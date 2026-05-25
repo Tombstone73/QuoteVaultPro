@@ -58,7 +58,11 @@ function makeMatrixBasePriceTree(basePrice: number) {
   };
 }
 
-function makeRowTierBasisTree(tierBasis: "computed_sheet_usage" | "line_item_quantity") {
+function makeRowTierBasisTree(
+  tierBasis: "computed_sheet_usage" | "line_item_quantity",
+  rowVariables?: Record<string, number>,
+  formulaVariablesOverride?: Record<string, number>,
+) {
   return {
     ...makeTree(200),
     rootNodeIds: ["rate"],
@@ -68,6 +72,7 @@ function makeRowTierBasisTree(tierBasis: "computed_sheet_usage" | "line_item_qua
         {
           id: "standard",
           when: { rate: "standard" },
+          ...(rowVariables ? { variables: rowVariables } : {}),
           tierBasis,
           qtyTiers: [
             { id: "sheet_1", label: "1+ sheet", minQty: 1, perSqftCents: 132 },
@@ -89,7 +94,7 @@ function makeRowTierBasisTree(tierBasis: "computed_sheet_usage" | "line_item_qua
     },
     meta: {
       pricingV2: { base: { perSqftCents: 200 } },
-      formulaVariables: {
+      formulaVariables: formulaVariablesOverride ?? {
         sheet_width: 48,
         sheet_length: 96,
         usable_drop_min: 24,
@@ -551,6 +556,45 @@ describe("sheet_consumption_sqft", () => {
     expect(result.debug?.tierResolution?.tierSelectionQuantity).toBe(1);
     expect(result.debug?.tierResolution?.selectedTierMinQty).toBe(1);
     expect(result.debug?.tierResolution?.selectedTierRate).toBe(1.32);
+  });
+
+  test.each([7, 8, 9, 10])("row tier rate drives sheet-yield base_price for 24x18 q%s", (quantity) => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeRowTierBasisTree(
+        "computed_sheet_usage",
+        { base_price: 0 },
+        {
+          sheet_width: 48,
+          sheet_length: 96,
+          usable_drop_min: 0,
+          billable_length_increment: 1,
+          minimum_billable_sqft: 32,
+        },
+      ),
+      widthIn: 24,
+      heightIn: 18,
+      quantity,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingFormulaOverride: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+      debug: true,
+    });
+
+    expect(result.debug?.variables.billed_sheet_sqft).toBe(32);
+    expect(result.debug?.variables.base_price).toBe(1.32);
+    expect(result.debug?.variables.p).toBe(1.32);
+    expect(result.debug?.tierResolution?.rawItemQuantity).toBe(quantity);
+    expect(result.debug?.tierResolution?.computedSheetUsageAvailable).toBe(true);
+    expect(result.debug?.tierResolution?.tierSelectionQuantity).toBeGreaterThanOrEqual(1);
+    expect(result.debug?.tierResolution?.selectedTierMinQty).toBe(1);
+    expect(result.debug?.tierResolution?.selectedTierRate).toBe(1.32);
+    expect(result.debug?.tierResolution?.selectedTierRateAppliedToBasePrice).toBe(true);
+    expect(result.debug?.tierResolution?.matrixBasePriceRaw).toBe(0);
+    expect(result.debug?.tierResolution?.matrixBasePriceIgnoredBecauseTierMatched).toBe(true);
+    expect(result.debug?.tierResolution?.basePriceFinal).toBe(1.32);
+    expect(result.debug?.tierResolution?.basePriceSource).toBe("pricing_matrix.row_qty_tier");
+    expect(result.totalPrice).toBeCloseTo(42.24, 2);
+    expect(result.breakdown.basePrice).toBeCloseTo(42.24, 2);
+    expect(result.totalPrice).not.toBe(10);
   });
 
   test("row-level raw item quantity still selects the qty 10 tier when configured", () => {

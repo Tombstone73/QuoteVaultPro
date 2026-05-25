@@ -157,6 +157,8 @@ export type PBV2TierResolutionSnapshot = {
   matrixBasePriceOverride: boolean;
   matrixRowId?: string | null;
   matrixStaticBaseRate?: number | null;
+  matrixBasePriceRaw?: number | null;
+  matrixBasePriceIgnoredBecauseTierMatched?: boolean;
   matrixStaticBaseRateUsedAsFallback?: boolean;
   productTierFallbackUsed?: boolean;
   tierBasis?: Pbv2TierBasis;
@@ -172,6 +174,9 @@ export type PBV2TierResolutionSnapshot = {
   selectedTierMinQty?: number | null;
   selectedTierRate?: number | null;
   selectedTierSource?: "matrix_row" | "pbv2_product" | "pbv2_pricing_v2" | "none" | null;
+  selectedTierRateAppliedToBasePrice?: boolean;
+  basePriceFinal?: number;
+  basePriceSource?: string;
   finalBaseRateUsed: number;
   warnings: Pbv2TierResolutionWarning[];
   capturedAt: string;
@@ -1512,13 +1517,21 @@ function getPricingMatrixVariablesForFormula(
   variables: Record<string, number>,
   tierResolution: Pbv2TierResolution,
 ): Record<string, number> {
-  if (
-    tierResolution.tierSource !== "matrix_row" ||
-    tierResolution.matrixStaticBaseRateUsedAsFallback ||
-    typeof variables.base_price !== "number"
-  ) {
+  if (typeof variables.base_price !== "number") {
     return variables;
   }
+
+  const matrixBasePrice = Number(variables.base_price);
+  const shouldIgnoreMatrixBasePrice =
+    !Number.isFinite(matrixBasePrice) ||
+    matrixBasePrice <= 0 ||
+    (
+      tierResolution.tierSource === "matrix_row" &&
+      !tierResolution.matrixStaticBaseRateUsedAsFallback &&
+      typeof tierResolution.selectedTierRate === "number"
+    );
+
+  if (!shouldIgnoreMatrixBasePrice) return variables;
 
   const { base_price: _staticBasePrice, ...rest } = variables;
   return rest;
@@ -1559,6 +1572,29 @@ function isPbv2TierBasis(value: unknown): value is Pbv2TierBasis {
 function getFiniteNumberFromRecord(record: Record<string, unknown>, key: string): number | null {
   const value = Number(record[key]);
   return Number.isFinite(value) ? value : null;
+}
+
+function resolveComputedSheetTierSelectionQuantity(metrics: SheetYieldMetrics): number | null {
+  if (!metrics.available) return null;
+
+  const candidates: number[] = [];
+  const computedSheets = Number(metrics.computedSheets);
+  if (Number.isFinite(computedSheets) && computedSheets > 0) {
+    candidates.push(computedSheets);
+  }
+
+  const billedSheets = Number(metrics.billedSheets);
+  if (Number.isFinite(billedSheets) && billedSheets > 0) {
+    candidates.push(billedSheets);
+  }
+
+  const sheetSqft = Number(metrics.sheetSqft);
+  const billedSheetSqft = Number(metrics.billedSheetSqft);
+  if (Number.isFinite(sheetSqft) && sheetSqft > 0 && Number.isFinite(billedSheetSqft) && billedSheetSqft > 0) {
+    candidates.push(billedSheetSqft / sheetSqft);
+  }
+
+  return candidates.length > 0 ? Math.max(...candidates) : null;
 }
 
 function getFormulaVariableRecord(
@@ -1916,10 +1952,11 @@ function resolveTierBasisState(input: {
 
   const computed = input.sheetYieldMetrics;
   warnings.push(...computed.warnings);
-  if (computed.available && computed.computedSheets !== null && Number.isFinite(computed.computedSheets) && computed.computedSheets > 0) {
+  const computedTierSelectionQuantity = resolveComputedSheetTierSelectionQuantity(computed);
+  if (computed.available && computed.computedSheets !== null && Number.isFinite(computed.computedSheets) && computed.computedSheets > 0 && computedTierSelectionQuantity !== null) {
     return {
       tierBasis,
-      tierBasisValue: computed.computedSheets,
+      tierBasisValue: computedTierSelectionQuantity,
       tierBasisResolvedFrom,
       lineItemQuantity: input.quantity,
       computedSheetUsage: computed.computedSheets,
@@ -2017,7 +2054,10 @@ function calculateBasePriceDetails(
   const matrixRowQtyTiers = getMatrixRowQtyTiers(matchedMatrixRow);
   const hasMatrixRowQtyTiers = matrixRowQtyTiers.length > 0;
   const matrixBasePrice = pricingMatrixVariables.base_price;
-  const hasMatrixBasePrice = typeof matrixBasePrice === "number" && Number.isFinite(matrixBasePrice) && matrixBasePrice >= 0;
+  const matrixBasePriceRaw = typeof matrixBasePrice === "number" && Number.isFinite(matrixBasePrice)
+    ? matrixBasePrice
+    : null;
+  const hasMatrixBasePrice = matrixBasePriceRaw !== null && matrixBasePriceRaw > 0;
   const base = pricingV2.base && typeof pricingV2.base === 'object' ? pricingV2.base : {};
   if (Object.keys(base).length === 0 && !hasMatrixBasePrice && !hasMatrixRowQtyTiers) {
     throw new Error(
@@ -2089,12 +2129,14 @@ function calculateBasePriceDetails(
 
     if (matchedRowTier) {
       let appliedRateField = false;
+      let selectedTierRateAppliedToBasePrice = false;
       const rowTier = matchedRowTier as Record<string, unknown>;
 
       if ("perSqftCents" in rowTier) {
         if (isValidRateCents(rowTier.perSqftCents)) {
           perSqftCents = rowTier.perSqftCents;
           appliedRateField = true;
+          selectedTierRateAppliedToBasePrice = true;
         } else if (rowTier.perSqftCents !== undefined && rowTier.perSqftCents !== null) {
           rowTierWarnings.push({
             code: "PBV2_TIER_INVALID_RATE",
@@ -2156,6 +2198,8 @@ function calculateBasePriceDetails(
         effectiveBaseRateBeforeMatrix: dollarsFromCents(perSqftCents),
         matrixBasePriceOverride: false,
         matrixStaticBaseRate,
+        matrixBasePriceRaw,
+        matrixBasePriceIgnoredBecauseTierMatched: matrixBasePriceRaw !== null,
         matrixStaticBaseRateUsedAsFallback: false,
         productTierFallbackUsed: false,
         tierBasis: tierBasisState.tierBasis,
@@ -2171,6 +2215,9 @@ function calculateBasePriceDetails(
         selectedTierMinQty: typeof matchedRowTier.minQty === "number" ? matchedRowTier.minQty : null,
         selectedTierRate: dollarsFromCents(perSqftCents),
         selectedTierSource: "matrix_row",
+        selectedTierRateAppliedToBasePrice,
+        basePriceFinal: dollarsFromCents(perSqftCents),
+        basePriceSource,
         finalBaseRateUsed: dollarsFromCents(perSqftCents),
         warnings: [...tierBasisState.warnings, ...rowTierWarnings],
       };
@@ -2206,6 +2253,8 @@ function calculateBasePriceDetails(
         effectiveBaseRateBeforeMatrix: dollarsFromCents(perSqftCents),
         matrixBasePriceOverride: hasMatrixBasePrice,
         matrixStaticBaseRate,
+        matrixBasePriceRaw,
+        matrixBasePriceIgnoredBecauseTierMatched: false,
         matrixStaticBaseRateUsedAsFallback: hasMatrixBasePrice,
         productTierFallbackUsed: false,
         tierBasis: tierBasisState.tierBasis,
@@ -2221,6 +2270,9 @@ function calculateBasePriceDetails(
         selectedTierMinQty: null,
         selectedTierRate: null,
         selectedTierSource: "matrix_row",
+        selectedTierRateAppliedToBasePrice: false,
+        basePriceFinal: dollarsFromCents(perSqftCents),
+        basePriceSource,
         finalBaseRateUsed: dollarsFromCents(perSqftCents),
         warnings: [...tierBasisState.warnings, ...warnings],
       };
@@ -2247,6 +2299,8 @@ function calculateBasePriceDetails(
       ...resolvedBaseRates.tierResolution,
       matrixRowId,
       matrixStaticBaseRate: hasMatrixBasePrice ? matrixBasePrice : null,
+      matrixBasePriceRaw,
+      matrixBasePriceIgnoredBecauseTierMatched: false,
       matrixStaticBaseRateUsedAsFallback: false,
       productTierFallbackUsed: Boolean(matchedMatrixRow)
         && (
@@ -2266,6 +2320,9 @@ function calculateBasePriceDetails(
       selectedTierMinQty: resolvedBaseRates.tierResolution.selectedTierMinQty ?? null,
       selectedTierRate: resolvedBaseRates.tierResolution.selectedTierRate ?? null,
       selectedTierSource: resolvedBaseRates.tierResolution.selectedTierSource ?? null,
+      selectedTierRateAppliedToBasePrice: typeof resolvedBaseRates.tierResolution.selectedTierRate === "number",
+      basePriceFinal: perSqftCents / 100,
+      basePriceSource,
       warnings: [...tierBasisState.warnings, ...resolvedBaseRates.tierResolution.warnings],
     };
 
@@ -2275,6 +2332,8 @@ function calculateBasePriceDetails(
         ...tierResolution,
         matrixBasePriceOverride: true,
         finalBaseRateUsed: matrixBasePrice,
+        basePriceFinal: matrixBasePrice,
+        basePriceSource: "pricing_matrix.base_price",
         warnings: [
           ...tierResolution.warnings,
           {
@@ -2293,6 +2352,8 @@ function calculateBasePriceDetails(
       tierResolution = {
         ...tierResolution,
         matrixBasePriceOverride: false,
+        basePriceFinal: perSqftCents / 100,
+        basePriceSource,
         finalBaseRateUsed: perSqftCents / 100,
       };
     }
@@ -3042,6 +3103,8 @@ function buildTierResolutionSnapshot(
     matrixBasePriceOverride: tierResolution.matrixBasePriceOverride,
     matrixRowId: tierResolution.matrixRowId,
     matrixStaticBaseRate: tierResolution.matrixStaticBaseRate,
+    matrixBasePriceRaw: tierResolution.matrixBasePriceRaw,
+    matrixBasePriceIgnoredBecauseTierMatched: tierResolution.matrixBasePriceIgnoredBecauseTierMatched,
     matrixStaticBaseRateUsedAsFallback: tierResolution.matrixStaticBaseRateUsedAsFallback,
     productTierFallbackUsed: tierResolution.productTierFallbackUsed,
     tierBasis: tierResolution.tierBasis,
@@ -3057,6 +3120,9 @@ function buildTierResolutionSnapshot(
     selectedTierMinQty: tierResolution.selectedTierMinQty,
     selectedTierRate: tierResolution.selectedTierRate,
     selectedTierSource: tierResolution.selectedTierSource,
+    selectedTierRateAppliedToBasePrice: tierResolution.selectedTierRateAppliedToBasePrice,
+    basePriceFinal: tierResolution.basePriceFinal,
+    basePriceSource: tierResolution.basePriceSource,
     finalBaseRateUsed: tierResolution.finalBaseRateUsed,
     warnings: tierResolution.warnings,
     capturedAt,
