@@ -125,6 +125,60 @@ async function refreshQuoteAggregateTotals(organizationId: string, quoteId: stri
   return updated ?? null;
 }
 
+async function repriceQuotePbv2LineItems(organizationId: string, quoteId: string) {
+  const lineRows = await db
+    .select()
+    .from(quoteLineItems)
+    .where(eq(quoteLineItems.quoteId, quoteId));
+
+  const { priceLineItem } = await import("../services/pricing/PricingService");
+
+  for (const line of lineRows) {
+    if (line.status === "canceled") continue;
+    if (!line.productId) continue;
+    if (!line.pbv2TreeVersionId && !(line.pbv2SnapshotJson as any)?.pricingSystem) continue;
+
+    const width = Number(line.width);
+    const height = Number(line.height);
+    const quantity = Number(line.quantity);
+    if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0 || !Number.isFinite(quantity) || quantity <= 0) {
+      throw new Error(`Cannot reprice PBV2 quote line item ${line.id}: missing width, height, or quantity`);
+    }
+
+    const optionSelectionsJson = (line.optionSelectionsJson ?? {}) as any;
+    const pricingResult = await priceLineItem({
+      organizationId,
+      productId: line.productId,
+      quantity,
+      widthIn: width,
+      heightIn: height,
+      pbv2ExplicitSelections: optionSelectionsJson.selected || {},
+      pbv2TreeVersionIdOverride: undefined,
+    });
+
+    await db
+      .update(quoteLineItems)
+      .set({
+        pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
+        pbv2SnapshotJson: pricingResult.pbv2SnapshotJson,
+        selectedOptions: pricingResult.pbv2SnapshotJson.selectedOptions || [],
+        pricedAt: new Date(),
+        linePrice: (pricingResult.lineTotalCents / 100).toFixed(2),
+        priceBreakdown: {
+          basePrice: pricingResult.breakdown.baseCents / 100,
+          optionsPrice: pricingResult.breakdown.optionsCents / 100,
+          total: pricingResult.lineTotalCents / 100,
+          formula: "",
+          nestingDetails: pricingResult.breakdown.nestingDetails ?? null,
+          pricingMethod: pricingResult.breakdown.pricingMethod,
+        } as any,
+        formulaLinePrice: null,
+        priceOverride: null,
+      })
+      .where(eq(quoteLineItems.id, line.id));
+  }
+}
+
 async function syncInboundCompletionForQuote(args: {
   organizationId: string;
   quoteId: string;
@@ -1276,6 +1330,7 @@ export function registerQuoteRoutes(
         !isPartialUpdate;
 
       if (shouldRefreshAggregateTotals) {
+        await repriceQuotePbv2LineItems(organizationId, id);
         const refreshedTotals = await refreshQuoteAggregateTotals(organizationId, id);
         if (refreshedTotals) {
           updatedQuote = {
