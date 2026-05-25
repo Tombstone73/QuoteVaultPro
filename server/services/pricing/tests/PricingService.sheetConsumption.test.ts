@@ -371,6 +371,9 @@ describe("sheet_consumption_sqft", () => {
     expect(result.breakdown.basePrice).toBeCloseTo(46.44, 2);
     expect(result.debug?.pricing?.finalTotalSource).toBe("formula");
     expect(result.debug?.pricing?.formulaEvaluatedTotal).toBeCloseTo(46.44, 2);
+    expect(result.debug?.pricing?.finalTotal).toBeCloseTo(46.44, 2);
+    expect(result.debug?.pricing?.totalPrice).toBeCloseTo(result.debug?.pricing?.finalTotal ?? 0, 2);
+    expect(result.totalPrice).toBeCloseTo(result.debug?.pricing?.finalTotal ?? 0, 2);
     expect(result.debug?.pricing?.pbv2BaseTotal).not.toBeCloseTo(46.44, 2);
     expect(result.debug?.pricingSystem).toBe("pbv2");
     expect(result.totalPrice).not.toBe(27);
@@ -399,6 +402,9 @@ describe("sheet_consumption_sqft", () => {
     expect(result.breakdown.basePrice).toBeCloseTo(41.4, 2);
     expect(result.debug?.pricing?.finalTotalSource).toBe("formula");
     expect(result.debug?.pricing?.formulaEvaluatedTotal).toBeCloseTo(41.4, 2);
+    expect(result.debug?.pricing?.finalTotal).toBeCloseTo(41.4, 2);
+    expect(result.debug?.pricing?.totalPrice).toBeCloseTo(result.debug?.pricing?.finalTotal ?? 0, 2);
+    expect(result.totalPrice).toBeCloseTo(result.debug?.pricing?.finalTotal ?? 0, 2);
     expect(result.totalPrice).not.toBe(30);
   });
 

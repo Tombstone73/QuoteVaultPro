@@ -728,6 +728,26 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     return normalized;
   }, [formulaDebug]);
   const hasFormulaDebugErrors = formulaDebugErrors.length > 0;
+  const formulaPricingDebug = formulaDebug?.pricing ?? null;
+  const formulaAuthoritativeTotal = formulaPricingDebug?.finalTotalSource === "formula" && typeof formulaPricingDebug.finalTotal === "number"
+    ? formulaPricingDebug.finalTotal + (typeof formulaPricingDebug.optionsPrice === "number" ? formulaPricingDebug.optionsPrice : 0)
+    : null;
+  const displayTotalPrice = result
+    ? formulaAuthoritativeTotal ?? result.totalPrice
+    : 0;
+  const displayUnitPrice = result
+    ? (previewState.quantity > 0 ? displayTotalPrice / previewState.quantity : result.unitPrice)
+    : 0;
+  const displayBasePrice = result?.breakdown
+    ? (formulaPricingDebug?.finalTotalSource === "formula" && typeof formulaPricingDebug.finalTotal === "number"
+      ? formulaPricingDebug.finalTotal
+      : result.breakdown.basePrice)
+    : 0;
+  const finalTotalDisplayMismatch = Boolean(
+    result &&
+    formulaAuthoritativeTotal != null &&
+    Math.abs(result.totalPrice - formulaAuthoritativeTotal) > 0.005,
+  );
   const sortedDebugVariables = useMemo(() => {
     const source = formulaDebug?.variables ?? {};
     const entries = Object.entries(source);
@@ -1106,8 +1126,13 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     </div>
                   ) : (
                     <>
-                      <div className="flex items-center justify-between"><span>Unit price</span><span className="font-mono">{currencyFormatter.format(result.unitPrice)}</span></div>
-                      <div className="flex items-center justify-between"><span>Total price</span><span className="font-mono">{currencyFormatter.format(result.totalPrice)}</span></div>
+                      {finalTotalDisplayMismatch ? (
+                        <div className="rounded border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-[11px] text-red-200">
+                          PBV2_E_FINAL_TOTAL_MISMATCH: API total was {currencyFormatter.format(result.totalPrice)} but formula final total is {currencyFormatter.format(formulaAuthoritativeTotal ?? result.totalPrice)}.
+                        </div>
+                      ) : null}
+                      <div className="flex items-center justify-between"><span>Unit price</span><span className="font-mono">{currencyFormatter.format(displayUnitPrice)}</span></div>
+                      <div className="flex items-center justify-between"><span>Total price</span><span className="font-mono">{currencyFormatter.format(displayTotalPrice)}</span></div>
                       {formulaDebug?.pricing?.finalTotalSource ? (
                         <div className="flex items-center justify-between text-[11px] text-slate-400">
                           <span>Final source</span>
@@ -1136,7 +1161,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                   ) : null}
                   {result.breakdown ? (
                     <div className="pt-2 mt-2 border-t border-slate-700 text-xs text-slate-400 space-y-1">
-                      <div className="flex items-center justify-between"><span>Base</span><span className="font-mono">{currencyFormatter.format(result.breakdown.basePrice)}</span></div>
+                      <div className="flex items-center justify-between"><span>Base</span><span className="font-mono">{currencyFormatter.format(displayBasePrice)}</span></div>
                       <div className="flex items-center justify-between"><span>Options</span><span className="font-mono">{currencyFormatter.format(result.breakdown.optionsPrice)}</span></div>
                     </div>
                   ) : null}
