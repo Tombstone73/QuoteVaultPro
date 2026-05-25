@@ -368,18 +368,20 @@ export function registerQuoteRoutes(
           });
         }
 
+        if (pricingError.code === 'PBV2_FORMULA_ERROR') {
+          return res.status(422).json({
+            message: pricingError.message,
+            code: 'PBV2_FORMULA_ERROR',
+            details: pricingError.details ?? [],
+            debug: pricingError.debug,
+          });
+        }
+
         // Re-throw other pricing errors (will be caught by outer handler)
         throw pricingError;
       }
 
-      // Load variant info (display-only, not used for pricing)
-      let variant = null;
-      if (variantId) {
-        const variants = await storage.getProductVariants(productId);
-        variant = variants.find(v => v.id === variantId) ?? null;
-      }
-
-      // Format response (convert cents to dollars for legacy compatibility)
+      // Format response. PBV2 pricing is authoritative.
       res.json({
         success: true,
         linePrice: pricingResult.lineTotalCents / 100,
@@ -400,10 +402,7 @@ export function registerQuoteRoutes(
           name: product.name,
           pbv2ActiveTreeVersionId: product.pbv2ActiveTreeVersionId,
         },
-        variant: variant ? {
-          id: variant.id,
-          name: variant.name,
-        } : null,
+        variant: null,
       });
     } catch (error) {
       console.error("Error calculating price:", error);
@@ -1724,7 +1723,7 @@ export function registerQuoteRoutes(
         pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
         pbv2SnapshotJson: pricingResult.pbv2SnapshotJson,
         pricedAt: new Date(),
-        selectedOptions: lineItem.selectedOptions || [],
+        selectedOptions: pricingResult.pbv2SnapshotJson.selectedOptions || [],
         linePrice: pricingResult.lineTotalCents / 100, // Convert cents to dollars
         formulaLinePrice: null,
         priceOverride: null,
@@ -1747,6 +1746,14 @@ export function registerQuoteRoutes(
       res.json(createdLineItem);
     } catch (error) {
       console.error("Error adding line item:", error);
+      if ((error as any)?.code === "PBV2_FORMULA_ERROR") {
+        return res.status(422).json({
+          message: (error as any).message,
+          code: "PBV2_FORMULA_ERROR",
+          details: (error as any).details ?? [],
+          debug: (error as any).debug,
+        });
+      }
       res.status(500).json({ message: "Failed to add line item", error: (error as Error).message });
     }
   });
@@ -1774,7 +1781,6 @@ export function registerQuoteRoutes(
         quantity,
         specsJson,
         optionSelectionsJson,
-        selectedOptions,
         displayOrder,
       } = req.body;
 
@@ -1821,7 +1827,7 @@ export function registerQuoteRoutes(
         pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
         pbv2SnapshotJson: pricingResult.pbv2SnapshotJson,
         pricedAt: new Date(),
-        selectedOptions: Array.isArray(selectedOptions) ? selectedOptions : [],
+        selectedOptions: pricingResult.pbv2SnapshotJson.selectedOptions || [],
         linePrice: pricingResult.lineTotalCents / 100, // Convert cents to dollars
         formulaLinePrice: null,
         priceOverride: null,
@@ -1845,6 +1851,14 @@ export function registerQuoteRoutes(
       res.json({ success: true, data: createdLineItem });
     } catch (error) {
       console.error("Error creating temporary line item:", error);
+      if ((error as any)?.code === "PBV2_FORMULA_ERROR") {
+        return res.status(422).json({
+          message: (error as any).message,
+          code: "PBV2_FORMULA_ERROR",
+          details: (error as any).details ?? [],
+          debug: (error as any).debug,
+        });
+      }
       res.status(500).json({ message: "Failed to create temporary line item", error: (error as Error).message });
     }
   });
@@ -1904,6 +1918,7 @@ export function registerQuoteRoutes(
         // Set server-authoritative PBV2 fields
         updateData.pbv2TreeVersionId = pricingResult.pbv2TreeVersionId;
         updateData.pbv2SnapshotJson = pricingResult.pbv2SnapshotJson;
+        updateData.selectedOptions = pricingResult.pbv2SnapshotJson.selectedOptions || [];
         updateData.pricedAt = new Date();
         updateData.linePrice = pricingResult.lineTotalCents / 100;
         updateData.priceBreakdown = {
@@ -1929,7 +1944,6 @@ export function registerQuoteRoutes(
       if (lineItem.height !== undefined) updateData.height = parseFloat(lineItem.height);
       if (lineItem.quantity !== undefined) updateData.quantity = parseInt(lineItem.quantity);
       if (lineItem.optionSelectionsJson !== undefined) updateData.optionSelectionsJson = lineItem.optionSelectionsJson;
-      if (lineItem.selectedOptions !== undefined) updateData.selectedOptions = lineItem.selectedOptions;
       if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
       if (lineItem.isTemporary !== undefined) updateData.isTemporary = lineItem.isTemporary;
       if (lineItem.quoteId !== undefined) updateData.quoteId = lineItem.quoteId;
@@ -1946,6 +1960,14 @@ export function registerQuoteRoutes(
       res.json(updatedLineItem);
     } catch (error) {
       console.error("Error updating line item:", error);
+      if ((error as any)?.code === "PBV2_FORMULA_ERROR") {
+        return res.status(422).json({
+          message: (error as any).message,
+          code: "PBV2_FORMULA_ERROR",
+          details: (error as any).details ?? [],
+          debug: (error as any).debug,
+        });
+      }
       res.status(500).json({ message: "Failed to update line item" });
     }
   });

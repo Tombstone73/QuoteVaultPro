@@ -205,6 +205,8 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaEvaluatedTotal).toBe(44);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.finalTotalSource).toBe("formula");
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.finalTotal).toBe(44);
+    expect(result.pbv2SnapshotJson.pricingSystem).toBe("pbv2");
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.pricingSystem).toBe("pbv2");
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaVariables.computed_sheets).toBe(1);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaVariables.billed_sheet_sqft).toBe(32);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.sheetYield?.billedSheetSqft).toBe(32);
@@ -489,7 +491,7 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     expect(snapshot?.formulaScopeUsed?.tier_base_price).toBe(0.8);
   });
 
-  test("captures matrix override and native-versus-legacy tier warning in snapshot metadata", async () => {
+  test("ignores legacy priceBreaks while capturing PBV2 matrix override metadata", async () => {
     const tree = makeAcmTree(575, { perSqftCents: 100 }) as any;
     tree.meta.pricingV2.qtyTiers = [
       { id: "tier_5", label: "Five plus", minQty: 5, perSqftCents: 80 },
@@ -528,9 +530,14 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     }));
     expect(tierResolution?.warnings).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ code: "PBV2_TIER_LEGACY_AND_NATIVE_PRESENT" }),
         expect.objectContaining({ code: "PBV2_TIER_MATRIX_BASE_PRICE_OVERRIDE" }),
       ])
     );
+    expect(tierResolution?.warnings ?? []).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: expect.stringContaining("LEGACY") }),
+      ])
+    );
+    expect((tierResolution as any)?.source).not.toBe("legacy_price_breaks");
   });
 });
