@@ -401,7 +401,7 @@ export default function StripePayDialog(props: {
 
         {!publishableKey && (
           <div className="text-sm text-muted-foreground">
-            Stripe is not configured (missing <span className="font-mono">VITE_STRIPE_PUBLISHABLE_KEY</span>).
+            Online payment is not configured for this environment.
           </div>
         )}
 

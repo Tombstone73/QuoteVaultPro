@@ -53,7 +53,7 @@ export default function PortalOrderDetailPage() {
     return (
       <div className="mx-auto w-full max-w-4xl space-y-4">
         <Button asChild variant="ghost">
-          <Link to="/portal/my-orders">
+          <Link to="/portal/orders">
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back to orders
           </Link>
@@ -73,7 +73,7 @@ export default function PortalOrderDetailPage() {
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
           <Button asChild variant="ghost" className="mb-2 px-0">
-            <Link to="/portal/my-orders">
+            <Link to="/portal/orders">
               <ArrowLeft className="mr-2 h-4 w-4" />
               Back to orders
             </Link>

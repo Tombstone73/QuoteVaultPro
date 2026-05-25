@@ -238,6 +238,7 @@ async function upsertOrderLineItem(params: {
     totalPrice: money(params.config.invoiceAmountCents),
     status: "new",
     workflowState: params.workflowState,
+    designStatus: "design_complete",
     requiresProofApproval: params.requiresProofApproval,
     approvedProofVersionId: params.approvedProofVersionId ?? null,
     requiresInventory: false,

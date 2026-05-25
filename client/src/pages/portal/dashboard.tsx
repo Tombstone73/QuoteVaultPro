@@ -248,7 +248,7 @@ export default function PortalDashboardPage() {
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Quotes Requiring Attention</CardTitle>
             <Button asChild variant="ghost" size="sm">
-              <Link to="/portal/my-quotes">
+              <Link to="/portal/quotes">
                 View all
                 <ArrowRight className="ml-2 h-4 w-4" />
               </Link>
@@ -265,7 +265,7 @@ export default function PortalDashboardPage() {
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Active Orders</CardTitle>
             <Button asChild variant="ghost" size="sm">
-              <Link to="/portal/my-orders">
+              <Link to="/portal/orders">
                 View all
                 <ArrowRight className="ml-2 h-4 w-4" />
               </Link>
