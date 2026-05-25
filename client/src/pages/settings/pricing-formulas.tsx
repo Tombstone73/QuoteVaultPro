@@ -789,9 +789,9 @@ function BreakdownRow({
 const SHEET_4X8_PRESET: Record<string, number> = {
   sheet_width: 48,
   sheet_length: 96,
-  usable_drop_min: 24,
-  billable_length_increment: 12,
-  minimum_billable_sqft: 3,
+  usable_drop_min: 0,
+  billable_length_increment: 1,
+  minimum_billable_sqft: 32,
 };
 
 function FormulaVariablesEditor({
@@ -854,7 +854,7 @@ function FormulaVariablesEditor({
           variant="outline"
           className="h-6 px-2 text-[10px]"
           onClick={applyPreset}
-          title="Add sheet_width=48, sheet_length=96, usable_drop_min=24, billable_length_increment=12, minimum_billable_sqft=3"
+          title="Add sheet_width=48, sheet_length=96, usable_drop_min=0, billable_length_increment=1, minimum_billable_sqft=32"
         >
           + 4×8 Sheet Vars
         </Button>

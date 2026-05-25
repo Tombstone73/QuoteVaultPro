@@ -1670,18 +1670,24 @@ export function registerProductRoutes(
       const overrideFormula = !sourceModeIsLibrary && typeof pricingFormulaOverride === "string" && pricingFormulaOverride.trim()
         ? pricingFormulaOverride
         : undefined;
-      let pricingFormulaLibrary: { id: string; name?: string | null; expression: string } | undefined;
+      let pricingFormulaLibrary: { id: string; name?: string | null; code?: string | null; expression: string; config?: Record<string, any> | null } | undefined;
       const normalizedPricingFormulaId = typeof pricingFormulaId === "string" && pricingFormulaId.trim()
         ? pricingFormulaId.trim()
         : "";
       if (normalizedPricingFormulaId) {
         const [formula] = await db
-          .select({ id: pricingFormulas.id, name: pricingFormulas.name, expression: pricingFormulas.expression })
+          .select({
+            id: pricingFormulas.id,
+            name: pricingFormulas.name,
+            code: pricingFormulas.code,
+            expression: pricingFormulas.expression,
+            config: pricingFormulas.config,
+          })
           .from(pricingFormulas)
           .where(and(eq(pricingFormulas.id, normalizedPricingFormulaId), eq(pricingFormulas.organizationId, organizationId)))
           .limit(1);
         if (typeof formula?.expression === "string" && formula.expression.trim()) {
-          pricingFormulaLibrary = { id: formula.id, name: formula.name, expression: formula.expression };
+          pricingFormulaLibrary = { id: formula.id, name: formula.name, code: formula.code, expression: formula.expression, config: formula.config as any };
         } else {
           return res.json({
             success: false,
