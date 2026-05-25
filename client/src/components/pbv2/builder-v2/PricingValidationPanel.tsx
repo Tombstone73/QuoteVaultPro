@@ -101,11 +101,25 @@ type PricingPreviewResponse = {
       pbv2BaseTotal?: number;
       finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
       finalTotal?: number;
+      formulaSourceMode?: "library" | "manual" | "profile";
+      resolvedFormulaSource?: "library" | "manual" | "tree_meta" | "product" | "profile" | "none";
+      resolvedFormulaId?: string | null;
+      resolvedFormulaName?: string | null;
+      resolvedFormulaExpression?: string;
+      manualFormulaPresent?: boolean;
+      manualFormulaIgnored?: boolean;
     };
     formulaEvaluatedTotal?: number | null;
     pbv2BaseTotal?: number;
     finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
     finalTotal?: number;
+    formulaSourceMode?: "library" | "manual" | "profile";
+    resolvedFormulaSource?: "library" | "manual" | "tree_meta" | "product" | "profile" | "none";
+    resolvedFormulaId?: string | null;
+    resolvedFormulaName?: string | null;
+    resolvedFormulaExpression?: string;
+    manualFormulaPresent?: boolean;
+    manualFormulaIgnored?: boolean;
     formulaResultType?: "final_dollars";
     quantityBasisUsed?: string;
     selectedRate?: number | null;
@@ -215,7 +229,9 @@ interface PricingValidationPanelProps {
   treeJson: unknown | null;
   pricingV2Override?: unknown;
   pricingFormulaOverride?: string | null;
+  manualFormulaText?: string | null;
   pricingFormulaId?: string | null;
+  formulaSourceMode?: "library" | "manual" | "profile";
   pricingProfileKey?: string | null;
   pricingProfileConfig?: unknown;
   pricingMode?: "basic" | "advanced";
@@ -464,7 +480,7 @@ function PreviewErrorBanner({
   );
 }
 
-export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, pricingFormulaId, pricingProfileKey, pricingProfileConfig, pricingMode = "basic", productPrimaryMaterialId, findings }: PricingValidationPanelProps) {
+export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode = "profile", pricingProfileKey, pricingProfileConfig, pricingMode = "basic", productPrimaryMaterialId, findings }: PricingValidationPanelProps) {
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat("en-US", {
@@ -547,12 +563,14 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
         height: previewState.height,
         quantity: previewState.quantity,
         pricingFormulaOverride,
+        manualFormulaText,
         pricingFormulaId,
+        formulaSourceMode,
         pricingProfileKey,
         pricingProfileConfig,
         optionSelectionsJson: selectionPayload,
       }),
-    [treeForPreview, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, pricingFormulaId, pricingProfileKey, pricingProfileConfig, selectionPayload],
+    [treeForPreview, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, selectionPayload],
   );
 
   const inputErrors = useMemo(() => {
@@ -667,7 +685,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     ? billedSqftPost * baseRateUsed
     : null;
   const hasBilledSqftDebug = billedSqftPre != null && billedSqftPost != null;
-  const activeFormulaText = String(result?.formulaUsed || formulaDebug?.formulaRaw || pricingFormulaOverride || "");
+  const activeFormulaText = String(formulaDebug?.resolvedFormulaExpression || result?.formulaUsed || formulaDebug?.formulaRaw || pricingFormulaOverride || "");
   const hasActiveTrimAllowance = trimAllowanceX > 0 || trimAllowanceY > 0;
   const hasManualGeometryRebuild = detectsManualGeometryRebuild(activeFormulaText, hasActiveTrimAllowance);
   const geometryComparisonScope = useMemo(() => {
@@ -920,7 +938,9 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
             height: previewState.height,
             quantity: previewState.quantity,
             pricingFormulaOverride,
+            manualFormulaText,
             pricingFormulaId,
+            formulaSourceMode,
             pricingProfileKey,
             pricingProfileConfig,
             productPrimaryMaterialId,
@@ -968,7 +988,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [hasInputErrors, requestSignature, treeForPreview, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, pricingFormulaId, pricingProfileKey, pricingProfileConfig, selectionPayload]);
+  }, [hasInputErrors, requestSignature, treeForPreview, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, selectionPayload]);
 
   return (
     <aside className="h-full w-full min-w-0 bg-card flex flex-col overflow-hidden">
@@ -1177,6 +1197,13 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     <AccordionTrigger className="py-1 text-xs text-slate-300 hover:no-underline">Formula Debug</AccordionTrigger>
                     <AccordionContent className="space-y-2 text-xs text-slate-300">
                       <div><span className="text-slate-400">Formula used:</span> <span className="font-mono">{formulaDebug.formulaRaw || "—"}</span></div>
+                      <div><span className="text-slate-400">Formula source mode:</span> <span className="font-mono">{formulaDebug.formulaSourceMode ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Resolved formula source:</span> <span className="font-mono">{formulaDebug.resolvedFormulaSource ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Resolved formula id:</span> <span className="font-mono">{formulaDebug.resolvedFormulaId ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Resolved formula name:</span> <span className="font-mono">{formulaDebug.resolvedFormulaName ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Resolved formula expression:</span> <span className="font-mono">{formulaDebug.resolvedFormulaExpression ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Manual formula present:</span> <span className="font-mono">{formulaDebug.manualFormulaPresent ? "true" : "false"}</span></div>
+                      <div><span className="text-slate-400">Manual formula ignored:</span> <span className="font-mono">{formulaDebug.manualFormulaIgnored ? "true" : "false"}</span></div>
                       {formulaDebug.formulaResolved ? (
                         <div><span className="text-slate-400">Formula resolved:</span> <span className="font-mono">{formulaDebug.formulaResolved}</span></div>
                       ) : null}

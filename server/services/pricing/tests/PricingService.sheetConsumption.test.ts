@@ -348,6 +348,93 @@ describe("sheet_consumption_sqft", () => {
     expect(result.breakdown.basePrice).toBeCloseTo(44, 2);
   });
 
+  test("formula library mode ignores stale manual formula text and uses library expression", () => {
+    const libraryExpression = "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3) * base_price";
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeMatrixBasePriceTree(1.375),
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 10,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      formulaSourceMode: "library",
+      pricingFormulaLibrary: {
+        id: "formula_4x8",
+        name: "4x8 Sheets with rounding",
+        expression: libraryExpression,
+      },
+      manualFormulaText: "total_sqft * base_price",
+      debug: true,
+    });
+
+    expect(result.totalPrice).toBeCloseTo(44, 2);
+    expect(result.formulaUsed).toBe(libraryExpression);
+    expect(result.debug?.formulaRaw).toBe(libraryExpression);
+    expect(result.debug?.formulaSourceMode).toBe("library");
+    expect(result.debug?.resolvedFormulaSource).toBe("library");
+    expect(result.debug?.resolvedFormulaId).toBe("formula_4x8");
+    expect(result.debug?.resolvedFormulaName).toBe("4x8 Sheets with rounding");
+    expect(result.debug?.resolvedFormulaExpression).toBe(libraryExpression);
+    expect(result.debug?.manualFormulaPresent).toBe(true);
+    expect(result.debug?.manualFormulaIgnored).toBe(true);
+    expect(result.debug?.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_W_LIBRARY_FORMULA_DETACHED" }),
+    ]));
+    expect(result.debug?.variables.computed_sheets).toBe(1);
+    expect(result.debug?.variables.billed_sheet_sqft).toBe(32);
+  });
+
+  test("manual formula mode uses the manual formula even when a library formula is selected", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeMatrixBasePriceTree(1.375),
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 10,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      formulaSourceMode: "manual",
+      pricingFormulaOverride: "total_sqft * base_price",
+      pricingFormulaLibrary: {
+        id: "formula_4x8",
+        name: "4x8 Sheets with rounding",
+        expression: "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3) * base_price",
+      },
+      debug: true,
+    });
+
+    expect(result.totalPrice).toBeCloseTo(41.25, 2);
+    expect(result.formulaUsed).toBe("total_sqft * base_price");
+    expect(result.debug?.formulaSourceMode).toBe("manual");
+    expect(result.debug?.resolvedFormulaSource).toBe("manual");
+    expect(result.debug?.manualFormulaPresent).toBe(true);
+    expect(result.debug?.manualFormulaIgnored).toBe(false);
+  });
+
+  test("formula library mode errors when the selected library formula is missing", () => {
+    let err: any = null;
+    try {
+      evaluatePricingPreviewFromTree({
+        treeJson: makeMatrixBasePriceTree(1.375),
+        widthIn: 24,
+        heightIn: 18,
+        quantity: 10,
+        pbv2ExplicitSelections: { rate: { value: "standard" } },
+        formulaSourceMode: "library",
+        manualFormulaText: "total_sqft * base_price",
+        debug: true,
+      });
+    } catch (error: any) {
+      err = error;
+    }
+
+    expect(err?.code).toBe("PBV2_FORMULA_ERROR");
+    expect(err?.details).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_E_FORMULA_LIBRARY_NOT_FOUND" }),
+    ]));
+    expect(err?.debug?.formulaSourceMode).toBe("library");
+    expect(err?.debug?.resolvedFormulaSource).toBe("none");
+    expect(err?.debug?.manualFormulaPresent).toBe(true);
+    expect(err?.debug?.manualFormulaIgnored).toBe(true);
+  });
+
   test("selected formula wins over flat-goods fallback for 24x18 q9", () => {
     const result = evaluatePricingPreviewFromTree({
       treeJson: makeMatrixBasePriceTree(1.72),
