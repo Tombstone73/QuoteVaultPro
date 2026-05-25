@@ -109,6 +109,7 @@ export type Pbv2TierResolutionWarning = {
     | "PBV2_TIER_MATRIX_ROW_NO_MATCH"
     | "PBV2_TIER_MATRIX_STATIC_BASE_FALLBACK"
     | "PBV2_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE"
+    | "PBV2_E_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE"
     | "PBV2_TIER_COMPUTED_SHEET_USAGE_FAILED"
     | "PBV2_TIER_COMPUTED_SHEET_USAGE_INVALID"
     | "PBV2_TIER_FALLBACK_LINE_ITEM_QUANTITY"
@@ -144,6 +145,13 @@ export type Pbv2TierResolution = {
   computedSheetUsage?: number | null;
   computedSheetUsageAvailable?: boolean;
   computedSheetUsageMode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
+  tierSheetWidth?: number | null;
+  tierSheetLength?: number | null;
+  tierUsableDropMin?: number | null;
+  tierBillableLengthIncrement?: number | null;
+  tierMinimumBillableSqft?: number | null;
+  tierVariableSources?: Record<string, string>;
+  computedSheetUsageUnavailableReason?: string | null;
   fallbackToLineItemQuantity?: boolean;
   selectedTierMinQty?: number | null;
   selectedTierRate?: number | null;

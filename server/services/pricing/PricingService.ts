@@ -170,6 +170,13 @@ export type PBV2TierResolutionSnapshot = {
   computedSheetUsage?: number | null;
   computedSheetUsageAvailable?: boolean;
   computedSheetUsageMode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
+  tierSheetWidth?: number | null;
+  tierSheetLength?: number | null;
+  tierUsableDropMin?: number | null;
+  tierBillableLengthIncrement?: number | null;
+  tierMinimumBillableSqft?: number | null;
+  tierVariableSources?: Record<string, string>;
+  computedSheetUsageUnavailableReason?: string | null;
   fallbackToLineItemQuantity?: boolean;
   selectedTierMinQty?: number | null;
   selectedTierRate?: number | null;
@@ -588,6 +595,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     pricingProfileKey: product.pricingProfileKey,
     pricingProfileConfig: product.pricingProfileConfig,
     formulaVariables: formulaVariablesForPricing,
+    formulaVariableSources: formulaVariableResolution.sources,
     pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
     productLegacy: {
       sheetWidth: product.sheetWidth,
@@ -839,6 +847,7 @@ export function evaluatePricingPreviewFromTree(input: {
     pricingProfileKey: input.pricingProfileKey,
     pricingProfileConfig: input.pricingProfileConfig,
     formulaVariables: formulaVariablesForPricing,
+    formulaVariableSources: formulaVariableResolution.sources,
     pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
   });
   const pricingMethod = String(baseDetails.pricingProfileKey || "default");
@@ -1473,6 +1482,7 @@ function calculateBasePrice(
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
     formulaVariables?: Record<string, number>;
+    formulaVariableSources?: Record<string, string>;
     pricingFormulaExpression?: string | null;
     productLegacy?: {
       sheetWidth?: string | null;
@@ -1546,6 +1556,13 @@ type SheetYieldMetrics = {
   sheetCount: number | null;
   sheetSqft: number | null;
   billedSheetSqft: number | null;
+  tierSheetWidth?: number | null;
+  tierSheetLength?: number | null;
+  tierUsableDropMin?: number | null;
+  tierBillableLengthIncrement?: number | null;
+  tierMinimumBillableSqft?: number | null;
+  tierVariableSources?: Record<string, string>;
+  computedSheetUsageUnavailableReason?: string | null;
   finishedSqft: number;
   totalFinishedSqft: number;
   available: boolean;
@@ -1561,6 +1578,13 @@ type TierBasisState = {
   computedSheetUsage: number | null;
   computedSheetUsageAvailable: boolean;
   computedSheetUsageMode: ComputedSheetUsageMode;
+  tierSheetWidth?: number | null;
+  tierSheetLength?: number | null;
+  tierUsableDropMin?: number | null;
+  tierBillableLengthIncrement?: number | null;
+  tierMinimumBillableSqft?: number | null;
+  tierVariableSources?: Record<string, string>;
+  computedSheetUsageUnavailableReason?: string | null;
   fallbackToLineItemQuantity: boolean;
   warnings: Pbv2TierResolutionWarning[];
 };
@@ -1597,29 +1621,37 @@ function resolveComputedSheetTierSelectionQuantity(metrics: SheetYieldMetrics): 
   return candidates.length > 0 ? Math.max(...candidates) : null;
 }
 
+function mergeNumericVariablesWithSources(
+  target: { variables: Record<string, number>; sources: Record<string, string> },
+  source: unknown,
+  sourceLabel: string,
+  sourceOverrides?: Record<string, string>,
+): void {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return;
+  for (const [key, rawValue] of Object.entries(source as Record<string, unknown>)) {
+    const value = Number(rawValue);
+    if (!key || !Number.isFinite(value)) continue;
+    target.variables[key] = value;
+    target.sources[key] = sourceOverrides?.[key] ?? sourceLabel;
+  }
+}
+
 function getFormulaVariableRecord(
   meta: Record<string, unknown>,
   activeProfileConfig: FlatGoodsConfig | null,
   pricingMatrixVariables: Record<string, number>,
   explicitFormulaVariables?: Record<string, number>,
-): Record<string, number> {
-  const sources = [
-    (meta as any).formulaVariables,
-    (meta as any).pricingFormulaVariables,
-    (activeProfileConfig as any)?.formulaVariables,
-    explicitFormulaVariables,
-  ];
-  const out: Record<string, number> = {};
-  for (const source of sources) {
-    if (!source || typeof source !== "object" || Array.isArray(source)) continue;
-    for (const [key, rawValue] of Object.entries(source as Record<string, unknown>)) {
-      const value = Number(rawValue);
-      if (key && Number.isFinite(value)) out[key] = value;
-    }
+  explicitFormulaVariableSources?: Record<string, string>,
+): { variables: Record<string, number>; sources: Record<string, string> } {
+  const out = { variables: {} as Record<string, number>, sources: {} as Record<string, string> };
+  if (explicitFormulaVariables && Object.keys(explicitFormulaVariables).length > 0) {
+    mergeNumericVariablesWithSources(out, explicitFormulaVariables, "formulaVariables", explicitFormulaVariableSources);
+  } else {
+    mergeNumericVariablesWithSources(out, (activeProfileConfig as any)?.formulaVariables, "pricingProfileConfig.formulaVariables");
+    mergeNumericVariablesWithSources(out, (meta as any).pricingFormulaVariables, "tree.meta.pricingFormulaVariables");
+    mergeNumericVariablesWithSources(out, (meta as any).formulaVariables, "tree.meta.formulaVariables");
   }
-  for (const [key, value] of Object.entries(pricingMatrixVariables)) {
-    if (Number.isFinite(value)) out[key] = value;
-  }
+  mergeNumericVariablesWithSources(out, pricingMatrixVariables, "pricing_matrix.variables");
   return out;
 }
 
@@ -1696,6 +1728,7 @@ function resolveComputedSheetUsage(input: {
   };
   pricingMatrixVariables: Record<string, number>;
   formulaVariables?: Record<string, number>;
+  formulaVariableSources?: Record<string, string>;
   pricingFormulaExpression?: string | null;
   orderedWidthIn: number;
   orderedHeightIn: number;
@@ -1777,21 +1810,29 @@ function resolveComputedSheetUsage(input: {
     }
   }
 
-  const formulaVariables = getFormulaVariableRecord(
+  const formulaVariableRecord = getFormulaVariableRecord(
     input.meta,
     input.activeProfileConfig,
     input.pricingMatrixVariables,
     input.formulaVariables,
+    input.formulaVariableSources,
   );
-  Object.assign(
-    formulaVariables,
-    extractSheetConsumptionFormulaVariables(input.pricingFormulaExpression, formulaVariables),
-  );
+  const formulaVariables = formulaVariableRecord.variables;
+  const formulaVariableSources = formulaVariableRecord.sources;
+  const expressionVariables = extractSheetConsumptionFormulaVariables(input.pricingFormulaExpression, formulaVariables);
+  for (const [key, value] of Object.entries(expressionVariables)) {
+    formulaVariables[key] = value;
+    formulaVariableSources[key] = formulaVariableSources[key] ?? "formula.expression";
+  }
   const sheetWidth = getFiniteNumberFromRecord(formulaVariables, "sheet_width");
   const sheetLength = getFiniteNumberFromRecord(formulaVariables, "sheet_length");
   const usableDropMin = getFiniteNumberFromRecord(formulaVariables, "usable_drop_min");
   const billableLengthIncrement = getFiniteNumberFromRecord(formulaVariables, "billable_length_increment");
   const minimumBillableSqft = getFiniteNumberFromRecord(formulaVariables, "minimum_billable_sqft");
+  const tierVariableSources: Record<string, string> = {};
+  for (const key of ["sheet_width", "sheet_length", "usable_drop_min", "billable_length_increment", "minimum_billable_sqft"]) {
+    if (formulaVariableSources[key]) tierVariableSources[key] = formulaVariableSources[key];
+  }
 
   if (
     sheetWidth === null ||
@@ -1800,18 +1841,24 @@ function resolveComputedSheetUsage(input: {
     billableLengthIncrement === null ||
     minimumBillableSqft === null
   ) {
+    const missingVariables = [
+      ["sheet_width", sheetWidth],
+      ["sheet_length", sheetLength],
+      ["usable_drop_min", usableDropMin],
+      ["billable_length_increment", billableLengthIncrement],
+      ["minimum_billable_sqft", minimumBillableSqft],
+    ]
+      .filter(([, value]) => value === null)
+      .map(([key]) => String(key));
+    const unavailableReason = `missing_variables:${missingVariables.join(",")}`;
     warnings.push({
-      code: "PBV2_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE",
-      severity: "warning",
+      code: "PBV2_E_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE",
+      severity: "error",
       message: "Computed sheet usage was selected, but required sheet consumption variables are not available.",
       detail: {
-        requiredVariables: [
-          "sheet_width",
-          "sheet_length",
-          "usable_drop_min",
-          "billable_length_increment",
-          "minimum_billable_sqft",
-        ],
+        requiredVariables: ["sheet_width", "sheet_length", "usable_drop_min", "billable_length_increment", "minimum_billable_sqft"],
+        missingVariables,
+        variableSources: tierVariableSources,
       },
     });
     return {
@@ -1820,6 +1867,13 @@ function resolveComputedSheetUsage(input: {
       sheetCount: null,
       sheetSqft: null,
       billedSheetSqft: null,
+      tierSheetWidth: sheetWidth,
+      tierSheetLength: sheetLength,
+      tierUsableDropMin: usableDropMin,
+      tierBillableLengthIncrement: billableLengthIncrement,
+      tierMinimumBillableSqft: minimumBillableSqft,
+      tierVariableSources,
+      computedSheetUsageUnavailableReason: unavailableReason,
       finishedSqft,
       totalFinishedSqft,
       available: false,
@@ -1855,6 +1909,13 @@ function resolveComputedSheetUsage(input: {
         sheetCount: null,
         sheetSqft: Number.isFinite(sheetAreaSqft) && sheetAreaSqft > 0 ? sheetAreaSqft : null,
         billedSheetSqft: null,
+        tierSheetWidth: sheetWidth,
+        tierSheetLength: sheetLength,
+        tierUsableDropMin: usableDropMin,
+        tierBillableLengthIncrement: billableLengthIncrement,
+        tierMinimumBillableSqft: minimumBillableSqft,
+        tierVariableSources,
+        computedSheetUsageUnavailableReason: "sheet_usage_invalid",
         finishedSqft,
         totalFinishedSqft,
         available: false,
@@ -1869,6 +1930,13 @@ function resolveComputedSheetUsage(input: {
       sheetCount: Math.ceil(sheetUsage),
       sheetSqft: sheetAreaSqft,
       billedSheetSqft: consumedSqft,
+      tierSheetWidth: sheetWidth,
+      tierSheetLength: sheetLength,
+      tierUsableDropMin: usableDropMin,
+      tierBillableLengthIncrement: billableLengthIncrement,
+      tierMinimumBillableSqft: minimumBillableSqft,
+      tierVariableSources,
+      computedSheetUsageUnavailableReason: null,
       finishedSqft,
       totalFinishedSqft,
       available: true,
@@ -1888,6 +1956,13 @@ function resolveComputedSheetUsage(input: {
       sheetCount: null,
       sheetSqft: null,
       billedSheetSqft: null,
+      tierSheetWidth: sheetWidth,
+      tierSheetLength: sheetLength,
+      tierUsableDropMin: usableDropMin,
+      tierBillableLengthIncrement: billableLengthIncrement,
+      tierMinimumBillableSqft: minimumBillableSqft,
+      tierVariableSources,
+      computedSheetUsageUnavailableReason: error?.message ?? "sheet_consumption_failed",
       finishedSqft,
       totalFinishedSqft,
       available: false,
@@ -1962,26 +2037,43 @@ function resolveTierBasisState(input: {
       computedSheetUsage: computed.computedSheets,
       computedSheetUsageAvailable: true,
       computedSheetUsageMode: computed.mode,
+      tierSheetWidth: computed.tierSheetWidth,
+      tierSheetLength: computed.tierSheetLength,
+      tierUsableDropMin: computed.tierUsableDropMin,
+      tierBillableLengthIncrement: computed.tierBillableLengthIncrement,
+      tierMinimumBillableSqft: computed.tierMinimumBillableSqft,
+      tierVariableSources: computed.tierVariableSources,
+      computedSheetUsageUnavailableReason: computed.computedSheetUsageUnavailableReason,
       fallbackToLineItemQuantity: false,
       warnings,
     };
   }
 
   warnings.push({
-    code: "PBV2_TIER_FALLBACK_LINE_ITEM_QUANTITY",
-    severity: "warning",
-    message: "Falling back to line item quantity because computed sheet usage is unavailable.",
-    detail: { lineItemQuantity: input.quantity },
+    code: "PBV2_E_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE",
+    severity: "error",
+    message: "Computed sheet usage tier basis is selected, but sheet usage could not be computed.",
+    detail: {
+      lineItemQuantity: input.quantity,
+      unavailableReason: computed.computedSheetUsageUnavailableReason ?? "unavailable",
+    },
   });
   return {
     tierBasis,
-    tierBasisValue: input.quantity,
+    tierBasisValue: 0,
     tierBasisResolvedFrom,
     lineItemQuantity: input.quantity,
     computedSheetUsage: computed.computedSheets,
     computedSheetUsageAvailable: false,
     computedSheetUsageMode: "unavailable",
-    fallbackToLineItemQuantity: true,
+    tierSheetWidth: computed.tierSheetWidth,
+    tierSheetLength: computed.tierSheetLength,
+    tierUsableDropMin: computed.tierUsableDropMin,
+    tierBillableLengthIncrement: computed.tierBillableLengthIncrement,
+    tierMinimumBillableSqft: computed.tierMinimumBillableSqft,
+    tierVariableSources: computed.tierVariableSources,
+    computedSheetUsageUnavailableReason: computed.computedSheetUsageUnavailableReason ?? "unavailable",
+    fallbackToLineItemQuantity: false,
     warnings,
   };
 }
@@ -1997,6 +2089,7 @@ function calculateBasePriceDetails(
     pricingProfileKey?: string | null;
     pricingProfileConfig?: unknown;
     formulaVariables?: Record<string, number>;
+    formulaVariableSources?: Record<string, string>;
     pricingFormulaExpression?: string | null;
     productLegacy?: {
       sheetWidth?: string | null;
@@ -2093,6 +2186,7 @@ function calculateBasePriceDetails(
     productLegacy,
     pricingMatrixVariables,
     formulaVariables: pricingContext?.formulaVariables,
+    formulaVariableSources: pricingContext?.formulaVariableSources,
     pricingFormulaExpression: pricingContext?.pricingFormulaExpression,
     orderedWidthIn,
     orderedHeightIn,
@@ -2211,6 +2305,13 @@ function calculateBasePriceDetails(
         computedSheetUsage: tierBasisState.computedSheetUsage,
         computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
         computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
+        tierSheetWidth: tierBasisState.tierSheetWidth,
+        tierSheetLength: tierBasisState.tierSheetLength,
+        tierUsableDropMin: tierBasisState.tierUsableDropMin,
+        tierBillableLengthIncrement: tierBasisState.tierBillableLengthIncrement,
+        tierMinimumBillableSqft: tierBasisState.tierMinimumBillableSqft,
+        tierVariableSources: tierBasisState.tierVariableSources,
+        computedSheetUsageUnavailableReason: tierBasisState.computedSheetUsageUnavailableReason,
         fallbackToLineItemQuantity: tierBasisState.fallbackToLineItemQuantity,
         selectedTierMinQty: typeof matchedRowTier.minQty === "number" ? matchedRowTier.minQty : null,
         selectedTierRate: dollarsFromCents(perSqftCents),
@@ -2266,6 +2367,13 @@ function calculateBasePriceDetails(
         computedSheetUsage: tierBasisState.computedSheetUsage,
         computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
         computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
+        tierSheetWidth: tierBasisState.tierSheetWidth,
+        tierSheetLength: tierBasisState.tierSheetLength,
+        tierUsableDropMin: tierBasisState.tierUsableDropMin,
+        tierBillableLengthIncrement: tierBasisState.tierBillableLengthIncrement,
+        tierMinimumBillableSqft: tierBasisState.tierMinimumBillableSqft,
+        tierVariableSources: tierBasisState.tierVariableSources,
+        computedSheetUsageUnavailableReason: tierBasisState.computedSheetUsageUnavailableReason,
         fallbackToLineItemQuantity: tierBasisState.fallbackToLineItemQuantity,
         selectedTierMinQty: null,
         selectedTierRate: null,
@@ -2316,6 +2424,13 @@ function calculateBasePriceDetails(
       computedSheetUsage: tierBasisState.computedSheetUsage,
       computedSheetUsageAvailable: tierBasisState.computedSheetUsageAvailable,
       computedSheetUsageMode: tierBasisState.computedSheetUsageMode,
+      tierSheetWidth: tierBasisState.tierSheetWidth,
+      tierSheetLength: tierBasisState.tierSheetLength,
+      tierUsableDropMin: tierBasisState.tierUsableDropMin,
+      tierBillableLengthIncrement: tierBasisState.tierBillableLengthIncrement,
+      tierMinimumBillableSqft: tierBasisState.tierMinimumBillableSqft,
+      tierVariableSources: tierBasisState.tierVariableSources,
+      computedSheetUsageUnavailableReason: tierBasisState.computedSheetUsageUnavailableReason,
       fallbackToLineItemQuantity: tierBasisState.fallbackToLineItemQuantity,
       selectedTierMinQty: resolvedBaseRates.tierResolution.selectedTierMinQty ?? null,
       selectedTierRate: resolvedBaseRates.tierResolution.selectedTierRate ?? null,
@@ -3116,6 +3231,13 @@ function buildTierResolutionSnapshot(
     computedSheetUsage: tierResolution.computedSheetUsage,
     computedSheetUsageAvailable: tierResolution.computedSheetUsageAvailable,
     computedSheetUsageMode: tierResolution.computedSheetUsageMode,
+    tierSheetWidth: tierResolution.tierSheetWidth,
+    tierSheetLength: tierResolution.tierSheetLength,
+    tierUsableDropMin: tierResolution.tierUsableDropMin,
+    tierBillableLengthIncrement: tierResolution.tierBillableLengthIncrement,
+    tierMinimumBillableSqft: tierResolution.tierMinimumBillableSqft,
+    tierVariableSources: tierResolution.tierVariableSources,
+    computedSheetUsageUnavailableReason: tierResolution.computedSheetUsageUnavailableReason,
     fallbackToLineItemQuantity: tierResolution.fallbackToLineItemQuantity,
     selectedTierMinQty: tierResolution.selectedTierMinQty,
     selectedTierRate: tierResolution.selectedTierRate,

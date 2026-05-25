@@ -162,6 +162,13 @@ type PricingPreviewResponse = {
       computedSheetUsage?: number | null;
       computedSheetUsageAvailable?: boolean;
       computedSheetUsageMode?: "exact_flat_goods" | "sheet_equivalent" | "unavailable";
+      tierSheetWidth?: number | null;
+      tierSheetLength?: number | null;
+      tierUsableDropMin?: number | null;
+      tierBillableLengthIncrement?: number | null;
+      tierMinimumBillableSqft?: number | null;
+      tierVariableSources?: Record<string, string>;
+      computedSheetUsageUnavailableReason?: string | null;
       fallbackToLineItemQuantity?: boolean;
       selectedTierMinQty?: number | null;
       selectedTierRate?: number | null;
@@ -1349,6 +1356,18 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                             <div className="font-mono">{tierResolution?.computedSheetUsageAvailable ? displayDebugValue(tierResolution?.computedSheetUsage) : "Unavailable"}</div>
                             <div className="text-slate-400">Sheet usage mode</div>
                             <div className="font-mono">{computedSheetUsageModeDisplay}</div>
+                            <div className="text-slate-400">Tier sheet width</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.tierSheetWidth)}</div>
+                            <div className="text-slate-400">Tier sheet length</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.tierSheetLength)}</div>
+                            <div className="text-slate-400">Tier usable drop min</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.tierUsableDropMin)}</div>
+                            <div className="text-slate-400">Tier billable increment</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.tierBillableLengthIncrement)}</div>
+                            <div className="text-slate-400">Tier minimum billable sqft</div>
+                            <div className="font-mono">{displayDebugValue(tierResolution?.tierMinimumBillableSqft)}</div>
+                            <div className="text-slate-400">Sheet usage unavailable reason</div>
+                            <div className="font-mono break-all">{tierResolution?.computedSheetUsageUnavailableReason ?? "None"}</div>
                             <div className="text-slate-400">Fallback to line item quantity</div>
                             <div className={tierResolution?.fallbackToLineItemQuantity ? "font-mono text-amber-200" : "font-mono"}>
                               {tierResolution?.fallbackToLineItemQuantity ? "Yes" : "No"}
@@ -1394,6 +1413,19 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                             <div className="text-slate-400">Final base rate used</div>
                             <div className="font-mono">{displayDebugCurrency(tierResolution?.finalBaseRateUsed)}</div>
                           </div>
+                          {tierResolution?.tierVariableSources && Object.keys(tierResolution.tierVariableSources).length > 0 ? (
+                            <div className="mt-2 rounded border border-slate-700/70 bg-slate-950/50 p-2">
+                              <div className="mb-1 text-slate-400">Tier variable sources</div>
+                              <div className="space-y-1">
+                                {Object.entries(tierResolution.tierVariableSources).map(([key, source]) => (
+                                  <div key={key} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2">
+                                    <span className="min-w-0 break-all font-mono">{key}</span>
+                                    <span className="min-w-0 break-all text-right font-mono text-slate-400">{source}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
 
                         {tierResolution?.matrixBasePriceOverride ? (

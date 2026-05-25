@@ -434,7 +434,7 @@ describe("PricingService pricing matrix variable resolution", () => {
     );
   });
 
-  test("computed sheet usage unavailable falls back to line item quantity with warnings", () => {
+  test("computed sheet usage unavailable does not fall back to line item quantity", () => {
     const tree = makeAcmTree(null);
     delete (tree as any).pricingMatrix;
     delete (tree as any).meta.formulaVariables;
@@ -451,23 +451,27 @@ describe("PricingService pricing matrix variable resolution", () => {
       {},
     );
 
-    expect(result.totalPrice).toBeCloseTo(24, 2);
+    expect(result.totalPrice).toBeCloseTo(30, 2);
     expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
       source: "pbv2_product",
-      matchedTierId: "line_fallback_5",
+      matchedTierId: null,
       tierBasis: "computed_sheet_usage",
-      tierBasisValue: 5,
+      tierBasisValue: 0,
       tierBasisResolvedFrom: "product",
       lineItemQuantity: 5,
       computedSheetUsage: null,
       computedSheetUsageAvailable: false,
       computedSheetUsageMode: "unavailable",
-      fallbackToLineItemQuantity: true,
-      finalBaseRateUsed: 0.8,
+      fallbackToLineItemQuantity: false,
+      finalBaseRateUsed: 1,
     }));
     expect(result.debug?.tierResolution?.warnings).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ code: "PBV2_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE" }),
+        expect.objectContaining({ code: "PBV2_E_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE" }),
+      ])
+    );
+    expect(result.debug?.tierResolution?.warnings ?? []).not.toEqual(
+      expect.arrayContaining([
         expect.objectContaining({ code: "PBV2_TIER_FALLBACK_LINE_ITEM_QUANTITY" }),
       ])
     );
