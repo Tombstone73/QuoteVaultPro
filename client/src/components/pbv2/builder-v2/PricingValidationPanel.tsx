@@ -993,22 +993,22 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   }, [hasInputErrors, requestSignature, treeForPreview, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, selectionPayload]);
 
   return (
-    <aside className="h-full w-full min-w-0 bg-card flex flex-col overflow-hidden">
-      <ScrollArea className="flex-1 min-w-0">
-        <div className="p-4 space-y-4 min-w-0">
+    <aside className="h-full w-full max-w-full min-w-0 bg-card flex flex-col overflow-hidden">
+      <ScrollArea className="flex-1 min-w-0 max-w-full">
+        <div className="p-4 space-y-4 min-w-0 max-w-full overflow-hidden [overflow-wrap:anywhere]">
           <div className="space-y-3 min-w-0">
             <div className="flex items-center gap-2">
               <DollarSign className="h-4 w-4 text-blue-400" />
               <h2 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Pricing Preview Sandbox</h2>
             </div>
 
-            <div className="rounded-md border border-slate-700 bg-slate-800/50 p-3 space-y-3 min-w-0">
-              <div className="flex items-center justify-between">
-                <div className="text-xs text-slate-400 uppercase tracking-wide">Inputs</div>
-                <div className="text-[11px] text-slate-500">Units: {previewState.unit === "in" ? "inches" : previewState.unit}</div>
+            <div className="rounded-md border border-slate-700 bg-slate-800/50 p-3 space-y-3 min-w-0 max-w-full overflow-hidden">
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <div className="text-xs text-slate-400 uppercase tracking-wide min-w-0">Inputs</div>
+                <div className="text-[11px] text-slate-500 shrink-0">Units: {previewState.unit === "in" ? "inches" : previewState.unit}</div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2 min-w-0">
+              <div className="grid grid-cols-[repeat(3,minmax(0,1fr))] gap-2 min-w-0 max-w-full">
                 <div className="min-w-0">
                   <Label className="text-xs text-slate-400">Width ({previewState.unit})</Label>
                   <Input
@@ -1017,7 +1017,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     step="any"
                     value={previewState.width}
                     onChange={(e) => setPreviewState((prev) => ({ ...prev, width: Number(e.target.value) }))}
-                    className="bg-slate-950/60 border-slate-700/60 h-8"
+                    className="bg-slate-950/60 border-slate-700/60 h-8 w-full min-w-0"
                   />
                   {inputErrors.width ? <div className="mt-1 text-[11px] text-red-300">{inputErrors.width}</div> : null}
                 </div>
@@ -1029,7 +1029,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     step="any"
                     value={previewState.height}
                     onChange={(e) => setPreviewState((prev) => ({ ...prev, height: Number(e.target.value) }))}
-                    className="bg-slate-950/60 border-slate-700/60 h-8"
+                    className="bg-slate-950/60 border-slate-700/60 h-8 w-full min-w-0"
                   />
                   {inputErrors.height ? <div className="mt-1 text-[11px] text-red-300">{inputErrors.height}</div> : null}
                 </div>
@@ -1041,14 +1041,14 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     step={1}
                     value={previewState.quantity}
                     onChange={(e) => setPreviewState((prev) => ({ ...prev, quantity: Number(e.target.value) }))}
-                    className="bg-slate-950/60 border-slate-700/60 h-8"
+                    className="bg-slate-950/60 border-slate-700/60 h-8 w-full min-w-0"
                   />
                   {inputErrors.quantity ? <div className="mt-1 text-[11px] text-red-300">{inputErrors.quantity}</div> : null}
                 </div>
               </div>
             </div>
 
-            <div className="rounded-md border border-slate-700 bg-slate-800/50 p-3 space-y-2 min-w-0">
+            <div className="rounded-md border border-slate-700 bg-slate-800/50 p-3 space-y-2 min-w-0 max-w-full overflow-hidden">
               <div className="text-xs text-slate-400 uppercase tracking-wide">Output</div>
               {loading ? (
                 <div className="text-sm text-slate-300">Calculating…</div>
@@ -1074,7 +1074,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                   ))}
                 </div>
               ) : result ? (
-                <div className="space-y-1 text-sm text-slate-200">
+                <div className="space-y-1 text-sm text-slate-200 min-w-0 max-w-full overflow-hidden">
                   {hasCanonicalGeometryWarning ? (
                     <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 mb-2 text-[11px] text-amber-200">
                       <div className="font-semibold">Formula does not use canonical finished geometry. Billing may ignore trim allowances.</div>
@@ -1164,10 +1164,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     </>
                   )}
                   {result.formulaUsed ? (
-                    <div className="flex items-center gap-2 text-[11px] text-slate-400">
-                      <span>Formula: <span className="font-mono">{result.formulaUsed}</span></span>
+                    <div className="flex flex-wrap items-start gap-2 text-[11px] text-slate-400 min-w-0 max-w-full">
+                      <span className="min-w-0 break-words">Formula: <span className="font-mono break-all">{result.formulaUsed}</span></span>
                       {formulaDebug?.likelyMisconfiguredFormula ? (
-                        <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-300">
+                        <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-300 shrink-0">
                           Check formula output
                         </Badge>
                       ) : null}
@@ -1195,15 +1195,15 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
 
               {formulaDebug ? (
                 <Accordion type="single" collapsible className="mt-2 border-t border-slate-700/80 pt-2">
-                  <AccordionItem value="formula-debug" className="border-b-0">
+                  <AccordionItem value="formula-debug" className="border-b-0 min-w-0">
                     <AccordionTrigger className="py-1 text-xs text-slate-300 hover:no-underline">Formula Debug</AccordionTrigger>
-                    <AccordionContent className="space-y-2 text-xs text-slate-300">
-                      <div><span className="text-slate-400">Formula used:</span> <span className="font-mono">{formulaDebug.formulaRaw || "—"}</span></div>
+                    <AccordionContent className="space-y-2 text-xs text-slate-300 min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere]">
+                      <div className="min-w-0"><span className="text-slate-400">Formula used:</span> <span className="font-mono break-all">{formulaDebug.formulaRaw || "—"}</span></div>
                       <div><span className="text-slate-400">Formula source mode:</span> <span className="font-mono">{formulaDebug.formulaSourceMode ?? "—"}</span></div>
                       <div><span className="text-slate-400">Resolved formula source:</span> <span className="font-mono">{formulaDebug.resolvedFormulaSource ?? "—"}</span></div>
-                      <div><span className="text-slate-400">Resolved formula id:</span> <span className="font-mono">{formulaDebug.resolvedFormulaId ?? "—"}</span></div>
-                      <div><span className="text-slate-400">Resolved formula name:</span> <span className="font-mono">{formulaDebug.resolvedFormulaName ?? "—"}</span></div>
-                      <div><span className="text-slate-400">Resolved formula expression:</span> <span className="font-mono">{formulaDebug.resolvedFormulaExpression ?? "—"}</span></div>
+                      <div className="min-w-0"><span className="text-slate-400">Resolved formula id:</span> <span className="font-mono break-all">{formulaDebug.resolvedFormulaId ?? "—"}</span></div>
+                      <div className="min-w-0"><span className="text-slate-400">Resolved formula name:</span> <span className="font-mono break-words">{formulaDebug.resolvedFormulaName ?? "—"}</span></div>
+                      <div className="min-w-0"><span className="text-slate-400">Resolved formula expression:</span> <span className="font-mono break-all">{formulaDebug.resolvedFormulaExpression ?? "—"}</span></div>
                       <div><span className="text-slate-400">Manual formula present:</span> <span className="font-mono">{formulaDebug.manualFormulaPresent ? "true" : "false"}</span></div>
                       <div><span className="text-slate-400">Manual formula ignored:</span> <span className="font-mono">{formulaDebug.manualFormulaIgnored ? "true" : "false"}</span></div>
                       {["sheet_width", "sheet_length", "usable_drop_min", "billable_length_increment", "minimum_billable_sqft"].map((key) => (
@@ -1215,7 +1215,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                         </div>
                       ))}
                       {formulaDebug.formulaResolved ? (
-                        <div><span className="text-slate-400">Formula resolved:</span> <span className="font-mono">{formulaDebug.formulaResolved}</span></div>
+                        <div className="min-w-0"><span className="text-slate-400">Formula resolved:</span> <span className="font-mono break-all">{formulaDebug.formulaResolved}</span></div>
                       ) : null}
                       <div><span className="text-slate-400">Result value:</span> <span className="font-mono">{typeof formulaDebug.resultValue === "number" ? String(formulaDebug.resultValue) : "—"}</span></div>
                       <div><span className="text-slate-400">Applied as:</span> <span className="font-mono">{formulaDebug.appliedAs ?? "unknown"}</span></div>
@@ -1235,14 +1235,14 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div><span className="text-slate-400">Base rate used (p):</span> <span className="font-mono">{typeof formulaDebug.baseRateUsed === "number" ? String(formulaDebug.baseRateUsed) : "—"}</span></div>
                       <div className="space-y-1">
                         <div className="text-slate-400">Variables</div>
-                        <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2 max-h-32 overflow-y-auto">
+                        <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2 max-h-32 max-w-full overflow-y-auto overflow-x-hidden">
                           {sortedDebugVariables.length === 0 ? (
                             <div className="text-slate-500">No variables</div>
                           ) : (
                             sortedDebugVariables.map(([key, value]) => (
-                              <div key={key} className="flex items-center justify-between gap-2">
-                                <span className="font-mono text-slate-400">{key}</span>
-                                <span className="font-mono text-slate-200">{value == null ? "null" : String(value)}</span>
+                              <div key={key} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2 min-w-0">
+                                <span className="font-mono text-slate-400 min-w-0 break-all">{key}</span>
+                                <span className="font-mono text-slate-200 min-w-0 break-all text-right">{value == null ? "null" : String(value)}</span>
                               </div>
                             ))
                           )}
@@ -1252,11 +1252,11 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       {Array.isArray(formulaDebug.steps) && formulaDebug.steps.length > 0 ? (
                         <div className="space-y-1">
                           <div className="text-slate-400">Steps</div>
-                          <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2">
+                          <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2 max-w-full overflow-hidden">
                             {formulaDebug.steps.map((step, idx) => (
-                              <div key={`${step.label}-${idx}`} className="flex items-center justify-between gap-2">
-                                <span>{step.label}</span>
-                                <span className="font-mono">{String(step.value)}</span>
+                              <div key={`${step.label}-${idx}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2 min-w-0">
+                                <span className="min-w-0 break-words">{step.label}</span>
+                                <span className="font-mono min-w-0 break-all text-right">{String(step.value)}</span>
                               </div>
                             ))}
                           </div>
@@ -1266,16 +1266,16 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       {hasRuntimeSelectionDebug ? (
                         <div className="space-y-2">
                           <div className="text-slate-400">Runtime Selection Context</div>
-                          <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2 space-y-2">
+                          <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2 space-y-2 max-w-full overflow-hidden">
                             <div>
                               <div className="text-slate-500 mb-1">Selected choices</div>
                               {selectedChoiceEntries.length === 0 ? (
                                 <div className="font-mono text-slate-500">-</div>
                               ) : (
                                 selectedChoiceEntries.map(([selectionKey, choiceValue]) => (
-                                  <div key={selectionKey} className="flex items-center justify-between gap-2">
-                                    <span className="font-mono text-slate-400">{selectionKey}</span>
-                                    <span className="font-mono text-slate-200">{choiceValue}</span>
+                                  <div key={selectionKey} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2 min-w-0">
+                                    <span className="font-mono text-slate-400 min-w-0 break-all">{selectionKey}</span>
+                                    <span className="font-mono text-slate-200 min-w-0 break-all text-right">{choiceValue}</span>
                                   </div>
                                 ))
                               )}
@@ -1287,7 +1287,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                                 <div className="font-mono text-slate-500">-</div>
                               ) : (
                                 appliedPricingOverrides.map((override, index) => (
-                                  <div key={`pricing-override-${index}`} className="font-mono text-slate-200">
+                                  <div key={`pricing-override-${index}`} className="font-mono text-slate-200 min-w-0 break-all">
                                     {displayDebugValue(override.selectionKey)}:{displayDebugValue(override.choiceValue)} {displayDebugValue(override.mode)} {displayDebugValue(override.amount)} {displayDebugValue(override.unit)}
                                   </div>
                                 ))
@@ -1298,7 +1298,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                               <div>
                                 <div className="text-slate-500 mb-1">Hidden/stale selections</div>
                                 {hiddenSelectionWarnings.map((warning, index) => (
-                                  <div key={`hidden-selection-${index}`} className="font-mono text-amber-200">
+                                  <div key={`hidden-selection-${index}`} className="font-mono text-amber-200 min-w-0 break-all">
                                     {displayDebugValue(warning.selectionKey)}:{displayDebugValue(warning.choiceValue)} {displayDebugValue(warning.reason)}
                                   </div>
                                 ))}
@@ -1327,9 +1327,9 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                           </Badge>
                         ) : null}
                       </AccordionTrigger>
-                      <AccordionContent className="space-y-2 text-xs text-slate-300">
-                        <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2">
-                          <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                      <AccordionContent className="space-y-2 text-xs text-slate-300 min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere]">
+                        <div className="rounded border border-slate-700/70 bg-slate-900/40 p-2 max-w-full overflow-hidden">
+                          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-x-4 gap-y-1 min-w-0">
                             <div className="text-slate-400">Tier source</div>
                             <div className="font-mono">{tierSourceDisplay}</div>
                             <div className="text-slate-400">Tier basis</div>
