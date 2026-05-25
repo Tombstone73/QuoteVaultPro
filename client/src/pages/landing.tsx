@@ -174,7 +174,7 @@ export default function Landing() {
   return (
     <div className="min-h-screen bg-[#05080d] text-white">
       <MarketingMeta />
-      <MarketingHeader activePage="home" />
+      {contentVisible ? <MarketingHeader activePage="home" /> : null}
 
       <main>
         <section className="relative min-h-screen overflow-hidden pt-16">
@@ -193,22 +193,17 @@ export default function Landing() {
               className="absolute inset-0 h-full w-full object-cover object-center"
             />
           )}
-          <div className="absolute inset-0 bg-[#05080d]/45" />
-          <div
-            className={cn(
-              "absolute inset-0 transition-opacity duration-1000 ease-out",
-              contentVisible ? "opacity-100" : "opacity-55",
-            )}
-          >
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_24%,rgba(0,0,0,0)_0%,rgba(5,8,13,0.2)_38%,rgba(5,8,13,0.72)_72%),linear-gradient(180deg,rgba(5,8,13,0.12)_0%,rgba(5,8,13,0.35)_48%,#05080d_94%)]" />
-            <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-[#05080d] via-[#05080d]/78 to-transparent" />
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_35%_38%,rgba(0,169,224,0.17),transparent_34%),radial-gradient(circle_at_70%_34%,rgba(255,45,149,0.12),transparent_29%)]" />
-          </div>
+          {contentVisible ? (
+            <div className="pointer-events-none absolute inset-0 transition-opacity duration-1000 ease-out">
+              <div className="absolute inset-x-0 bottom-0 h-[58%] bg-gradient-to-t from-[#05080d]/88 via-[#05080d]/28 to-transparent" />
+              <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-[#05080d]/45 to-transparent" />
+            </div>
+          ) : null}
 
           <div className="relative z-10 mx-auto flex min-h-[calc(100vh-4rem)] max-w-7xl flex-col justify-end px-4 pb-14 pt-24 sm:px-6 sm:pb-16 lg:px-8">
             <div
               className={cn(
-                "mx-auto max-w-4xl text-center transition-all duration-1000 ease-out",
+                "mx-auto max-w-4xl text-center transition-all duration-1000 ease-out [text-shadow:0_2px_22px_rgba(0,0,0,0.72)]",
                 contentVisible ? "translate-y-0 opacity-100" : "translate-y-5 opacity-0",
               )}
             >
