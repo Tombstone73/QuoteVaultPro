@@ -19,6 +19,7 @@ import { stringifyPbv2TreeJson } from "@shared/pbv2/starterTree";
 import { buildSymbolTable } from "@shared/pbv2/symbolTable";
 import { pbv2ToPricingAddons, pbv2ToWeightTotal } from "@shared/pbv2/pricingAdapter";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
+import { normalizePbv2ProductIdentity, shouldBlockPbv2TreeHydration } from "@shared/pbv2/draftTreeHydration";
 import type { Finding } from "@shared/pbv2/findings";
 import type { ValidationResult } from "@shared/pbv2/validator/types";
 import type { ProductOptionRule } from "@shared/productOptionRules";
@@ -274,7 +275,7 @@ export default function PBV2ProductBuilderSectionV2({
   
   // Dirty lock: Prevent server sync from overwriting local edits
   const [isLocalDirty, setIsLocalDirty] = useState(false);
-  const lastLoadedProductIdRef = useRef<string | null | undefined>(null);
+  const lastLoadedProductIdRef = useRef<string | null>(null);
   
   // Saving lock: Prevent nav guard from blocking during save
   const [isSaving, setIsSaving] = useState(false);
@@ -400,13 +401,20 @@ export default function PBV2ProductBuilderSectionV2({
 
   // Initialize local tree from draft OR create empty tree for new products
   useEffect(() => {
+    const effectiveProductId = normalizePbv2ProductIdentity(productId);
+
     // DIRTY LOCK: Only block sync if localTreeJson is already populated AND productId hasn't changed
     // CRITICAL: Allow hydration when localTreeJson is null, even if isLocalDirty is true
-    if (isLocalDirty && localTreeJson && lastLoadedProductIdRef.current === productId) {
+    if (shouldBlockPbv2TreeHydration({
+      isLocalDirty,
+      hasLocalTree: Boolean(localTreeJson),
+      lastLoadedProductId: lastLoadedProductIdRef.current,
+      productId,
+    })) {
       if (import.meta.env.DEV) {
         console.log('[PBV2_SYNC_BLOCKED]', {
           reason: 'Local edits in progress, blocking server sync',
-          productId,
+          productId: effectiveProductId,
           isLocalDirty,
           hasLocalTree: !!localTreeJson,
         });
@@ -415,14 +423,14 @@ export default function PBV2ProductBuilderSectionV2({
     }
     
     // Product changed - reset dirty flag and allow hydration
-    if (lastLoadedProductIdRef.current !== productId && productId) {
+    if (lastLoadedProductIdRef.current !== effectiveProductId) {
       if (import.meta.env.DEV) {
         console.log('[PBV2_PRODUCT_CHANGED]', {
           oldProductId: lastLoadedProductIdRef.current,
-          newProductId: productId,
+          newProductId: effectiveProductId,
         });
       }
-      lastLoadedProductIdRef.current = productId ?? null;
+      lastLoadedProductIdRef.current = effectiveProductId;
       setIsLocalDirty(false);
     }
     
@@ -1082,6 +1090,14 @@ export default function PBV2ProductBuilderSectionV2({
     } else {
       tree.pricingMatrix = pricingMatrix;
       if (tree.meta && typeof tree.meta === "object") delete tree.meta.pricingMatrix;
+    }
+    if (import.meta.env.DEV) {
+      console.log("[PBV2_MATRIX_DIMENSION_UPDATE]", {
+        dimensions: pricingMatrix.dimensions,
+        rowCount: pricingMatrix.rows.length,
+        wrotePricingMatrix: Boolean(tree.pricingMatrix),
+        treeJsonDimensionsAfterUpdate: tree.pricingMatrix?.dimensions ?? null,
+      });
     }
     applyTreeUpdate(tree, 'handleUpdatePricingMatrix', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
   };
