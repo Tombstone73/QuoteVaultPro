@@ -558,6 +558,53 @@ describe("sheet_consumption_sqft", () => {
     expect(result.debug?.tierResolution?.selectedTierRate).toBe(1.32);
   });
 
+  test.each([8, 9, 10])("formula library sheet variables reach quantity tier resolver for 24x18 q%s", (quantity) => {
+    const libraryExpression = "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price";
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeRowTierBasisTree("computed_sheet_usage", { base_price: 0 }, {}),
+      widthIn: 24,
+      heightIn: 18,
+      quantity,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      formulaSourceMode: "library",
+      pricingFormulaLibrary: {
+        id: "formula_4x8",
+        name: "4x8 Sheets with rounding",
+        expression: libraryExpression,
+        config: {
+          variables: {
+            sheet_width: 48,
+            sheet_length: 96,
+            usable_drop_min: 0,
+            billable_length_increment: 1,
+            minimum_billable_sqft: 32,
+          },
+        },
+      },
+      debug: true,
+    });
+
+    expect(result.debug?.tierResolution?.computedSheetUsage).toBe(1);
+    expect(result.debug?.tierResolution?.tierSelectionQuantity).toBe(1);
+    expect(result.debug?.tierResolution?.selectedTierMinQty).toBe(1);
+    expect(result.debug?.tierResolution?.selectedTierRate).toBe(1.32);
+    expect(result.debug?.tierResolution?.fallbackToLineItemQuantity).toBe(false);
+    expect(result.debug?.tierResolution?.tierSheetWidth).toBe(48);
+    expect(result.debug?.tierResolution?.tierSheetLength).toBe(96);
+    expect(result.debug?.tierResolution?.tierUsableDropMin).toBe(0);
+    expect(result.debug?.tierResolution?.tierBillableLengthIncrement).toBe(1);
+    expect(result.debug?.tierResolution?.tierMinimumBillableSqft).toBe(32);
+    expect(result.debug?.tierResolution?.tierVariableSources).toEqual(expect.objectContaining({
+      sheet_width: "formula_library.config.variables",
+      sheet_length: "formula_library.config.variables",
+      usable_drop_min: "formula_library.config.variables",
+      billable_length_increment: "formula_library.config.variables",
+      minimum_billable_sqft: "formula_library.config.variables",
+    }));
+    expect(result.debug?.variables.billed_sheet_sqft).toBe(32);
+    expect(result.totalPrice).toBeCloseTo(42.24, 2);
+  });
+
   test.each([7, 8, 9, 10])("row tier rate drives sheet-yield base_price for 24x18 q%s", (quantity) => {
     const result = evaluatePricingPreviewFromTree({
       treeJson: makeRowTierBasisTree(
@@ -688,7 +735,7 @@ describe("sheet_consumption_sqft", () => {
     expect(result.debug?.formulaResultType).toBe("final_dollars");
   });
 
-  test("missing computed sheet usage emits a warning instead of silently hiding fallback", () => {
+  test("missing computed sheet usage emits an explicit tier error without raw quantity fallback", () => {
     const result = evaluatePricingPreviewFromTree({
       treeJson: {
         ...makeRowTierBasisTree("computed_sheet_usage"),
@@ -702,8 +749,10 @@ describe("sheet_consumption_sqft", () => {
       debug: true,
     });
 
-    expect(result.debug?.tierResolution?.fallbackToLineItemQuantity).toBe(true);
-    expect(result.debug?.tierResolution?.warnings?.some((warning) => warning.code === "PBV2_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE")).toBe(true);
+    expect(result.debug?.tierResolution?.tierSelectionQuantity).toBe(0);
+    expect(result.debug?.tierResolution?.fallbackToLineItemQuantity).toBe(false);
+    expect(result.debug?.tierResolution?.computedSheetUsageUnavailableReason).toContain("missing_variables");
+    expect(result.debug?.tierResolution?.warnings?.some((warning) => warning.code === "PBV2_E_TIER_COMPUTED_SHEET_USAGE_UNAVAILABLE")).toBe(true);
   });
 });
 
