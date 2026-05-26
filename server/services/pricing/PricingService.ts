@@ -375,6 +375,8 @@ export type PricingPreviewErrorDetail = {
   code: string;
   message: string;
   location?: number;
+  path?: string;
+  missingSymbol?: string | null;
 };
 
 type PricingPreviewFormulaError = Error & {
@@ -4019,12 +4021,18 @@ function evaluatePreviewFormulaToCents(input: {
     const message = typeof error?.message === 'string' ? error.message : 'Invalid formula';
     const location = extractMathErrorLocation(message);
     const errorCode = inferFormulaErrorCode(message);
-    const formulaError = new Error(`Formula error: ${message}`) as PricingPreviewFormulaError;
+    const missingSymbol = extractUndefinedFormulaSymbol(message);
+    const friendlyMessage = missingSymbol
+      ? `Pricing formula references missing symbol "${missingSymbol}". Configure that formula variable before using this product in order entry.`
+      : message;
+    const formulaError = new Error(`Formula error: ${friendlyMessage}`) as PricingPreviewFormulaError;
     formulaError.code = 'PBV2_FORMULA_ERROR';
     formulaError.details = [{
       code: errorCode,
-      message,
+      message: friendlyMessage,
       location,
+      path: "pricingFormula",
+      missingSymbol,
     }];
     formulaError.debug = {
       pricingSystem: "pbv2",
@@ -4034,7 +4042,7 @@ function evaluatePreviewFormulaToCents(input: {
       variableSources,
       appliedAs,
       steps,
-      errors: [{ code: errorCode, message }],
+      errors: [{ code: errorCode, message: friendlyMessage, detail: missingSymbol ? { missingSymbol } : undefined }],
       preCeilSqftTotal,
       postCeilSqftTotal,
       baseRateUsed: resolvedBaseRate,
@@ -4430,6 +4438,11 @@ function inferFormulaErrorCode(message: string): string {
   if (lower.includes('undefined symbol') || lower.includes('undefined variable')) return 'PBV2_FORMULA_MISSING_VARIABLE';
   if (lower.includes('non-numeric') || lower.includes('nan') || lower.includes('infinity')) return 'PBV2_FORMULA_NON_FINITE';
   return 'PBV2_FORMULA_PARSE_ERROR';
+}
+
+function extractUndefinedFormulaSymbol(message: string): string | null {
+  const match = message.match(/undefined\s+(?:symbol|variable)\s+([A-Za-z_][A-Za-z0-9_]*)/i);
+  return match?.[1] ?? null;
 }
 
 /**

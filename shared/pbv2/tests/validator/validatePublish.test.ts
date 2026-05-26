@@ -680,3 +680,72 @@ describe("pbv2/validator/validatePublish — text input type", () => {
     expect(result.errors.length).toBe(0);
   });
 });
+
+describe("pbv2/validator/validatePublish — fee formula variables", () => {
+  test("flatFee option formula requires a configured flat fee variable", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["rush_fee"],
+      nodes: [
+        {
+          id: "rush_fee",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "rush_fee",
+          label: "Rush Fee",
+          input: { selectionKey: "rush_fee", type: "select" },
+          choices: [
+            {
+              value: "rush",
+              label: "Yes",
+              pricingImpact: [{ mode: "addFormula", formula: "flatFee" }],
+            },
+          ],
+        },
+      ],
+      edges: [],
+      meta: {
+        pricingProfileKey: "fee",
+        pricingFormula: "flatFee",
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+
+    expect(result.errors.some((finding) => finding.code === "PBV2_E_FORMULA_FLAT_FEE_MISSING")).toBe(true);
+  });
+
+  test("flatFee option formula passes when flat fee variable is configured", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["rush_fee"],
+      nodes: [
+        {
+          id: "rush_fee",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "rush_fee",
+          label: "Rush Fee",
+          input: { selectionKey: "rush_fee", type: "select" },
+          choices: [
+            {
+              value: "rush",
+              label: "Yes",
+              pricingImpact: [{ mode: "addFormula", formula: "flatFee" }],
+            },
+          ],
+        },
+      ],
+      edges: [],
+      meta: {
+        pricingProfileKey: "fee",
+        pricingFormula: "flatFee",
+        formulaVariables: { flatFee: 25 },
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+
+    expect(result.errors.some((finding) => finding.code === "PBV2_E_FORMULA_FLAT_FEE_MISSING")).toBe(false);
+  });
+});

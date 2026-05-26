@@ -245,6 +245,10 @@ export type OptionTreeV2 = {
     updatedByUserId?: string;
     notes?: string;
     baseWeightOz?: number;
+    pricingProfileKey?: string;
+    pricingFormula?: string;
+    formulaVariables?: Record<string, number>;
+    pricingFormulaVariables?: Record<string, number>;
     pricingV2?: PricingV2;
     shippingConfig?: ShippingConfig;
     productImages?: ProductImage[];
@@ -494,6 +498,10 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
       updatedByUserId: z.string().optional(),
       notes: z.string().optional(),
       baseWeightOz: z.number().optional(),
+      pricingProfileKey: z.string().optional(),
+      pricingFormula: z.string().optional(),
+      formulaVariables: z.record(z.number()).optional(),
+      pricingFormulaVariables: z.record(z.number()).optional(),
       pricingV2: pricingV2Schema.optional(),
       shippingConfig: shippingConfigSchema.optional(),
       productImages: z.array(productImageSchema).optional(),

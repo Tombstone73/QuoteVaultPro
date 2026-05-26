@@ -124,7 +124,16 @@ const ProductEditorPage = () => {
   const [pbv2PricingMode, setPbv2PricingMode] = useState<"basic" | "advanced">("basic");
 
   // Track PBV2 tree meta (shippingConfig, productImages, pricingV2) for ProductForm
-  const [treeMeta, setTreeMeta] = useState<{ shippingConfig?: any; productImages?: any[]; pricingV2?: any; geometry?: { trimAllowance?: number; trimAllowanceX?: number; trimAllowanceY?: number } }>({});
+  const [treeMeta, setTreeMeta] = useState<{
+    shippingConfig?: any;
+    productImages?: any[];
+    pricingV2?: any;
+    geometry?: { trimAllowance?: number; trimAllowanceX?: number; trimAllowanceY?: number };
+    formulaVariables?: Record<string, number>;
+    pricingFormulaVariables?: Record<string, number>;
+    pricingProfileKey?: string;
+    pricingFormula?: string;
+  }>({});
 
   // Track PBV2 pricing/validation data for page-level pricing panel
   const [pbv2PricingData, setPbv2PricingData] = useState<{
