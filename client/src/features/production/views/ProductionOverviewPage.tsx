@@ -1871,7 +1871,7 @@ function StatusBullet({
   disabled,
   onChange,
 }: {
-  status: "queued" | "in_progress" | "done";
+  status: "queued" | "in_progress" | "paused" | "done";
   disabled: boolean;
   onChange: (status: "queued" | "in_progress" | "done") => void;
 }) {
@@ -1881,12 +1881,14 @@ function StatusBullet({
   const statusLabels = {
     queued: "Queued",
     in_progress: "In Progress",
+    paused: "Paused",
     done: "Done",
   };
   
   // Map current status to display label
   const getCurrentLabel = () => {
     if (status === "queued") return "Queued";
+    if (status === "paused") return "Paused";
     if (status === "done") return "Production Complete";
     // For in_progress, we don't have stepKey here, so show generic label
     return "In Progress";

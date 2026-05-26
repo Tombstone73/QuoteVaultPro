@@ -55,6 +55,11 @@ export const statusColors = {
     label: 'text-blue-600',
     hover: 'hover:bg-blue-50',
   },
+  paused: {
+    dot: 'bg-amber-500',
+    label: 'text-amber-600',
+    hover: 'hover:bg-amber-50',
+  },
   done: {
     dot: 'bg-green-500',
     label: 'text-green-600',

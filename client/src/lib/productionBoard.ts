@@ -1,7 +1,9 @@
 import { isTerminalProductionStatus } from "@shared/operationalState";
 
-export type ProductionBoardTab = "all" | "queued" | "in_progress" | "done";
+export type ProductionBoardTab = "all" | "queued" | "in_progress" | "paused" | "done";
 export type ProductionStationPage = "flatbed" | "roll";
+export type ProductionQueueSortBy = "newest" | "oldest" | "due_date" | "customer" | "priority" | "status";
+export type ProductionQueueSortDirection = "asc" | "desc";
 
 export type ProductionBoardJob = {
   status: string;
@@ -11,6 +13,8 @@ export type ProductionBoardJob = {
 };
 
 export const DEFAULT_PRODUCTION_TAB: ProductionBoardTab = "in_progress";
+export const DEFAULT_PRODUCTION_QUEUE_SORT_BY: ProductionQueueSortBy = "due_date";
+export const DEFAULT_PRODUCTION_QUEUE_SORT_DIRECTION: ProductionQueueSortDirection = "asc";
 export const DONE_RETENTION_DAYS = 7;
 
 export const PRODUCTION_TAB_STORAGE_KEYS: Record<ProductionStationPage, string> = {
@@ -18,10 +22,24 @@ export const PRODUCTION_TAB_STORAGE_KEYS: Record<ProductionStationPage, string> 
   roll: "productionTab.roll",
 };
 
+export type ProductionQueueControls = {
+  search: string;
+  sortBy: ProductionQueueSortBy;
+  sortDirection: ProductionQueueSortDirection;
+};
+
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
 
 function isProductionBoardTab(value: string | null | undefined): value is ProductionBoardTab {
-  return value === "all" || value === "queued" || value === "in_progress" || value === "done";
+  return value === "all" || value === "queued" || value === "in_progress" || value === "paused" || value === "done";
+}
+
+function isProductionQueueSortBy(value: string | null | undefined): value is ProductionQueueSortBy {
+  return value === "newest" || value === "oldest" || value === "due_date" || value === "customer" || value === "priority" || value === "status";
+}
+
+function isProductionQueueSortDirection(value: string | null | undefined): value is ProductionQueueSortDirection {
+  return value === "asc" || value === "desc";
 }
 
 function getStorage(storage?: StorageLike | null): StorageLike | null {
@@ -48,6 +66,10 @@ export function getProductionTabStorageKey(station: ProductionStationPage): stri
   return PRODUCTION_TAB_STORAGE_KEYS[station];
 }
 
+export function getProductionQueueControlsStorageKey(station: ProductionStationPage): string {
+  return `productionQueueControls.${station}`;
+}
+
 export function readPersistedProductionTab(
   station: ProductionStationPage,
   storage?: StorageLike | null,
@@ -61,6 +83,48 @@ export function readPersistedProductionTab(
   } catch (error) {
     console.error("Failed to read production tab preference:", error);
     return null;
+  }
+}
+
+export function normalizeProductionQueueControls(value: Partial<ProductionQueueControls> | null | undefined): ProductionQueueControls {
+  return {
+    search: typeof value?.search === "string" ? value.search : "",
+    sortBy: isProductionQueueSortBy(value?.sortBy) ? value.sortBy : DEFAULT_PRODUCTION_QUEUE_SORT_BY,
+    sortDirection: isProductionQueueSortDirection(value?.sortDirection)
+      ? value.sortDirection
+      : DEFAULT_PRODUCTION_QUEUE_SORT_DIRECTION,
+  };
+}
+
+export function readPersistedProductionQueueControls(
+  station: ProductionStationPage,
+  storage?: StorageLike | null,
+): ProductionQueueControls {
+  const resolvedStorage = getStorage(storage);
+  if (!resolvedStorage) return normalizeProductionQueueControls(null);
+
+  try {
+    const raw = resolvedStorage.getItem(getProductionQueueControlsStorageKey(station));
+    if (!raw) return normalizeProductionQueueControls(null);
+    return normalizeProductionQueueControls(JSON.parse(raw));
+  } catch (error) {
+    console.error("Failed to read production queue controls:", error);
+    return normalizeProductionQueueControls(null);
+  }
+}
+
+export function persistProductionQueueControls(
+  station: ProductionStationPage,
+  controls: ProductionQueueControls,
+  storage?: StorageLike | null,
+): void {
+  const resolvedStorage = getStorage(storage);
+  if (!resolvedStorage) return;
+
+  try {
+    resolvedStorage.setItem(getProductionQueueControlsStorageKey(station), JSON.stringify(normalizeProductionQueueControls(controls)));
+  } catch (error) {
+    console.error("Failed to save production queue controls:", error);
   }
 }
 
@@ -108,6 +172,7 @@ export function matchesProductionTab(
 ): boolean {
   if (tab === "queued") return job.status === "queued";
   if (tab === "in_progress") return job.status === "in_progress";
+  if (tab === "paused") return job.status === "paused";
   if (tab === "done") return isJobInDoneRetentionWindow(job, nowMs, retentionDays);
 
   return (
@@ -134,6 +199,7 @@ export function getProductionTabCounts<T extends ProductionBoardJob>(
     all: filterProductionJobsForTab(jobs, "all", nowMs, retentionDays).length,
     queued: filterProductionJobsForTab(jobs, "queued", nowMs, retentionDays).length,
     in_progress: filterProductionJobsForTab(jobs, "in_progress", nowMs, retentionDays).length,
+    paused: filterProductionJobsForTab(jobs, "paused", nowMs, retentionDays).length,
     done: filterProductionJobsForTab(jobs, "done", nowMs, retentionDays).length,
   };
 }

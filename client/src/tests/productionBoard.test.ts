@@ -3,9 +3,13 @@ import {
   DEFAULT_PRODUCTION_TAB,
   DONE_RETENTION_DAYS,
   filterProductionJobsForTab,
+  getProductionQueueControlsStorageKey,
   getProductionTabCounts,
   getProductionTabStorageKey,
+  normalizeProductionQueueControls,
+  persistProductionQueueControls,
   persistProductionTab,
+  readPersistedProductionQueueControls,
   readPersistedProductionTab,
   resolvePersistedProductionTab,
 } from "../lib/productionBoard";
@@ -30,6 +34,7 @@ describe("productionBoard helpers", () => {
   const jobs = [
     { id: "queued-1", status: "queued", createdAt: new Date(now).toISOString() },
     { id: "progress-1", status: "in_progress", createdAt: new Date(now).toISOString() },
+    { id: "paused-1", status: "paused", createdAt: new Date(now).toISOString() },
     { id: "done-recent", status: "done", completedAt: new Date(now - dayMs).toISOString() },
     { id: "done-old", status: "done", completedAt: new Date(now - (DONE_RETENTION_DAYS + 1) * dayMs).toISOString() },
     { id: "canceled-1", status: "canceled", createdAt: new Date(now).toISOString() },
@@ -54,11 +59,38 @@ describe("productionBoard helpers", () => {
     expect(readPersistedProductionTab("roll", storage)).toBe("queued");
   });
 
+  test("persists search and sort controls with separate station keys", () => {
+    const storage = createStorage();
+
+    persistProductionQueueControls("roll", { search: "Acme", sortBy: "customer", sortDirection: "desc" }, storage);
+
+    expect(getProductionQueueControlsStorageKey("roll")).toBe("productionQueueControls.roll");
+    expect(readPersistedProductionQueueControls("roll", storage)).toEqual({
+      search: "Acme",
+      sortBy: "customer",
+      sortDirection: "desc",
+    });
+    expect(readPersistedProductionQueueControls("flatbed", storage)).toEqual({
+      search: "",
+      sortBy: "due_date",
+      sortDirection: "asc",
+    });
+  });
+
+  test("normalizes invalid queue controls back to safe defaults", () => {
+    expect(normalizeProductionQueueControls({ search: "Banner", sortBy: "oops" as any, sortDirection: "sideways" as any })).toEqual({
+      search: "Banner",
+      sortBy: "due_date",
+      sortDirection: "asc",
+    });
+  });
+
   test("computes count badges from current visible tab rules", () => {
     expect(getProductionTabCounts(jobs, now)).toEqual({
-      all: 3,
+      all: 4,
       queued: 1,
       in_progress: 1,
+      paused: 1,
       done: 1,
     });
   });
@@ -72,7 +104,7 @@ describe("productionBoard helpers", () => {
   test("cancelled and void production jobs are not active board work", () => {
     const visibleAllJobIds = filterProductionJobsForTab(jobs, "all", now).map((job) => job.id);
 
-    expect(visibleAllJobIds).toEqual(["queued-1", "progress-1", "done-recent"]);
+    expect(visibleAllJobIds).toEqual(["queued-1", "progress-1", "paused-1", "done-recent"]);
     expect(visibleAllJobIds).not.toContain("canceled-1");
     expect(visibleAllJobIds).not.toContain("void-1");
   });

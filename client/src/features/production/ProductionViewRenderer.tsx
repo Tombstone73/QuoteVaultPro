@@ -2,8 +2,9 @@ import FlatbedProductionView from "@/features/production/views/FlatbedProduction
 import RollProductionView from "@/features/production/views/RollProductionView";
 import { Card, CardContent } from "@/components/ui/card";
 import type { ProductionJobListItem } from "@/hooks/useProduction";
+import type { ProductionBoardTab } from "@/lib/productionBoard";
 
-type ProductionStatus = "queued" | "in_progress" | "done" | "all";
+type ProductionStatus = ProductionBoardTab;
 
 const registry: Record<string, (props: { viewKey: string; status: ProductionStatus; jobs?: ProductionJobListItem[] }) => JSX.Element> = {
   flatbed: (props) => <FlatbedProductionView {...props} />,
