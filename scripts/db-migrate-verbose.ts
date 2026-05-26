@@ -33,6 +33,39 @@ function redactDatabaseUrl(url: string) {
   }
 }
 
+function runDrizzleKitMigrate(repoRoot: string): number {
+  const drizzleKitBin = path.join(repoRoot, 'node_modules', 'drizzle-kit', 'bin.cjs');
+  if (!fs.existsSync(drizzleKitBin)) {
+    console.error('[db:migrate:verbose] drizzle-kit binary not found:', drizzleKitBin);
+    console.error('[db:migrate:verbose] Run npm install, then retry the migration.');
+    return 1;
+  }
+
+  const args = [drizzleKitBin, '--config', 'drizzle.config.ts', 'migrate'];
+
+  console.log('[db:migrate:verbose] Running:', [process.execPath, ...args].join(' '));
+
+  const result = spawnSync(process.execPath, args, {
+    cwd: repoRoot,
+    env: process.env,
+    stdio: 'inherit',
+  });
+
+  if (result.error) {
+    console.error('[db:migrate:verbose] Failed to spawn drizzle-kit:', result.error);
+    return 1;
+  }
+
+  if (result.signal) {
+    console.error(`[db:migrate:verbose] drizzle-kit terminated by signal: ${result.signal}`);
+    return 1;
+  }
+
+  const status = result.status ?? 1;
+  console.log(`[db:migrate:verbose] drizzle-kit exit code: ${status}`);
+  return status;
+}
+
 function main() {
   const repoRoot = process.cwd();
   const configPath = path.join(repoRoot, 'drizzle.config.ts');
@@ -126,14 +159,7 @@ function main() {
       // Continue to attempt drizzle-kit migrate; it will surface its own errors.
     }
 
-    console.log('[db:migrate:verbose] Running: drizzle-kit --config drizzle.config.ts migrate');
-
-    const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-    const result = spawnSync(npxCmd, ['drizzle-kit', '--config', 'drizzle.config.ts', 'migrate'], {
-      stdio: 'inherit',
-    });
-
-    process.exit(result.status ?? 1);
+    process.exit(runDrizzleKitMigrate(repoRoot));
   })().catch((e) => {
     console.error('[db:migrate:verbose] Fatal:', e);
     process.exit(1);
