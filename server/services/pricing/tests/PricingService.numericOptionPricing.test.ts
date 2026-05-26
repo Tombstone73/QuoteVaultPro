@@ -168,6 +168,82 @@ describe("PBV2 numeric option pricing", () => {
     expect(result.debug?.variables.flatFee).toBe(25);
   });
 
+  test("flat fee option formula can resolve from persisted pricingProfileConfig", () => {
+    const tree = {
+      schemaVersion: 2 as const,
+      rootNodeIds: ["rush_fee"],
+      nodes: {
+        rush_fee: {
+          id: "rush_fee",
+          kind: "question" as const,
+          label: "Rush Fee",
+          input: { type: "select" as const, selectionKey: "rush_fee" },
+          choices: [
+            {
+              value: "rush",
+              label: "Yes",
+              pricingImpact: [{ mode: "addFormula" as const, formula: "flatFee" }],
+            },
+          ],
+        },
+      },
+      meta: {
+        pricingProfileKey: "fee",
+        pricingFormula: "1",
+        pricingV2: { base: { minimumChargeCents: 1 } },
+      },
+    };
+
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: 1,
+      heightIn: 1,
+      quantity: 1,
+      pbv2ExplicitSelections: { rush_fee: { value: "rush" } },
+      pricingProfileKey: "fee",
+      pricingProfileConfig: { formulaVariables: { flatFee: 25 } },
+      debug: true,
+    });
+
+    expect(result.breakdown.optionsPrice).toBe(25);
+    expect(result.debug?.variables.flatFee).toBe(25);
+  });
+
+  test("flat fee base formula can resolve from persisted pricingProfileConfig", () => {
+    const tree = {
+      schemaVersion: 2 as const,
+      rootNodeIds: ["rush_fee"],
+      nodes: {
+        rush_fee: {
+          id: "rush_fee",
+          kind: "question" as const,
+          label: "Rush Fee",
+          input: { type: "select" as const, selectionKey: "rush_fee" },
+          choices: [{ value: "rush", label: "Yes" }],
+        },
+      },
+      meta: {
+        pricingProfileKey: "fee",
+        pricingFormula: "flatFee",
+        pricingV2: { base: { minimumChargeCents: 1 } },
+      },
+    };
+
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: 1,
+      heightIn: 1,
+      quantity: 1,
+      pbv2ExplicitSelections: { rush_fee: { value: "rush" } },
+      pricingProfileKey: "fee",
+      pricingProfileConfig: { formulaVariables: { flatFee: 25 } },
+      debug: true,
+    });
+
+    expect(result.totalPrice).toBe(25);
+    expect(result.debug?.variables.flatFee).toBe(25);
+  });
+
   test("missing flatFee in option formula reports option name and symbol", () => {
     const tree = {
       schemaVersion: 2 as const,
