@@ -208,8 +208,9 @@ function Router() {
 
         {/* Order routes */}
         <Route path={ROUTES.orders.new} element={<OrderNewRoute />} />
-        <Route path="/orders/:id" element={<OrderDetail />} />
-        <Route path="/orders" element={<Orders />} />
+        <Route path={ROUTES.orders.edit(":id")} element={<OrderDetail />} />
+        <Route path={ROUTES.orders.detail(":id")} element={<OrderDetail />} />
+        <Route path={ROUTES.orders.list} element={<Orders />} />
         <Route path={ROUTES.inboundOrders.list} element={<InboundOrdersPage />} />
 
         {/* Inventory / Materials routes */}

@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import type { LineItemProofSummary, OrderProofCounts, OrderProofStatus } from "@shared/orderProofStatus";
@@ -47,6 +47,27 @@ export const orderTimelineQueryKey = (orderId: string) =>
 
 export const orderWorkflowQueryKey = () =>
   ["orders", "workflow"] as const;
+
+function invalidateOrderOperationalQueries(queryClient: QueryClient, orderId?: string) {
+  if (orderId) {
+    queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+    queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
+  }
+
+  queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/design/queue"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/fulfillment/queue"] });
+  queryClient.invalidateQueries({
+    predicate: (query) => {
+      const key = query.queryKey;
+      if (!Array.isArray(key)) return false;
+      return key[0] === "/api/production/jobs" || key[0] === "production";
+    },
+  });
+}
 
 // ============================================================
 // TYPE DEFINITIONS
@@ -535,14 +556,7 @@ export function useUpdateOrder(id: string) {
       return response.json();
     },
     onSuccess: (updatedOrder) => {
-      // Invalidate list queries
-      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
-      
-      // Invalidate specific order detail
-      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(id) });
-      
-      // Invalidate timeline
-      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(id) });
+      invalidateOrderOperationalQueries(queryClient, id);
       
       // Optimistically update the detail cache
       queryClient.setQueryData(orderDetailQueryKey(id), (old: any) => {
@@ -766,22 +780,7 @@ export function useUpdateOrderLineItem(
       return response.json();
     },
     onSuccess: (updatedLineItem) => {
-      // Invalidate order detail to refresh line items
-      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
-      
-      // Invalidate list queries
-      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
-      
-      // Invalidate timeline
-      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
-      
-      // CRITICAL: Invalidate production jobs to sync live fields (qty/sides/media/description)
-      queryClient.invalidateQueries({
-        predicate: (query) => {
-          const key = query.queryKey;
-          return Array.isArray(key) && key[0] === "/api/production/jobs";
-        },
-      });
+      invalidateOrderOperationalQueries(queryClient, orderId);
       
       if (shouldToast) {
         toast({
@@ -835,8 +834,7 @@ export function useCreateOrderLineItem(orderId: string) {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
-      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      invalidateOrderOperationalQueries(queryClient, orderId);
       toast({
         title: "Success",
         description: "Line item added successfully",
@@ -869,8 +867,7 @@ export function useDeleteOrderLineItem(orderId: string) {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
-      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      invalidateOrderOperationalQueries(queryClient, orderId);
       toast({
         title: "Success",
         description: "Line item deleted successfully",
@@ -908,15 +905,8 @@ export function useUpdateOrderLineItemStatus(orderId: string) {
       return response.json();
     },
     onSuccess: (updatedLineItem) => {
-      // Invalidate order detail
-      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
-      
-      // Invalidate list queries
-      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
-      
-      // Invalidate timeline
-      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
-      
+      invalidateOrderOperationalQueries(queryClient, orderId);
+
       toast({
         title: "Success",
         description: "Line item status updated successfully",
@@ -952,14 +942,7 @@ export function useBulkUpdateOrderLineItemStatus(orderId: string) {
       return data;
     },
     onSuccess: (data) => {
-      // Invalidate order detail (contains line items)
-      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
-      
-      // Invalidate order timeline
-      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
-      
-      // Invalidate orders list
-      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      invalidateOrderOperationalQueries(queryClient, orderId);
       
       toast({
         title: "Success",
@@ -1013,11 +996,7 @@ export function useTransitionLineItemWorkflow(orderId: string) {
       return data.data as LineItemWorkflowTransitionResult;
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
-      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
-      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/design/queue"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      invalidateOrderOperationalQueries(queryClient, orderId);
       toast({
         title: "Workflow updated",
         description: `${data.fromState.replace(/_/g, " ")} -> ${data.toState.replace(/_/g, " ")}`,

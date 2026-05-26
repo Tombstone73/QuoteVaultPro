@@ -698,6 +698,20 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     [lineItems]
   );
 
+  const canEditLineItemRecord = useCallback(
+    (item: OrderLineItem) => {
+      if (readOnly) return false;
+
+      const status = String((item as any)?.status ?? "").toLowerCase();
+      const workflowState = String((item as any)?.workflowState ?? "new").toLowerCase();
+      const hasActiveProductionJob = Boolean((item as any)?.activeOwnerJobId);
+      const lockedStates = new Set(["in_production", "completed", "canceled", "cancelled"]);
+
+      return !hasActiveProductionJob && !lockedStates.has(status) && !lockedStates.has(workflowState);
+    },
+    [readOnly]
+  );
+
   const buildComputedPbv2Env = (li: any): Record<string, unknown> => {
     const widthIn = typeof li?.width === "number" && Number.isFinite(li.width) ? li.width : li?.width ? Number(li.width) : undefined;
     const heightIn = typeof li?.height === "number" && Number.isFinite(li.height) ? li.height : li?.height ? Number(li.height) : undefined;
@@ -2280,6 +2294,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const isEditingPrice = editingPriceItemId === String(item.id);
 
                   const statusValue = item.status || "new";
+                  const readOnly = !canEditLineItemRecord(item);
 
                   const attachmentsForThumb = (allOrderFiles as any[]).filter((f) => f?.orderLineItemId === item.id) as OrderFileWithUser[];
                   const lineItemAttachmentsAssociationKnown =
