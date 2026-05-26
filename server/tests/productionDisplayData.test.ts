@@ -1,4 +1,4 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, jest, test } from "@jest/globals";
 
 import {
   buildPrepressOptionRows,
@@ -73,5 +73,56 @@ describe("production display data", () => {
     expect(rows).toEqual([
       { groupLabel: "Finishing", optionLabel: "Lamination Finish", selectedLabel: "Gloss", isDefault: false },
     ]);
+  });
+
+  test("resolves saved PBV2 snapshot labels before exposing generated option ids", () => {
+    const optionId = "dfa265fa-f1fc-4fdd-afde-a12274db2aec";
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const rows = buildPrepressOptionRows({
+        id: "li-4",
+        optionSelectionsJson: {
+          schemaVersion: 2,
+          selected: {
+            [optionId]: { value: "choice_1" },
+          },
+        },
+        pbv2SnapshotJson: {
+          treeJson: {
+            schemaVersion: 2,
+            rootNodeIds: [optionId],
+            nodes: {
+              [optionId]: {
+                id: optionId,
+                kind: "question",
+                label: "Weeding & Taping",
+                input: { type: "boolean", selectionKey: optionId, defaultValue: false },
+              },
+            },
+            edges: [],
+          },
+          selectedOptions: [
+            {
+              optionId,
+              optionName: "Weeding & Taping",
+              value: "choice_1",
+            },
+          ],
+        },
+      });
+
+      expect(rows).toEqual([
+        { groupLabel: null, optionLabel: "Weeding & Taping", selectedLabel: "Yes", isDefault: false },
+      ]);
+      expect(JSON.stringify(rows)).not.toContain(optionId);
+      expect(JSON.stringify(rows)).not.toContain("Unknown choice");
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[Production display resolver] resolved opaque PBV2 option token",
+        expect.objectContaining({ selectionKey: optionId, selectedValue: "choice_1" }),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

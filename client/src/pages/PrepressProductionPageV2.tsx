@@ -1276,7 +1276,7 @@ export default function PrepressProductionPageV2() {
             <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
               <Info className="w-4 h-4" /> Job Specifications
             </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4 bg-[#1a232e] p-5 border border-[#2d3748] rounded-lg shadow-sm">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4 bg-[#1a232e] p-5 border border-[#2d3748] rounded-lg shadow-sm items-start">
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Product</p>
                 <p className="text-sm font-medium">{selectedItem?.productName || "—"}</p>
@@ -1333,14 +1333,14 @@ export default function PrepressProductionPageV2() {
                   </div>
                 </div>
               </div>
-              <div>
+              <div className="xl:col-start-1">
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Bleed</p>
                 <p className="text-sm font-medium">{selectedItem?.bleed || "—"}</p>
               </div>
-              <div className="sm:col-span-2 xl:col-span-3 min-w-0">
+              <div className="sm:col-span-2 xl:col-start-2 xl:col-span-2 min-w-0 overflow-hidden">
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Options</p>
                 {(selectedItem?.optionsRows?.length || 0) > 0 ? (
-                  <div className="space-y-1.5">
+                  <div className="space-y-1.5 min-w-0 max-w-full">
                     {Object.entries(
                       (selectedItem?.optionsRows || []).reduce((acc, row) => {
                         const key = row.groupLabel && row.groupLabel.trim() ? row.groupLabel.trim() : "Options";
@@ -1353,9 +1353,9 @@ export default function PrepressProductionPageV2() {
                         {groupLabel !== "Options" && (
                           <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-0.5">{groupLabel}</p>
                         )}
-                        <ul className="text-sm font-medium list-disc pl-4 space-y-1">
+                        <ul className="text-sm font-medium list-disc pl-4 space-y-1 min-w-0 max-w-full">
                           {rows.map((row: NonNullable<PrepressQueueItem["optionsRows"]>[number], index: number) => (
-                            <li key={`${groupLabel}-${row.optionLabel}-${row.selectedLabel}-${index}`} className="min-w-0 break-words">
+                            <li key={`${groupLabel}-${row.optionLabel}-${row.selectedLabel}-${index}`} className="min-w-0 break-words [overflow-wrap:anywhere]">
                               <span>{row.optionLabel}: {row.selectedLabel}</span>
                               {typeof row.isDefault === "boolean" ? (
                                 <span
@@ -1379,15 +1379,15 @@ export default function PrepressProductionPageV2() {
                   <p className="text-sm font-medium text-slate-400">No options selected</p>
                 )}
               </div>
-              <div>
+              <div className="xl:col-start-4">
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Priority</p>
                 <p className={cn("text-sm font-bold", selectedItem?.rush ? "text-[#e53e3e]" : "text-slate-400")}>
                   {selectedItem?.rush ? "RUSH" : selectedItem?.priorityLabel || "Normal"}
                 </p>
               </div>
-              <div className="sm:col-span-2 xl:col-span-2 min-w-0">
+              <div className="sm:col-span-2 xl:col-start-5 xl:col-span-2 min-w-0 overflow-hidden">
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Line Item Notes</p>
-                <p className="text-sm font-medium text-slate-300 whitespace-pre-wrap break-words">
+                <p className="text-sm font-medium text-slate-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                   {selectedItem?.lineItemNotes || "No line item notes"}
                 </p>
               </div>
