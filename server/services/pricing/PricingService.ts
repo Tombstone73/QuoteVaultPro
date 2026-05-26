@@ -711,6 +711,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     height: heightIn ?? 0,
     quantity,
     basePrice: basePriceCents / 100, // Convert cents to dollars for evaluator
+    formulaVariables: formulaVariablesForPricing,
   });
 
   // PBV2_DEBUG: Log evaluator return values
@@ -971,6 +972,7 @@ export function evaluatePricingPreviewFromTree(input: {
     height: heightIn,
     quantity,
     basePrice: basePriceCents / 100,
+    formulaVariables: formulaVariablesForPricing,
   });
 
   const optionsCents = Math.round(evalResult.optionsPrice * 100);

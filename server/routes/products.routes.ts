@@ -53,6 +53,7 @@ import {
   zodIssuesToPreviewDetails,
 } from "../services/pricing/pricingPreviewValidation";
 import { applyProductTypeIdUpdateGuard } from "../lib/productUpdateGuards";
+import { getDefaultFormula } from "@shared/pricingProfiles";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -146,6 +147,47 @@ async function buildPbv2MaterialValidationFindings(organizationId: string, produ
     productPrimaryMaterialId: product?.primaryMaterialId ?? null,
     materials: materialRecords,
   });
+}
+
+function numericFormulaVariables(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const numeric = Number(raw);
+    if (key && Number.isFinite(numeric)) out[key] = numeric;
+  }
+  return out;
+}
+
+function formulaVariablesFromProductConfig(config: unknown): Record<string, number> {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return {};
+  return numericFormulaVariables((config as Record<string, unknown>).formulaVariables);
+}
+
+function resolveFormulaMetaForActiveTree(product: any, draftTree: any): {
+  pricingProfileKey: string;
+  pricingFormula: string;
+  formulaVariables: Record<string, number>;
+} {
+  const draftMeta = draftTree && typeof draftTree === "object" ? draftTree.meta || {} : {};
+  const pricingProfileKey = String(
+    product?.pricingProfileKey ||
+    draftMeta.pricingProfileKey ||
+    "default",
+  );
+  const pricingFormula = String(
+    draftMeta.pricingFormula ||
+    product?.pricingFormula ||
+    getDefaultFormula(pricingProfileKey) ||
+    "",
+  ).trim();
+  const formulaVariables = {
+    ...numericFormulaVariables(draftMeta.pricingFormulaVariables),
+    ...numericFormulaVariables(draftMeta.formulaVariables),
+    ...formulaVariablesFromProductConfig(product?.pricingProfileConfig),
+  };
+
+  return { pricingProfileKey, pricingFormula, formulaVariables };
 }
 
 interface PolePocketsConfig extends BaseOptionConfig {
@@ -2255,23 +2297,45 @@ export function registerProductRoutes(
               const activeTree = activeTreeVersion.treeJson as any;
               const draftBasePricing = draftTree?.meta?.pricingV2?.base;
               const activeBasePricing = activeTree?.meta?.pricingV2?.base;
+              const nextFormulaMeta = resolveFormulaMetaForActiveTree(product, draftTree);
+              const activeFormulaMeta = {
+                pricingProfileKey: activeTree?.meta?.pricingProfileKey ?? null,
+                pricingFormula: activeTree?.meta?.pricingFormula ?? null,
+                formulaVariables: activeTree?.meta?.formulaVariables ?? {},
+                pricingFormulaVariables: activeTree?.meta?.pricingFormulaVariables ?? {},
+              };
+              const desiredFormulaMeta = {
+                pricingProfileKey: nextFormulaMeta.pricingProfileKey,
+                pricingFormula: nextFormulaMeta.pricingFormula,
+                formulaVariables: nextFormulaMeta.formulaVariables,
+                pricingFormulaVariables: nextFormulaMeta.formulaVariables,
+              };
 
               // Compare base pricing - only propagate if changed
               const basePricingChanged = JSON.stringify(draftBasePricing) !== JSON.stringify(activeBasePricing);
+              const formulaMetadataChanged = JSON.stringify(activeFormulaMeta) !== JSON.stringify(desiredFormulaMeta);
 
-              if (basePricingChanged && draftBasePricing) {
-                console.log('[PBV2_BASE_PRICING_PROPAGATION] detected change', {
+              if ((basePricingChanged && draftBasePricing) || formulaMetadataChanged) {
+                console.log('[PBV2_ACTIVE_PRICING_PROPAGATION] detected change', {
                   productId,
                   activeTreeVersionId: activeTreeVersion.id,
                   draftBasePricing,
                   activeBasePricing,
+                  formulaMetadataChanged,
+                  desiredFormulaMeta,
                 });
 
                 // Deep clone ACTIVE tree and update only meta.pricingV2.base
                 const updatedActiveTree = JSON.parse(JSON.stringify(activeTree));
                 if (!updatedActiveTree.meta) updatedActiveTree.meta = {};
-                if (!updatedActiveTree.meta.pricingV2) updatedActiveTree.meta.pricingV2 = {};
-                updatedActiveTree.meta.pricingV2.base = draftBasePricing;
+                if (draftBasePricing) {
+                  if (!updatedActiveTree.meta.pricingV2) updatedActiveTree.meta.pricingV2 = {};
+                  updatedActiveTree.meta.pricingV2.base = draftBasePricing;
+                }
+                updatedActiveTree.meta.pricingProfileKey = nextFormulaMeta.pricingProfileKey;
+                updatedActiveTree.meta.pricingFormula = nextFormulaMeta.pricingFormula;
+                updatedActiveTree.meta.formulaVariables = nextFormulaMeta.formulaVariables;
+                updatedActiveTree.meta.pricingFormulaVariables = nextFormulaMeta.formulaVariables;
 
                 // Use transaction to ensure atomic state transition: DEPRECATE old → INSERT new → UPDATE pointer
                 const newActiveVersion = await db.transaction(async (tx) => {
@@ -2323,19 +2387,20 @@ export function registerProductRoutes(
                   return newVersion;
                 });
 
-                console.log('[PBV2_BASE_PRICING_PROPAGATION] success - status transitions completed', {
+                console.log('[PBV2_ACTIVE_PRICING_PROPAGATION] success - status transitions completed', {
                   productId,
                   oldActiveId: activeTreeVersion.id,
                   oldStatus: 'ACTIVE → DEPRECATED',
                   newActiveId: newActiveVersion.id,
                   newStatus: 'ACTIVE',
                   basePricing: draftBasePricing,
+                  formulaVariables: nextFormulaMeta.formulaVariables,
                 });
 
                 // Update product object for response
                 product.pbv2ActiveTreeVersionId = newActiveVersion.id;
               } else {
-                console.log('[PBV2_BASE_PRICING_PROPAGATION] skipped - no change', {
+                console.log('[PBV2_ACTIVE_PRICING_PROPAGATION] skipped - no change', {
                   productId,
                   activeTreeVersionId: activeTreeVersion.id,
                 });

@@ -26,6 +26,7 @@ export type OptionTreeV2EvaluateInput = {
   height: number;
   quantity: number;
   basePrice: number;
+  formulaVariables?: Record<string, number>;
 };
 
 export type OptionTreeV2EvaluateResult = {
@@ -175,6 +176,7 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
   const treeFormulaVariables = {
     ...getNumericRecord((tree.meta as any)?.pricingFormulaVariables),
     ...getNumericRecord((tree.meta as any)?.formulaVariables),
+    ...getNumericRecord(input.formulaVariables),
   };
   const formulaScope = buildFormulaEvaluationScope({
     scope: buildFormulaScope({

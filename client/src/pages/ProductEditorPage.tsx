@@ -94,6 +94,39 @@ function mapProductTypeIdForInitialHydration(
   return rawValue;
 }
 
+function getNumericFormulaVariables(config: unknown): Record<string, number> {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return {};
+  const rawVariables = (config as Record<string, any>).formulaVariables;
+  if (!rawVariables || typeof rawVariables !== "object" || Array.isArray(rawVariables)) return {};
+
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(rawVariables)) {
+    const numeric = Number(value);
+    if (key && Number.isFinite(numeric)) out[key] = numeric;
+  }
+  return out;
+}
+
+function mergeProductPricingMetaIntoPbv2Tree(treeJson: unknown, productValues: ProductFormData): unknown {
+  if (!treeJson || typeof treeJson !== "object" || Array.isArray(treeJson)) return treeJson;
+
+  const pricingProfileKey = productValues.pricingProfileKey || "default";
+  const profile = getProfile(pricingProfileKey);
+  const pricingFormula = String(productValues.pricingFormula || profile.defaultFormula || getDefaultFormula(pricingProfileKey) || "").trim();
+  const formulaVariables = getNumericFormulaVariables(productValues.pricingProfileConfig);
+
+  return {
+    ...(treeJson as Record<string, any>),
+    meta: {
+      ...((treeJson as any).meta || {}),
+      pricingProfileKey,
+      pricingFormula,
+      formulaVariables,
+      pricingFormulaVariables: formulaVariables,
+    },
+  };
+}
+
 const ProductEditorPage = () => {
   const DEBUG_NAV_GUARD = true; // Temporary debug flag
   
@@ -515,8 +548,12 @@ const ProductEditorPage = () => {
           return;
         }
         
-        // Tree is already normalized by getCurrentTree; sanitize matrix refs as a final save guard.
-        const normalizedTree = sanitizePbv2PricingMatrix(freshTreeJson, { allowIncompleteMatrix: true }).tree;
+        // Tree is already normalized by getCurrentTree; merge product-level
+        // formula metadata so fee variables are durable in the PBV2 draft too.
+        const normalizedTree = sanitizePbv2PricingMatrix(
+          mergeProductPricingMetaIntoPbv2Tree(freshTreeJson, form.getValues()),
+          { allowIncompleteMatrix: true },
+        ).tree;
         const nodes = (normalizedTree as any)?.nodes || {};
         const edges = (normalizedTree as any)?.edges || [];
         const nodeCount = Object.keys(nodes).length;
