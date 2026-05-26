@@ -1624,11 +1624,17 @@ export async function autoSyncCanonicalProofForLineItem(tx: any, args: {
         reason: args.reason,
       });
 
-      if (lineItem.workflowState !== "awaiting_proof_approval") {
+      const currentWorkflowState = String(lineItem.workflowState || "").trim().toLowerCase();
+      const proofPendingTarget =
+        lineItem.requiresPrepress && (currentWorkflowState === "ready_for_prepress" || currentWorkflowState === "in_prepress")
+          ? (currentWorkflowState as any)
+          : "awaiting_proof_approval";
+
+      if (lineItem.workflowState !== proofPendingTarget) {
         const workflowTransition = await transitionLineItemWorkflowState(tx, {
           organizationId: args.organizationId,
           lineItemId: args.lineItemId,
-          toState: "awaiting_proof_approval",
+          toState: proofPendingTarget,
           actorUserId: args.actorUserId,
           metadata: {
             source: "proofing_auto_sync_missing_artwork",
@@ -1820,11 +1826,17 @@ export async function cancelProofVersion(tx: any, args: {
       .where(eq(orderLineItems.id, lineItem.lineItemId));
 
     let workflowTransition: Awaited<ReturnType<typeof transitionLineItemWorkflowState>> | null = null;
-    if (lineItem.workflowState !== "awaiting_proof_approval") {
+    const currentWorkflowState = String(lineItem.workflowState || "").trim().toLowerCase();
+    const proofPendingTarget =
+      lineItem.requiresPrepress && (currentWorkflowState === "ready_for_prepress" || currentWorkflowState === "in_prepress")
+        ? (currentWorkflowState as any)
+        : "awaiting_proof_approval";
+
+    if (lineItem.workflowState !== proofPendingTarget) {
       workflowTransition = await transitionLineItemWorkflowState(tx, {
         organizationId: args.organizationId,
         lineItemId: lineItem.lineItemId,
-        toState: "awaiting_proof_approval",
+        toState: proofPendingTarget,
         actorUserId: args.actorUserId,
         metadata: {
           source: "proofing_cancel_version",
@@ -2498,10 +2510,16 @@ export async function markProofVersionSent(tx: any, args: {
       .where(eq(lineItemProofVersions.id, proofVersion.id))
       .returning();
 
+    const currentWorkflowState = String(lineItem.workflowState || "").trim().toLowerCase();
+    const proofAwaitingTarget =
+      lineItem.requiresPrepress && (currentWorkflowState === "ready_for_prepress" || currentWorkflowState === "in_prepress")
+        ? (currentWorkflowState as any)
+        : "awaiting_proof_approval";
+
     const workflowTransition = await transitionLineItemWorkflowState(tx, {
       organizationId: args.organizationId,
       lineItemId: proofVersion.lineItemId,
-      toState: "awaiting_proof_approval",
+      toState: proofAwaitingTarget,
       actorUserId: args.actorUserId,
       metadata: {
         source: "proofing_send_for_review",

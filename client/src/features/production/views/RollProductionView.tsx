@@ -1580,8 +1580,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
           <CardContent className="p-6">
             <div className="text-sm font-medium text-titan-text-primary">No production jobs yet</div>
             <div className="mt-1 text-sm text-titan-text-muted">
-              Production jobs are created from Orders. Open an order and click <span className="font-medium">Production Job</span>
-              to generate the first job.
+              Production jobs are created per line item from order routing. Open an order and send line items to production.
             </div>
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <Button asChild size="sm">

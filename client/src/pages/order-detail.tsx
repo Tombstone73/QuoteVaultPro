@@ -54,7 +54,6 @@ import { TimelinePanel } from "@/components/TimelinePanel";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
 import { cn, formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
 import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
-import { useCreateProductionJobFromOrder } from "@/hooks/useProduction";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import { useSmartBack } from "@/hooks/useSmartBack";
 import { buildReferrer } from "@/lib/nav/smartBack";
@@ -211,7 +210,6 @@ export default function OrderDetail() {
   const { onSmartBack } = useSmartBack();
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const createProductionJob = useCreateProductionJobFromOrder();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isCustomerPickerOpen, setIsCustomerPickerOpen] = useState(false);
   const [isContactPickerOpen, setIsContactPickerOpen] = useState(false);
@@ -220,6 +218,7 @@ export default function OrderDetail() {
   const [editingPromisedDate, setEditingPromisedDate] = useState(false);
   const [tempDueDate, setTempDueDate] = useState("");
   const [tempPromisedDate, setTempPromisedDate] = useState("");
+  const [proofBypassReason, setProofBypassReason] = useState("");
 
   const [jobLabelDraft, setJobLabelDraft] = useState("");
   const [poNumberDraft, setPoNumberDraft] = useState("");
@@ -314,6 +313,29 @@ export default function OrderDetail() {
       ...pendingOrderPatch,
     } as OrderDetailOrder;
   }
+  const proofPolicyMutation = useMutation({
+    mutationFn: async ({ policy, reason }: { policy: "inherit_default" | "force_required" | "bypass"; reason?: string | null }) => {
+      const response = await fetch(`/api/orders/${orderId}/proof-policy`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ policy, reason: reason ?? null }),
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(json.message || json.error || "Failed to update proof policy");
+      }
+      return json;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] as any });
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] as any });
+      toast({ title: "Proof policy updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Proof policy failed", description: error.message, variant: "destructive" });
+    },
+  });
 
   const productionFocus = useMemo(() => {
     if (!focusProduction || !order?.lineItems?.length) {
@@ -558,6 +580,8 @@ export default function OrderDetail() {
   // Check if user is admin or owner
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
   const isManagerOrHigher = isAdminOrOwner || user?.role === 'manager';
+  const proofApprovalPolicyOverride = String((order as any)?.proofApprovalPolicyOverride || "inherit_default");
+  const proofBypassed = proofApprovalPolicyOverride === "bypass";
   
   // Check editability based on order status
   const canEditLineItems = order ? areLineItemsEditable(order.status) : false;
@@ -1780,27 +1804,42 @@ export default function OrderDetail() {
               <CompleteProductionButton orderId={order.id} />
             )}
 
-            {user?.role !== 'customer' && !orderIsCanceled && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={async () => {
-                  try {
-                    const job = await createProductionJob.mutateAsync(order.id);
-                    navigate(`/production/jobs/${job.id}`);
-                  } catch (e: any) {
-                    toast({
-                      title: "Production job failed",
-                      description: e?.message || "Failed to create production job",
-                      variant: "destructive",
-                    });
-                  }
-                }}
-                disabled={createProductionJob.isPending}
-              >
-                Production Job
-              </Button>
+            {proofBypassed ? (
+              <Badge variant="outline" className="border-amber-500/50 bg-amber-500/10 text-amber-700">
+                Proof Bypassed
+              </Badge>
+            ) : null}
+
+            {isAdminOrOwner && !orderIsCanceled && (
+              proofBypassed ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => proofPolicyMutation.mutate({ policy: "inherit_default" })}
+                  disabled={proofPolicyMutation.isPending}
+                >
+                  Require Proof Defaults
+                </Button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={proofBypassReason}
+                    onChange={(event) => setProofBypassReason(event.target.value)}
+                    placeholder="Bypass reason"
+                    className="h-9 w-40"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => proofPolicyMutation.mutate({ policy: "bypass", reason: proofBypassReason })}
+                    disabled={proofPolicyMutation.isPending}
+                  >
+                    Bypass Proof
+                  </Button>
+                </div>
+              )
             )}
+
           </div>
         </div>
 

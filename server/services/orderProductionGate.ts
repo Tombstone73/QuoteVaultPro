@@ -2,9 +2,11 @@ import { and, eq } from "drizzle-orm";
 
 import { orderLineItems, orders } from "@shared/schema";
 import { isCanceledOrder } from "@shared/operationalState";
+import { syncParentOrderForOperationalChildren } from "./orderWorkflowSyncService";
 
 type DbLike = {
   select: (...args: any[]) => any;
+  update: (...args: any[]) => any;
 };
 
 type ProductionOwnerRef = {
@@ -66,6 +68,13 @@ export async function assertParentOrderInProduction(tx: DbLike, args: {
   lineItemId?: string | null;
   action: string;
 }) {
+  await syncParentOrderForOperationalChildren(tx, {
+    organizationId: args.organizationId,
+    orderId: args.orderId ?? null,
+    lineItemId: args.lineItemId ?? null,
+    source: `production_gate:${args.action}`,
+  });
+
   const order = await loadOrderForProductionOwner(tx, args);
   if (!order) {
     throw blocked("Cannot advance production workflow: parent order was not found.", {

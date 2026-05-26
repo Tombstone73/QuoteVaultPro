@@ -103,6 +103,15 @@ type ProofAttachmentRow = ProofFileRow & {
   role?: string | null;
 };
 
+type ProofRecipientOption = {
+  id: string;
+  name: string;
+  email: string;
+  isPrimary?: boolean;
+  isOrderContact?: boolean;
+  isBillingContact?: boolean;
+};
+
 const proofingFilterMeta: Array<{ value: ProofingFilterValue; label: string }> = [
   { value: "awaiting_proof", label: "Awaiting Proof" },
   { value: "sent", label: "Sent" },
@@ -700,6 +709,14 @@ export default function StaffProofingPage() {
 
   const detail = detailQuery.data?.data;
   const activeOrderId = detail?.orderId ?? activeRow?.orderId ?? null;
+  const recipientsQuery = useQuery<JsonEnvelope<{ defaultRecipient: ProofRecipientOption | null; contacts: ProofRecipientOption[] }>>({
+    queryKey: ["/api/orders", activeOrderId, "proof-recipients"],
+    queryFn: () => readJson(`/api/orders/${activeOrderId}/proof-recipients`),
+    enabled: Boolean(isInternalUser && activeOrderId && sendDialogOpen),
+    staleTime: 60_000,
+  });
+  const proofRecipients = recipientsQuery.data?.data?.contacts ?? [];
+  const defaultProofRecipient = recipientsQuery.data?.data?.defaultRecipient ?? null;
   const orderQuery = useOrder(activeOrderId ?? undefined);
   const updateOrder = useUpdateOrder(activeOrderId ?? "");
   const selectedOrder = orderQuery.data;
@@ -758,6 +775,13 @@ export default function StaffProofingPage() {
     return `${url}${separator}page=${viewerPage}&zoom=${viewerZoom}`;
   }, [pdfViewerMode, previewIsPdf, previewUrl, viewerPage, viewerZoom]);
   const jobSpecificationRows = useMemo(() => getJobSpecificationRows(selectedLineItem, activeRow ?? undefined), [activeRow, selectedLineItem]);
+
+  useEffect(() => {
+    if (!sendDialogOpen || !defaultProofRecipient || sendToEmail.trim()) return;
+    setSendToName(defaultProofRecipient.name || "");
+    setSendToEmail(defaultProofRecipient.email || "");
+    setSendEmailSource("prefilled");
+  }, [defaultProofRecipient, sendDialogOpen, sendToEmail]);
   const internalStaffNote = useMemo(() => {
     const candidates = [
       selectedOrder?.notesInternal,
@@ -2157,6 +2181,33 @@ export default function StaffProofingPage() {
             ) : null}
 
             {/* Recipient fields */}
+            {proofRecipients.length > 0 ? (
+              <div className="grid gap-2">
+                <Label htmlFor="proof-recipient-select">Customer contact</Label>
+                <Select
+                  value=""
+                  onValueChange={(value) => {
+                    const selected = proofRecipients.find((recipient) => recipient.id === value);
+                    if (!selected) return;
+                    setSendToName(selected.name || "");
+                    setSendToEmail(selected.email || "");
+                    setSendEmailSource("");
+                  }}
+                >
+                  <SelectTrigger id="proof-recipient-select">
+                    <SelectValue placeholder="Choose a customer contact" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {proofRecipients.map((recipient) => (
+                      <SelectItem key={recipient.id} value={recipient.id}>
+                        {recipient.name || recipient.email} - {recipient.email}
+                        {recipient.isOrderContact ? " (order contact)" : recipient.isPrimary ? " (primary)" : recipient.isBillingContact ? " (billing)" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
             <div className="grid gap-2">
               <Label htmlFor="proof-send-name">Send to name</Label>
               <Input
@@ -2169,10 +2220,10 @@ export default function StaffProofingPage() {
             <div className="grid gap-2">
               <div className="flex items-baseline justify-between">
                 <Label htmlFor="proof-send-email">
-                  Send to email <span className="text-destructive">*</span>
+                  Send to email(s) <span className="text-destructive">*</span>
                 </Label>
                 {sendEmailSource === "prefilled" && sendToEmail.trim() ? (
-                  <span className="text-[10px] text-muted-foreground">From previous send</span>
+                  <span className="text-[10px] text-muted-foreground">Auto-filled from customer contact</span>
                 ) : null}
               </div>
               <Input
@@ -2180,7 +2231,7 @@ export default function StaffProofingPage() {
                 type="email"
                 value={sendToEmail}
                 onChange={(event) => { setSendToEmail(event.target.value); setSendEmailSource(""); }}
-                placeholder="customer@example.com"
+                placeholder="customer@example.com, manager@example.com"
               />
               {sendDialogOpen && !sendToEmail.trim() ? (
                 <p className="text-xs text-destructive">A recipient email is required.</p>

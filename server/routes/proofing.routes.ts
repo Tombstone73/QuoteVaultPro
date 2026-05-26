@@ -76,6 +76,19 @@ function buildDefaultProofEmailSubject(versionNumber: number): string {
   return `Proof Ready for Review - Version ${versionNumber}`;
 }
 
+function normalizeProofRecipientEmails(value: string | null | undefined): string | null {
+  const emails = String(value || "")
+    .split(/[;,]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (emails.length === 0) return null;
+  const invalid = emails.find((email) => !z.string().email().safeParse(email).success);
+  if (invalid) {
+    throw Object.assign(new Error(`Invalid proof recipient email: ${invalid}`), { statusCode: 400 });
+  }
+  return emails.join(", ");
+}
+
 function buildProofEmailHtml(args: {
   proofLink: string;
   versionNumber: number;
@@ -308,6 +321,7 @@ export function registerProofingRoutes(
         return res.status(400).json({ error: fromZodError(parsed.error).message });
       }
 
+      const normalizedSentToEmail = normalizeProofRecipientEmails(parsed.data.sentToEmail);
       const lineItemId = String(req.params.lineItemId);
       const customerVisibleDisclaimer = await loadOrgProofDisclaimer(organizationId);
 
@@ -322,7 +336,7 @@ export function registerProofingRoutes(
           proofFileId: "proofFileId" in parsed.data ? parsed.data.proofFileId : null,
           internalNotes: parsed.data.internalNotes ?? null,
           sentToName: parsed.data.sentToName ?? null,
-          sentToEmail: parsed.data.sentToEmail ?? null,
+          sentToEmail: normalizedSentToEmail,
           customerMessage: parsed.data.customerMessage ?? null,
           customerVisibleDisclaimer,
         });
@@ -330,7 +344,7 @@ export function registerProofingRoutes(
         // Create portal access token whenever a recipient email is supplied.
         // Token creation requires proof to be in awaiting_response (guaranteed above).
         let emailPayload: EmailPayload | null = null;
-        if (parsed.data.sentToEmail) {
+        if (normalizedSentToEmail) {
           const tokenResult = await createProofAccessToken(tx, {
             organizationId,
             lineItemId,
@@ -339,7 +353,7 @@ export function registerProofingRoutes(
             createdBy: userId,
           });
           emailPayload = {
-            to: parsed.data.sentToEmail,
+            to: normalizedSentToEmail,
             rawToken: tokenResult.rawToken,
             versionNumber: created.proofVersion.versionNumber,
             sentToName: parsed.data.sentToName ?? null,
@@ -430,6 +444,7 @@ export function registerProofingRoutes(
         return res.status(400).json({ error: fromZodError(parsed.error).message });
       }
 
+      const normalizedSentToEmail = normalizeProofRecipientEmails(parsed.data.sentToEmail);
       const customerVisibleDisclaimer = await loadOrgProofDisclaimer(organizationId);
       type SendEmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null; subject: string | null };
 
@@ -439,14 +454,14 @@ export function registerProofingRoutes(
           proofVersionId: String(req.params.proofVersionId),
           actorUserId: userId,
           sentToName: parsed.data.sentToName ?? null,
-          sentToEmail: parsed.data.sentToEmail ?? null,
+          sentToEmail: normalizedSentToEmail,
           customerMessage: parsed.data.customerMessage ?? null,
           customerVisibleDisclaimer,
         });
 
         // Create portal access token whenever a recipient email is supplied.
         let emailPayload: SendEmailPayload | null = null;
-        if (parsed.data.sentToEmail) {
+        if (normalizedSentToEmail) {
           const tokenResult = await createProofAccessToken(tx, {
             organizationId,
             lineItemId: sendResult.proofVersion.lineItemId,
@@ -455,7 +470,7 @@ export function registerProofingRoutes(
             createdBy: userId,
           });
           emailPayload = {
-            to: parsed.data.sentToEmail,
+            to: normalizedSentToEmail,
             rawToken: tokenResult.rawToken,
             versionNumber: sendResult.proofVersion.versionNumber,
             sentToName: parsed.data.sentToName ?? null,
@@ -542,7 +557,7 @@ export function registerProofingRoutes(
 
       const parsed = z.object({
         sentToName: z.string().optional().nullable(),
-        sentToEmail: z.string().email().optional().nullable(),
+        sentToEmail: z.string().optional().nullable(),
         customerMessage: z.string().optional().nullable(),
         subject: z.string().optional().nullable(),
       }).safeParse(req.body);
@@ -551,6 +566,7 @@ export function registerProofingRoutes(
         return res.status(400).json({ error: fromZodError(parsed.error).message });
       }
 
+      const normalizedSentToEmail = normalizeProofRecipientEmails(parsed.data.sentToEmail);
       const customerVisibleDisclaimer = await loadOrgProofDisclaimer(organizationId);
       type ResendEmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null; subject: string | null };
 
@@ -560,13 +576,13 @@ export function registerProofingRoutes(
           proofVersionId: String(req.params.proofVersionId),
           actorUserId: userId,
           sentToName: parsed.data.sentToName ?? null,
-          sentToEmail: parsed.data.sentToEmail ?? null,
+          sentToEmail: normalizedSentToEmail,
           customerMessage: parsed.data.customerMessage ?? null,
           customerVisibleDisclaimer,
         });
 
         let emailPayload: ResendEmailPayload | null = null;
-        if (parsed.data.sentToEmail) {
+        if (normalizedSentToEmail) {
           const tokenResult = await createProofAccessToken(tx, {
             organizationId,
             lineItemId: resendResult.proofVersion.lineItemId,
@@ -575,7 +591,7 @@ export function registerProofingRoutes(
             createdBy: userId,
           });
           emailPayload = {
-            to: parsed.data.sentToEmail,
+            to: normalizedSentToEmail,
             rawToken: tokenResult.rawToken,
             versionNumber: resendResult.proofVersion.versionNumber,
             sentToName: parsed.data.sentToName ?? null,

@@ -186,6 +186,14 @@ export type PrepressQueueItem = {
   dueDate: string | null;
   status: string;
   workflowState: PrepressQueueWorkflowState;
+  requiresProofApproval?: boolean | null;
+  approvedProofVersionId?: string | null;
+  proofApprovalPolicyOverride?: "inherit_default" | "force_required" | "bypass";
+  proofBypassed?: boolean;
+  proofBypassReason?: string | null;
+  proofBypassedAt?: string | null;
+  proofBypassedByUserId?: string | null;
+  productionReleaseBlockedReason?: string | null;
   hasCompletedSession: boolean;
   rush: boolean;
   assignedTo: string | null;

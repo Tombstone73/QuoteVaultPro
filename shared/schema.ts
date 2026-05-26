@@ -2756,6 +2756,10 @@ export const orders = pgTable("orders", {
   billingReadyOverrideNote: text("billing_ready_override_note"),
   billingReadyOverrideAt: timestamp("billing_ready_override_at", { withTimezone: true }),
   billingReadyOverrideByUserId: varchar("billing_ready_override_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  proofApprovalPolicyOverride: varchar("proof_approval_policy_override", { length: 32 }).notNull().default("inherit_default"),
+  proofApprovalOverrideReason: text("proof_approval_override_reason"),
+  proofApprovalOverrideAt: timestamp("proof_approval_override_at", { withTimezone: true }),
+  proofApprovalOverrideByUserId: varchar("proof_approval_override_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   productionCompletedAt: timestamp("production_completed_at", { withTimezone: true, mode: "string" }),
   closedAt: timestamp("closed_at", { withTimezone: true, mode: "string" }),
   priority: varchar("priority", { length: 50 }).notNull().default("normal"), // rush, normal, low

@@ -4,6 +4,8 @@ import { appendEvent } from "../productionHelpers";
 import { completeActiveJob, findActiveJobForLineItem, findAllActiveJobsForLineItem, transitionToStation } from "./productionOwnership";
 import { routeLineItemToProduction } from "./productionRoutingService";
 import { resolvePostPrepressProductionRoute } from "./productionRoutingResolver";
+import { syncParentOrderForOperationalChildren } from "./orderWorkflowSyncService";
+import { resolveLineItemProofReleaseGate } from "./proofGateService";
 
 export const NON_TERMINAL_WORKFLOW_STATES: LineItemWorkflowState[] = [
   "new",
@@ -478,9 +480,19 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
     throw Object.assign(new Error(`Design must be completed before transitioning to ${args.toState}`), { statusCode: 409 });
   }
 
-  const requiresApprovedProofForTarget = ["ready_for_prepress", "in_prepress", "ready_for_production", "in_production"].includes(args.toState);
-  if (requiresApprovedProofForTarget && lineItem.requiresProofApproval && !lineItem.approvedProofVersionId) {
-    throw Object.assign(new Error(`Approved proof is required before transitioning to ${args.toState}`), { statusCode: 409 });
+  const requiresApprovedProofForTarget = ["ready_for_production", "in_production"].includes(args.toState);
+  if (requiresApprovedProofForTarget) {
+    const proofGate = await resolveLineItemProofReleaseGate(tx, {
+      organizationId: args.organizationId,
+      lineItemId: args.lineItemId,
+    });
+    if (!proofGate.allowed) {
+      throw Object.assign(new Error(proofGate.blockedReason || `Approved proof is required before transitioning to ${args.toState}`), {
+        statusCode: 409,
+        code: "PROOF_APPROVAL_REQUIRED",
+        details: proofGate,
+      });
+    }
   }
 
   const activeJob = await findActiveJobForLineItem(tx, {
@@ -570,6 +582,14 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
       })
       .where(eq(orderLineItems.id, lineItem.id));
 
+    const orderSync = await syncParentOrderForOperationalChildren(tx, {
+      organizationId: args.organizationId,
+      orderId: lineItem.orderId,
+      lineItemId: lineItem.id,
+      actorUserId: args.actorUserId,
+      source: `line_item_workflow_reconcile:${args.toState}`,
+    });
+
     const eventJobId = invariant.activeOwnerJobId ?? ownership.activeOwnerJobId ?? activeJob?.id ?? null;
     if (eventJobId) {
       await appendEvent({
@@ -588,6 +608,7 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
           actorUserId: args.actorUserId ?? null,
           note: args.note ?? null,
           metadata: args.metadata ?? {},
+          orderSync,
         },
       });
     }
@@ -658,6 +679,14 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
     })
     .where(eq(orderLineItems.id, lineItem.id));
 
+  const orderSync = await syncParentOrderForOperationalChildren(tx, {
+    organizationId: args.organizationId,
+    orderId: lineItem.orderId,
+    lineItemId: lineItem.id,
+    actorUserId: args.actorUserId,
+    source: `line_item_workflow_transition:${fromState}->${args.toState}`,
+  });
+
   const eventJobId = invariant.activeOwnerJobId ?? ownership.activeOwnerJobId ?? activeJob?.id ?? null;
   if (eventJobId) {
     await appendEvent({
@@ -674,6 +703,7 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
         actorUserId: args.actorUserId ?? null,
         note: args.note ?? null,
         metadata: args.metadata ?? {},
+        orderSync,
       },
     });
   }
@@ -696,8 +726,8 @@ export function getInitialWorkflowState(args: {
   requiresProofApproval?: boolean;
 }): LineItemWorkflowState {
   if (args.requiresDesign) return "needs_design";
-  if (args.requiresProofApproval) return "awaiting_proof_approval";
   if (args.requiresPrepress) return "ready_for_prepress";
+  if (args.requiresProofApproval) return "awaiting_proof_approval";
   return "ready_for_production";
 }
 
@@ -726,10 +756,10 @@ export async function completeLineItemDesign(tx: any, args: {
     throw Object.assign(new Error("Line item is not currently in design"), { statusCode: 409 });
   }
 
-  const targetState: LineItemWorkflowState = lineItem.requiresProofApproval
-    ? "awaiting_proof_approval"
-    : lineItem.requiresPrepress
-      ? "ready_for_prepress"
+  const targetState: LineItemWorkflowState = lineItem.requiresPrepress
+    ? "ready_for_prepress"
+    : lineItem.requiresProofApproval
+      ? "awaiting_proof_approval"
       : "ready_for_production";
 
   await tx

@@ -39,7 +39,7 @@ import {
     type InsertOrder
 } from "@shared/schema";
 import { isPortalFileCategory, normalizePortalFileCategory } from "@shared/portalFileVisibility";
-import { eq, desc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
+import { eq, desc, asc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
@@ -1267,6 +1267,174 @@ export async function registerOrderRoutes(
         } catch (error) {
             console.error("Error fetching order:", error);
             res.status(500).json({ message: "Failed to fetch order" });
+        }
+    });
+
+    app.patch("/api/orders/:orderId/proof-policy", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+            const actorUserId = getUserId(req.user);
+            if (!actorUserId) return res.status(401).json({ success: false, message: "User ID not found" });
+
+            const parsed = z.object({
+                policy: z.enum(["inherit_default", "force_required", "bypass"]),
+                reason: z.string().max(1000).optional().nullable(),
+            }).safeParse(req.body);
+            if (!parsed.success) {
+                return res.status(400).json({ success: false, message: fromZodError(parsed.error).message });
+            }
+
+            const [existingOrder] = await db
+                .select({
+                    id: orders.id,
+                    orderNumber: orders.orderNumber,
+                    proofApprovalPolicyOverride: orders.proofApprovalPolicyOverride,
+                    proofApprovalOverrideReason: orders.proofApprovalOverrideReason,
+                    proofApprovalOverrideAt: orders.proofApprovalOverrideAt,
+                    proofApprovalOverrideByUserId: orders.proofApprovalOverrideByUserId,
+                })
+                .from(orders)
+                .where(and(eq(orders.id, req.params.orderId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!existingOrder) {
+                return res.status(404).json({ success: false, message: "Order not found" });
+            }
+
+            const reason = parsed.data.reason?.trim() || null;
+            const overrideAt = parsed.data.policy === "inherit_default" ? null : new Date();
+            const overrideBy = parsed.data.policy === "inherit_default" ? null : actorUserId;
+
+            const [updatedOrder] = await db
+                .update(orders)
+                .set({
+                    proofApprovalPolicyOverride: parsed.data.policy,
+                    proofApprovalOverrideReason: parsed.data.policy === "inherit_default" ? null : reason,
+                    proofApprovalOverrideAt: overrideAt,
+                    proofApprovalOverrideByUserId: overrideBy,
+                    updatedAt: new Date().toISOString(),
+                } as any)
+                .where(and(eq(orders.id, req.params.orderId), eq(orders.organizationId, organizationId)))
+                .returning();
+
+            await db.insert(auditLogs).values({
+                organizationId,
+                userId: actorUserId,
+                userName: req.user?.email || req.user?.name || null,
+                actionType: "UPDATE",
+                entityType: "order",
+                entityId: existingOrder.id,
+                entityName: existingOrder.orderNumber,
+                description: parsed.data.policy === "bypass"
+                    ? "Proof approval bypass enabled for order"
+                    : parsed.data.policy === "force_required"
+                        ? "Proof approval forced for order"
+                        : "Proof approval policy reset to product defaults",
+                oldValues: {
+                    proofApprovalPolicyOverride: existingOrder.proofApprovalPolicyOverride,
+                    proofApprovalOverrideReason: existingOrder.proofApprovalOverrideReason,
+                    proofApprovalOverrideAt: existingOrder.proofApprovalOverrideAt,
+                    proofApprovalOverrideByUserId: existingOrder.proofApprovalOverrideByUserId,
+                },
+                newValues: {
+                    proofApprovalPolicyOverride: parsed.data.policy,
+                    proofApprovalOverrideReason: parsed.data.policy === "inherit_default" ? null : reason,
+                    proofApprovalOverrideAt: overrideAt,
+                    proofApprovalOverrideByUserId: overrideBy,
+                },
+                ipAddress: req.ip || null,
+                userAgent: req.headers["user-agent"] || null,
+            } as any);
+
+            return res.json({ success: true, data: updatedOrder, message: "Proof policy updated" });
+        } catch (error: any) {
+            console.error("[PATCH /api/orders/:orderId/proof-policy] Error:", error);
+            return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || "Failed to update proof policy" });
+        }
+    });
+
+    app.get("/api/orders/:orderId/proof-recipients", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+            const [orderRow] = await db
+                .select({
+                    orderId: orders.id,
+                    contactId: orders.contactId,
+                    billToEmail: orders.billToEmail,
+                    billToName: orders.billToName,
+                    customerId: orders.customerId,
+                    customerName: customers.companyName,
+                    customerEmail: customers.email,
+                })
+                .from(orders)
+                .innerJoin(customers, eq(orders.customerId, customers.id))
+                .where(and(eq(orders.id, req.params.orderId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!orderRow) return res.status(404).json({ success: false, message: "Order not found" });
+
+            const contacts = await db
+                .select({
+                    id: customerContacts.id,
+                    firstName: customerContacts.firstName,
+                    lastName: customerContacts.lastName,
+                    email: customerContacts.email,
+                    isPrimary: customerContacts.isPrimary,
+                    flags: customerContacts.flags,
+                })
+                .from(customerContacts)
+                .where(eq(customerContacts.customerId, orderRow.customerId))
+                .orderBy(desc(customerContacts.isPrimary), asc(customerContacts.lastName), asc(customerContacts.firstName));
+
+            const normalizedContacts = contacts
+                .filter((contact) => String(contact.email || "").trim())
+                .map((contact) => ({
+                    id: contact.id,
+                    name: `${contact.firstName || ""} ${contact.lastName || ""}`.trim(),
+                    email: String(contact.email || "").trim(),
+                    isPrimary: Boolean(contact.isPrimary),
+                    isOrderContact: contact.id === orderRow.contactId,
+                    isBillingContact: Array.isArray(contact.flags) && contact.flags.includes("billing_contact"),
+                }));
+
+            const selected =
+                normalizedContacts.find((contact) => contact.isOrderContact) ??
+                normalizedContacts.find((contact) => contact.isPrimary) ??
+                normalizedContacts.find((contact) => contact.isBillingContact) ??
+                (orderRow.billToEmail
+                    ? {
+                        id: "billing_snapshot",
+                        name: orderRow.billToName || orderRow.customerName || "",
+                        email: String(orderRow.billToEmail).trim(),
+                        isPrimary: false,
+                        isOrderContact: false,
+                        isBillingContact: true,
+                    }
+                    : null) ??
+                (orderRow.customerEmail
+                    ? {
+                        id: "customer",
+                        name: orderRow.customerName || "",
+                        email: String(orderRow.customerEmail).trim(),
+                        isPrimary: true,
+                        isOrderContact: false,
+                        isBillingContact: false,
+                    }
+                    : null);
+
+            return res.json({
+                success: true,
+                data: {
+                    defaultRecipient: selected,
+                    contacts: normalizedContacts,
+                },
+            });
+        } catch (error: any) {
+            console.error("[GET /api/orders/:orderId/proof-recipients] Error:", error);
+            return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || "Failed to load proof recipients" });
         }
     });
 

@@ -4,6 +4,8 @@ import { eq, and, inArray } from "drizzle-orm";
 import { routeLineItemToProduction } from "./productionRoutingService";
 import { resolveInitialProductionRoute } from "./productionRoutingResolver";
 import { isCanceledOrder } from "@shared/operationalState";
+import { syncParentOrderForOperationalChildren } from "./orderWorkflowSyncService";
+import { resolveLineItemProofReleaseGate } from "./proofGateService";
 
 type SchedulingCandidateLineItem = {
   lineItemId: string;
@@ -50,7 +52,7 @@ const toFailedItem = (lineItemId: string, traceId: string, step: string, error: 
   message: String(error?.message || "Unknown scheduling error"),
 });
 
-const WORKFLOW_STATES_REQUIRING_APPROVED_PROOF = new Set(["ready_for_prepress", "in_prepress", "ready_for_production", "in_production"]);
+const WORKFLOW_STATES_REQUIRING_APPROVED_PROOF = new Set(["ready_for_production", "in_production"]);
 
 function logProofSchedulingBlock(args: {
   traceId: string;
@@ -95,6 +97,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
   organizationId: string;
   orderId: string;
   lineItemIds?: string[];
+  actorUserId?: string | null;
   loadRoutingRules: (orgId: string) => Promise<{ source: string; rules: any[] }>;
   appendEvent: (args: { tx: any; organizationId: string; productionJobId: string; type: "intake" | "routing_override" | "timer_started" | "timer_stopped" | "note" | "reprint_incremented" | "media_used_set"; payload?: any }) => Promise<void>;
   traceId?: string;
@@ -271,25 +274,6 @@ export async function scheduleOrderLineItemsForProduction(args: {
     let step = "begin_item";
     try {
       const currentWorkflowState = String(item.workflowState || "").trim().toLowerCase();
-      if (currentWorkflowState === "awaiting_proof_approval") {
-        blockedByProofCount++;
-        lineItemDiagnostics[item.lineItemId] = {
-          stationKey: "proofing",
-          stepKey: "awaiting_proof_approval",
-          routingReason: "proof_approval_required_before_scheduling",
-          idempotencyNote: "Skipped scheduling while proof approval is still pending",
-        };
-        logProofSchedulingBlock({
-          traceId: requestTraceId,
-          orderId,
-          lineItemId: item.lineItemId,
-          currentWorkflowState,
-          requiresProofApproval: item.lineItemRequiresProofApprovalSnapshot === true,
-          approvedProofVersionId: item.approvedProofVersionId,
-          reason: "awaiting_proof_approval",
-        });
-        continue;
-      }
 
       step = "resolve_initial_route";
       const route = await resolveRoute({
@@ -312,30 +296,33 @@ export async function scheduleOrderLineItemsForProduction(args: {
             ? "ready_for_prepress"
             : "ready_for_production";
 
-      if (
-        item.lineItemRequiresProofApprovalSnapshot === true &&
-        !item.approvedProofVersionId &&
-        WORKFLOW_STATES_REQUIRING_APPROVED_PROOF.has(targetWorkflowState)
-      ) {
-        blockedByProofCount++;
-        lineItemDiagnostics[item.lineItemId] = {
-          stationKey: "proofing",
-          stepKey: "approved_proof_required",
-          routingReason: "proof_approval_required_before_scheduling",
-          idempotencyNote: `Blocked scheduling to ${route.stationKey}/${route.stepKey} until an approved proof is recorded`,
-        };
-        logProofSchedulingBlock({
-          traceId: requestTraceId,
-          orderId,
+      if (WORKFLOW_STATES_REQUIRING_APPROVED_PROOF.has(targetWorkflowState)) {
+        const proofGate = await resolveLineItemProofReleaseGate(db, {
+          organizationId,
           lineItemId: item.lineItemId,
-          currentWorkflowState,
-          targetWorkflowState,
-          requiresProofApproval: true,
-          approvedProofVersionId: item.approvedProofVersionId,
-          routingReason: route.reason,
-          reason: "missing_approved_proof",
         });
-        continue;
+
+        if (!proofGate.allowed) {
+          blockedByProofCount++;
+          lineItemDiagnostics[item.lineItemId] = {
+            stationKey: "proofing",
+            stepKey: "approved_proof_required",
+            routingReason: "proof_approval_required_before_scheduling",
+            idempotencyNote: `Blocked scheduling to ${route.stationKey}/${route.stepKey} until an approved proof is recorded`,
+          };
+          logProofSchedulingBlock({
+            traceId: requestTraceId,
+            orderId,
+            lineItemId: item.lineItemId,
+            currentWorkflowState,
+            targetWorkflowState,
+            requiresProofApproval: proofGate.requiresProofApproval,
+            approvedProofVersionId: proofGate.approvedProofVersionId,
+            routingReason: route.reason,
+            reason: "missing_approved_proof",
+          });
+          continue;
+        }
       }
 
       const scheduledItem = await txRunner.transaction(async (tx) => {
@@ -367,6 +354,14 @@ export async function scheduleOrderLineItemsForProduction(args: {
             updatedAt: new Date(),
           })
           .where(eq(orderLineItems.id, item.lineItemId));
+
+        await syncParentOrderForOperationalChildren(tx, {
+          organizationId,
+          orderId,
+          lineItemId: item.lineItemId,
+          actorUserId: args.actorUserId,
+          source: `production_schedule:${targetWorkflowState}`,
+        });
 
         if (routingResult.outcome === "existing" && routingResult.reason) {
           console.warn(
