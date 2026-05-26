@@ -117,6 +117,8 @@ type SpecSheetData = {
   sqFootage: number | null;
   media: string | null;
   printType: string | null;
+  productionDestination?: string | null;
+  suggestedProductionDestination?: string | null;
   bleed: string | null;
   finishingBullets: string[];
   originals: LineItemFile[];
@@ -245,7 +247,7 @@ export default function PrepressProductionPageV2() {
   // UI State
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [printTypeFilter, setPrintTypeFilter] = useState("all");
+  const [destinationFilter, setDestinationFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [rushFilter, setRushFilter] = useState(false);
   const [sortBy, setSortBy] = useState("due_date");
@@ -274,14 +276,14 @@ export default function PrepressProductionPageV2() {
 
   const queueFilters = useMemo(
     () => ({
-      printType: printTypeFilter,
+      destination: destinationFilter,
       status: statusFilter,
       rush: rushFilter,
       sortBy,
       sortAsc,
       search: normalizedSearchQuery,
     }),
-    [normalizedSearchQuery, printTypeFilter, rushFilter, sortAsc, sortBy, statusFilter],
+    [destinationFilter, normalizedSearchQuery, rushFilter, sortAsc, sortBy, statusFilter],
   );
 
   const refreshPrepressQueue = React.useCallback(async () => {
@@ -301,7 +303,7 @@ export default function PrepressProductionPageV2() {
     queryKey: [...PREPRESS_QUEUE_QUERY_KEY, queueFilters],
     queryFn: async () => {
       const params = new URLSearchParams();
-      if (queueFilters.printType !== "all") params.set("printType", queueFilters.printType);
+      if (queueFilters.destination !== "all") params.set("destination", queueFilters.destination);
       if (queueFilters.status !== "all") params.set("status", queueFilters.status);
       if (queueFilters.rush) params.set("rush", "true");
       if (queueFilters.search) params.set("search", queueFilters.search);
@@ -581,11 +583,18 @@ export default function PrepressProductionPageV2() {
       
       return res.json();
     },
-    onSuccess: async () => {
+    onSuccess: async (_response, lineItemId) => {
       await Promise.all([
         refreshPrepressQueue(),
+        refreshLineItemQueries(lineItemId),
         queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
         queryClient.refetchQueries({ queryKey: ["/api/production/jobs"], type: "active" }),
+        queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] }),
+        queryClient.refetchQueries({ queryKey: ["/api/operational-summary"], type: "active" }),
+        queryClient.invalidateQueries({ predicate: (query) => {
+          const key = query.queryKey;
+          return Array.isArray(key) && key[0] === "/api/orders";
+        } }),
       ]);
       // Clear selection since item will move to production boards
       setSelectedLineItemId(null);
@@ -603,17 +612,17 @@ export default function PrepressProductionPageV2() {
     },
   });
 
-  const updatePrintTypeMutation = useMutation({
-    mutationFn: async ({ lineItemId, printType }: { lineItemId: string; printType: string }) => {
-      const res = await fetch(`/api/prepress/line-item/${lineItemId}/print-type`, {
+  const updateProductionDestinationMutation = useMutation({
+    mutationFn: async ({ lineItemId, destination }: { lineItemId: string; destination: string }) => {
+      const res = await fetch(`/api/prepress/line-item/${lineItemId}/production-destination`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ printType }),
+        body: JSON.stringify({ destination }),
       });
       if (!res.ok) {
         const error = await res.json().catch(() => ({}));
-        throw new Error(error.error || "Failed to update print type");
+        throw new Error(error.error || "Failed to update production destination");
       }
       return res.json();
     },
@@ -623,7 +632,7 @@ export default function PrepressProductionPageV2() {
         queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
         queryClient.refetchQueries({ queryKey: ["/api/production/jobs"], type: "active" }),
       ]);
-      toast({ title: "Print type updated" });
+      toast({ title: "Production destination updated" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -866,9 +875,9 @@ export default function PrepressProductionPageV2() {
     setSpecSheetOpen(true);
   };
 
-  const handlePrintTypeChange = (value: string) => {
+  const handleProductionDestinationChange = (value: string) => {
     if (!selectedItem || !selectedLineItemId) return;
-    updatePrintTypeMutation.mutate({ lineItemId: selectedLineItemId, printType: value });
+    updateProductionDestinationMutation.mutate({ lineItemId: selectedLineItemId, destination: value });
   };
 
   const handleStartPrepress = () => {
@@ -1085,14 +1094,14 @@ export default function PrepressProductionPageV2() {
             </div>
 
             <div className="flex gap-2">
-              <Select value={printTypeFilter} onValueChange={setPrintTypeFilter}>
+              <Select value={destinationFilter} onValueChange={setDestinationFilter}>
                 <SelectTrigger className="flex-1 bg-[#111921] border-[#2d3748] rounded-lg text-xs py-1 h-8 focus:ring-[#1773cf] focus:border-[#1773cf]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">Print Type: All</SelectItem>
+                  <SelectItem value="all">Destination: All</SelectItem>
+                  <SelectItem value="roll">Roll</SelectItem>
                   <SelectItem value="flatbed">Flatbed</SelectItem>
-                  <SelectItem value="wide_roll">Wide Roll</SelectItem>
                 </SelectContent>
               </Select>
 
@@ -1287,21 +1296,34 @@ export default function PrepressProductionPageV2() {
                 <p className="text-sm font-medium">{selectedItem?.media || "—"}</p>
               </div>
               <div>
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Print Type</p>
+                <p className="text-[10px] text-slate-500 uppercase font-bold">Production Destination</p>
                 <Select
-                  value={selectedItem?.printType || "wide_roll"}
-                  onValueChange={handlePrintTypeChange}
-                  disabled={!selectedItem || updatePrintTypeMutation.isPending}
+                  value={selectedItem?.destinationOverrideActive ? selectedItem?.selectedProductionDestination || "auto" : "auto"}
+                  onValueChange={handleProductionDestinationChange}
+                  disabled={!selectedItem || updateProductionDestinationMutation.isPending}
                 >
                   <SelectTrigger className="h-8 bg-[#111921] border-[#2d3748] text-sm">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="flatbed">flatbed</SelectItem>
-                    <SelectItem value="wide_roll">wide_roll</SelectItem>
-                    <SelectItem value="roll">roll</SelectItem>
+                    <SelectItem value="auto">Auto / Suggested</SelectItem>
+                    <SelectItem value="roll">Roll</SelectItem>
+                    <SelectItem value="flatbed">Flatbed</SelectItem>
                   </SelectContent>
                 </Select>
+                <div className="mt-1 space-y-0.5 text-[10px] text-slate-500">
+                  <div>
+                    Suggested: {selectedItem?.suggestedProductionDestination
+                      ? selectedItem.suggestedProductionDestination === "roll" ? "Roll" : "Flatbed"
+                      : "—"}
+                  </div>
+                  <div>
+                    Selected: {selectedItem?.selectedProductionDestination
+                      ? selectedItem.selectedProductionDestination === "roll" ? "Roll" : "Flatbed"
+                      : "—"}
+                    {selectedItem?.destinationOverrideActive ? <span className="ml-1 text-amber-300">Override active</span> : null}
+                  </div>
+                </div>
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Bleed</p>
@@ -2100,7 +2122,7 @@ export default function PrepressProductionPageV2() {
                 <div><span className="text-slate-500">Qty:</span> {specSheetData.quantity || "—"}</div>
                 <div><span className="text-slate-500">Sq Ft:</span> {specSheetData.sqFootage != null ? `${specSheetData.sqFootage.toFixed(1)} sq ft` : "—"}</div>
                 <div><span className="text-slate-500">Media:</span> {specSheetData.media || "—"}</div>
-                <div><span className="text-slate-500">Print Type:</span> {specSheetData.printType || "—"}</div>
+                <div><span className="text-slate-500">Production Destination:</span> {specSheetData.productionDestination || "—"}</div>
               </div>
 
               <div>

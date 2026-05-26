@@ -1,5 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { organizations, productTypes } from "@shared/schema";
+import { normalizeProductionStationKey } from "@shared/productionStations";
 import { db } from "../db";
 
 export type InitialProductionRoute = {
@@ -68,6 +69,8 @@ function inferStationKeyFromProductTypeName(productTypeName?: string | null): st
   const value = String(productTypeName ?? "").trim().toLowerCase();
   if (!value) return null;
 
+  const canonical = normalizeProductionStationKey(value);
+  if (canonical) return canonical;
   if (value.includes("prepress")) return "prepress";
   if (value.includes("roll")) return "roll";
   if (value.includes("flatbed") || value.includes("sheet")) return "flatbed";
@@ -81,7 +84,8 @@ function inferStationKeyFromProductTypeName(productTypeName?: string | null): st
 }
 
 function buildNonPrepressRoute(productType?: ProductTypeRoutingSnapshot): InitialProductionRoute {
-  const productTypeStationKey = String(productType?.defaultStationKey ?? "").trim();
+  const rawProductTypeStationKey = String(productType?.defaultStationKey ?? "").trim();
+  const productTypeStationKey = normalizeProductionStationKey(rawProductTypeStationKey) ?? rawProductTypeStationKey;
   const productTypeStepKey = String(productType?.defaultStepKey ?? "").trim();
   const inferredStationKey = inferStationKeyFromProductTypeName(productType?.name);
 

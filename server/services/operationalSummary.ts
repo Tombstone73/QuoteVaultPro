@@ -8,7 +8,7 @@
  * No new states are introduced, no counts are persisted.
  */
 
-import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, notInArray, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   customers,
@@ -21,6 +21,7 @@ import {
 import { getProductionConfigForOrganization } from "../routes/production.shared";
 import { isPrepressOwnershipJob, resolveActiveProductionOwners } from "./productionOwnership";
 import { stationResolver } from "./stations/stationResolver";
+import { normalizeProductionStationKey } from "@shared/productionStations";
 
 export interface OperationalSummary {
   inboundOrders: number;
@@ -46,7 +47,7 @@ function count(rows: { count: number }[]): number {
 async function countVisibleProductionJobs(
   organizationId: string,
   stationKey?: "flatbed" | "roll",
-  visibleStatuses: Array<"queued" | "in_progress"> = ["queued", "in_progress"],
+  visibleStatuses: Array<"queued" | "in_progress" | "paused"> = ["queued", "in_progress", "paused"],
 ): Promise<number> {
   if (stationKey) {
     const config = await getProductionConfigForOrganization(organizationId);
@@ -56,6 +57,11 @@ async function countVisibleProductionJobs(
   const resolvedStationId = stationKey
     ? await stationResolver.resolveStationId({ organizationId, stationKey })
     : null;
+  const stationAliases = stationKey === "roll"
+    ? ["roll", "wide_roll"]
+    : stationKey === "flatbed"
+      ? ["flatbed"]
+      : [];
 
   const baseRows = await db
     .select({
@@ -72,8 +78,8 @@ async function countVisibleProductionJobs(
         eq(productionJobs.organizationId, organizationId),
         stationKey
           ? (resolvedStationId
-              ? sql`production_jobs.station_id = ${resolvedStationId}`
-              : eq(productionJobs.stationKey, stationKey))
+              ? or(sql`production_jobs.station_id = ${resolvedStationId}`, inArray(productionJobs.stationKey as any, stationAliases))
+              : inArray(productionJobs.stationKey as any, stationAliases))
           : undefined,
         inArray(productionJobs.status as any, visibleStatuses),
       ),
@@ -102,6 +108,10 @@ async function countVisibleProductionJobs(
     if (!activeOwner || activeOwner.id !== row.id) return false;
 
     if (stationKey && (stationKey === "flatbed" || stationKey === "roll") && isPrepressOwnershipJob(activeOwner)) {
+      return false;
+    }
+
+    if (stationKey && normalizeProductionStationKey(activeOwner.stationKey) !== stationKey) {
       return false;
     }
 
@@ -169,8 +179,8 @@ export async function computeOperationalSummary(organizationId: string): Promise
       ),
 
     countVisibleProductionJobs(organizationId),
-    countVisibleProductionJobs(organizationId, "flatbed", ["in_progress"]),
-    countVisibleProductionJobs(organizationId, "roll", ["in_progress"]),
+    countVisibleProductionJobs(organizationId, "flatbed"),
+    countVisibleProductionJobs(organizationId, "roll"),
 
     db
       .select({ count: sql<number>`count(*)::int` })

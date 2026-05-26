@@ -18,6 +18,7 @@ import { orders, productionJobs } from "@shared/schema";
 import { appendEvent } from "../productionHelpers";
 import { TERMINAL_JOB_STATUSES } from "./productionOwnership";
 import { isCanceledOrder } from "@shared/operationalState";
+import { normalizeProductionStationKey } from "@shared/productionStations";
 
 export type RouteLineItemTrigger = "scheduler" | "intake" | "line_item_status" | "prepress" | "prepress_handoff";
 
@@ -60,7 +61,7 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
     organizationId,
     orderId,
     lineItemId,
-    stationKey,
+    stationKey: rawStationKey,
     stepKey,
     trigger,
     actorUserId = null,
@@ -68,6 +69,7 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
   } = args;
 
   const runner = passedTx ?? db;
+  const stationKey = normalizeProductionStationKey(rawStationKey) ?? rawStationKey;
   let step = "start";
 
   try {
