@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -1248,11 +1249,19 @@ export default function StaffProofingPage() {
               ) : (
                 visibleQueueRows.map((row) => {
                   const isSelected = row.lineItemId === activeRow?.lineItemId;
+                  const printJobId = row.activeOwnerJobId ?? row.productionJobId;
                   return (
-                    <button
+                    <div
                       key={row.lineItemId}
-                      type="button"
                       onClick={() => setSelectedLineItemId(row.lineItemId)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSelectedLineItemId(row.lineItemId);
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
                       className={`group w-full cursor-pointer rounded-lg p-3 text-left transition-all ${
                         isSelected
                           ? "border-2 border-[#1337ec] bg-[#1337ec]/10 shadow-[0_0_15px_rgba(19,55,236,0.15)]"
@@ -1278,7 +1287,22 @@ export default function StaffProofingPage() {
                           {formatRelativeTime(row.lastActivityAt)}
                         </span>
                       </div>
-                    </button>
+                      {printJobId ? (
+                        <div
+                          className="mt-2"
+                          onClick={(event) => event.stopPropagation()}
+                          onPointerDownCapture={(event) => event.stopPropagation()}
+                          onMouseDownCapture={(event) => event.stopPropagation()}
+                        >
+                          <PrintTicketActions
+                            jobId={printJobId}
+                            size="sm"
+                            variant="outline"
+                            className="flex flex-wrap"
+                          />
+                        </div>
+                      ) : null}
+                    </div>
                   );
                 })
               )}

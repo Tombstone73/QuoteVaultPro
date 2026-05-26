@@ -13,6 +13,11 @@ export interface FulfillmentQueueRow {
   readySince: string | null;
   shipTo: string;
   overdue: boolean;
+  productionJobs?: Array<{
+    id: string;
+    lineItemId: string | null;
+    quantity: number | null;
+  }>;
 }
 
 export interface FulfillmentQueueFilters {

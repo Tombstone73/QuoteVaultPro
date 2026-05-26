@@ -63,6 +63,7 @@ import {
 } from "lucide-react";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
+import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
 import { filterProductionJobsForTab } from "@/lib/productionBoard";
@@ -626,6 +627,12 @@ function ActionRail({
           >
             <Home className="w-4 h-4 mr-2" /> HOME
           </Button>
+        </div>
+
+        <div className="h-px bg-titan-border-subtle" />
+
+        <div className="space-y-2">
+          <PrintTicketActions jobId={job.id} jobQuantity={job.qty} size="sm" variant="outline" className="flex w-full flex-wrap" />
         </div>
 
         <div className="h-px bg-titan-border-subtle" />

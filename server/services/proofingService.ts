@@ -27,6 +27,7 @@ import {
   orderAuditLog,
   orderLineItems,
   orders,
+  productionJobs,
   proofAccessTokens,
   quoteAttachmentPages,
 } from "@shared/schema";
@@ -38,6 +39,7 @@ import { resolveProofPreviewSource, type ProofPreviewCandidate } from "./proofPr
 import { ensureSharp, generateImageDerivatives, isSupportedImageType } from "./thumbnailGenerator";
 import { storageApplicationService } from "./storage/StorageApplicationService";
 import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
+import { resolveActiveProductionOwners } from "./productionOwnership";
 
 type ProofDecision = "approved" | "rejected" | "revision_requested";
 type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "superseded";
@@ -428,6 +430,10 @@ type LoadedProofQueueLineItem = LoadedProofLineItem & {
   customerDisplayName: string | null;
   lineItemLabel: string;
   packageLabel: string;
+  activeOwnerJobId?: string | null;
+  activeOwnerStationKey?: string | null;
+  activeOwnerStepKey?: string | null;
+  productionJobId?: string | null;
 };
 
 async function loadProofLineItem(tx: any, args: { organizationId: string; lineItemId: string }): Promise<LoadedProofLineItem> {
@@ -2141,6 +2147,10 @@ function buildProofingQueueRow(base: LoadedProofQueueLineItem, truth: ProofingRe
     hasApprovedProof: truth.approvedProofVersionId !== null,
     requiresProofApproval: truth.requiresProofApproval,
     requiresPrepress: base.requiresPrepress,
+    activeOwnerJobId: base.activeOwnerJobId ?? null,
+    activeOwnerStationKey: base.activeOwnerStationKey ?? null,
+    activeOwnerStepKey: base.activeOwnerStepKey ?? null,
+    productionJobId: base.productionJobId ?? null,
     proofCount: truth.proofVersionHistory.length,
   };
 }
@@ -2204,6 +2214,30 @@ export async function listProofingQueue(tx: any, args: {
     organizationId: args.organizationId,
     lineItems: queueBaseRows,
   });
+  const activeOwnersByLineItem = await resolveActiveProductionOwners(tx, {
+    organizationId: args.organizationId,
+    lineItemIds: queueBaseRows.map((row) => row.lineItemId),
+    debugLabel: "GET /api/proofing/queue",
+  });
+  const latestProductionJobRows = queueBaseRows.length > 0
+    ? await tx
+      .select({
+        id: productionJobs.id,
+        lineItemId: productionJobs.lineItemId,
+      })
+      .from(productionJobs)
+      .where(and(
+        eq(productionJobs.organizationId, args.organizationId),
+        inArray(productionJobs.lineItemId, queueBaseRows.map((row) => row.lineItemId)),
+        notInArray(productionJobs.status, ["void", "canceled", "cancelled"]),
+      ))
+      .orderBy(desc(productionJobs.updatedAt), desc(productionJobs.createdAt))
+    : [];
+  const latestProductionJobByLineItem = new Map<string, string>();
+  for (const job of latestProductionJobRows) {
+    if (!job.lineItemId || latestProductionJobByLineItem.has(job.lineItemId)) continue;
+    latestProductionJobByLineItem.set(job.lineItemId, job.id);
+  }
 
   const allRows = queueBaseRows
     .map((base) => {
@@ -2212,7 +2246,14 @@ export async function listProofingQueue(tx: any, args: {
         return null;
       }
 
-      return buildProofingQueueRow(base, truth);
+      const activeOwner = activeOwnersByLineItem.get(base.lineItemId);
+      return buildProofingQueueRow({
+        ...base,
+        activeOwnerJobId: activeOwner?.id ?? null,
+        activeOwnerStationKey: activeOwner?.stationKey ?? null,
+        activeOwnerStepKey: activeOwner?.stepKey ?? null,
+        productionJobId: latestProductionJobByLineItem.get(base.lineItemId) ?? null,
+      }, truth);
     })
     .filter((row): row is ProofingQueueRow => row !== null)
     .sort((left, right) => {

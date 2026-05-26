@@ -15,6 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { formatDistanceToNow } from "date-fns";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
+import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import type { PrepressQueueItem, PrepressQueueWorkflowState } from "@/hooks/useOrders";
 import { usePageVisible } from "@/hooks/usePageVisible";
 
@@ -2148,6 +2149,22 @@ function JobCard({ item, isSelected, onClick, onPreviewClick }: { item: Prepress
           {item.rush && <span className="text-[#e53e3e] font-bold">RUSH</span>}
           {item.dueDate && !item.rush && <span className="text-slate-400">{new Date(item.dueDate).toLocaleDateString()}</span>}
         </div>
+        {item.activeOwnerJobId ? (
+          <div
+            className="mt-2"
+            onClick={(event) => event.stopPropagation()}
+            onPointerDownCapture={(event) => event.stopPropagation()}
+            onMouseDownCapture={(event) => event.stopPropagation()}
+          >
+            <PrintTicketActions
+              jobId={item.activeOwnerJobId}
+              jobQuantity={item.quantity}
+              size="sm"
+              variant="outline"
+              className="flex flex-wrap"
+            />
+          </div>
+        ) : null}
       </div>
     </div>
   );
