@@ -690,6 +690,7 @@ function PricingEngineRadioSection({
   const flatFeeValueRaw = currentFormulaVariables.flatFee ?? treeMeta?.formulaVariables?.flatFee ?? treeMeta?.pricingFormulaVariables?.flatFee;
   const flatFeeInputValue = flatFeeValueRaw === undefined || flatFeeValueRaw === null ? "" : String(flatFeeValueRaw);
   const hasFlatFeeValue = flatFeeInputValue !== "" && Number.isFinite(Number(flatFeeInputValue));
+  const isLegacyFeeSqftFormula = currentProfile === "fee" && String(currentFormula || "").trim() === LEGACY_SQFT_BASIC_FORMULA;
   const [referenceOpen, setReferenceOpen] = useState(false);
   const [referenceInsertEnabled, setReferenceInsertEnabled] = useState(false);
   const formulaInputRef = useRef<HTMLInputElement | null>(null);
@@ -759,6 +760,29 @@ function PricingEngineRadioSection({
       pricingFormula: form.getValues("pricingFormula") || getDefaultFormula(form.getValues("pricingProfileKey") || currentProfile || pricingProfileKey || "default"),
     });
   }, [currentProfile, form, onUpdateTreeMeta, pricingProfileKey]);
+
+  const isAutoManagedFormula = useCallback((formula: string, profileKey: string | null | undefined) => {
+    const trimmed = String(formula || "").trim();
+    if (!trimmed) return true;
+    const profileDefault = getDefaultFormula(profileKey || "default");
+    return trimmed === profileDefault || trimmed === LEGACY_SQFT_BASIC_FORMULA;
+  }, []);
+
+  const applyPricingProfileFormula = useCallback((nextProfileKey: string, previousProfileKey: string) => {
+    const existingFormula = String(form.getValues("pricingFormula") || "").trim();
+    const nextFormula = getDefaultFormula(nextProfileKey);
+    const shouldRegenerate = isAutoManagedFormula(existingFormula, previousProfileKey);
+    const formulaToSave = shouldRegenerate ? nextFormula : existingFormula;
+
+    if (shouldRegenerate) {
+      form.setValue("pricingFormula", nextFormula, { shouldDirty: true });
+    }
+
+    onUpdateTreeMeta?.({
+      pricingProfileKey: nextProfileKey,
+      pricingFormula: formulaToSave || nextFormula,
+    });
+  }, [form, isAutoManagedFormula, onUpdateTreeMeta]);
 
   useEffect(() => {
     if (!formulaId) return;
@@ -993,11 +1017,11 @@ function PricingEngineRadioSection({
                 <FormItem className="space-y-0">
                   <Select
                     onValueChange={(val) => {
+                      const previousProfileKey = form.getValues("pricingProfileKey") || currentProfile || pricingProfileKey || "default";
                       field.onChange(val);
                       const profile = getProfile(val);
                       if (profile.usesFormula && profile.defaultFormula) {
-                        form.setValue("pricingFormula", profile.defaultFormula);
-                        onUpdateTreeMeta?.({ pricingProfileKey: val, pricingFormula: profile.defaultFormula });
+                        applyPricingProfileFormula(val, previousProfileKey);
                       }
                       if (val === "flat_goods") {
                         const current = form.getValues("pricingProfileConfig") as FlatGoodsConfig | null;
@@ -1005,7 +1029,7 @@ function PricingEngineRadioSection({
                       } else if (val === "fee") {
                         onUpdateTreeMeta?.({
                           pricingProfileKey: val,
-                          pricingFormula: profile.defaultFormula || getDefaultFormula(val),
+                          pricingFormula: form.getValues("pricingFormula") || profile.defaultFormula || getDefaultFormula(val),
                           formulaVariables: currentFormulaVariables,
                           pricingFormulaVariables: currentFormulaVariables,
                         });
@@ -1118,7 +1142,7 @@ function PricingEngineRadioSection({
                 <div className="text-xs font-medium text-slate-300">Fee / Service Amount</div>
                 <p className="text-[11px] text-slate-400">Use this for fixed charges like rush fees, design fees, and service add-ons. The flatFee variable is priced in dollars.</p>
                 <div className="space-y-1">
-                  <Label className="text-xs text-slate-400">Flat Fee ($)</Label>
+                  <Label className="text-xs text-slate-400">Flat Fee Amount ($)</Label>
                   <Input
                     type="number"
                     min={0}
@@ -1142,6 +1166,26 @@ function PricingEngineRadioSection({
                 {formulaReferencesFlatFee && !hasFlatFeeValue ? (
                   <div className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-[11px] text-destructive">
                     This formula references flatFee. Enter a flat fee amount before using this product in order entry.
+                  </div>
+                ) : null}
+                {isLegacyFeeSqftFormula ? (
+                  <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-200 space-y-1">
+                    <div>This Fee / Service product is using a legacy sqft-based pricing formula.</div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-6 px-2 text-[10px]"
+                      onClick={() => {
+                        form.setValue("pricingFormula", "flatFee", { shouldDirty: true });
+                        onUpdateTreeMeta?.({
+                          pricingProfileKey: "fee",
+                          pricingFormula: "flatFee",
+                        });
+                      }}
+                    >
+                      Reset to flat-fee pricing
+                    </Button>
                   </div>
                 ) : null}
                 {feeFormulaUsesSqftPricing ? (
