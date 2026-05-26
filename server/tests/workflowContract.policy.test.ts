@@ -63,45 +63,50 @@ describe("workflow contract policy", () => {
     expect(getInitialWorkflowState({ requiresDesign: true, requiresPrepress: true })).toBe("needs_design");
     expect(getInitialWorkflowState({ requiresDesign: false, requiresPrepress: true })).toBe("ready_for_prepress");
     expect(getInitialWorkflowState({ requiresDesign: false, requiresPrepress: false })).toBe("ready_for_production");
-    expect(getInitialWorkflowState({ requiresDesign: false, requiresProofApproval: true, requiresPrepress: true })).toBe("awaiting_proof_approval");
+    expect(getInitialWorkflowState({ requiresDesign: false, requiresProofApproval: true, requiresPrepress: true })).toBe("ready_for_prepress");
     expect(getInitialWorkflowState({ requiresDesign: false, requiresProofApproval: true, requiresPrepress: false })).toBe("awaiting_proof_approval");
     expect(getInitialWorkflowState({ requiresDesign: true, requiresProofApproval: true, requiresPrepress: true })).toBe("needs_design");
   });
 });
 
 describe("routing edit guard", () => {
-  test("intake-safe states match the stable reroute policy", () => {
+  test("editable routing states match the active-work edit policy", () => {
     expect(ROUTING_EDIT_INTAKE_SAFE_STATES).toEqual([
       "new",
       "needs_design",
       "ready_for_prepress",
       "ready_for_production",
+      "in_design",
+      "awaiting_proof_approval",
+      "in_prepress",
+      "in_production",
+      "on_hold",
     ]);
   });
 
-  test.each(ROUTING_EDIT_INTAKE_SAFE_STATES)("allows reroute edits for intake-safe state %s when no active owner exists", (state) => {
+  test.each(ROUTING_EDIT_INTAKE_SAFE_STATES)("allows controlled edits for non-terminal state %s without resetting workflow", (state) => {
     expect(canEditLineItemRouting({ workflowState: state, hasActiveJob: false })).toBe(true);
   });
 
-  test.each(["in_design", "awaiting_proof_approval", "in_prepress", "in_production", "on_hold", "completed", "canceled"])(
-    "blocks reroute edits for non-intake-safe state %s",
+  test.each(["completed", "complete", "canceled", "cancelled"])(
+    "blocks edits for terminal state %s",
     (state) => {
       expect(canEditLineItemRouting({ workflowState: state, hasActiveJob: false })).toBe(false);
     },
   );
 
-  test.each(["new", "needs_design", "ready_for_prepress", "ready_for_production", "in_production"])(
-    "blocks reroute edits when an active owner exists, even if state is %s",
+  test.each(["ready_for_prepress", "in_prepress", "ready_for_production", "in_production"])(
+    "allows controlled edits when an active owner exists for state %s",
     (state) => {
-      expect(canEditLineItemRouting({ workflowState: state, hasActiveJob: true })).toBe(false);
+      expect(canEditLineItemRouting({ workflowState: state, hasActiveJob: true })).toBe(true);
     },
   );
 
-  test("awaiting_proof_approval is not intake-safe and blocks reroute edits", () => {
+  test("awaiting_proof_approval remains owner-required but editable", () => {
     // awaiting_proof_approval is now owned by Prepress (not ownerless),
-    // and is still correctly blocked from routing edits.
+    // but operators may still make controlled edits without resetting workflow.
     expect(workflowStateRequiresActiveOwner("awaiting_proof_approval")).toBe(true);
     expect(workflowStateIsIntentionallyOwnerless("awaiting_proof_approval")).toBe(false);
-    expect(canEditLineItemRouting({ workflowState: "awaiting_proof_approval", hasActiveJob: false })).toBe(false);
+    expect(canEditLineItemRouting({ workflowState: "awaiting_proof_approval", hasActiveJob: false })).toBe(true);
   });
 });
