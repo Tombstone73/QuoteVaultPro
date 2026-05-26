@@ -205,6 +205,8 @@ export type PrepressQueueItem = {
   sessionStartedAt: string | null;
   sessionStartedByUserId: string | null;
   prepressNotes: string | null;
+  lineItemNotes?: string | null;
+  priorityLabel?: string | null;
   issueFlag: boolean;
   issueType: string | null;
   hasDownstreamActiveJob: boolean;
