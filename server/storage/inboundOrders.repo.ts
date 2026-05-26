@@ -4,7 +4,6 @@ import { db } from "../db";
 import {
   customerContacts,
   customers,
-  globalVariables,
   inboundOrderDecisionFlags,
   inboundOrderEvents,
   inboundOrderFiles,
@@ -35,7 +34,11 @@ import {
   type Quote,
   type QuoteLineItem,
 } from "@shared/schema";
-import { buildDocumentNumberParts } from "../services/documentNumberingService";
+import {
+  allocateDocumentNumber,
+  isDocumentNumberUniqueViolation,
+  toDocumentNumberConflictError,
+} from "../services/documentNumberingService";
 
 export type InboundOrderListFilters = {
   status?: InboundOrderRecordStatus;
@@ -928,36 +931,8 @@ export class InboundOrdersRepository {
         return null;
       }
 
-      let quoteNumberVar = await tx
-        .select()
-        .from(globalVariables)
-        .where(
-          and(
-            eq(globalVariables.name, "next_quote_number"),
-            eq(globalVariables.organizationId, organizationId),
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0]);
-
-      if (!quoteNumberVar) {
-        const [newVar] = await tx
-          .insert(globalVariables)
-          .values({
-            organizationId,
-            name: "next_quote_number",
-            value: "1000",
-            description: "Next quote number sequence (auto-initialized)",
-            category: "numbering",
-            isActive: true,
-          })
-          .returning();
-
-        quoteNumberVar = newVar;
-      }
-
-      const quoteNumber = Math.floor(Number(quoteNumberVar.value));
-      const { displayNumber, numberCore } = await buildDocumentNumberParts(organizationId, "quote", quoteNumber, tx);
+      const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "quote", tx);
+      const quoteNumber = numberCore;
       const now = new Date();
 
       // Keep quote.source aligned with normal staff-created quotes so internal quote lists and permissions include it.
@@ -988,14 +963,6 @@ export class InboundOrdersRepository {
           totalPrice: "0",
         })
         .returning();
-
-      await tx
-        .update(globalVariables)
-        .set({
-          value: String(quoteNumber + 1),
-          updatedAt: now,
-        })
-        .where(eq(globalVariables.id, quoteNumberVar.id));
 
       const lineItemRows = input.lineItems.map((lineItem, index) => ({
         quoteId: quote.id,
@@ -1121,6 +1088,9 @@ export class InboundOrdersRepository {
         lineItems: createdLineItems,
         skippedLineItems: input.skippedLineItems,
       };
+    }).catch((error) => {
+      if (isDocumentNumberUniqueViolation(error)) throw toDocumentNumberConflictError(error);
+      throw error;
     });
   }
 

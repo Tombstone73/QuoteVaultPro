@@ -11,7 +11,6 @@ import {
     customers,
     products,
     productVariants,
-    globalVariables,
     type Quote,
     type InsertQuote,
     type UpdateQuote,
@@ -20,7 +19,6 @@ import {
     type QuoteWithRelations,
     type QuoteWorkflowState,
     type InsertQuoteWorkflowState,
-    type InsertGlobalVariable,
 } from "@shared/schema";
 import { and, eq, isNull, like, gte, lte, desc, asc, sql, inArray } from "drizzle-orm";
 import { DB_TO_WORKFLOW, getEffectiveWorkflowState, type QuoteWorkflowState as WorkflowState } from "@shared/quoteWorkflow";
@@ -28,7 +26,11 @@ import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { sanitizeJsonForPostgres } from "../lib/quoteCreateLineItemNormalizer";
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "./productDesignConfig.repo";
-import { buildDocumentNumberParts } from "../services/documentNumberingService";
+import {
+    allocateDocumentNumber,
+    isDocumentNumberUniqueViolation,
+    toDocumentNumberConflictError,
+} from "../services/documentNumberingService";
 
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
@@ -504,44 +506,8 @@ export class QuotesRepository {
 
         // Create quote in a transaction to handle quote numbering
         const newQuote = await this.dbInstance.transaction(async (tx) => {
-            // Get or create quote numbering variable
-            let quoteNumberVar = await tx
-                .select()
-                .from(globalVariables)
-                .where(and(
-                    eq(globalVariables.name, 'next_quote_number'),
-                    eq(globalVariables.organizationId, organizationId)
-                ))
-                .limit(1)
-                .then(rows => rows[0]);
-
-            // Auto-initialize quote numbering if not configured
-            if (!quoteNumberVar) {
-                console.log(`[NUMBERING] Auto-initialized quote numbering for org ${organizationId} with default sequence.`);
-
-                // Create default quote numbering configuration
-                const defaultConfig: InsertGlobalVariable = {
-                    name: 'next_quote_number',
-                    value: '1000', // Start at 1000
-                    description: 'Next quote number sequence (auto-initialized)',
-                    category: 'numbering',
-                    isActive: true,
-                };
-
-                // Insert the new configuration
-                const [newVar] = await tx
-                    .insert(globalVariables)
-                    .values({
-                        ...defaultConfig,
-                        organizationId,
-                    })
-                    .returning();
-
-                quoteNumberVar = newVar;
-            }
-
-            const quoteNumber = Math.floor(Number(quoteNumberVar.value));
-            const { displayNumber, numberCore } = await buildDocumentNumberParts(organizationId, "quote", quoteNumber, tx);
+            const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "quote", tx);
+            const quoteNumber = numberCore;
 
             // Create the parent quote with tax fields
             const quoteData = {
@@ -592,16 +558,10 @@ export class QuotesRepository {
 
             const [quote] = await tx.insert(quotes).values(quoteData).returning();
 
-            // Increment the next quote number
-            await tx
-                .update(globalVariables)
-                .set({
-                    value: (quoteNumber + 1).toString(),
-                    updatedAt: new Date(),
-                })
-                .where(eq(globalVariables.id, quoteNumberVar.id));
-
             return quote;
+        }).catch((error) => {
+            if (isDocumentNumberUniqueViolation(error)) throw toDocumentNumberConflictError(error);
+            throw error;
         });
 
         // Create line items

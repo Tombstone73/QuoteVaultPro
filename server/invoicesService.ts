@@ -1,10 +1,14 @@
 import { db } from './db';
-import { invoices, invoiceEmailLogs, invoiceLineItems, payments, orders, orderLineItems, globalVariables } from '../shared/schema';
+import { invoices, invoiceEmailLogs, invoiceLineItems, payments, orders, orderLineItems } from '../shared/schema';
 import { eq, and, inArray, sql } from 'drizzle-orm';
 import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment } from '../shared/schema';
 import { computeInvoicePaymentRollup } from '../shared/rollups/invoicePaymentRollup';
 import { normalizeInvoiceAccountingDisplay } from '../shared/invoiceAccountingDisplay';
-import { buildDocumentNumberParts } from './services/documentNumberingService';
+import {
+  allocateDocumentNumber,
+  isDocumentNumberUniqueViolation,
+  toDocumentNumberConflictError,
+} from './services/documentNumberingService';
 
 // Map payment terms to days offset
 const TERM_OFFSETS: Record<string, number> = {
@@ -157,32 +161,8 @@ export async function getInvoiceEmailStatuses(
 
 export async function generateNextInvoiceNumber(organizationId: string, tx?: any): Promise<number> {
   const dbConn = tx || db;
-  let varRow = await dbConn
-    .select()
-    .from(globalVariables)
-    .where(and(eq(globalVariables.name, 'next_invoice_number'), eq(globalVariables.organizationId, organizationId)))
-    .limit(1)
-    .then((rows: any[]) => rows[0]);
-
-  if (!varRow) {
-    console.log(`[NUMBERING] Auto-initialized invoice numbering for org ${organizationId} with default sequence.`);
-    const [newVar] = await dbConn
-      .insert(globalVariables)
-      .values({
-        name: 'next_invoice_number',
-        value: '1000',
-        description: 'Next invoice number sequence (auto-initialized)',
-        category: 'numbering',
-        isActive: true,
-        organizationId,
-      })
-      .returning();
-    varRow = newVar;
-  }
-
-  const current = Math.floor(Number(varRow.value));
-  await dbConn.update(globalVariables).set({ value: (current + 1).toString(), updatedAt: new Date() }).where(and(eq(globalVariables.id, varRow.id), eq(globalVariables.organizationId, organizationId)));
-  return current;
+  const { numberCore } = await allocateDocumentNumber(organizationId, "invoice", dbConn);
+  return numberCore;
 }
 
 export async function getMaxInvoiceNumber(organizationId: string): Promise<number | null> {
@@ -314,8 +294,8 @@ async function createInvoiceFromOrderImpl(
       throw new Error('Invoice already exists for this order');
     }
 
-    const invoiceNumber = await generateNextInvoiceNumber(organizationId, tx);
-    const { displayNumber, numberCore } = await buildDocumentNumberParts(organizationId, "invoice", invoiceNumber, tx);
+    const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "invoice", tx);
+    const invoiceNumber = numberCore;
     const issueDate = new Date();
     const dueDate = calculateDueDate(issueDate, opts.terms, opts.customDueDate || null);
 
@@ -392,6 +372,9 @@ async function createInvoiceFromOrderImpl(
     }
 
     return invoice;
+  }).catch((error) => {
+    if (isDocumentNumberUniqueViolation(error)) throw toDocumentNumberConflictError(error);
+    throw error;
   });
 }
 

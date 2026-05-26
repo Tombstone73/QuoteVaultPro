@@ -1420,6 +1420,8 @@ export const quotes = pgTable("quotes", {
   index("quotes_quote_number_idx").on(table.quoteNumber),
   index("quotes_display_number_idx").on(table.displayNumber),
   index("quotes_number_core_idx").on(table.numberCore),
+  uniqueIndex("quotes_org_display_number_unique").on(table.organizationId, table.displayNumber).where(sql`${table.displayNumber} IS NOT NULL`),
+  uniqueIndex("quotes_org_number_core_unique").on(table.organizationId, table.numberCore).where(sql`${table.numberCore} IS NOT NULL`),
   index("quotes_source_idx").on(table.source),
 ]);
 
@@ -2832,6 +2834,8 @@ export const orders = pgTable("orders", {
   index("orders_order_number_idx").on(table.orderNumber),
   index("orders_display_number_idx").on(table.displayNumber),
   index("orders_number_core_idx").on(table.numberCore),
+  uniqueIndex("orders_org_display_number_unique").on(table.organizationId, table.displayNumber).where(sql`${table.displayNumber} IS NOT NULL`),
+  uniqueIndex("orders_org_number_core_unique").on(table.organizationId, table.numberCore).where(sql`${table.numberCore} IS NOT NULL`),
   index("orders_customer_id_idx").on(table.customerId),
   index("orders_workflow_status_id_idx").on(table.workflowStatusId),
   index("orders_canonical_state_idx").on(table.canonicalState),
@@ -3654,6 +3658,8 @@ export const invoices = pgTable("invoices", {
   index("invoices_invoice_number_idx").on(table.invoiceNumber),
   index("invoices_display_number_idx").on(table.displayNumber),
   index("invoices_number_core_idx").on(table.numberCore),
+  uniqueIndex("invoices_org_display_number_unique").on(table.organizationId, table.displayNumber).where(sql`${table.displayNumber} IS NOT NULL`),
+  uniqueIndex("invoices_org_number_core_unique").on(table.organizationId, table.numberCore).where(sql`${table.numberCore} IS NOT NULL`),
   index("invoices_customer_id_idx").on(table.customerId),
   index("invoices_order_id_idx").on(table.orderId),
   index("invoices_status_idx").on(table.status),
