@@ -64,6 +64,8 @@ function UnknownLookupWarning({ children }: { children: React.ReactNode }) {
   );
 }
 
+const MATERIAL_SELECT_CONTENT_CLASS = "max-h-80 overflow-y-auto";
+
 // Get profile badge for display
 function getProfileBadge(profileKey: string | null | undefined) {
   const profile = getProfile(profileKey);
@@ -909,7 +911,7 @@ export default function ProductsPage() {
                             <SelectValue placeholder="Select primary material" />
                           </SelectTrigger>
                         </FormControl>
-                        <SelectContent>
+                        <SelectContent className={MATERIAL_SELECT_CONTENT_CLASS}>
                           <SelectItem value="__none__">None</SelectItem>
                           {shouldShowUnknownLookupValue(materials, field.value) ? (
                             <SelectItem value={field.value}>Unknown material ({field.value})</SelectItem>
@@ -1642,7 +1644,7 @@ export default function ProductsPage() {
                             <SelectValue placeholder="Select primary material" />
                           </SelectTrigger>
                         </FormControl>
-                        <SelectContent>
+                        <SelectContent className={MATERIAL_SELECT_CONTENT_CLASS}>
                           <SelectItem value="__none__">None</SelectItem>
                           {shouldShowUnknownLookupValue(materials, field.value) ? (
                             <SelectItem value={field.value}>Unknown material ({field.value})</SelectItem>
@@ -2014,7 +2016,7 @@ function MaterialSelector({ value, onChange }: { value: string; onChange: (mater
       <SelectTrigger className="h-9">
         <SelectValue placeholder="Select material" />
       </SelectTrigger>
-      <SelectContent>
+      <SelectContent className={MATERIAL_SELECT_CONTENT_CLASS}>
         {(materials || []).map((material: any) => (
           <SelectItem key={material.id} value={material.id}>
             {material.name} - {material.width}×{material.height}
