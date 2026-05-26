@@ -37,6 +37,40 @@ function deepClone<T>(value: T): T {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
+function stripTemplateEditLocks(node: any): void {
+  delete node.readOnly;
+  delete node.readonly;
+  delete node.isReadOnly;
+  delete node.isLocked;
+  delete node.locked;
+  delete node.isSystem;
+  delete node.systemTemplate;
+  delete node.isSystemTemplate;
+
+  if (isRecord(node.meta)) {
+    const meta = { ...node.meta };
+    delete meta.readOnly;
+    delete meta.readonly;
+    delete meta.isReadOnly;
+    delete meta.isLocked;
+    delete meta.locked;
+    delete meta.isSystem;
+    delete meta.systemTemplate;
+    delete meta.isSystemTemplate;
+    node.meta = meta;
+  }
+
+  if (isRecord(node.ui)) {
+    const ui = { ...node.ui };
+    delete ui.readOnly;
+    delete ui.readonly;
+    delete ui.isReadOnly;
+    delete ui.isLocked;
+    delete ui.locked;
+    node.ui = ui;
+  }
+}
+
 function toNodeRecord(nodes: unknown): Record<string, any> {
   if (Array.isArray(nodes)) {
     return nodes.reduce<Record<string, any>>((acc, node) => {
@@ -520,9 +554,16 @@ export function cloneTemplateIntoTree(
     const rewritten = rewriteDeep(node, maps) as any;
     const newId = nodeIdMap.get(oldId)!;
     rewritten.id = newId;
+    stripTemplateEditLocks(rewritten);
     const oldSelectionKey = getSelectionKey(node);
     const newSelectionKey = oldSelectionKey ? selectionKeyMap.get(oldSelectionKey) : undefined;
-    if (isInputLikeNode(node)) {
+    if (isGroupNode(node)) {
+      rewritten.input = {
+        type: rewritten.input?.type ?? "select",
+        required: Boolean(rewritten.input?.required),
+        ...(isRecord(rewritten.input) ? rewritten.input : {}),
+      };
+    } else if (isInputLikeNode(node)) {
       const sourceChoices = Array.isArray((node as any).choices)
         ? (node as any).choices
         : Array.isArray((node as any).input?.choices)

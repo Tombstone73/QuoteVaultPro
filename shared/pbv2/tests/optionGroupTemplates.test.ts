@@ -156,6 +156,43 @@ describe("PBV2 option group templates", () => {
     expect(cloned.tree.rootNodeIds).toContain("tpl_case_a_opt_lamination");
   });
 
+  test("cloned template group is an editable product-local copy", () => {
+    const lockedTemplateTree = {
+      ...tree,
+      nodes: {
+        ...tree.nodes,
+        group_finish: {
+          ...tree.nodes.group_finish,
+          readOnly: true,
+          isLocked: true,
+          isSystemTemplate: true,
+          meta: { readOnly: true, isLocked: true },
+          ui: { readOnly: true },
+        },
+      },
+    };
+    const extracted = extractOptionGroupTemplateTree(lockedTemplateTree, "group_finish");
+    expect(extracted.ok).toBe(true);
+    if (!extracted.ok) return;
+
+    const cloned = cloneTemplateIntoTree({ schemaVersion: 2, status: "DRAFT", nodes: {}, edges: [], rootNodeIds: [] }, extracted.templateTree, {
+      importInstanceId: "editable",
+      sourceTemplateId: "tpl_system_sides",
+    });
+    expect(cloned.ok).toBe(true);
+    if (!cloned.ok) return;
+
+    const group = cloned.tree.nodes.tpl_editable_group_finish;
+    expect(group.readOnly).toBeUndefined();
+    expect(group.isLocked).toBeUndefined();
+    expect(group.isSystemTemplate).toBeUndefined();
+    expect(group.meta.readOnly).toBeUndefined();
+    expect(group.meta.isLocked).toBeUndefined();
+    expect(group.ui.readOnly).toBeUndefined();
+    expect(group.input).toMatchObject({ type: "select", required: false });
+    expect(group.meta.templateSource.sourceTemplateId).toBe("tpl_system_sides");
+  });
+
   test("rewrites rule, matrix, edge, and nested nodeOutputRef references after clone", () => {
     const extracted = extractOptionGroupTemplateTree(tree, "group_finish");
     expect(extracted.ok).toBe(true);

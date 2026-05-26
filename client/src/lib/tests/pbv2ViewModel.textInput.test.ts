@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { applyPatchToTree, createUpdateOptionPatch, pbv2TreeToEditorModel } from "../pbv2/pbv2ViewModel";
+import { applyPatchToTree, createUpdateGroupPatch, createUpdateOptionPatch, pbv2TreeToEditorModel } from "../pbv2/pbv2ViewModel";
 
 function makeTextOptionTree() {
   return {
@@ -84,5 +84,12 @@ describe("pbv2ViewModel — text input type", () => {
       ? nodes.find((n: any) => n.id === "imprint")
       : nodes["imprint"];
     expect(inputNode.input.type).toBe("textarea");
+  });
+
+  test("createUpdateGroupPatch writes Required when imported group is missing input metadata", () => {
+    const tree = makeTextOptionTree();
+    const { patch } = createUpdateGroupPatch(tree, "grp", { isRequired: true });
+    const updated = applyPatchToTree(tree, patch) as any;
+    expect(updated.nodes.grp.input).toMatchObject({ type: "select", required: true });
   });
 });

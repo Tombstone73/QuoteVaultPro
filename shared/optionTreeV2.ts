@@ -338,15 +338,15 @@ export const pricingV2TierSchema: z.ZodType<PricingV2Tier> = z.object({
   label: z.string().optional(),
   minQty: z.number().int().min(1).optional(),
   minSqft: z.number().positive().optional(),
-  perSqftCents: z.number().int().min(0).optional(),
-  perPieceCents: z.number().int().min(0).optional(),
-  minimumChargeCents: z.number().int().min(0).optional(),
+  perSqftCents: z.number().finite().min(0).optional(),
+  perPieceCents: z.number().finite().min(0).optional(),
+  minimumChargeCents: z.number().finite().min(0).optional(),
 });
 
 export const pricingV2BaseSchema: z.ZodType<PricingV2Base> = z.object({
-  perSqftCents: z.number().int().min(0).optional(),
-  perPieceCents: z.number().int().min(0).optional(),
-  minimumChargeCents: z.number().int().min(0).optional(),
+  perSqftCents: z.number().finite().min(0).optional(),
+  perPieceCents: z.number().finite().min(0).optional(),
+  minimumChargeCents: z.number().finite().min(0).optional(),
 });
 
 export const pbv2TierBasisSchema: z.ZodType<Pbv2TierBasis> = z.enum(["line_item_quantity", "computed_sheet_usage"]);

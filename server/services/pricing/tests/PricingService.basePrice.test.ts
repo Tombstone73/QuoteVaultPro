@@ -142,4 +142,27 @@ describe("PBV2 Base Pricing - Minimum Charge Semantics", () => {
     // max(1200, 0) = 1200
     expect(result).toBe(1200);
   });
+
+  test("high-precision perSqftCents: 32 sqft at $1.375/sqft => 4400", () => {
+    const highPrecisionTree = {
+      meta: {
+        pricingV2: {
+          base: {
+            perSqftCents: 137.5,
+            perPieceCents: 0,
+            minimumChargeCents: 0,
+          }
+        }
+      }
+    };
+
+    const result = calculateBasePrice(highPrecisionTree, {
+      widthIn: 48,
+      heightIn: 96,
+      quantity: 1,
+    });
+
+    // 48x96 = 32 sqft; 137.5 cents * 32 = 4400 cents
+    expect(result).toBe(4400);
+  });
 });
