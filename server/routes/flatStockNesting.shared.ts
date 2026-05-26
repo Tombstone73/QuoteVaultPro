@@ -138,7 +138,49 @@ function humanizeDisplayToken(value: unknown, fallback = "Unknown option"): stri
 
 function isOpaqueDisplayToken(value: unknown): boolean {
   const raw = cleanString(value);
-  return !raw || OPAQUE_TOKEN_PATTERN.test(raw) || INTERNAL_KEY_PATTERN.test(raw);
+  const normalized = normalizeLookupToken(raw);
+  return !raw || OPAQUE_TOKEN_PATTERN.test(raw) || /^[0-9a-f]{32}$/i.test(normalized) || /^choice\d+$/i.test(normalized) || INTERNAL_KEY_PATTERN.test(raw);
+}
+
+function normalizeLookupToken(value: unknown): string {
+  return cleanString(value).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function lookupTokenVariants(value: unknown): string[] {
+  const raw = cleanString(value);
+  if (!raw) return [];
+  const variants = new Set<string>();
+  const add = (entry: unknown) => {
+    const stringValue = cleanString(entry);
+    if (!stringValue) return;
+    variants.add(stringValue);
+    variants.add(stringValue.toLowerCase());
+    const normalized = normalizeLookupToken(stringValue);
+    if (normalized) variants.add(normalized);
+    for (const prefix of ["optopt", "opt", "option"]) {
+      if (normalized.startsWith(prefix) && normalized.length > prefix.length) {
+        variants.add(normalized.slice(prefix.length));
+      }
+    }
+  };
+
+  add(raw);
+  add(stripTechnicalSuffix(raw));
+  return Array.from(variants).filter(Boolean);
+}
+
+function indexLookupAlias<T>(map: Map<string, T>, alias: unknown, value: T) {
+  for (const variant of lookupTokenVariants(alias)) {
+    if (!map.has(variant)) map.set(variant, value);
+  }
+}
+
+function lookupByAlias<T>(map: Map<string, T>, alias: unknown): T | undefined {
+  for (const variant of lookupTokenVariants(alias)) {
+    const hit = map.get(variant);
+    if (hit) return hit;
+  }
+  return undefined;
 }
 
 function getDisplayLabelFromRecord(value: unknown, keys: string[]): string | null {
@@ -304,33 +346,45 @@ export const buildPrepressOptionRows = (
   const selectedRecord: Record<string, unknown> =
     selectedRecordRaw && typeof selectedRecordRaw === "object" ? selectedRecordRaw : {};
 
-  const normalizedNodes: any[] = effectiveTreeJson
-    ? Array.isArray(effectiveTreeJson?.nodes)
-      ? effectiveTreeJson.nodes
-      : Object.values(effectiveTreeJson?.nodes || {})
-    : [];
+  const normalizedNodes: any[] = [];
+  const seenNodeObjects = new Set<any>();
+  for (const candidateTree of [snapshot?.treeJson, treeJson, effectiveTreeJson]) {
+    if (!candidateTree) continue;
+    const candidateNodes = Array.isArray(candidateTree?.nodes)
+      ? candidateTree.nodes
+      : Object.values(candidateTree?.nodes || {});
+    for (const node of candidateNodes) {
+      if (!node || seenNodeObjects.has(node)) continue;
+      seenNodeObjects.add(node);
+      normalizedNodes.push(node);
+    }
+  }
 
   const selectionNodeByKey = new Map<string, any>();
   const selectionNodeById = new Map<string, any>();
   for (const node of normalizedNodes) {
-    const selectionKey = node?.input?.selectionKey;
-    if (typeof selectionKey === "string" && selectionKey.trim()) {
-      selectionNodeByKey.set(selectionKey, node);
+    for (const alias of [
+      node?.input?.selectionKey,
+      node?.selectionKey,
+      node?.id,
+      node?.key,
+      node?.internalId,
+      node?.optionId,
+      node?.sourceOptionId,
+      node?.importedOptionId,
+    ]) {
+      indexLookupAlias(selectionNodeByKey, alias, node);
     }
-    if (typeof node?.id === "string" && node.id.trim()) {
-      selectionNodeById.set(node.id, node);
-    }
-    if (typeof node?.key === "string" && node.key.trim()) {
-      selectionNodeByKey.set(node.key, node);
-    }
+    indexLookupAlias(selectionNodeById, node?.id, node);
   }
 
   const selectedOptionById = new Map<string, any>();
   const snapshotSelectedOptions = Array.isArray(snapshot?.selectedOptions) ? snapshot.selectedOptions : [];
   const persistedSelectedOptions = Array.isArray(lineItem?.selectedOptions) ? lineItem.selectedOptions : [];
   for (const opt of [...snapshotSelectedOptions, ...persistedSelectedOptions]) {
-    const optionId = cleanString(opt?.optionId);
-    if (optionId && !selectedOptionById.has(optionId)) selectedOptionById.set(optionId, opt);
+    for (const alias of [opt?.optionId, opt?.id, opt?.key, opt?.selectionKey]) {
+      indexLookupAlias(selectedOptionById, alias, opt);
+    }
   }
 
   let visibleNodeIds = new Set<string>();
@@ -369,14 +423,17 @@ export const buildPrepressOptionRows = (
 
   const getChoiceList = (node: any): any[] => {
     if (Array.isArray(node?.choices)) return node.choices;
+    if (Array.isArray(node?.input?.choices)) return node.input.choices;
+    if (Array.isArray(node?.input?.options)) return node.input.options;
     if (Array.isArray(node?.input?.constraints?.enum?.options)) return node.input.constraints.enum.options;
+    if (Array.isArray(node?.options)) return node.options;
     return [];
   };
 
   const choiceMatches = (choice: any, value: unknown): boolean => {
-    const selected = String(value);
-    return [choice?.value, choice?.id, choice?.key, choice?.choiceId]
-      .some((candidate) => candidate !== undefined && candidate !== null && String(candidate) === selected);
+    const selectedVariants = new Set(lookupTokenVariants(value));
+    return [choice?.value, choice?.id, choice?.key, choice?.choiceId, choice?.valueId, choice?.importedChoiceId]
+      .some((candidate) => lookupTokenVariants(candidate).some((variant) => selectedVariants.has(variant)));
   };
 
   const choiceDisplayLabel = (choice: any): string | null =>
@@ -386,13 +443,13 @@ export const buildPrepressOptionRows = (
     if (isInternalDisplayKey(selectionKey)) continue;
     if (rowKeys.has(selectionKey)) continue;
 
-    const node = selectionNodeByKey.get(selectionKey) ?? selectionNodeById.get(selectionKey);
+    const node = lookupByAlias(selectionNodeByKey, selectionKey) ?? lookupByAlias(selectionNodeById, selectionKey);
     if (node?.id && visibleNodeIds.size > 0 && !visibleNodeIds.has(node.id)) continue;
 
     const selectedValue = normalizeSelectionValue(rawSelection);
     if (isEmptySelectionValue(selectedValue)) continue;
 
-    const selectedOptionSnapshot = selectedOptionById.get(selectionKey) ?? (node?.id ? selectedOptionById.get(node.id) : undefined);
+    const selectedOptionSnapshot = lookupByAlias(selectedOptionById, selectionKey) ?? (node?.id ? lookupByAlias(selectedOptionById, node.id) : undefined);
     const optionLabel =
       getDisplayLabelFromRecord(selectedOptionSnapshot, ["optionName", "optionLabel", "label", "name"])
       || getDisplayLabelFromRecord(node, ["label", "name", "displayLabel", "title"])
@@ -419,11 +476,11 @@ export const buildPrepressOptionRows = (
       if (fromChoice) return fromChoice;
 
       const inputType = cleanString(node?.input?.type ?? node?.input?.valueType ?? node?.input?.inputKind).toLowerCase();
-      if (["boolean", "checkbox", "toggle", "addon", "add_on"].includes(inputType) || isOpaqueDisplayToken(value)) {
+      if (["boolean", "bool", "checkbox", "toggle", "addon", "add_on"].includes(inputType)) {
         return "Yes";
       }
 
-      return humanizeDisplayToken(value, "Yes");
+      return humanizeDisplayToken(value, "Selected");
     };
 
     const selectedLabel = toDisplayLabel(selectedValue);
@@ -463,6 +520,11 @@ export const buildPrepressOptionRows = (
     for (const opt of selectedOptions) {
       const optionId = cleanString(opt?.optionId);
       if (isInternalDisplayKey(optionId) && !cleanString(opt?.optionName)) continue;
+      const node = lookupByAlias(selectionNodeByKey, optionId) ?? lookupByAlias(selectionNodeById, optionId);
+      const choiceList = getChoiceList(node);
+      const choice = choiceList.find((candidate: any) => choiceMatches(candidate, opt?.value));
+      const choiceLabel = choiceDisplayLabel(choice);
+      const inputType = cleanString(node?.input?.type ?? node?.input?.valueType ?? node?.input?.inputKind).toLowerCase();
       const optionLabel = getDisplayLabelFromRecord(opt, ["optionName", "optionLabel", "label", "name"]) || humanizeDisplayToken(optionId);
       const selectedValue = opt?.value;
       if (!optionLabel || isEmptySelectionValue(selectedValue)) continue;
@@ -478,9 +540,11 @@ export const buildPrepressOptionRows = (
         optionLabel,
         selectedLabel: typeof selectedValue === "boolean"
           ? (selectedValue ? "Yes" : "No")
-          : isOpaqueDisplayToken(selectedValue)
+          : choiceLabel
+            ? choiceLabel
+          : isOpaqueDisplayToken(selectedValue) && ["boolean", "bool", "checkbox", "toggle", "addon", "add_on"].includes(inputType)
             ? "Yes"
-            : humanizeDisplayToken(selectedValue, "Yes"),
+            : humanizeDisplayToken(selectedValue, "Selected"),
       });
     }
   }
