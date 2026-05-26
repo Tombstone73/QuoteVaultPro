@@ -1,3 +1,4 @@
+import { describe, expect, test } from "@jest/globals";
 import {
   DEFAULT_PRODUCTION_TAB,
   DONE_RETENTION_DAYS,
@@ -31,6 +32,8 @@ describe("productionBoard helpers", () => {
     { id: "progress-1", status: "in_progress", createdAt: new Date(now).toISOString() },
     { id: "done-recent", status: "done", completedAt: new Date(now - dayMs).toISOString() },
     { id: "done-old", status: "done", completedAt: new Date(now - (DONE_RETENTION_DAYS + 1) * dayMs).toISOString() },
+    { id: "canceled-1", status: "canceled", createdAt: new Date(now).toISOString() },
+    { id: "void-1", status: "void", createdAt: new Date(now).toISOString() },
   ];
 
   test("falls back to in_progress when no saved preference exists", () => {
@@ -64,5 +67,13 @@ describe("productionBoard helpers", () => {
     const visibleDoneJobIds = filterProductionJobsForTab(jobs, "done", now).map((job) => job.id);
 
     expect(visibleDoneJobIds).toEqual(["done-recent"]);
+  });
+
+  test("cancelled and void production jobs are not active board work", () => {
+    const visibleAllJobIds = filterProductionJobsForTab(jobs, "all", now).map((job) => job.id);
+
+    expect(visibleAllJobIds).toEqual(["queued-1", "progress-1", "done-recent"]);
+    expect(visibleAllJobIds).not.toContain("canceled-1");
+    expect(visibleAllJobIds).not.toContain("void-1");
   });
 });

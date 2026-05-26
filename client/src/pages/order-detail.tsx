@@ -28,13 +28,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown } from "lucide-react";
+import { AlertTriangle, Ban, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
-import { useOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable, useOrderWorkflow } from "@/hooks/useOrders";
+import { useOrder, useCancelOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable, useOrderWorkflow } from "@/hooks/useOrders";
 import { useCreateOrderInvoice, useInvoices } from "@/hooks/useInvoices";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
@@ -79,6 +79,12 @@ import BackNavControls from "@/components/BackNavControls";
 import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus } from "@shared/orderProofStatus";
+import { isCanceledOrder } from "@shared/operationalState";
+import {
+  orderCancellationReasonLabels,
+  orderCancellationReasonValues,
+  type OrderCancellationReason,
+} from "@shared/orderCancellation";
 
 /**
  * OrderDetail renders some legacy "bill to / ship to / shipping" snapshot fields
@@ -237,6 +243,9 @@ export default function OrderDetail() {
   // Status transition confirmation state
   const [pendingStatusTransition, setPendingStatusTransition] = useState<{ toStatus: string; requiresReason: boolean } | null>(null);
   const [cancellationReason, setCancellationReason] = useState("");
+  const [showCancelOrderDialog, setShowCancelOrderDialog] = useState(false);
+  const [cancelOrderReason, setCancelOrderReason] = useState<OrderCancellationReason>("customer_requested");
+  const [cancelOrderInternalNote, setCancelOrderInternalNote] = useState("");
   
   // Per-section edit states (replaces global editMode)
   const [isEditingCustomer, setIsEditingCustomer] = useState(false);
@@ -370,6 +379,7 @@ export default function OrderDetail() {
   }, [focusProduction, productionFocus]);
 
   const deleteOrder = useDeleteOrder();
+  const cancelOrderMutation = useCancelOrder(orderId!);
   const updateOrder = useUpdateOrder(orderId!);
   const transitionStatus = useTransitionOrderStatus(orderId!);
   const workflowQuery = useOrderWorkflow();
@@ -575,6 +585,7 @@ export default function OrderDetail() {
       .map((s) => s.key);
   }, [order, workflowQuery.data]);
   const isTerminal = allowedNextStatuses.length === 0;
+  const orderIsCanceled = isCanceledOrder(order);
   
   // Admin/Owner override: allow editing terminal orders if setting enabled
   const allowCompletedOrderEdits = preferences?.orders?.allowCompletedOrderEdits || false;
@@ -582,6 +593,14 @@ export default function OrderDetail() {
     ?? preferences?.orders?.requireLineItemsDoneToComplete
     ?? true); // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
+  const canCancelOrder = Boolean(
+    order &&
+    isManagerOrHigher &&
+    !orderIsCanceled &&
+    order.state !== "closed" &&
+    order.status !== "completed" &&
+    order.canonicalState !== "completed",
+  );
   // Single canonical dirty value: staged order-level edits OR an unsaved line
   // item. This same value drives the Save Order button.
   const hasStagedOrderChanges = hasAnyStagedChanges(pendingOrderPatch);
@@ -958,7 +977,7 @@ export default function OrderDetail() {
   const handleStatusChange = async (newStatus: string) => {
     // Check if this transition requires confirmation
     if (newStatus === 'canceled') {
-      setPendingStatusTransition({ toStatus: newStatus, requiresReason: true });
+      setShowCancelOrderDialog(true);
       return;
     }
     
@@ -1010,6 +1029,17 @@ export default function OrderDetail() {
   const cancelStatusTransition = () => {
     setPendingStatusTransition(null);
     setCancellationReason("");
+  };
+
+  const handleCancelOrderConfirm = async () => {
+    if (!orderId) return;
+    await cancelOrderMutation.mutateAsync({
+      reason: cancelOrderReason,
+      internalNote: cancelOrderInternalNote.trim() || undefined,
+    });
+    setShowCancelOrderDialog(false);
+    setCancelOrderReason("customer_requested");
+    setCancelOrderInternalNote("");
   };
 
   const handlePriorityChange = async (newPriority: string) => {
@@ -1733,11 +1763,24 @@ export default function OrderDetail() {
               </Button>
             )}
 
+            {canCancelOrder && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowCancelOrderDialog(true)}
+                disabled={cancelOrderMutation.isPending}
+                className="rounded-titan-md border-destructive/60 text-destructive hover:bg-destructive/10"
+              >
+                <Ban className="w-4 h-4 mr-2" />
+                Cancel Order
+              </Button>
+            )}
+
             {isAdminOrOwner && order.state === 'open' && (
               <CompleteProductionButton orderId={order.id} />
             )}
 
-            {user?.role !== 'customer' && (
+            {user?.role !== 'customer' && !orderIsCanceled && (
               <Button
                 variant="outline"
                 size="sm"
@@ -1760,6 +1803,20 @@ export default function OrderDetail() {
             )}
           </div>
         </div>
+
+        {orderIsCanceled && (
+          <div className="mb-4 rounded-titan-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <div className="font-semibold">Cancelled order</div>
+                <div className="text-destructive/90">
+                  This order is read-only for operations. History, files, proofs, invoices, payments, and activity remain available.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <ContentLayout>
           <div className="grid grid-cols-1 gap-4 lg:gap-5 xl:gap-6 lg:[grid-template-columns:minmax(0,1fr)_var(--titan-order-right-col)]">
@@ -2821,7 +2878,7 @@ export default function OrderDetail() {
                           variant="outline"
                           size="sm"
                           onClick={handleGeneratePackingSlip}
-                          disabled={generatePackingSlip.isPending}
+                          disabled={generatePackingSlip.isPending || orderIsCanceled}
                         >
                           <FileText className="h-4 w-4 mr-2" />
                           {generatePackingSlip.isPending ? "Generating..." : "Generate & View"}
@@ -2831,7 +2888,13 @@ export default function OrderDetail() {
                       {/* Order Traveler — print-friendly whole-order summary */}
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-medium">Order Traveler</span>
-                        <PrintTicketButton orderId={order.id} />
+                        {orderIsCanceled ? (
+                          <Badge variant="outline" className="border-destructive/40 text-destructive">
+                            Cancelled
+                          </Badge>
+                        ) : (
+                          <PrintTicketButton orderId={order.id} />
+                        )}
                       </div>
 
                       {/* Manual Status Override (Manager+) */}
@@ -2841,6 +2904,7 @@ export default function OrderDetail() {
                           <Select
                             value={order.fulfillmentStatus || "pending"}
                             onValueChange={(value) => handleFulfillmentStatusChange(value as any)}
+                            disabled={orderIsCanceled}
                           >
                             <SelectTrigger>
                               <SelectValue />
@@ -2865,6 +2929,7 @@ export default function OrderDetail() {
                             variant="outline"
                             size="sm"
                             onClick={handleAddShipment}
+                            disabled={orderIsCanceled}
                           >
                             <Truck className="h-4 w-4 mr-2" />
                             Add Shipment
@@ -3580,6 +3645,77 @@ export default function OrderDetail() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={showCancelOrderDialog} onOpenChange={(open) => {
+        if (cancelOrderMutation.isPending) return;
+        setShowCancelOrderDialog(open);
+      }}>
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>Cancel Order</DialogTitle>
+            <DialogDescription>
+              Cancellation is permanent for normal operations. The order stays readable and auditable, but production, proofing,
+              fulfillment, shipment creation, invoice generation, timers, and active print-ticket workflows will stop.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="rounded-titan-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Paid invoices, partial payments, shipped shipments, or picked-up orders will block cancellation and require manual handling.
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="cancel-reason">Reason</Label>
+              <Select
+                value={cancelOrderReason}
+                onValueChange={(value) => setCancelOrderReason(value as OrderCancellationReason)}
+              >
+                <SelectTrigger id="cancel-reason">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {orderCancellationReasonValues.map((reason) => (
+                    <SelectItem key={reason} value={reason}>
+                      {orderCancellationReasonLabels[reason]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="cancel-note">Internal note</Label>
+              <Textarea
+                id="cancel-note"
+                value={cancelOrderInternalNote}
+                onChange={(event) => setCancelOrderInternalNote(event.target.value)}
+                placeholder="Optional context for staff and audit review"
+                rows={4}
+                maxLength={2000}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setShowCancelOrderDialog(false)}
+              disabled={cancelOrderMutation.isPending}
+            >
+              Keep Order Active
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => void handleCancelOrderConfirm()}
+              disabled={cancelOrderMutation.isPending}
+            >
+              {cancelOrderMutation.isPending ? "Cancelling..." : "Cancel Order"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Status Transition Confirmation Dialog */}
       <AlertDialog open={!!pendingStatusTransition} onOpenChange={(open) => !open && cancelStatusTransition()}>

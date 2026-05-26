@@ -18,6 +18,7 @@ import { normalizeInvoiceAccountingDisplay, normalizeQuickBooksLineItemsSnapshot
 import { emailService } from "../emailService";
 import { jobs } from "../../shared/schema";
 import { storage } from "../storage";
+import { isCanceledOrder } from "../../shared/operationalState";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -1363,6 +1364,16 @@ export async function registerMvpInvoicingRoutes(
 
       const { orderId } = req.params;
       const { terms, customDueDate } = req.body || {};
+
+      const [order] = await db
+        .select({ id: orders.id, state: orders.state, status: orders.status, canceledAt: orders.canceledAt })
+        .from(orders)
+        .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+      if (!order) return res.status(404).json({ error: "Order not found" });
+      if (isCanceledOrder(order)) {
+        return res.status(409).json({ error: "Cannot create an invoice from a cancelled order", code: "ORDER_CANCELLED" });
+      }
 
       const invoice = await createInvoiceFromOrder(organizationId, orderId, userId, {
         terms: terms || "due_on_receipt",

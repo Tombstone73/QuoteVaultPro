@@ -4,6 +4,7 @@ import { emailService } from '../../emailService';
 import { customers, orders, pickupTickets, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
 import { FulfillmentDashboardRepo, PickupRepo, ShipmentRepo } from './repository';
 import { FulfillmentHttpError } from './types';
+import { isCanceledOrder } from '@shared/operationalState';
 
 export class FulfillmentService {
   private readonly shipmentRepo = new ShipmentRepo(db);
@@ -51,8 +52,8 @@ export class FulfillmentService {
     const lineItemCountByOrderId = new Map(lineItemCounts.map((r) => [r.orderId, r.count]));
 
     for (const order of ordersForValidation) {
-      if (order.state === 'canceled') {
-        throw new FulfillmentHttpError(400, `Order ${order.id} is canceled and not ship-eligible`, 'ORDER_NOT_SHIP_ELIGIBLE');
+      if (isCanceledOrder(order)) {
+        throw new FulfillmentHttpError(400, `Order ${order.id} is cancelled and not ship-eligible`, 'ORDER_NOT_SHIP_ELIGIBLE');
       }
 
       if (order.state !== 'production_complete' || order.routingTarget !== 'fulfillment') {
@@ -181,6 +182,17 @@ export class FulfillmentService {
   }
 
   async markShipmentShipped(orgId: string, shipmentId: string, actorUserId?: string | null) {
+    const existing = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
+    if (!existing) {
+      throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');
+    }
+    const canceledOrder = (existing.orders || []).find((order: any) =>
+      isCanceledOrder({ state: order.orderState, status: order.orderStatus, canceledAt: order.orderCanceledAt }),
+    );
+    if (canceledOrder) {
+      throw new FulfillmentHttpError(409, 'Cancelled orders cannot be marked shipped', 'ORDER_CANCELLED');
+    }
+
     const result = await this.shipmentRepo.markShipped(orgId, shipmentId, actorUserId);
 
     if (!result.ok) {
@@ -207,12 +219,18 @@ export class FulfillmentService {
       .select({
         id: orders.id,
         shippingMethod: orders.shippingMethod,
+        state: orders.state,
+        status: orders.status,
+        canceledAt: orders.canceledAt,
       })
       .from(orders)
       .where(and(eq(orders.id, orderId), eq(orders.organizationId, orgId)))
       .limit(1);
 
     if (!order) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
+    if (isCanceledOrder(order)) {
+      throw new FulfillmentHttpError(409, 'Cancelled orders cannot create pickup tickets', 'ORDER_CANCELLED');
+    }
     if (order.shippingMethod !== 'pickup') {
       throw new FulfillmentHttpError(400, 'Pickup tickets can only be created for pickup orders', 'MIXED_FULFILLMENT_TYPES');
     }
@@ -234,6 +252,8 @@ export class FulfillmentService {
         orderId: pickupTickets.orderId,
         status: pickupTickets.status,
         orderState: orders.state,
+        orderStatus: orders.status,
+        orderCanceledAt: orders.canceledAt,
         productionCompletedAt: orders.productionCompletedAt,
         completedProductionAt: orders.completedProductionAt,
         orderNumber: orders.orderNumber,
@@ -246,6 +266,13 @@ export class FulfillmentService {
       .limit(1);
 
     if (!ticketWithOrder) throw new FulfillmentHttpError(404, 'Pickup ticket not found', 'NOT_FOUND');
+    if (isCanceledOrder({
+      state: ticketWithOrder.orderState,
+      status: ticketWithOrder.orderStatus,
+      canceledAt: ticketWithOrder.orderCanceledAt,
+    })) {
+      throw new FulfillmentHttpError(409, 'Cancelled orders cannot advance pickup fulfillment', 'ORDER_CANCELLED');
+    }
 
     const productionComplete = this.isOrderProductionComplete({
       state: ticketWithOrder.orderState,
@@ -343,6 +370,26 @@ export class FulfillmentService {
   }
 
   async markPickupPickedUp(orgId: string, ticketId: string, actorUserId?: string | null) {
+    const [ticketWithOrder] = await db
+      .select({
+        orderState: orders.state,
+        orderStatus: orders.status,
+        orderCanceledAt: orders.canceledAt,
+      })
+      .from(pickupTickets)
+      .innerJoin(orders, eq(orders.id, pickupTickets.orderId))
+      .where(and(eq(pickupTickets.id, ticketId), eq(pickupTickets.organizationId, orgId), eq(orders.organizationId, orgId)))
+      .limit(1);
+
+    if (!ticketWithOrder) throw new FulfillmentHttpError(404, 'Pickup ticket not found', 'NOT_FOUND');
+    if (isCanceledOrder({
+      state: ticketWithOrder.orderState,
+      status: ticketWithOrder.orderStatus,
+      canceledAt: ticketWithOrder.orderCanceledAt,
+    })) {
+      throw new FulfillmentHttpError(409, 'Cancelled orders cannot advance pickup fulfillment', 'ORDER_CANCELLED');
+    }
+
     const result = await this.pickupRepo.markPickedUp(orgId, ticketId, actorUserId);
 
     if (!result.ok) {

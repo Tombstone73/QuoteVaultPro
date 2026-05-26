@@ -40,6 +40,7 @@ import { ensureSharp, generateImageDerivatives, isSupportedImageType } from "./t
 import { storageApplicationService } from "./storage/StorageApplicationService";
 import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 import { resolveActiveProductionOwners } from "./productionOwnership";
+import { isCanceledOrder } from "@shared/operationalState";
 
 type ProofDecision = "approved" | "rejected" | "revision_requested";
 type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "superseded";
@@ -418,6 +419,9 @@ type LoadedProofLineItem = {
   lineItemId: string;
   orderId: string;
   organizationId: string;
+  orderState: string | null;
+  orderStatus: string | null;
+  orderCanceledAt: string | Date | null;
   workflowState: string;
   requiresPrepress: boolean;
   requiresProofApproval: boolean;
@@ -442,6 +446,9 @@ async function loadProofLineItem(tx: any, args: { organizationId: string; lineIt
       lineItemId: orderLineItems.id,
       orderId: orderLineItems.orderId,
       organizationId: orders.organizationId,
+      orderState: orders.state,
+      orderStatus: orders.status,
+      orderCanceledAt: orders.canceledAt,
       workflowState: orderLineItems.workflowState,
       requiresPrepress: orderLineItems.requiresPrepress,
       requiresProofApproval: orderLineItems.requiresProofApproval,
@@ -1591,6 +1598,7 @@ export async function autoSyncCanonicalProofForLineItem(tx: any, args: {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
   });
+  assertProofOrderNotCancelled(lineItem);
 
   if (!lineItem.requiresProofApproval) {
     return { status: "not_required" };
@@ -2155,6 +2163,16 @@ function buildProofingQueueRow(base: LoadedProofQueueLineItem, truth: ProofingRe
   };
 }
 
+function assertProofOrderNotCancelled(lineItem: LoadedProofLineItem): void {
+  if (isCanceledOrder({
+    state: lineItem.orderState,
+    status: lineItem.orderStatus,
+    canceledAt: lineItem.orderCanceledAt,
+  })) {
+    throwProofingConflict("Cancelled orders cannot advance proof approval workflow");
+  }
+}
+
 export async function listProofingQueue(tx: any, args: {
   organizationId: string;
   slice?: ProofQueueSlice | null;
@@ -2293,6 +2311,7 @@ export async function createLineItemProofVersion(tx: any, args: {
       organizationId: args.organizationId,
       lineItemId: args.lineItemId,
     });
+    assertProofOrderNotCancelled(lineItem);
 
     const [attachment] = await tx
       .select({
@@ -2413,6 +2432,11 @@ export async function markProofVersionSent(tx: any, args: {
       organizationId: args.organizationId,
       proofVersionId: args.proofVersionId,
     });
+    const lineItem = await loadProofLineItem(tx, {
+      organizationId: args.organizationId,
+      lineItemId: proofVersion.lineItemId,
+    });
+    assertProofOrderNotCancelled(lineItem);
 
     if (proofVersion.status !== "draft") {
       throwProofingConflict("Only draft proof versions can be sent for review");
@@ -2533,6 +2557,7 @@ export async function recordProofResponse(tx: any, args: {
       organizationId: args.organizationId,
       lineItemId: proofVersion.lineItemId,
     });
+    assertProofOrderNotCancelled(lineItem);
 
     if (!lineItem.requiresProofApproval) {
       throwProofingConflict("This line item is not currently awaiting proof approval");
@@ -2650,6 +2675,7 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
       organizationId: args.organizationId,
       lineItemId: args.lineItemId,
     });
+    assertProofOrderNotCancelled(lineItem);
 
     if (!lineItem.requiresProofApproval || lineItem.workflowState !== "awaiting_proof_approval") {
       throwProofingConflict("Line item is not eligible for manual approval override");

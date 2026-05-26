@@ -3491,7 +3491,7 @@ export type Job = typeof jobs.$inferSelect;
 // Production MVP (Modular Production Views) - Flatbed first
 // ============================================================
 
-export type ProductionJobStatus = "queued" | "in_progress" | "done";
+export type ProductionJobStatus = "queued" | "in_progress" | "done" | "canceled";
 export type ProductionEventType =
   | "intake"
   | "routing_override"
@@ -3988,7 +3988,7 @@ export type PaymentWebhookEvent = typeof paymentWebhookEvents.$inferSelect;
 
 export const shipmentStatusSchema = z.enum(['DRAFT', 'SHIPPED', 'VOIDED']);
 export const shipmentScopeSchema = z.enum(['SINGLE_ORDER', 'MULTI_ORDER']);
-export const pickupTicketStatusSchema = z.enum(['DRAFT', 'READY_FOR_PICKUP', 'PICKED_UP']);
+export const pickupTicketStatusSchema = z.enum(['DRAFT', 'READY_FOR_PICKUP', 'PICKED_UP', 'VOIDED']);
 export const outboundNotificationChannelSchema = z.enum(['email', 'sms']);
 export const outboundNotificationStatusSchema = z.enum(['PENDING', 'SENT', 'FAILED']);
 export const outboundNotificationRelatedTypeSchema = z.enum(['PICKUP_TICKET']);
@@ -4000,6 +4000,7 @@ export const fulfillmentEventTypeSchema = z.enum([
   'SHIPMENT_VOIDED',
   'PICKUP_READY',
   'PICKUP_PICKED_UP',
+  'PICKUP_VOIDED',
   'NOTIFICATION_SENT',
   'NOTIFICATION_FAILED',
 ]);

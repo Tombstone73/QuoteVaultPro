@@ -1,3 +1,5 @@
+import { isTerminalProductionStatus } from "@shared/operationalState";
+
 export type ProductionBoardTab = "all" | "queued" | "in_progress" | "done";
 export type ProductionStationPage = "flatbed" | "roll";
 
@@ -109,8 +111,7 @@ export function matchesProductionTab(
   if (tab === "done") return isJobInDoneRetentionWindow(job, nowMs, retentionDays);
 
   return (
-    job.status === "queued" ||
-    job.status === "in_progress" ||
+    !isTerminalProductionStatus(job.status) ||
     isJobInDoneRetentionWindow(job, nowMs, retentionDays)
   );
 }

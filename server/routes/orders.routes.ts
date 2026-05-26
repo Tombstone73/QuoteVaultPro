@@ -101,6 +101,9 @@ import {
     upsertOrderWorkflowDraft,
     updateOrderWorkflowStatus,
 } from "../services/orderWorkflowService";
+import { cancelOrder, OrderCancellationError } from "../services/orderCancellationService";
+import { cancelOrderRequestSchema } from "@shared/orderCancellation";
+import { isCanceledOrder } from "@shared/operationalState";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
 import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
@@ -2589,6 +2592,61 @@ export async function registerOrderRoutes(
         }
     });
 
+    app.post("/api/orders/:id/cancel", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            if (!assertInternalStaffUser(req, res)) return;
+
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) {
+                return res.status(500).json({ success: false, message: "Missing organization context" });
+            }
+
+            const userId = getUserId(req.user);
+            if (!userId) {
+                return res.status(401).json({ success: false, message: "Authentication required" });
+            }
+
+            const parsed = cancelOrderRequestSchema.parse(req.body ?? {});
+            const result = await cancelOrder({
+                organizationId,
+                orderId: String(req.params.id),
+                actorUserId: userId,
+                reason: parsed.reason,
+                internalNote: parsed.internalNote ?? null,
+                ipAddress: req.ip,
+                userAgent: req.get?.("user-agent") ?? req.headers["user-agent"] ?? null,
+            });
+
+            return res.json({
+                success: true,
+                data: result,
+                warnings: result.warnings,
+                message: result.warnings.length > 0
+                    ? `Order cancelled with ${result.warnings.length} warning(s).`
+                    : "Order cancelled.",
+            });
+        } catch (error: any) {
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({
+                    success: false,
+                    code: "VALIDATION_ERROR",
+                    message: fromZodError(error).message,
+                    details: error.flatten(),
+                });
+            }
+            if (error instanceof OrderCancellationError) {
+                return res.status(error.statusCode).json({
+                    success: false,
+                    code: error.code,
+                    message: error.message,
+                    details: error.details ?? null,
+                });
+            }
+            console.error("[POST /api/orders/:id/cancel] Error:", error);
+            return res.status(500).json({ success: false, message: "Failed to cancel order" });
+        }
+    });
+
     app.patch("/api/orders/:orderId/attachments/:attachmentId/portal-visibility", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             if (!assertInternalStaffUser(req, res)) return;
@@ -5011,11 +5069,20 @@ export async function registerOrderRoutes(
             }
 
             const [order] = await db
-                .select({ id: orders.id, customerId: orders.customerId })
+                .select({
+                    id: orders.id,
+                    customerId: orders.customerId,
+                    state: orders.state,
+                    status: orders.status,
+                    canceledAt: orders.canceledAt,
+                })
                 .from(orders)
                 .where(and(eq(orders.id, String(lineItemData.orderId)), eq(orders.organizationId, organizationId)))
                 .limit(1);
             if (!order) return res.status(404).json({ message: "Order not found" });
+            if (isCanceledOrder(order)) {
+                return res.status(409).json({ message: "Cannot add line items to a cancelled order.", code: "ORDER_CANCELLED" });
+            }
 
             // Server-authoritative pricing using PricingService
             const { priceLineItem } = await import("../services/pricing/PricingService");
@@ -5158,12 +5225,20 @@ export async function registerOrderRoutes(
 
             const lineItemId = String(req.params.id);
             const [ownership] = await db
-                .select({ id: orderLineItems.id })
+                .select({
+                    id: orderLineItems.id,
+                    orderState: orders.state,
+                    orderStatus: orders.status,
+                    orderCanceledAt: orders.canceledAt,
+                })
                 .from(orderLineItems)
                 .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
                 .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
                 .limit(1);
             if (!ownership) return res.status(404).json({ message: "Order line item not found" });
+            if (isCanceledOrder({ state: ownership.orderState, status: ownership.orderStatus, canceledAt: ownership.orderCanceledAt })) {
+                return res.status(409).json({ message: "Cannot edit line items on a cancelled order.", code: "ORDER_CANCELLED" });
+            }
 
             const oldLineItem = await storage.getOrderLineItemById(lineItemId);
             if (!oldLineItem) return res.status(404).json({ message: "Order line item not found" });

@@ -13,10 +13,11 @@
  */
 
 import { db } from "../db";
-import { and, eq, ne, sql } from "drizzle-orm";
-import { productionJobs } from "@shared/schema";
+import { and, eq, notInArray, sql } from "drizzle-orm";
+import { orders, productionJobs } from "@shared/schema";
 import { appendEvent } from "../productionHelpers";
 import { TERMINAL_JOB_STATUSES } from "./productionOwnership";
+import { isCanceledOrder } from "@shared/operationalState";
 
 export type RouteLineItemTrigger = "scheduler" | "intake" | "line_item_status" | "prepress" | "prepress_handoff";
 
@@ -80,6 +81,23 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
       );
     }
 
+    const [order] = await runner
+      .select({ id: orders.id, state: orders.state, status: orders.status, canceledAt: orders.canceledAt })
+      .from(orders)
+      .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
+      .limit(1);
+
+    if (!order) {
+      throw Object.assign(new Error("[productionRoutingService] parent order not found"), { statusCode: 404, orderId, lineItemId });
+    }
+
+    if (isCanceledOrder(order)) {
+      throw Object.assign(
+        new Error("[productionRoutingService] cancelled orders cannot receive production jobs"),
+        { statusCode: 409, code: "ORDER_CANCELLED", orderId, lineItemId },
+      );
+    }
+
     step = "resolve_station_id";
     let stationId: string;
     try {
@@ -127,13 +145,11 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
         and(
           eq(productionJobs.organizationId, organizationId),
           eq(productionJobs.lineItemId, lineItemId),
-          ne(productionJobs.status, "void"),
+          notInArray(productionJobs.status, [...TERMINAL_JOB_STATUSES]),
         ),
       );
 
-    const filteredActiveJobs = existingActiveJobs.filter(
-      (job: any) => !TERMINAL_JOB_STATUSES.includes(String(job.status ?? "").toLowerCase() as any),
-    );
+    const filteredActiveJobs = existingActiveJobs;
 
     const existingExact = filteredActiveJobs.find((job: any) => {
       return job.stationKey === stationKey && job.stepKey === stepKey;
@@ -191,13 +207,11 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
         and(
           eq(productionJobs.organizationId, organizationId),
           eq(productionJobs.lineItemId, lineItemId),
-          ne(productionJobs.status, "void"),
+          notInArray(productionJobs.status, [...TERMINAL_JOB_STATUSES]),
         ),
       );
 
-    const residualFilteredActiveJobs = residualActiveJobs.filter(
-      (job: any) => !TERMINAL_JOB_STATUSES.includes(String(job.status ?? "").toLowerCase() as any),
-    );
+    const residualFilteredActiveJobs = residualActiveJobs;
 
     const residualExistingExact = residualFilteredActiveJobs.find((job: any) => {
       return job.stationKey === stationKey && job.stepKey === stepKey;
