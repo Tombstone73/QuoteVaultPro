@@ -47,11 +47,12 @@ export function registerUsersRoutes(
     isAdminOrOwner: any;
   },
 ): void {
-  const { isAuthenticated, tenantContext, requireOrgOwnerAdmin, requireOrgCanInvite, isAdminOrOwner } = middleware;
+  const { isAuthenticated, tenantContext, requireOrgOwnerAdmin, isAdminOrOwner } = middleware;
 
   // User management routes - org-scoped
-  // GET is allowed for owner/admin/manager so managers can see the org list and use the invite UI
-  app.get("/api/users", isAuthenticated, tenantContext, requireOrgCanInvite, async (req: any, res) => {
+  // GET is scoped by tenantContext so existing workflow assignment screens can
+  // list org staff without granting user-management mutation permissions.
+  app.get("/api/users", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
 
@@ -62,6 +63,7 @@ export function registerUsersRoutes(
           email: users.email,
           firstName: users.firstName,
           lastName: users.lastName,
+          role: users.role,
           orgRole: userOrganizations.role,
           isInvited: sql<boolean>`(${authIdentities.passwordHash} IS NOT NULL AND ${authIdentities.passwordSetAt} IS NULL)`,
           createdAt: users.createdAt,
@@ -87,9 +89,9 @@ export function registerUsersRoutes(
   });
 
   // Invite a new user to the organization.
-  // Allowed for: owner, admin, manager. member cannot invite.
+  // Allowed for: owner, admin. member/manager cannot manage users from settings.
   // Role-assignment scope is enforced per actor role (canAssignOrgRole).
-  app.post("/api/users/invite", isAuthenticated, tenantContext, requireOrgCanInvite, async (req: any, res) => {
+  app.post("/api/users/invite", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const { email: rawEmail, orgRole = 'member' } = req.body;
@@ -106,52 +108,10 @@ export function registerUsersRoutes(
       }
 
       // Enforce role-assignment scope: actor's org role determines which target
-      // roles they may assign. req.actorOrgRole is set by requireOrgCanInvite.
+      // roles they may assign. req.actorOrgRole is set by requireOrgOwnerAdmin.
       // This check runs server-side regardless of what the frontend sends.
       if (!canAssignOrgRole(req.actorOrgRole, orgRole)) {
         return res.status(403).json({ message: `Your role (${req.actorOrgRole}) is not permitted to assign the '${orgRole}' role.` });
-      }
-
-      // Check if user already exists
-      const [existingUser] = await db
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.email, email))
-        .limit(1);
-
-      let userId: string;
-
-      if (existingUser) {
-        userId = existingUser.id;
-
-        // Check if already in this org
-        const [existingMembership] = await db
-          .select()
-          .from(userOrganizations)
-          .where(
-            and(
-              eq(userOrganizations.userId, userId),
-              eq(userOrganizations.organizationId, organizationId)
-            )
-          )
-          .limit(1);
-
-        if (existingMembership) {
-          return res.status(400).json({ message: "User already exists in this organization" });
-        }
-      } else {
-        // Create new user
-        userId = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-        await db.insert(users).values({
-          id: userId,
-          email: email,
-          firstName: null,
-          lastName: null,
-          role: 'employee',
-          isAdmin: false,
-          profileImageUrl: null,
-          passwordHash: null,
-        });
       }
 
       // Generate cryptographically strong temporary password
@@ -161,30 +121,76 @@ export function registerUsersRoutes(
       const bcryptModule = await import('bcryptjs');
       const passwordHash = await bcryptModule.hash(tempPassword, 10);
 
-      // Upsert auth identity with temp password (passwordSetAt = NULL indicates invited state)
-      await db
-        .insert(authIdentities)
-        .values({
-          userId: userId,
-          provider: 'password',
-          passwordHash: passwordHash,
-          passwordSetAt: null, // NULL = invited/temp password state
-        })
-        .onConflictDoUpdate({
-          target: [authIdentities.userId, authIdentities.provider],
-          set: {
+      const invitedUser = await db.transaction(async (tx) => {
+        // Check if user already exists
+        const [existingUser] = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.email, email))
+          .limit(1);
+
+        let userId: string;
+
+        if (existingUser) {
+          userId = existingUser.id;
+
+          // Check if already in this org
+          const [existingMembership] = await tx
+            .select()
+            .from(userOrganizations)
+            .where(
+              and(
+                eq(userOrganizations.userId, userId),
+                eq(userOrganizations.organizationId, organizationId)
+              )
+            )
+            .limit(1);
+
+          if (existingMembership) {
+            throw Object.assign(new Error("User already exists in this organization"), { statusCode: 400 });
+          }
+        } else {
+          // Create new user
+          userId = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+          await tx.insert(users).values({
+            id: userId,
+            email: email,
+            firstName: null,
+            lastName: null,
+            role: 'employee',
+            isAdmin: false,
+            profileImageUrl: null,
+            passwordHash: null,
+          });
+        }
+
+        // Upsert auth identity with temp password (passwordSetAt = NULL indicates invited state)
+        await tx
+          .insert(authIdentities)
+          .values({
+            userId: userId,
+            provider: 'password',
             passwordHash: passwordHash,
-            passwordSetAt: null,
-            updatedAt: sql`now()`,
-          },
+            passwordSetAt: null, // NULL = invited/temp password state
+          })
+          .onConflictDoUpdate({
+            target: [authIdentities.userId, authIdentities.provider],
+            set: {
+              passwordHash: passwordHash,
+              passwordSetAt: null,
+              updatedAt: sql`now()`,
+            },
+          });
+
+        // Add user to organization in the same transaction as user/auth creation.
+        await tx.insert(userOrganizations).values({
+          userId: userId,
+          organizationId: organizationId,
+          role: orgRole,
+          isDefault: true,
         });
 
-      // Add user to organization
-      await db.insert(userOrganizations).values({
-        userId: userId,
-        organizationId: organizationId,
-        role: orgRole,
-        isDefault: true,
+        return { id: userId, email, orgRole };
       });
 
       // Send invite email asynchronously (non-blocking)
@@ -226,9 +232,13 @@ export function registerUsersRoutes(
         }
       });
 
-      res.json({ success: true });
+      res.json({ success: true, data: { user: invitedUser } });
     } catch (error) {
       console.error("Error inviting user:", error);
+      const statusCode = (error as any)?.statusCode;
+      if (statusCode) {
+        return res.status(statusCode).json({ message: (error as any).message });
+      }
       res.status(500).json({ message: "Failed to invite user" });
     }
   });
@@ -254,7 +264,7 @@ export function registerUsersRoutes(
         return res.status(400).json({ message: "You cannot modify your own membership" });
       }
 
-      // Check if target user is an owner (owners can't be demoted)
+      // Check target membership and protect the last owner.
       const [targetMembership] = await db
         .select()
         .from(userOrganizations)
@@ -273,20 +283,38 @@ export function registerUsersRoutes(
         return res.status(404).json({ message: "User not found in organization" });
       }
 
-      if (targetMembership.role === 'owner') {
-        console.log('[PATCH /api/users/:id] Blocked: Cannot modify owner role');
-        return res.status(400).json({ message: "Cannot modify owner role" });
-      }
-
       // Validate org role
       if (!orgRole) {
         console.log('[PATCH /api/users/:id] Error: orgRole is required');
         return res.status(400).json({ message: "orgRole is required" });
       }
 
-      if (!['admin', 'manager', 'member'].includes(orgRole)) {
+      if (!['owner', 'admin', 'manager', 'member'].includes(orgRole)) {
         console.log('[PATCH /api/users/:id] Error: Invalid org role:', orgRole);
         return res.status(400).json({ message: "Invalid org role" });
+      }
+
+      if (targetMembership.role === 'owner' && orgRole !== 'owner') {
+        if (req.actorOrgRole !== 'owner') {
+          console.log('[PATCH /api/users/:id] Blocked: Only owner can modify another owner');
+          return res.status(403).json({ message: "Only an owner can modify another owner" });
+        }
+
+        const [ownerCountRow] = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(userOrganizations)
+          .where(
+            and(
+              eq(userOrganizations.organizationId, organizationId),
+              eq(userOrganizations.role, 'owner')
+            )
+          )
+          .limit(1);
+
+        if ((ownerCountRow?.count ?? 0) <= 1) {
+          console.log('[PATCH /api/users/:id] Blocked: Cannot remove last owner role');
+          return res.status(400).json({ message: "Cannot remove the last owner" });
+        }
       }
 
       // Enforce role-assignment scope for the actor.
@@ -339,6 +367,42 @@ export function registerUsersRoutes(
       // Prevent users from removing themselves
       if (id === currentUserId) {
         return res.status(400).json({ message: "You cannot remove yourself from the organization" });
+      }
+
+      const [targetMembership] = await db
+        .select()
+        .from(userOrganizations)
+        .where(
+          and(
+            eq(userOrganizations.userId, id),
+            eq(userOrganizations.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+
+      if (!targetMembership) {
+        return res.status(404).json({ message: "User not found in organization" });
+      }
+
+      if (targetMembership.role === 'owner') {
+        if (req.actorOrgRole !== 'owner') {
+          return res.status(403).json({ message: "Only an owner can remove another owner" });
+        }
+
+        const [ownerCountRow] = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(userOrganizations)
+          .where(
+            and(
+              eq(userOrganizations.organizationId, organizationId),
+              eq(userOrganizations.role, 'owner')
+            )
+          )
+          .limit(1);
+
+        if ((ownerCountRow?.count ?? 0) <= 1) {
+          return res.status(400).json({ message: "Cannot remove the last owner" });
+        }
       }
 
       // Remove user from organization
