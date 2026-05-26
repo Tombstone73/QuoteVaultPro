@@ -412,6 +412,7 @@ export function LineItemsSection({
   // Tracks the itemKey of a product just added so we can scroll to it once it's expanded.
   // Set before onExpandedKeyChange so the effect fires on the correct render.
   const pendingScrollToItemKeyRef = useRef<string | null>(null);
+  const widthInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   // Track saved state snapshot for dirty detection
   const savedSnapshotRef = useRef<
@@ -457,11 +458,10 @@ export function LineItemsSection({
         const cardRoot = contentEl?.parentElement ?? contentEl;
         cardRoot?.scrollIntoView({ block: "start", behavior: "instant" as ScrollBehavior });
 
-        // Focus the first enabled non-readonly input (Width) without letting it scroll.
-        const widthInput = contentEl?.querySelector<HTMLInputElement>(
-          "input:not([disabled]):not([readonly])"
-        );
-        widthInput?.focus({ preventScroll: true });
+        const currentDimsRequired = requiresDimensionsV2(expandedProduct, expandedOptionTreeJson);
+        if (currentDimsRequired) {
+          widthInputRefs.current[pendingKey]?.focus({ preventScroll: true });
+        }
 
         // Re-anchor after focus in case the browser nudged the viewport.
         cardRoot?.scrollIntoView({ block: "start", behavior: "instant" as ScrollBehavior });
@@ -472,7 +472,7 @@ export function LineItemsSection({
       cancelled = true;
       cancelAnimationFrame(raf1);
     };
-  }, [expandedKey]);
+  }, [expandedKey, expandedProduct, expandedOptionTreeJson]);
 
   useEffect(() => {
     if (!expandedItem) return;
@@ -1038,6 +1038,9 @@ export function LineItemsSection({
                             requiresProofApproval={requiresProofApproval}
                             onRequiresDesignChange={handleRequiresDesignChange}
                             onRequiresPrepressChange={handleRequiresPrepressChange}
+                            widthInputRef={(node) => {
+                              widthInputRefs.current[itemKey] = node;
+                            }}
                             optionsSlot={
                               <>
 

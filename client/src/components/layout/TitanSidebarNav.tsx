@@ -250,6 +250,7 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
   const Icon = item.icon;
   const location = useLocation();
   const { guardedNavigate } = useNavigationGuard();
+  const hasBadgeSlot = item.badge && badgeCount !== undefined;
 
   // Active state: exact match or nested route prefix
   // Special case: /production should ONLY match exact /production, not /production/flatbed
@@ -282,10 +283,10 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
       <Icon className="h-4 w-4 shrink-0" />
       {!isCollapsed && (
         <>
-          <span className="truncate flex-1">{item.name}</span>
-          {badgeCount !== undefined && badgeCount > 0 && (
-            <Badge variant="default" className="ml-auto h-5 min-w-[20px] px-1.5 text-xs">
-              {badgeCount}
+          <span className="min-w-0 flex-1 truncate text-left">{item.name}</span>
+          {hasBadgeSlot && (
+            <Badge variant={badgeCount > 0 ? "default" : "secondary"} className="ml-auto h-5 min-w-[20px] shrink-0 px-1.5 text-xs tabular-nums">
+              {badgeCount ?? 0}
             </Badge>
           )}
         </>
@@ -371,18 +372,29 @@ function buildBadgeCounts(
   summary: OperationalSummaryData | undefined,
   approvalCount: number,
 ): Record<string, number> {
-  if (!summary) return { approvals: approvalCount };
+  const emptySummary: OperationalSummaryData = {
+    inboundOrders: 0,
+    overview: 0,
+    design: 0,
+    proofing: 0,
+    prepress: 0,
+    flatbed: 0,
+    roll: 0,
+    fulfillment: 0,
+    invoices: { pendingSend: 0, unpaid: 0 },
+  };
+  const safeSummary = summary ?? emptySummary;
   return {
     approvals: approvalCount,
-    "inbound-orders": summary.inboundOrders,
-    "production-overview": summary.overview,
-    "production-design": summary.design,
-    "production-proofing": summary.proofing,
-    "production-prepress": summary.prepress,
-    "production-flatbed": summary.flatbed,
-    "production-roll": summary.roll,
-    fulfillment: summary.fulfillment,
-    invoices: summary.invoices.pendingSend,
+    "inbound-orders": safeSummary.inboundOrders,
+    "production-overview": safeSummary.overview,
+    "production-design": safeSummary.design,
+    "production-proofing": safeSummary.proofing,
+    "production-prepress": safeSummary.prepress,
+    "production-flatbed": safeSummary.flatbed,
+    "production-roll": safeSummary.roll,
+    fulfillment: safeSummary.fulfillment,
+    invoices: safeSummary.invoices.pendingSend,
   };
 }
 
@@ -442,7 +454,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
   });
 
   const badgeCounts = buildBadgeCounts(
-    summaryQuery.data ?? undefined,
+    summaryQuery.isError ? undefined : summaryQuery.data ?? undefined,
     approvalsQuery.data?.count ?? 0,
   );
 

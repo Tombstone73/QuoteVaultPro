@@ -59,6 +59,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
 }, ref) => {
     const [tagInput, setTagInput] = useState("");
     const tagInputRef = useRef<HTMLInputElement | null>(null);
+    const customerSelectRef = useRef<CustomerSelectRef | null>(null);
     const [showCustomerAddress, setShowCustomerAddress] = useState(false);
 
     const selectedContact = selectedContactId
@@ -125,8 +126,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     useImperativeHandle(ref, () => ({
         commitPendingFlags: commitPendingFlag,
         focus: () => {
-            // Focus is handled by CustomerSelect internally - this is a no-op for CustomerCard
-            // but required by CustomerSelectRef interface
+            customerSelectRef.current?.focus();
         },
     }));
 
@@ -185,7 +185,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                                 </div>
                             ) : (
                                 <CustomerSelect
-                                    ref={ref}
+                                    ref={customerSelectRef}
                                     value={selectedCustomerId}
                                     onChange={onCustomerChange}
                                     autoFocus={false}
