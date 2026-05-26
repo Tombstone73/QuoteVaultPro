@@ -33,4 +33,22 @@ describe("calculateQuoteAggregateTotals", () => {
       totalPrice: 101.3,
     });
   });
+
+  test("keeps golden PBV2 repriced line values as quote aggregate source of truth", () => {
+    expect(
+      calculateQuoteAggregateTotals({
+        lineItems: [
+          { linePrice: "44.00", status: "active", isTaxableSnapshot: true },
+          { linePrice: "329.60", status: "active", isTaxableSnapshot: true },
+          { linePrice: "999.00", status: "canceled", isTaxableSnapshot: true },
+        ],
+        taxRate: 0,
+      }),
+    ).toEqual({
+      subtotal: 373.6,
+      taxableSubtotal: 373.6,
+      taxAmount: 0,
+      totalPrice: 373.6,
+    });
+  });
 });
