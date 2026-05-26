@@ -43,6 +43,7 @@ import {
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
 import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/materialsOverrideMode";
 import { resetTransactionalData, resetQuickBooksImportData } from "../services/orgResetService";
+import { resolveFileUploadNamingPolicyFromPreferences } from "../prepressFileService";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -157,9 +158,11 @@ export function registerOrganizationRoutes(
       const quickBooks = resolveQuickBooksPreferencesFromOrgPreferences(preferences);
 
       const materialsOverrideMode = resolveMaterialsOverrideModeFromOrgPreferences(preferences);
+      const fileUploadNaming = resolveFileUploadNamingPolicyFromPreferences(preferences, organizationId);
 
       res.json({
         ...(preferences as any),
+        fileUploadNaming,
         prepressDefaultEnabled: org.prepressDefaultEnabled,
         production: {
           ...(((preferences as any)?.production && typeof (preferences as any).production === "object") ? (preferences as any).production : {}),

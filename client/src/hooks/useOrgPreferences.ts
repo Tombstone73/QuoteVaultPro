@@ -11,6 +11,11 @@ import type { ProductionDocumentNumberDisplayMode } from "@shared/documentNumber
 export interface OrgPreferences {
   prepressDefaultEnabled?: boolean;
 
+  fileUploadNaming?: {
+    fileUploadJobPrefixMode?: "none" | "numeric_only" | "full_job_number";
+    prepressFileLabelMode?: "optional" | "required";
+  };
+
   quotes?: {
     requireApproval?: boolean;
   };

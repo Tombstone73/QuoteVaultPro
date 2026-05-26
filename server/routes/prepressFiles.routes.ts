@@ -47,6 +47,20 @@ export function registerPrepressFileRoutes(
 ): void {
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
 
+  app.get("/api/prepress/file-naming-policy", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const policy = await prepressFileService.getFileUploadNamingPolicy(organizationId);
+      res.json({ success: true, data: policy });
+    } catch (error: any) {
+      console.error("[Prepress] File naming policy error:", error);
+      res.status(500).json({ error: error?.message || "Failed to resolve file naming policy" });
+    }
+  });
+
   // POST /api/prepress/files/upload - Upload file (multipart)
   app.post("/api/prepress/files/upload", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -135,6 +149,13 @@ export function registerPrepressFileRoutes(
 
           const lineItem = lineItems[0].lineItem;
           const order = lineItems[0].order;
+          const namingPolicy = await prepressFileService.getFileUploadNamingPolicy(organizationId);
+          const normalizedRole = fields.role as "original" | "final" | "reference";
+          const normalizedTag = fields.tag === "none" ? "" : fields.tag;
+
+          if (normalizedRole === "final" && namingPolicy.prepressFileLabelMode === "required" && !normalizedTag) {
+            return res.status(400).json({ error: "File type is required for final prepress uploads" });
+          }
 
           // Upload file
           const uploadedFile = await prepressFileService.uploadLineItemFile({
@@ -142,8 +163,8 @@ export function registerPrepressFileRoutes(
             orderId: order.id,
             lineItemId: fields.lineItemId,
             prepressSessionId: fields.sessionId || undefined,
-            role: fields.role as "original" | "final" | "reference",
-            tag: fields.tag || undefined,
+            role: normalizedRole,
+            tag: normalizedTag || undefined,
             buffer: fileBuffer,
             originalFilename: fileName,
             mimeType: fileMimeType,
@@ -287,6 +308,19 @@ export function registerPrepressFileRoutes(
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
       const files = await prepressFileService.getLineItemFiles(req.params.lineItemId, organizationId);
+      const [lineItemRow] = await db
+        .select({ orderNumber: orders.orderNumber })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(
+          and(
+            eq(orderLineItems.id, req.params.lineItemId),
+            eq(orders.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+      const fullJobNumber = lineItemRow?.orderNumber || "";
+      const namingPolicy = await prepressFileService.getFileUploadNamingPolicy(organizationId);
       const enhance = async (f: any) => {
         const [thumbnailAccess, previewAccess] = f.fileRecordId
           ? await Promise.all([
@@ -301,6 +335,8 @@ export function registerPrepressFileRoutes(
             role: f.role,
             originalFilename: f.originalFilename,
             tag: f.tag,
+            fullJobNumber,
+            namingPolicy,
           }),
           originalUrl: `/api/prepress/files/${f.id}/download`,
           downloadUrl: `/api/prepress/files/${f.id}/download`,

@@ -1773,12 +1773,15 @@ export function registerPrepressQueueRoutes(
       const row = rows[0];
       const li = row.lineItem;
       const filesGrouped = await prepressFileService.getLineItemFiles(lineItemId, organizationId);
+      const namingPolicy = await prepressFileService.getFileUploadNamingPolicy(organizationId);
       const allFiles = [...filesGrouped.originals, ...filesGrouped.finals, ...filesGrouped.references].map((f) => ({
         ...f,
         computedDisplayFilename: prepressFileService.buildComputedDisplayFilename({
           role: f.role,
           originalFilename: f.originalFilename,
           tag: f.tag,
+          fullJobNumber: row.orderNumber,
+          namingPolicy,
         }),
       }));
 

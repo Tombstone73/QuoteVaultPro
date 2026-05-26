@@ -145,6 +145,10 @@ export const organizations = pgTable("organizations", {
     currency?: string;
     features?: Record<string, boolean>;
     preferences?: {
+      fileUploadNaming?: {
+        fileUploadJobPrefixMode?: 'none' | 'numeric_only' | 'full_job_number';
+        prepressFileLabelMode?: 'optional' | 'required';
+      };
       orders?: {
         billingReadyPolicy?: 'all_line_items_done' | 'manual' | 'none';
       };
