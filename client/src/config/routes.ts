@@ -27,7 +27,7 @@
  * - /orders → Orders (list)
  * - /orders/new → OrderNewRoute (create via quote editor + convert)
  * - /orders/:id → OrderDetail (view)
- * - /orders/:id/edit → [TODO: NOT IMPLEMENTED - referenced but missing]
+ * - /orders/:id/edit → OrderDetail (edit)
  * 
  * CUSTOMERS:
  * - /customers → Customers (list)
@@ -119,9 +119,8 @@ export const ROUTES = {
     list: "/orders",
     new: "/orders/new",
     detail: (id: string) => `/orders/${id}`,
+    edit: (id: string) => `/orders/${id}/edit`,
     traveler: (id: string) => `/orders/${id}/traveler`,
-    // TODO: /orders/:id/edit not implemented but may be needed
-    // edit: (id: string) => `/orders/${id}/edit`,
   },
 
   inboundOrders: {

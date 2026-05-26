@@ -34,7 +34,7 @@ import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
-import { useOrder, useCancelOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable, useOrderWorkflow } from "@/hooks/useOrders";
+import { useOrder, useCancelOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, isOrderEditable, useOrderWorkflow } from "@/hooks/useOrders";
 import { useCreateOrderInvoice, useInvoices } from "@/hooks/useInvoices";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
@@ -79,6 +79,7 @@ import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus } from "@shared/orderProofStatus";
 import { isCanceledOrder } from "@shared/operationalState";
+import { ROUTES } from "@/config/routes";
 import {
   orderCancellationReasonLabels,
   orderCancellationReasonValues,
@@ -206,6 +207,7 @@ export default function OrderDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
+  const isOrderEditRoute = location.pathname.endsWith("/edit");
   const { registerGuard, guardedNavigate, getGuardDiagnostics } = useNavigationGuard();
   const { onSmartBack } = useSmartBack();
   const { toast } = useToast();
@@ -584,7 +586,6 @@ export default function OrderDetail() {
   const proofBypassed = proofApprovalPolicyOverride === "bypass";
   
   // Check editability based on order status
-  const canEditLineItems = order ? areLineItemsEditable(order.status) : false;
   const baseCanEditOrder = order ? isOrderEditable(order.status) : false;
   const allowedNextStatuses = useMemo(() => {
     if (!order) return [] as string[];
@@ -1290,17 +1291,18 @@ export default function OrderDetail() {
         toast({ title: "Order saved" });
       }
 
-      // Commit-and-exit: clear all dirty state then navigate to Orders list.
+      // Commit-and-exit: clear all dirty state then leave the explicit edit route.
       // Direct navigate() is intentionally allowed after a successful save; the
       // global guard only intercepts explicit guardedNavigate() calls.
       orderDirtyRef.current = false;
       setHasDirtyLineItem(false);
       setPendingOrderPatch({});
       logOrderDirtyAudit("after-clear-before-navigate");
-      navigate("/orders");
+      const postSavePath = isOrderEditRoute ? ROUTES.orders.detail(orderId) : ROUTES.orders.list;
+      navigate(postSavePath);
       notifyBrowserRouterOfCurrentUrlSoon();
       recoverBrowserRouterMismatchSoon({
-        targetPath: "/orders",
+        targetPath: postSavePath,
         getReactRouterPath: () =>
           `${routeLocationRef.current.pathname}${routeLocationRef.current.search}${routeLocationRef.current.hash}`,
       });
@@ -1741,6 +1743,23 @@ export default function OrderDetail() {
           </div>
 
           <div className="flex items-center gap-3">
+            {canEditOrder && !isOrderEditRoute && (
+              <Button asChild variant="outline" size="sm" className="rounded-titan-md">
+                <Link to={ROUTES.orders.edit(order.id)} state={{ referrer: buildReferrer(location) }}>
+                  <Edit className="w-4 h-4 mr-2" />
+                  Edit Order
+                </Link>
+              </Button>
+            )}
+
+            {isOrderEditRoute && (
+              <Button asChild variant="outline" size="sm" className="rounded-titan-md">
+                <Link to={ROUTES.orders.detail(order.id)}>
+                  View Order
+                </Link>
+              </Button>
+            )}
+
             {canEditOrder && (
               <>
                 <Button
@@ -1842,6 +1861,20 @@ export default function OrderDetail() {
 
           </div>
         </div>
+
+        {isOrderEditRoute && !canEditOrder && (
+          <div className="mb-4 rounded-titan-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-800">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <div className="font-semibold">Order editing is locked</div>
+                <div>
+                  Completed and cancelled orders are read-only for normal operations. Existing history remains available.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {orderIsCanceled && (
           <div className="mb-4 rounded-titan-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -2484,7 +2517,7 @@ export default function OrderDetail() {
                       </Badge>
                     ) : null}
                   </div>
-                  {isAdminOrOwner && canEditLineItems && orderOperationalSummary.productionRequiredCount > 0 ? (
+                  {isAdminOrOwner && canEditOrder && orderOperationalSummary.productionRequiredCount > 0 ? (
                     <div className="text-xs text-muted-foreground">Bulk production handoff is available below in Line Items.</div>
                   ) : null}
                   {order?.proofLineItemId && canOpenProofingFromOrderStatus(order?.proofStatus ?? "no_proof_required") ? (
@@ -2499,7 +2532,7 @@ export default function OrderDetail() {
                 ref={orderLineItemsApiRef}
                 orderId={orderId!}
                 customerId={order.customerId}
-                readOnly={!(isAdminOrOwner && canEditLineItems)}
+                readOnly={!(isAdminOrOwner && canEditOrder)}
                 lineItems={order.lineItems as any}
                 productionFocusLineItemIds={productionFocus.highlightedIds}
                 productionPriorityLineItemIds={productionFocus.prioritizedIds}

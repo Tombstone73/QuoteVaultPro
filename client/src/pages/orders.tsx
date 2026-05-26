@@ -953,7 +953,7 @@ export default function Orders() {
               <Button
                 size="sm"
                 variant="ghost"
-                onClick={() => navigate(`${ROUTES.orders.detail(row.id)}/edit`)}
+                onClick={() => navigate(ROUTES.orders.edit(row.id), { state: { referrer: buildReferrer(location) } })}
               >
                 <Edit className="w-4 h-4" />
               </Button>
