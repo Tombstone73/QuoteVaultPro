@@ -1,10 +1,13 @@
 import * as React from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { TitanCard } from "@/components/titan";
 import { PageHeader } from "@/components/titan";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { useOrgPreferences, type OrgPreferences } from "@/hooks/useOrgPreferences";
+import { fetchMyOrgs } from "@/lib/api/me";
+import { getApiUrl } from "@/lib/apiConfig";
 import { useLowStockAlerts } from "@/hooks/useMaterials";
 import { useVendors } from "@/hooks/useVendors";
 import { MaterialsSettingsPanel } from "@/features/materials/MaterialsSettingsPanel";
@@ -68,13 +71,34 @@ import {
 } from "lucide-react";
 
 function Guard({ children }: React.PropsWithChildren<{}>) {
-  const { user } = useAuth();
-  const allowed = user && (user.role === "owner" || user.role === "admin");
+  const { user, isLoading: isAuthLoading } = useAuth();
+  const { data: orgData, isLoading: isOrgLoading } = useQuery({
+    queryKey: [getApiUrl("/api/me/orgs")],
+    queryFn: fetchMyOrgs,
+    enabled: !!user,
+    staleTime: 60_000,
+  });
+
+  const orgs = orgData?.data?.orgs ?? [];
+  const activeOrg = orgs.find((org) => org.id === orgData?.data?.lastActiveOrgId) ?? (orgs.length === 1 ? orgs[0] : null);
+  const activeOrgRole = activeOrg?.role ?? "";
+  const allowed = activeOrgRole === "owner" || activeOrgRole === "admin";
+
+  if (isAuthLoading || (!!user && isOrgLoading)) {
+    return (
+      <div className="min-h-screen bg-titan-bg-app p-6">
+        <TitanCard className="p-6">
+          <p className="text-titan-text-secondary">Loading settings...</p>
+        </TitanCard>
+      </div>
+    );
+  }
+
   if (!allowed) {
     return (
       <div className="min-h-screen bg-titan-bg-app p-6">
         <TitanCard className="p-6">
-          <p className="text-titan-text-secondary">Access denied. Settings are only available to Owners and Admins.</p>
+          <p className="text-titan-text-secondary">Access denied. Settings are only available to organization Owners and Admins.</p>
         </TitanCard>
       </div>
     );
