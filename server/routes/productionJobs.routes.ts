@@ -43,6 +43,7 @@ import {
 } from "../services/productionOwnership";
 import { routeLineItemToProduction } from "../services/productionRoutingService";
 import { assertParentOrderInProductionForJob } from "../services/orderProductionGate";
+import { isCanceledOrder, isTerminalProductionStatus } from "@shared/operationalState";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -1608,7 +1609,7 @@ export function registerProductionJobsRoutes(
           .limit(1);
         const job = jobRows[0];
         if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
-        if (job.status === "done") throw Object.assign(new Error("Job is done; reopen first"), { statusCode: 400 });
+        if (isTerminalProductionStatus(job.status)) throw Object.assign(new Error("Job is terminal; reopen or restore first"), { statusCode: 400 });
         await assertParentOrderInProductionForJob(tx, {
           organizationId,
           job,
@@ -1749,6 +1750,9 @@ export function registerProductionJobsRoutes(
         const job = jobRows[0];
         if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
         if (job.status === "done") return job;
+        if (isTerminalProductionStatus(job.status)) {
+          throw Object.assign(new Error("Cannot complete a terminal production job."), { statusCode: 409 });
+        }
         await assertParentOrderInProductionForJob(tx, {
           organizationId,
           job,
@@ -2005,11 +2009,27 @@ export function registerProductionJobsRoutes(
 
       await db.transaction(async (tx) => {
         const jobRows = await tx
-          .select({ id: productionJobs.id })
+          .select({
+            id: productionJobs.id,
+            status: productionJobs.status,
+            orderId: productionJobs.orderId,
+            lineItemId: productionJobs.lineItemId,
+            orderState: orders.state,
+            orderStatus: orders.status,
+            orderCanceledAt: orders.canceledAt,
+          })
           .from(productionJobs)
+          .innerJoin(orders, eq(orders.id, productionJobs.orderId))
           .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
           .limit(1);
-        if (!jobRows[0]) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+        const ticketJob = jobRows[0];
+        if (!ticketJob) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+        if (
+          isTerminalProductionStatus(ticketJob.status) ||
+          isCanceledOrder({ state: ticketJob.orderState, status: ticketJob.orderStatus, canceledAt: ticketJob.orderCanceledAt })
+        ) {
+          throw Object.assign(new Error("Cancelled or terminal production jobs cannot be printed as active tickets."), { statusCode: 409 });
+        }
         await appendEvent({
           tx,
           organizationId,
@@ -2358,7 +2378,7 @@ export function registerProductionJobsRoutes(
 
       const jobId = req.params.jobId;
       const statusSchema = z.object({
-        status: z.enum(["queued", "in_progress", "done"]),
+        status: productionStatusSchema,
         stepKey: z.string().nullable().optional(),
       });
       const parsed = statusSchema.safeParse(req.body || {});
@@ -2376,6 +2396,9 @@ export function registerProductionJobsRoutes(
           .limit(1);
         const job = jobRows[0];
         if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+        if (isTerminalProductionStatus(job.status) && newStatus !== job.status) {
+          throw Object.assign(new Error("Cannot advance a terminal production job."), { statusCode: 409 });
+        }
 
         // IDEMPOTENCY: If status and stepKey unchanged, return success without DB writes
         const stepKeyUnchanged = newStepKey === undefined || job.stepKey === newStepKey;
@@ -2391,11 +2414,13 @@ export function registerProductionJobsRoutes(
           return job;
         }
 
-        await assertParentOrderInProductionForJob(tx, {
-          organizationId,
-          job,
-          action: "update production job status",
-        });
+        if (newStatus !== "canceled") {
+          await assertParentOrderInProductionForJob(tx, {
+            organizationId,
+            job,
+            action: "update production job status",
+          });
+        }
 
         // If setting to done, stop timer if running
         if (newStatus === "done") {

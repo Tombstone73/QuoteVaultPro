@@ -15,7 +15,7 @@ import {
 import { db } from "../db";
 import { canAutoDeductMaterialStock } from "../lib/materialStockDeductionGuard";
 
-export const productionStatusSchema = z.enum(["queued", "in_progress", "done"]);
+export const productionStatusSchema = z.enum(["queued", "in_progress", "done", "canceled"]);
 export const productionViewKeySchema = z.string().min(1);
 export const productionEventTypeSchema = z.enum([
   "intake",

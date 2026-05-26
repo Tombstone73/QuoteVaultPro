@@ -14,6 +14,12 @@
 
 import { and, eq, notInArray, desc, sql, inArray } from "drizzle-orm";
 import { productionJobs } from "@shared/schema";
+import {
+  TERMINAL_PRODUCTION_STATUSES,
+  isOperationallyActiveProductionJob,
+  isTerminalProductionStatus,
+  type TerminalProductionStatus,
+} from "@shared/operationalState";
 import { appendEvent } from "../productionHelpers";
 
 // ────────────────────────────────────────────────────────────
@@ -21,7 +27,7 @@ import { appendEvent } from "../productionHelpers";
 // ────────────────────────────────────────────────────────────
 
 /** Statuses considered terminal (job is no longer active). */
-export const TERMINAL_JOB_STATUSES = ["done", "void", "canceled", "cancelled"] as const;
+export const TERMINAL_JOB_STATUSES = TERMINAL_PRODUCTION_STATUSES;
 
 /** The lifecycle-only statuses allowed on order_line_items.status. */
 export const LINE_ITEM_LIFECYCLE_STATUSES = ["new", "in_production", "complete", "canceled"] as const;
@@ -44,7 +50,7 @@ export const LEGACY_STATION_STATUSES = [
 // Type Exports
 // ────────────────────────────────────────────────────────────
 
-export type TerminalJobStatus = (typeof TERMINAL_JOB_STATUSES)[number];
+export type TerminalJobStatus = TerminalProductionStatus;
 
 export interface ActiveProductionJob {
   id: string;
@@ -84,17 +90,14 @@ export interface ResolveActiveProductionOwnersArgs {
  * Returns true if the given status is terminal (job is no longer active).
  */
 export function isTerminalStatus(status: string | null | undefined): boolean {
-  if (!status) return false;
-  return (TERMINAL_JOB_STATUSES as readonly string[]).includes(
-    status.toLowerCase().trim(),
-  );
+  return isTerminalProductionStatus(status);
 }
 
 /**
  * Returns true if the given status is a non-terminal (active) production job status.
  */
 export function isActiveJobStatus(status: string | null | undefined): boolean {
-  return !!status && !isTerminalStatus(status);
+  return isOperationallyActiveProductionJob({ status });
 }
 
 export function isPrepressOwnershipJob(

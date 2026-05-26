@@ -3,6 +3,7 @@ import { orderLineItems, products, orders } from "@shared/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import { routeLineItemToProduction } from "./productionRoutingService";
 import { resolveInitialProductionRoute } from "./productionRoutingResolver";
+import { isCanceledOrder } from "@shared/operationalState";
 
 type SchedulingCandidateLineItem = {
   lineItemId: string;
@@ -155,7 +156,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
     lineItemIds?: string[];
   }): Promise<{ orderExists: boolean; lineItemRecords: SchedulingCandidateLineItem[] }> => {
     const [orderRecord] = await db
-      .select({ id: orders.id })
+      .select({ id: orders.id, state: orders.state, status: orders.status, canceledAt: orders.canceledAt })
       .from(orders)
       .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
       .limit(1);
@@ -165,6 +166,14 @@ export async function scheduleOrderLineItemsForProduction(args: {
         orderExists: false,
         lineItemRecords: [],
       };
+    }
+
+    if (isCanceledOrder(orderRecord)) {
+      throw Object.assign(new Error("Cancelled orders cannot be scheduled for production"), {
+        statusCode: 409,
+        code: "ORDER_CANCELLED",
+        orderId,
+      });
     }
 
     const lineItemRecords = await db

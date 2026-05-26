@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import type { LineItemProofSummary, OrderProofCounts, OrderProofStatus } from "@shared/orderProofStatus";
+import type { CancelOrderRequest } from "@shared/orderCancellation";
 
 // ============================================================
 // QUERY KEY FACTORIES (Single Source of Truth)
@@ -83,6 +84,8 @@ export type Order = {
   createdByUserId: string;
   createdAt: string;
   updatedAt: string;
+  canceledAt?: string | null;
+  cancellationReason?: string | null;
   label?: string | null; // Job label
   poNumber?: string | null; // PO number
 };
@@ -541,6 +544,60 @@ export function useUpdateOrder(id: string) {
     onError: (error: Error) => {
       toast({
         title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+}
+
+export function useCancelOrder(orderId: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (payload: CancelOrderRequest) => {
+      const response = await fetch(`/api/orders/${orderId}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        credentials: "include",
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.message || "Failed to cancel order");
+      }
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      queryClient.invalidateQueries({ queryKey: ["orders", "internalNotes", orderId] });
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["shipments", orderId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/shipments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/design/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/fulfillment/queue"] });
+      queryClient.invalidateQueries({
+        predicate: (query) => {
+          const key = query.queryKey;
+          if (!Array.isArray(key)) return false;
+          return key[0] === "/api/production/jobs" || key[0] === "production";
+        },
+      });
+
+      const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+      toast({
+        title: "Order cancelled",
+        description: warnings.length ? warnings.join(" ") : "The order is now operationally terminal.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Cancellation blocked",
         description: error.message,
         variant: "destructive",
       });

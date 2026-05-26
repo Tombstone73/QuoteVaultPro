@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, inArray, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, ne, notInArray, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   customers,
@@ -13,6 +13,7 @@ import {
   shipments,
 } from '@shared/schema';
 import type { DerivedOrderFulfillmentStatus, QueueRowDto } from './types';
+import { TERMINAL_PRODUCTION_STATUSES } from '@shared/operationalState';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
 
@@ -361,6 +362,9 @@ export class ShipmentRepo {
           shipmentOrderId: shipmentOrders.id,
           orderId: shipmentOrders.orderId,
           orderNumber: orders.orderNumber,
+          orderState: orders.state,
+          orderStatus: orders.status,
+          orderCanceledAt: orders.canceledAt,
           customerName: customers.companyName,
         })
         .from(shipmentOrders)
@@ -733,6 +737,8 @@ export class FulfillmentDashboardRepo {
         orderNumber: orders.orderNumber,
         shippingMethod: orders.shippingMethod,
         state: orders.state,
+        status: orders.status,
+        canceledAt: orders.canceledAt,
         routingTarget: orders.routingTarget,
         productionCompletedAt: orders.productionCompletedAt,
         updatedAt: orders.updatedAt,
@@ -796,9 +802,7 @@ export class FulfillmentDashboardRepo {
         .where(and(
           eq(productionJobs.organizationId, orgId),
           inArray(productionJobs.orderId, orderIds),
-          ne(productionJobs.status, 'void'),
-          ne(productionJobs.status, 'canceled'),
-          ne(productionJobs.status, 'cancelled'),
+          notInArray(productionJobs.status, [...TERMINAL_PRODUCTION_STATUSES]),
         ))
         .orderBy(desc(productionJobs.updatedAt))
       : [];

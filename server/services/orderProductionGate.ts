@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 
 import { orderLineItems, orders } from "@shared/schema";
+import { isCanceledOrder } from "@shared/operationalState";
 
 type DbLike = {
   select: (...args: any[]) => any;
@@ -31,6 +32,7 @@ async function loadOrderForProductionOwner(tx: DbLike, args: {
         id: orders.id,
         status: orders.status,
         state: orders.state,
+        canceledAt: orders.canceledAt,
         orderNumber: orders.orderNumber,
       })
       .from(orders)
@@ -45,6 +47,7 @@ async function loadOrderForProductionOwner(tx: DbLike, args: {
         id: orders.id,
         status: orders.status,
         state: orders.state,
+        canceledAt: orders.canceledAt,
         orderNumber: orders.orderNumber,
       })
       .from(orderLineItems)
@@ -70,6 +73,19 @@ export async function assertParentOrderInProduction(tx: DbLike, args: {
       orderId: args.orderId ?? null,
       lineItemId: args.lineItemId ?? null,
     });
+  }
+
+  if (isCanceledOrder(order)) {
+    throw blocked(
+      `Cannot ${args.action}: parent order ${order.orderNumber ?? order.id} is cancelled.`,
+      {
+        action: args.action,
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        orderStatus: order.status,
+        orderState: order.state,
+      },
+    );
   }
 
   if (order.status !== "in_production") {
