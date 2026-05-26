@@ -7,6 +7,7 @@ import {
   orders,
   outboundNotifications,
   pickupTickets,
+  productionJobs,
   shipmentItems,
   shipmentOrders,
   shipments,
@@ -782,9 +783,39 @@ export class FulfillmentDashboardRepo {
         ))
       : [];
 
+    const productionJobRows = orderIds.length > 0
+      ? await this.dbInstance
+        .select({
+          id: productionJobs.id,
+          orderId: productionJobs.orderId,
+          lineItemId: productionJobs.lineItemId,
+          quantity: orderLineItems.quantity,
+        })
+        .from(productionJobs)
+        .leftJoin(orderLineItems, eq(orderLineItems.id, productionJobs.lineItemId))
+        .where(and(
+          eq(productionJobs.organizationId, orgId),
+          inArray(productionJobs.orderId, orderIds),
+          ne(productionJobs.status, 'void'),
+          ne(productionJobs.status, 'canceled'),
+          ne(productionJobs.status, 'cancelled'),
+        ))
+        .orderBy(desc(productionJobs.updatedAt))
+      : [];
+
     const orderedMap = new Map(lineItemAgg.map((row) => [row.orderId, row.orderedQty]));
     const shippedMap = new Map(shippedAgg.map((row) => [row.orderId, row.shippedQty]));
     const ticketMap = new Map(ticketRows.map((row) => [row.orderId, row]));
+    const productionJobsByOrder = new Map<string, QueueRowDto['productionJobs']>();
+    for (const job of productionJobRows) {
+      const list = productionJobsByOrder.get(job.orderId) ?? [];
+      list.push({
+        id: job.id,
+        lineItemId: job.lineItemId,
+        quantity: job.quantity == null ? null : Number(job.quantity),
+      });
+      productionJobsByOrder.set(job.orderId, list);
+    }
 
     const nowMs = Date.now();
     const rows: QueueRowDto[] = [];
@@ -820,6 +851,7 @@ export class FulfillmentDashboardRepo {
           readySince,
           shipTo: 'In-Store',
           overdue: false,
+          productionJobs: productionJobsByOrder.get(order.id) ?? [],
         };
 
         if (filters.status !== 'all' && filters.status.toLowerCase() !== status.toLowerCase()) continue;
@@ -854,6 +886,7 @@ export class FulfillmentDashboardRepo {
         readySince: readySinceIso,
         shipTo: [order.shipToCity, order.shipToState].filter(Boolean).join(', ') || 'Unknown',
         overdue,
+        productionJobs: productionJobsByOrder.get(order.id) ?? [],
       });
     }
 

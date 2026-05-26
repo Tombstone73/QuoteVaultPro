@@ -15,6 +15,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { ROUTES } from "@/config/routes";
 import { buildReferrer } from "@/lib/nav/smartBack";
+import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { FulfillmentDebugPanel } from "@/components/fulfillment/FulfillmentDebugPanel";
 import {
   FulfillmentQueueRow,
@@ -36,6 +37,11 @@ const statusOptions = [
   { value: "picked_up", label: "Picked Up" },
 ];
 
+type FulfillmentPageProps = {
+  title?: string;
+  initialType?: "all" | "ship" | "pickup";
+};
+
 function parseItemsRemaining(value: string): number {
   const match = value.match(/\d+/);
   return match ? Number(match[0]) : 0;
@@ -51,12 +57,39 @@ function statusBadgeClass(status: string): string {
   return "bg-muted text-muted-foreground border border-border";
 }
 
-export default function FulfillmentPage() {
+function FulfillmentProductionTickets({ row }: { row: FulfillmentQueueRow }) {
+  const jobs = (row.productionJobs ?? []).filter((job) => job.id);
+
+  if (jobs.length === 0) {
+    return <span className="text-xs text-muted-foreground">--</span>;
+  }
+
+  return (
+    <div className="flex max-w-[260px] flex-col gap-2">
+      {jobs.map((job, index) => (
+        <div key={job.id} className="flex flex-wrap items-center gap-2">
+          {jobs.length > 1 ? (
+            <span className="text-[10px] font-bold uppercase text-muted-foreground">Job {index + 1}</span>
+          ) : null}
+          <PrintTicketActions
+            jobId={job.id}
+            jobQuantity={job.quantity ?? undefined}
+            size="sm"
+            variant="outline"
+            className="flex flex-wrap"
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default function FulfillmentPage({ title = "Fulfillment", initialType = "all" }: FulfillmentPageProps = {}) {
   const { toast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const [type, setType] = useState<"all" | "ship" | "pickup">("all");
+  const [type, setType] = useState<"all" | "ship" | "pickup">(initialType);
   const [status, setStatus] = useState("all");
   const [overdueOnly, setOverdueOnly] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -216,7 +249,7 @@ export default function FulfillmentPage() {
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2 text-primary">
               <Truck className="h-6 w-6" />
-              <h2 className="text-lg font-medium">Fulfillment</h2>
+              <h2 className="text-lg font-medium">{title}</h2>
             </div>
           </div>
           <div className="max-w-xl flex-1">
@@ -336,12 +369,13 @@ export default function FulfillmentPage() {
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Items Remaining</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ready Since</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ship To</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Print Tickets</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {queueQuery.isLoading && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={9} className="px-4 py-12 text-center text-sm text-muted-foreground">
                     <div className="inline-flex items-center gap-2">
                       <Loader2 className="h-4 w-4 animate-spin" />
                       Loading queue...
@@ -352,7 +386,7 @@ export default function FulfillmentPage() {
 
               {!queueQuery.isLoading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-12 text-center">
+                  <td colSpan={9} className="px-4 py-12 text-center">
                     <div className="mx-auto mb-4 w-fit rounded-full bg-muted p-4">
                       <Box className="h-8 w-8 text-muted-foreground" />
                     </div>
@@ -416,6 +450,9 @@ export default function FulfillmentPage() {
                     <td className="px-4 py-4 text-sm font-medium">{row.itemsRemaining}</td>
                     <td className="px-4 py-4 text-sm text-muted-foreground">{readySince}</td>
                     <td className="px-4 py-4 text-sm text-muted-foreground">{row.shipTo}</td>
+                    <td className="px-4 py-4">
+                      <FulfillmentProductionTickets row={row} />
+                    </td>
                   </tr>
                 );
               })}

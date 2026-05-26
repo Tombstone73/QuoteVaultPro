@@ -191,6 +191,10 @@ export const proofingQueueRowSchema = z.object({
   hasApprovedProof: z.boolean(),
   requiresProofApproval: z.boolean(),
   requiresPrepress: z.boolean(),
+  activeOwnerJobId: z.string().nullable(),
+  activeOwnerStationKey: z.string().nullable(),
+  activeOwnerStepKey: z.string().nullable(),
+  productionJobId: z.string().nullable(),
   proofCount: z.number().int().nonnegative(),
 });
 

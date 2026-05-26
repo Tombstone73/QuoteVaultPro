@@ -15,6 +15,11 @@ export interface QueueRowDto {
   readySince: string | null;
   shipTo: string;
   overdue: boolean;
+  productionJobs: Array<{
+    id: string;
+    lineItemId: string | null;
+    quantity: number | null;
+  }>;
 }
 
 export interface PaginationInput {
