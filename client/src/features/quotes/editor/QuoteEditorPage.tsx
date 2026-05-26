@@ -504,7 +504,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         // Only focus if:
         // 1. Not read-only (edit mode)
         // 2. On new quote/new order route OR no customer selected yet
-        // 3. User hasn't already focused something (activeElement is not an input/textarea/select/button)
+        // 3. User hasn't already focused an editable field
         // 4. No dialog is open
         // 5. Not still loading initial quote data
         if (readOnly) return;
@@ -527,7 +527,6 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             activeEl.tagName === 'INPUT' ||
             activeEl.tagName === 'TEXTAREA' ||
             activeEl.tagName === 'SELECT' ||
-            activeEl.tagName === 'BUTTON' ||
             activeEl.getAttribute('role') === 'combobox' ||
             activeEl.getAttribute('contenteditable') === 'true'
         );

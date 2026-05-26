@@ -4,21 +4,23 @@
  * Canonical operational counts aggregation for the TitanOS sidebar badges.
  * One function, parallel count queries, one response shape.
  *
- * Counts are derived from existing canonical workflow states only —
- * no new states are introduced, no counts are persisted.
- *
- * Placement: server/services/operationalSummary.ts
+ * Counts are derived from existing canonical workflow states only.
+ * No new states are introduced, no counts are persisted.
  */
 
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
+  customers,
   inboundOrderRecords,
   invoices,
   orderLineItems,
   orders,
   productionJobs,
 } from "../../shared/schema";
+import { getProductionConfigForOrganization } from "../routes/production.shared";
+import { isPrepressOwnershipJob, resolveActiveProductionOwners } from "./productionOwnership";
+import { stationResolver } from "./stations/stationResolver";
 
 export interface OperationalSummary {
   inboundOrders: number;
@@ -35,29 +37,91 @@ export interface OperationalSummary {
   };
 }
 
-// Orders in these states are excluded from workflow queues.
 const CLOSED_ORDER_STATES = ["closed", "canceled", "production_complete"];
 
 function count(rows: { count: number }[]): number {
   return rows[0]?.count ?? 0;
 }
 
+async function countVisibleProductionJobs(
+  organizationId: string,
+  stationKey?: "flatbed" | "roll",
+  visibleStatuses: Array<"queued" | "in_progress"> = ["queued", "in_progress"],
+): Promise<number> {
+  if (stationKey) {
+    const config = await getProductionConfigForOrganization(organizationId);
+    if (!config.enabledViews.includes(stationKey)) return 0;
+  }
+
+  const resolvedStationId = stationKey
+    ? await stationResolver.resolveStationId({ organizationId, stationKey })
+    : null;
+
+  const baseRows = await db
+    .select({
+      id: productionJobs.id,
+      lineItemId: productionJobs.lineItemId,
+      status: productionJobs.status,
+    })
+    .from(productionJobs)
+    .innerJoin(orders, eq(productionJobs.orderId, orders.id))
+    .innerJoin(customers, eq(orders.customerId, customers.id))
+    .leftJoin(orderLineItems, eq(productionJobs.lineItemId, orderLineItems.id))
+    .where(
+      and(
+        eq(productionJobs.organizationId, organizationId),
+        stationKey
+          ? (resolvedStationId
+              ? sql`production_jobs.station_id = ${resolvedStationId}`
+              : eq(productionJobs.stationKey, stationKey))
+          : undefined,
+        inArray(productionJobs.status as any, visibleStatuses),
+      ),
+    );
+
+  const lineItemIds = Array.from(
+    new Set(
+      baseRows
+        .map((row) => row.lineItemId)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  );
+
+  const activeOwnerByLineItem = lineItemIds.length > 0
+    ? await resolveActiveProductionOwners(db, {
+        organizationId,
+        lineItemIds,
+        debugLabel: "operational-summary",
+      })
+    : new Map<string, any>();
+
+  return baseRows.filter((row) => {
+    if (!row.lineItemId) return true;
+
+    const activeOwner = activeOwnerByLineItem.get(row.lineItemId);
+    if (!activeOwner || activeOwner.id !== row.id) return false;
+
+    if (stationKey && (stationKey === "flatbed" || stationKey === "roll") && isPrepressOwnershipJob(activeOwner)) {
+      return false;
+    }
+
+    return true;
+  }).length;
+}
+
 export async function computeOperationalSummary(organizationId: string): Promise<OperationalSummary> {
   const [
     inboundResult,
-    overviewResult,
     designResult,
     proofingResult,
     prepressResult,
-    flatbedResult,
-    rollResult,
+    overviewCount,
+    flatbedCount,
+    rollCount,
     fulfillmentResult,
     invoiceDraftResult,
     invoiceUnpaidResult,
   ] = await Promise.all([
-    // Inbound Orders — records in the "needs_review" group.
-    // Matches InboundOrderRepository.getQueueSummary() line: status in ('received','processing','needs_review').
-    // These are the three statuses the Inbound Orders page treats as actionable queue items.
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(inboundOrderRecords)
@@ -68,19 +132,6 @@ export async function computeOperationalSummary(organizationId: string): Promise
         ),
       ),
 
-    // Overview — total active production jobs across all stations
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(productionJobs)
-      .innerJoin(orders, eq(productionJobs.orderId, orders.id))
-      .where(
-        and(
-          eq(orders.organizationId, organizationId),
-          inArray(productionJobs.status as any, ["queued", "in_progress"]),
-        ),
-      ),
-
-    // Design — line items in design workflow
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(orderLineItems)
@@ -93,7 +144,6 @@ export async function computeOperationalSummary(organizationId: string): Promise
         ),
       ),
 
-    // Proofing — line items awaiting customer proof approval
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(orderLineItems)
@@ -106,7 +156,6 @@ export async function computeOperationalSummary(organizationId: string): Promise
         ),
       ),
 
-    // Prepress — line items in prepress workflow states
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(orderLineItems)
@@ -119,33 +168,10 @@ export async function computeOperationalSummary(organizationId: string): Promise
         ),
       ),
 
-    // Flatbed — active jobs at the flatbed station
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(productionJobs)
-      .innerJoin(orders, eq(productionJobs.orderId, orders.id))
-      .where(
-        and(
-          eq(orders.organizationId, organizationId),
-          eq(productionJobs.stationKey, "flatbed"),
-          inArray(productionJobs.status as any, ["queued", "in_progress"]),
-        ),
-      ),
+    countVisibleProductionJobs(organizationId),
+    countVisibleProductionJobs(organizationId, "flatbed", ["in_progress"]),
+    countVisibleProductionJobs(organizationId, "roll", ["in_progress"]),
 
-    // Roll — active jobs at the roll station
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(productionJobs)
-      .innerJoin(orders, eq(productionJobs.orderId, orders.id))
-      .where(
-        and(
-          eq(orders.organizationId, organizationId),
-          eq(productionJobs.stationKey, "roll"),
-          inArray(productionJobs.status as any, ["queued", "in_progress"]),
-        ),
-      ),
-
-    // Fulfillment — orders that have completed production and are pending fulfillment
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(orders)
@@ -156,7 +182,6 @@ export async function computeOperationalSummary(organizationId: string): Promise
         ),
       ),
 
-    // Invoices: pending send (draft)
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(invoices)
@@ -167,7 +192,6 @@ export async function computeOperationalSummary(organizationId: string): Promise
         ),
       ),
 
-    // Invoices: unpaid (sent but not collected)
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(invoices)
@@ -181,12 +205,12 @@ export async function computeOperationalSummary(organizationId: string): Promise
 
   return {
     inboundOrders: count(inboundResult),
-    overview: count(overviewResult),
+    overview: overviewCount,
     design: count(designResult),
     proofing: count(proofingResult),
     prepress: count(prepressResult),
-    flatbed: count(flatbedResult),
-    roll: count(rollResult),
+    flatbed: flatbedCount,
+    roll: rollCount,
     fulfillment: count(fulfillmentResult),
     invoices: {
       pendingSend: count(invoiceDraftResult),

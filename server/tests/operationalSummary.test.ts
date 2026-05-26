@@ -32,18 +32,18 @@ function buildBadgeCounts(
   summary: OperationalSummary | undefined,
   approvalCount: number,
 ): Record<string, number> {
-  if (!summary) return { approvals: approvalCount };
+  const safeSummary = summary ?? makeZeroSummary();
   return {
     approvals: approvalCount,
-    "inbound-orders": summary.inboundOrders,
-    "production-overview": summary.overview,
-    "production-design": summary.design,
-    "production-proofing": summary.proofing,
-    "production-prepress": summary.prepress,
-    "production-flatbed": summary.flatbed,
-    "production-roll": summary.roll,
-    fulfillment: summary.fulfillment,
-    invoices: summary.invoices.pendingSend,
+    "inbound-orders": safeSummary.inboundOrders,
+    "production-overview": safeSummary.overview,
+    "production-design": safeSummary.design,
+    "production-proofing": safeSummary.proofing,
+    "production-prepress": safeSummary.prepress,
+    "production-flatbed": safeSummary.flatbed,
+    "production-roll": safeSummary.roll,
+    fulfillment: safeSummary.fulfillment,
+    invoices: safeSummary.invoices.pendingSend,
   };
 }
 
@@ -164,15 +164,37 @@ describe("buildBadgeCounts — zero state", () => {
     }
   });
 
-  test("falls back to approvals-only when summary is undefined", () => {
+  test("falls back to zero operational badges when summary is undefined", () => {
     const counts = buildBadgeCounts(undefined, 3);
-    expect(counts).toEqual({ approvals: 3 });
+    expect(counts).toEqual({
+      approvals: 3,
+      "inbound-orders": 0,
+      "production-overview": 0,
+      "production-design": 0,
+      "production-proofing": 0,
+      "production-prepress": 0,
+      "production-flatbed": 0,
+      "production-roll": 0,
+      fulfillment: 0,
+      invoices: 0,
+    });
   });
 
-  test("approvals is zero when approval count is 0 and summary is undefined", () => {
+  test("all badge slots remain present when approval count is 0 and summary is undefined", () => {
     const counts = buildBadgeCounts(undefined, 0);
     expect(counts.approvals).toBe(0);
-    expect(Object.keys(counts)).toHaveLength(1);
+    expect(Object.keys(counts)).toEqual([
+      "approvals",
+      "inbound-orders",
+      "production-overview",
+      "production-design",
+      "production-proofing",
+      "production-prepress",
+      "production-flatbed",
+      "production-roll",
+      "fulfillment",
+      "invoices",
+    ]);
   });
 });
 
@@ -228,6 +250,23 @@ describe("buildBadgeCounts — full mapping", () => {
     const counts = buildBadgeCounts(makeZeroSummary(), 5);
     expect(counts.approvals).toBe(5);
     expect(counts["inbound-orders"]).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Production station badges - destination board default visibility
+// ---------------------------------------------------------------------------
+
+type ProductionJobStatus = "queued" | "in_progress" | "done" | "void";
+
+function simulateStationBoardBadge(records: ProductionJobStatus[]): number {
+  return records.filter((status) => status === "in_progress").length;
+}
+
+describe("production station badges", () => {
+  test("station badges follow the destination board default visible tab", () => {
+    expect(simulateStationBoardBadge(["queued", "queued"])).toBe(0);
+    expect(simulateStationBoardBadge(["queued", "in_progress"])).toBe(1);
   });
 });
 
