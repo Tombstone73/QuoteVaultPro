@@ -704,10 +704,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
       const status = String((item as any)?.status ?? "").toLowerCase();
       const workflowState = String((item as any)?.workflowState ?? "new").toLowerCase();
-      const hasActiveProductionJob = Boolean((item as any)?.activeOwnerJobId);
-      const lockedStates = new Set(["in_production", "completed", "canceled", "cancelled"]);
+      const lockedStates = new Set(["completed", "complete", "canceled", "cancelled"]);
 
-      return !hasActiveProductionJob && !lockedStates.has(status) && !lockedStates.has(workflowState);
+      return !lockedStates.has(status) && !lockedStates.has(workflowState);
     },
     [readOnly]
   );
@@ -2385,6 +2384,13 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     approvedProofVersionId: (item as any).approvedProofVersionId ?? null,
                   }) || Boolean(lineItemProofSummary?.openProofingAvailable);
                   const hasActiveOwner = Boolean((item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || (item as any).activeOwnerJobId);
+                  const showActiveWorkEditWarning =
+                    !readOnly &&
+                    isExpanded &&
+                    (
+                      hasActiveOwner ||
+                      ["ready_for_prepress", "in_prepress", "ready_for_production", "in_production", "awaiting_proof_approval", "in_design", "on_hold"].includes(workflowState)
+                    );
                   const ownerLabel = (item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || null;
                   const policy =
                     productArtworkPolicy === "required" || productArtworkPolicy === "not_required"
@@ -2690,6 +2696,15 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 }
                                 optionsSlot={
                                   <>
+                                    {showActiveWorkEditWarning && (
+                                      <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-900">
+                                        <div className="font-medium">Active work warning</div>
+                                        <div className="mt-1">
+                                          This line item is already in production/prepress. Changes may require rework, updated files, or operator review.
+                                        </div>
+                                      </div>
+                                    )}
+
                                     {!readOnly && isExpanded && expandedItem && expandedItem.id === item.id && (
                                       <div className="mb-3 rounded-md border border-border/40 bg-background/70 p-3">
                                         <div className="mb-1.5 flex items-center justify-between gap-2">

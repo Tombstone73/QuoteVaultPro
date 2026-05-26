@@ -233,18 +233,30 @@ export const ROUTING_EDIT_INTAKE_SAFE_STATES = [
     "needs_design",
     "ready_for_prepress",
     "ready_for_production",
+    "in_design",
+    "awaiting_proof_approval",
+    "in_prepress",
+    "in_production",
+    "on_hold",
 ] as const;
+
+const LINE_ITEM_EDIT_LOCKED_STATES = new Set(["completed", "complete", "canceled", "cancelled"]);
+const ACTIVE_LINE_ITEM_EDIT_WARNING_STATES = new Set([
+    "ready_for_prepress",
+    "in_prepress",
+    "ready_for_production",
+    "in_production",
+    "awaiting_proof_approval",
+    "in_design",
+    "on_hold",
+]);
 
 export function canEditLineItemRouting(args: {
     workflowState?: string | null;
     hasActiveJob: boolean;
 }): boolean {
-    if (args.hasActiveJob) {
-        return false;
-    }
-
     const currentWorkflowState = String(args.workflowState || "new").trim().toLowerCase();
-    return ROUTING_EDIT_INTAKE_SAFE_STATES.includes(currentWorkflowState as (typeof ROUTING_EDIT_INTAKE_SAFE_STATES)[number]);
+    return !LINE_ITEM_EDIT_LOCKED_STATES.has(currentWorkflowState);
 }
 
 const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
@@ -5411,6 +5423,24 @@ export async function registerOrderRoutes(
             const oldLineItem = await storage.getOrderLineItemById(lineItemId);
             if (!oldLineItem) return res.status(404).json({ message: "Order line item not found" });
 
+            const oldLineItemStatus = String((oldLineItem as any).status || "").trim().toLowerCase();
+            const oldLineItemWorkflowState = String((oldLineItem as any).workflowState || "new").trim().toLowerCase();
+            if (LINE_ITEM_EDIT_LOCKED_STATES.has(oldLineItemStatus) || LINE_ITEM_EDIT_LOCKED_STATES.has(oldLineItemWorkflowState)) {
+                return res.status(409).json({
+                    message: "Completed or cancelled line items are locked for editing.",
+                    code: "LINE_ITEM_EDIT_LOCKED",
+                });
+            }
+
+            const activeJob = await findActiveJobForLineItem(db, {
+                organizationId,
+                lineItemId,
+            });
+            const isActiveOperationalEdit =
+                Boolean(activeJob) ||
+                ACTIVE_LINE_ITEM_EDIT_WARNING_STATES.has(oldLineItemStatus) ||
+                ACTIVE_LINE_ITEM_EDIT_WARNING_STATES.has(oldLineItemWorkflowState);
+            const submittedFields = Object.keys(updateData).filter((field) => updateData[field] !== undefined);
             const requestedRequiresDesign = updateData.requiresDesign;
             const requestedRequiresPrepress = updateData.requiresPrepress;
             const hasRoutingChange =
@@ -5419,10 +5449,6 @@ export async function registerOrderRoutes(
                 (typeof requestedRequiresPrepress === "boolean" && requestedRequiresPrepress !== Boolean((oldLineItem as any).requiresPrepress));
 
             if (hasRoutingChange) {
-                const activeJob = await findActiveJobForLineItem(db, {
-                    organizationId,
-                    lineItemId,
-                });
                 if (!canEditLineItemRouting({
                     workflowState: (oldLineItem as any).workflowState,
                     hasActiveJob: Boolean(activeJob),
@@ -5448,8 +5474,31 @@ export async function registerOrderRoutes(
                 updateData.requiresDesign = routing.requiresDesign;
                 updateData.requiresProofApproval = routing.requiresProofApproval;
                 updateData.requiresPrepress = routing.requiresPrepress;
-                updateData.workflowState = routing.workflowState;
-                updateData.status = "new";
+                if (!isActiveOperationalEdit) {
+                    updateData.workflowState = routing.workflowState;
+                    updateData.status = "new";
+                }
+            }
+
+            if (isActiveOperationalEdit && submittedFields.length > 0) {
+                const currentSpecs = updateData.specsJson && typeof updateData.specsJson === "object" && !Array.isArray(updateData.specsJson)
+                    ? updateData.specsJson
+                    : ((oldLineItem as any).specsJson && typeof (oldLineItem as any).specsJson === "object" && !Array.isArray((oldLineItem as any).specsJson)
+                        ? (oldLineItem as any).specsJson
+                        : {});
+                updateData.specsJson = {
+                    ...currentSpecs,
+                    flags: {
+                        ...((currentSpecs as any).flags || {}),
+                        production_change_warning: {
+                            at: new Date().toISOString(),
+                            actorUserId: userId,
+                            changedFields: submittedFields,
+                            workflowState: oldLineItemWorkflowState,
+                            productionJobId: activeJob?.id ?? null,
+                        },
+                    },
+                };
             }
 
             // Server-authoritative: detect pricing-relevant changes
@@ -5525,6 +5574,57 @@ export async function registerOrderRoutes(
                     note: null,
                     metadata: { lineItemId: lineItem.id, oldStatus: oldLineItem.status, newStatus: updateData.status },
                 });
+            }
+
+            if (oldLineItem && userId && isActiveOperationalEdit && submittedFields.length > 0) {
+                const stableValue = (value: any): any => {
+                    if (value instanceof Date) return value.toISOString();
+                    if (value === undefined) return null;
+                    return value;
+                };
+                const valuesEqual = (a: any, b: any): boolean => {
+                    try {
+                        return JSON.stringify(stableValue(a)) === JSON.stringify(stableValue(b));
+                    } catch {
+                        return String(a ?? "") === String(b ?? "");
+                    }
+                };
+
+                const savedLineItem = (finalLineItem ?? lineItem) as any;
+                const changedFields = submittedFields.filter((field) =>
+                    !valuesEqual((oldLineItem as any)[field], savedLineItem[field])
+                );
+
+                if (changedFields.length > 0) {
+                    const previousValues = Object.fromEntries(changedFields.map((field) => [field, stableValue((oldLineItem as any)[field])]));
+                    const newValues = Object.fromEntries(changedFields.map((field) => [field, stableValue(savedLineItem[field])]));
+                    const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+
+                    await storage.createOrderAuditLog({
+                        orderId: lineItem.orderId,
+                        orderLineItemId: lineItem.id,
+                        userId,
+                        userName,
+                        actionType: 'line_item.active_work_changed',
+                        fromStatus: oldLineItemWorkflowState,
+                        toStatus: String(savedLineItem.workflowState || oldLineItemWorkflowState),
+                        note: 'Active production/prepress line item edited; operator review may be required.',
+                        metadata: {
+                            eventType: 'line_item.active_work_changed',
+                            orderId: lineItem.orderId,
+                            lineItemId: lineItem.id,
+                            actorUserId: userId,
+                            changedFields,
+                            previousValues,
+                            newValues,
+                            workflowState: oldLineItemWorkflowState,
+                            productionJobId: activeJob?.id ?? null,
+                            productionJobStatus: activeJob?.status ?? null,
+                            warning: 'This line item is already in production/prepress. Changes may require rework, updated files, or operator review.',
+                            createdAt: new Date().toISOString(),
+                        },
+                    });
+                }
             }
 
             // Structured timeline events (v1)
@@ -5640,7 +5740,7 @@ export async function registerOrderRoutes(
             // Auto-schedule production job when productId changes and new product type has sendToProductionDefault=true.
             // Guard: only fires when productId is explicitly changed by this edit.
             // Fail-soft: scheduling failure does not block the line item update response.
-            if (updateData.productId !== undefined) {
+            if (updateData.productId !== undefined && !isActiveOperationalEdit) {
                 try {
                     const newProductId = String(updateData.productId);
                     const [ptRow] = await db
