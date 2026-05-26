@@ -763,7 +763,9 @@ export default function PrepressProductionPageV2() {
     !!selectedItem?.hasCompletedSession &&
     !selectedItem?.sessionId &&
     !selectedItem?.hasDownstreamActiveJob &&
-    hasFinalFiles;
+    hasFinalFiles &&
+    !selectedItem?.productionReleaseBlockedReason;
+  const hasProofReleaseBlock = Boolean(selectedItem?.productionReleaseBlockedReason);
   const activeSessionStartedAt = selectedItem?.sessionStartedAt ? new Date(selectedItem.sessionStartedAt) : null;
   const activeSessionElapsedSeconds =
     selectedWorkflowState === "in_prepress" && activeSessionStartedAt && Number.isFinite(activeSessionStartedAt.getTime())
@@ -1861,10 +1863,18 @@ export default function PrepressProductionPageV2() {
         {/* Sticky Footer */}
         <div className="sticky bottom-0 z-20 shrink-0 border-t border-[#2d3748] bg-[#1a232e] p-4 flex items-center justify-between">
           <div className="flex items-center gap-4">
+            {selectedItem?.proofBypassed ? (
+              <div className="flex items-center gap-2 text-green-500">
+                <CheckCircle className="w-4 h-4" />
+                <span className="text-xs font-medium">Proof Bypassed</span>
+              </div>
+            ) : null}
             {hasFinalFiles ? (
               <div className="flex items-center gap-2 text-green-500">
                 <CheckCircle className="w-4 h-4" />
-                <span className="text-xs font-medium">Final file detected</span>
+                <span className="text-xs font-medium">
+                  {hasProofReleaseBlock ? "Final file detected - awaiting proof approval" : "Final file detected"}
+                </span>
               </div>
             ) : canCompleteWithExistingArtwork ? (
               <div className="flex items-center gap-2 text-green-500">
@@ -1929,7 +1939,7 @@ export default function PrepressProductionPageV2() {
                 <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Sending...</>
               ) : (
                 <>
-                  Send to Production
+                  {hasProofReleaseBlock ? "Awaiting Proof Approval" : "Release to Production"}
                   <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                   </svg>

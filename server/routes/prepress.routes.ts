@@ -53,6 +53,7 @@ import {
 import { routeLineItemToProduction } from "../services/productionRoutingService";
 import { resolvePostPrepressProductionRoute } from "../services/productionRoutingResolver";
 import { assertParentOrderInProduction } from "../services/orderProductionGate";
+import { resolveLineItemProofReleaseGate } from "../services/proofGateService";
 import { computePlannedMaterialsForLineItem } from "../services/prepressPlannedMaterials";
 import {
   appendMaterialOverrideToSpecsJson,
@@ -819,6 +820,8 @@ export function registerPrepressQueueRoutes(
           orderId: orders.id,
           status: orderLineItems.status,
           workflowState: orderLineItems.workflowState,
+          requiresProofApproval: orderLineItems.requiresProofApproval,
+          approvedProofVersionId: orderLineItems.approvedProofVersionId,
           description: orderLineItems.description,
           productType: orderLineItems.productType,
           pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
@@ -834,6 +837,10 @@ export function registerPrepressQueueRoutes(
           dueDate: orders.dueDate,
           priority: orders.priority,
           customerName: customers.companyName,
+          proofApprovalPolicyOverride: orders.proofApprovalPolicyOverride,
+          proofApprovalOverrideReason: orders.proofApprovalOverrideReason,
+          proofApprovalOverrideAt: orders.proofApprovalOverrideAt,
+          proofApprovalOverrideByUserId: orders.proofApprovalOverrideByUserId,
         })
         .from(orderLineItems)
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
@@ -1140,6 +1147,12 @@ export function registerPrepressQueueRoutes(
         const activeOwner = activeOwnerByLineItem.get(item.lineItemId) ?? null;
         const activeOwnerIsPrepress = isPrepressOwnershipJob(activeOwner);
         const computedWorkflowState = String(item.workflowState || '').toLowerCase();
+        const proofBypassed = String(item.proofApprovalPolicyOverride || "").toLowerCase() === "bypass";
+        const hasApprovedProof = Boolean(item.approvedProofVersionId);
+        const productionReleaseBlockedReason =
+          item.requiresProofApproval && !hasApprovedProof && !proofBypassed
+            ? "Cannot release to production until proof approved"
+            : null;
 
         if (process.env.NODE_ENV !== "production" && index === 0) {
           const selectedCount = (() => {
@@ -1167,6 +1180,14 @@ export function registerPrepressQueueRoutes(
           dueDate: item.dueDate ?? null,
           status: item.status,
           workflowState: item.workflowState,
+          requiresProofApproval: item.requiresProofApproval,
+          approvedProofVersionId: item.approvedProofVersionId ?? null,
+          proofApprovalPolicyOverride: item.proofApprovalPolicyOverride ?? "inherit_default",
+          proofBypassed,
+          proofBypassReason: item.proofApprovalOverrideReason ?? null,
+          proofBypassedAt: item.proofApprovalOverrideAt ? new Date(item.proofApprovalOverrideAt as any).toISOString() : null,
+          proofBypassedByUserId: item.proofApprovalOverrideByUserId ?? null,
+          productionReleaseBlockedReason,
           hasCompletedSession: completedSessionLineItems.has(item.lineItemId),
           rush: item.priority === "rush",
           assignedTo: null,
@@ -2400,7 +2421,12 @@ export function registerPrepressQueueRoutes(
           productId: orderLineItems.productId,
           productType: orderLineItems.productType,
           requiresPrepress: orderLineItems.requiresPrepress,
+          requiresProofApproval: orderLineItems.requiresProofApproval,
+          approvedProofVersionId: orderLineItems.approvedProofVersionId,
           productTypeId: products.productTypeId,
+          proofApprovalPolicyOverride: orders.proofApprovalPolicyOverride,
+          proofApprovalOverrideReason: orders.proofApprovalOverrideReason,
+          proofApprovalOverrideAt: orders.proofApprovalOverrideAt,
         })
         .from(orderLineItems)
         .leftJoin(products, eq(orderLineItems.productId, products.id))
@@ -2480,6 +2506,19 @@ export function registerPrepressQueueRoutes(
 
       if (item.requiresPrepress && completedSessions.length === 0) {
         return res.status(400).json({ error: "Line item must complete prepress first" });
+      }
+
+      const proofGate = await resolveLineItemProofReleaseGate(db, {
+        organizationId,
+        lineItemId,
+      });
+
+      if (!proofGate.allowed) {
+        return res.status(409).json({
+          error: proofGate.blockedReason || "Cannot release to production until proof approved",
+          code: "PROOF_APPROVAL_REQUIRED",
+          proofGate,
+        });
       }
 
       const materialContext = await getPrepressMaterialContext(organizationId, lineItemId);

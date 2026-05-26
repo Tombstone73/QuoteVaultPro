@@ -38,10 +38,10 @@ import { deriveProofResponseWorkflowState } from "../services/proofingService";
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("Scenario 1: proof-required item initial state", () => {
-  test("getInitialWorkflowState: proof+prepress → awaiting_proof_approval", () => {
+  test("getInitialWorkflowState: proof+prepress can start in prepress", () => {
     expect(
       getInitialWorkflowState({ requiresDesign: false, requiresProofApproval: true, requiresPrepress: true }),
-    ).toBe("awaiting_proof_approval");
+    ).toBe("ready_for_prepress");
   });
 
   test("getInitialWorkflowState: proof only (no prepress) → awaiting_proof_approval", () => {
