@@ -25,6 +25,9 @@ import { useMaterial, useMaterialsSearch, type MaterialSearchItem } from '@/hook
 import { useAuth } from '@/hooks/useAuth';
 import { formatMaterialWeightStatus } from '@/lib/materialWeightDisplay';
 
+const MATERIAL_DROPDOWN_RESULT_LIMIT = 200;
+const MATERIAL_COMMAND_LIST_CLASS = "max-h-80 overflow-y-auto overscroll-contain";
+
 /**
  * Money input backed by a local draft string so the user can type freely —
  * including partial values like "1." and a fully-cleared field — without the
@@ -1361,7 +1364,7 @@ function MaterialIdSearchField({
   const [open, setOpen] = React.useState(false);
   const [searchText, setSearchText] = React.useState('');
 
-  const materialsQuery = useMaterialsSearch(searchText, { limit: 20, includeInactive: false });
+  const materialsQuery = useMaterialsSearch(searchText, { limit: MATERIAL_DROPDOWN_RESULT_LIMIT, includeInactive: false });
   const searchResults = materialsQuery.data || [];
 
   const selectedInResults = React.useMemo(
@@ -1426,14 +1429,14 @@ function MaterialIdSearchField({
             <ChevronsUpDown className="ml-2 h-3 w-3 shrink-0 opacity-50" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-[420px] p-0" align="start">
-          <Command>
+        <PopoverContent className="w-[420px] max-w-[calc(100vw-2rem)] overflow-hidden p-0" align="start">
+          <Command className="max-h-[420px]">
             <CommandInput
               placeholder="Search materials by name or SKU..."
               value={searchText}
               onValueChange={setSearchText}
             />
-            <CommandList>
+            <CommandList className={MATERIAL_COMMAND_LIST_CLASS}>
               <CommandEmpty>
                 {materialsQuery.isLoading ? 'Searching materials...' : 'No materials found'}
               </CommandEmpty>

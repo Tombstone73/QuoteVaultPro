@@ -52,6 +52,8 @@ function UnknownLookupWarning({ children }: { children: React.ReactNode }) {
   );
 }
 
+const MATERIAL_SELECT_CONTENT_CLASS = "max-h-80 overflow-y-auto";
+
 function parseBooleanLikeConfigValue(value: unknown): boolean | null {
   if (typeof value === "boolean") return value;
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -355,7 +357,7 @@ export const ProductForm = ({
                       <SelectValue placeholder="Select primary material" />
                     </SelectTrigger>
                   </FormControl>
-                  <SelectContent>
+                  <SelectContent className={MATERIAL_SELECT_CONTENT_CLASS}>
                     <SelectItem value="__none__">None</SelectItem>
                     {shouldShowUnknownLookupValue(materials, field.value) ? (
                       <SelectItem value={field.value}>Unknown material ({field.value})</SelectItem>
