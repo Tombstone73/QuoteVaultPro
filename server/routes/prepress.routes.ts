@@ -66,8 +66,7 @@ import * as prepressFileService from "../prepressFileService";
 import {
   parseDimensionsFromDescription,
   computeTotalSqFt,
-  extractFinishingBullets,
-  buildPrepressOptionRows,
+  resolveLineItemProductionDisplayData,
 } from "./flatStockNesting.shared";
 import {
   createRequestLogOnce,
@@ -833,15 +832,19 @@ export function registerPrepressQueueRoutes(
           description: orderLineItems.description,
           productType: orderLineItems.productType,
           productTypeId: products.productTypeId,
+          productPrimaryMaterialId: products.primaryMaterialId,
           pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
+          pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
           quantity: orderLineItems.quantity,
           width: orderLineItems.width,
           height: orderLineItems.height,
           sqft: orderLineItems.sqft,
           materialName: materials.name,
+          materialUsageJson: orderLineItems.materialUsageJson,
           specsJson: orderLineItems.specsJson,
           optionSelectionsJson: orderLineItems.optionSelectionsJson,
           selectedOptions: orderLineItems.selectedOptions,
+          productionNotes: orderLineItems.productionNotes,
           orderNumber: orders.orderNumber,
           dueDate: orders.dueDate,
           priority: orders.priority,
@@ -965,6 +968,19 @@ export function registerPrepressQueueRoutes(
 
       const treeByVersionId = new Map<string, any>(
         treeVersions.map((tv) => [tv.id, tv.treeJson])
+      );
+
+      const productPrimaryMaterialIds = Array.from(new Set(items
+        .map((item) => item.productPrimaryMaterialId)
+        .filter((id): id is string => typeof id === "string" && id.length > 0)));
+      const productPrimaryMaterialRows = productPrimaryMaterialIds.length > 0
+        ? await db
+            .select({ id: materials.id, name: materials.name })
+            .from(materials)
+            .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, productPrimaryMaterialIds)))
+        : [];
+      const productPrimaryMaterialNameById = new Map<string, string>(
+        productPrimaryMaterialRows.map((row) => [row.id, row.name])
       );
 
       const firstPreviewByLineItem = new Map<string, {
@@ -1173,8 +1189,17 @@ export function registerPrepressQueueRoutes(
           quantity: item.quantity,
           description: item.description,
         });
-        const finishingBullets = extractFinishingBullets(item);
-        const optionsRows = buildPrepressOptionRows(item, item.pbv2TreeVersionId ? treeByVersionId.get(item.pbv2TreeVersionId) : undefined);
+        const treeJson = item.pbv2TreeVersionId ? treeByVersionId.get(item.pbv2TreeVersionId) : undefined;
+        const displayData = resolveLineItemProductionDisplayData({
+          lineItem: { ...item, lineItemId: item.lineItemId },
+          treeJson,
+          materialName: item.materialName ?? null,
+          primaryMaterialName: item.productPrimaryMaterialId ? productPrimaryMaterialNameById.get(item.productPrimaryMaterialId) ?? null : null,
+        });
+        const finishingBullets = displayData.optionRows
+          .filter((row) => /(finish|laminat|grommet|hem|trim|weld|mount|sew|pocket|tape|edge|contour|cut)/i.test(row.optionLabel))
+          .map((row) => `${row.optionLabel}: ${row.selectedLabel}`);
+        const optionsRows = displayData.optionRows;
         const activeOwner = activeOwnerByLineItem.get(item.lineItemId) ?? null;
         const activeOwnerIsPrepress = isPrepressOwnershipJob(activeOwner);
         const computedWorkflowState = String(item.workflowState || '').toLowerCase();
@@ -1216,7 +1241,7 @@ export function registerPrepressQueueRoutes(
           selectedProductionDestination: destination.selected,
           destinationOverrideActive: destination.overrideActive,
           productionDestinationLabel: getProductionStationLabel(destination.selected),
-          media: item.materialName ?? null,
+          media: displayData.mediaLabel,
           dueDate: item.dueDate ?? null,
           status: item.status,
           workflowState: item.workflowState,
@@ -1235,6 +1260,8 @@ export function registerPrepressQueueRoutes(
           sessionStartedAt: latestSession?.startedAt ? new Date(latestSession.startedAt as any).toISOString() : null,
           sessionStartedByUserId: latestSession?.startedByUserId ?? null,
           prepressNotes: latestSession?.notesText ?? null,
+          lineItemNotes: displayData.lineItemNotes,
+          priorityLabel: displayData.priorityLabel,
           issueFlag: latestSession?.issueFlag ?? false,
           issueType: latestSession?.issueType ?? null,
           hasDownstreamActiveJob: !!activeOwner && !activeOwnerIsPrepress,
@@ -1821,13 +1848,16 @@ export function registerPrepressQueueRoutes(
         .select({
           lineItem: orderLineItems,
           orderNumber: orders.orderNumber,
+          priority: orders.priority,
           customerName: customers.companyName,
           materialName: materials.name,
+          productPrimaryMaterialId: products.primaryMaterialId,
         })
         .from(orderLineItems)
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
         .innerJoin(customers, eq(orders.customerId, customers.id))
         .leftJoin(materials, eq(orderLineItems.materialId, materials.id))
+        .leftJoin(products, eq(orderLineItems.productId, products.id))
         .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
         .limit(1);
 
@@ -1837,6 +1867,29 @@ export function registerPrepressQueueRoutes(
 
       const row = rows[0];
       const li = row.lineItem;
+      const [treeVersion] = li.pbv2TreeVersionId
+        ? await db
+            .select({ id: pbv2TreeVersions.id, treeJson: pbv2TreeVersions.treeJson })
+            .from(pbv2TreeVersions)
+            .where(and(eq(pbv2TreeVersions.id, li.pbv2TreeVersionId), eq(pbv2TreeVersions.organizationId, organizationId)))
+            .limit(1)
+        : [];
+      const [primaryMaterial] = row.productPrimaryMaterialId
+        ? await db
+            .select({ id: materials.id, name: materials.name })
+            .from(materials)
+            .where(and(eq(materials.id, row.productPrimaryMaterialId), eq(materials.organizationId, organizationId)))
+            .limit(1)
+        : [];
+      const displayData = resolveLineItemProductionDisplayData({
+        lineItem: { ...li, priority: row.priority },
+        treeJson: treeVersion?.treeJson,
+        materialName: row.materialName ?? null,
+        primaryMaterialName: primaryMaterial?.name ?? null,
+      });
+      const finishingBullets = displayData.optionRows
+        .filter((option) => /(finish|laminat|grommet|hem|trim|weld|mount|sew|pocket|tape|edge|contour|cut)/i.test(option.optionLabel))
+        .map((option) => `${option.optionLabel}: ${option.selectedLabel}`);
       const filesGrouped = await prepressFileService.getLineItemFiles(lineItemId, organizationId);
       const namingPolicy = await prepressFileService.getFileUploadNamingPolicy(organizationId);
       const allFiles = [...filesGrouped.originals, ...filesGrouped.finals, ...filesGrouped.references].map((f) => ({
@@ -1879,12 +1932,15 @@ export function registerPrepressQueueRoutes(
           width,
           height,
           sqFootage: computedSqFt ?? (li.sqft != null ? Number(li.sqft) : null),
-          media: row.materialName ?? null,
+          media: displayData.mediaLabel,
           printType: li.productType,
           productionDestination: getProductionStationLabel(selectedDestination),
           suggestedProductionDestination: getProductionStationLabel(suggestedDestination),
           bleed: null,
-          finishingBullets: extractFinishingBullets(li),
+          finishingBullets,
+          optionsRows: displayData.optionRows,
+          lineItemNotes: displayData.lineItemNotes,
+          priorityLabel: displayData.priorityLabel,
           originals: allFiles.filter((f) => f.role === "original"),
           finals: allFiles.filter((f) => f.role === "final"),
           references: allFiles.filter((f) => f.role === "reference"),

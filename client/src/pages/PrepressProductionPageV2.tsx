@@ -121,6 +121,14 @@ type SpecSheetData = {
   suggestedProductionDestination?: string | null;
   bleed: string | null;
   finishingBullets: string[];
+  optionsRows?: Array<{
+    groupLabel?: string | null;
+    optionLabel: string;
+    selectedLabel: string;
+    isDefault?: boolean;
+  }>;
+  lineItemNotes?: string | null;
+  priorityLabel?: string | null;
   originals: LineItemFile[];
   finals: LineItemFile[];
   references: LineItemFile[];
@@ -1268,7 +1276,7 @@ export default function PrepressProductionPageV2() {
             <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
               <Info className="w-4 h-4" /> Job Specifications
             </h3>
-            <div className="grid grid-cols-4 lg:grid-cols-6 gap-4 bg-[#1a232e] p-5 border border-[#2d3748] rounded-lg shadow-sm">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4 bg-[#1a232e] p-5 border border-[#2d3748] rounded-lg shadow-sm">
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Product</p>
                 <p className="text-sm font-medium">{selectedItem?.productName || "—"}</p>
@@ -1293,7 +1301,7 @@ export default function PrepressProductionPageV2() {
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Media</p>
-                <p className="text-sm font-medium">{selectedItem?.media || "—"}</p>
+                <p className="text-sm font-medium break-words">{selectedItem?.media || "Not specified"}</p>
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Production Destination</p>
@@ -1329,7 +1337,7 @@ export default function PrepressProductionPageV2() {
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Bleed</p>
                 <p className="text-sm font-medium">{selectedItem?.bleed || "—"}</p>
               </div>
-              <div>
+              <div className="sm:col-span-2 xl:col-span-3 min-w-0">
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Options</p>
                 {(selectedItem?.optionsRows?.length || 0) > 0 ? (
                   <div className="space-y-1.5">
@@ -1345,14 +1353,14 @@ export default function PrepressProductionPageV2() {
                         {groupLabel !== "Options" && (
                           <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-0.5">{groupLabel}</p>
                         )}
-                        <ul className="text-sm font-medium list-disc pl-4 space-y-0.5">
+                        <ul className="text-sm font-medium list-disc pl-4 space-y-1">
                           {rows.map((row: NonNullable<PrepressQueueItem["optionsRows"]>[number], index: number) => (
-                            <li key={`${groupLabel}-${row.optionLabel}-${row.selectedLabel}-${index}`} className="flex items-center gap-2 flex-wrap">
+                            <li key={`${groupLabel}-${row.optionLabel}-${row.selectedLabel}-${index}`} className="min-w-0 break-words">
                               <span>{row.optionLabel}: {row.selectedLabel}</span>
                               {typeof row.isDefault === "boolean" ? (
                                 <span
                                   className={cn(
-                                    "text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border",
+                                    "ml-2 inline-flex text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border align-middle",
                                     row.isDefault
                                       ? "border-slate-500 text-slate-300 bg-slate-700/40"
                                       : "border-amber-500 text-amber-300 bg-amber-900/20"
@@ -1374,7 +1382,13 @@ export default function PrepressProductionPageV2() {
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Priority</p>
                 <p className={cn("text-sm font-bold", selectedItem?.rush ? "text-[#e53e3e]" : "text-slate-400")}>
-                  {selectedItem?.rush ? "RUSH" : "Normal"}
+                  {selectedItem?.rush ? "RUSH" : selectedItem?.priorityLabel || "Normal"}
+                </p>
+              </div>
+              <div className="sm:col-span-2 xl:col-span-2 min-w-0">
+                <p className="text-[10px] text-slate-500 uppercase font-bold">Line Item Notes</p>
+                <p className="text-sm font-medium text-slate-300 whitespace-pre-wrap break-words">
+                  {selectedItem?.lineItemNotes || "No line item notes"}
                 </p>
               </div>
             </div>
@@ -2121,18 +2135,27 @@ export default function PrepressProductionPageV2() {
                 <div><span className="text-slate-500">Size:</span> {specSheetData.width && specSheetData.height ? `${specSheetData.width}" x ${specSheetData.height}"` : "—"}</div>
                 <div><span className="text-slate-500">Qty:</span> {specSheetData.quantity || "—"}</div>
                 <div><span className="text-slate-500">Sq Ft:</span> {specSheetData.sqFootage != null ? `${specSheetData.sqFootage.toFixed(1)} sq ft` : "—"}</div>
-                <div><span className="text-slate-500">Media:</span> {specSheetData.media || "—"}</div>
+                <div><span className="text-slate-500">Media:</span> {specSheetData.media || "Not specified"}</div>
                 <div><span className="text-slate-500">Production Destination:</span> {specSheetData.productionDestination || "—"}</div>
+                <div><span className="text-slate-500">Line Item Notes:</span> {specSheetData.lineItemNotes || "No line item notes"}</div>
               </div>
 
               <div>
                 <div className="text-slate-500 uppercase text-xs mb-2">Finishing</div>
-                {(specSheetData.finishingBullets || []).length > 0 ? (
+                {(specSheetData.optionsRows || []).length > 0 ? (
                   <ul className="list-disc pl-5 space-y-1">
-                    {specSheetData.finishingBullets.map((bullet, i) => <li key={`${bullet}-${i}`}>{bullet}</li>)}
+                    {(specSheetData.optionsRows || []).map((row, i) => (
+                      <li key={`${row.optionLabel}-${row.selectedLabel}-${i}`} className="break-words">
+                        {row.optionLabel}: {row.selectedLabel}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (specSheetData.finishingBullets || []).length > 0 ? (
+                  <ul className="list-disc pl-5 space-y-1">
+                    {specSheetData.finishingBullets.map((bullet, i) => <li key={`${bullet}-${i}`} className="break-words">{bullet}</li>)}
                   </ul>
                 ) : (
-                  <div>—</div>
+                  <div>No finishing options specified</div>
                 )}
               </div>
 
