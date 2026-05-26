@@ -28,6 +28,46 @@ describe('Option Tree v2 initializer', () => {
     });
   });
 
+  test('schema accepts high-precision pricingV2 base and tier rates', () => {
+    const parsed = optionTreeV2Schema.parse({
+      schemaVersion: 2,
+      rootNodeIds: [],
+      nodes: {},
+      meta: {
+        pricingV2: {
+          base: {
+            perSqftCents: 137.5,
+            perPieceCents: 12.345,
+            minimumChargeCents: 1000.5,
+          },
+          qtyTiers: [
+            { minQty: 1, perSqftCents: 137.5 },
+          ],
+        },
+      },
+    });
+
+    expect(parsed.meta?.pricingV2?.base?.perSqftCents).toBe(137.5);
+    expect(parsed.meta?.pricingV2?.qtyTiers?.[0]?.perSqftCents).toBe(137.5);
+  });
+
+  test('schema still rejects fractional tier count fields', () => {
+    const result = optionTreeV2Schema.safeParse({
+      schemaVersion: 2,
+      rootNodeIds: [],
+      nodes: {},
+      meta: {
+        pricingV2: {
+          qtyTiers: [
+            { minQty: 1.5, perSqftCents: 137.5 },
+          ],
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   test('maps legacy priceMode values to valid v2 pricingImpact modes', () => {
     const legacyOptionsJson = [
       {

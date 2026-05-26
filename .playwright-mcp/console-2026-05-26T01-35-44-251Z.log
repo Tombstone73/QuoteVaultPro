@@ -1,0 +1,21 @@
+[   33521ms] [INFO] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold @ http://127.0.0.1:5000/@fs/C:/Users/dale9/Downloads/QuoteVaultPro/node_modules/.vite/deps/chunk-RPCDYKBN.js?v=8d58452f:21550
+[   33815ms] [LOG] [Auth] Session: {authenticated: true, email: test@local.dev, mustChangePassword: false} @ http://127.0.0.1:5000/src/hooks/useAuth.ts:33
+[   33850ms] [WARNING] [TitanOS] Running DEV environment build @ http://127.0.0.1:5000/src/components/layout/TitanTopBar.tsx:113
+[   33853ms] [LOG] [ProductEditor] Dirty state update: {hasUnsavedChanges: false, rhfDirty: false, pbv2Dirty: false, engineDirty: false, pbv2Saving: false} @ http://127.0.0.1:5000/src/pages/ProductEditorPage.tsx:239
+[   33853ms] [LOG] [NavigationGuard] registered {guardId: 1, label: product-editor, guardCount: 1, windowPath: /products/d512ebe2-19e7-4be5-b34f-72a3381f291d/edit} @ http://127.0.0.1:5000/src/contexts/NavigationGuardContext.tsx:39
+[   33853ms] [LOG] [GUARD] ProductEditor guard registered {hasUnsavedChanges: false, willBlock: false} @ http://127.0.0.1:5000/src/pages/ProductEditorPage.tsx:310
+[   33853ms] [LOG] [ROUTE_CHANGE] /products/d512ebe2-19e7-4be5-b34f-72a3381f291d/edit @ http://127.0.0.1:5000/src/components/layout/AppLayout.tsx:64
+[   34062ms] [ERROR] Failed to load resource: the server responded with a status of 403 (Forbidden) @ http://127.0.0.1:5000/api/organization/preferences:0
+[   34080ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:5000/api/products/d512ebe2-19e7-4be5-b34f-72a3381f291d:0
+[   34118ms] [LOG] [PBV2] Tree provider registered (sync) @ http://127.0.0.1:5000/src/components/PBV2ProductBuilderSectionV2.tsx:253
+[   34119ms] [LOG] [PBV2] clearDirty callback registered (sync) @ http://127.0.0.1:5000/src/components/PBV2ProductBuilderSectionV2.tsx:267
+[   34138ms] [LOG] [PBV2ProductBuilderSectionV2] Fetching tree from GET /api/products/:id/pbv2/tree @ http://127.0.0.1:5000/src/components/PBV2ProductBuilderSectionV2.tsx:206
+[   34138ms] [LOG] [PBV2_INIT_STATE] {productId: d512ebe2-19e7-4be5-b34f-72a3381f291d, hasDraft: false, hasLocal: false, isLocalDirty: false, lastLoadedProductId: null} @ http://127.0.0.1:5000/src/components/PBV2ProductBuilderSectionV2.tsx:272
+[   34139ms] [LOG] [PBV2_PRODUCT_CHANGED] {oldProductId: null, newProductId: d512ebe2-19e7-4be5-b34f-72a3381f291d} @ http://127.0.0.1:5000/src/components/PBV2ProductBuilderSectionV2.tsx:301
+[   34139ms] [LOG] [PBV2_SEED] Existing product initialized: {mode: no-draft-no-active, productId: d512ebe2-19e7-4be5-b34f-72a3381f291d, nodeCount: 1} @ http://127.0.0.1:5000/src/components/PBV2ProductBuilderSectionV2.tsx:381
+[   34139ms] [LOG] [PBV2_STATE_RESET] setLocalTreeJson called (no draft/active, resetting to seed) {productId: d512ebe2-19e7-4be5-b34f-72a3381f291d, stack: Error
+    at http://127.0.0.1:5000/src/components/….vite/deps/chunk-RPCDYKBN.js?v=8d58452f:18119:15)} @ http://127.0.0.1:5000/src/components/PBV2ProductBuilderSectionV2.tsx:382
+[   34200ms] [LOG] [PBV2_INIT_STATE] {productId: d512ebe2-19e7-4be5-b34f-72a3381f291d, hasDraft: false, hasLocal: true, isLocalDirty: false, lastLoadedProductId: d512ebe2-19e7-4be5-b34f-72a3381f291d} @ http://127.0.0.1:5000/src/components/PBV2ProductBuilderSectionV2.tsx:272
+[   34200ms] [LOG] [ProductEditor] Dirty state update: {hasUnsavedChanges: false, rhfDirty: false, pbv2Dirty: false, engineDirty: false, pbv2Saving: false} @ http://127.0.0.1:5000/src/pages/ProductEditorPage.tsx:239
+[   34309ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:5000/api/products/d512ebe2-19e7-4be5-b34f-72a3381f291d/pbv2/tree:0
+[   34624ms] [ERROR] Failed to load resource: the server responded with a status of 400 (Bad Request) @ http://127.0.0.1:5000/api/pbv2/pricing-preview:0

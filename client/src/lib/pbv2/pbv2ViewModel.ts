@@ -645,11 +645,19 @@ export function createUpdateGroupPatch(
     const updated = { ...n };
     if (updates.name !== undefined) updated.label = updates.name;
     if (updates.description !== undefined) updated.description = updates.description;
-    if (updates.isRequired !== undefined && updated.input) {
-      updated.input = { ...updated.input, required: updates.isRequired };
+    if (updates.isRequired !== undefined) {
+      updated.input = {
+        type: updated.input?.type ?? 'select',
+        ...(updated.input ?? {}),
+        required: updates.isRequired,
+      };
     }
-    if (updates.isMultiSelect !== undefined && updated.input) {
-      updated.input = { ...updated.input, type: updates.isMultiSelect ? 'multiselect' : 'select' };
+    if (updates.isMultiSelect !== undefined) {
+      updated.input = {
+        ...(updated.input ?? {}),
+        required: updated.input?.required ?? false,
+        type: updates.isMultiSelect ? 'multiselect' : 'select',
+      };
     }
     if (Object.prototype.hasOwnProperty.call(updates, 'visibilityRules')) {
       const nextRules = updates.visibilityRules;
