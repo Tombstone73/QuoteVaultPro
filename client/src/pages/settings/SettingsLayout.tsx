@@ -4,7 +4,7 @@ import { TitanCard } from "@/components/titan";
 import { PageHeader } from "@/components/titan";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
-import { useOrgPreferences } from "@/hooks/useOrgPreferences";
+import { useOrgPreferences, type OrgPreferences } from "@/hooks/useOrgPreferences";
 import { useLowStockAlerts } from "@/hooks/useMaterials";
 import { useVendors } from "@/hooks/useVendors";
 import { MaterialsSettingsPanel } from "@/features/materials/MaterialsSettingsPanel";
@@ -1525,6 +1525,18 @@ export function PreferencesSettings() {
       },
     });
   };
+
+  const handleFileUploadNamingChange = async (
+    patch: NonNullable<OrgPreferences["fileUploadNaming"]>,
+  ) => {
+    await updatePreferences({
+      ...preferences,
+      fileUploadNaming: {
+        ...preferences.fileUploadNaming,
+        ...patch,
+      },
+    });
+  };
   
   if (isLoading) {
     return (
@@ -1697,6 +1709,77 @@ export function PreferencesSettings() {
             </div>
           </div>
         </div>
+
+        {/* File Upload Naming Section */}
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-titan-base font-medium text-titan-text-primary">File Upload Naming</h3>
+            <p className="text-titan-sm text-titan-text-muted mt-1">
+              Control job-number prefixes and prepress labels on operator-facing upload filenames.
+            </p>
+          </div>
+
+          <div className="space-y-4">
+            <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+              <div className="flex-1 space-y-1">
+                <Label className="text-titan-sm font-medium text-titan-text-primary">Job number prefix</Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  Choose whether prepress filenames include no job number, the numeric job number, or the full order/job number.
+                </p>
+              </div>
+              <div className="w-[210px]">
+                <Select
+                  value={preferences.fileUploadNaming?.fileUploadJobPrefixMode ?? "full_job_number"}
+                  onValueChange={(value) =>
+                    handleFileUploadNamingChange({
+                      fileUploadJobPrefixMode: value as NonNullable<OrgPreferences["fileUploadNaming"]>["fileUploadJobPrefixMode"],
+                    })
+                  }
+                  disabled={isUpdating}
+                >
+                  <SelectTrigger aria-label="File upload job prefix mode">
+                    <SelectValue placeholder="Select prefix" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None</SelectItem>
+                    <SelectItem value="numeric_only">Numeric only</SelectItem>
+                    <SelectItem value="full_job_number">Full job number</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+              <div className="flex-1 space-y-1">
+                <Label className="text-titan-sm font-medium text-titan-text-primary">Prepress file labels</Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  Required keeps the Print, Proof, or Cut File choice mandatory. Optional allows files with no label suffix.
+                </p>
+              </div>
+              <div className="w-[210px]">
+                <Select
+                  value={preferences.fileUploadNaming?.prepressFileLabelMode ?? "required"}
+                  onValueChange={(value) =>
+                    handleFileUploadNamingChange({
+                      prepressFileLabelMode: value as NonNullable<OrgPreferences["fileUploadNaming"]>["prepressFileLabelMode"],
+                    })
+                  }
+                  disabled={isUpdating}
+                >
+                  <SelectTrigger aria-label="Prepress file label mode">
+                    <SelectValue placeholder="Select label mode" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="optional">Optional</SelectItem>
+                    <SelectItem value="required">Required</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="h-px bg-titan-border-subtle" />
 
         {/* Inventory Reservations Section */}
         <div className="space-y-4">

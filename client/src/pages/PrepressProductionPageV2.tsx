@@ -18,6 +18,7 @@ import { AttachmentViewerDialog, type AttachmentData } from "@/components/Attach
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import type { PrepressQueueItem, PrepressQueueWorkflowState } from "@/hooks/useOrders";
 import { usePageVisible } from "@/hooks/usePageVisible";
+import type { FileUploadNamingPolicy } from "@shared/fileUploadNaming";
 
 type LineItemFile = {
   id: string;
@@ -217,6 +218,17 @@ function formatElapsedDuration(totalSeconds: number): string {
   return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
 }
 
+function formatPrepressTagLabel(tag: string | null | undefined, defaultTag: string): string {
+  const normalized = String(tag || "").trim().toLowerCase();
+  if (!normalized || normalized === "none") {
+    return defaultTag === "final" ? "No label" : defaultTag;
+  }
+  if (normalized === "final_print" || normalized === "print") return "Print";
+  if (normalized === "proof_only" || normalized === "proof") return "Proof";
+  if (normalized === "cut_file" || normalized === "cut") return "Cut File";
+  return tag || defaultTag;
+}
+
 const PREPRESS_QUEUE_QUERY_KEY = ["/api/prepress/queue"] as const;
 
 function getPrepressLineItemQueryKey(lineItemId: string | null) {
@@ -228,6 +240,7 @@ export default function PrepressProductionPageV2() {
   const queryClient = useQueryClient();
   const isPageVisible = usePageVisible();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const hasSelectedTagManuallyRef = useRef(false);
   
   // UI State
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
@@ -241,7 +254,7 @@ export default function PrepressProductionPageV2() {
   const [flagForQc, setFlagForQc] = useState(false);
   const [issueType, setIssueType] = useState("");
   const [uploadRole, setUploadRole] = useState<"original" | "final">("final");
-  const [selectedTag, setSelectedTag] = useState("final_print");
+  const [selectedTag, setSelectedTag] = useState("none");
   const [uploadingFiles, setUploadingFiles] = useState<UploadProgress[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [specSheetOpen, setSpecSheetOpen] = useState(false);
@@ -326,6 +339,33 @@ export default function PrepressProductionPageV2() {
     },
     enabled: !!selectedLineItemId,
   });
+
+  const { data: fileNamingPolicy } = useQuery<FileUploadNamingPolicy>({
+    queryKey: ["/api/prepress/file-naming-policy"],
+    queryFn: async () => {
+      const res = await fetch("/api/prepress/file-naming-policy", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch file naming policy");
+      const data = await res.json();
+      return data.data as FileUploadNamingPolicy;
+    },
+  });
+
+  const prepressFileLabelMode = fileNamingPolicy?.prepressFileLabelMode ?? "required";
+
+  useEffect(() => {
+    if (!fileNamingPolicy) return;
+    if (fileNamingPolicy.prepressFileLabelMode === "required" && selectedTag === "none") {
+      setSelectedTag("final_print");
+      return;
+    }
+    if (
+      fileNamingPolicy.prepressFileLabelMode === "optional" &&
+      !hasSelectedTagManuallyRef.current &&
+      selectedTag === "final_print"
+    ) {
+      setSelectedTag("none");
+    }
+  }, [fileNamingPolicy, selectedTag]);
 
   const { data: historyData, isLoading: historyLoading } = useQuery({
     queryKey: ["/api/prepress/line-item", selectedLineItemId, "history"],
@@ -641,7 +681,7 @@ export default function PrepressProductionPageV2() {
     thumbUrl: file.thumbnailUrl || null,
     displayName: file.computedDisplayFilename || file.originalFilename,
     uploadedByLabel: file.uploadedBy,
-    tagLabel: file.tag || defaultTag,
+    tagLabel: formatPrepressTagLabel(file.tag, defaultTag),
     downloadUrl: file.downloadUrl ?? `/api/prepress/files/${file.id}/download`,
     sizeBytesValue: file.sizeBytes,
   });
@@ -1521,7 +1561,20 @@ export default function PrepressProductionPageV2() {
               
               <div className="mb-4">
                 <p className="text-[10px] uppercase font-bold text-slate-500 mb-2 tracking-wider">File Type</p>
-                <RadioGroup value={selectedTag} onValueChange={setSelectedTag} className="flex items-center gap-6">
+                <RadioGroup
+                  value={selectedTag}
+                  onValueChange={(value) => {
+                    hasSelectedTagManuallyRef.current = true;
+                    setSelectedTag(value);
+                  }}
+                  className="flex items-center gap-6"
+                >
+                  {prepressFileLabelMode === "optional" ? (
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="none" id="tag-none" className="border-[#2d3748] text-[#1773cf]" />
+                      <Label htmlFor="tag-none" className="text-sm font-medium text-slate-300 cursor-pointer">No label</Label>
+                    </div>
+                  ) : null}
                   <div className="flex items-center space-x-2">
                     <RadioGroupItem value="final_print" id="tag-print" className="border-[#2d3748] text-[#1773cf]" />
                     <Label htmlFor="tag-print" className="text-sm font-medium text-slate-300 cursor-pointer">Print</Label>

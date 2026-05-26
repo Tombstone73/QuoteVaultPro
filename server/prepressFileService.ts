@@ -9,7 +9,7 @@
  */
 
 import { db } from "./db";
-import { lineItemFiles, orders, orderLineItems, orderAttachments } from "../shared/schema";
+import { lineItemFiles, orders, orderLineItems, orderAttachments, organizations } from "../shared/schema";
 import { eq, and, desc } from "drizzle-orm";
 import { getStorageClient } from "./objectStorage";
 import type { Response } from "express";
@@ -29,6 +29,17 @@ import {
   resolveDerivativeFileAccess,
   resolveOriginalFileAccess,
 } from "./lib/supabaseObjectHelpers";
+import {
+  DEFAULT_FILE_UPLOAD_NAMING_POLICY,
+  buildFileUploadDisplayFilename,
+  normalizeFileUploadJobPrefixMode,
+  normalizePrepressFileLabel,
+  normalizePrepressFileLabelMode,
+  numericJobNumberFromFull,
+  type FileUploadNamingPolicy,
+  type PrepressFileLabel,
+} from "@shared/fileUploadNaming";
+import { DEFAULT_ORGANIZATION_ID } from "./tenantContext";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
 
@@ -64,35 +75,74 @@ export type EnsuredFinalArtworkResult = {
 const MAX_FILE_SIZE_MB = 250;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
-function splitExtension(filename: string): { base: string; ext: string } {
-  const lastDot = filename.lastIndexOf(".");
-  if (lastDot <= 0 || lastDot === filename.length - 1) {
-    return { base: filename, ext: "" };
-  }
+function mapTagToPrepressLabel(tag?: string | null): PrepressFileLabel {
+  const normalized = (tag || "").trim().toLowerCase();
+  if (!normalized || normalized === "none") return "none";
+  if (normalized === "proof_only" || normalized === "proof") return "proof";
+  if (normalized === "cut_file" || normalized === "cut") return "cut_file";
+  if (normalized === "final_print" || normalized === "print") return "print";
+  return normalizePrepressFileLabel(normalized);
+}
+
+export function resolveFileUploadNamingPolicyFromPreferences(
+  preferences: unknown,
+  organizationId?: string | null
+): FileUploadNamingPolicy {
+  const namingPreferences = ((preferences as any)?.fileUploadNaming && typeof (preferences as any).fileUploadNaming === "object")
+    ? (preferences as any).fileUploadNaming
+    : {};
+
+  const titanDefault: FileUploadNamingPolicy | null = organizationId === DEFAULT_ORGANIZATION_ID
+    ? {
+        fileUploadJobPrefixMode: "numeric_only",
+        prepressFileLabelMode: "optional",
+      }
+    : null;
+
+  const base = titanDefault ?? DEFAULT_FILE_UPLOAD_NAMING_POLICY;
+
   return {
-    base: filename.slice(0, lastDot),
-    ext: filename.slice(lastDot),
+    fileUploadJobPrefixMode: normalizeFileUploadJobPrefixMode(
+      namingPreferences.fileUploadJobPrefixMode ?? base.fileUploadJobPrefixMode
+    ),
+    prepressFileLabelMode: normalizePrepressFileLabelMode(
+      namingPreferences.prepressFileLabelMode ?? base.prepressFileLabelMode
+    ),
   };
 }
 
-function mapTagToDisplay(tag?: string | null): string {
-  const normalized = (tag || "").trim().toLowerCase();
-  if (normalized === "proof_only" || normalized === "proof") return "Proof";
-  if (normalized === "cut_file" || normalized === "cut") return "CutFile";
-  return "Print";
+export async function getFileUploadNamingPolicy(organizationId: string): Promise<FileUploadNamingPolicy> {
+  const [org] = await db
+    .select({ settings: organizations.settings })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId))
+    .limit(1);
+
+  const preferences = (org?.settings as any)?.preferences;
+  return resolveFileUploadNamingPolicyFromPreferences(preferences, organizationId);
 }
 
 export function buildComputedDisplayFilename(params: {
   role: string;
   originalFilename: string;
   tag?: string | null;
+  fullJobNumber?: string | null;
+  numericJobNumber?: string | null;
+  namingPolicy?: FileUploadNamingPolicy | null;
 }): string {
   const { role, originalFilename, tag } = params;
-  if (role !== "final") return originalFilename;
+  const namingPolicy = params.namingPolicy ?? DEFAULT_FILE_UPLOAD_NAMING_POLICY;
+  const fullJobNumber = params.fullJobNumber ?? "";
+  const numericJobNumber = params.numericJobNumber ?? numericJobNumberFromFull(fullJobNumber);
+  const prepressLabel = role === "final" ? mapTagToPrepressLabel(tag) : "none";
 
-  const { base, ext } = splitExtension(originalFilename);
-  const suffix = mapTagToDisplay(tag);
-  return `${base}_FINAL_${suffix}${ext}`;
+  return buildFileUploadDisplayFilename({
+    originalFilename,
+    fullJobNumber,
+    numericJobNumber,
+    fileUploadJobPrefixMode: namingPolicy.fileUploadJobPrefixMode,
+    prepressLabel,
+  });
 }
 
 /**
@@ -282,16 +332,17 @@ export async function downloadLineItemFile(
     return;
   }
 
-  // Get job number from order (orders table doesn't have jobNumber, use orderNumber)
   const jobNumber = file.order.orderNumber || "NOJOB";
-
-  // Download filename with job number prefix + TWO SPACES
+  const namingPolicy = await getFileUploadNamingPolicy(organizationId);
   const computedDisplayFilename = buildComputedDisplayFilename({
     role: file.file.role,
     originalFilename: file.file.originalFilename,
     tag: file.file.tag,
+    fullJobNumber: jobNumber,
+    numericJobNumber: numericJobNumberFromFull(jobNumber),
+    namingPolicy,
   });
-  const downloadFilename = `${jobNumber}  ${computedDisplayFilename}`;
+  const downloadFilename = computedDisplayFilename;
   const dispositionType = options?.inline ? "inline" : "attachment";
   const etag = buildPrepressDownloadEtag(file.file.id, file.file.sizeBytes, file.file.createdAt);
   const ifNoneMatchHeader = Array.isArray(res.req?.headers["if-none-match"])
@@ -398,7 +449,14 @@ export async function downloadOriginalsAsZip(
   }
 
   const jobNumber = files[0].order.orderNumber || "NOJOB";
-  const zipFilename = `${jobNumber}  originals.zip`;
+  const namingPolicy = await getFileUploadNamingPolicy(organizationId);
+  const zipFilename = buildFileUploadDisplayFilename({
+    originalFilename: "originals.zip",
+    fullJobNumber: jobNumber,
+    numericJobNumber: numericJobNumberFromFull(jobNumber),
+    fileUploadJobPrefixMode: namingPolicy.fileUploadJobPrefixMode,
+    prepressLabel: "none",
+  });
 
   res.set({
     "Content-Type": "application/zip",
@@ -418,9 +476,16 @@ export async function downloadOriginalsAsZip(
 
   archive.pipe(res);
 
-  // Add each file to the archive with job number prefix
+  // Add each file to the archive with the org's configured human-readable name.
   for (const fileRecord of files) {
-    const entryName = `${jobNumber}  ${fileRecord.file.originalFilename}`;
+    const entryName = buildComputedDisplayFilename({
+      role: fileRecord.file.role,
+      originalFilename: fileRecord.file.originalFilename,
+      tag: fileRecord.file.tag,
+      fullJobNumber: jobNumber,
+      numericJobNumber: numericJobNumberFromFull(jobNumber),
+      namingPolicy,
+    });
 
     if (fileRecord.file.storageBucket) {
       const bucket = getStorageClient().bucket(fileRecord.file.storageBucket || BUCKET_NAME);
@@ -556,6 +621,8 @@ export async function ensureFinalArtworkForLineItem(params: {
   createdByUserId: string;
 }): Promise<EnsuredFinalArtworkResult | null> {
   const { organizationId, orderId, lineItemId, prepressSessionId, createdByUserId } = params;
+  const namingPolicy = await getFileUploadNamingPolicy(organizationId);
+  const defaultFinalTag = namingPolicy.prepressFileLabelMode === "required" ? "final_print" : null;
 
   const [existingFinal] = await db
     .select()
@@ -602,7 +669,7 @@ export async function ensureFinalArtworkForLineItem(params: {
       fileRecordId: existingOriginal.fileRecordId || null,
       role: "final",
       status: "active",
-      tag: "final_print",
+      tag: defaultFinalTag,
       storageBucket: existingOriginal.storageBucket || null,
       storagePath: existingOriginal.storagePath,
       storageKey: existingOriginal.storageKey || existingOriginal.storagePath,
@@ -675,7 +742,7 @@ export async function ensureFinalArtworkForLineItem(params: {
     fileRecordId: eligibleAttachment.fileRecordId || null,
     role: "final",
     status: "active",
-    tag: "final_print",
+    tag: defaultFinalTag,
     storageBucket: null,
     storagePath: resolvedStoragePath,
     storageKey: resolvedStoragePath,
