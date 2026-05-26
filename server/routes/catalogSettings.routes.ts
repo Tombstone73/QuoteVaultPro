@@ -25,6 +25,9 @@ import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
 import { insertGlobalVariableSchema, updateGlobalVariableSchema } from "@shared/schema";
 import { getMaxInvoiceNumber } from "../invoicesService";
+import { DOCUMENT_NUMBER_PREFIX_VARIABLES, sanitizeDocumentNumberPrefix } from "@shared/documentNumbering";
+
+const DOCUMENT_NUMBER_PREFIX_NAMES = new Set(Object.values(DOCUMENT_NUMBER_PREFIX_VARIABLES));
 
 export function registerCatalogSettingsRoutes(
   app: Express,
@@ -111,6 +114,14 @@ export function registerCatalogSettingsRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const variableData = insertGlobalVariableSchema.parse(req.body);
+      if (DOCUMENT_NUMBER_PREFIX_NAMES.has(variableData.name)) {
+        try {
+          variableData.value = sanitizeDocumentNumberPrefix(variableData.value);
+          variableData.category = variableData.category || "numbering";
+        } catch (prefixError: any) {
+          return res.status(400).json({ message: prefixError?.message || "Invalid document number prefix" });
+        }
+      }
       const variable = await storage.createGlobalVariable(organizationId, variableData);
       res.json(variable);
     } catch (error) {
@@ -134,8 +145,14 @@ export function registerCatalogSettingsRoutes(
       // Validate numbering sequence updates — prevent setting below the existing maximum
       const currentVariable = await storage.getGlobalVariableById(organizationId, req.params.id);
       if (variableData.value !== undefined && currentVariable?.name) {
-        const newValue = Math.floor(Number(variableData.value));
-        if (currentVariable.name === 'next_quote_number') {
+        if (DOCUMENT_NUMBER_PREFIX_NAMES.has(currentVariable.name)) {
+          try {
+            variableData.value = sanitizeDocumentNumberPrefix(variableData.value);
+          } catch (prefixError: any) {
+            return res.status(400).json({ message: prefixError?.message || "Invalid document number prefix" });
+          }
+        } else if (currentVariable.name === 'next_quote_number') {
+          const newValue = Math.floor(Number(variableData.value));
           const maxQuoteNumber = await storage.getMaxQuoteNumber(organizationId);
           if (maxQuoteNumber !== null && newValue <= maxQuoteNumber) {
             return res.status(400).json({
@@ -143,6 +160,7 @@ export function registerCatalogSettingsRoutes(
             });
           }
         } else if (currentVariable.name === 'next_order_number') {
+          const newValue = Math.floor(Number(variableData.value));
           const maxOrderNumber = await storage.getMaxOrderNumber(organizationId);
           if (maxOrderNumber !== null && newValue <= maxOrderNumber) {
             return res.status(400).json({
@@ -150,6 +168,7 @@ export function registerCatalogSettingsRoutes(
             });
           }
         } else if (currentVariable.name === 'next_invoice_number') {
+          const newValue = Math.floor(Number(variableData.value));
           const maxInvoiceNumber = await getMaxInvoiceNumber(organizationId);
           if (maxInvoiceNumber !== null && newValue <= maxInvoiceNumber) {
             return res.status(400).json({

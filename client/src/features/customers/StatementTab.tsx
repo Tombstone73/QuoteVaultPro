@@ -69,6 +69,7 @@ interface CustomerIdentity {
 interface OrderStatementRow {
   orderId: string;
   orderNumber: string;
+  displayNumber?: string | null;
   poNumber: string | null;
   date: string;
   dueDate: string | null;
@@ -78,6 +79,7 @@ interface OrderStatementRow {
   total: string;
   invoiceStatus: string | null;
   invoiceNumber: number | null;
+  invoiceDisplayNumber?: string | null;
   balanceDue: string | null;
   linkId: string;
 }
@@ -85,6 +87,7 @@ interface OrderStatementRow {
 interface InvoiceStatementRow {
   invoiceId: string;
   invoiceNumber: number;
+  displayNumber?: string | null;
   issueDate: string;
   dueDate: string | null;
   status: string;
@@ -100,6 +103,7 @@ interface InvoiceStatementRow {
 interface QuoteStatementRow {
   quoteId: string;
   quoteNumber: number | null;
+  displayNumber?: string | null;
   createdAt: string;
   status: string;
   total: string;
@@ -361,7 +365,7 @@ function OpenOrdersSection({
                   >
                     <td className="px-4 py-3 font-medium text-blue-400">
                       <div className="flex items-center gap-1.5">
-                        ORD-{row.orderNumber}
+                        {row.displayNumber || row.orderNumber}
                         <ExternalLink className="w-3 h-3 opacity-50" />
                       </div>
                     </td>
@@ -440,7 +444,7 @@ function CompletedOrdersSection({
                   >
                     <td className="px-4 py-3 font-medium text-blue-400">
                       <div className="flex items-center gap-1.5">
-                        ORD-{row.orderNumber}
+                        {row.displayNumber || row.orderNumber}
                         <ExternalLink className="w-3 h-3 opacity-50" />
                       </div>
                     </td>
@@ -530,7 +534,7 @@ function InvoicesSection({ rows, includeInvoices }: { rows: InvoiceStatementRow[
                   >
                     <td className="px-4 py-3 font-medium text-blue-400">
                       <div className="flex items-center gap-1.5">
-                        INV-{inv.invoiceNumber}
+                        {inv.displayNumber || inv.invoiceNumber}
                         <ExternalLink className="w-3 h-3 opacity-50" />
                       </div>
                     </td>
@@ -538,7 +542,7 @@ function InvoicesSection({ rows, includeInvoices }: { rows: InvoiceStatementRow[
                     <td className="px-4 py-3 text-titan-text-secondary">{formatDate(inv.issueDate)}</td>
                     <td className="px-4 py-3 text-titan-text-secondary">{formatDate(inv.dueDate)}</td>
                     <td className="px-4 py-3 text-titan-text-secondary">
-                      {inv.relatedOrderNumber ? `ORD-${inv.relatedOrderNumber}` : "—"}
+                      {inv.relatedOrderNumber || "—"}
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={inv.status} styleMap={INVOICE_STATUS_STYLES} />
@@ -609,7 +613,7 @@ function QuotesSection({ rows, includeQuotes }: { rows: QuoteStatementRow[] | nu
                   >
                     <td className="px-4 py-3 font-medium text-blue-400">
                       <div className="flex items-center gap-1.5">
-                        {q.quoteNumber != null ? `Q-${q.quoteNumber}` : "Draft"}
+                        {q.displayNumber || (q.quoteNumber != null ? String(q.quoteNumber) : "Draft")}
                         <ExternalLink className="w-3 h-3 opacity-50" />
                       </div>
                     </td>

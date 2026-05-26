@@ -168,7 +168,7 @@ export default function PortalInvoiceDetailPage() {
             <Link to="/portal/invoices">Back to invoices</Link>
           </Button>
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-semibold tracking-normal">Invoice #{invoice.invoiceNumber}</h1>
+            <h1 className="text-2xl font-semibold tracking-normal">Invoice {invoice.displayNumber || invoice.invoiceNumber}</h1>
             <Badge variant={statusVariant(invoice.status)}>{invoice.paymentStatusLabel}</Badge>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">

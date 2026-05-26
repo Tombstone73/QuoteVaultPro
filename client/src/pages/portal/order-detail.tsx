@@ -79,7 +79,7 @@ export default function PortalOrderDetailPage() {
             </Link>
           </Button>
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-semibold tracking-normal">Order #{order.orderNumber}</h1>
+            <h1 className="text-2xl font-semibold tracking-normal">Order {order.displayNumber || order.orderNumber}</h1>
             <Badge variant={statusVariant(order.displayStatus)}>{order.displayStatus}</Badge>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">

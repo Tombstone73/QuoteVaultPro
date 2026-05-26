@@ -90,8 +90,13 @@ export type ProductionJobListItem = {
   productionNotes?: string | null;
   poNumber?: string | null;
   fulfillment?: string | null;
+  orderNumber?: string;
+  displayNumber?: string | null;
+  numberCore?: number | null;
   order: {
     id: string;    customerId: string;    orderNumber: string;
+    displayNumber?: string | null;
+    numberCore?: number | null;
     customerName: string;
     contactName?: string | null;
     internalNotes?: string | null;

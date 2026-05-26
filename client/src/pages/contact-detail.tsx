@@ -50,6 +50,7 @@ import { Page, ContentLayout, StatusPill, getStatusVariant } from "@/components/
 import { useSmartBack } from "@/hooks/useSmartBack";
 import BackNavControls from "@/components/BackNavControls";
 import { ContactFlagPill, CONTACT_FLAGS } from "@/components/ContactFlagPill";
+import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PAGE
@@ -527,7 +528,11 @@ export default function ContactDetailPage() {
                   >
                     <td className="px-4 py-3">
                       <span className="text-titan-sm font-medium text-titan-accent">
-                        {order.orderNumber}
+                        {resolveDocumentDisplayNumber({
+                          displayNumber: (order as any).displayNumber,
+                          numberCore: (order as any).numberCore,
+                          legacyNumber: order.orderNumber,
+                        }) || order.orderNumber}
                       </span>
                     </td>
                     <td className="px-4 py-3">
@@ -619,7 +624,11 @@ export default function ContactDetailPage() {
                   >
                     <td className="px-4 py-3">
                       <span className="text-titan-sm font-medium text-titan-accent">
-                        Q-{quote.quoteNumber}
+                        {resolveDocumentDisplayNumber({
+                          displayNumber: (quote as any).displayNumber,
+                          numberCore: (quote as any).numberCore,
+                          legacyNumber: quote.quoteNumber,
+                        }) || "Draft"}
                       </span>
                     </td>
                     <td className="px-4 py-3">

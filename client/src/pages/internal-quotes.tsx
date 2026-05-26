@@ -78,6 +78,7 @@ import type { Organization } from "@shared/schema";
 import type { QuoteWorkflowState } from "@shared/quoteWorkflow";
 import { useSmartBack } from "@/hooks/useSmartBack";
 import BackNavControls from "@/components/BackNavControls";
+import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 
 type SortKey = "date" | "quoteNumber" | "customer" | "total" | "items" | "source" | "createdBy" | "listLabel" | "jobLabel";
 
@@ -415,7 +416,11 @@ export default function InternalQuotes() {
   const getExportValue = (quote: QuoteRow, columnKey: string): CsvValue => {
     switch (columnKey) {
       case "quoteNumber":
-        return quote.quoteNumber ?? "";
+        return resolveDocumentDisplayNumber({
+          displayNumber: (quote as any).displayNumber,
+          numberCore: (quote as any).numberCore,
+          legacyNumber: quote.quoteNumber,
+        }) ?? "";
       case "listLabel":
         return quote.listLabel ?? "";
       case "jobLabel":
@@ -684,7 +689,11 @@ export default function InternalQuotes() {
           <TableCell style={getColStyle("quoteNumber")}>
             <div className="flex min-w-0 flex-col gap-1">
               <span className="font-medium text-titan-accent hover:text-titan-accent-hover hover:underline cursor-pointer block truncate">
-                {quote.quoteNumber || "N/A"}
+                {resolveDocumentDisplayNumber({
+                  displayNumber: (quote as any).displayNumber,
+                  numberCore: (quote as any).numberCore,
+                  legacyNumber: quote.quoteNumber,
+                }) || "N/A"}
               </span>
               <InboundReviewBadge inboundReview={quote.inboundReview} />
             </div>

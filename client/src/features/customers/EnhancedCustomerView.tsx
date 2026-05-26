@@ -78,6 +78,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useCustomer, type CustomerWithRelations } from "@/hooks/useCustomer";
+import { documentNumberMatchesSearch, resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { useOrders, type Order } from "@/hooks/useOrders";
 import { useInvoices } from "@/hooks/useInvoices";
 import { ROUTES } from "@/config/routes";
@@ -1287,7 +1288,12 @@ function OrdersTable({
     let result = orders.filter((order: any) => {
       const matchesSearch =
         !searchQuery ||
-        order.orderNumber?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        documentNumberMatchesSearch({
+          query: searchQuery,
+          displayNumber: order.displayNumber,
+          numberCore: order.numberCore,
+          legacyNumber: order.orderNumber,
+        }) ||
         order.poNumber?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         order.label?.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesStatus =
@@ -1304,8 +1310,8 @@ function OrdersTable({
           
           switch (sort.id) {
             case "orderNumber":
-              aVal = a.orderNumber || "";
-              bVal = b.orderNumber || "";
+              aVal = (a.numberCore ?? Number.parseInt(String(a.orderNumber || ""), 10)) || 0;
+              bVal = (b.numberCore ?? Number.parseInt(String(b.orderNumber || ""), 10)) || 0;
               break;
             case "poNumber":
               aVal = a.poNumber || "";
@@ -1482,7 +1488,11 @@ function OrdersTable({
                   return (
                     <td key={columnId} className="px-4 py-3" style={{ width: `${width}px` }}>
                       <span className="text-titan-sm font-medium text-titan-accent">
-                        {order.orderNumber}
+                        {resolveDocumentDisplayNumber({
+                          displayNumber: order.displayNumber,
+                          numberCore: order.numberCore,
+                          legacyNumber: order.orderNumber,
+                        }) || order.orderNumber}
                       </span>
                     </td>
                   );
@@ -1661,7 +1671,12 @@ function QuotesTable({
     return quotes.filter((quote) => {
       const matchesSearch =
         !searchQuery ||
-        String(quote.quoteNumber)?.includes(searchQuery);
+        documentNumberMatchesSearch({
+          query: searchQuery,
+          displayNumber: quote.displayNumber,
+          numberCore: quote.numberCore,
+          legacyNumber: quote.quoteNumber,
+        });
       const matchesStatus =
         statusFilter === "all" || quote.status === statusFilter;
       return matchesSearch && matchesStatus;
@@ -1722,7 +1737,11 @@ function QuotesTable({
               >
                 <td className="px-4 py-3">
                   <span className="text-titan-sm font-medium text-titan-accent">
-                    Q-{quote.quoteNumber}
+                    {resolveDocumentDisplayNumber({
+                      displayNumber: quote.displayNumber,
+                      numberCore: quote.numberCore,
+                      legacyNumber: quote.quoteNumber,
+                    }) || "Draft"}
                   </span>
                 </td>
                 <td className="px-4 py-3 text-titan-sm text-titan-text-secondary">
@@ -1812,7 +1831,12 @@ function InvoicesTable({
     return invoices.filter((inv) => {
       const matchesSearch =
         !searchQuery ||
-        inv.invoiceNumber?.toLowerCase().includes(searchQuery.toLowerCase());
+        documentNumberMatchesSearch({
+          query: searchQuery,
+          displayNumber: inv.displayNumber,
+          numberCore: inv.numberCore,
+          legacyNumber: inv.invoiceNumber,
+        });
       const matchesStatus =
         statusFilter === "all" || inv.status === statusFilter;
       return matchesSearch && matchesStatus;
@@ -1870,7 +1894,11 @@ function InvoicesTable({
             >
               <td className="px-4 py-3">
                 <span className="text-titan-sm font-medium text-titan-accent">
-                  {inv.invoiceNumber}
+                  {resolveDocumentDisplayNumber({
+                    displayNumber: inv.displayNumber,
+                    numberCore: inv.numberCore,
+                    legacyNumber: inv.invoiceNumber,
+                  }) || inv.invoiceNumber}
                 </span>
               </td>
               <td className="px-4 py-3 text-titan-sm text-titan-text-secondary">

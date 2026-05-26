@@ -75,6 +75,9 @@ import {
   useDroppable,
   useDraggable,
 } from "@dnd-kit/core";
+import { useOrgPreferences } from "@/hooks/useOrgPreferences";
+import { documentNumberMatchesSearch, type ProductionDocumentNumberDisplayMode } from "@shared/documentNumbering";
+import { getProductionOrderNumber } from "@/lib/productionDocumentNumbers";
 
 type ViewMode = "board" | "list";
 
@@ -290,6 +293,8 @@ export default function ProductionOverviewPage() {
   // Fetch ALL production jobs (no station/status filter for overview)
   // This shows jobs across all production modules (flatbed, roll, apparel)
   const { data: allJobs, isLoading, error } = useProductionJobs({});
+  const { preferences } = useOrgPreferences();
+  const productionNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
   const { data: designQueue = [], isLoading: isDesignQueueLoading, error: designQueueError } = useDesignQueue();
   const {
     data: proofingQueueData,
@@ -578,7 +583,7 @@ export default function ProductionOverviewPage() {
           comparison = (a.order.customerName || "").localeCompare(b.order.customerName || "");
           break;
         case "orderNumber":
-          comparison = (a.order.orderNumber || "").localeCompare(b.order.orderNumber || "");
+          comparison = ((a.order.numberCore ?? Number.parseInt(a.order.orderNumber || "", 10)) || 0) - ((b.order.numberCore ?? Number.parseInt(b.order.orderNumber || "", 10)) || 0);
           break;
         case "status":
           comparison = (a.status || "").localeCompare(b.status || "");
@@ -587,7 +592,7 @@ export default function ProductionOverviewPage() {
       
       // Stable sort: tie-break by orderNumber then jobId
       if (comparison === 0) {
-        comparison = (a.order.orderNumber || "").localeCompare(b.order.orderNumber || "");
+        comparison = ((a.order.numberCore ?? Number.parseInt(a.order.orderNumber || "", 10)) || 0) - ((b.order.numberCore ?? Number.parseInt(b.order.orderNumber || "", 10)) || 0);
       }
       if (comparison === 0) {
         comparison = (a.id || "").localeCompare(b.id || "");
@@ -604,7 +609,12 @@ export default function ProductionOverviewPage() {
     const lowerQuery = query.toLowerCase();
     return (
       (job.order.customerName || "").toLowerCase().includes(lowerQuery) ||
-      (job.order.orderNumber || "").toLowerCase().includes(lowerQuery) ||
+      documentNumberMatchesSearch({
+        query: searchQuery,
+        displayNumber: job.order.displayNumber,
+        numberCore: job.order.numberCore,
+        legacyNumber: job.order.orderNumber,
+      }) ||
       (job.jobDescription || "").toLowerCase().includes(lowerQuery) ||
       (job.mediaLabel || "").toLowerCase().includes(lowerQuery) ||
       (job.media || "").toLowerCase().includes(lowerQuery)
@@ -938,7 +948,7 @@ export default function ProductionOverviewPage() {
           comparison = (a.order.customerName || "").localeCompare(b.order.customerName || "");
           break;
         case "orderNumber":
-          comparison = (a.order.orderNumber || "").localeCompare(b.order.orderNumber || "");
+          comparison = ((a.order.numberCore ?? Number.parseInt(a.order.orderNumber || "", 10)) || 0) - ((b.order.numberCore ?? Number.parseInt(b.order.orderNumber || "", 10)) || 0);
           break;
         case "jobDescription":
           comparison = (a.jobDescription || "").localeCompare(b.jobDescription || "");
@@ -1536,6 +1546,7 @@ export default function ProductionOverviewPage() {
                       showThumbnails={showThumbnails}
                       isCardExpanded={isCardExpanded}
                       toggleCardExpanded={toggleCardExpanded}
+                      documentNumberDisplayMode={productionNumberDisplayMode}
                       width={fitColumns ? calculatedColumnWidth : DEFAULT_COLUMN_WIDTH}
                     />
                   );
@@ -1550,6 +1561,7 @@ export default function ProductionOverviewPage() {
                   onArtworkClick={openArtworkModal}
                   showThumbnails={showThumbnails}
                   isDragOverlay
+                  documentNumberDisplayMode={productionNumberDisplayMode}
                 />
               )}
             </DragOverlay>
@@ -1590,6 +1602,7 @@ export default function ProductionOverviewPage() {
                       visibleColumns={visibleColumns}
                       showThumbnails={showThumbnails}
                       onArtworkClick={openArtworkModal}
+                      documentNumberDisplayMode={productionNumberDisplayMode}
                     />
                   ))
                 )}
@@ -1605,7 +1618,7 @@ export default function ProductionOverviewPage() {
           <DialogHeader className="shrink-0">
             <DialogTitle>
               {selectedJob
-                ? `${selectedJob.order.customerName} • Order #${selectedJob.order.orderNumber} • Job ${String(selectedJob.id).slice(-6)}`
+                ? `${selectedJob.order.customerName} - Order ${getProductionOrderNumber(selectedJob, productionNumberDisplayMode) || selectedJob.order.orderNumber} - Job ${String(selectedJob.id).slice(-6)}`
                 : "Artwork Preview"}
             </DialogTitle>
           </DialogHeader>
@@ -1729,6 +1742,7 @@ function KanbanColumn({
   showThumbnails,
   isCardExpanded,
   toggleCardExpanded,
+  documentNumberDisplayMode,
   width = DEFAULT_COLUMN_WIDTH,
 }: {
   column: typeof KANBAN_COLUMNS[number];
@@ -1738,6 +1752,7 @@ function KanbanColumn({
   showThumbnails: boolean;
   isCardExpanded: (jobId: string) => boolean;
   toggleCardExpanded: (jobId: string) => void;
+  documentNumberDisplayMode: ProductionDocumentNumberDisplayMode;
   width?: number;
 }) {
   const { setNodeRef } = useDroppable({ id: column.id });
@@ -1770,6 +1785,7 @@ function KanbanColumn({
               showThumbnails={showThumbnails}
               isExpanded={isCardExpanded(job.id)}
               toggleExpanded={() => toggleCardExpanded(job.id)}
+              documentNumberDisplayMode={documentNumberDisplayMode}
             />
           ))
         )}
@@ -2038,6 +2054,7 @@ function JobCard({
   isDragOverlay = false,
   isExpanded = true,
   toggleExpanded,
+  documentNumberDisplayMode,
 }: { 
   job: ProductionJobListItem; 
   boardCardConfig: BoardCardConfig;
@@ -2046,6 +2063,7 @@ function JobCard({
   isDragOverlay?: boolean;
   isExpanded?: boolean;
   toggleExpanded?: () => void;
+  documentNumberDisplayMode: ProductionDocumentNumberDisplayMode;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: job.id,
@@ -2056,6 +2074,7 @@ function JobCard({
   const urgency = computeUrgency(job.order.dueDate);
   const customerId = job.order.customerId;
   const orderId = job.order.id;
+  const orderNumberLabel = getProductionOrderNumber(job, documentNumberDisplayMode);
 
   const style = transform ? {
     transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
@@ -2130,7 +2149,7 @@ function JobCard({
                 onPointerDownCapture={(e) => e.stopPropagation()}
                 onMouseDownCapture={(e) => e.stopPropagation()}
               >
-                #{job.order.orderNumber}
+                Order {orderNumberLabel || job.order.orderNumber}
               </Link>
             </div>
           )}
@@ -2326,13 +2345,26 @@ function JobCard({
 }
 
 // Job row component for list view
-function JobRow({ job, visibleColumns, showThumbnails, onArtworkClick }: { job: ProductionJobListItem; visibleColumns: ColumnConfig[]; showThumbnails: boolean; onArtworkClick: (job: ProductionJobListItem) => void }) {
+function JobRow({
+  job,
+  visibleColumns,
+  showThumbnails,
+  onArtworkClick,
+  documentNumberDisplayMode,
+}: {
+  job: ProductionJobListItem;
+  visibleColumns: ColumnConfig[];
+  showThumbnails: boolean;
+  onArtworkClick: (job: ProductionJobListItem) => void;
+  documentNumberDisplayMode: ProductionDocumentNumberDisplayMode;
+}) {
   const navigate = useNavigate();
   const updateStatus = useUpdateProductionJobStatus(job.id);
   const sides = job.sides || "single";
   const isDueOverdue = job.order.dueDate ? isPast(parseISO(job.order.dueDate)) : false;
   const customerId = job.order.customerId;
   const orderId = job.order.id;
+  const orderNumberLabel = getProductionOrderNumber(job, documentNumberDisplayMode);
 
   const handleClick = () => {
     navigate(`/production/jobs/${job.id}`);
@@ -2393,10 +2425,10 @@ function JobRow({ job, visibleColumns, showThumbnails, onArtworkClick }: { job: 
                 to={ROUTES.orders.detail(orderId)}
                 className="text-sm text-blue-600 hover:text-blue-700 hover:underline"
               >
-                {job.order.orderNumber}
+                {orderNumberLabel || job.order.orderNumber}
               </Link>
             ) : (
-              <span className="text-sm text-muted-foreground">{job.order.orderNumber}</span>
+              <span className="text-sm text-muted-foreground">{orderNumberLabel || job.order.orderNumber}</span>
             )}
           </div>
         );

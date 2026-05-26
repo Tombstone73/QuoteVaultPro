@@ -33,6 +33,7 @@ type CustomerLike = {
 
 type InvoiceLike = {
   invoiceNumber?: number | null;
+  displayNumber?: string | null;
   issueDate?: Date | string | null;
   dueDate?: Date | string | null;
   status?: string | null;
@@ -528,7 +529,7 @@ export async function generateInvoicePdfBytes(
   // -----------------
   // Header
   // -----------------
-  const invoiceNumber = invoice.invoiceNumber ? String(invoice.invoiceNumber) : '';
+  const invoiceNumber = invoice.displayNumber || (invoice.invoiceNumber ? String(invoice.invoiceNumber) : '');
   const issueDate = fmtDate(invoice.issueDate);
   const dueDate = fmtDate(invoice.dueDate);
 

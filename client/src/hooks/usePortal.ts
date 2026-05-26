@@ -24,6 +24,8 @@ export type PortalSessionDto = {
 export type PortalInvoiceDto = {
   id: string;
   invoiceNumber: number;
+  displayNumber: string;
+  numberCore: number | null;
   status: string;
   issueDate: string | null;
   dueDate: string | null;
@@ -92,6 +94,8 @@ export type PortalOrderInvoiceSummaryDto = {
 export type PortalOrderListDto = {
   id: string;
   orderNumber: string;
+  displayNumber: string;
+  numberCore: number | null;
   customerPoNumber: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -134,6 +138,8 @@ export type PortalQuoteExpirationSummaryDto = {
 export type PortalQuoteListDto = {
   id: string;
   quoteNumber: number | null;
+  displayNumber: string | null;
+  numberCore: number | null;
   createdAt: string | null;
   validUntil: string | null;
   displayStatus: string;
@@ -165,6 +171,7 @@ export type PortalQuoteActionResultDto = {
   order?: {
     id: string;
     orderNumber: string;
+    displayNumber: string;
     displayStatus: string;
   };
   message: string;
@@ -231,6 +238,7 @@ export type PortalProofDto = {
   orderSummary: {
     id: string;
     orderNumber: string;
+    displayNumber: string;
     displayStatus: string;
   };
   customerActionRequired: boolean;

@@ -1,3 +1,5 @@
+import { documentNumberMatchesSearch } from "@shared/documentNumbering";
+
 /**
  * customerStatementHelpers.ts
  *
@@ -133,12 +135,18 @@ export function filterOrderByDate(
  * Searches: orderNumber, poNumber, label, status (case-insensitive).
  */
 export function filterOrderBySearch(
-  order: { orderNumber: string; poNumber: string | null; label: string | null; status: string },
+  order: { orderNumber: string; displayNumber?: string | null; numberCore?: number | null; poNumber: string | null; label: string | null; status: string },
   search: string,
 ): boolean {
   if (!search) return true;
   const s = search.toLowerCase();
   return (
+    documentNumberMatchesSearch({
+      query: search,
+      displayNumber: order.displayNumber,
+      numberCore: order.numberCore,
+      legacyNumber: order.orderNumber,
+    }) ||
     order.orderNumber.toLowerCase().includes(s) ||
     (order.poNumber || "").toLowerCase().includes(s) ||
     (order.label || "").toLowerCase().includes(s) ||
@@ -153,6 +161,8 @@ export function filterOrderBySearch(
 export function filterInvoiceBySearch(
   invoice: {
     invoiceNumber: number | string;
+    displayNumber?: string | null;
+    numberCore?: number | null;
     customerPoNumber: string | null | undefined;
     notesPublic: string | null | undefined;
     sourceOrderNumber: number | null | undefined;
@@ -162,6 +172,12 @@ export function filterInvoiceBySearch(
   if (!search) return true;
   const s = search.toLowerCase();
   return (
+    documentNumberMatchesSearch({
+      query: search,
+      displayNumber: invoice.displayNumber,
+      numberCore: invoice.numberCore,
+      legacyNumber: invoice.invoiceNumber,
+    }) ||
     String(invoice.invoiceNumber).toLowerCase().includes(s) ||
     (invoice.customerPoNumber || "").toLowerCase().includes(s) ||
     (invoice.notesPublic || "").toLowerCase().includes(s) ||
@@ -176,6 +192,8 @@ export function filterInvoiceBySearch(
 export function filterQuoteBySearch(
   quote: {
     quoteNumber: number | null | undefined;
+    displayNumber?: string | null;
+    numberCore?: number | null;
     label: string | null | undefined;
     status: string | null | undefined;
   },
@@ -184,6 +202,12 @@ export function filterQuoteBySearch(
   if (!search) return true;
   const s = search.toLowerCase();
   return (
+    documentNumberMatchesSearch({
+      query: search,
+      displayNumber: quote.displayNumber,
+      numberCore: quote.numberCore,
+      legacyNumber: quote.quoteNumber,
+    }) ||
     (quote.quoteNumber != null && String(quote.quoteNumber).includes(s)) ||
     (quote.label || "").toLowerCase().includes(s) ||
     (quote.status || "").toLowerCase().includes(s)

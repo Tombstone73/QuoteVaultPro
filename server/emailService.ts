@@ -388,8 +388,9 @@ class EmailService {
     console.log('[EmailService] [STAGE: load-config] ✅ Config, quote data, and templates loaded');
 
     // Prepare template variables
+    const quoteDisplayNumber = (quote as any).displayNumber || quote.quoteNumber;
     const variables = {
-      quoteNumber: quote.quoteNumber,
+      quoteNumber: quoteDisplayNumber,
       companyName: config.fromName,
       customerName: quote.customerName || 'Customer',
     };
@@ -555,13 +556,15 @@ class EmailService {
     const taxAmount = subtotal * taxRate;
     const marginAmount = subtotal * marginPercentage;
 
+    const quoteDisplayNumber = (quote as any).displayNumber || quote.quoteNumber;
+
     return `
       <!DOCTYPE html>
       <html>
       <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Quote #${quote.quoteNumber}</title>
+        <title>Quote ${quoteDisplayNumber}</title>
       </head>
       <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px;">
         ${customBodyHtml ? `
@@ -571,7 +574,7 @@ class EmailService {
         ` : ''}
         
         <div style="background-color: #f8f9fa; padding: 30px; border-radius: 8px; margin-bottom: 30px;">
-          <h1 style="margin: 0 0 10px 0; color: #2563eb;">Quote #${quote.quoteNumber}</h1>
+          <h1 style="margin: 0 0 10px 0; color: #2563eb;">Quote ${quoteDisplayNumber}</h1>
           <p style="margin: 0; color: #666;">
             Date: ${new Date(quote.createdAt).toLocaleDateString()}<br>
             ${quote.customerName ? `Customer: ${quote.customerName}` : ""}

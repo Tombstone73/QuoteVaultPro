@@ -9,6 +9,7 @@ export async function generatePackingSlipHTML(orderId: string): Promise<string> 
 
   const [customer] = await db.select().from(customers).where(eq(customers.id, order.customerId));
   const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
+  const orderDisplayNumber = order.displayNumber || order.orderNumber;
 
   const shippingAddr = (order.shippingAddress as {
     name?: string;
@@ -45,7 +46,7 @@ export async function generatePackingSlipHTML(orderId: string): Promise<string> 
 <body>
   <div class="header">
     <h1>PACKING SLIP</h1>
-    <p>Order #${order.orderNumber}</p>
+    <p>Order ${orderDisplayNumber}</p>
   </div>
 
   <div class="info-section">
@@ -130,6 +131,7 @@ export async function sendShipmentEmail(
     : null;
 
   const carrierLabel = String(shipment.carrier || 'Carrier').toUpperCase();
+  const orderDisplayNumber = order.displayNumber || order.orderNumber;
 
   const html = `
 <!DOCTYPE html>
@@ -154,7 +156,7 @@ export async function sendShipmentEmail(
   </div>
   <div class="content">
     <p>Hi ${customer.companyName},</p>
-    <p>Great news! Your order <strong>#${order.orderNumber}</strong> has been shipped via <strong>${carrierLabel}</strong>.</p>
+    <p>Great news! Your order <strong>${orderDisplayNumber}</strong> has been shipped via <strong>${carrierLabel}</strong>.</p>
     
     ${trackingNumber ? `
       <div class="tracking">
@@ -196,7 +198,7 @@ export async function sendShipmentEmail(
 
   await emailService.sendEmail(organizationId, {
     to: customer.email,
-    subject: `Your Order #${order.orderNumber} Has Shipped!`,
+    subject: `Your Order ${orderDisplayNumber} Has Shipped!`,
     html,
   });
 }

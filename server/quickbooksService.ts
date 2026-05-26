@@ -6,6 +6,7 @@ import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
 import { generateNextInvoiceNumber } from './invoicesService';
+import { buildDocumentNumberParts } from './services/documentNumberingService';
 import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHelpers';
 import { fetchAllQBEntities } from './lib/qbPaginationHelper';
 
@@ -1192,9 +1193,11 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
 
   const txnDate = (invoice.issuedAt || invoice.issueDate || new Date()) as any;
 
+  const invoiceDisplayNumber = String((invoice as any).displayNumber || invoice.invoiceNumber);
+
   const qbInvoiceData: any = {
     CustomerRef: { value: qbCustomerId },
-    DocNumber: String(invoice.invoiceNumber),
+    DocNumber: invoiceDisplayNumber,
     TxnDate: new Date(txnDate).toISOString().split('T')[0],
     DueDate: invoice.dueDate ? new Date(invoice.dueDate as any).toISOString().split('T')[0] : undefined,
     Line: (lineItems || []).map((r: any, index: number) => {
@@ -1228,7 +1231,7 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
   }
 
   // Idempotency fallback: look up by DocNumber + CustomerRef if local link missing.
-  const docNumber = String((invoice as any).invoiceNumber);
+  const docNumber = invoiceDisplayNumber;
   const findQuery = `SELECT Id, DocNumber FROM Invoice WHERE DocNumber = '${escapeQBQueryString(docNumber)}' MAXRESULTS 1`;
   const findResp = await makeQBRequest('GET', `/query?query=${encodeURIComponent(findQuery)}`, undefined, organizationId);
   const found = findResp?.QueryResponse?.Invoice?.[0];
@@ -3179,10 +3182,13 @@ export async function importQBInvoicesByIds(
         if (isHistorical) result.importedHistorical++; else result.importedOpenAr++;
       } else {
         const invoiceNumber = await generateNextInvoiceNumber(organizationId);
+        const { displayNumber, numberCore } = await buildDocumentNumberParts(organizationId, 'invoice', invoiceNumber);
 
         await db.insert(invoices).values({
           organizationId,
           invoiceNumber,
+          displayNumber,
+          numberCore,
           customerId: localCustomerId,
           status,
           issueDate,

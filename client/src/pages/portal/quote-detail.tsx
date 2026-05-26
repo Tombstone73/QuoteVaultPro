@@ -56,7 +56,7 @@ export default function PortalQuoteDetailPage() {
   const files = filesQuery.data ?? [];
   const [selectedAction, setSelectedAction] = useState<PortalQuoteAction | null>(null);
   const [note, setNote] = useState("");
-  const [createdOrder, setCreatedOrder] = useState<{ id: string; orderNumber: string; displayStatus: string } | null>(null);
+  const [createdOrder, setCreatedOrder] = useState<{ id: string; orderNumber: string; displayNumber?: string; displayStatus: string } | null>(null);
 
   const actionLabels: Record<PortalQuoteAction, { title: string; description: string; confirm: string }> = {
     approve: {
@@ -148,7 +148,7 @@ export default function PortalQuoteDetailPage() {
             </Link>
           </Button>
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-semibold tracking-normal">Quote #{quote.quoteNumber ?? quote.id.slice(0, 8)}</h1>
+            <h1 className="text-2xl font-semibold tracking-normal">Quote {quote.displayNumber ?? quote.quoteNumber ?? quote.id.slice(0, 8)}</h1>
             <Badge variant={statusVariant(quote.displayStatus)}>{quote.displayStatus}</Badge>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -188,7 +188,7 @@ export default function PortalQuoteDetailPage() {
         <Card>
           <CardContent className="flex flex-col gap-3 py-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <p className="font-medium">Order #{createdOrder.orderNumber} created</p>
+              <p className="font-medium">Order {createdOrder.displayNumber || createdOrder.orderNumber} created</p>
               <p className="text-sm text-muted-foreground">Status: {createdOrder.displayStatus}</p>
             </div>
             <Button asChild variant="outline">

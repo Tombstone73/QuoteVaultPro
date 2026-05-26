@@ -33,6 +33,7 @@ import { eq, desc, and, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "../db";
 import { orders, quotes, invoices, payments, customerCreditTransactions, customers, customerContacts } from "@shared/schema";
+import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import {
   insertCustomerContactSchema,
   updateCustomerContactSchema,
@@ -472,6 +473,8 @@ export function registerCustomerRelationsRoutes(
             id: quotes.id,
             createdAt: quotes.createdAt,
             quoteNumber: quotes.quoteNumber,
+            displayNumber: quotes.displayNumber,
+            numberCore: quotes.numberCore,
             label: quotes.label,
             status: quotes.status,
             totalPrice: quotes.totalPrice,
@@ -480,7 +483,11 @@ export function registerCustomerRelationsRoutes(
           .where(and(eq(quotes.organizationId, organizationId), eq(quotes.customerId, customerId), ...dateFilters));
 
         for (const q of quoteRows) {
-          const refNum   = q.quoteNumber != null ? `Q-${q.quoteNumber}` : "â€”";
+          const refNum = resolveDocumentDisplayNumber({
+            displayNumber: q.displayNumber,
+            numberCore: q.numberCore,
+            legacyNumber: q.quoteNumber,
+          }) || "—";
           const descText = q.label || "Quote";
           if (search) {
             const s = search;
@@ -513,6 +520,8 @@ export function registerCustomerRelationsRoutes(
             id: orders.id,
             createdAt: orders.createdAt,   // string (mode:"string")
             orderNumber: orders.orderNumber,
+            displayNumber: orders.displayNumber,
+            numberCore: orders.numberCore,
             poNumber: orders.poNumber,
             label: orders.label,
             status: orders.status,
@@ -522,7 +531,11 @@ export function registerCustomerRelationsRoutes(
           .where(and(eq(orders.organizationId, organizationId), eq(orders.customerId, customerId), ...dateFilters));
 
         for (const o of orderRows) {
-          const refNum   = `ORD-${o.orderNumber}`;
+          const refNum = resolveDocumentDisplayNumber({
+            displayNumber: o.displayNumber,
+            numberCore: o.numberCore,
+            legacyNumber: o.orderNumber,
+          }) || "—";
           const descText = o.label || "Order";
           if (search) {
             const s = search;
@@ -561,6 +574,8 @@ export function registerCustomerRelationsRoutes(
             id: invoices.id,
             issueDate: invoices.issueDate,
             invoiceNumber: invoices.invoiceNumber,
+            displayNumber: invoices.displayNumber,
+            numberCore: invoices.numberCore,
             customerPoNumber: invoices.customerPoNumber,
             status: invoices.status,
             total: invoices.total,
@@ -571,7 +586,11 @@ export function registerCustomerRelationsRoutes(
           .where(and(eq(invoices.organizationId, organizationId), eq(invoices.customerId, customerId), ...dateFilters));
 
         for (const inv of invoiceRows) {
-          const refNum   = `INV-${inv.invoiceNumber}`;
+          const refNum = resolveDocumentDisplayNumber({
+            displayNumber: inv.displayNumber,
+            numberCore: inv.numberCore,
+            legacyNumber: inv.invoiceNumber,
+          }) || "—";
           const poNum    = (inv.customerPoNumber || "").toLowerCase();
           const descText = inv.notesPublic || (inv.customerPoNumber ? `Invoice (PO: ${inv.customerPoNumber})` : "Invoice");
           if (search) {
@@ -627,6 +646,8 @@ export function registerCustomerRelationsRoutes(
             note: payments.note,
             invoiceId: payments.invoiceId,
             invoiceNumber: invoices.invoiceNumber,
+            invoiceDisplayNumber: invoices.displayNumber,
+            invoiceNumberCore: invoices.numberCore,
           })
           .from(payments)
           .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
@@ -647,7 +668,12 @@ export function registerCustomerRelationsRoutes(
           if (isRefund  && !wantRefund)  continue;
           if (!isRefund && !wantPayment) continue;
 
-          const refNum   = p.invoiceNumber != null ? `PMT-INV-${p.invoiceNumber}` : "PMT";
+          const invoiceDisplayNumber = resolveDocumentDisplayNumber({
+            displayNumber: p.invoiceDisplayNumber,
+            numberCore: p.invoiceNumberCore,
+            legacyNumber: p.invoiceNumber,
+          });
+          const refNum   = invoiceDisplayNumber ? `PMT-${invoiceDisplayNumber}` : "PMT";
           const noteText = p.notes || p.note || "";
           const descText = noteText || `${isRefund ? "Refund" : "Payment"} â€” ${p.method || "other"}`;
 
@@ -987,6 +1013,8 @@ export function registerCustomerRelationsRoutes(
         .select({
           id:          orders.id,
           orderNumber: orders.orderNumber,
+          displayNumber: orders.displayNumber,
+          numberCore: orders.numberCore,
           poNumber:    orders.poNumber,
           label:       orders.label,
           status:      orders.status,
@@ -1011,6 +1039,8 @@ export function registerCustomerRelationsRoutes(
         .select({
           id:                invoices.id,
           invoiceNumber:     invoices.invoiceNumber,
+          displayNumber:     invoices.displayNumber,
+          numberCore:        invoices.numberCore,
           orderId:           invoices.orderId,
           sourceOrderNumber: invoices.sourceOrderNumber,
           issueDate:         invoices.issueDate,
@@ -1035,6 +1065,8 @@ export function registerCustomerRelationsRoutes(
         .select({
           id:          quotes.id,
           quoteNumber: quotes.quoteNumber,
+          displayNumber: quotes.displayNumber,
+          numberCore: quotes.numberCore,
           label:       quotes.label,
           status:      quotes.status,
           totalPrice:  quotes.totalPrice,
@@ -1070,7 +1102,7 @@ export function registerCustomerRelationsRoutes(
       // If an order has multiple invoices, prefer non-draft / non-void, most recent by issueDate.
       const invoiceByOrderId = new Map<
         string,
-        { status: string; balanceDue: string; invoiceNumber: number }
+        { status: string; balanceDue: string; invoiceNumber: number; invoiceDisplayNumber: string }
       >();
       if (includeInvoices) {
         // Sort so latest invoice wins (issueDate descending)
@@ -1085,6 +1117,11 @@ export function registerCustomerRelationsRoutes(
               status:        inv.status,
               balanceDue:    inv.balanceDue || "0",
               invoiceNumber: inv.invoiceNumber,
+              invoiceDisplayNumber: resolveDocumentDisplayNumber({
+                displayNumber: inv.displayNumber,
+                numberCore: inv.numberCore,
+                legacyNumber: inv.invoiceNumber,
+              }),
             });
           }
         }
@@ -1109,6 +1146,12 @@ export function registerCustomerRelationsRoutes(
         const row = {
           orderId:       o.id,
           orderNumber:   o.orderNumber,
+          displayNumber:  resolveDocumentDisplayNumber({
+            displayNumber: o.displayNumber,
+            numberCore: o.numberCore,
+            legacyNumber: o.orderNumber,
+          }),
+          numberCore:     o.numberCore,
           poNumber:      o.poNumber    || null,
           date:          stmtSafeIso(o.createdAt),
           dueDate:       o.dueDate     ? stmtSafeIso(o.dueDate)   : null,
@@ -1120,6 +1163,7 @@ export function registerCustomerRelationsRoutes(
           total:         o.total       || "0",
           invoiceStatus: linkedInvoice?.status        || null,
           invoiceNumber: linkedInvoice?.invoiceNumber ?? null,
+          invoiceDisplayNumber: linkedInvoice?.invoiceDisplayNumber ?? null,
           balanceDue:    linkedInvoice?.balanceDue    ?? null,
           linkId:        o.id,
         };
@@ -1163,6 +1207,11 @@ export function registerCustomerRelationsRoutes(
           invoiceSection.push({
             invoiceId:          inv.id,
             invoiceNumber:      inv.invoiceNumber,
+            displayNumber:      resolveDocumentDisplayNumber({
+              displayNumber: inv.displayNumber,
+              numberCore: inv.numberCore,
+              legacyNumber: inv.invoiceNumber,
+            }),
             issueDate:          stmtSafeIso(inv.issueDate as any),
             dueDate:            inv.dueDate ? stmtSafeIso(inv.dueDate as any) : null,
             status:             inv.status,
@@ -1197,6 +1246,11 @@ export function registerCustomerRelationsRoutes(
           quoteSection.push({
             quoteId:     q.id,
             quoteNumber: q.quoteNumber  ?? null,
+            displayNumber: resolveDocumentDisplayNumber({
+              displayNumber: q.displayNumber,
+              numberCore: q.numberCore,
+              legacyNumber: q.quoteNumber,
+            }),
             createdAt:   stmtSafeIso(q.createdAt as any),
             status:      q.status        || "draft",
             total:       q.totalPrice    || "0",

@@ -28,7 +28,7 @@ function ProofRow({ proof }: { proof: PortalProofDto }) {
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <Link to={`/portal/proofs/${proof.id}`} className="font-medium hover:underline">
-            Proof v{proof.versionNumber} / Order #{proof.orderSummary.orderNumber}
+            Proof v{proof.versionNumber} / Order {proof.orderSummary.displayNumber || proof.orderSummary.orderNumber}
           </Link>
           <Badge variant={proofVariant(proof)}>{proof.displayStatus}</Badge>
           {proof.customerActionRequired ? (

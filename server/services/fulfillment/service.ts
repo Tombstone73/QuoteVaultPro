@@ -257,6 +257,7 @@ export class FulfillmentService {
         productionCompletedAt: orders.productionCompletedAt,
         completedProductionAt: orders.completedProductionAt,
         orderNumber: orders.orderNumber,
+        displayNumber: orders.displayNumber,
         customerName: customers.companyName,
       })
       .from(pickupTickets)
@@ -327,12 +328,13 @@ export class FulfillmentService {
     }
 
     try {
+      const orderDisplayNumber = ticketWithOrder.displayNumber || ticketWithOrder.orderNumber;
       const providerMessageId = await emailService.sendEmail(orgId, {
         to: notification.toAddress,
-        subject: `Order #${ticketWithOrder.orderNumber} is ready for pickup`,
+        subject: `Order ${orderDisplayNumber} is ready for pickup`,
         html: [
           `<p>Hello ${ticket.contactName || ticketWithOrder.customerName || 'Customer'},</p>`,
-          `<p>Your order <strong>#${ticketWithOrder.orderNumber}</strong> is now ready for pickup.</p>`,
+          `<p>Your order <strong>${orderDisplayNumber}</strong> is now ready for pickup.</p>`,
           ticket.stagingLocation ? `<p>Pickup location: ${ticket.stagingLocation}</p>` : '',
           ticket.pickupNotes ? `<p>Notes: ${ticket.pickupNotes}</p>` : '',
         ].join(''),

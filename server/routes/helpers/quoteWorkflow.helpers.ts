@@ -29,6 +29,7 @@ import {
   type QuoteStatusDB,
   type QuoteWorkflowState,
 } from "@shared/quoteWorkflow";
+import { buildDocumentNumberParts } from "../../services/documentNumberingService";
 
 /**
  * Get effective workflow state for a quote
@@ -170,12 +171,15 @@ export const cloneQuoteToDraft = async (args: {
 
   const parsed = parseInt(String(quoteNumberVar.value), 10);
   const nextQuoteNumber = Number.isFinite(parsed) ? parsed : 1000;
+  const { displayNumber, numberCore } = await buildDocumentNumberParts(organizationId, "quote", nextQuoteNumber, tx);
 
   const [newQuote] = await tx
     .insert(quotes)
     .values({
       organizationId,
       quoteNumber: nextQuoteNumber,
+      displayNumber,
+      numberCore,
       label: operation === 'duplicate' ? null : sourceQuote.label,
       userId: sourceQuote.userId,
       status: 'draft' as any,

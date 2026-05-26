@@ -26,6 +26,7 @@ import {
   StatusPill,
   getStatusVariant,
 } from "@/components/titan";
+import { documentNumberMatchesSearch, resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
@@ -83,7 +84,12 @@ export default function InvoicesListPage() {
 
   const filteredInvoices = invoices?.filter((inv) => {
     const matchesSearch = search === "" || 
-      inv.invoiceNumber.toString().includes(search) ||
+      documentNumberMatchesSearch({
+        query: search,
+        displayNumber: (inv as any).displayNumber,
+        numberCore: (inv as any).numberCore,
+        legacyNumber: inv.invoiceNumber,
+      }) ||
       inv.id.toLowerCase().includes(search.toLowerCase());
     return matchesSearch;
   }) || [];
@@ -214,7 +220,11 @@ export default function InvoicesListPage() {
                 >
                   <TitanTableCell className="font-medium">
                     <span className="text-titan-accent hover:underline">
-                      #{invoice.invoiceNumber}
+                      {resolveDocumentDisplayNumber({
+                        displayNumber: (invoice as any).displayNumber,
+                        numberCore: (invoice as any).numberCore,
+                        legacyNumber: invoice.invoiceNumber,
+                      }) || invoice.invoiceNumber}
                     </span>
                   </TitanTableCell>
                   <TitanTableCell>{formatDate(invoice.issueDate)}</TitanTableCell>

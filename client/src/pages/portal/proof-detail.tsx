@@ -97,7 +97,7 @@ export default function PortalProofDetailPage() {
           <Badge variant={proofVariant(proof)}>{proof.displayStatus}</Badge>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
-          Order #{proof.orderSummary.orderNumber} / {proof.lineItemSummary.name}
+          Order {proof.orderSummary.displayNumber || proof.orderSummary.orderNumber} / {proof.lineItemSummary.name}
         </p>
       </div>
 
