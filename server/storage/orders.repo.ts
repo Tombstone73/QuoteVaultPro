@@ -21,7 +21,6 @@ import {
     quoteLineItems,
     jobs,
     jobStatusLog,
-    globalVariables,
     auditLogs,
     type Order,
     type InsertOrder,
@@ -48,7 +47,11 @@ import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../ser
 import { resolveActiveProductionOwners } from "../services/productionOwnership";
 import { copyLineItemDesignSnapshotFields, materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "./productDesignConfig.repo";
-import { buildDocumentNumberParts } from "../services/documentNumberingService";
+import {
+    allocateDocumentNumber,
+    isDocumentNumberUniqueViolation,
+    toDocumentNumberConflictError,
+} from "../services/documentNumberingService";
 
 type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
 
@@ -567,39 +570,8 @@ export class OrdersRepository {
 
     private async generateNextOrderNumber(organizationId: string, tx?: any): Promise<{ orderNumber: string; displayNumber: string; numberCore: number }> {
         const executor = tx || this.dbInstance;
-        let orderNumberVar = await executor
-            .select()
-            .from(globalVariables)
-            .where(and(
-                eq(globalVariables.name, 'next_order_number'),
-                eq(globalVariables.organizationId, organizationId)
-            ))
-            .limit(1)
-            .then((rows: any[]) => rows[0]);
-
-        if (!orderNumberVar) {
-            console.log(`[NUMBERING] Auto-initialized order numbering for org ${organizationId} with default sequence.`);
-            const [newVar] = await executor
-                .insert(globalVariables)
-                .values({
-                    name: 'next_order_number',
-                    value: '1000',
-                    description: 'Next order number sequence (auto-initialized)',
-                    category: 'numbering',
-                    isActive: true,
-                    organizationId,
-                })
-                .returning();
-            orderNumberVar = newVar;
-        }
-
-        const current = Math.floor(Number(orderNumberVar.value));
-        const { displayNumber, numberCore } = await buildDocumentNumberParts(organizationId, "order", current, executor);
-        await executor
-            .update(globalVariables)
-            .set({ value: (current + 1).toString(), updatedAt: new Date() })
-            .where(and(eq(globalVariables.id, orderNumberVar.id), eq(globalVariables.organizationId, organizationId)));
-        return { orderNumber: current.toString(), displayNumber, numberCore };
+        const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "order", executor);
+        return { orderNumber: numberCore.toString(), displayNumber, numberCore };
     }
 
     async getMaxOrderNumber(organizationId: string): Promise<number | null> {
@@ -1385,6 +1357,9 @@ export class OrdersRepository {
             });
             const createdLineItems = lineItemsData.length ? await tx.insert(orderLineItems).values(lineItemsData).returning() : [];
             return { order, lineItems: createdLineItems };
+        }).catch((error) => {
+            if (isDocumentNumberUniqueViolation(error)) throw toDocumentNumberConflictError(error);
+            throw error;
         });
 
         // Auto-create legacy job record only for line items that enter the production pipeline immediately.

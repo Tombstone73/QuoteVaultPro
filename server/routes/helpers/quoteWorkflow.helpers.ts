@@ -11,7 +11,6 @@ import { eq, and, asc } from "drizzle-orm";
 import { db } from "../../db";
 import {
   quotes,
-  globalVariables,
   quoteLineItems,
   quoteAttachments,
   quoteAttachmentPages,
@@ -29,7 +28,11 @@ import {
   type QuoteStatusDB,
   type QuoteWorkflowState,
 } from "@shared/quoteWorkflow";
-import { buildDocumentNumberParts } from "../../services/documentNumberingService";
+import {
+  allocateDocumentNumber,
+  isDocumentNumberUniqueViolation,
+  toDocumentNumberConflictError,
+} from "../../services/documentNumberingService";
 
 /**
  * Get effective workflow state for a quote
@@ -104,16 +107,17 @@ export const cloneQuoteToDraft = async (args: {
   operation: 'duplicate' | 'revise';
   includeArtwork: boolean;
 }) => {
-  const {
-    tx,
-    organizationId,
-    userId,
-    userName,
-    sourceQuoteId,
-    isInternalUser,
-    operation,
-    includeArtwork,
-  } = args;
+  try {
+    const {
+      tx,
+      organizationId,
+      userId,
+      userName,
+      sourceQuoteId,
+      isInternalUser,
+      operation,
+      includeArtwork,
+    } = args;
 
   const whereParts = [
     eq(quotes.id, sourceQuoteId),
@@ -144,34 +148,8 @@ export const cloneQuoteToDraft = async (args: {
     }
   }
 
-  let quoteNumberVar = await tx
-    .select()
-    .from(globalVariables)
-    .where(and(
-      eq(globalVariables.name, 'next_quote_number'),
-      eq(globalVariables.organizationId, organizationId)
-    ))
-    .limit(1)
-    .then((rows: any[]) => rows[0]);
-
-  if (!quoteNumberVar) {
-    const [createdVar] = await tx
-      .insert(globalVariables)
-      .values({
-        organizationId,
-        name: 'next_quote_number',
-        value: '1000',
-        description: 'Next quote number sequence (auto-initialized)',
-        category: 'numbering',
-        isActive: true,
-      })
-      .returning();
-    quoteNumberVar = createdVar;
-  }
-
-  const parsed = parseInt(String(quoteNumberVar.value), 10);
-  const nextQuoteNumber = Number.isFinite(parsed) ? parsed : 1000;
-  const { displayNumber, numberCore } = await buildDocumentNumberParts(organizationId, "quote", nextQuoteNumber, tx);
+  const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "quote", tx);
+  const nextQuoteNumber = numberCore;
 
   const [newQuote] = await tx
     .insert(quotes)
@@ -228,14 +206,6 @@ export const cloneQuoteToDraft = async (args: {
       convertedToOrderId: null,
     } as any)
     .returning();
-
-  await tx
-    .update(globalVariables)
-    .set({
-      value: String(nextQuoteNumber + 1),
-      updatedAt: new Date(),
-    })
-    .where(eq(globalVariables.id, quoteNumberVar.id));
 
   const sourceLineItems = await tx
     .select()
@@ -424,9 +394,13 @@ export const cloneQuoteToDraft = async (args: {
       : { duplicatedQuoteId: newQuote.id, duplicatedQuoteNumber: newQuote.quoteNumber, includeArtwork },
   } as any);
 
-  return {
-    id: newQuote.id,
-    quoteNumber: newQuote.quoteNumber,
-    includeArtwork,
-  };
+    return {
+      id: newQuote.id,
+      quoteNumber: newQuote.quoteNumber,
+      includeArtwork,
+    };
+  } catch (error) {
+    if (isDocumentNumberUniqueViolation(error)) throw toDocumentNumberConflictError(error);
+    throw error;
+  }
 };
