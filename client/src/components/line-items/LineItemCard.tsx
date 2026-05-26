@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { type FocusEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -130,6 +130,19 @@ export type LineItemCardProps = {
 function formatMoney(n: number): string {
   if (!Number.isFinite(n)) return "$0.00";
   return `$${n.toFixed(2)}`;
+}
+
+function selectInputTextOnFocus(event: FocusEvent<HTMLInputElement>) {
+  const input = event.currentTarget;
+  input.select();
+
+  if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(() => {
+      if (document.activeElement === input) {
+        input.select();
+      }
+    });
+  }
 }
 
 export function LineItemCard({
@@ -531,6 +544,7 @@ export function LineItemCard({
                       ref={widthInputRef}
                       value={width}
                       onChange={(e) => onWidthChange?.(e.target.value)}
+                      onFocus={selectInputTextOnFocus}
                       className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
                       inputMode="decimal"
                       disabled={readOnly || !dimsRequired}
@@ -543,6 +557,7 @@ export function LineItemCard({
                     <Input
                       value={height}
                       onChange={(e) => onHeightChange?.(e.target.value)}
+                      onFocus={selectInputTextOnFocus}
                       className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
                       inputMode="decimal"
                       disabled={readOnly || !dimsRequired}
