@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, test } from "@jest/globals";
+import { normalizeProductionStationKey } from "@shared/productionStations";
 
 // ---------------------------------------------------------------------------
 // Re-implement the pure mapping function here to keep tests DB-free.
@@ -308,5 +309,40 @@ describe("sidebar badge toggle", () => {
     const badgeCounts: Record<string, number> = { "inbound-orders": 2 };
     const count = badgeCounts["inbound-orders"];
     expect(count !== undefined && count > 0).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Production station badge consistency
+// ---------------------------------------------------------------------------
+
+describe("production badge station/status consistency", () => {
+  const pendingStatuses = ["queued", "in_progress", "paused"] as const;
+  const nonPendingStatuses = ["done", "completed", "canceled", "cancelled", "archived"] as const;
+
+  function countsAsPendingProductionJob(job: { stationKey: string; status: string }, station: "roll" | "flatbed") {
+    return normalizeProductionStationKey(job.stationKey) === station &&
+      (pendingStatuses as readonly string[]).includes(job.status);
+  }
+
+  test("queued and in_progress roll jobs count as Roll pending", () => {
+    expect(countsAsPendingProductionJob({ stationKey: "roll", status: "queued" }, "roll")).toBe(true);
+    expect(countsAsPendingProductionJob({ stationKey: "roll", status: "in_progress" }, "roll")).toBe(true);
+  });
+
+  test("paused roll jobs count as Roll pending", () => {
+    expect(countsAsPendingProductionJob({ stationKey: "roll", status: "paused" }, "roll")).toBe(true);
+  });
+
+  test.each(nonPendingStatuses)("status %s does not count as Roll pending", (status) => {
+    expect(countsAsPendingProductionJob({ stationKey: "roll", status }, "roll")).toBe(false);
+  });
+
+  test("queued flatbed jobs count as Flatbed pending", () => {
+    expect(countsAsPendingProductionJob({ stationKey: "flatbed", status: "queued" }, "flatbed")).toBe(true);
+  });
+
+  test("legacy wide_roll station maps to Roll pending", () => {
+    expect(countsAsPendingProductionJob({ stationKey: "wide_roll", status: "queued" }, "roll")).toBe(true);
   });
 });

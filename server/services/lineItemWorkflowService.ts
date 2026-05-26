@@ -6,6 +6,7 @@ import { routeLineItemToProduction } from "./productionRoutingService";
 import { resolvePostPrepressProductionRoute } from "./productionRoutingResolver";
 import { syncParentOrderForOperationalChildren } from "./orderWorkflowSyncService";
 import { resolveLineItemProofReleaseGate } from "./proofGateService";
+import { readPrepressProductionDestinationOverride } from "@shared/productionStations";
 
 export const NON_TERMINAL_WORKFLOW_STATES: LineItemWorkflowState[] = [
   "new",
@@ -68,6 +69,7 @@ type LoadedLineItem = {
   approvedProofVersionId: string | null;
   productType: string;
   productTypeId: string | null;
+  specsJson: unknown;
 };
 
 const DESIGN_INCOMPLETE_STATUSES: LineItemDesignStatus[] = ["needs_design", "in_design"];
@@ -227,6 +229,7 @@ async function loadLineItemForWorkflow(tx: any, args: { organizationId: string; 
       approvedProofVersionId: orderLineItems.approvedProofVersionId,
       productType: orderLineItems.productType,
       productTypeId: products.productTypeId,
+      specsJson: orderLineItems.specsJson,
     })
     .from(orderLineItems)
     .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
@@ -291,6 +294,14 @@ async function resolveOwnershipRouteForState(tx: any, lineItem: LoadedLineItem, 
       productTypeId: lineItem.productTypeId,
       productTypeNameSnapshot: lineItem.productType,
     });
+    const destinationOverride = readPrepressProductionDestinationOverride(lineItem.specsJson);
+    if (destinationOverride?.selectedStationKey) {
+      return {
+        stationKey: destinationOverride.selectedStationKey,
+        stepKey: "queued",
+        reason: "prepress_destination_override",
+      };
+    }
 
     return {
       stationKey: route.stationKey,

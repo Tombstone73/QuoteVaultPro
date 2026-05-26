@@ -182,6 +182,10 @@ export type PrepressQueueItem = {
   customerName: string;
   productName: string;
   printType: string | null;
+  suggestedProductionDestination?: "roll" | "flatbed" | null;
+  selectedProductionDestination?: "roll" | "flatbed" | null;
+  destinationOverrideActive?: boolean;
+  productionDestinationLabel?: string | null;
   media: string | null;
   dueDate: string | null;
   status: string;

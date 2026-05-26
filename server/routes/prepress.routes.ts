@@ -75,6 +75,12 @@ import {
   resolveDerivativeFileAccess,
 } from "../lib/supabaseObjectHelpers";
 import { canAutoDeductMaterialStock } from "../lib/materialStockDeductionGuard";
+import {
+  getProductionStationLabel,
+  normalizeProductionStationKey,
+  readPrepressProductionDestinationOverride,
+  writePrepressProductionDestinationOverride,
+} from "@shared/productionStations";
 
 // ---------------------------------------------------------------------------
 // Local utility (mirrors top-level helper in routes.ts)
@@ -792,7 +798,13 @@ export function registerPrepressQueueRoutes(
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
       const statusFilter = req.query.status ? String(req.query.status).split(",") : [];
-      const printTypeFilter = req.query.printType as string | undefined;
+      const destinationFilterRaw = req.query.destination ?? req.query.printType;
+      const destinationFilter = String(destinationFilterRaw || "all").toLowerCase() === "all"
+        ? "all"
+        : normalizeProductionStationKey(destinationFilterRaw);
+      if (destinationFilterRaw && String(destinationFilterRaw).toLowerCase() !== "all" && !destinationFilter) {
+        return res.status(400).json({ error: "Invalid production destination filter" });
+      }
       const searchQuery = req.query.search as string | undefined;
       const sortBy = typeof req.query.sortBy === "string" ? req.query.sortBy : "due_date";
       const sortOrder = String(req.query.sortOrder || "asc").toLowerCase() === "desc" ? "desc" : "asc";
@@ -809,10 +821,6 @@ export function registerPrepressQueueRoutes(
         notInArray(orders.state, ['closed', 'canceled', 'production_complete']),
       ];
 
-      if (printTypeFilter && printTypeFilter !== 'all') {
-        conditions.push(eq(orderLineItems.productType, printTypeFilter));
-      }
-
       // Get line items with order/customer/material data (session is resolved separately)
       const items = await db
         .select({
@@ -824,6 +832,7 @@ export function registerPrepressQueueRoutes(
           approvedProofVersionId: orderLineItems.approvedProofVersionId,
           description: orderLineItems.description,
           productType: orderLineItems.productType,
+          productTypeId: products.productTypeId,
           pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
           quantity: orderLineItems.quantity,
           width: orderLineItems.width,
@@ -846,8 +855,30 @@ export function registerPrepressQueueRoutes(
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
         .innerJoin(customers, eq(orders.customerId, customers.id))
         .leftJoin(materials, eq(orderLineItems.materialId, materials.id))
+        .leftJoin(products, eq(orderLineItems.productId, products.id))
         .where(and(...conditions))
         .orderBy(asc(orders.dueDate), desc(orders.priority));
+
+      const destinationByLineItem = new Map<string, {
+        suggested: "roll" | "flatbed";
+        selected: "roll" | "flatbed";
+        overrideActive: boolean;
+      }>();
+      await Promise.all(items.map(async (item) => {
+        const suggestedRoute = await resolvePostPrepressProductionRoute({
+          organizationId,
+          productTypeId: item.productTypeId ?? null,
+          productTypeNameSnapshot: item.productType,
+        });
+        const suggested = normalizeProductionStationKey(suggestedRoute.stationKey) ?? "flatbed";
+        const override = readPrepressProductionDestinationOverride(item.specsJson);
+        const selected = override?.selectedStationKey ?? suggested;
+        destinationByLineItem.set(item.lineItemId, {
+          suggested,
+          selected,
+          overrideActive: Boolean(override?.selectedStationKey && override.selectedStationKey !== suggested),
+        });
+      }));
 
       const lineItemIds = items.map((i) => i.lineItemId);
       const activeOwnerByLineItem = lineItemIds.length > 0
@@ -1147,6 +1178,11 @@ export function registerPrepressQueueRoutes(
         const activeOwner = activeOwnerByLineItem.get(item.lineItemId) ?? null;
         const activeOwnerIsPrepress = isPrepressOwnershipJob(activeOwner);
         const computedWorkflowState = String(item.workflowState || '').toLowerCase();
+        const destination = destinationByLineItem.get(item.lineItemId) ?? {
+          suggested: "flatbed" as const,
+          selected: "flatbed" as const,
+          overrideActive: false,
+        };
         const proofBypassed = String(item.proofApprovalPolicyOverride || "").toLowerCase() === "bypass";
         const hasApprovedProof = Boolean(item.approvedProofVersionId);
         const productionReleaseBlockedReason =
@@ -1176,6 +1212,10 @@ export function registerPrepressQueueRoutes(
           customerName: item.customerName ?? "—",
           productName: item.description,
           printType: item.productType ?? null,
+          suggestedProductionDestination: destination.suggested,
+          selectedProductionDestination: destination.selected,
+          destinationOverrideActive: destination.overrideActive,
+          productionDestinationLabel: getProductionStationLabel(destination.selected),
           media: item.materialName ?? null,
           dueDate: item.dueDate ?? null,
           status: item.status,
@@ -1238,9 +1278,13 @@ export function registerPrepressQueueRoutes(
         return false;
       };
 
-      const filteredQueue = statusFilter.length > 0
-        ? queue.filter((q: any) => statusFilter.some((filterValue) => matchesPrepressStatusFilter(q, filterValue)))
+      const destinationFilteredQueue = destinationFilter && destinationFilter !== "all"
+        ? queue.filter((q: any) => q.selectedProductionDestination === destinationFilter)
         : queue;
+
+      const filteredQueue = statusFilter.length > 0
+        ? destinationFilteredQueue.filter((q: any) => statusFilter.some((filterValue) => matchesPrepressStatusFilter(q, filterValue)))
+        : destinationFilteredQueue;
 
       const normalizedSearchQuery = searchQuery?.trim().toLowerCase() || "";
       const searchedQueue = normalizedSearchQuery
@@ -1250,7 +1294,7 @@ export function registerPrepressQueueRoutes(
               item.orderId,
               item.customerName,
               item.productName,
-              item.printType,
+              item.productionDestinationLabel,
               item.media,
               item.lineItemId,
             ];
@@ -1281,7 +1325,7 @@ export function registerPrepressQueueRoutes(
             comparison = compareStrings(left.customerName, right.customerName);
             break;
           case "type":
-            comparison = compareStrings(left.printType, right.printType);
+            comparison = compareStrings(left.productionDestinationLabel, right.productionDestinationLabel);
             break;
           case "material":
             comparison = compareStrings(left.media, right.media);
@@ -1812,6 +1856,13 @@ export function registerPrepressQueueRoutes(
         quantity: li.quantity,
         description: li.description,
       });
+      const suggestedRoute = await resolvePostPrepressProductionRoute({
+        organizationId,
+        productTypeId: null,
+        productTypeNameSnapshot: li.productType,
+      });
+      const suggestedDestination = normalizeProductionStationKey(suggestedRoute.stationKey) ?? "flatbed";
+      const selectedDestination = readPrepressProductionDestinationOverride(li.specsJson)?.selectedStationKey ?? suggestedDestination;
 
       const parsedDimensions = parseDimensionsFromDescription(li.description);
       const width = li.width != null ? Number(li.width) : parsedDimensions.widthIn;
@@ -1830,6 +1881,8 @@ export function registerPrepressQueueRoutes(
           sqFootage: computedSqFt ?? (li.sqft != null ? Number(li.sqft) : null),
           media: row.materialName ?? null,
           printType: li.productType,
+          productionDestination: getProductionStationLabel(selectedDestination),
+          suggestedProductionDestination: getProductionStationLabel(suggestedDestination),
           bleed: null,
           finishingBullets: extractFinishingBullets(li),
           originals: allFiles.filter((f) => f.role === "original"),
@@ -1843,8 +1896,7 @@ export function registerPrepressQueueRoutes(
     }
   });
 
-  // PATCH /api/prepress/line-item/:lineItemId/print-type
-  app.patch("/api/prepress/line-item/:lineItemId/print-type", isAuthenticated, tenantContext, async (req: any, res) => {
+  async function updatePrepressProductionDestination(req: any, res: any) {
     try {
       if (!assertInternalUser(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
@@ -1852,19 +1904,30 @@ export function registerPrepressQueueRoutes(
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: "User ID not found" });
 
-      const schema = z.object({ printType: z.enum(["flatbed", "wide_roll", "roll"]) });
+      const schema = z.object({
+        destination: z.string().optional().nullable(),
+        printType: z.string().optional().nullable(),
+        reason: z.string().optional().nullable(),
+      });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ error: fromZodError(parsed.error).message });
       }
 
       const { lineItemId } = req.params;
-      const { printType } = parsed.data;
+      const rawDestination = parsed.data.destination ?? parsed.data.printType ?? null;
+      const selectedDestination = String(rawDestination || "").toLowerCase() === "auto"
+        ? null
+        : normalizeProductionStationKey(rawDestination);
+
+      if (rawDestination && String(rawDestination).toLowerCase() !== "auto" && !selectedDestination) {
+        return res.status(400).json({ error: "Production destination must be Auto, Roll, or Flatbed" });
+      }
 
       const rows = await db
         .select({
           id: orderLineItems.id,
-          productType: orderLineItems.productType,
+          specsJson: orderLineItems.specsJson,
         })
         .from(orderLineItems)
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
@@ -1875,13 +1938,17 @@ export function registerPrepressQueueRoutes(
         return res.status(404).json({ error: "Line item not found" });
       }
 
-      if (rows[0].productType === printType) {
-        return res.json({ success: true, data: { lineItemId, printType } });
-      }
+      const previous = readPrepressProductionDestinationOverride(rows[0].specsJson);
+      const nextSpecsJson = writePrepressProductionDestinationOverride({
+        specsJson: rows[0].specsJson,
+        selectedStationKey: selectedDestination,
+        actorUserId: userId,
+        reason: parsed.data.reason ?? null,
+      });
 
       await db
         .update(orderLineItems)
-        .set({ productType: printType, updatedAt: new Date() })
+        .set({ specsJson: nextSpecsJson as any, updatedAt: new Date() })
         .where(eq(orderLineItems.id, lineItemId));
 
       await db.insert(auditLogs).values({
@@ -1892,19 +1959,29 @@ export function registerPrepressQueueRoutes(
         entityType: "order_line_item",
         entityId: lineItemId,
         entityName: `Line item ${lineItemId}`,
-        description: "Updated prepress print type",
-        oldValues: { printType: rows[0].productType },
-        newValues: { printType },
+        description: "Updated prepress production destination",
+        oldValues: { productionDestination: previous?.selectedStationKey ?? "auto" },
+        newValues: { productionDestination: selectedDestination ?? "auto", reason: parsed.data.reason ?? null },
         ipAddress: req.ip || null,
         userAgent: req.headers["user-agent"] || null,
       } as any);
 
-      res.json({ success: true, data: { lineItemId, printType } });
+      res.json({
+        success: true,
+        data: {
+          lineItemId,
+          selectedProductionDestination: selectedDestination,
+          destinationOverrideActive: Boolean(selectedDestination),
+        },
+      });
     } catch (error: any) {
-      console.error("[Prepress] Error updating print type:", error);
-      res.status(500).json({ error: error?.message || "Failed to update print type" });
+      console.error("[Prepress] Error updating production destination:", error);
+      res.status(500).json({ error: error?.message || "Failed to update production destination" });
     }
-  });
+  }
+
+  app.patch("/api/prepress/line-item/:lineItemId/production-destination", isAuthenticated, tenantContext, updatePrepressProductionDestination);
+  app.patch("/api/prepress/line-item/:lineItemId/print-type", isAuthenticated, tenantContext, updatePrepressProductionDestination);
 
   // POST /api/prepress/session/start - Start prepress session
   app.post("/api/prepress/session/start", isAuthenticated, tenantContext, async (req: any, res) => {

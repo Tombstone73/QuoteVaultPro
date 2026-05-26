@@ -45,6 +45,7 @@ import { routeLineItemToProduction } from "../services/productionRoutingService"
 import { assertParentOrderInProductionForJob } from "../services/orderProductionGate";
 import { isCanceledOrder, isTerminalProductionStatus } from "@shared/operationalState";
 import { documentNumberMatchesSearch } from "@shared/documentNumbering";
+import { normalizeProductionStationKey } from "@shared/productionStations";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -115,10 +116,15 @@ export function registerProductionJobsRoutes(
       }
       const status = statusParsed?.success ? statusParsed.data : undefined;
       const view = viewParsed?.success ? viewParsed.data : undefined;
-      const station = stationParsed?.data; // May be undefined for "all stations" query
+      const station = normalizeProductionStationKey(stationParsed?.data) ?? stationParsed?.data; // May be undefined for "all stations" query
       const resolvedStationId = station
         ? await stationResolver.resolveStationId({ organizationId, stationKey: station })
         : null;
+      const stationAliases = station === "roll"
+        ? ["roll", "wide_roll"]
+        : station === "flatbed"
+          ? ["flatbed"]
+          : station ? [station] : [];
       const search = typeof searchRaw === "string" ? searchRaw.trim() : "";
 
       const config = await getProductionConfigForOrganization(organizationId);
@@ -140,8 +146,8 @@ export function registerProductionJobsRoutes(
         eq(productionJobs.organizationId, organizationId),
         station
           ? (resolvedStationId
-              ? sql`production_jobs.station_id = ${resolvedStationId}`
-              : eq(productionJobs.stationKey, station))
+              ? or(sql`production_jobs.station_id = ${resolvedStationId}`, inArray(productionJobs.stationKey as any, stationAliases))
+              : inArray(productionJobs.stationKey as any, stationAliases))
           : undefined,
         status ? eq(productionJobs.status, status) : undefined,
         orderIdRaw ? eq(productionJobs.orderId, orderIdRaw) : undefined,
