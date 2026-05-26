@@ -260,7 +260,16 @@ export default function PBV2ProductBuilderSectionV2({
   }) => void;
   onTreeProviderReady?: (provider: { getCurrentTree: () => unknown | null; updateTreeMeta: (metaUpdates: Record<string, unknown>) => void }) => void;
   onClearDirtyReady?: (clearDirty: () => void) => void;
-  onTreeMetaChange?: (meta: { shippingConfig?: any; productImages?: any[]; pricingV2?: any; geometry?: { trimAllowance?: number; trimAllowanceX?: number; trimAllowanceY?: number } }) => void;
+  onTreeMetaChange?: (meta: {
+    shippingConfig?: any;
+    productImages?: any[];
+    pricingV2?: any;
+    geometry?: { trimAllowance?: number; trimAllowanceX?: number; trimAllowanceY?: number };
+    formulaVariables?: Record<string, number>;
+    pricingFormulaVariables?: Record<string, number>;
+    pricingProfileKey?: string;
+    pricingFormula?: string;
+  }) => void;
 }) {
   const { toast } = useToast();
   const { isAdmin: isAdminUser } = useAuth();
@@ -691,6 +700,10 @@ export default function PBV2ProductBuilderSectionV2({
         productImages: meta?.productImages ?? undefined,
         pricingV2: meta?.pricingV2 ?? undefined,
         geometry: meta?.geometry ?? undefined,
+        formulaVariables: meta?.formulaVariables ?? undefined,
+        pricingFormulaVariables: meta?.pricingFormulaVariables ?? undefined,
+        pricingProfileKey: meta?.pricingProfileKey ?? undefined,
+        pricingFormula: meta?.pricingFormula ?? undefined,
       });
     }
   }, [localTreeJson, onTreeMetaChange]);

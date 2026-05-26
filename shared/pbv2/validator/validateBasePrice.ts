@@ -16,6 +16,26 @@ function toResult(findings: Finding[]): ValidationResult {
   return { ok, findings, errors, warnings, info };
 }
 
+function numericRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const numeric = Number(raw);
+    if (key && Number.isFinite(numeric)) out[key] = numeric;
+  }
+  return out;
+}
+
+function hasFlatFeeFormula(meta: AnyRecord): boolean {
+  const formula = typeof meta.pricingFormula === "string" ? meta.pricingFormula : "";
+  if (!/\bflatFee\b/.test(formula)) return false;
+  const variables = {
+    ...numericRecord((meta as any).pricingFormulaVariables),
+    ...numericRecord((meta as any).formulaVariables),
+  };
+  return Number.isFinite(variables.flatFee);
+}
+
 /**
  * Validate that PBV2 tree has base pricing configured
  * 
@@ -49,6 +69,10 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
         path: "tree.meta",
       }),
     ]);
+  }
+
+  if (meta.pricingProfileKey === "fee" && hasFlatFeeFormula(meta)) {
+    return toResult([]);
   }
 
   const pricingV2 = asRecord((meta as any).pricingV2);

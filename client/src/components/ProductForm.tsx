@@ -107,7 +107,15 @@ export const ProductForm = ({
   onSave: any;
   formId?: string;
   onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
-  treeMeta?: { shippingConfig?: ShippingConfig; productImages?: any[]; geometry?: { trimAllowance?: number; trimAllowanceX?: number; trimAllowanceY?: number } };
+  treeMeta?: {
+    shippingConfig?: ShippingConfig;
+    productImages?: any[];
+    geometry?: { trimAllowance?: number; trimAllowanceX?: number; trimAllowanceY?: number };
+    formulaVariables?: Record<string, number>;
+    pricingFormulaVariables?: Record<string, number>;
+    pricingProfileKey?: string;
+    pricingFormula?: string;
+  };
   onUpdateTreeMeta?: (updates: Record<string, unknown>) => void;
   pricingV2?: any;
   onUpdatePricingV2Base?: (base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }) => void;
@@ -321,6 +329,8 @@ export const ProductForm = ({
           form={form}
           pricingFormulas={pricingFormulas}
           pricingProfileKey={addPricingProfileKey}
+          treeMeta={treeMeta}
+          onUpdateTreeMeta={onUpdateTreeMeta}
           pricingEngine={pricingEngine}
           onPricingEngineChange={onPricingEngineChange}
           pricingMode={pbv2PricingMode ?? "basic"}
@@ -622,6 +632,8 @@ function PricingEngineRadioSection({
   form,
   pricingFormulas,
   pricingProfileKey,
+  treeMeta,
+  onUpdateTreeMeta,
   pricingEngine,
   onPricingEngineChange,
   pricingMode,
@@ -632,6 +644,13 @@ function PricingEngineRadioSection({
   form: any;
   pricingFormulas: any;
   pricingProfileKey: string;
+  treeMeta?: {
+    formulaVariables?: Record<string, number>;
+    pricingFormulaVariables?: Record<string, number>;
+    pricingProfileKey?: string;
+    pricingFormula?: string;
+  };
+  onUpdateTreeMeta?: (updates: Record<string, unknown>) => void;
   pricingEngine?: "formulaLibrary" | "pricingProfile" | "pricingFormula";
   onPricingEngineChange?: (engine: "formulaLibrary" | "pricingProfile" | "pricingFormula") => void;
   pricingMode: "basic" | "advanced";
@@ -640,7 +659,7 @@ function PricingEngineRadioSection({
   trimAllowanceY?: number;
 }) {
   type PricingEngineMode = "formulaLibrary" | "pricingProfile" | "pricingFormula";
-  const BASIC_CANONICAL_FORMULA = "ceil(total_sqft) * base_price";
+  const LEGACY_SQFT_BASIC_FORMULA = "ceil(total_sqft) * base_price";
   const DEFAULT_FLAT_GOODS_CONFIG: FlatGoodsConfig = {
     sheetWidth: 48,
     sheetHeight: 96,
@@ -658,6 +677,19 @@ function PricingEngineRadioSection({
   const hasTrimAllowance = (Number(trimAllowanceX) || 0) > 0 || (Number(trimAllowanceY) || 0) > 0;
   const formulaUsesOrderedDimsPattern = /\bw\s*\*\s*h\b|\bh\s*\*\s*w\b|\/\s*144\b|\bwidth\s*\*\s*height\b|\bordered_/i.test(String(currentFormula || ""));
   const shouldShowFinishedSizeWarning = isAdvancedMode && hasTrimAllowance && formulaUsesOrderedDimsPattern;
+  const recommendedFormula = getDefaultFormula(currentProfile || pricingProfileKey || "default");
+  const formulaForValidation = String(currentFormula || recommendedFormula || "");
+  const formulaReferencesFlatFee = /\bflatFee\b/.test(formulaForValidation);
+  const feeFormulaUsesSqftPricing = currentProfile === "fee" && /\b(?:total_sqft|sqft|w|h|width|height|base_price|p)\b/i.test(formulaForValidation);
+  const currentConfigRecord = currentProfileConfig && typeof currentProfileConfig === "object" && !Array.isArray(currentProfileConfig)
+    ? (currentProfileConfig as Record<string, any>)
+    : {};
+  const currentFormulaVariables = currentConfigRecord.formulaVariables && typeof currentConfigRecord.formulaVariables === "object" && !Array.isArray(currentConfigRecord.formulaVariables)
+    ? currentConfigRecord.formulaVariables as Record<string, any>
+    : {};
+  const flatFeeValueRaw = currentFormulaVariables.flatFee ?? treeMeta?.formulaVariables?.flatFee ?? treeMeta?.pricingFormulaVariables?.flatFee;
+  const flatFeeInputValue = flatFeeValueRaw === undefined || flatFeeValueRaw === null ? "" : String(flatFeeValueRaw);
+  const hasFlatFeeValue = flatFeeInputValue !== "" && Number.isFinite(Number(flatFeeInputValue));
   const [referenceOpen, setReferenceOpen] = useState(false);
   const [referenceInsertEnabled, setReferenceInsertEnabled] = useState(false);
   const formulaInputRef = useRef<HTMLInputElement | null>(null);
@@ -700,6 +732,34 @@ function PricingEngineRadioSection({
     );
   }, [form, getSafeFlatGoodsConfig]);
 
+  const updatePricingFormulaVariable = useCallback((key: string, value: number | null, shouldDirty = true) => {
+    const current = form.getValues("pricingProfileConfig");
+    const currentRecord = current && typeof current === "object" && !Array.isArray(current)
+      ? { ...(current as Record<string, any>) }
+      : {};
+    const variables = currentRecord.formulaVariables && typeof currentRecord.formulaVariables === "object" && !Array.isArray(currentRecord.formulaVariables)
+      ? { ...(currentRecord.formulaVariables as Record<string, number>) }
+      : {};
+
+    if (value === null) {
+      delete variables[key];
+    } else {
+      variables[key] = value;
+    }
+
+    const nextConfig = {
+      ...currentRecord,
+      formulaVariables: variables,
+    };
+    form.setValue("pricingProfileConfig", nextConfig, { shouldDirty });
+    onUpdateTreeMeta?.({
+      formulaVariables: variables,
+      pricingFormulaVariables: variables,
+      pricingProfileKey: form.getValues("pricingProfileKey") || currentProfile || pricingProfileKey || "default",
+      pricingFormula: form.getValues("pricingFormula") || getDefaultFormula(form.getValues("pricingProfileKey") || currentProfile || pricingProfileKey || "default"),
+    });
+  }, [currentProfile, form, onUpdateTreeMeta, pricingProfileKey]);
+
   useEffect(() => {
     if (!formulaId) return;
     const values = getPricingFormulaSelectionValues(pricingFormulas, formulaId);
@@ -737,10 +797,14 @@ function PricingEngineRadioSection({
   useEffect(() => {
     if (pricingMode !== "basic") return;
     const existing = String(form.getValues("pricingFormula") || "").trim();
-    if (!existing) {
-      form.setValue("pricingFormula", BASIC_CANONICAL_FORMULA, { shouldDirty: false });
+    if (!existing || (currentProfile === "fee" && existing === LEGACY_SQFT_BASIC_FORMULA)) {
+      form.setValue("pricingFormula", recommendedFormula, { shouldDirty: false });
+      onUpdateTreeMeta?.({
+        pricingProfileKey: currentProfile || pricingProfileKey || "default",
+        pricingFormula: recommendedFormula,
+      });
     }
-  }, [pricingMode, form]);
+  }, [pricingMode, form, currentProfile, recommendedFormula, onUpdateTreeMeta, pricingProfileKey]);
 
   useEffect(() => {
     if (currentProfile !== "flat_goods") return;
@@ -933,10 +997,18 @@ function PricingEngineRadioSection({
                       const profile = getProfile(val);
                       if (profile.usesFormula && profile.defaultFormula) {
                         form.setValue("pricingFormula", profile.defaultFormula);
+                        onUpdateTreeMeta?.({ pricingProfileKey: val, pricingFormula: profile.defaultFormula });
                       }
                       if (val === "flat_goods") {
                         const current = form.getValues("pricingProfileConfig") as FlatGoodsConfig | null;
                         form.setValue("pricingProfileConfig", getSafeFlatGoodsConfig(current), { shouldDirty: true });
+                      } else if (val === "fee") {
+                        onUpdateTreeMeta?.({
+                          pricingProfileKey: val,
+                          pricingFormula: profile.defaultFormula || getDefaultFormula(val),
+                          formulaVariables: currentFormulaVariables,
+                          pricingFormulaVariables: currentFormulaVariables,
+                        });
                       }
                     }}
                     value={field.value || "default"}
@@ -1040,6 +1112,45 @@ function PricingEngineRadioSection({
                 </div>
               </div>
             ) : null}
+
+            {currentProfile === "fee" ? (
+              <div className="mt-2 rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
+                <div className="text-xs font-medium text-slate-300">Fee / Service Amount</div>
+                <p className="text-[11px] text-slate-400">Use this for fixed charges like rush fees, design fees, and service add-ons. The flatFee variable is priced in dollars.</p>
+                <div className="space-y-1">
+                  <Label className="text-xs text-slate-400">Flat Fee ($)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={flatFeeInputValue}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (raw === "") {
+                        updatePricingFormulaVariable("flatFee", null, true);
+                        return;
+                      }
+                      const parsed = Number(raw);
+                      if (Number.isFinite(parsed) && parsed >= 0) {
+                        updatePricingFormulaVariable("flatFee", parsed, true);
+                      }
+                    }}
+                    className="h-8"
+                    placeholder="25.00"
+                  />
+                </div>
+                {formulaReferencesFlatFee && !hasFlatFeeValue ? (
+                  <div className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-[11px] text-destructive">
+                    This formula references flatFee. Enter a flat fee amount before using this product in order entry.
+                  </div>
+                ) : null}
+                {feeFormulaUsesSqftPricing ? (
+                  <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-200">
+                    This Fee / Service formula uses sqft or base-rate variables. Confirm that square-foot pricing is intentional for this fee.
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -1070,6 +1181,13 @@ function PricingEngineRadioSection({
                         placeholder={getDefaultFormula(pricingProfileKey)}
                         {...field}
                         value={field.value || ""}
+                        onChange={(event) => {
+                          field.onChange(event);
+                          onUpdateTreeMeta?.({
+                            pricingProfileKey: currentProfile || pricingProfileKey || "default",
+                            pricingFormula: event.target.value,
+                          });
+                        }}
                         ref={(node) => {
                           field.ref(node);
                           formulaInputRef.current = node;
@@ -1079,13 +1197,19 @@ function PricingEngineRadioSection({
                     </FormControl>
                     {!String(field.value || "").trim() ? (
                       <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
-                        <span>No formula set. Preview will use recommended formula: ceil(total_sqft) * base_price</span>
+                        <span>No formula set. Preview will use recommended formula: {recommendedFormula}</span>
                         <Button
                           type="button"
                           variant="outline"
                           size="sm"
                           className="h-6 px-2 text-[10px]"
-                          onClick={() => form.setValue("pricingFormula", BASIC_CANONICAL_FORMULA, { shouldDirty: true })}
+                          onClick={() => {
+                            form.setValue("pricingFormula", recommendedFormula, { shouldDirty: true });
+                            onUpdateTreeMeta?.({
+                              pricingProfileKey: currentProfile || pricingProfileKey || "default",
+                              pricingFormula: recommendedFormula,
+                            });
+                          }}
                         >
                           Insert default formula
                         </Button>
@@ -1100,7 +1224,13 @@ function PricingEngineRadioSection({
                             variant="outline"
                             size="sm"
                             className="h-6 px-2 text-[10px]"
-                            onClick={() => form.setValue("pricingFormula", BASIC_CANONICAL_FORMULA, { shouldDirty: true })}
+                            onClick={() => {
+                              form.setValue("pricingFormula", recommendedFormula, { shouldDirty: true });
+                              onUpdateTreeMeta?.({
+                                pricingProfileKey: currentProfile || pricingProfileKey || "default",
+                                pricingFormula: recommendedFormula,
+                              });
+                            }}
                           >
                             Fix formula
                           </Button>
@@ -1123,7 +1253,7 @@ function PricingEngineRadioSection({
           <div className="rounded-md px-3 py-2.5 bg-slate-900/30 border border-slate-700">
             <div className="text-xs font-medium text-slate-300 mb-1">Generated Canonical Formula</div>
             <Input
-              value={BASIC_CANONICAL_FORMULA}
+              value={recommendedFormula}
               readOnly
               className="bg-slate-950/60 border-slate-700/50 h-8 text-sm font-mono"
             />

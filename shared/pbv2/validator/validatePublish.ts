@@ -1103,6 +1103,54 @@ function getMatrixRowVariables(row: Record<string, unknown>): { key: "variables"
   return null;
 }
 
+function numericRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const numeric = Number(raw);
+    if (key && Number.isFinite(numeric)) out[key] = numeric;
+  }
+  return out;
+}
+
+function formulaReferencesSymbol(formula: unknown, symbol: string): boolean {
+  if (typeof formula !== "string" || !formula.trim()) return false;
+  const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${escaped}\\b`).test(formula);
+}
+
+function formulaUsesSqftPricing(formula: unknown): boolean {
+  if (typeof formula !== "string" || !formula.trim()) return false;
+  return /\b(?:total_sqft|sqft|w|h|width|height|base_price|p)\b/i.test(formula);
+}
+
+function hasConfiguredFormulaVariable(meta: Record<string, unknown> | null, key: string): boolean {
+  const variables = {
+    ...numericRecord(meta?.pricingFormulaVariables),
+    ...numericRecord(meta?.formulaVariables),
+  };
+  return Number.isFinite(variables[key]);
+}
+
+function validateFormulaVariableReferences(
+  findings: Finding[],
+  meta: Record<string, unknown> | null,
+  formula: unknown,
+  path: string,
+  label: string,
+): void {
+  if (formulaReferencesSymbol(formula, "flatFee") && !hasConfiguredFormulaVariable(meta, "flatFee")) {
+    findings.push(
+      errorFinding({
+        code: "PBV2_E_FORMULA_FLAT_FEE_MISSING",
+        message: `${label} references flatFee, but no flat fee amount is configured.`,
+        path,
+        context: { missingSymbol: "flatFee" },
+      })
+    );
+  }
+}
+
 function hasMatrixRowQtyTiers(row: Record<string, unknown>): boolean {
   return Array.isArray((row as any).qtyTiers) && (row as any).qtyTiers.length > 0;
 }
@@ -3111,11 +3159,73 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
     }
   });
 
+  const pricingMeta = asRecord((t as any).meta);
+  const metaPricingProfileKey = isNonEmptyString((pricingMeta as any)?.pricingProfileKey)
+    ? String((pricingMeta as any).pricingProfileKey)
+    : null;
+  const metaPricingFormula = isNonEmptyString((pricingMeta as any)?.pricingFormula)
+    ? String((pricingMeta as any).pricingFormula)
+    : null;
+
+  validateFormulaVariableReferences(
+    findings,
+    pricingMeta,
+    metaPricingFormula,
+    "tree.meta.pricingFormula",
+    "Product pricing formula",
+  );
+
+  if (metaPricingProfileKey === "fee" && formulaUsesSqftPricing(metaPricingFormula)) {
+    findings.push(
+      warningFinding({
+        code: "PBV2_W_FEE_FORMULA_USES_SQFT_PRICING",
+        message: "Fee / Service products usually use flat-fee or per-item pricing. This formula uses sqft/base-rate variables; confirm this is intentional.",
+        path: "tree.meta.pricingFormula",
+      })
+    );
+  }
+
+  for (const n of nodes) {
+    if (n.status === "DELETED") continue;
+    const nodeLabel = isNonEmptyString((n.raw as any).label) ? String((n.raw as any).label) : n.id;
+    const nodeImpacts = Array.isArray((n.raw as any).pricingImpact) ? ((n.raw as any).pricingImpact as unknown[]) : [];
+    for (let i = 0; i < nodeImpacts.length; i++) {
+      const impact = asRecord(nodeImpacts[i]);
+      if (!impact || (impact as any).mode !== "addFormula") continue;
+      validateFormulaVariableReferences(
+        findings,
+        pricingMeta,
+        (impact as any).formula,
+        `nodes.${n.id}.pricingImpact.${i}.formula`,
+        `Option "${nodeLabel}" pricing formula`,
+      );
+    }
+
+    const choices = Array.isArray((n.raw as any).choices) ? ((n.raw as any).choices as unknown[]) : [];
+    for (let i = 0; i < choices.length; i++) {
+      const choice = asRecord(choices[i]);
+      if (!choice) continue;
+      const choiceLabel = isNonEmptyString((choice as any).label) ? String((choice as any).label) : `choice ${i + 1}`;
+      const impacts = Array.isArray((choice as any).pricingImpact) ? ((choice as any).pricingImpact as unknown[]) : [];
+      for (let j = 0; j < impacts.length; j++) {
+        const impact = asRecord(impacts[j]);
+        if (!impact || (impact as any).mode !== "addFormula") continue;
+        validateFormulaVariableReferences(
+          findings,
+          pricingMeta,
+          (impact as any).formula,
+          `nodes.${n.id}.choices.${i}.pricingImpact.${j}.formula`,
+          `Option "${nodeLabel}" choice "${choiceLabel}" pricing formula`,
+        );
+      }
+    }
+  }
+
   // Weight validation: check for negative weights (ERROR)
   const negativeWeights: Array<{ path: string; value: number; label?: string }> = [];
 
   // Check base weight (canonical field)
-  const meta = asRecord((t as any).meta);
+  const meta = pricingMeta;
   if (meta) {
     const baseWeightOz = meta.baseWeightOz;
     if (typeof baseWeightOz === "number" && baseWeightOz < 0) {

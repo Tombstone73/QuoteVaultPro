@@ -57,6 +57,63 @@ const toSnapshotValue = (value: unknown): string | number | boolean => {
   }
 };
 
+const getNumericRecord = (value: unknown): Record<string, number> => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const numeric = Number(raw);
+    if (key && Number.isFinite(numeric)) out[key] = numeric;
+  }
+  return out;
+};
+
+const extractUndefinedSymbol = (message: string): string | null => {
+  const match = message.match(/undefined\s+(?:symbol|variable)\s+([A-Za-z_][A-Za-z0-9_]*)/i);
+  return match?.[1] ?? null;
+};
+
+const buildFormulaImpactError = (input: {
+  error: unknown;
+  sourceLabel: string;
+  formula: string;
+  path?: string;
+  nodeId?: string;
+  optionLabel?: string;
+  choiceValue?: string;
+  choiceLabel?: string;
+  formulaScope: Record<string, unknown>;
+}) => {
+  const rawMessage = typeof (input.error as any)?.message === "string" ? (input.error as any).message : "Invalid formula";
+  const missingSymbol = extractUndefinedSymbol(rawMessage);
+  const friendly = missingSymbol
+    ? `${input.sourceLabel} formula references missing symbol "${missingSymbol}". Configure that formula variable or change the pricing impact to a fixed flat fee.`
+    : `${input.sourceLabel} formula is invalid: ${rawMessage}`;
+  const err = new Error(`Formula error: ${friendly}`) as Error & {
+    code: "PBV2_FORMULA_ERROR";
+    details: Array<Record<string, unknown>>;
+    debug: Record<string, unknown>;
+  };
+  err.code = "PBV2_FORMULA_ERROR";
+  err.details = [{
+    code: missingSymbol ? "PBV2_FORMULA_MISSING_VARIABLE" : "PBV2_FORMULA_INVALID",
+    message: friendly,
+    path: input.path,
+    missingSymbol,
+    nodeId: input.nodeId,
+    optionLabel: input.optionLabel,
+    choiceValue: input.choiceValue,
+    choiceLabel: input.choiceLabel,
+  }];
+  err.debug = {
+    formulaRaw: input.formula,
+    variables: input.formulaScope,
+    missingSymbol,
+    sourceLabel: input.sourceLabel,
+    path: input.path,
+  };
+  return err;
+};
+
 const applyWhenOk = (applyWhen: any, treeSelected: Record<string, { value?: any }>): boolean => {
   if (!applyWhen) return true;
   // We intentionally rely on the shared runtime evaluator via resolveVisibleNodes’ internal calls.
@@ -115,6 +172,10 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
   const selected = Object.fromEntries(
     Object.entries(runtimeVisibility.effectiveSelections).map(([selectionKey, value]) => [selectionKey, { value }])
   ) as Record<string, { value?: any }>;
+  const treeFormulaVariables = {
+    ...getNumericRecord((tree.meta as any)?.pricingFormulaVariables),
+    ...getNumericRecord((tree.meta as any)?.formulaVariables),
+  };
   const formulaScope = buildFormulaEvaluationScope({
     scope: buildFormulaScope({
       formula: "",
@@ -130,20 +191,43 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
       totalSqft: sqftPerItem * quantity,
       linearFeet: linearFootPerItem,
     }),
-    formulaVariables: buildNumericSelectionFormulaVariables({
-      treeJson: tree,
-      selections: runtimeVisibility.effectiveSelections,
-    }),
+    formulaVariables: {
+      ...treeFormulaVariables,
+      ...buildNumericSelectionFormulaVariables({
+        treeJson: tree,
+        selections: runtimeVisibility.effectiveSelections,
+      }),
+    },
   });
 
-  const evaluateFormulaImpactDollars = (formula: unknown, sourceLabel: string): number => {
+  const evaluateFormulaImpactDollars = (
+    formula: unknown,
+    sourceLabel: string,
+    context: {
+      path?: string;
+      nodeId?: string;
+      optionLabel?: string;
+      choiceValue?: string;
+      choiceLabel?: string;
+    } = {},
+  ): number => {
     const formulaText = typeof formula === "string" ? formula.trim() : "";
     if (!formulaText) return 0;
-    const result = Number(evaluate(formulaText, formulaScope as Record<string, any>));
-    if (!Number.isFinite(result)) {
-      throw new Error(`${sourceLabel} formula produced an invalid number`);
+    try {
+      const result = Number(evaluate(formulaText, formulaScope as Record<string, any>));
+      if (!Number.isFinite(result)) {
+        throw new Error(`${sourceLabel} formula produced an invalid number`);
+      }
+      return result;
+    } catch (error) {
+      throw buildFormulaImpactError({
+        error,
+        sourceLabel,
+        formula: formulaText,
+        formulaScope: formulaScope as Record<string, unknown>,
+        ...context,
+      });
     }
-    return result;
   };
 
   // DEV: Log visible nodes for debugging
@@ -280,7 +364,11 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
           nodeCost += ((impact.amountCents ?? 0) / 100) * sqftPerItem * quantity;
           break;
         case "addFormula":
-          nodeCost += evaluateFormulaImpactDollars(impact.formula, `Option v2 node '${nodeId}'`);
+          nodeCost += evaluateFormulaImpactDollars(impact.formula, `Option "${node.label || nodeId}"`, {
+            path: `nodes.${nodeId}.pricingImpact.${j}.formula`,
+            nodeId,
+            optionLabel: node.label || nodeId,
+          });
           break;
         default:
           // MVP: ignore unsupported impact modes.
@@ -424,7 +512,17 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
             }
 
             case "addFormula": {
-              const formulaDollars = evaluateFormulaImpactDollars(impact.formula, `Option v2 choice '${nodeId}:${selectedValue}'`);
+              const formulaDollars = evaluateFormulaImpactDollars(
+                impact.formula,
+                `Option "${node.label || nodeId}" choice "${choice.label || selectedValue}"`,
+                {
+                  path: `nodes.${nodeId}.choices.${node.choices.indexOf(choice)}.pricingImpact.${k}.formula`,
+                  nodeId,
+                  optionLabel: node.label || nodeId,
+                  choiceValue: selectedValue,
+                  choiceLabel: choice.label || selectedValue,
+                },
+              );
               const formulaCents = Math.round(formulaDollars * 100);
               optionsCents += formulaCents;
               choiceCentsApplied += formulaCents;
