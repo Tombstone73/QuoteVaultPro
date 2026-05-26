@@ -104,6 +104,7 @@ const INTERNAL_OPTION_KEYS = new Set([
 ]);
 
 const INTERNAL_KEY_PATTERN = /(^|_)(id|ids|uuid|resolver|metadata|schema|version|debug|fingerprint|hash|import|internal)(_|$)/i;
+const OPAQUE_TOKEN_PATTERN = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{24,}|choice[_-]?\d+|opt(?:_opt)?_[0-9a-f_:-]{8,})$/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -125,7 +126,7 @@ function stripTechnicalSuffix(value: string): string {
 function humanizeDisplayToken(value: unknown, fallback = "Unknown option"): string {
   const raw = cleanString(value);
   if (!raw) return fallback;
-  if (/^choice[_-]?\d+$/i.test(raw)) return fallback;
+  if (OPAQUE_TOKEN_PATTERN.test(raw)) return fallback;
   const stripped = stripTechnicalSuffix(raw)
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/[_\-]+/g, " ")
@@ -133,6 +134,20 @@ function humanizeDisplayToken(value: unknown, fallback = "Unknown option"): stri
     .trim();
   if (!stripped) return fallback;
   return stripped.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function isOpaqueDisplayToken(value: unknown): boolean {
+  const raw = cleanString(value);
+  return !raw || OPAQUE_TOKEN_PATTERN.test(raw) || INTERNAL_KEY_PATTERN.test(raw);
+}
+
+function getDisplayLabelFromRecord(value: unknown, keys: string[]): string | null {
+  if (!isRecord(value)) return null;
+  for (const key of keys) {
+    const label = cleanString(value[key]);
+    if (label && !isOpaqueDisplayToken(label)) return label;
+  }
+  return null;
 }
 
 function isInternalDisplayKey(key: unknown): boolean {
@@ -259,6 +274,19 @@ export const buildPrepressOptionRows = (
   treeJson?: any,
 ): ProductionDisplayOptionRow[] => {
   const rows: ProductionDisplayOptionRow[] = [];
+  const rowKeys = new Set<string>();
+  const snapshot = isRecord(lineItem?.pbv2SnapshotJson) ? lineItem.pbv2SnapshotJson : null;
+  const effectiveTreeJson = treeJson ?? snapshot?.treeJson;
+
+  const pushRow = (dedupeKey: string, row: ProductionDisplayOptionRow) => {
+    const optionLabel = cleanString(row.optionLabel);
+    const selectedLabel = cleanString(row.selectedLabel);
+    if (!optionLabel || !selectedLabel) return;
+    const key = dedupeKey || `${optionLabel}:${selectedLabel}`;
+    if (rowKeys.has(key)) return;
+    rowKeys.add(key);
+    rows.push({ ...row, optionLabel, selectedLabel });
+  };
 
   const optionSelections = lineItem?.optionSelectionsJson as any;
   const selectedRecordRaw =
@@ -269,15 +297,17 @@ export const buildPrepressOptionRows = (
       ? optionSelections.selected
       : optionSelections && typeof optionSelections === "object"
         ? optionSelections
-        : null;
+        : snapshot && isRecord(snapshot.selections)
+          ? snapshot.selections
+          : null;
 
   const selectedRecord: Record<string, unknown> =
     selectedRecordRaw && typeof selectedRecordRaw === "object" ? selectedRecordRaw : {};
 
-  const normalizedNodes: any[] = treeJson
-    ? Array.isArray(treeJson?.nodes)
-      ? treeJson.nodes
-      : Object.values(treeJson?.nodes || {})
+  const normalizedNodes: any[] = effectiveTreeJson
+    ? Array.isArray(effectiveTreeJson?.nodes)
+      ? effectiveTreeJson.nodes
+      : Object.values(effectiveTreeJson?.nodes || {})
     : [];
 
   const selectionNodeByKey = new Map<string, any>();
@@ -290,12 +320,23 @@ export const buildPrepressOptionRows = (
     if (typeof node?.id === "string" && node.id.trim()) {
       selectionNodeById.set(node.id, node);
     }
+    if (typeof node?.key === "string" && node.key.trim()) {
+      selectionNodeByKey.set(node.key, node);
+    }
+  }
+
+  const selectedOptionById = new Map<string, any>();
+  const snapshotSelectedOptions = Array.isArray(snapshot?.selectedOptions) ? snapshot.selectedOptions : [];
+  const persistedSelectedOptions = Array.isArray(lineItem?.selectedOptions) ? lineItem.selectedOptions : [];
+  for (const opt of [...snapshotSelectedOptions, ...persistedSelectedOptions]) {
+    const optionId = cleanString(opt?.optionId);
+    if (optionId && !selectedOptionById.has(optionId)) selectedOptionById.set(optionId, opt);
   }
 
   let visibleNodeIds = new Set<string>();
-  if (treeJson && treeJson.schemaVersion === 2) {
+  if (effectiveTreeJson && effectiveTreeJson.schemaVersion === 2) {
     try {
-      const visible = resolveVisibleNodes(treeJson as any, {
+      const visible = resolveVisibleNodes(effectiveTreeJson as any, {
         schemaVersion: 2,
         selected: Object.fromEntries(
           Object.entries(selectedRecord).map(([key, value]) => [
@@ -310,8 +351,40 @@ export const buildPrepressOptionRows = (
     }
   }
 
+  const runtimeResolvedChoices = isRecord(snapshot?.runtimeSelectionContext?.resolvedChoices)
+    ? snapshot.runtimeSelectionContext.resolvedChoices
+    : null;
+  if (runtimeResolvedChoices) {
+    for (const [selectionKey, resolved] of Object.entries(runtimeResolvedChoices)) {
+      const optionLabel = getDisplayLabelFromRecord(resolved, ["optionLabel", "label", "name"]);
+      const selectedLabel = getDisplayLabelFromRecord(resolved, ["choiceLabel", "selectedLabel", "valueLabel", "label", "name"]);
+      if (!optionLabel || !selectedLabel) continue;
+      pushRow(selectionKey, {
+        groupLabel: null,
+        optionLabel,
+        selectedLabel,
+      });
+    }
+  }
+
+  const getChoiceList = (node: any): any[] => {
+    if (Array.isArray(node?.choices)) return node.choices;
+    if (Array.isArray(node?.input?.constraints?.enum?.options)) return node.input.constraints.enum.options;
+    return [];
+  };
+
+  const choiceMatches = (choice: any, value: unknown): boolean => {
+    const selected = String(value);
+    return [choice?.value, choice?.id, choice?.key, choice?.choiceId]
+      .some((candidate) => candidate !== undefined && candidate !== null && String(candidate) === selected);
+  };
+
+  const choiceDisplayLabel = (choice: any): string | null =>
+    getDisplayLabelFromRecord(choice, ["label", "name", "displayLabel", "title", "value"]);
+
   for (const [selectionKey, rawSelection] of Object.entries(selectedRecord)) {
     if (isInternalDisplayKey(selectionKey)) continue;
+    if (rowKeys.has(selectionKey)) continue;
 
     const node = selectionNodeByKey.get(selectionKey) ?? selectionNodeById.get(selectionKey);
     if (node?.id && visibleNodeIds.size > 0 && !visibleNodeIds.has(node.id)) continue;
@@ -319,34 +392,54 @@ export const buildPrepressOptionRows = (
     const selectedValue = normalizeSelectionValue(rawSelection);
     if (isEmptySelectionValue(selectedValue)) continue;
 
+    const selectedOptionSnapshot = selectedOptionById.get(selectionKey) ?? (node?.id ? selectedOptionById.get(node.id) : undefined);
     const optionLabel =
-      typeof node?.label === "string" && node.label.trim() ? node.label : humanizeDisplayToken(selectionKey);
+      getDisplayLabelFromRecord(selectedOptionSnapshot, ["optionName", "optionLabel", "label", "name"])
+      || getDisplayLabelFromRecord(node, ["label", "name", "displayLabel", "title"])
+      || humanizeDisplayToken(selectionKey);
 
-    const choiceList = Array.isArray(node?.choices)
-      ? node.choices
-      : Array.isArray(node?.input?.constraints?.enum?.options)
-        ? node.input.constraints.enum.options
-        : [];
+    const choiceList = getChoiceList(node);
 
     const toDisplayLabel = (value: unknown): string => {
       if (Array.isArray(value)) {
         return value
           .map((entry) => {
-            const choice = choiceList.find((c: any) => String(c?.value) === String(entry) || String(c?.id) === String(entry));
-            return choice?.label || humanizeDisplayToken(entry, "Unknown choice");
+            const choice = choiceList.find((c: any) => choiceMatches(c, entry));
+            return choiceDisplayLabel(choice) || humanizeDisplayToken(entry, "Yes");
           })
           .join(", ");
       }
       if (typeof value === "boolean") return value ? "Yes" : "No";
       if (isRecord(value)) {
-        const direct = pickFirstString(value.label, value.name, value.value);
-        return direct || "Unknown choice";
+        const direct = getDisplayLabelFromRecord(value, ["choiceLabel", "selectedLabel", "valueLabel", "label", "name", "value"]);
+        return direct || "Yes";
       }
-      const choice = choiceList.find((c: any) => String(c?.value) === String(value) || String(c?.id) === String(value));
-      return choice?.label || humanizeDisplayToken(value, "Unknown choice");
+      const choice = choiceList.find((c: any) => choiceMatches(c, value));
+      const fromChoice = choiceDisplayLabel(choice);
+      if (fromChoice) return fromChoice;
+
+      const inputType = cleanString(node?.input?.type ?? node?.input?.valueType ?? node?.input?.inputKind).toLowerCase();
+      if (["boolean", "checkbox", "toggle", "addon", "add_on"].includes(inputType) || isOpaqueDisplayToken(value)) {
+        return "Yes";
+      }
+
+      return humanizeDisplayToken(value, "Yes");
     };
 
     const selectedLabel = toDisplayLabel(selectedValue);
+    if (
+      process.env.NODE_ENV !== "production" &&
+      (isOpaqueDisplayToken(selectionKey) || isOpaqueDisplayToken(selectedValue)) &&
+      (optionLabel === "Unknown option" || selectedLabel === "Yes")
+    ) {
+      console.warn("[Production display resolver] resolved opaque PBV2 option token", {
+        lineItemId: lineItem?.id ?? lineItem?.lineItemId ?? null,
+        selectionKey,
+        selectedValue,
+        optionLabel,
+        selectedLabel,
+      });
+    }
     const defaultValue =
       node?.input && Object.prototype.hasOwnProperty.call(node.input, "defaultValue")
         ? node.input.defaultValue
@@ -362,20 +455,32 @@ export const buildPrepressOptionRows = (
       row.isDefault = valuesEqualForDefault(selectedValue, defaultValue);
     }
 
-    rows.push(row);
+    pushRow(selectionKey, row);
   }
 
   if (rows.length === 0) {
-    const selectedOptions = Array.isArray(lineItem?.selectedOptions) ? lineItem.selectedOptions : [];
+    const selectedOptions = [...snapshotSelectedOptions, ...persistedSelectedOptions];
     for (const opt of selectedOptions) {
       const optionId = cleanString(opt?.optionId);
       if (isInternalDisplayKey(optionId) && !cleanString(opt?.optionName)) continue;
-      const optionLabel = cleanString(opt?.optionName) || humanizeDisplayToken(optionId);
+      const optionLabel = getDisplayLabelFromRecord(opt, ["optionName", "optionLabel", "label", "name"]) || humanizeDisplayToken(optionId);
       const selectedValue = opt?.value;
       if (!optionLabel || isEmptySelectionValue(selectedValue)) continue;
-      rows.push({
+      if (process.env.NODE_ENV !== "production" && (isOpaqueDisplayToken(optionId) || isOpaqueDisplayToken(selectedValue))) {
+        console.warn("[Production display resolver] resolved opaque PBV2 selectedOptions token", {
+          lineItemId: lineItem?.id ?? lineItem?.lineItemId ?? null,
+          optionId,
+          selectedValue,
+          optionLabel,
+        });
+      }
+      pushRow(optionId, {
         optionLabel,
-        selectedLabel: typeof selectedValue === "boolean" ? (selectedValue ? "Yes" : "No") : humanizeDisplayToken(selectedValue, "Unknown choice"),
+        selectedLabel: typeof selectedValue === "boolean"
+          ? (selectedValue ? "Yes" : "No")
+          : isOpaqueDisplayToken(selectedValue)
+            ? "Yes"
+            : humanizeDisplayToken(selectedValue, "Yes"),
       });
     }
   }
