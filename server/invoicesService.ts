@@ -4,6 +4,7 @@ import { eq, and, inArray, sql } from 'drizzle-orm';
 import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment } from '../shared/schema';
 import { computeInvoicePaymentRollup } from '../shared/rollups/invoicePaymentRollup';
 import { normalizeInvoiceAccountingDisplay } from '../shared/invoiceAccountingDisplay';
+import { buildDocumentNumberParts } from './services/documentNumberingService';
 
 // Map payment terms to days offset
 const TERM_OFFSETS: Record<string, number> = {
@@ -186,7 +187,7 @@ export async function generateNextInvoiceNumber(organizationId: string, tx?: any
 
 export async function getMaxInvoiceNumber(organizationId: string): Promise<number | null> {
   const result = await db
-    .select({ maxNumber: sql<number>`MAX(${invoices.invoiceNumber})` })
+    .select({ maxNumber: sql<number>`MAX(COALESCE(${invoices.numberCore}, ${invoices.invoiceNumber}))` })
     .from(invoices)
     .where(eq(invoices.organizationId, organizationId));
   const val = result[0]?.maxNumber;
@@ -314,6 +315,7 @@ async function createInvoiceFromOrderImpl(
     }
 
     const invoiceNumber = await generateNextInvoiceNumber(organizationId, tx);
+    const { displayNumber, numberCore } = await buildDocumentNumberParts(organizationId, "invoice", invoiceNumber, tx);
     const issueDate = new Date();
     const dueDate = calculateDueDate(issueDate, opts.terms, opts.customDueDate || null);
 
@@ -331,6 +333,8 @@ async function createInvoiceFromOrderImpl(
     const invoiceInsert: InsertInvoice = {
       organizationId,
       invoiceNumber,
+      displayNumber,
+      numberCore,
       orderId: order.id,
       sourceOrderNumber: sourceOrderNumber as any, // Immutable snapshot — survives order deletion
       customerId: order.customerId,

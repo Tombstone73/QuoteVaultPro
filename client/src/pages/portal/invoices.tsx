@@ -34,7 +34,7 @@ function InvoiceRow({ invoice }: { invoice: PortalInvoiceDto }) {
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <Link to={`/portal/invoices/${invoice.id}`} className="font-medium text-foreground hover:underline">
-            Invoice #{invoice.invoiceNumber}
+            Invoice {invoice.displayNumber || invoice.invoiceNumber}
           </Link>
           <Badge variant={statusVariant(invoice.status)}>{invoice.paymentStatusLabel}</Badge>
         </div>
@@ -114,4 +114,3 @@ export default function PortalInvoicesPage() {
     </div>
   );
 }
-

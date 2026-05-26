@@ -698,7 +698,7 @@ export async function registerMvpInvoicingRoutes(
         job,
       });
 
-      const invoiceNumber = (inv as any).invoiceNumber ? String((inv as any).invoiceNumber) : inv.id;
+      const invoiceNumber = (inv as any).displayNumber || ((inv as any).invoiceNumber ? String((inv as any).invoiceNumber) : inv.id);
       const filename = `invoice-${invoiceNumber}.pdf`;
       const wantsDownload = String(req.query.download || '') === '1';
 
@@ -2090,7 +2090,7 @@ export async function registerMvpInvoicingRoutes(
         job,
       });
 
-      const invoiceNumber = (inv as any).invoiceNumber ? String((inv as any).invoiceNumber) : inv.id;
+      const invoiceNumber = (inv as any).displayNumber || ((inv as any).invoiceNumber ? String((inv as any).invoiceNumber) : inv.id);
       const filename = `invoice-${invoiceNumber}.pdf`;
       const pdfBase64 = Buffer.from(pdfBytes).toString('base64');
 

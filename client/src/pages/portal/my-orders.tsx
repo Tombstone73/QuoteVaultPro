@@ -35,7 +35,7 @@ function OrderRow({ order }: { order: PortalOrderListDto }) {
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <Link to={`/portal/orders/${order.id}`} className="font-medium text-foreground hover:underline">
-            Order #{order.orderNumber}
+            Order {order.displayNumber || order.orderNumber}
           </Link>
           <Badge variant={statusVariant(order.displayStatus)}>{order.displayStatus}</Badge>
           {order.proofStatusSummary.actionRequired ? (

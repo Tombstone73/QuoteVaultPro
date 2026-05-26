@@ -36,6 +36,8 @@ import { useStationPrinter } from "@/hooks/useStationPrinter";
 import { PrinterPicker } from "@/components/production/PrinterPicker";
 import { CenteredMessage, TicketDivider } from "@/components/production/ticketPrintPrimitives";
 import { Printer, RotateCcw, ArrowLeft } from "lucide-react";
+import { useOrgPreferences } from "@/hooks/useOrgPreferences";
+import { getProductionOrderNumber } from "@/lib/productionDocumentNumbers";
 
 /** Capitalize a station key for the Station / Route field (e.g. "flatbed" → "Flatbed"). */
 function titleCase(value: string | null | undefined): string {
@@ -77,6 +79,8 @@ export default function ProductionTicketPage() {
   const reasonBanner = ticketReasonBanner(overrides.reason);
 
   const { data, isLoading, error } = useProductionJob(isSample ? undefined : jobId);
+  const { preferences } = useOrgPreferences();
+  const productionNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
   const reprint = useReprintProductionJob(jobId || "");
 
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
@@ -114,7 +118,7 @@ export default function ProductionTicketPage() {
         ? ({
             jobId: data.id,
             orderId: data.order.id,
-            orderNumber: data.order.orderNumber,
+            orderNumber: getProductionOrderNumber(data, productionNumberDisplayMode) || data.order.orderNumber,
             poNumber: data.poNumber ?? data.order.poNumber ?? null,
             customerName: data.order.customerName,
             contactName: data.contactName ?? data.order.contactName ?? null,

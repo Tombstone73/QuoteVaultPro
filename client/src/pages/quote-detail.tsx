@@ -21,6 +21,7 @@ import { QuoteWorkflowActions } from "@/components/QuoteWorkflowActions";
 import { useQuoteWorkflowState } from "@/hooks/useQuoteWorkflowState";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import BackNavControls from "@/components/BackNavControls";
+import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import type { QuoteWithRelations } from "@shared/schema";
 
 type QuoteDetailRouteParams = {
@@ -198,7 +199,11 @@ export default function QuoteDetail() {
   return (
     <Page>
       <PageHeader
-        title={`Quote #${quote.quoteNumber || 'N/A'}`}
+        title={`Quote ${resolveDocumentDisplayNumber({
+          displayNumber: (quote as any).displayNumber,
+          numberCore: (quote as any).numberCore,
+          legacyNumber: quote.quoteNumber,
+        }) || 'N/A'}`}
         subtitle={`Created ${format(new Date(quote.createdAt), 'MMMM d, yyyy')}`}
         className="pb-3"
         backButton={

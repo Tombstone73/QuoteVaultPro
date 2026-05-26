@@ -44,6 +44,7 @@ import {
 import { routeLineItemToProduction } from "../services/productionRoutingService";
 import { assertParentOrderInProductionForJob } from "../services/orderProductionGate";
 import { isCanceledOrder, isTerminalProductionStatus } from "@shared/operationalState";
+import { documentNumberMatchesSearch } from "@shared/documentNumbering";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -163,6 +164,8 @@ export function registerProductionJobsRoutes(
           createdAt: productionJobs.createdAt,
           updatedAt: productionJobs.updatedAt,
           orderNumber: orders.orderNumber,
+          displayNumber: orders.displayNumber,
+          numberCore: orders.numberCore,
           dueDate: orders.dueDate,
           priority: orders.priority,
           fulfillmentStatus: orders.fulfillmentStatus,
@@ -793,6 +796,8 @@ export function registerProductionJobsRoutes(
           lineItemId: String(row.lineItemId ?? ""),
           orderId: row.orderId,
           orderNumber: String(row.orderNumber ?? ""), // Order number at top level for easy access
+          displayNumber: row.displayNumber,
+          numberCore: row.numberCore,
           customerName: String(row.customerName ?? "—"),
           dueDate: row.dueDate ?? null,
           stationKey: String(row.stationKey ?? ""),
@@ -834,6 +839,8 @@ export function registerProductionJobsRoutes(
             id: row.orderId,
             customerId: row.customerId,
             orderNumber: row.orderNumber,
+            displayNumber: row.displayNumber,
+            numberCore: row.numberCore,
             customerName: row.customerName,
             dueDate: row.dueDate,
             priority: row.priority,
@@ -859,7 +866,12 @@ export function registerProductionJobsRoutes(
             const orderNumber = String(j.order?.orderNumber ?? "").toLowerCase();
             const customerName = String(j.order?.customerName ?? "").toLowerCase();
             const desc = String(j.order?.lineItems?.primary?.description ?? "").toLowerCase();
-            return orderNumber.includes(q) || customerName.includes(q) || desc.includes(q);
+            return documentNumberMatchesSearch({
+              query: search,
+              displayNumber: j.order?.displayNumber ?? j.displayNumber,
+              numberCore: j.order?.numberCore ?? j.numberCore,
+              legacyNumber: j.order?.orderNumber,
+            }) || orderNumber.includes(q) || customerName.includes(q) || desc.includes(q);
           })
         : data;
 
@@ -926,6 +938,8 @@ export function registerProductionJobsRoutes(
         .select({
           id: orders.id,
           orderNumber: orders.orderNumber,
+          displayNumber: orders.displayNumber,
+          numberCore: orders.numberCore,
           dueDate: orders.dueDate,
           priority: orders.priority,
           fulfillmentStatus: orders.fulfillmentStatus,
@@ -1375,6 +1389,8 @@ export function registerProductionJobsRoutes(
           mediaLabel: media,
           // Convenience top-level order context
           orderNumber: order.orderNumber,
+          displayNumber: order.displayNumber,
+          numberCore: order.numberCore,
           customerName: String(order.customerName || "—"),
           dueDate: order.dueDate ?? null,
           priority: order.priority ?? null,
@@ -1390,6 +1406,8 @@ export function registerProductionJobsRoutes(
           order: {
             id: orderId,
             orderNumber: order.orderNumber,
+            displayNumber: order.displayNumber,
+            numberCore: order.numberCore,
             customerName: String(order.customerName || "—"),
             contactName,
             poNumber: order.poNumber ?? null,

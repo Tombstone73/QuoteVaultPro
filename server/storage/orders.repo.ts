@@ -48,6 +48,7 @@ import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../ser
 import { resolveActiveProductionOwners } from "../services/productionOwnership";
 import { copyLineItemDesignSnapshotFields, materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "./productDesignConfig.repo";
+import { buildDocumentNumberParts } from "../services/documentNumberingService";
 
 type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
 
@@ -564,7 +565,7 @@ export class OrdersRepository {
         return thumbAccess.url ?? null;
     }
 
-    private async generateNextOrderNumber(organizationId: string, tx?: any): Promise<string> {
+    private async generateNextOrderNumber(organizationId: string, tx?: any): Promise<{ orderNumber: string; displayNumber: string; numberCore: number }> {
         const executor = tx || this.dbInstance;
         let orderNumberVar = await executor
             .select()
@@ -593,16 +594,17 @@ export class OrdersRepository {
         }
 
         const current = Math.floor(Number(orderNumberVar.value));
+        const { displayNumber, numberCore } = await buildDocumentNumberParts(organizationId, "order", current, executor);
         await executor
             .update(globalVariables)
             .set({ value: (current + 1).toString(), updatedAt: new Date() })
             .where(and(eq(globalVariables.id, orderNumberVar.id), eq(globalVariables.organizationId, organizationId)));
-        return current.toString();
+        return { orderNumber: current.toString(), displayNumber, numberCore };
     }
 
     async getMaxOrderNumber(organizationId: string): Promise<number | null> {
         const result = await this.dbInstance.execute(
-            sql`SELECT MAX(CAST(order_number AS INTEGER)) AS max_num FROM orders WHERE order_number ~ '^[0-9]+$' AND organization_id = ${organizationId}`
+            sql`SELECT MAX(COALESCE(number_core, CASE WHEN order_number ~ '^[0-9]+$' THEN order_number::integer ELSE NULL END)) AS max_num FROM orders WHERE organization_id = ${organizationId}`
         );
         const val = (result as any).rows?.[0]?.max_num;
         return val != null ? Number(val) : null;
@@ -751,7 +753,9 @@ export class OrdersRepository {
             const dir = opts.sortDir === 'asc' ? 'asc' : 'desc';
             switch (opts.sortBy) {
                 case 'orderNumber':
-                    orderByClause = dir === 'asc' ? sql`${orders.orderNumber} ASC` : sql`${orders.orderNumber} DESC`;
+                    orderByClause = dir === 'asc'
+                        ? sql`COALESCE(${orders.numberCore}, CASE WHEN ${orders.orderNumber} ~ '^[0-9]+$' THEN ${orders.orderNumber}::integer ELSE NULL END) ASC NULLS LAST`
+                        : sql`COALESCE(${orders.numberCore}, CASE WHEN ${orders.orderNumber} ~ '^[0-9]+$' THEN ${orders.orderNumber}::integer ELSE NULL END) DESC NULLS LAST`;
                     break;
                 case 'customer':
                     orderByClause = dir === 'asc' ? sql`${customers.companyName} ASC` : sql`${customers.companyName} DESC`;
@@ -1137,10 +1141,12 @@ export class OrdersRepository {
         };
 
         const created = await this.dbInstance.transaction(async (tx) => {
-            const orderNumber = await this.generateNextOrderNumber(organizationId, tx);
+            const orderNumberParts = await this.generateNextOrderNumber(organizationId, tx);
             const orderInsert: typeof orders.$inferInsert = {
                 organizationId,
-                orderNumber,
+                orderNumber: orderNumberParts.orderNumber,
+                displayNumber: orderNumberParts.displayNumber,
+                numberCore: orderNumberParts.numberCore,
                 quoteId: data.quoteId || null,
                 sourceQuoteNumber: data.sourceQuoteNumber ?? null,
                 customerId: data.customerId,

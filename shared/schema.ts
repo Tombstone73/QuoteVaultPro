@@ -1355,6 +1355,8 @@ export const quotes = pgTable("quotes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   quoteNumber: integer("quote_number"),
+  displayNumber: varchar("display_number", { length: 64 }),
+  numberCore: integer("number_core"),
   label: text("label"), // Free-text label for categorization/notes
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   status: quoteStatusEnum("status").notNull().default("active"),
@@ -1416,6 +1418,8 @@ export const quotes = pgTable("quotes", {
   index("quotes_contact_id_idx").on(table.contactId),
   index("quotes_created_at_idx").on(table.createdAt),
   index("quotes_quote_number_idx").on(table.quoteNumber),
+  index("quotes_display_number_idx").on(table.displayNumber),
+  index("quotes_number_core_idx").on(table.numberCore),
   index("quotes_source_idx").on(table.source),
 ]);
 
@@ -2721,6 +2725,8 @@ export const orders = pgTable("orders", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   orderNumber: varchar("order_number", { length: 50 }).notNull(),
+  displayNumber: varchar("display_number", { length: 64 }),
+  numberCore: integer("number_core"),
   poNumber: varchar("po_number", { length: 64 }), // Customer PO number
   label: text("label"), // Free-text label for categorization/notes
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }),
@@ -2824,6 +2830,8 @@ export const orders = pgTable("orders", {
 }, (table) => [
   index("orders_organization_id_idx").on(table.organizationId),
   index("orders_order_number_idx").on(table.orderNumber),
+  index("orders_display_number_idx").on(table.displayNumber),
+  index("orders_number_core_idx").on(table.numberCore),
   index("orders_customer_id_idx").on(table.customerId),
   index("orders_workflow_status_id_idx").on(table.workflowStatusId),
   index("orders_canonical_state_idx").on(table.canonicalState),
@@ -3586,6 +3594,8 @@ export const invoices = pgTable("invoices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   invoiceNumber: integer("invoice_number").notNull(), // Sequential numeric per org
+  displayNumber: varchar("display_number", { length: 64 }),
+  numberCore: integer("number_core"),
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }),
   sourceOrderNumber: integer("source_order_number"), // Snapshot of order number at time of invoice creation (immutable)
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
@@ -3642,6 +3652,8 @@ export const invoices = pgTable("invoices", {
 }, (table) => [
   index("invoices_organization_id_idx").on(table.organizationId),
   index("invoices_invoice_number_idx").on(table.invoiceNumber),
+  index("invoices_display_number_idx").on(table.displayNumber),
+  index("invoices_number_core_idx").on(table.numberCore),
   index("invoices_customer_id_idx").on(table.customerId),
   index("invoices_order_id_idx").on(table.orderId),
   index("invoices_status_idx").on(table.status),

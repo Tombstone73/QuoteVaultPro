@@ -37,6 +37,7 @@ import BackNavControls from "@/components/BackNavControls";
 import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus, type OrderProofStatus } from "@shared/orderProofStatus";
+import { documentNumberMatchesSearch } from "@shared/documentNumbering";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
@@ -355,7 +356,12 @@ export default function Orders() {
     if (search) {
       const searchLower = search.toLowerCase();
       filtered = filtered.filter((order: any) =>
-        order.orderNumber?.toLowerCase().includes(searchLower) ||
+        documentNumberMatchesSearch({
+          query: search,
+          displayNumber: order.displayNumber,
+          numberCore: order.numberCore,
+          legacyNumber: order.orderNumber,
+        }) ||
         order.label?.toLowerCase().includes(searchLower) ||
         order.poNumber?.toLowerCase().includes(searchLower) ||
         order.customer?.companyName?.toLowerCase().includes(searchLower)

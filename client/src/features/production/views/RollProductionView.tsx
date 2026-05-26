@@ -67,6 +67,9 @@ import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
 import { filterProductionJobsForTab } from "@/lib/productionBoard";
+import { useOrgPreferences } from "@/hooks/useOrgPreferences";
+import { getProductionOrderNumber } from "@/lib/productionDocumentNumbers";
+import type { ProductionDocumentNumberDisplayMode } from "@shared/documentNumbering";
 
 type ProductionStatus = "queued" | "in_progress" | "done" | "all";
 
@@ -1225,12 +1228,14 @@ function PreviewPanel({
   timerIsRunning,
   notes,
   onPreviewArtwork,
+  documentNumberDisplayMode,
 }: {
   job: ProductionJobListItem;
   timerSeconds: number | null;
   timerIsRunning: boolean;
   notes: Array<{ id: string; text: string; createdAt: string; edited?: boolean }>;
   onPreviewArtwork: (side: "front" | "back") => void;
+  documentNumberDisplayMode: ProductionDocumentNumberDisplayMode;
 }) {
   const li = primaryLineItem(job);
   const thumbs = artworkThumbs(job);
@@ -1248,7 +1253,7 @@ function PreviewPanel({
   const media = sanitizeDisplayText((job as any).media);
   const sides = sidesInfo.label;
   const size = sanitizeDisplayText((job as any).size);
-  const orderNumber = (job as any).orderNumber ?? job.order.orderNumber ?? "—";
+  const orderNumber = getProductionOrderNumber(job, documentNumberDisplayMode) || ((job as any).orderNumber ?? job.order.orderNumber ?? "—");
   const productionJobId = (job as any).productionJobId ?? job.id;
   
   // Extract IDs for linking
@@ -1263,7 +1268,7 @@ function PreviewPanel({
 
   // Show Order # and Production Job ID (Order # is primary identifier)
   const jobRefParts = [
-    orderNumber && orderNumber !== "—" ? `Order #${orderNumber}` : null,
+    orderNumber && orderNumber !== "—" ? `Order ${orderNumber}` : null,
     productionJobId ? `Job ${String(productionJobId).slice(-6)}` : null,
   ].filter(Boolean);
   const jobRef = jobRefParts.length ? jobRefParts.join(" • ") : "—";
@@ -1342,7 +1347,7 @@ function PreviewPanel({
                       className="text-blue-600 hover:text-blue-700 hover:underline"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      Order #{orderNumber}
+                      Order {orderNumber}
                     </Link>
                     {productionJobId && <span> • Job {String(productionJobId).slice(-6)}</span>}
                   </>
@@ -1437,6 +1442,8 @@ function PreviewPanel({
 }
 
 export default function RollProductionView(props: { viewKey: string; status: ProductionStatus; jobs?: ProductionJobListItem[] }) {
+  const { preferences } = useOrgPreferences();
+  const productionNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
   const shouldFetchJobs = !props.jobs;
   const { data, isLoading, error } = useProductionJobs(
     { view: props.viewKey },
@@ -1619,6 +1626,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
               setPreviewSide(side);
               setPreviewModalOpen(true);
             }}
+            documentNumberDisplayMode={productionNumberDisplayMode}
           />
         ) : null}
 
@@ -1657,7 +1665,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                   const hasBack = !!back;
 
                   // Extract order number and ID for linking
-                  const orderNumber = (job as any).orderNumber || job.order?.orderNumber || "—";
+                  const orderNumber = getProductionOrderNumber(job, productionNumberDisplayMode) || (job as any).orderNumber || job.order?.orderNumber || "—";
                   const orderId = (job as any).orderId || job.order?.id;
                   const customerId = (job as any).customerId || (job.order as any)?.customerId;
 
@@ -1816,7 +1824,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
           <DialogHeader className="shrink-0">
             <DialogTitle>
               {selectedJob
-                ? `${selectedJob.order.customerName} • Order #${(selectedJob as any).orderNumber ?? selectedJob.order.orderNumber} • Job ${String((selectedJob as any).productionJobId ?? selectedJob.id).slice(-6)}`
+                ? `${selectedJob.order.customerName} - Order ${getProductionOrderNumber(selectedJob, productionNumberDisplayMode) || ((selectedJob as any).orderNumber ?? selectedJob.order.orderNumber)} - Job ${String((selectedJob as any).productionJobId ?? selectedJob.id).slice(-6)}`
                 : "Artwork Preview"}
             </DialogTitle>
           </DialogHeader>

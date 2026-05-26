@@ -59,7 +59,7 @@ function InvoiceItem({ invoice }: { invoice: PortalInvoiceDto }) {
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <Link to={`/portal/invoices/${invoice.id}`} className="font-medium hover:underline">
-            Invoice #{invoice.invoiceNumber}
+            Invoice {invoice.displayNumber || invoice.invoiceNumber}
           </Link>
           <Badge variant={invoiceVariant(invoice)}>{invoice.status === "overdue" ? "Past Due" : invoice.paymentStatusLabel}</Badge>
         </div>
@@ -84,7 +84,7 @@ function QuoteItem({ quote }: { quote: PortalQuoteListDto }) {
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <Link to={`/portal/quotes/${quote.id}`} className="font-medium hover:underline">
-            Quote #{quote.quoteNumber ?? quote.id.slice(0, 8)}
+            Quote {quote.displayNumber ?? quote.quoteNumber ?? quote.id.slice(0, 8)}
           </Link>
           <Badge variant={quoteVariant(quote)}>{quote.displayStatus}</Badge>
         </div>
@@ -107,7 +107,7 @@ function OrderItem({ order }: { order: PortalOrderListDto }) {
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <Link to={`/portal/orders/${order.id}`} className="font-medium hover:underline">
-              Order #{order.orderNumber}
+              Order {order.displayNumber || order.orderNumber}
             </Link>
             <Badge variant={orderVariant(order)}>{order.displayStatus}</Badge>
             {order.proofStatusSummary.actionRequired ? (
@@ -135,7 +135,7 @@ function ProofItem({ proof }: { proof: PortalProofDto }) {
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <Link to={`/portal/proofs/${proof.id}`} className="font-medium hover:underline">
-            Proof v{proof.versionNumber} / Order #{proof.orderSummary.orderNumber}
+            Proof v{proof.versionNumber} / Order {proof.orderSummary.displayNumber || proof.orderSummary.orderNumber}
           </Link>
           <Badge variant="secondary">Awaiting Your Approval</Badge>
         </div>

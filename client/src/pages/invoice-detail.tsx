@@ -36,6 +36,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { TimelinePanel } from "@/components/TimelinePanel";
 import StripePayDialog from "@/components/payments/StripePayDialog";
 import { QBTransientDisconnectBanner } from "@/components/integrations/QBTransientDisconnectBanner";
+import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 
 type StripeIntegrationStatusEnvelope = {
   success: boolean;
@@ -1141,7 +1142,11 @@ export default function InvoiceDetailPage() {
               </Button>
               <div className="min-w-0">
                 <div className="text-base sm:text-lg font-semibold truncate">
-                  Invoice #{invoice.invoiceNumber}
+                  Invoice {resolveDocumentDisplayNumber({
+                    displayNumber: (invoice as any).displayNumber,
+                    numberCore: (invoice as any).numberCore,
+                    legacyNumber: invoice.invoiceNumber,
+                  }) || invoice.invoiceNumber}
                 </div>
                 <div className="text-sm text-muted-foreground truncate">
                   Issued {formatDate((invoice as any).issuedAt || invoice.issueDate)}

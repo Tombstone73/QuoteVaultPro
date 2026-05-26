@@ -37,6 +37,7 @@ import { storage } from "../storage";
 import { resolveOriginalFileAccess } from "../lib/supabaseObjectHelpers";
 import { buildProofArtifactSummary, INCOMPLETE_PROOF_MESSAGE, recordProofResponse } from "./proofingService";
 import { recordPortalFollowUpItem } from "./portalFollowUps";
+import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 
 export type PortalSessionDto = {
   userId: string;
@@ -55,6 +56,8 @@ export type PortalSessionDto = {
 export type InvoicePortalDto = {
   id: string;
   invoiceNumber: number;
+  displayNumber: string;
+  numberCore: number | null;
   status: string;
   issueDate: string | null;
   dueDate: string | null;
@@ -152,6 +155,7 @@ export type PortalProofLineItemSummaryDto = {
 export type PortalProofOrderSummaryDto = {
   id: string;
   orderNumber: string;
+  displayNumber: string;
   displayStatus: string;
 };
 
@@ -250,6 +254,8 @@ export type OrderPortalInvoiceSummaryDto = {
 export type OrderPortalListDto = {
   id: string;
   orderNumber: string;
+  displayNumber: string;
+  numberCore: number | null;
   customerPoNumber: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -297,6 +303,8 @@ export type QuotePortalExpirationSummaryDto = {
 export type QuotePortalListDto = {
   id: string;
   quoteNumber: number | null;
+  displayNumber: string | null;
+  numberCore: number | null;
   createdAt: string | null;
   validUntil: string | null;
   displayStatus: string;
@@ -317,6 +325,7 @@ export type QuotePortalAction = "approve" | "decline" | "request_revision";
 export type QuotePortalOrderSummaryDto = {
   id: string;
   orderNumber: string;
+  displayNumber: string;
   displayStatus: string;
 };
 
@@ -337,6 +346,8 @@ type InvoicePortalRow = Pick<
   typeof invoices.$inferSelect,
   | "id"
   | "invoiceNumber"
+  | "displayNumber"
+  | "numberCore"
   | "status"
   | "issueDate"
   | "dueDate"
@@ -372,6 +383,8 @@ type InvoicePaymentPortalRow = Pick<
   typeof invoices.$inferSelect,
   | "id"
   | "invoiceNumber"
+  | "displayNumber"
+  | "numberCore"
   | "status"
   | "issueDate"
   | "dueDate"
@@ -395,6 +408,8 @@ type OrderPortalRow = Pick<
   typeof orders.$inferSelect,
   | "id"
   | "orderNumber"
+  | "displayNumber"
+  | "numberCore"
   | "poNumber"
   | "createdAt"
   | "updatedAt"
@@ -436,7 +451,7 @@ type OrderInvoiceSummaryRow = Pick<
 
 type QuotePortalRow = Pick<
   typeof quotes.$inferSelect,
-  "id" | "quoteNumber" | "createdAt" | "validUntil" | "status" | "subtotal" | "taxAmount" | "totalPrice" | "convertedToOrderId"
+  "id" | "quoteNumber" | "displayNumber" | "numberCore" | "createdAt" | "validUntil" | "status" | "subtotal" | "taxAmount" | "totalPrice" | "convertedToOrderId"
 >;
 
 type QuoteLineItemPortalRow = Pick<
@@ -476,6 +491,8 @@ type PortalProofRow = {
   organizationId: string;
   orderId: string;
   orderNumber: string;
+  orderDisplayNumber: string | null;
+  orderNumberCore: number | null;
   orderStatus: string | null;
   orderState: string | null;
   orderStatusPillValue: string | null;
@@ -815,6 +832,12 @@ function mapInvoice(row: InvoicePortalRow, paymentRows: PaymentRollupRow[]): Inv
   return {
     id: row.id,
     invoiceNumber: Number(row.invoiceNumber),
+    displayNumber: resolveDocumentDisplayNumber({
+      displayNumber: row.displayNumber,
+      numberCore: row.numberCore,
+      legacyNumber: row.invoiceNumber,
+    }),
+    numberCore: row.numberCore,
     status: normalizeInvoiceStatus(row.status),
     issueDate: toIso(row.issueDate),
     dueDate: toIso(row.dueDate),
@@ -857,6 +880,8 @@ export async function listPortalInvoices(req: Request): Promise<InvoicePortalDto
     .select({
       id: invoices.id,
       invoiceNumber: invoices.invoiceNumber,
+      displayNumber: invoices.displayNumber,
+      numberCore: invoices.numberCore,
       status: invoices.status,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
@@ -888,6 +913,8 @@ export async function getPortalInvoice(req: Request, invoiceId: string): Promise
     .select({
       id: invoices.id,
       invoiceNumber: invoices.invoiceNumber,
+      displayNumber: invoices.displayNumber,
+      numberCore: invoices.numberCore,
       status: invoices.status,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
@@ -920,6 +947,8 @@ async function getPortalInvoiceForPayment(scope: PortalScope, invoiceId: string)
     .select({
       id: invoices.id,
       invoiceNumber: invoices.invoiceNumber,
+      displayNumber: invoices.displayNumber,
+      numberCore: invoices.numberCore,
       status: invoices.status,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
@@ -1715,6 +1744,11 @@ function mapPortalProofRow(row: PortalProofRow, history?: PortalProofHistoryItem
     orderSummary: {
       id: row.orderId,
       orderNumber: String(row.orderNumber),
+      displayNumber: resolveDocumentDisplayNumber({
+        displayNumber: row.orderDisplayNumber,
+        numberCore: row.orderNumberCore,
+        legacyNumber: row.orderNumber,
+      }),
       displayStatus: orderDisplayStatus,
     },
     customerActionRequired: mapped.customerActionRequired,
@@ -1729,6 +1763,8 @@ async function loadPortalProofRows(scope: PortalScope, proofId?: string, tx: any
       organizationId: lineItemProofVersions.organizationId,
       orderId: lineItemProofVersions.orderId,
       orderNumber: orders.orderNumber,
+      orderDisplayNumber: orders.displayNumber,
+      orderNumberCore: orders.numberCore,
       orderStatus: orders.status,
       orderState: orders.state,
       orderStatusPillValue: orders.statusPillValue,
@@ -2388,6 +2424,12 @@ function mapOrderDetail(
   return {
     id: order.id,
     orderNumber: String(order.orderNumber),
+    displayNumber: resolveDocumentDisplayNumber({
+      displayNumber: order.displayNumber,
+      numberCore: order.numberCore,
+      legacyNumber: order.orderNumber,
+    }),
+    numberCore: order.numberCore,
     customerPoNumber: order.poNumber ?? null,
     createdAt: toIso(order.createdAt),
     updatedAt: toIso(order.updatedAt),
@@ -2465,6 +2507,8 @@ export async function listPortalOrders(req: Request): Promise<OrderPortalListDto
     .select({
       id: orders.id,
       orderNumber: orders.orderNumber,
+      displayNumber: orders.displayNumber,
+      numberCore: orders.numberCore,
       poNumber: orders.poNumber,
       createdAt: orders.createdAt,
       updatedAt: orders.updatedAt,
@@ -2511,6 +2555,8 @@ export async function getPortalOrder(req: Request, orderId: string): Promise<Ord
     .select({
       id: orders.id,
       orderNumber: orders.orderNumber,
+      displayNumber: orders.displayNumber,
+      numberCore: orders.numberCore,
       poNumber: orders.poNumber,
       createdAt: orders.createdAt,
       updatedAt: orders.updatedAt,
@@ -2590,6 +2636,12 @@ function mapQuoteDetail(
   return {
     id: quote.id,
     quoteNumber: quote.quoteNumber == null ? null : Number(quote.quoteNumber),
+    displayNumber: resolveDocumentDisplayNumber({
+      displayNumber: quote.displayNumber,
+      numberCore: quote.numberCore,
+      legacyNumber: quote.quoteNumber,
+    }),
+    numberCore: quote.numberCore,
     createdAt: toIso(quote.createdAt),
     validUntil: toIso(quote.validUntil),
     displayStatus,
@@ -2668,6 +2720,8 @@ export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto
     .select({
       id: quotes.id,
       quoteNumber: quotes.quoteNumber,
+      displayNumber: quotes.displayNumber,
+      numberCore: quotes.numberCore,
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
@@ -2693,6 +2747,8 @@ export async function getPortalQuote(req: Request, quoteId: string): Promise<Quo
     .select({
       id: quotes.id,
       quoteNumber: quotes.quoteNumber,
+      displayNumber: quotes.displayNumber,
+      numberCore: quotes.numberCore,
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
@@ -2806,6 +2862,8 @@ async function getScopedPortalQuoteRecord(scope: PortalScope, quoteId: string): 
     .select({
       id: quotes.id,
       quoteNumber: quotes.quoteNumber,
+      displayNumber: quotes.displayNumber,
+      numberCore: quotes.numberCore,
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
@@ -2860,6 +2918,8 @@ async function getConvertedOrderSummary(scope: PortalScope, quote: QuotePortalRo
     .select({
       id: orders.id,
       orderNumber: orders.orderNumber,
+      displayNumber: orders.displayNumber,
+      numberCore: orders.numberCore,
       status: orders.status,
       state: orders.state,
       statusPillValue: orders.statusPillValue,
@@ -2882,6 +2942,11 @@ async function getConvertedOrderSummary(scope: PortalScope, quote: QuotePortalRo
   return {
     id: order.id,
     orderNumber: order.orderNumber,
+    displayNumber: resolveDocumentDisplayNumber({
+      displayNumber: order.displayNumber,
+      numberCore: order.numberCore,
+      legacyNumber: order.orderNumber,
+    }),
     displayStatus: mapPortalOrderStatus(order),
   };
 }
@@ -3002,6 +3067,11 @@ export async function approvePortalQuote(req: Request, quoteId: string): Promise
       createdOrder = {
         id: order.id,
         orderNumber: order.orderNumber,
+        displayNumber: resolveDocumentDisplayNumber({
+          displayNumber: order.displayNumber,
+          numberCore: order.numberCore,
+          legacyNumber: order.orderNumber,
+        }),
         displayStatus: mapPortalOrderStatus(order),
       };
     } catch (error) {

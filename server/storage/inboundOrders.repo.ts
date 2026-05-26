@@ -35,6 +35,7 @@ import {
   type Quote,
   type QuoteLineItem,
 } from "@shared/schema";
+import { buildDocumentNumberParts } from "../services/documentNumberingService";
 
 export type InboundOrderListFilters = {
   status?: InboundOrderRecordStatus;
@@ -956,6 +957,7 @@ export class InboundOrdersRepository {
       }
 
       const quoteNumber = Math.floor(Number(quoteNumberVar.value));
+      const { displayNumber, numberCore } = await buildDocumentNumberParts(organizationId, "quote", quoteNumber, tx);
       const now = new Date();
 
       // Keep quote.source aligned with normal staff-created quotes so internal quote lists and permissions include it.
@@ -966,6 +968,8 @@ export class InboundOrdersRepository {
           organizationId,
           userId: input.actorUserId,
           quoteNumber,
+          displayNumber,
+          numberCore,
           status: "draft",
           source: "internal",
           label: input.label,

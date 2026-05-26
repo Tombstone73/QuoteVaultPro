@@ -1504,6 +1504,7 @@ export function PreferencesSettings() {
   };
 
   const materialsOverrideInProductionEnabled = (preferences as any)?.production?.materialsOverrideMode !== "prepress_only";
+  const productionDocumentNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
 
   const handleMaterialsOverrideModeToggle = async (enabled: boolean) => {
     await updatePreferences({
@@ -1511,6 +1512,16 @@ export function PreferencesSettings() {
       production: {
         ...(preferences as any)?.production,
         materialsOverrideMode: enabled ? "prepress_and_production" : "prepress_only",
+      },
+    });
+  };
+
+  const handleProductionDocumentNumberModeChange = async (value: "full" | "number_only") => {
+    await updatePreferences({
+      ...preferences,
+      production: {
+        ...(preferences as any)?.production,
+        documentNumberDisplayMode: value,
       },
     });
   };
@@ -1659,6 +1670,30 @@ export function PreferencesSettings() {
                 onCheckedChange={handleMaterialsOverrideModeToggle}
                 disabled={isUpdating}
               />
+            </div>
+
+            <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="production-document-number-display" className="text-titan-sm font-medium text-titan-text-primary">
+                  Production document numbers
+                </Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  Choose whether production views show the full stored order number or just the numeric core.
+                </p>
+              </div>
+              <Select
+                value={productionDocumentNumberDisplayMode}
+                onValueChange={(value) => handleProductionDocumentNumberModeChange(value as "full" | "number_only")}
+                disabled={isUpdating}
+              >
+                <SelectTrigger id="production-document-number-display" className="w-[180px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="full">Full</SelectItem>
+                  <SelectItem value="number_only">Number only</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
         </div>

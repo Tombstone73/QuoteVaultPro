@@ -256,6 +256,12 @@ describe('filterOrderBySearch', () => {
     expect(filterOrderBySearch(makeOrder({ orderNumber: '2025' }), '2025')).toBe(true);
   });
 
+  test('matches full and core display order numbers', () => {
+    const order = makeOrder({ orderNumber: '1006', displayNumber: 'ORD-1006', numberCore: 1006 } as any);
+    expect(filterOrderBySearch(order, 'ORD-1006')).toBe(true);
+    expect(filterOrderBySearch(order, '1006')).toBe(true);
+  });
+
   test('matches poNumber', () => {
     expect(filterOrderBySearch(makeOrder({ poNumber: 'PO-ABC' }), 'po-abc')).toBe(true);
   });
@@ -288,6 +294,12 @@ describe('filterInvoiceBySearch', () => {
     expect(filterInvoiceBySearch(makeInvoice({ invoiceNumber: 42 }), '42')).toBe(true);
   });
 
+  test('matches full and core display invoice numbers', () => {
+    const invoice = makeInvoice({ invoiceNumber: 1006, displayNumber: 'INV-1006', numberCore: 1006 } as any);
+    expect(filterInvoiceBySearch(invoice, 'INV-1006')).toBe(true);
+    expect(filterInvoiceBySearch(invoice, '1006')).toBe(true);
+  });
+
   test('matches customerPoNumber', () => {
     expect(filterInvoiceBySearch(makeInvoice({ customerPoNumber: 'CUS-PO-999' }), 'cus-po')).toBe(true);
   });
@@ -314,6 +326,12 @@ describe('filterQuoteBySearch', () => {
 
   test('matches quoteNumber', () => {
     expect(filterQuoteBySearch(makeQuote({ quoteNumber: 555 }), '555')).toBe(true);
+  });
+
+  test('matches full and core display quote numbers', () => {
+    const quote = makeQuote({ quoteNumber: 1006, displayNumber: 'QT-1006', numberCore: 1006 } as any);
+    expect(filterQuoteBySearch(quote, 'QT-1006')).toBe(true);
+    expect(filterQuoteBySearch(quote, '1006')).toBe(true);
   });
 
   test('matches label', () => {

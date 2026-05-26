@@ -16,6 +16,7 @@ import { db } from "../db";
 import { invoices } from "@shared/schema";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
+import { documentNumberMatchesSearch, resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 
 export function registerSearchRoutes(
   app: Express,
@@ -71,33 +72,57 @@ export function registerSearchRoutes(
       const allOrders = await storage.getAllOrders(organizationId);
       const matchingOrders = allOrders
         .filter((order: any) =>
-          String(order.orderNumber || '').toLowerCase().includes(lowerQuery) ||
+          documentNumberMatchesSearch({
+            query,
+            displayNumber: order.displayNumber,
+            numberCore: order.numberCore,
+            legacyNumber: order.orderNumber,
+          }) ||
           String(order.jobNumber || '').toLowerCase().includes(lowerQuery) ||
           String(order.customerPO || '').toLowerCase().includes(lowerQuery) ||
           String(order.customerName || '').toLowerCase().includes(lowerQuery)
         )
         .slice(0, 5)
-        .map((order: any) => ({
-          id: order.id,
-          title: `Order #${order.orderNumber || order.id.slice(0, 8)}`,
-          subtitle: order.customerName || order.status || undefined,
-          url: `/orders/${order.id}`,
-        }));
+        .map((order: any) => {
+          const displayNumber = resolveDocumentDisplayNumber({
+            displayNumber: order.displayNumber,
+            numberCore: order.numberCore,
+            legacyNumber: order.orderNumber,
+          }) || order.id.slice(0, 8);
+          return {
+            id: order.id,
+            title: `Order ${displayNumber}`,
+            subtitle: [order.customerName, order.status, order.createdAt ? new Date(order.createdAt).toLocaleDateString() : null].filter(Boolean).join(" • ") || undefined,
+            url: `/orders/${order.id}`,
+          };
+        });
 
       // Search quotes
       const allQuotes = await storage.getAllQuotes(organizationId);
       const matchingQuotes = allQuotes
         .filter((quote: any) =>
-          String(quote.quoteNumber || '').toLowerCase().includes(lowerQuery) ||
+          documentNumberMatchesSearch({
+            query,
+            displayNumber: quote.displayNumber,
+            numberCore: quote.numberCore,
+            legacyNumber: quote.quoteNumber,
+          }) ||
           String(quote.customerName || '').toLowerCase().includes(lowerQuery)
         )
         .slice(0, 5)
-        .map((quote: any) => ({
-          id: quote.id,
-          title: `Quote #${quote.quoteNumber || quote.id.slice(0, 8)}`,
-          subtitle: quote.customerName || undefined,
-          url: `/edit-quote/${quote.id}`,
-        }));
+        .map((quote: any) => {
+          const displayNumber = resolveDocumentDisplayNumber({
+            displayNumber: quote.displayNumber,
+            numberCore: quote.numberCore,
+            legacyNumber: quote.quoteNumber,
+          }) || quote.id.slice(0, 8);
+          return {
+            id: quote.id,
+            title: `Quote ${displayNumber}`,
+            subtitle: [quote.customerName, quote.status, quote.createdAt ? new Date(quote.createdAt).toLocaleDateString() : null].filter(Boolean).join(" • ") || undefined,
+            url: `/edit-quote/${quote.id}`,
+          };
+        });
 
       // Search invoices
       const allInvoices = await db
@@ -108,16 +133,28 @@ export function registerSearchRoutes(
 
       const matchingInvoices = allInvoices
         .filter((invoice: any) =>
-          String(invoice.invoiceNumber || '').toLowerCase().includes(lowerQuery) ||
+          documentNumberMatchesSearch({
+            query,
+            displayNumber: invoice.displayNumber,
+            numberCore: invoice.numberCore,
+            legacyNumber: invoice.invoiceNumber,
+          }) ||
           String(invoice.customerName || '').toLowerCase().includes(lowerQuery)
         )
         .slice(0, 5)
-        .map((invoice: any) => ({
-          id: invoice.id,
-          title: `Invoice #${invoice.invoiceNumber || invoice.id.slice(0, 8)}`,
-          subtitle: invoice.customerName || invoice.status || undefined,
-          url: `/invoices/${invoice.id}`,
-        }));
+        .map((invoice: any) => {
+          const displayNumber = resolveDocumentDisplayNumber({
+            displayNumber: invoice.displayNumber,
+            numberCore: invoice.numberCore,
+            legacyNumber: invoice.invoiceNumber,
+          }) || invoice.id.slice(0, 8);
+          return {
+            id: invoice.id,
+            title: `Invoice ${displayNumber}`,
+            subtitle: [invoice.customerName, invoice.status, invoice.issueDate ? new Date(invoice.issueDate).toLocaleDateString() : null].filter(Boolean).join(" • ") || undefined,
+            url: `/invoices/${invoice.id}`,
+          };
+        });
 
       // Search jobs (from orders)
       const jobsFromOrders = allOrders

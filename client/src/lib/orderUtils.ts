@@ -2,6 +2,8 @@
  * Order utility functions
  */
 
+import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
+
 export interface OrderNumberDisplay {
   displayNumber: string;
   isTest: boolean;
@@ -14,11 +16,21 @@ export interface OrderNumberDisplay {
  * @param order - Order object with id and orderNumber fields
  * @returns Object with displayNumber and isTest flag
  */
-export function getDisplayOrderNumber(order: { id: string; orderNumber?: string | null }): OrderNumberDisplay {
+export function getDisplayOrderNumber(order: {
+  id: string;
+  orderNumber?: string | null;
+  displayNumber?: string | null;
+  numberCore?: number | null;
+}): OrderNumberDisplay {
   const orderNumber = order.orderNumber?.trim();
+  const frozenDisplayNumber = resolveDocumentDisplayNumber({
+    displayNumber: order.displayNumber,
+    numberCore: order.numberCore,
+    legacyNumber: orderNumber,
+  });
   
   // If no orderNumber exists, use short ID fallback
-  if (!orderNumber) {
+  if (!orderNumber && !frozenDisplayNumber) {
     return {
       displayNumber: `#${order.id.slice(0, 8)}`,
       isTest: false,
@@ -26,7 +38,7 @@ export function getDisplayOrderNumber(order: { id: string; orderNumber?: string 
   }
   
   // Check if this is a test order (TEST-TRANS pattern)
-  const isTestOrder = /^TEST-TRANS-/i.test(orderNumber);
+  const isTestOrder = /^TEST-TRANS-/i.test(orderNumber || "");
   
   if (isTestOrder) {
     // For test orders, show them as test data but use short ID for cleaner display
@@ -38,7 +50,7 @@ export function getDisplayOrderNumber(order: { id: string; orderNumber?: string 
   
   // Normal case: display the actual order number
   return {
-    displayNumber: orderNumber,
+    displayNumber: frozenDisplayNumber || orderNumber || `#${order.id.slice(0, 8)}`,
     isTest: false,
   };
 }
@@ -49,7 +61,12 @@ export function getDisplayOrderNumber(order: { id: string; orderNumber?: string 
  * @param order - Order object
  * @returns Formatted string for display
  */
-export function formatOrderNumber(order: { id: string; orderNumber?: string | null }): string {
+export function formatOrderNumber(order: {
+  id: string;
+  orderNumber?: string | null;
+  displayNumber?: string | null;
+  numberCore?: number | null;
+}): string {
   const { displayNumber, isTest } = getDisplayOrderNumber(order);
   return isTest ? `${displayNumber} (Test)` : displayNumber;
 }

@@ -28,6 +28,7 @@ import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { sanitizeJsonForPostgres } from "../lib/quoteCreateLineItemNormalizer";
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "./productDesignConfig.repo";
+import { buildDocumentNumberParts } from "../services/documentNumberingService";
 
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
@@ -229,7 +230,7 @@ export class QuotesRepository {
 
         switch (sortBy) {
             case 'quoteNumber':
-                return [order(quotes.quoteNumber), stableSecondary];
+                return [order(sql`coalesce(${quotes.numberCore}, ${quotes.quoteNumber})`), stableSecondary];
             case 'label':
                 return [order(quotes.label), stableSecondary];
             case 'customer':
@@ -540,11 +541,14 @@ export class QuotesRepository {
             }
 
             const quoteNumber = Math.floor(Number(quoteNumberVar.value));
+            const { displayNumber, numberCore } = await buildDocumentNumberParts(organizationId, "quote", quoteNumber, tx);
 
             // Create the parent quote with tax fields
             const quoteData = {
                 userId: data.userId,
                 quoteNumber,
+                displayNumber,
+                numberCore,
                 organizationId,
                 customerId: data.customerId || null,
                 contactId: data.contactId || null,
@@ -865,7 +869,7 @@ export class QuotesRepository {
 
     async getMaxQuoteNumber(organizationId: string): Promise<number | null> {
         const result = await this.dbInstance
-            .select({ maxNumber: sql<number>`MAX(${quotes.quoteNumber})` })
+            .select({ maxNumber: sql<number>`MAX(COALESCE(${quotes.numberCore}, ${quotes.quoteNumber}))` })
             .from(quotes)
             .where(eq(quotes.organizationId, organizationId));
 
