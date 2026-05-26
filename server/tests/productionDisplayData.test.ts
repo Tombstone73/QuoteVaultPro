@@ -75,8 +75,9 @@ describe("production display data", () => {
     ]);
   });
 
-  test("resolves saved PBV2 snapshot labels before exposing generated option ids", () => {
+  test("resolves generated PBV2 option ids and choice_1 through the saved option tree", () => {
     const optionId = "dfa265fa-f1fc-4fdd-afde-a12274db2aec";
+    const importedSelectionKey = "Dfa265fa F1fc 4fdd Afde A12274db2aec";
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
@@ -85,7 +86,7 @@ describe("production display data", () => {
         optionSelectionsJson: {
           schemaVersion: 2,
           selected: {
-            [optionId]: { value: "choice_1" },
+            [importedSelectionKey]: { value: "choice_1" },
           },
         },
         pbv2SnapshotJson: {
@@ -97,7 +98,12 @@ describe("production display data", () => {
                 id: optionId,
                 kind: "question",
                 label: "Weeding & Taping",
-                input: { type: "boolean", selectionKey: optionId, defaultValue: false },
+                key: `opt_${optionId}`,
+                input: { type: "select", selectionKey: `opt_${optionId}`, defaultValue: "choice_1" },
+                choices: [
+                  { value: "choice_1", label: "No" },
+                  { value: "choice_2", label: "Yes" },
+                ],
               },
             },
             edges: [],
@@ -113,14 +119,50 @@ describe("production display data", () => {
       });
 
       expect(rows).toEqual([
-        { groupLabel: null, optionLabel: "Weeding & Taping", selectedLabel: "Yes", isDefault: false },
+        { groupLabel: null, optionLabel: "Weeding & Taping", selectedLabel: "No", isDefault: true },
       ]);
       expect(JSON.stringify(rows)).not.toContain(optionId);
       expect(JSON.stringify(rows)).not.toContain("Unknown choice");
-      expect(warnSpy).toHaveBeenCalledWith(
-        "[Production display resolver] resolved opaque PBV2 option token",
-        expect.objectContaining({ selectionKey: optionId, selectedValue: "choice_1" }),
+      expect(JSON.stringify(rows)).not.toContain("choice_1");
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("keeps boolean fallback as Yes only for unresolved toggle-style selections", () => {
+    const optionId = "toggle-raw-id";
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const rows = buildPrepressOptionRows(
+        {
+          id: "li-5",
+          optionSelectionsJson: {
+            schemaVersion: 2,
+            selected: {
+              [optionId]: { value: "choice_1" },
+            },
+          },
+        },
+        {
+          schemaVersion: 2,
+          rootNodeIds: [optionId],
+          nodes: {
+            [optionId]: {
+              id: optionId,
+              kind: "question",
+              label: "Rush Add-On",
+              input: { type: "boolean", selectionKey: optionId, defaultValue: false },
+            },
+          },
+          edges: [],
+        },
       );
+
+      expect(rows).toEqual([
+        { groupLabel: null, optionLabel: "Rush Add-On", selectedLabel: "Yes", isDefault: false },
+      ]);
     } finally {
       warnSpy.mockRestore();
     }
