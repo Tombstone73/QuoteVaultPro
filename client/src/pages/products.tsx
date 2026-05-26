@@ -65,6 +65,76 @@ function UnknownLookupWarning({ children }: { children: React.ReactNode }) {
 }
 
 const MATERIAL_SELECT_CONTENT_CLASS = "max-h-80 overflow-y-auto";
+const LEGACY_SQFT_BASIC_FORMULA = "ceil(total_sqft) * base_price";
+
+function getFormulaVariables(config: unknown): Record<string, number> {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return {};
+  const variables = (config as Record<string, any>).formulaVariables;
+  if (!variables || typeof variables !== "object" || Array.isArray(variables)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(variables)) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) out[key] = numeric;
+  }
+  return out;
+}
+
+function getFlatFeeValue(config: unknown): string {
+  const value = getFormulaVariables(config).flatFee;
+  return Number.isFinite(value) ? String(value) : "";
+}
+
+function hasFlatFeeValue(config: unknown): boolean {
+  return Number.isFinite(getFormulaVariables(config).flatFee);
+}
+
+function formulaReferencesFlatFee(formula: unknown): boolean {
+  return /\bflatFee\b/.test(String(formula || ""));
+}
+
+function feeFormulaUsesSqftPricing(formula: unknown): boolean {
+  return /\b(?:total_sqft|sqft|w|h|width|height|base_price|p)\b/i.test(String(formula || ""));
+}
+
+function isAutoManagedFormula(formula: unknown, profileKey: string | null | undefined): boolean {
+  const trimmed = String(formula || "").trim();
+  if (!trimmed) return true;
+  return trimmed === getDefaultFormula(profileKey || "default") || trimmed === LEGACY_SQFT_BASIC_FORMULA;
+}
+
+function setFlatFeeFormulaVariable(form: any, raw: string) {
+  const current = form.getValues("pricingProfileConfig");
+  const record = current && typeof current === "object" && !Array.isArray(current)
+    ? { ...(current as Record<string, any>) }
+    : {};
+  const variables = getFormulaVariables(record);
+
+  if (raw === "") {
+    delete variables.flatFee;
+  } else {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) return;
+    variables.flatFee = parsed;
+  }
+
+  form.setValue(
+    "pricingProfileConfig",
+    {
+      ...record,
+      formulaVariables: variables,
+    },
+    { shouldDirty: true },
+  );
+}
+
+function applyPricingProfileSelection(form: any, nextProfileKey: string) {
+  const previousProfileKey = form.getValues("pricingProfileKey") || "default";
+  const existingFormula = form.getValues("pricingFormula");
+  const nextFormula = getDefaultFormula(nextProfileKey);
+  if (getProfile(nextProfileKey).usesFormula && isAutoManagedFormula(existingFormula, previousProfileKey)) {
+    form.setValue("pricingFormula", nextFormula, { shouldDirty: true });
+  }
+}
 
 // Get profile badge for display
 function getProfileBadge(profileKey: string | null | undefined) {
@@ -189,6 +259,16 @@ export default function ProductsPage() {
   const editPricingProfileConfig = editProductForm.watch("pricingProfileConfig");
   const addPricingFormulaId = addProductForm.watch("pricingFormulaId");
   const editPricingFormulaId = editProductForm.watch("pricingFormulaId");
+  const addPricingFormula = addProductForm.watch("pricingFormula");
+  const editPricingFormula = editProductForm.watch("pricingFormula");
+  const addFlatFeeInputValue = getFlatFeeValue(addPricingProfileConfig);
+  const editFlatFeeInputValue = getFlatFeeValue(editPricingProfileConfig);
+  const addFlatFeeMissing = addPricingProfileKey === "fee" && formulaReferencesFlatFee(addPricingFormula || getDefaultFormula("fee")) && !hasFlatFeeValue(addPricingProfileConfig);
+  const editFlatFeeMissing = editPricingProfileKey === "fee" && formulaReferencesFlatFee(editPricingFormula || getDefaultFormula("fee")) && !hasFlatFeeValue(editPricingProfileConfig);
+  const addLegacyFeeSqftFormula = addPricingProfileKey === "fee" && String(addPricingFormula || "").trim() === LEGACY_SQFT_BASIC_FORMULA;
+  const editLegacyFeeSqftFormula = editPricingProfileKey === "fee" && String(editPricingFormula || "").trim() === LEGACY_SQFT_BASIC_FORMULA;
+  const addFeeUsesSqftPricing = addPricingProfileKey === "fee" && feeFormulaUsesSqftPricing(addPricingFormula || getDefaultFormula("fee"));
+  const editFeeUsesSqftPricing = editPricingProfileKey === "fee" && feeFormulaUsesSqftPricing(editPricingFormula || getDefaultFormula("fee"));
 
   // Pricing engine radio mode state
   type PricingMode = "formulaLibrary" | "pricingProfile" | "pricingFormula";
@@ -727,11 +807,9 @@ export default function ProductsPage() {
                           <FormItem className="space-y-0">
                             <Select
                               onValueChange={(val) => {
+                                applyPricingProfileSelection(addProductForm, val);
                                 field.onChange(val);
                                 const profile = getProfile(val);
-                                if (profile.usesFormula && profile.defaultFormula) {
-                                  addProductForm.setValue("pricingFormula", profile.defaultFormula);
-                                }
                                 if (val === "flat_goods" && !addProductForm.getValues("pricingProfileConfig")) {
                                   addProductForm.setValue("pricingProfileConfig", {
                                     sheetWidth: 48,
@@ -740,6 +818,9 @@ export default function ProductsPage() {
                                     materialType: "sheet",
                                     minPricePerItem: null,
                                   });
+                                }
+                                if (val === "fee" && !addProductForm.getValues("pricingProfileConfig")) {
+                                  addProductForm.setValue("pricingProfileConfig", { formulaVariables: {} } as any, { shouldDirty: true });
                                 }
                               }}
                               value={field.value || "default"}
@@ -883,6 +964,50 @@ export default function ProductsPage() {
                       />
                       <Label className="text-sm">Allow rotation for optimal nesting</Label>
                     </div>
+                  </div>
+                )}
+
+                {addPricingProfileKey === "fee" && (
+                  <div className="rounded-lg border border-purple-500/30 bg-purple-500/5 p-4 space-y-3">
+                    <div className="text-sm font-medium text-purple-700 dark:text-purple-300">Fee / Service Amount</div>
+                    <p className="text-xs text-muted-foreground">Use this for fixed charges like rush fees, design fees, and service add-ons. The canonical formula is flatFee.</p>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Flat Fee Amount ($)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={addFlatFeeInputValue}
+                        onChange={(e) => setFlatFeeFormulaVariable(addProductForm, e.target.value)}
+                        placeholder="25.00"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Generated Canonical Formula</Label>
+                      <Input value={getDefaultFormula("fee")} readOnly className="font-mono text-sm" />
+                    </div>
+                    {addFlatFeeMissing ? (
+                      <div className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+                        This formula references flatFee. Enter a flat fee amount before using this product in order entry.
+                      </div>
+                    ) : null}
+                    {addLegacyFeeSqftFormula ? (
+                      <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-200 space-y-2">
+                        <div>This Fee / Service product is using a legacy sqft-based pricing formula.</div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => addProductForm.setValue("pricingFormula", getDefaultFormula("fee"), { shouldDirty: true })}
+                        >
+                          Reset to flat-fee pricing
+                        </Button>
+                      </div>
+                    ) : addFeeUsesSqftPricing ? (
+                      <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-200">
+                        This Fee / Service product uses sqft or base-rate variables. Confirm that is intentional.
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
@@ -1460,11 +1585,9 @@ export default function ProductsPage() {
                           <FormItem className="space-y-0">
                             <Select
                               onValueChange={(val) => {
+                                applyPricingProfileSelection(editProductForm, val);
                                 field.onChange(val);
                                 const profile = getProfile(val);
-                                if (profile.usesFormula && profile.defaultFormula) {
-                                  editProductForm.setValue("pricingFormula", profile.defaultFormula);
-                                }
                                 if (val === "flat_goods" && !editProductForm.getValues("pricingProfileConfig")) {
                                   editProductForm.setValue("pricingProfileConfig", {
                                     sheetWidth: 48,
@@ -1473,6 +1596,9 @@ export default function ProductsPage() {
                                     materialType: "sheet",
                                     minPricePerItem: null,
                                   });
+                                }
+                                if (val === "fee" && !editProductForm.getValues("pricingProfileConfig")) {
+                                  editProductForm.setValue("pricingProfileConfig", { formulaVariables: {} } as any, { shouldDirty: true });
                                 }
                               }}
                               value={field.value || "default"}
@@ -1616,6 +1742,50 @@ export default function ProductsPage() {
                       />
                       <Label className="text-sm">Allow rotation for optimal nesting</Label>
                     </div>
+                  </div>
+                )}
+
+                {editPricingProfileKey === "fee" && (
+                  <div className="rounded-lg border border-purple-500/30 bg-purple-500/5 p-4 space-y-3">
+                    <div className="text-sm font-medium text-purple-700 dark:text-purple-300">Fee / Service Amount</div>
+                    <p className="text-xs text-muted-foreground">Use this for fixed charges like rush fees, design fees, and service add-ons. The canonical formula is flatFee.</p>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Flat Fee Amount ($)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={editFlatFeeInputValue}
+                        onChange={(e) => setFlatFeeFormulaVariable(editProductForm, e.target.value)}
+                        placeholder="25.00"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Generated Canonical Formula</Label>
+                      <Input value={getDefaultFormula("fee")} readOnly className="font-mono text-sm" />
+                    </div>
+                    {editFlatFeeMissing ? (
+                      <div className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+                        This formula references flatFee. Enter a flat fee amount before using this product in order entry.
+                      </div>
+                    ) : null}
+                    {editLegacyFeeSqftFormula ? (
+                      <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-200 space-y-2">
+                        <div>This Fee / Service product is using a legacy sqft-based pricing formula.</div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => editProductForm.setValue("pricingFormula", getDefaultFormula("fee"), { shouldDirty: true })}
+                        >
+                          Reset to flat-fee pricing
+                        </Button>
+                      </div>
+                    ) : editFeeUsesSqftPricing ? (
+                      <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-200">
+                        This Fee / Service product uses sqft or base-rate variables. Confirm that is intentional.
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
