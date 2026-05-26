@@ -77,6 +77,108 @@ function mapFulfillmentLabel(shippingMethod: string | null | undefined): string 
   }
 }
 
+const productionQueueSortBySchema = z.enum(["newest", "oldest", "due_date", "customer", "priority", "status"]);
+const productionQueueSortDirectionSchema = z.enum(["asc", "desc"]);
+
+type ProductionQueueSortBy = z.infer<typeof productionQueueSortBySchema>;
+type ProductionQueueSortDirection = z.infer<typeof productionQueueSortDirectionSchema>;
+
+function normalizeProductionJobStatusFilter(value: unknown): string | undefined {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized || normalized === "all") return undefined;
+  if (normalized === "completed" || normalized === "complete") return "done";
+  if (normalized === "cancelled") return "canceled";
+  return normalized;
+}
+
+function compareNullableDates(left: unknown, right: unknown, direction: ProductionQueueSortDirection): number {
+  const missingValue = direction === "asc" ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+  const leftTime = left ? new Date(left as any).getTime() : missingValue;
+  const rightTime = right ? new Date(right as any).getTime() : missingValue;
+  const safeLeft = Number.isFinite(leftTime) ? leftTime : missingValue;
+  const safeRight = Number.isFinite(rightTime) ? rightTime : missingValue;
+  return direction === "asc" ? safeLeft - safeRight : safeRight - safeLeft;
+}
+
+function compareStrings(left: unknown, right: unknown, direction: ProductionQueueSortDirection): number {
+  const comparison = String(left ?? "").localeCompare(String(right ?? ""), undefined, { sensitivity: "base", numeric: true });
+  return direction === "asc" ? comparison : -comparison;
+}
+
+function priorityRank(value: unknown): number {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "rush" || normalized === "urgent") return 0;
+  if (normalized === "high") return 1;
+  if (normalized === "normal" || normalized === "standard") return 2;
+  if (normalized === "low") return 3;
+  return 4;
+}
+
+function statusRank(value: unknown): number {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "in_progress") return 0;
+  if (normalized === "paused") return 1;
+  if (normalized === "queued") return 2;
+  if (normalized === "done" || normalized === "completed") return 3;
+  return 4;
+}
+
+function sortProductionQueueJobs<T extends {
+  id?: string | null;
+  status?: string | null;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  order?: {
+    customerName?: string | null;
+    dueDate?: unknown;
+    priority?: string | null;
+    orderNumber?: string | null;
+  };
+}>(
+  jobs: T[],
+  sortBy: ProductionQueueSortBy,
+  sortDirection: ProductionQueueSortDirection,
+): T[] {
+  const sorted = [...jobs].sort((left, right) => {
+    let comparison = 0;
+    switch (sortBy) {
+      case "newest":
+        comparison = compareNullableDates(left.createdAt, right.createdAt, "desc");
+        break;
+      case "oldest":
+        comparison = compareNullableDates(left.createdAt, right.createdAt, "asc");
+        break;
+      case "due_date":
+        comparison = compareNullableDates(left.order?.dueDate, right.order?.dueDate, sortDirection);
+        break;
+      case "customer":
+        comparison = compareStrings(left.order?.customerName, right.order?.customerName, sortDirection);
+        break;
+      case "priority": {
+        const leftRank = priorityRank(left.order?.priority);
+        const rightRank = priorityRank(right.order?.priority);
+        comparison = sortDirection === "asc" ? leftRank - rightRank : rightRank - leftRank;
+        break;
+      }
+      case "status": {
+        const leftRank = statusRank(left.status);
+        const rightRank = statusRank(right.status);
+        comparison = sortDirection === "asc" ? leftRank - rightRank : rightRank - leftRank;
+        break;
+      }
+    }
+
+    if (comparison !== 0) return comparison;
+
+    const orderComparison = compareStrings(left.order?.orderNumber, right.order?.orderNumber, "asc");
+    if (orderComparison !== 0) return orderComparison;
+
+    return compareStrings(left.id, right.id, "asc");
+  });
+
+  return sorted;
+}
+
 export function registerProductionJobsRoutes(
   app: Express,
   middleware: {
@@ -100,12 +202,23 @@ export function registerProductionJobsRoutes(
       const stationRaw = req.query.station as string | undefined;
       const stationCandidate = stationRaw ?? viewRaw;
       const searchRaw = req.query.search as string | undefined;
+      const sortByRaw = req.query.sortBy as string | undefined;
+      const sortDirectionRaw = req.query.sortDirection as string | undefined;
       const orderIdRaw = req.query.orderId as string | undefined;
-      const statusParsed = statusRaw ? productionStatusSchema.safeParse(statusRaw) : null;
+      const normalizedStatusFilter = normalizeProductionJobStatusFilter(statusRaw);
+      const statusParsed = normalizedStatusFilter ? productionStatusSchema.safeParse(normalizedStatusFilter) : null;
       const viewParsed = viewRaw ? productionViewKeySchema.safeParse(viewRaw) : null;
       const stationParsed = stationCandidate ? productionViewKeySchema.safeParse(stationCandidate) : null;
+      const sortByParsed = sortByRaw ? productionQueueSortBySchema.safeParse(sortByRaw) : null;
+      const sortDirectionParsed = sortDirectionRaw ? productionQueueSortDirectionSchema.safeParse(sortDirectionRaw) : null;
       if (statusParsed && !statusParsed.success) {
         return res.status(400).json({ error: "Invalid status" });
+      }
+      if (sortByParsed && !sortByParsed.success) {
+        return res.status(400).json({ error: "Invalid sortBy" });
+      }
+      if (sortDirectionParsed && !sortDirectionParsed.success) {
+        return res.status(400).json({ error: "Invalid sortDirection" });
       }
       if (viewParsed && !viewParsed.success) {
         return res.status(400).json({ error: "Invalid view" });
@@ -126,10 +239,29 @@ export function registerProductionJobsRoutes(
           ? ["flatbed"]
           : station ? [station] : [];
       const search = typeof searchRaw === "string" ? searchRaw.trim() : "";
+      const sortBy = sortByParsed?.success ? sortByParsed.data : "due_date";
+      const sortDirection = sortDirectionParsed?.success ? sortDirectionParsed.data : "asc";
+      const direction = sortDirection === "desc" ? desc : asc;
+      const dbOrderBy = (() => {
+        switch (sortBy) {
+          case "newest":
+            return [desc(productionJobs.createdAt), asc(productionJobs.id)];
+          case "oldest":
+            return [asc(productionJobs.createdAt), asc(productionJobs.id)];
+          case "due_date":
+            return [direction(orders.dueDate), asc(orders.orderNumber), asc(productionJobs.id)];
+          case "customer":
+            return [direction(customers.companyName), asc(orders.orderNumber), asc(productionJobs.id)];
+          case "priority":
+            return [direction(orders.priority), asc(orders.orderNumber), asc(productionJobs.id)];
+          case "status":
+            return [direction(productionJobs.status), asc(orders.orderNumber), asc(productionJobs.id)];
+        }
+      })();
 
       const config = await getProductionConfigForOrganization(organizationId);
       if (process.env.NODE_ENV !== "production") {
-        console.log("[DEV][GET /api/production/jobs] params:", { organizationId, status, view, station, enabledViews: config.enabledViews });
+        console.log("[DEV][GET /api/production/jobs] params:", { organizationId, status, view, station, sortBy, sortDirection, enabledViews: config.enabledViews });
       }
       if (station && !config.enabledViews.includes(station)) {
         // Station not in this org's enabledViews — return empty rather than 403.
@@ -172,6 +304,8 @@ export function registerProductionJobsRoutes(
           orderNumber: orders.orderNumber,
           displayNumber: orders.displayNumber,
           numberCore: orders.numberCore,
+          poNumber: orders.poNumber,
+          notesInternal: orders.notesInternal,
           dueDate: orders.dueDate,
           priority: orders.priority,
           fulfillmentStatus: orders.fulfillmentStatus,
@@ -181,13 +315,14 @@ export function registerProductionJobsRoutes(
           // Prepress gate fields (null when no line item linked)
           lineItemRequiresPrepress: orderLineItems.requiresPrepress,
           lineItemStatus: orderLineItems.status,
+          lineItemProductionNotes: orderLineItems.productionNotes,
         })
         .from(productionJobs)
         .innerJoin(orders, eq(productionJobs.orderId, orders.id))
         .innerJoin(customers, eq(orders.customerId, customers.id))
         .leftJoin(orderLineItems, eq(productionJobs.lineItemId, orderLineItems.id))
         .where(whereClause)
-        .orderBy(desc(productionJobs.updatedAt));
+        .orderBy(...dbOrderBy);
 
       const lineItemIdsForOwnership = Array.from(
         new Set(
@@ -376,6 +511,7 @@ export function registerProductionJobsRoutes(
           status: orderLineItems.status,
           sortOrder: orderLineItems.sortOrder,
           selectedOptions: orderLineItems.selectedOptions, // For deriving Sides (single/double)
+          productionNotes: orderLineItems.productionNotes,
           createdAt: orderLineItems.createdAt,
         })
         .from(orderLineItems)
@@ -425,6 +561,7 @@ export function registerProductionJobsRoutes(
           status: string;
           sortOrder: number;
           selectedOptions: any; // ADDED: For Sides derivation
+          productionNotes: string | null;
           createdAt: any;
         }>
       >();
@@ -443,6 +580,7 @@ export function registerProductionJobsRoutes(
           status: string;
           sortOrder: number;
           selectedOptions: any; // ADDED: For Sides derivation
+          productionNotes: string | null;
           createdAt: any;
         }
       >();
@@ -460,6 +598,7 @@ export function registerProductionJobsRoutes(
           status: li.status,
           sortOrder: Number(li.sortOrder) || 0,
           selectedOptions: li.selectedOptions ?? [], // ADDED: Pass through selected_options
+          productionNotes: li.productionNotes ?? null,
           createdAt: li.createdAt,
         };
         list.push(mapped);
@@ -829,6 +968,9 @@ export function registerProductionJobsRoutes(
           backFileUrl,
           artwork: artworkThumbs,
           notes,
+          internalNotes: row.notesInternal ?? null,
+          productionNotes: primaryLineItem?.productionNotes ?? row.lineItemProductionNotes ?? null,
+          poNumber: row.poNumber ?? null,
           // Back-compat: treat view as stationKey
           view: station ?? view ?? config.defaultView,
           status: row.status,
@@ -848,6 +990,8 @@ export function registerProductionJobsRoutes(
             displayNumber: row.displayNumber,
             numberCore: row.numberCore,
             customerName: row.customerName,
+            internalNotes: row.notesInternal ?? null,
+            poNumber: row.poNumber ?? null,
             dueDate: row.dueDate,
             priority: row.priority,
             fulfillmentStatus: row.fulfillmentStatus,
@@ -869,34 +1013,56 @@ export function registerProductionJobsRoutes(
       const filtered = search
         ? data.filter((j) => {
             const q = search.toLowerCase();
+            const notesText = [
+              j.productionNotes,
+              j.internalNotes,
+              ...(j.notes ?? []).map((note: any) => note.text),
+            ].join(" ");
+            const fileNames = [
+              ...(j.artwork ?? []).map((art: any) => art.fileName),
+              ...(j.order?.artwork ?? []).map((art: any) => art.fileName),
+            ].join(" ");
             const orderNumber = String(j.order?.orderNumber ?? "").toLowerCase();
             const customerName = String(j.order?.customerName ?? "").toLowerCase();
-            const desc = String(j.order?.lineItems?.primary?.description ?? "").toLowerCase();
+            const desc = String(j.order?.lineItems?.primary?.description ?? j.jobDescription ?? "").toLowerCase();
+            const media = String(j.media ?? j.mediaLabel ?? j.order?.lineItems?.primary?.materialName ?? "").toLowerCase();
+            const jobNumber = String(j.id ?? "").toLowerCase();
+            const poNumber = String(j.order?.poNumber ?? j.poNumber ?? "").toLowerCase();
             return documentNumberMatchesSearch({
               query: search,
               displayNumber: j.order?.displayNumber ?? j.displayNumber,
               numberCore: j.order?.numberCore ?? j.numberCore,
               legacyNumber: j.order?.orderNumber,
-            }) || orderNumber.includes(q) || customerName.includes(q) || desc.includes(q);
+            }) ||
+              orderNumber.includes(q) ||
+              jobNumber.includes(q) ||
+              poNumber.includes(q) ||
+              customerName.includes(q) ||
+              desc.includes(q) ||
+              media.includes(q) ||
+              notesText.toLowerCase().includes(q) ||
+              fileNames.toLowerCase().includes(q);
           })
         : data;
 
+      const sorted = sortProductionQueueJobs(filtered, sortBy, sortDirection);
+
       // DEV: Log response shape for verification
-      if (process.env.NODE_ENV === "development" && filtered.length > 0) {
-        console.log(`[GET /api/production/jobs] Returning ${filtered.length} jobs. Sample keys:`, Object.keys(filtered[0]));
+      if (process.env.NODE_ENV === "development" && sorted.length > 0) {
+        console.log(`[GET /api/production/jobs] Returning ${sorted.length} jobs. Sample keys:`, Object.keys(sorted[0]));
 
         const g: any = global as any;
         if (!g.__dev_logged_production_jobs_preview_coverage) {
           g.__dev_logged_production_jobs_preview_coverage = true;
-          const withFront = filtered.filter((j: any) => !!j.frontPreviewUrl).length;
+          const withFront = sorted.filter((j: any) => !!j.frontPreviewUrl).length;
           console.log(`[GET /api/production/jobs] preview coverage`, {
-            total: filtered.length,
+            total: sorted.length,
             withFrontPreviewUrl: withFront,
           });
         }
       }
 
-      res.json({ success: true, data: filtered });
+      res.json({ success: true, data: sorted });
     } catch (error) {
       console.error("Error fetching production jobs:", error);
       res.status(500).json({ error: "Failed to fetch production jobs" });

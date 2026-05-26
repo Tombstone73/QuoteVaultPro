@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { Page, PageHeader, ContentLayout } from "@/components/titan";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ROUTES } from "@/config/routes";
@@ -11,13 +12,29 @@ import ProductionOverviewPage from "@/features/production/views/ProductionOvervi
 import {
   getProductionTabCounts,
   persistProductionTab,
+  persistProductionQueueControls,
+  readPersistedProductionQueueControls,
   resolvePersistedProductionTab,
   type ProductionBoardTab,
+  type ProductionQueueControls,
+  type ProductionQueueSortBy,
+  type ProductionQueueSortDirection,
   type ProductionStationPage,
 } from "@/lib/productionBoard";
 
-type ProductionStatus = "queued" | "in_progress" | "done" | "all";
+type ProductionStatus = ProductionBoardTab;
 type ProductionModule = "overview" | "flatbed" | "roll" | "apparel";
+
+function useDebouncedValue<T>(value: T, delayMs = 250): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => setDebouncedValue(value), delayMs);
+    return () => window.clearTimeout(timeoutId);
+  }, [delayMs, value]);
+
+  return debouncedValue;
+}
 
 function usePersistedProductionTab(station: ProductionStationPage) {
   const [status, setStatus] = useState<ProductionStatus>(() => resolvePersistedProductionTab(station));
@@ -40,6 +57,13 @@ function StatusTabLabel(props: { label: string; count: number }) {
   );
 }
 
+function updateControls(
+  current: ProductionQueueControls,
+  patch: Partial<ProductionQueueControls>,
+): ProductionQueueControls {
+  return { ...current, ...patch };
+}
+
 export default function ProductionBoard() {
   const { data: config, isLoading, error } = useProductionConfig();
   const navigate = useNavigate();
@@ -56,6 +80,8 @@ export default function ProductionBoard() {
 
   const [flatbedStatus, setFlatbedStatus] = usePersistedProductionTab("flatbed");
   const [rollStatus, setRollStatus] = usePersistedProductionTab("roll");
+  const [flatbedControls, setFlatbedControls] = useState<ProductionQueueControls>(() => readPersistedProductionQueueControls("flatbed"));
+  const [rollControls, setRollControls] = useState<ProductionQueueControls>(() => readPersistedProductionQueueControls("roll"));
   const [viewKey, setViewKey] = useState<string>("flatbed");
 
   useEffect(() => {
@@ -71,10 +97,28 @@ export default function ProductionBoard() {
   const activeStation = activeModule === "flatbed" || activeModule === "roll" ? activeModule : null;
   const status: ProductionStatus = activeModule === "roll" ? rollStatus : flatbedStatus;
   const setStatus = activeModule === "roll" ? setRollStatus : setFlatbedStatus;
+  const controls = activeModule === "roll" ? rollControls : flatbedControls;
+  const setControls = activeModule === "roll" ? setRollControls : setFlatbedControls;
+  const debouncedSearch = useDebouncedValue(controls.search.trim(), 250);
   const hasImplementedEnabledView = activeStation ? enabledViews.includes(activeStation) : false;
 
+  useEffect(() => {
+    persistProductionQueueControls("flatbed", flatbedControls);
+  }, [flatbedControls]);
+
+  useEffect(() => {
+    persistProductionQueueControls("roll", rollControls);
+  }, [rollControls]);
+
   const { data: stationJobs, isLoading: jobsLoading, error: jobsError } = useProductionJobs(
-    activeStation ? { view: activeStation } : undefined,
+    activeStation
+      ? {
+          view: activeStation,
+          search: debouncedSearch,
+          sortBy: controls.sortBy,
+          sortDirection: controls.sortDirection,
+        }
+      : undefined,
     { enabled: !!activeStation && !isLoading && !error && hasImplementedEnabledView },
   );
 
@@ -82,6 +126,58 @@ export default function ProductionBoard() {
     () => getProductionTabCounts(stationJobs ?? []),
     [stationJobs],
   );
+
+  const stationToolbar = activeStation ? (
+    <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+      <div className="grid gap-2 sm:grid-cols-[minmax(220px,1fr)_180px_120px] lg:max-w-[720px] lg:flex-1">
+        <Input
+          value={controls.search}
+          onChange={(event) => setControls((current) => updateControls(current, { search: event.target.value }))}
+          placeholder="Search order, customer, product, media"
+          className="h-9 bg-titan-bg-card border-titan-border-subtle"
+          aria-label="Search production queue"
+        />
+        <Select
+          value={controls.sortBy}
+          onValueChange={(value) => setControls((current) => updateControls(current, { sortBy: value as ProductionQueueSortBy }))}
+        >
+          <SelectTrigger className="h-9 bg-titan-bg-card border-titan-border-subtle">
+            <SelectValue placeholder="Sort by" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="newest">Newest</SelectItem>
+            <SelectItem value="oldest">Oldest</SelectItem>
+            <SelectItem value="due_date">Due date</SelectItem>
+            <SelectItem value="customer">Customer</SelectItem>
+            <SelectItem value="priority">Priority</SelectItem>
+            <SelectItem value="status">Status</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select
+          value={controls.sortDirection}
+          onValueChange={(value) => setControls((current) => updateControls(current, { sortDirection: value as ProductionQueueSortDirection }))}
+        >
+          <SelectTrigger className="h-9 bg-titan-bg-card border-titan-border-subtle">
+            <SelectValue placeholder="Direction" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="asc">Asc</SelectItem>
+            <SelectItem value="desc">Desc</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {debouncedSearch ? (
+        <button
+          type="button"
+          className="text-xs font-medium text-titan-text-muted hover:text-titan-text-primary"
+          onClick={() => setControls((current) => updateControls(current, { search: "" }))}
+        >
+          Clear search
+        </button>
+      ) : null}
+    </div>
+  ) : null;
 
   // OVERVIEW MODULE - Render without Page/PageHeader wrapper (uses own internal structure)
   if (activeModule === "overview") {
@@ -154,7 +250,8 @@ export default function ProductionBoard() {
                       <TabsTrigger value="all"><StatusTabLabel label="All" count={tabCounts.all} /></TabsTrigger>
                       <TabsTrigger value="queued"><StatusTabLabel label="Queued" count={tabCounts.queued} /></TabsTrigger>
                       <TabsTrigger value="in_progress"><StatusTabLabel label="In Progress" count={tabCounts.in_progress} /></TabsTrigger>
-                      <TabsTrigger value="done"><StatusTabLabel label="Done" count={tabCounts.done} /></TabsTrigger>
+                      <TabsTrigger value="paused"><StatusTabLabel label="Paused" count={tabCounts.paused} /></TabsTrigger>
+                      <TabsTrigger value="done"><StatusTabLabel label="Completed" count={tabCounts.done} /></TabsTrigger>
                     </TabsList>
                   </Tabs>
 
@@ -176,6 +273,7 @@ export default function ProductionBoard() {
                     </div>
                   )}
                 </div>
+                {stationToolbar}
 
                 {/* Production view content */}
                 {jobsLoading ? (
@@ -235,7 +333,8 @@ export default function ProductionBoard() {
                       <TabsTrigger value="all"><StatusTabLabel label="All" count={tabCounts.all} /></TabsTrigger>
                       <TabsTrigger value="queued"><StatusTabLabel label="Queued" count={tabCounts.queued} /></TabsTrigger>
                       <TabsTrigger value="in_progress"><StatusTabLabel label="In Progress" count={tabCounts.in_progress} /></TabsTrigger>
-                      <TabsTrigger value="done"><StatusTabLabel label="Done" count={tabCounts.done} /></TabsTrigger>
+                      <TabsTrigger value="paused"><StatusTabLabel label="Paused" count={tabCounts.paused} /></TabsTrigger>
+                      <TabsTrigger value="done"><StatusTabLabel label="Completed" count={tabCounts.done} /></TabsTrigger>
                     </TabsList>
                   </Tabs>
 
@@ -257,6 +356,7 @@ export default function ProductionBoard() {
                     </div>
                   )}
                 </div>
+                {stationToolbar}
 
                 {/* Production view content */}
                 {jobsLoading ? (

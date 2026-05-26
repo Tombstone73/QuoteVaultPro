@@ -62,7 +62,7 @@ export type ProductionJobListItem = {
   routingSource?: string | null;
   idempotencyNote?: string | null;
   lineItemId?: string | null;
-  status: "queued" | "in_progress" | "done";
+  status: "queued" | "in_progress" | "paused" | "done";
   startedAt: string | null;
   completedAt: string | null;
   totalSeconds: number;
@@ -169,7 +169,15 @@ export function useProductionConfig() {
 }
 
 export function useProductionJobs(
-  filters?: { status?: string; view?: string; station?: string; orderId?: string },
+  filters?: {
+    status?: string;
+    view?: string;
+    station?: string;
+    orderId?: string;
+    search?: string;
+    sortBy?: string;
+    sortDirection?: string;
+  },
   options?: { enabled?: boolean }
 ) {
   return useQuery<ProductionJobListItem[]>({
@@ -180,6 +188,9 @@ export function useProductionJobs(
       if (filters?.station) params.set("station", filters.station);
       else if (filters?.view) params.set("view", filters.view);
       if (filters?.orderId) params.set("orderId", filters.orderId);
+      if (filters?.search?.trim()) params.set("search", filters.search.trim());
+      if (filters?.sortBy) params.set("sortBy", filters.sortBy);
+      if (filters?.sortDirection) params.set("sortDirection", filters.sortDirection);
       const url = `/api/production/jobs${params.toString() ? `?${params.toString()}` : ""}`;
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch production jobs");

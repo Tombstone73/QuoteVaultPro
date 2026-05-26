@@ -66,12 +66,12 @@ import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
-import { filterProductionJobsForTab } from "@/lib/productionBoard";
+import { filterProductionJobsForTab, type ProductionBoardTab } from "@/lib/productionBoard";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { getProductionOrderNumber } from "@/lib/productionDocumentNumbers";
 import type { ProductionDocumentNumberDisplayMode } from "@shared/documentNumbering";
 
-type ProductionStatus = "queued" | "in_progress" | "done" | "all";
+type ProductionStatus = ProductionBoardTab;
 
 type DueUrgency = "overdue" | "today" | "soon" | "normal";
 
@@ -1412,22 +1412,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   );
 
   const sortedJobs = useMemo(() => {
-    return [...jobsSafe].sort((a, b) => {
-      const sr = statusRank(a.status) - statusRank(b.status);
-      if (sr !== 0) return sr;
-
-      const ad = a.order.dueDate ? new Date(a.order.dueDate).getTime() : Number.POSITIVE_INFINITY;
-      const bd = b.order.dueDate ? new Date(b.order.dueDate).getTime() : Number.POSITIVE_INFINITY;
-      if (ad !== bd) return ad - bd;
-
-      const pr = priorityRank(a.order.priority) - priorityRank(b.order.priority);
-      if (pr !== 0) return pr;
-
-      const on = String(a.order.orderNumber || "").localeCompare(String(b.order.orderNumber || ""));
-      if (on !== 0) return on;
-
-      return String(a.id).localeCompare(String(b.id));
-    });
+    return [...jobsSafe];
   }, [jobsSafe]);
 
   useEffect(() => {
