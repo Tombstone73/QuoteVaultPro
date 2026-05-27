@@ -78,6 +78,11 @@ import {
     resolveInventoryPolicyFromOrgPreferences,
 } from "@shared/inventoryPolicy";
 import { getClientBooleanOverride } from "../lib/clientBooleanOverride";
+import {
+    mergePricingIntoSpecsJson,
+    resolvePersistedLineItemPricing,
+    enrichLineItemWithEffectivePricing,
+} from "../lib/lineItemPricingPersistence";
 import { convertReservationInputToBaseQty } from "@shared/uomConversions";
 import {
     createRequestLogOnce,
@@ -175,6 +180,52 @@ const materialReorderReceiveSchema = z.object({
     receivedQuantity: z.coerce.number().positive(),
     notes: z.string().trim().optional(),
 });
+
+async function recomputeOrderTotalsFromPersistedLineItems(orderId: string, organizationId: string) {
+    const [orderRow] = await db
+        .select({
+            id: orders.id,
+            discount: orders.discount,
+            tax: orders.tax,
+            taxAmount: orders.taxAmount,
+            shippingCents: orders.shippingCents,
+        })
+        .from(orders)
+        .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+    if (!orderRow) return null;
+
+    const lineItems = await db
+        .select({
+            totalPrice: orderLineItems.totalPrice,
+            isTaxableSnapshot: orderLineItems.isTaxableSnapshot,
+        })
+        .from(orderLineItems)
+        .where(eq(orderLineItems.orderId, orderId));
+
+    const subtotal = lineItems.reduce((sum, item) => sum + (Number(item.totalPrice) || 0), 0);
+    const taxableSubtotal = lineItems
+        .filter((item) => item.isTaxableSnapshot !== false)
+        .reduce((sum, item) => sum + (Number(item.totalPrice) || 0), 0);
+    const discount = Number(orderRow.discount) || 0;
+    const tax = Number(orderRow.taxAmount ?? orderRow.tax) || 0;
+    const shipping = Math.max(0, Number(orderRow.shippingCents) || 0) / 100;
+    const total = subtotal - discount + tax + shipping;
+
+    const [updated] = await db
+        .update(orders)
+        .set({
+            subtotal: subtotal.toFixed(2),
+            taxableSubtotal: taxableSubtotal.toFixed(2),
+            total: total.toFixed(2),
+            updatedAt: new Date().toISOString(),
+        } as any)
+        .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+        .returning();
+
+    return updated;
+}
 
 const productionLineItemStatusRuleSchema = z
     .object({
@@ -1666,10 +1717,21 @@ export async function registerOrderRoutes(
             // Prepare line items with tax info (including tax category for SaaS tax)
             const lineItemsForTaxCalc: LineItemInput[] = lineItems.map((item: any) => {
                 const product = productMap.get(item.productId);
+                const fallbackTotal = Number(item.totalPrice ?? item.linePrice ?? 0);
+                const baseCalculatedTotalCents = Number.isFinite(Number(item?.pbv2SnapshotJson?.pricing?.totalCents))
+                    ? Math.round(Number(item.pbv2SnapshotJson.pricing.totalCents))
+                    : Math.round((Number.isFinite(fallbackTotal) ? fallbackTotal : 0) * 100);
+                const effectivePricing = resolvePersistedLineItemPricing({
+                    baseCalculatedTotalCents,
+                    quantity: item.quantity,
+                    body: item,
+                    specsJson: item.specsJson,
+                    legacyOverridePriceCents: item.overridePriceCents,
+                });
                 return {
                     productId: item.productId,
                     variantId: item.variantId || null,
-                    linePrice: parseFloat(item.linePrice),
+                    linePrice: effectivePricing.effectiveTotalCents / 100,
                     isTaxable: product?.isTaxable ?? true,
                     taxCategoryId: (item as any).taxCategoryId || null,
                 };
@@ -5118,7 +5180,7 @@ export async function registerOrderRoutes(
             }
 
             res.json(lineItems.map((li: any) => ({
-                ...li,
+                ...enrichLineItemWithEffectivePricing(li),
                 pbv2ActiveTreeVersionId: productTreeById.get(String((li as any).productId || '')) ?? null,
                 components: byLineItemId.get(String(li.id)) ?? [],
             })));
@@ -5160,7 +5222,7 @@ export async function registerOrderRoutes(
                     eq(orderLineItemComponents.status, 'ACCEPTED')
                 ));
 
-            res.json({ ...(lineItem as any), pbv2ActiveTreeVersionId: productRow?.pbv2ActiveTreeVersionId ? String(productRow.pbv2ActiveTreeVersionId) : null, components });
+            res.json({ ...enrichLineItemWithEffectivePricing(lineItem as any), pbv2ActiveTreeVersionId: productRow?.pbv2ActiveTreeVersionId ? String(productRow.pbv2ActiveTreeVersionId) : null, components });
         } catch (error) {
             res.status(500).json({ message: "Failed to fetch order line item" });
         }
@@ -5281,6 +5343,18 @@ export async function registerOrderRoutes(
             // Structured logging for PBV2 pricing persistence
             console.log(`[PBV2_PRICE_PERSIST] orderId=${lineItemData.orderId} treeVersionId=${pricingResult.pbv2TreeVersionId} totalCents=${pricingResult.lineTotalCents} pricedAt=${new Date().toISOString()}`);
 
+            const effectivePricing = resolvePersistedLineItemPricing({
+                baseCalculatedTotalCents: pricingResult.lineTotalCents,
+                quantity: Number(lineItemData.quantity),
+                body: req.body,
+                specsJson: lineItemData.specsJson,
+                legacyOverridePriceCents: (req.body as any)?.overridePriceCents,
+            });
+            const specsJsonWithPricing = mergePricingIntoSpecsJson({
+                specsJson: lineItemData.specsJson,
+                pricing: effectivePricing,
+            });
+
             // If the client didn't explicitly send requiresDesign, pass null so
             // materializeLineItemDesignSnapshot falls back to the product's design config
             // rather than treating Zod's default(false) as an intentional override.
@@ -5324,8 +5398,12 @@ export async function registerOrderRoutes(
                 pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
                 pbv2SnapshotJson: pricingResult.pbv2SnapshotJson as any,
                 pricedAt: new Date(),
-                unitPrice: pricingResult.lineTotalCents / 100 / Number(lineItemData.quantity),
-                totalPrice: pricingResult.lineTotalCents / 100,
+                specsJson: specsJsonWithPricing,
+                overridePriceCents: effectivePricing.hasPriceOverride ? effectivePricing.effectiveTotalCents : null,
+                overrideAt: effectivePricing.hasPriceOverride ? new Date() : null,
+                overrideByUserId: effectivePricing.hasPriceOverride ? (userId ?? null) : null,
+                unitPrice: effectivePricing.effectiveUnitPriceCents / 100,
+                totalPrice: effectivePricing.effectiveTotalCents / 100,
             });
 
             // Auto-schedule production job if the product type has sendToProductionDefault=true.
@@ -5369,7 +5447,9 @@ export async function registerOrderRoutes(
                 }
             }
 
-            res.json(created);
+            await recomputeOrderTotalsFromPersistedLineItems(String(created.orderId), organizationId);
+
+            res.json(enrichLineItemWithEffectivePricing(created as any));
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
             if ((error as any)?.code === 'PBV2_FORMULA_ERROR') {
@@ -5509,7 +5589,14 @@ export async function registerOrderRoutes(
                 updateData.quantity !== undefined ||
                 updateData.optionSelectionsJson !== undefined ||
                 (pbv2ExplicitSelections !== undefined && pbv2ExplicitSelections !== null);
+            const overrideFieldsChanged =
+                Object.prototype.hasOwnProperty.call(req.body ?? {}, "overridePriceCents") ||
+                Object.prototype.hasOwnProperty.call(req.body ?? {}, "priceOverride") ||
+                Object.prototype.hasOwnProperty.call(req.body ?? {}, "priceOverrideMode") ||
+                Object.prototype.hasOwnProperty.call(req.body ?? {}, "priceOverrideValueCents") ||
+                Object.prototype.hasOwnProperty.call(req.body ?? {}, "priceOverrideValuePercent");
 
+            let latestBaseCalculatedTotalCents: number | null = null;
             if (pricingFieldsChanged) {
                 // Reprice using PricingService
                 const { priceLineItem } = await import("../services/pricing/PricingService");
@@ -5539,8 +5626,46 @@ export async function registerOrderRoutes(
                 updateData.pbv2SnapshotJson = pricingResult.pbv2SnapshotJson as any;
                 updateData.selectedOptions = pricingResult.pbv2SnapshotJson.selectedOptions || [];
                 updateData.pricedAt = new Date();
-                updateData.unitPrice = pricingResult.lineTotalCents / 100 / Number(updateData.quantity ?? oldLineItem.quantity);
-                updateData.totalPrice = pricingResult.lineTotalCents / 100;
+                latestBaseCalculatedTotalCents = pricingResult.lineTotalCents;
+            }
+
+            if (pricingFieldsChanged || overrideFieldsChanged) {
+                const previousSpecs = (oldLineItem as any).specsJson && typeof (oldLineItem as any).specsJson === "object"
+                    ? (oldLineItem as any).specsJson
+                    : {};
+                const baseFromPreviousOverride = Number((previousSpecs as any)?.priceOverride?.baseCalculatedTotalCents);
+                const baseFromSnapshot = Number((oldLineItem as any)?.pbv2SnapshotJson?.pricing?.totalCents);
+                const fallbackPersistedTotal = Math.round((Number((oldLineItem as any).totalPrice) || 0) * 100);
+                const baseCalculatedTotalCents = latestBaseCalculatedTotalCents
+                    ?? (Number.isFinite(baseFromPreviousOverride)
+                        ? Math.round(baseFromPreviousOverride)
+                        : Number.isFinite(baseFromSnapshot)
+                            ? Math.round(baseFromSnapshot)
+                            : fallbackPersistedTotal);
+                const quantityForPricing = Number(updateData.quantity ?? oldLineItem.quantity);
+                const effectivePricing = resolvePersistedLineItemPricing({
+                    baseCalculatedTotalCents,
+                    quantity: quantityForPricing,
+                    body: overrideFieldsChanged ? req.body : undefined,
+                    specsJson: overrideFieldsChanged ? updateData.specsJson : previousSpecs,
+                    legacyOverridePriceCents: overrideFieldsChanged
+                        ? (req.body as any)?.overridePriceCents
+                        : (oldLineItem as any).overridePriceCents,
+                });
+
+                updateData.specsJson = mergePricingIntoSpecsJson({
+                    specsJson: updateData.specsJson ?? previousSpecs,
+                    pricing: effectivePricing,
+                });
+                updateData.overridePriceCents = effectivePricing.hasPriceOverride ? effectivePricing.effectiveTotalCents : null;
+                updateData.overrideAt = effectivePricing.hasPriceOverride
+                    ? ((oldLineItem as any).overrideAt ?? new Date())
+                    : null;
+                updateData.overrideByUserId = effectivePricing.hasPriceOverride
+                    ? ((oldLineItem as any).overrideByUserId ?? userId ?? null)
+                    : null;
+                updateData.unitPrice = (effectivePricing.effectiveUnitPriceCents / 100).toFixed(2);
+                updateData.totalPrice = (effectivePricing.effectiveTotalCents / 100).toFixed(2);
             }
 
             const lineItem = await storage.updateOrderLineItem(lineItemId, updateData);
@@ -5769,7 +5894,9 @@ export async function registerOrderRoutes(
                 }
             }
 
-            res.json(finalLineItem ?? lineItem);
+            await recomputeOrderTotalsFromPersistedLineItems(String(lineItem.orderId), organizationId);
+
+            res.json(enrichLineItemWithEffectivePricing((finalLineItem ?? lineItem) as any));
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
             if ((error as any)?.code === 'PBV2_FORMULA_ERROR') {
@@ -6525,7 +6652,7 @@ export async function registerOrderRoutes(
 
             const lineItemId = String(req.params.id);
             const [ownership] = await db
-                .select({ id: orderLineItems.id })
+                .select({ id: orderLineItems.id, orderId: orderLineItems.orderId })
                 .from(orderLineItems)
                 .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
                 .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
@@ -6534,6 +6661,7 @@ export async function registerOrderRoutes(
             if (!ownership) return res.status(404).json({ message: "Order line item not found" });
 
             await storage.deleteOrderLineItem(lineItemId);
+            await recomputeOrderTotalsFromPersistedLineItems(String(ownership.orderId), organizationId);
             res.json({ message: "Order line item deleted successfully" });
         } catch (error) {
             res.status(500).json({ message: "Failed to delete order line item" });

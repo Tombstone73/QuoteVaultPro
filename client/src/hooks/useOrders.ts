@@ -124,6 +124,15 @@ export type OrderLineItem = {
   sqft: string | null;
   unitPrice: string;
   totalPrice: string;
+  baseCalculatedUnitPriceCents?: number;
+  baseCalculatedTotalCents?: number;
+  effectiveUnitPriceCents?: number;
+  effectiveTotalCents?: number;
+  priceOverrideMode?: string | null;
+  priceOverrideValueCents?: number | null;
+  priceOverrideValuePercent?: number | null;
+  hasPriceOverride?: boolean;
+  overridePriceCents?: number | null;
   status: string;
   workflowState?: string;
   designStatus?: "needs_design" | "in_design" | "design_complete" | null;

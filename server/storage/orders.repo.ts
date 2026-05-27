@@ -49,6 +49,11 @@ import { resolveActiveProductionOwners } from "../services/productionOwnership";
 import { copyLineItemDesignSnapshotFields, materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "./productDesignConfig.repo";
 import {
+    enrichLineItemWithEffectivePricing,
+    mergePricingIntoSpecsJson,
+    resolvePersistedLineItemPricing,
+} from "../lib/lineItemPricingPersistence";
+import {
     allocateDocumentNumber,
     isDocumentNumberUniqueViolation,
     toDocumentNumberConflictError,
@@ -292,6 +297,7 @@ type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'requiresP
     total_price?: number | string | null;
     linePrice?: number | string | null;
     line_price?: number | string | null;
+    priceOverride?: any;
 };
 
 export class OrdersRepository {
@@ -1009,7 +1015,7 @@ export class OrdersRepository {
                 }
                 const activeOwner = activeOwnerByLineItem.get(String(li.id)) ?? null;
                 return {
-                    ...li,
+                    ...enrichLineItemWithEffectivePricing(li as any),
                     product,
                     productVariant,
                     pbv2ActiveTreeVersionId: (product as any)?.pbv2ActiveTreeVersionId ? String((product as any).pbv2ActiveTreeVersionId) : null,
@@ -1123,7 +1129,20 @@ export class OrdersRepository {
     }): Promise<OrderWithRelations> {
         if (!data.customerId) throw new Error('customerId required');
         if (!data.lineItems || data.lineItems.length === 0) throw new Error('At least one line item required');
-        const subtotal = data.lineItems.reduce((sum, li: any) => sum + Number(li.totalPrice || li.linePrice || 0), 0);
+        const subtotal = data.lineItems.reduce((sum, li: any) => {
+            const fallbackTotal = Number(li.totalPrice ?? li.linePrice ?? 0);
+            const baseCalculatedTotalCents = Number.isFinite(Number(li?.pbv2SnapshotJson?.pricing?.totalCents))
+                ? Math.round(Number(li.pbv2SnapshotJson.pricing.totalCents))
+                : Math.round((Number.isFinite(fallbackTotal) ? fallbackTotal : 0) * 100);
+            const effectivePricing = resolvePersistedLineItemPricing({
+                baseCalculatedTotalCents,
+                quantity: li.quantity,
+                body: li,
+                specsJson: li.specsJson,
+                legacyOverridePriceCents: li.overridePriceCents,
+            });
+            return sum + effectivePricing.effectiveTotalCents / 100;
+        }, 0);
         const discount = data.discount || 0;
         const taxAmount = data.taxAmount ?? 0;
         const total = subtotal - discount + taxAmount;
@@ -1306,18 +1325,31 @@ export class OrdersRepository {
 
             const lineItemsData = data.lineItems.map((li, index) => {
                 const designSnapshot = lineItemsWithSnapshots[index];
-                const unitRaw = (li as any).unitPrice ?? (li as any).unit_price;
                 const totalRaw =
                     (li as any).totalPrice ??
                     (li as any).total_price ??
                     (li as any).linePrice ??
                     (li as any).line_price;
 
-                const unit = Number(unitRaw ?? 0);
                 const totalPriceNum = Number(totalRaw ?? (li as any).linePrice ?? 0);
 
-                const unitSafe = Number.isFinite(unit) ? unit : 0;
                 const totalSafe = Number.isFinite(totalPriceNum) ? totalPriceNum : 0;
+                const specsJsonRaw = (li as any).specsJson || null;
+                const pbv2SnapshotJsonRaw = (li as any).pbv2SnapshotJson ?? null;
+                const baseCalculatedTotalCents = Number.isFinite(Number((pbv2SnapshotJsonRaw as any)?.pricing?.totalCents))
+                    ? Math.round(Number((pbv2SnapshotJsonRaw as any).pricing.totalCents))
+                    : Math.round(totalSafe * 100);
+                const effectivePricing = resolvePersistedLineItemPricing({
+                    baseCalculatedTotalCents,
+                    quantity: li.quantity,
+                    body: li as any,
+                    specsJson: specsJsonRaw,
+                    legacyOverridePriceCents: (li as any).overridePriceCents,
+                });
+                const specsJsonWithPricing = mergePricingIntoSpecsJson({
+                    specsJson: specsJsonRaw,
+                    pricing: effectivePricing,
+                });
 
                 const selectedOptionsRaw = (li as any).selectedOptions;
                 const selectedOptionsSafe = Array.isArray(selectedOptionsRaw) ? selectedOptionsRaw : [];
@@ -1349,8 +1381,8 @@ export class OrdersRepository {
                     height: li.height ? li.height.toString() : null,
                     quantity: li.quantity,
                     sqft: (li as any).sqft ? (li as any).sqft.toString() : null,
-                    unitPrice: unitSafe.toString(),
-                    totalPrice: totalSafe.toString(),
+                    unitPrice: (effectivePricing.effectiveUnitPriceCents / 100).toFixed(2),
+                    totalPrice: (effectivePricing.effectiveTotalCents / 100).toFixed(2),
                     status: 'new',
                     workflowState: workflowStateSafe,
                     requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
@@ -1366,14 +1398,18 @@ export class OrdersRepository {
                     requiresDesign: requiresDesignSafe,
                     requiresProofApproval: requiresProofApprovalSafe,
                     requiresPrepress: requiresPrepressSafe,
-                    specsJson: (li as any).specsJson || null,
+                    specsJson: specsJsonWithPricing,
                     selectedOptions: selectedOptionsSafe,
                     optionSelectionsJson: (li as any).optionSelectionsJson ?? null,
                     pbv2TreeVersionId: (li as any).pbv2TreeVersionId ?? null,
-                    pbv2SnapshotJson: (li as any).pbv2SnapshotJson ?? null,
+                    pbv2SnapshotJson: pbv2SnapshotJsonRaw,
                     pricedAt: (li as any).pricedAt ?? null,
                     nestingConfigSnapshot: (li as any).nestingConfigSnapshot || null,
                     sortOrder: (li as any).sortOrder ?? index, // Use provided sortOrder or default to index
+                    overridePriceCents: effectivePricing.hasPriceOverride ? effectivePricing.effectiveTotalCents : null,
+                    overrideAt: effectivePricing.hasPriceOverride ? new Date() : null,
+                    overrideByUserId: effectivePricing.hasPriceOverride ? data.createdByUserId : null,
+                    overrideReason: (li as any).overrideReason ?? null,
                     // Tax fields
                     taxAmount: taxAmountSafe.toString(),
                     isTaxableSnapshot: isTaxableSnapshotSafe,
@@ -1608,6 +1644,11 @@ export class OrdersRepository {
                 pbv2TreeVersionId: (ql as any).pbv2TreeVersionId ?? null,
                 pbv2SnapshotJson: (ql as any).pbv2SnapshotJson ?? null,
                 pricedAt: (ql as any).pricedAt ?? null, // Preserve pricing timestamp from quote
+                priceOverride: (ql as any).priceOverride ?? null,
+                overridePriceCents: (ql as any).overridePriceCents ?? null,
+                overrideAt: (ql as any).overrideAt ?? null,
+                overrideByUserId: (ql as any).overrideByUserId ?? null,
+                overrideReason: (ql as any).overrideReason ?? null,
                 nestingConfigSnapshot: null,
                 requiresInventory: false,
                 materialId: null,
@@ -1892,6 +1933,20 @@ export class OrdersRepository {
             .where(eq(products.id, lineItem.productId))
             .limit(1);
         const requiresProofApprovalSafe = Boolean(productProofRow?.requiresProofApproval);
+        const baseCalculatedTotalCents = Number.isFinite(Number((lineItem as any)?.pbv2SnapshotJson?.pricing?.totalCents))
+            ? Math.round(Number((lineItem as any).pbv2SnapshotJson.pricing.totalCents))
+            : Math.round(Number(lineItem.totalPrice) * 100);
+        const effectivePricing = resolvePersistedLineItemPricing({
+            baseCalculatedTotalCents,
+            quantity: lineItem.quantity,
+            body: lineItem as any,
+            specsJson: lineItem.specsJson,
+            legacyOverridePriceCents: (lineItem as any).overridePriceCents,
+        });
+        const specsJsonWithPricing = mergePricingIntoSpecsJson({
+            specsJson: lineItem.specsJson,
+            pricing: effectivePricing,
+        });
 
         // JSON/array fields often come from Zod/JSON sources as unknown; narrow them to the Drizzle column types.
         const selectedOptions = asArrayOrUndefined<SelectedOptionInsert>(lineItem.selectedOptions) as SelectedOptionsInsert | undefined;
@@ -1911,8 +1966,8 @@ export class OrdersRepository {
             height: lineItem.height == null ? null : lineItem.height.toString(),
             quantity: lineItem.quantity,
             sqft: lineItem.sqft == null ? null : lineItem.sqft.toString(),
-            unitPrice: lineItem.unitPrice.toString(),
-            totalPrice: lineItem.totalPrice.toString(),
+            unitPrice: (effectivePricing.effectiveUnitPriceCents / 100).toFixed(2),
+            totalPrice: (effectivePricing.effectiveTotalCents / 100).toFixed(2),
             status: lineItem.status,
             workflowState: lineItem.workflowState ?? getInitialWorkflowState({
                 requiresDesign: designSnapshot.effectiveRequiresDesign,
@@ -1932,7 +1987,7 @@ export class OrdersRepository {
             requiresDesign: designSnapshot.effectiveRequiresDesign,
             requiresProofApproval: requiresProofApprovalSafe,
             requiresPrepress: lineItem.requiresPrepress ?? true,
-            specsJson: lineItem.specsJson ?? undefined,
+            specsJson: specsJsonWithPricing ?? undefined,
             selectedOptions,
             nestingConfigSnapshot,
             materialId: lineItem.materialId ?? null,
@@ -1947,6 +2002,10 @@ export class OrdersRepository {
             pbv2TreeVersionId: (lineItem as any).pbv2TreeVersionId ?? undefined,
             pbv2SnapshotJson: (lineItem as any).pbv2SnapshotJson ?? undefined,
             pricedAt: (lineItem as any).pricedAt ?? undefined,
+            overridePriceCents: effectivePricing.hasPriceOverride ? effectivePricing.effectiveTotalCents : null,
+            overrideAt: effectivePricing.hasPriceOverride ? new Date() : null,
+            overrideByUserId: effectivePricing.hasPriceOverride ? ((lineItem as any).overrideByUserId ?? null) : null,
+            overrideReason: (lineItem as any).overrideReason ?? null,
         };
         const [created] = await this.dbInstance.insert(orderLineItems).values(lineItemInsert).returning();
         return created;
