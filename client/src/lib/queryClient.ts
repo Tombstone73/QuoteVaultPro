@@ -1,5 +1,6 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { apiUrl } from "./apiConfig";
+import { notifySessionExpired } from "./authUtils";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
@@ -14,6 +15,9 @@ async function throwIfResNotOk(res: Response) {
           return; // navigation is happening; don't throw
         }
       } catch { /* not JSON — fall through to normal error */ }
+    }
+    if (res.status === 401) {
+      notifySessionExpired("api-request");
     }
     throw new Error(`${res.status}: ${text}`);
   }

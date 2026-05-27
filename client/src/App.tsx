@@ -1,4 +1,5 @@
-import { Routes, Route, Navigate, useParams } from "react-router-dom";
+import { useEffect, useRef } from "react";
+import { Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SettingsLayout, CompanySettings, PreferencesSettings, AccountingSettings, ProductionSettings, InventorySettings, NotificationsSettings, AppearanceSettings } from "@/pages/settings/SettingsLayout";
 import EmailSettings from "@/pages/settings/email";
@@ -81,6 +82,8 @@ import MaterialsImportExport from "@/pages/admin/MaterialsImportExport";
 import QBInvoiceInspectorPage from "@/pages/admin/QBInvoiceInspectorPage";
 import QBCustomerInspectorPage from "@/pages/admin/QBCustomerInspectorPage";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
+import { useToast } from "@/hooks/use-toast";
+import { SESSION_EXPIRED_EVENT, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
 import FulfillmentPage from "@/pages/fulfillment";
 import FulfillmentShipmentDetailPage from "@/pages/fulfillment-shipment-detail";
 import LabelsPage from "@/pages/labels";
@@ -334,6 +337,39 @@ function MaterialDetailRoute() {
   return <MaterialDetailPage params={{ id: id ?? "" }} />;
 }
 
+function SessionExpiredRedirector() {
+  const { toast } = useToast();
+  const location = useLocation();
+  const handledRef = useRef(false);
+
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      if (handledRef.current) return;
+      if (/^\/(login|forgot-password|reset-password|set-password|accept-invite)(\/|$)/i.test(location.pathname)) {
+        return;
+      }
+
+      handledRef.current = true;
+      toast({
+        title: "Session expired",
+        description: SESSION_EXPIRED_MESSAGE,
+        variant: "destructive",
+      });
+      queryClient.clear();
+
+      const redirect = `${location.pathname}${location.search}`;
+      window.setTimeout(() => {
+        window.location.href = `/login?redirect=${encodeURIComponent(redirect)}`;
+      }, 250);
+    };
+
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+  }, [location.pathname, location.search, toast]);
+
+  return null;
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -341,6 +377,7 @@ function App() {
         <TooltipProvider>
           <NavigationGuardProvider>
             <Toaster />
+            <SessionExpiredRedirector />
             <Router />
           </NavigationGuardProvider>
         </TooltipProvider>

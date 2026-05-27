@@ -39,6 +39,7 @@ import { resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
 import { getPbv2Tree, isPbv2Product, isPbv2QuestionNode, normalizePbv2Tree, summarizePbv2Tree } from "@/lib/pbv2Utils";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
+import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
@@ -2067,6 +2068,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                 currentFingerprint: latestPricingFingerprintRef.current,
               });
             }
+            return;
+          }
+          if (isSessionExpiredError(err)) {
+            setCalcError(SESSION_EXPIRED_MESSAGE);
+            notifySessionExpired("order-line-price-preview");
+            setPreviewDiag((prev) => (prev && prev.seq === seq ? { ...prev, status: "error" } : prev));
             return;
           }
           // Error message format from apiRequest: "<status>: <responseBody>"
