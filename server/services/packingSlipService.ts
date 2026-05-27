@@ -111,28 +111,51 @@ export function buildPackingSlipHtml(input: PackingSlipHtmlInput): string {
   <meta charset="utf-8" />
   <title>Packing Slip ${display(input.orderNumber)}</title>
   <style>
-    body { color: #111827; font-family: Arial, sans-serif; margin: 0; padding: 28px; }
-    .header { border-bottom: 2px solid #111827; display: flex; justify-content: space-between; margin-bottom: 24px; padding-bottom: 12px; }
-    h1 { font-size: 28px; letter-spacing: 0; margin: 0; }
-    .order-number { color: #4b5563; font-size: 16px; margin-top: 4px; }
-    .section-grid { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; margin-bottom: 24px; }
-    .label { color: #6b7280; font-size: 11px; font-weight: 700; letter-spacing: .04em; margin-bottom: 6px; text-transform: uppercase; }
-    .value { font-size: 14px; line-height: 1.45; }
-    table { border-collapse: collapse; margin-top: 14px; width: 100%; }
-    th, td { border: 1px solid #d1d5db; font-size: 13px; padding: 10px; text-align: left; vertical-align: top; }
-    th { background: #f3f4f6; font-weight: 700; }
-    .qty { text-align: right; width: 84px; }
-    .footer { border-top: 1px solid #d1d5db; color: #6b7280; font-size: 12px; margin-top: 32px; padding-top: 12px; text-align: center; }
-    @media print { body { padding: 18px; } }
+    :root { --thermal-feed-spacer: 1.5in; }
+    html, body {
+      background: #fff;
+      color: #000;
+      font-family: Arial, Helvetica, sans-serif;
+      margin: 0;
+      padding: 0;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    body {
+      box-sizing: border-box;
+      margin: 0 auto;
+      padding: 3mm;
+      width: 80mm;
+    }
+    * { box-sizing: border-box; color: #000; }
+    .header { border-bottom: 2px solid #000; margin-bottom: 2mm; padding-bottom: 1.5mm; }
+    h1 { font-size: 26px; font-weight: 900; letter-spacing: 0; line-height: 1.05; margin: 0; text-transform: uppercase; }
+    .order-number { font-size: 22px; font-weight: 900; line-height: 1.05; margin-top: 1mm; }
+    .notice { font-size: 14px; font-weight: 900; line-height: 1.1; margin-top: 1mm; text-transform: uppercase; }
+    .section-grid { display: grid; gap: 2mm; grid-template-columns: 1fr; margin-bottom: 2.5mm; }
+    .label { font-size: 13px; font-weight: 900; letter-spacing: .02em; line-height: 1.05; margin-bottom: .75mm; text-transform: uppercase; }
+    .value { font-size: 15px; font-weight: 800; line-height: 1.18; }
+    .line-items { border-top: 2px solid #000; margin-top: 1.5mm; }
+    .line-item { border-bottom: 1.5px dashed #000; padding: 1.5mm 0; }
+    .line-meta { display: grid; gap: 1mm; grid-template-columns: 1fr 1fr; margin-top: 1mm; }
+    .qty { text-align: right; }
+    .line-main { font-size: 15px; font-weight: 900; }
+    .line-detail-label { font-size: 12px; font-weight: 900; letter-spacing: .02em; line-height: 1.05; text-transform: uppercase; }
+    .line-detail-value { font-size: 14px; font-weight: 900; line-height: 1.1; }
+    .footer { border-top: 1.5px dashed #000; font-size: 13px; font-weight: 900; line-height: 1.1; margin-top: 2.5mm; padding-top: 1.5mm; text-align: center; text-transform: uppercase; }
+    .thermal-feed-spacer { display: block; height: var(--thermal-feed-spacer, 1.5in); min-height: var(--thermal-feed-spacer, 1.5in); }
+    @media print {
+      @page { size: 80mm auto; margin: 0; }
+      html, body { margin: 0 !important; padding: 0 !important; }
+      body { margin: 0 !important; padding: 3mm !important; width: 80mm !important; }
+    }
   </style>
 </head>
 <body>
   <div class="header">
-    <div>
-      <h1>Packing Slip</h1>
-      <div class="order-number">Order ${display(input.orderNumber)}</div>
-    </div>
-    <div class="value">This is not an invoice.</div>
+    <h1>Packing Slip</h1>
+    <div class="order-number">Order ${display(input.orderNumber)}</div>
+    <div class="notice">Not an invoice</div>
   </div>
 
   <div class="section-grid">
@@ -154,29 +177,32 @@ export function buildPackingSlipHtml(input: PackingSlipHtmlInput): string {
     </div>
   </div>
 
-  <table>
-    <thead>
-      <tr>
-        <th>Line Item</th>
-        <th class="qty">Qty</th>
-        <th>Size</th>
-        <th>Material</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${lineItems.length
-        ? lineItems.map((item) => `
-      <tr>
-        <td>${display(item.description)}</td>
-        <td class="qty">${display(item.quantity)}</td>
-        <td>${item.size ? item.size : EMPTY}</td>
-        <td>${display(item.material)}</td>
-      </tr>`).join("")
-        : `<tr><td colspan="4">${EMPTY}</td></tr>`}
-    </tbody>
-  </table>
+  <div class="label">Line Items</div>
+  <div class="line-items">
+    ${lineItems.length
+      ? lineItems.map((item) => `
+    <div class="line-item">
+      <div class="line-main">${display(item.description)}</div>
+      <div class="line-meta">
+        <div>
+          <div class="line-detail-label">Qty</div>
+          <div class="line-detail-value">${display(item.quantity)}</div>
+        </div>
+        <div>
+          <div class="line-detail-label">Size</div>
+          <div class="line-detail-value">${item.size ? item.size : EMPTY}</div>
+        </div>
+        <div style="grid-column: 1 / -1;">
+          <div class="line-detail-label">Material</div>
+          <div class="line-detail-value">${display(item.material)}</div>
+        </div>
+      </div>
+    </div>`).join("")
+      : `<div class="line-item"><div class="line-main">${EMPTY}</div></div>`}
+  </div>
 
   <div class="footer">Generated for packing only. Amounts are intentionally omitted.</div>
+  <div class="thermal-feed-spacer"></div>
 </body>
 </html>`;
 }

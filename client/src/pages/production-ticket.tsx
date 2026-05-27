@@ -26,7 +26,7 @@ import {
 } from "@/hooks/useProduction";
 import { buildTicketData, type TicketSourceData } from "@shared/productionTicket";
 import { loadTicketTemplate } from "@/lib/ticketSettings";
-import { buildJobTicketQrUrl, ticketRowStyle, TICKET_PRINT_STYLES } from "@/lib/ticketRender";
+import { buildJobTicketQrUrl, ticketRowStyle, THERMAL_PRINT_STYLES } from "@/lib/ticketRender";
 import {
   parseTicketOverrides,
   resolveQuantityDisplay,
@@ -34,7 +34,14 @@ import {
 } from "@/lib/ticketPrintOverrides";
 import { useStationPrinter } from "@/hooks/useStationPrinter";
 import { PrinterPicker } from "@/components/production/PrinterPicker";
-import { CenteredMessage, TicketDivider } from "@/components/production/ticketPrintPrimitives";
+import {
+  CenteredMessage,
+  ThermalDivider,
+  ThermalLabel,
+  ThermalPrintPage,
+  ThermalQrBlock,
+  ThermalSection,
+} from "@/components/production/ticketPrintPrimitives";
 import { Printer, RotateCcw, ArrowLeft } from "lucide-react";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { getProductionOrderNumber } from "@/lib/productionDocumentNumbers";
@@ -201,7 +208,7 @@ export default function ProductionTicketPage() {
 
   return (
     <div className="min-h-screen bg-muted/40 print:bg-white">
-      <style dangerouslySetInnerHTML={{ __html: TICKET_PRINT_STYLES }} />
+      <style dangerouslySetInnerHTML={{ __html: THERMAL_PRINT_STYLES }} />
 
       {/* TOOLBAR — never printed */}
       <div className="ticket-no-print sticky top-0 z-10 border-b bg-background">
@@ -258,20 +265,17 @@ export default function ProductionTicketPage() {
 
       {/* TICKET — the only printable area */}
       <div className="mx-auto max-w-md px-4 py-6">
-        <div
-          id="ticket-print-area"
-          className="mx-auto bg-white text-black"
-          style={{ width: "72mm", padding: "4mm", fontFamily: "Arial, Helvetica, sans-serif" }}
-        >
+        <ThermalPrintPage>
           {reasonBanner && (
             <div
               style={{
                 border: "2px solid #000",
                 textAlign: "center",
-                fontWeight: 700,
-                fontSize: "14px",
+                fontWeight: 900,
+                fontSize: "18px",
+                lineHeight: 1.05,
                 padding: "1.5mm",
-                marginBottom: "1.5mm",
+                marginBottom: "1mm",
               }}
             >
               {reasonBanner}
@@ -279,44 +283,25 @@ export default function ProductionTicketPage() {
           )}
           {ticket.rows.map((row) => (
             <div key={row.key}>
-              {row.format.dividerBefore && <TicketDivider />}
-              <div style={{ margin: "1.5mm 0" }}>
+              {row.format.dividerBefore && <ThermalDivider />}
+              <ThermalSection compact>
                 {row.key !== "rush" && (
-                  <div
-                    style={{
-                      fontSize: "8px",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.04em",
-                      color: "#444",
-                      textAlign: row.format.align,
-                    }}
-                  >
-                    {row.label}
-                  </div>
+                  <ThermalLabel align={row.format.align}>{row.label}</ThermalLabel>
                 )}
                 <div style={ticketRowStyle(row.format)}>
                   {row.key === "rush" ? `★ ${row.value} ★` : row.value}
                 </div>
-              </div>
-              {row.format.dividerAfter && <TicketDivider />}
+              </ThermalSection>
+              {row.format.dividerAfter && <ThermalDivider />}
             </div>
           ))}
 
           {/* ARTWORK THUMBNAIL — placeholder for future B&W thumbnail support.
               MVP does not block on thumbnail generation; if a thumbnail exists
               we show it desaturated, otherwise a labelled placeholder box. */}
-          <TicketDivider />
-          <div style={{ margin: "1.5mm 0" }}>
-            <div
-              style={{
-                fontSize: "8px",
-                textTransform: "uppercase",
-                letterSpacing: "0.04em",
-                color: "#444",
-              }}
-            >
-              Artwork
-            </div>
+          <ThermalDivider />
+          <ThermalSection compact>
+            <ThermalLabel>Artwork</ThermalLabel>
             {artwork?.thumbnailUrl ? (
               <img
                 src={artwork.thumbnailUrl}
@@ -326,50 +311,45 @@ export default function ProductionTicketPage() {
                   maxHeight: "40mm",
                   objectFit: "contain",
                   filter: "grayscale(1) contrast(1.15)",
+                  border: "1.5px solid #000",
+                  marginTop: "1mm",
                 }}
               />
             ) : (
               <div
                 style={{
-                  border: "1px dashed #999",
-                  padding: "6mm 2mm",
+                  border: "1.5px dashed #000",
+                  padding: "5mm 2mm",
                   textAlign: "center",
-                  fontSize: "9px",
-                  color: "#666",
+                  fontSize: "14px",
+                  fontWeight: 900,
+                  lineHeight: 1.1,
+                  color: "#000",
+                  marginTop: "1mm",
                 }}
               >
                 B&amp;W artwork thumbnail
                 <br />
-                (coming soon)
+                coming soon
               </div>
             )}
-          </div>
+          </ThermalSection>
 
           {/* QR CODE — links back to the job in TitanOS */}
-          <TicketDivider />
-          <div style={{ textAlign: "center", margin: "2mm 0 0" }}>
-            {qrDataUrl ? (
-              <img
-                src={qrDataUrl}
-                alt="Job QR code"
-                style={{ width: "26mm", height: "26mm" }}
-              />
-            ) : (
-              <div style={{ fontSize: "9px", color: "#666" }}>QR unavailable</div>
-            )}
-            <div style={{ fontSize: "8px", color: "#444", marginTop: "1mm" }}>
-              Scan to open job in Printers Hero
-            </div>
+          <ThermalDivider />
+          <ThermalQrBlock
+            qrDataUrl={qrDataUrl}
+            alt="Job QR code"
+            instruction="Scan to open job in Printers Hero"
+            timestamp={`Printed ${new Date().toLocaleString()}`}
+          >
             {ticket.reprintCount > 0 && (
-              <div style={{ fontSize: "8px", color: "#444", marginTop: "1mm" }}>
+              <div style={{ fontSize: "13px", fontWeight: 900, lineHeight: 1.1, marginTop: "1.5mm" }}>
                 Reprints: {ticket.reprintCount}
               </div>
             )}
-            <div style={{ fontSize: "7px", color: "#888", marginTop: "1mm" }}>
-              Printed {new Date().toLocaleString()}
-            </div>
-          </div>
-        </div>
+          </ThermalQrBlock>
+        </ThermalPrintPage>
       </div>
     </div>
   );

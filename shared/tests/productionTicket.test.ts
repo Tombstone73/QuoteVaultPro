@@ -131,8 +131,11 @@ describe("buildTicketData — template formatting", () => {
 
     expect(byKey.orderNumber.format.fontSize).toBe("xlarge");
     expect(byKey.orderNumber.format.fontWeight).toBe("bold");
-    expect(byKey.customerName.format.fontSize).toBe("large");
+    expect(byKey.customerName.format.fontSize).toBe("xlarge");
     expect(byKey.customerName.format.fontWeight).toBe("bold");
+    expect(byKey.description.format.fontSize).toBe("large");
+    expect(byKey.size.format.fontSize).toBe("large");
+    expect(byKey.material.format.fontSize).toBe("large");
     expect(byKey.dueDate.format.fontWeight).toBe("bold");
   });
 
@@ -158,6 +161,21 @@ describe("buildTicketData — template formatting", () => {
     };
     const ticket = buildTicketData(baseSource, template);
     expect(ticket.rows.find((r) => r.key === "quantity")!.label).toBe("Pieces");
+  });
+
+  it("keeps custom templates above the thermal readability floor", () => {
+    const template: TicketTemplate = {
+      ...DEFAULT_TICKET_TEMPLATE,
+      fields: {
+        ...DEFAULT_TICKET_TEMPLATE.fields,
+        customerName: { ...DEFAULT_TICKET_TEMPLATE.fields.customerName, fontSize: "small" },
+        material: { ...DEFAULT_TICKET_TEMPLATE.fields.material, fontSize: "normal" },
+      },
+    };
+    const ticket = buildTicketData(baseSource, template);
+    const byKey = Object.fromEntries(ticket.rows.map((r) => [r.key, r]));
+    expect(byKey.customerName.format.fontSize).toBe("xlarge");
+    expect(byKey.material.format.fontSize).toBe("large");
   });
 
   it("orders rows by the template order field", () => {

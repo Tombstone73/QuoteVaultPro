@@ -28,6 +28,9 @@ describe("packing slip generation", () => {
     expect(html).toContain("PO-77");
     expect(html).toContain("Reflective sign");
     expect(html).toContain("Reflective Vinyl");
+    expect(html).toContain("@page { size: 80mm auto; margin: 0; }");
+    expect(html).toContain("thermal-feed-spacer");
+    expect(html).toContain("--thermal-feed-spacer: 1.5in");
     expect(html).not.toMatch(/price|subtotal|total|invoice amount/i);
   });
 
