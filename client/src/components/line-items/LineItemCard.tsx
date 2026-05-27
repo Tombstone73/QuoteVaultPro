@@ -86,6 +86,7 @@ export type LineItemCardProps = {
   onPriceBlur?: () => void;
   onPriceKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onUndoOverride?: () => void;
+  priceControlSlot?: ReactNode;
 
   // Calculating state
   isCalculating?: boolean;
@@ -185,6 +186,7 @@ export function LineItemCard({
   onPriceBlur,
   onPriceKeyDown,
   onUndoOverride,
+  priceControlSlot,
   isCalculating = false,
   calcError = null,
   description,
@@ -603,7 +605,7 @@ export function LineItemCard({
                 </div>
               </div>
 
-              <div className="ml-auto text-right min-h-[60px]">
+              <div className="ml-auto min-h-[60px] w-[280px] text-right">
                 <div className="text-xs text-muted-foreground">Total</div>
                 <div className="flex items-center gap-2 justify-end">
                   {editingPrice ? (
@@ -614,15 +616,22 @@ export function LineItemCard({
                       onBlur={onPriceBlur}
                       onKeyDown={onPriceKeyDown}
                       autoFocus
-                      className="font-mono text-lg font-bold h-auto px-2 py-1 text-right w-32"
+                      className="h-8 w-32 px-3 text-right font-mono text-sm font-semibold"
                     />
                   ) : (
-                    <div 
-                      className={`font-mono text-lg font-bold ${!readOnly && onPriceClick ? 'cursor-pointer hover:bg-accent/50 px-2 py-1 rounded transition-colors' : ''}`}
+                    <button
+                      type="button"
+                      className={cn(
+                        "h-8 w-32 rounded-md border border-input bg-background px-3 text-right font-mono text-sm font-semibold shadow-sm",
+                        !readOnly && onPriceClick
+                          ? "cursor-pointer hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          : "cursor-default"
+                      )}
                       onClick={onPriceClick}
+                      disabled={readOnly || !onPriceClick}
                     >
                       {formatMoney(priceOverride != null ? priceOverride : price)}
-                    </div>
+                    </button>
                   )}
                   {priceOverride != null && (
                     <div className="flex items-center gap-1">
@@ -644,6 +653,9 @@ export function LineItemCard({
                     </div>
                   )}
                 </div>
+                {priceControlSlot ? (
+                  <div className="mt-1.5">{priceControlSlot}</div>
+                ) : null}
                 <div className="h-5 flex items-center justify-end">
                   {isCalculating && <div className="text-[11px] text-muted-foreground">Calculating…</div>}
                   {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" && (

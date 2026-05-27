@@ -2572,6 +2572,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     : displayPersistedTotal;
                   const priceEditText = priceEditTextById[String(item.id)] ?? editorPriceValue.toFixed(2);
                   const isEditingPrice = editingPriceItemId === String(item.id);
+                  const overrideSelectValue = isOverride ? selectedOverrideMode : "__none";
 
                   const statusValue = item.status || "new";
                   const readOnly = !canEditLineItemRecord(item);
@@ -2959,6 +2960,80 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (calculatedCents / 100).toFixed(2) }));
                                       }
                                 }
+                                priceControlSlot={
+                                  isExpanded && expandedItem && expandedItem.id === item.id ? (
+                                    <div className="space-y-1">
+                                      <select
+                                        aria-label="Price override mode"
+                                        value={overrideSelectValue}
+                                        onChange={(event) => {
+                                          const lineItemId = String(item.id);
+                                          const selectedValue = event.target.value;
+                                          const calculatedCents = baseCalculatedTotalCents;
+                                          const qtyForOverride = isExpanded && expandedItem?.id === item.id ? qtyNum : (Number(item.quantity) > 0 ? Number(item.quantity) : 1);
+
+                                          if (selectedValue === "__none") {
+                                            markPricingDirtyByUser(lineItemId, "price_override_clear");
+                                            const clearPricing: PendingLineItemPriceOverride = {
+                                              baseCalculatedTotalCents: calculatedCents,
+                                              baseCalculatedUnitPriceCents: Math.round(calculatedCents / Math.max(1, qtyForOverride)),
+                                              effectiveTotalCents: calculatedCents,
+                                              effectiveUnitPriceCents: Math.round(calculatedCents / Math.max(1, qtyForOverride)),
+                                              priceOverrideMode: null,
+                                              priceOverrideValueCents: null,
+                                              priceOverrideValuePercent: null,
+                                              hasPriceOverride: false,
+                                            };
+                                            setPendingPriceOverrideById((prev) => ({ ...prev, [lineItemId]: clearPricing }));
+                                            setComputedTotal(clearPricing.effectiveTotalCents / 100);
+                                            setComputedTotalQty(qtyForOverride);
+                                            onDraftLineItemPricingChange?.(lineItemId, clearPricing.effectiveTotalCents);
+                                            setPriceOverrideModeById((prev) => {
+                                              const next = { ...prev };
+                                              delete next[lineItemId];
+                                              return next;
+                                            });
+                                            setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (calculatedCents / 100).toFixed(2) }));
+                                            return;
+                                          }
+
+                                          const nextMode = selectedValue as LineItemPriceOverrideMode;
+                                          markPricingDirtyByUser(lineItemId, "price_override_mode");
+                                          setPriceOverrideModeById((prev) => ({ ...prev, [lineItemId]: nextMode }));
+
+                                          const rawValue = priceEditTextById[lineItemId] ?? editorPriceValue.toFixed(2);
+                                          const parsed = Number.parseFloat(rawValue);
+                                          const valueCents = Math.round((Number.isFinite(parsed) && parsed >= 0 ? parsed : editorPriceValue) * 100);
+                                          const nextPricing = applyLineItemEditPriceOverride({
+                                            baseCalculatedTotalCents: calculatedCents,
+                                            quantity: qtyForOverride,
+                                            mode: nextMode,
+                                            valueCents,
+                                          });
+
+                                          setPendingPriceOverrideById((prev) => ({ ...prev, [lineItemId]: nextPricing }));
+                                          setComputedTotal(nextPricing.effectiveTotalCents / 100);
+                                          setComputedTotalQty(qtyForOverride);
+                                          onDraftLineItemPricingChange?.(lineItemId, nextPricing.effectiveTotalCents);
+                                          setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (valueCents / 100).toFixed(2) }));
+                                        }}
+                                        className="h-8 w-32 rounded-md border border-input bg-background px-2 text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                                        disabled={readOnly}
+                                      >
+                                        <option value="__none">No override</option>
+                                        <option value="override_total_after_margin">Total override</option>
+                                        <option value="override_unit_after_margin">Unit override</option>
+                                        <option value="override_total_before_margin">Total before margin</option>
+                                        <option value="override_unit_before_margin">Unit before margin</option>
+                                        <option value="apply_discount">Discount</option>
+                                        <option value="append_value">Add value</option>
+                                      </select>
+                                      <div className="text-[11px] text-muted-foreground">
+                                        Calculated {formatMoney(baseCalculatedTotal)} · Effective {formatMoney(displayTotal)}
+                                      </div>
+                                    </div>
+                                  ) : undefined
+                                }
                                 isCalculating={isCalculating}
                                 calcError={calcError}
                                 isPreviewPrice={isPreviewPrice}
@@ -2986,11 +3061,11 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       </div>
                                     )}
 
-                                    {isExpanded && expandedItem && expandedItem.id === item.id && (
+                                    {isExpanded && expandedItem && expandedItem.id === item.id && false && (
                                       <div className="mb-3 rounded-md border border-border/40 bg-background/70 p-3">
                                         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                                           <div>
-                                            <div className="text-sm font-medium">Price Override</div>
+                                            <div className="text-sm font-medium">Price details</div>
                                             <div className="text-xs text-muted-foreground">
                                               Calculated {formatMoney(baseCalculatedTotal)} · Effective {formatMoney(displayTotal)}
                                             </div>
@@ -3001,7 +3076,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                             </Badge>
                                           ) : null}
                                         </div>
-                                        <div className="grid gap-2 sm:grid-cols-[minmax(180px,260px)_1fr]">
+                                        <div className="flex">
                                           <select
                                             value={selectedOverrideMode}
                                             onChange={(event) => {
@@ -3012,7 +3087,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                               const currentValue = getLineItemOverrideInputValue(item, nextMode, displayPrice);
                                               setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: currentValue.toFixed(2) }));
                                             }}
-                                            className="h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                                            className="hidden"
                                             disabled={readOnly}
                                           >
                                             <option value="override_total_after_margin">Total override</option>
