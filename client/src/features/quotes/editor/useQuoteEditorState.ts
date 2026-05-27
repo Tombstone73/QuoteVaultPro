@@ -88,6 +88,10 @@ export function useQuoteEditorState() {
     const [jobLabel, setJobLabel] = useState<string>("");
     // Store as ISO date string (YYYY-MM-DD) for simple input compatibility.
     const [requestedDueDate, setRequestedDueDate] = useState<string>("");
+    const [orderPoNumber, setOrderPoNumber] = useState<string>("");
+    const [orderPromisedDate, setOrderPromisedDate] = useState<string>("");
+    const [orderPriority, setOrderPriority] = useState<string>("normal");
+    const [orderInternalNotes, setOrderInternalNotes] = useState<string>("");
     // Stored as absolute currency amount (not %).
     const [discountAmount, setDiscountAmount] = useState<number>(0);
     // Tags for quote/order (client-side only for now - backend doesn't support yet)
@@ -141,6 +145,10 @@ export function useQuoteEditorState() {
         quoteNotes: string;
         jobLabel: string;
         requestedDueDate: string;
+        orderPoNumber: string;
+        orderPromisedDate: string;
+        orderPriority: string;
+        orderInternalNotes: string;
         discountAmount: number;
         tags: string[];
         quoteTaxExempt: boolean | null;
@@ -164,6 +172,10 @@ export function useQuoteEditorState() {
         if (selectedContactId !== snap.selectedContactId) return true;
         if (jobLabel !== snap.jobLabel) return true;
         if (requestedDueDate !== snap.requestedDueDate) return true;
+        if (orderPoNumber !== snap.orderPoNumber) return true;
+        if (orderPromisedDate !== snap.orderPromisedDate) return true;
+        if (orderPriority !== snap.orderPriority) return true;
+        if (orderInternalNotes !== snap.orderInternalNotes) return true;
         if (Math.abs(discountAmount - snap.discountAmount) > 0.01) return true;
         if (deliveryMethod !== snap.deliveryMethod) return true;
         if ((shippingCents ?? null) !== snap.shippingCents) return true;
@@ -195,8 +207,13 @@ export function useQuoteEditorState() {
         selectedContactId,
         jobLabel,
         requestedDueDate,
+        orderPoNumber,
+        orderPromisedDate,
+        orderPriority,
+        orderInternalNotes,
         discountAmount,
         deliveryMethod,
+        shippingCents,
         quoteNotes,
         tags,
         quoteTaxExempt,
@@ -717,6 +734,10 @@ export function useQuoteEditorState() {
             },
             quoteNotes: (quote as any).shippingInstructions || "",
             jobLabel: (quote as any).label || "",
+            orderPoNumber: "",
+            orderPromisedDate: "",
+            orderPriority: "normal",
+            orderInternalNotes: "",
             tags: (quote as any).tags || [],
             quoteTaxExempt: (quote as any).quoteTaxExempt ?? null,
             quoteTaxRateOverride: (quote as any).quoteTaxRateOverride != null ? Number((quote as any).quoteTaxRateOverride) : null,
@@ -1755,6 +1776,7 @@ export function useQuoteEditorState() {
             label: jobLabel || null,
             requestedDueDate: requestedDueDate ? new Date(`${requestedDueDate}T00:00:00.000Z`).toISOString() : null,
             shippingMethod: deliveryMethod,
+            shippingCents,
             shippingInstructions: quoteNotes || null,
             source: "internal",
             hasCustomerId: payloadHasCustomerId,
@@ -1889,6 +1911,10 @@ export function useQuoteEditorState() {
                     quoteNotes,
                     jobLabel,
                     requestedDueDate,
+                    orderPoNumber,
+                    orderPromisedDate,
+                    orderPriority,
+                    orderInternalNotes,
                     discountAmount: effectiveDiscount,
                     tags,
                     quoteTaxExempt,
@@ -2038,6 +2064,7 @@ export function useQuoteEditorState() {
             promisedDate: values.promisedDate || undefined,
             priority: values.priority || undefined,
             notesInternal: values.notes || undefined,
+            poNumber: orderPoNumber.trim() || undefined,
         });
     };
 
@@ -2399,6 +2426,7 @@ export function useQuoteEditorState() {
                     label: jobLabel || null,
                     requestedDueDate: requestedDueDate ? new Date(`${requestedDueDate}T00:00:00.000Z`).toISOString() : null,
                     shippingMethod: deliveryMethod,
+                    shippingCents,
                     shippingInstructions: quoteNotes || null,
                     source: "internal",
                     hasCustomerId: !!payloadCustomerId,
@@ -2578,6 +2606,10 @@ export function useQuoteEditorState() {
         setQuoteNotes(snap.quoteNotes);
         setJobLabel(snap.jobLabel);
         setRequestedDueDate(snap.requestedDueDate);
+        setOrderPoNumber(snap.orderPoNumber);
+        setOrderPromisedDate(snap.orderPromisedDate);
+        setOrderPriority(snap.orderPriority);
+        setOrderInternalNotes(snap.orderInternalNotes);
         setDiscountAmount(snap.discountAmount);
         setTags(snap.tags);
         setQuoteTaxExempt(snap.quoteTaxExempt);
@@ -2643,6 +2675,10 @@ export function useQuoteEditorState() {
         // Quote meta
         jobLabel,
         requestedDueDate,
+        orderPoNumber,
+        orderPromisedDate,
+        orderPriority,
+        orderInternalNotes,
         discountAmount,
         tags,
         quoteTaxExempt,
@@ -2725,6 +2761,10 @@ export function useQuoteEditorState() {
             handleCopyCustomerAddress,
             setJobLabel,
             setRequestedDueDate,
+            setOrderPoNumber,
+            setOrderPromisedDate,
+            setOrderPriority,
+            setOrderInternalNotes,
             setDiscountAmount,
             addTag: (tag: string) => {
                 const trimmed = tag.trim();

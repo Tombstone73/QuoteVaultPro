@@ -5,10 +5,12 @@ import { db } from "../db";
 import {
   jobs,
   orderLineItems,
+  orderListNotes,
   orders,
   productDesignConfigs,
   products,
   quotes,
+  quoteListNotes,
   quoteLineItems,
   type LineItemWorkflowState,
 } from "@shared/schema";
@@ -465,6 +467,58 @@ describe("quote routing persistence and conversion contract", () => {
     expect(createdOrder.shippingMethod).toBe("pickup");
     expect(createdOrder.shippingMode).toBe("single_shipment");
     expect(createdOrder.shipToName).toBe("Workflow Pickup Contact");
+  });
+
+  test("quote to order conversion carries New Order operational fields", async () => {
+    const requestedDueDate = "2026-06-10T00:00:00.000Z";
+    const promisedDate = new Date("2026-06-12T00:00:00.000Z");
+    const quote = await quotesRepo.createQuote(organizationId, {
+      ...buildPrepressOnlyQuoteInput(`Order Mapping ${suffix}`),
+      requestedDueDate,
+      discountAmount: 5,
+      taxAmount: 3,
+      taxableSubtotal: 5,
+      shippingMethod: "ship",
+      shippingCents: 1200,
+      shippingInstructions: "Use dock door 3",
+      totalPrice: 20,
+    } as any);
+
+    await db.insert(quoteListNotes).values({
+      organizationId,
+      quoteId: quote.id,
+      listLabel: "Rush, Color Match",
+      updatedByUserId: userId,
+    });
+
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId, {
+      poNumber: "PO-NEW-123",
+      promisedDate,
+      priority: "rush",
+      notesInternal: "Internal-only order note",
+    });
+
+    const [orderRow] = await db
+      .select()
+      .from(orders)
+      .where(eq(orders.id, createdOrder.id));
+
+    expect(orderRow.poNumber).toBe("PO-NEW-123");
+    expect(orderRow.priority).toBe("rush");
+    expect(orderRow.notesInternal).toBe("Internal-only order note");
+    expect(orderRow.shippingInstructions).toBe("Use dock door 3");
+    expect(orderRow.shippingCents).toBe(1200);
+    expect(orderRow.discount).toBe("5.00");
+    expect(orderRow.total).toBe("20.00");
+    expect(new Date(orderRow.dueDate as string).toISOString()).toBe(requestedDueDate);
+    expect(new Date(orderRow.requestedDueDate as string).toISOString()).toBe(requestedDueDate);
+    expect(new Date(orderRow.promisedDate as string).toISOString()).toBe(promisedDate.toISOString());
+
+    const [listNote] = await db
+      .select()
+      .from(orderListNotes)
+      .where(eq(orderListNotes.orderId, createdOrder.id));
+    expect(listNote.listLabel).toBe("Rush, Color Match");
   });
 
   test("quote conversion blocks before order creation when billing snapshot cannot be resolved", async () => {

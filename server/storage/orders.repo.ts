@@ -17,6 +17,8 @@ import {
     organizations,
     productVariants,
     quotes,
+    quoteListNotes,
+    orderListNotes,
     quoteAttachments,
     quoteLineItems,
     productionJobs,
@@ -1088,10 +1090,12 @@ export class OrdersRepository {
         quoteId?: string | null;
         sourceQuoteNumber?: number | null;
         label?: string | null;
+        poNumber?: string | null;
         status?: string;
         priority?: string;
         dueDate?: Date | string | null;
         promisedDate?: Date | string | null;
+        requestedDueDate?: Date | string | null;
         discount?: number;
         notesInternal?: string | null;
         createdByUserId: string;
@@ -1145,7 +1149,8 @@ export class OrdersRepository {
         }, 0);
         const discount = data.discount || 0;
         const taxAmount = data.taxAmount ?? 0;
-        const total = subtotal - discount + taxAmount;
+        const shipping = Math.max(0, Number(data.shippingCents ?? 0)) / 100;
+        const total = subtotal - discount + taxAmount + shipping;
 
         // Sanitize date fields: convert Date objects to ISO strings, keep strings as-is, convert undefined/invalid to null
         const sanitizeDateField = (value: any): string | null => {
@@ -1166,11 +1171,13 @@ export class OrdersRepository {
                 sourceQuoteNumber: data.sourceQuoteNumber ?? null,
                 customerId: data.customerId,
                 contactId: data.contactId || null,
+                poNumber: data.poNumber || null,
                 label: data.label || null,
                 status: data.status || 'new',
                 priority: data.priority || 'normal',
                 dueDate: sanitizeDateField(data.dueDate),
                 promisedDate: sanitizeDateField(data.promisedDate),
+                requestedDueDate: sanitizeDateField(data.requestedDueDate),
                 subtotal: subtotal.toString(),
                 tax: taxAmount.toString(),
                 taxRate: data.taxRate != null ? data.taxRate.toString() : null,
@@ -1523,6 +1530,7 @@ export class OrdersRepository {
         promisedDate?: Date;
         priority?: string;
         notesInternal?: string | null;
+        poNumber?: string | null;
     }): Promise<OrderWithRelations> {
         // Fetch the quote with line items
         const [quote] = await this.dbInstance.select().from(quotes).where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
@@ -1667,17 +1675,22 @@ export class OrdersRepository {
             quoteId: quote.id,
             sourceQuoteNumber: quote.quoteNumber, // Immutable snapshot — survives quote deletion
             label: quote.label || null, // Copy jobLabel from quote
+            poNumber: options?.poNumber ? String(options.poNumber) : null,
             status: 'new',
             priority: options?.priority || 'normal',
-            dueDate: options?.dueDate || null,
+            // /orders/new uses quote.requestedDueDate as the operator-facing order due date.
+            // Keep requestedDueDate as an audit/source snapshot while also populating dueDate.
+            dueDate: options?.dueDate || (quote.requestedDueDate ? new Date(quote.requestedDueDate) : null),
             promisedDate: options?.promisedDate || null,
-            discount: 0,
+            requestedDueDate: quote.requestedDueDate || null,
+            discount: quote.discountAmount ? Number(quote.discountAmount) : 0,
             notesInternal: options?.notesInternal ? String(options.notesInternal) : null,
             createdByUserId,
             lineItems: orderLineItemsData,
             taxRate: quote.taxRate ? parseFloat(quote.taxRate.toString()) : undefined,
             taxAmount: quote.taxAmount ? parseFloat(quote.taxAmount) : undefined,
             taxableSubtotal: quote.taxableSubtotal ? parseFloat(quote.taxableSubtotal) : undefined,
+            shippingCents: quote.shippingCents ?? 0,
             ...orderSnapshot,
         };
 
@@ -1690,6 +1703,36 @@ export class OrdersRepository {
         });
 
         const createdOrder = await this.createOrder(organizationId, orderData);
+
+        try {
+            const [quoteListNote] = await this.dbInstance
+                .select({ listLabel: quoteListNotes.listLabel })
+                .from(quoteListNotes)
+                .where(and(eq(quoteListNotes.organizationId, organizationId), eq(quoteListNotes.quoteId, quoteId)))
+                .limit(1);
+
+            if (quoteListNote && quoteListNote.listLabel !== undefined) {
+                await this.dbInstance
+                    .insert(orderListNotes)
+                    .values({
+                        organizationId,
+                        orderId: createdOrder.id,
+                        listLabel: quoteListNote.listLabel || null,
+                        updatedByUserId: createdByUserId,
+                        updatedAt: new Date(),
+                    })
+                    .onConflictDoUpdate({
+                        target: [orderListNotes.organizationId, orderListNotes.orderId],
+                        set: {
+                            listLabel: quoteListNote.listLabel || null,
+                            updatedByUserId: createdByUserId,
+                            updatedAt: new Date(),
+                        },
+                    });
+            }
+        } catch (listNoteError) {
+            console.error('[CONVERT QUOTE] Failed to copy quote flags to order list note (non-blocking):', listNoteError);
+        }
         
         console.log('[CONVERT QUOTE TO ORDER] Order created:', {
             orderId: createdOrder.id,
