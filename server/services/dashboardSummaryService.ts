@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, isNull, lt, not, or, sql } from "drizzle-orm";
 import { db } from "../db";
-import { invoices, materials, orders, payments, productionJobs, quotes } from "@shared/schema";
+import { invoices, materials, orders, payments, productionJobs, quotes, vendors } from "@shared/schema";
 
 export type DashboardSummary = {
   criticalAlerts: {
@@ -23,6 +23,7 @@ export type DashboardSummary = {
     printing: number | null;
     finishing: number | null;
     qaInspection: number | null;
+    unassignedJobs: number | null;
   };
   fulfillmentFinance: {
     readyToShip: number | null;
@@ -32,6 +33,15 @@ export type DashboardSummary = {
     collectedTodayCents: number | null;
     collectedWeekCents: number | null;
   };
+};
+
+export type LowInventoryDashboardItem = {
+  id: string;
+  name: string;
+  currentQty: number;
+  reorderThreshold: number;
+  unit: string | null;
+  supplier: string | null;
 };
 
 const DEFAULT_SUMMARY: DashboardSummary = {
@@ -55,6 +65,7 @@ const DEFAULT_SUMMARY: DashboardSummary = {
     printing: null,
     finishing: null,
     qaInspection: null,
+    unassignedJobs: null,
   },
   fulfillmentFinance: {
     readyToShip: null,
@@ -98,6 +109,43 @@ function startOfWeekMonday(date: Date): Date {
 async function countFrom(query: Promise<Array<{ count: number }>>): Promise<number> {
   const rows = await query;
   return Number(rows[0]?.count ?? 0);
+}
+
+export async function getLowInventoryDashboardItems(
+  organizationId: string,
+  limit = 25,
+): Promise<LowInventoryDashboardItem[]> {
+  const cappedLimit = Math.max(1, Math.min(100, Number(limit) || 25));
+  const rows = await db
+    .select({
+      id: materials.id,
+      name: materials.name,
+      stockQuantity: materials.stockQuantity,
+      minStockAlert: materials.minStockAlert,
+      unitOfMeasure: materials.unitOfMeasure,
+      inventoryUnit: materials.inventoryUnit,
+      vendorName: vendors.name,
+    })
+    .from(materials)
+    .leftJoin(vendors, eq(vendors.id, materials.preferredVendorId))
+    .where(
+      and(
+        eq(materials.organizationId, organizationId),
+        eq(materials.isActive, true),
+        sql`${materials.stockQuantity} <= ${materials.minStockAlert}`,
+      ),
+    )
+    .orderBy(sql`(${materials.stockQuantity} - ${materials.minStockAlert}) ASC`, materials.name)
+    .limit(cappedLimit);
+
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    currentQty: Number(row.stockQuantity ?? 0),
+    reorderThreshold: Number(row.minStockAlert ?? 0),
+    unit: row.inventoryUnit || row.unitOfMeasure || null,
+    supplier: row.vendorName || null,
+  }));
 }
 
 export async function getDashboardSummary(organizationId: string): Promise<DashboardSummary> {
@@ -266,6 +314,19 @@ export async function getDashboardSummary(organizationId: string): Promise<Dashb
     summary.productionJobs.printing = null;
     summary.productionJobs.finishing = null;
     summary.productionJobs.qaInspection = null;
+    summary.productionJobs.unassignedJobs = await countFrom(
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(productionJobs)
+        .where(
+          and(
+            eq(productionJobs.organizationId, organizationId),
+            not(eq(productionJobs.status, "done")),
+            sql`COALESCE(NULLIF(TRIM(${productionJobs.assignedPrinterName}), ''), '') = ''`,
+            sql`LOWER(COALESCE(${productionJobs.stationKey}, '')) NOT IN ('prepress', 'design', 'fulfillment')`,
+          ),
+        ),
+    );
     devWarn("productionJobs.printing/finishing/qaInspection are null (step states not implemented)");
   } catch (error) {
     console.error("[dashboard-summary] productionJobs failed:", error);

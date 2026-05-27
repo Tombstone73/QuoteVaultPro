@@ -17,7 +17,7 @@
 
 import type { Express } from "express";
 import { storage } from "../storage";
-import { getDashboardSummary } from "../services/dashboardSummaryService";
+import { getDashboardSummary, getLowInventoryDashboardItems } from "../services/dashboardSummaryService";
 import { getAppEnv, getCookieDomain, getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { getRuntimeEnvironmentSummary } from "../lib/runtimeEnvironment";
 import { getRequestOrganizationId } from "../tenantContext";
@@ -61,6 +61,22 @@ export function registerSystemRoutes(
     } catch (error) {
       console.error('[DashboardSummary:GET] failed:', error);
       return res.status(500).json({ success: false, message: 'Failed to fetch dashboard summary' });
+    }
+  });
+
+  app.get('/api/dashboard/low-inventory', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, message: 'Missing organization context' });
+      }
+
+      const limit = Number(req.query?.limit ?? 25);
+      const items = await getLowInventoryDashboardItems(organizationId, limit);
+      return res.json({ success: true, data: { items }, message: 'Low inventory details fetched' });
+    } catch (error) {
+      console.error('[DashboardLowInventory:GET] failed:', error);
+      return res.status(500).json({ success: false, message: 'Failed to fetch low inventory details' });
     }
   });
 

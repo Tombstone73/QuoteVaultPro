@@ -21,6 +21,7 @@ export type DashboardSummary = {
     printing: number | null;
     finishing: number | null;
     qaInspection: number | null;
+    unassignedJobs: number | null;
   };
   fulfillmentFinance: {
     readyToShip: number | null;

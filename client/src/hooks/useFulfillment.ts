@@ -18,6 +18,15 @@ export interface FulfillmentQueueRow {
     lineItemId: string | null;
     quantity: number | null;
   }>;
+  productionContext?: {
+    primaryPrinterName: string | null;
+    printerNames: string[];
+    finishingRequirements: string[];
+    lamination: string | null;
+    registrationMarks: string[];
+    productionNotes: string[];
+    completedAt: string | null;
+  };
 }
 
 export interface FulfillmentQueueFilters {
