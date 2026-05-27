@@ -79,6 +79,7 @@ import {
   buildSavedSnapshotAfterLineItemSave,
   hasOrderLineItemDraftChanges,
   normalizeVariantId,
+  shouldApplyOrderLineItemPreviewResult,
   type OrderLineItemSavedSnapshot,
 } from "@/components/orders/orderLineItemEditState";
 
@@ -912,6 +913,39 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [priceEditTextById, setPriceEditTextById] = useState<Record<string, string>>({});
   const [priceOverrideModeById, setPriceOverrideModeById] = useState<Record<string, LineItemPriceOverrideMode>>({});
   const [pendingPriceOverrideById, setPendingPriceOverrideById] = useState<Record<string, PendingLineItemPriceOverride>>({});
+  const pendingPriceOverrideRef = useRef<Record<string, PendingLineItemPriceOverride>>({});
+  const pricingDirtyByUserRef = useRef<Record<string, boolean>>({});
+  const latestPricingFingerprintRef = useRef("");
+  const lastUserPricingFingerprintRef = useRef<Record<string, string>>({});
+
+  useEffect(() => {
+    pendingPriceOverrideRef.current = pendingPriceOverrideById;
+  }, [pendingPriceOverrideById]);
+
+  const markPricingDirtyByUser = useCallback((lineItemId: string | null | undefined, reason: string) => {
+    if (!lineItemId) return;
+    pricingDirtyByUserRef.current = {
+      ...pricingDirtyByUserRef.current,
+      [lineItemId]: true,
+    };
+    lastUserPricingFingerprintRef.current[lineItemId] = latestPricingFingerprintRef.current;
+    if (import.meta.env.DEV) {
+      console.warn("[OrderLineItemsSection] Pricing draft marked dirty by user", {
+        lineItemId,
+        reason,
+        fingerprint: latestPricingFingerprintRef.current,
+      });
+    }
+  }, []);
+
+  const resetPricingDirtyByUser = useCallback((lineItemId: string | null | undefined) => {
+    if (!lineItemId) return;
+    pricingDirtyByUserRef.current = {
+      ...pricingDirtyByUserRef.current,
+      [lineItemId]: false,
+    };
+    delete lastUserPricingFingerprintRef.current[lineItemId];
+  }, []);
 
   const [pendingJumpToLineItemId, setPendingJumpToLineItemId] = useState<string | null>(null);
   const lineItemTopAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -1326,6 +1360,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       OrderLineItemSavedSnapshot
     >
   >({});
+  // Monotonic id per preview request. Incrementing it cancels older responses.
+  const lastCalcKeyRef = useRef<string>("");
+  const calcSeqRef = useRef(0);
 
   useEffect(() => {
     if (!expandedItem?.id) {
@@ -1470,6 +1507,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       return next;
     });
     onDraftLineItemPricingChange?.(itemId, null);
+    resetPricingDirtyByUser(itemId);
+    calcSeqRef.current += 1;
+    setIsCalculating(false);
+    setPreviewDiag(null);
     const currentOverrideMode = persistedPricing.priceOverrideMode;
     const priceForEditor =
       currentOverrideMode
@@ -1501,7 +1542,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       optionSelectionsV2: nextSelectionsV2.selected ?? {},
       totalPrice: currentTotal,
     };
-  }, [expandedItem?.id]);
+  }, [expandedItem?.id, onDraftLineItemPricingChange, resetPricingDirtyByUser]);
 
   // Hydrate PBV2 defaults from the product tree when a line item is first expanded
   // with no saved selections. resolveRuntimeVisibility computes effective defaults from
@@ -1569,14 +1610,11 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const widthNum = dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
   const heightNum = dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
   const qtyNum = Number.isFinite(qty) && qty > 0 ? qty : 1;
-  const lastCalcKeyRef = useRef<string>("");
-  // Monotonic id per preview request — guards against an earlier, slower
-  // response overwriting a newer one.
-  const calcSeqRef = useRef(0);
 
   const handleProductReplacement = useCallback((nextProductId: string) => {
     if (!expandedItem) return;
     if (!nextProductId || nextProductId === currentDraftProductId) return;
+    markPricingDirtyByUser(expandedItem.id, "product");
 
     const nextProduct = products.find((product) => product.id === nextProductId);
     if (!nextProduct) return;
@@ -1616,7 +1654,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         pbv2DefaultsHydratedRef.current.delete(key);
       }
     });
-  }, [currentDraftProductId, expandedItem, orderId, products, qtyNum]);
+  }, [currentDraftProductId, expandedItem, markPricingDirtyByUser, orderId, products, qtyNum]);
 
   const v1SelectionsKey = useMemo(() => stableStringify(optionSelections || {}), [optionSelections]);
   const v2SelectionsKey = useMemo(() => stableStringify(optionSelectionsV2?.selected || {}), [optionSelectionsV2]);
@@ -1643,6 +1681,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       ].join("|"),
     [currentDraftProductId, pbv2TreeVersionId, widthNum, heightNum, qtyNum, isPbv2Mode, v2SelectionsKey, v1SelectionsKey, overridePriceCents]
   );
+
+  useEffect(() => {
+    latestPricingFingerprintRef.current = calcKey;
+  }, [calcKey]);
 
   useEffect(() => {
     lastCalcKeyRef.current = "";
@@ -1702,20 +1744,21 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     const savedOptionsV2 = stableStringify(saved.optionSelectionsV2 || {});
     const currentBrief = JSON.stringify(designBriefDraft);
     const persistedBrief = JSON.stringify(savedBrief);
+    const pricingDirtyByUser = pricingDirtyByUserRef.current[expandedItem.id] === true;
 
     const dirty = hasOrderLineItemDraftChanges(saved, {
-      productId: currentDraftProductId,
-      productVariantId: currentDraftProductVariantId,
-      pbv2TreeVersionId,
-      width: widthNum,
-      height: heightNum,
-      quantity: qtyNum,
+      productId: pricingDirtyByUser ? currentDraftProductId : saved.productId,
+      productVariantId: pricingDirtyByUser ? currentDraftProductVariantId : saved.productVariantId,
+      pbv2TreeVersionId: pricingDirtyByUser ? pbv2TreeVersionId : saved.pbv2TreeVersionId,
+      width: pricingDirtyByUser ? widthNum : saved.width,
+      height: pricingDirtyByUser ? heightNum : saved.height,
+      quantity: pricingDirtyByUser ? qtyNum : saved.quantity,
       notes: currentNotes,
       productionNotes: currentProductionNotes,
       requiresDesign: requiresDesignInput,
       requiresPrepress: requiresPrepressInput,
-      optionSelections,
-      optionSelectionsV2: optionSelectionsV2?.selected || {},
+      optionSelections: pricingDirtyByUser ? optionSelections : saved.optionSelections,
+      optionSelectionsV2: pricingDirtyByUser ? (optionSelectionsV2?.selected || {}) : saved.optionSelectionsV2,
       isPbv2Mode,
       designBriefDraftJson: currentBrief,
       savedDesignBriefJson: persistedBrief,
@@ -1742,6 +1785,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         savedOptionsV2,
         currentTotal: computedTotal,
         savedTotal: saved.totalPrice,
+        pricingDirtyByUser,
       });
     }
 
@@ -1798,8 +1842,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
     const saved = savedSnapshotRef.current[expandedItem.id];
     const savedBrief = designBriefSnapshotRef.current[expandedItem.id] ?? EMPTY_DESIGN_BRIEF_DRAFT;
+    const pricingDirtyByUser = pricingDirtyByUserRef.current[expandedItem.id] === true;
     const productReplacementDirty = Boolean(
-      saved &&
+      pricingDirtyByUser &&
+        saved &&
         (currentDraftProductId !== saved.productId ||
           normalizeVariantId(currentDraftProductVariantId) !== normalizeVariantId(saved.productVariantId)),
     );
@@ -1854,8 +1900,36 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         return;
       }
 
+      const isDirtyByUser = pricingDirtyByUserRef.current[expandedItem.id] === true;
       if (pendingPriceOverrideById[expandedItem.id]?.hasPriceOverride) {
         lastCalcKeyRef.current = calcKey;
+        if (import.meta.env.DEV) {
+          console.warn("[OrderLineItemsSection] Preview request suppressed", {
+            lineItemId: expandedItem.id,
+            reasonIgnored: "manual_override_active",
+            dirtyByUser: isDirtyByUser,
+            requestFingerprint: calcKey,
+            currentFingerprint: latestPricingFingerprintRef.current,
+          });
+        }
+        return;
+      }
+
+      if (!isDirtyByUser) {
+        const persistedPricing = hydrateLineItemEditPricingState(expandedItem);
+        setComputedTotal(persistedPricing.persistedEffectiveTotalCents / 100);
+        setComputedTotalQty(savedSnapshotRef.current[expandedItem.id]?.quantity ?? qtyNum);
+        setIsCalculating(false);
+        lastCalcKeyRef.current = calcKey;
+        if (import.meta.env.DEV) {
+          console.warn("[OrderLineItemsSection] Preview request suppressed", {
+            lineItemId: expandedItem.id,
+            reasonIgnored: "not_dirty_by_user",
+            dirtyByUser: isDirtyByUser,
+            requestFingerprint: calcKey,
+            currentFingerprint: latestPricingFingerprintRef.current,
+          });
+        }
         return;
       }
 
@@ -1897,6 +1971,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       // Sequence id: a slower earlier response must not overwrite a newer one.
       calcSeqRef.current += 1;
       const seq = calcSeqRef.current;
+      const requestFingerprint = calcKey;
+      const requestedBecauseOfUserChange = true;
 
       // Payload is always built from current DRAFT state (qty/dims/options).
       const payload = buildQuoteCalculatePayload({
@@ -1928,8 +2004,28 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       apiRequest("POST", "/api/quotes/calculate", payload)
         .then((r) => r.json())
         .then((data) => {
-          // Ignore a response that a newer request has already superseded.
-          if (seq !== calcSeqRef.current) return;
+          const gate = shouldApplyOrderLineItemPreviewResult({
+            requestId: seq,
+            latestRequestId: calcSeqRef.current,
+            requestFingerprint,
+            currentFingerprint: latestPricingFingerprintRef.current,
+            isDirtyByUser: pricingDirtyByUserRef.current[expandedItem.id] === true,
+            requestedBecauseOfUserChange,
+            hasPendingManualOverride: pendingPriceOverrideRef.current[expandedItem.id]?.hasPriceOverride === true,
+          });
+          if (!gate.apply) {
+            if (import.meta.env.DEV) {
+              console.warn("[OrderLineItemsSection] Preview response ignored", {
+                lineItemId: expandedItem.id,
+                requestId: seq,
+                reasonIgnored: gate.reasonIgnored,
+                dirtyByUser: pricingDirtyByUserRef.current[expandedItem.id] === true,
+                requestFingerprint,
+                currentFingerprint: latestPricingFingerprintRef.current,
+              });
+            }
+            return;
+          }
           // Backend returns 'linePrice' in dollars (legacy compatibility)
           const price = Number(data?.linePrice);
           if (!Number.isFinite(price)) {
@@ -1940,6 +2036,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           setComputedTotal(price);
           // Record the qty this total was priced for so per-each stays consistent.
           setComputedTotalQty(qtyNum);
+          onDraftLineItemPricingChange?.(expandedItem.id, Math.round(price * 100));
           setPreviewDiag((prev) =>
             prev && prev.seq === seq ? { ...prev, responseTotal: price, status: "ok" } : prev,
           );
@@ -1950,7 +2047,28 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           }
         })
         .catch((err: any) => {
-          if (seq !== calcSeqRef.current) return;
+          const gate = shouldApplyOrderLineItemPreviewResult({
+            requestId: seq,
+            latestRequestId: calcSeqRef.current,
+            requestFingerprint,
+            currentFingerprint: latestPricingFingerprintRef.current,
+            isDirtyByUser: pricingDirtyByUserRef.current[expandedItem.id] === true,
+            requestedBecauseOfUserChange,
+            hasPendingManualOverride: pendingPriceOverrideRef.current[expandedItem.id]?.hasPriceOverride === true,
+          });
+          if (!gate.apply) {
+            if (import.meta.env.DEV) {
+              console.warn("[OrderLineItemsSection] Preview error ignored", {
+                lineItemId: expandedItem.id,
+                requestId: seq,
+                reasonIgnored: gate.reasonIgnored,
+                dirtyByUser: pricingDirtyByUserRef.current[expandedItem.id] === true,
+                requestFingerprint,
+                currentFingerprint: latestPricingFingerprintRef.current,
+              });
+            }
+            return;
+          }
           // Error message format from apiRequest: "<status>: <responseBody>"
           // Always extract a friendly message; never leak raw JSON to the UI.
           const raw: string = (err?.message as string) || "";
@@ -2124,6 +2242,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         return next;
       });
       onDraftLineItemPricingChange?.(itemId, null);
+      resetPricingDirtyByUser(itemId);
 
       const shouldPersistDesignBrief = Boolean(designBriefQuery.data?.id)
         || Boolean(designBriefQuery.data?.effectiveRequiresDesign)
@@ -2685,11 +2804,26 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 width={widthText}
                                 height={heightText}
                                 quantity={qty}
-                                onWidthChange={setWidthText}
-                                onHeightChange={setHeightText}
-                                onQuantityChange={setQty}
-                                onQuantityIncrement={() => setQty((q) => (q || 1) + 1)}
-                                onQuantityDecrement={() => setQty((q) => Math.max(1, (q || 1) - 1))}
+                                onWidthChange={(value) => {
+                                  markPricingDirtyByUser(String(item.id), "width");
+                                  setWidthText(value);
+                                }}
+                                onHeightChange={(value) => {
+                                  markPricingDirtyByUser(String(item.id), "height");
+                                  setHeightText(value);
+                                }}
+                                onQuantityChange={(value) => {
+                                  markPricingDirtyByUser(String(item.id), "quantity");
+                                  setQty(value);
+                                }}
+                                onQuantityIncrement={() => {
+                                  markPricingDirtyByUser(String(item.id), "quantity_increment");
+                                  setQty((q) => (q || 1) + 1);
+                                }}
+                                onQuantityDecrement={() => {
+                                  markPricingDirtyByUser(String(item.id), "quantity_decrement");
+                                  setQty((q) => Math.max(1, (q || 1) - 1));
+                                }}
                                 dimsRequired={dimsRequired}
                                 price={displayTotal}
                                 priceOverride={isOverride ? displayTotal : null}
@@ -2729,6 +2863,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         const nextCents = Math.round(parsed * 100);
                                         const calculatedCents = baseCalculatedTotalCents;
                                         const mode = selectedOverrideMode;
+                                        markPricingDirtyByUser(lineItemId, "price_override_value");
                                         const qtyForOverride = isExpanded && expandedItem?.id === item.id ? qtyNum : (Number(item.quantity) > 0 ? Number(item.quantity) : 1);
                                         const nextPricing = applyLineItemEditPriceOverride({
                                           baseCalculatedTotalCents: calculatedCents,
@@ -2783,6 +2918,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     ? undefined
                                     : () => {
                                         const lineItemId = String(item.id);
+                                        markPricingDirtyByUser(lineItemId, "price_override_clear");
                                         const calculatedCents = baseCalculatedTotalCents;
                                         const qtyForOverride = isExpanded && expandedItem?.id === item.id ? qtyNum : (Number(item.quantity) > 0 ? Number(item.quantity) : 1);
                                         const clearPricing: PendingLineItemPriceOverride = {
@@ -2855,6 +2991,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                             onChange={(event) => {
                                               const nextMode = event.target.value as LineItemPriceOverrideMode;
                                               const lineItemId = String(item.id);
+                                              markPricingDirtyByUser(lineItemId, "price_override_mode");
                                               setPriceOverrideModeById((prev) => ({ ...prev, [lineItemId]: nextMode }));
                                               const currentValue = getLineItemOverrideInputValue(item, nextMode, displayPrice);
                                               setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: currentValue.toFixed(2) }));
@@ -3013,7 +3150,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                           tree={effectivePbv2Tree}
                                           selections={optionSelectionsV2}
                                           onSelectionsChange={setOptionSelectionsV2}
-                                          onUserEdit={() => markUserEditedOptions(expandedItem?.id)}
+                                          onUserEdit={() => {
+                                            markPricingDirtyByUser(String(item.id), "pbv2_user_edit");
+                                            markUserEditedOptions(expandedItem?.id);
+                                          }}
                                           onValidityChange={setOptionsV2Valid}
                                           onRenderStatsChange={setPbv2PanelRenderStats}
                                         />
@@ -3027,6 +3167,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                           productOptions={expandedProductOptions}
                                           optionSelections={optionSelections as any}
                                           onOptionSelectionsChange={(next: Record<string, OptionSelection>) => {
+                                            markPricingDirtyByUser(String(item.id), "legacy_options");
                                             markUserEditedOptions(expandedItem?.id);
                                             setOptionSelections(next);
                                           }}

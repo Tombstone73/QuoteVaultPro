@@ -56,6 +56,21 @@ export type ProductReplacementDraft = {
   debug: InitialOrderLineItemDraftDebug;
 };
 
+export type OrderLineItemPreviewGateInput = {
+  requestId: number;
+  latestRequestId: number;
+  requestFingerprint: string;
+  currentFingerprint: string;
+  isDirtyByUser: boolean;
+  requestedBecauseOfUserChange: boolean;
+  hasPendingManualOverride: boolean;
+};
+
+export type OrderLineItemPreviewGateResult = {
+  apply: boolean;
+  reasonIgnored: string | null;
+};
+
 type ProductLike = Parameters<typeof buildInitialOrderLineItemDraftFromProduct>[0];
 
 export function stableLineItemEditStringify(value: unknown): string {
@@ -98,6 +113,27 @@ export function hasOrderLineItemDraftChanges(
     (draft.isPbv2Mode ? currentOptionsV2 !== savedOptionsV2 : currentOptions !== savedOptions) ||
     draft.designBriefDraftJson !== draft.savedDesignBriefJson
   );
+}
+
+export function shouldApplyOrderLineItemPreviewResult(
+  input: OrderLineItemPreviewGateInput,
+): OrderLineItemPreviewGateResult {
+  if (input.requestId !== input.latestRequestId) {
+    return { apply: false, reasonIgnored: "stale_request_id" };
+  }
+  if (input.requestFingerprint !== input.currentFingerprint) {
+    return { apply: false, reasonIgnored: "stale_fingerprint" };
+  }
+  if (!input.isDirtyByUser) {
+    return { apply: false, reasonIgnored: "not_dirty_by_user" };
+  }
+  if (!input.requestedBecauseOfUserChange) {
+    return { apply: false, reasonIgnored: "not_user_requested" };
+  }
+  if (input.hasPendingManualOverride) {
+    return { apply: false, reasonIgnored: "manual_override_active" };
+  }
+  return { apply: true, reasonIgnored: null };
 }
 
 export function buildProductReplacementDraft({
