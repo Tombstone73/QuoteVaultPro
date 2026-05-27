@@ -50,12 +50,24 @@ export function PrintTicketActions({
   };
 
   return (
-    <div className={`inline-flex items-center gap-1.5 ${className ?? ""}`}>
-      <Button variant={variant} size={size} className="gap-1.5" onClick={printFast}>
+    <div className={`inline-flex items-stretch ${className ?? ""}`}>
+      <Button
+        variant={variant}
+        size={size}
+        className="gap-1.5 rounded-r-none border-r-0"
+        onClick={printFast}
+      >
         <Ticket className="h-4 w-4" /> Print Ticket
       </Button>
-      <Button variant="outline" size={size} className="gap-1.5" onClick={openOptions}>
-        <SlidersHorizontal className="h-4 w-4" /> Print Options
+      <Button
+        variant={variant}
+        size={size}
+        className="rounded-l-none px-2"
+        onClick={openOptions}
+        aria-label="Open print options"
+        title="Print options"
+      >
+        <SlidersHorizontal className="h-4 w-4" />
       </Button>
       <PrintOptionsModal
         open={optionsOpen}

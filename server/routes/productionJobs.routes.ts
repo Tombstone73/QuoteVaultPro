@@ -46,6 +46,11 @@ import { assertParentOrderInProductionForJob } from "../services/orderProduction
 import { isCanceledOrder, isTerminalProductionStatus } from "@shared/operationalState";
 import { documentNumberMatchesSearch } from "@shared/documentNumbering";
 import { normalizeProductionStationKey } from "@shared/productionStations";
+import {
+  buildPrepressOptionRows,
+  extractFinishingBullets,
+  type ProductionDisplayOptionRow,
+} from "./flatStockNesting.shared";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -53,6 +58,11 @@ import { normalizeProductionStationKey } from "@shared/productionStations";
  * Fulfillment jobs route the line item to "completed" on completion.
  */
 const FULFILLMENT_STATION_KEY = "fulfillment";
+const DEFAULT_PRINTER_OPTIONS_BY_STATION: Record<string, string[]> = {
+  roll: ["S40", "S60", "Canon"],
+  wide_roll: ["S40", "S60", "Canon"],
+  flatbed: ["Jetson"],
+};
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub ?? user?.id;
@@ -75,6 +85,32 @@ function mapFulfillmentLabel(shippingMethod: string | null | undefined): string 
     default:
       return null;
   }
+}
+
+function resolvePrinterOptionsForStation(config: any, stationKey: unknown): string[] {
+  const key = normalizeProductionStationKey(String(stationKey ?? "")) ?? String(stationKey ?? "").trim().toLowerCase();
+  const configured = config?.printerOptionsByStation?.[key];
+  if (Array.isArray(configured)) {
+    return configured.map((value) => String(value || "").trim()).filter(Boolean);
+  }
+  return DEFAULT_PRINTER_OPTIONS_BY_STATION[key] ?? [];
+}
+
+function resolveLaminationFromOptionRows(rows: ProductionDisplayOptionRow[]): { label: string; source: "option" | "none" } {
+  const row = rows.find((candidate) => /laminat|lamination|finish|coating/i.test(candidate.optionLabel));
+  if (!row) return { label: "None", source: "none" };
+  const selected = String(row.selectedLabel || "").trim();
+  if (!selected || /^none$/i.test(selected) || /^no$/i.test(selected)) return { label: "None", source: "none" };
+  return { label: selected, source: "option" };
+}
+
+function buildLineItemProductionDisplay(lineItem: any) {
+  const optionRows = buildPrepressOptionRows(lineItem);
+  return {
+    optionRows,
+    finishingRequirements: extractFinishingBullets(lineItem),
+    lamination: resolveLaminationFromOptionRows(optionRows),
+  };
 }
 
 const productionQueueSortBySchema = z.enum(["newest", "oldest", "due_date", "customer", "priority", "status"]);
@@ -296,6 +332,10 @@ export function registerProductionJobsRoutes(
           stationKey: productionJobs.stationKey,
           stepKey: productionJobs.stepKey,
           status: productionJobs.status,
+          assignedPrinterId: productionJobs.assignedPrinterId,
+          assignedPrinterName: productionJobs.assignedPrinterName,
+          assignedPrinterByUserId: productionJobs.assignedPrinterByUserId,
+          assignedPrinterAt: productionJobs.assignedPrinterAt,
           startedAt: productionJobs.startedAt,
           completedAt: productionJobs.completedAt,
           totalSeconds: productionJobs.totalSeconds,
@@ -511,6 +551,9 @@ export function registerProductionJobsRoutes(
           status: orderLineItems.status,
           sortOrder: orderLineItems.sortOrder,
           selectedOptions: orderLineItems.selectedOptions, // For deriving Sides (single/double)
+          optionSelectionsJson: orderLineItems.optionSelectionsJson,
+          pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
+          specsJson: orderLineItems.specsJson,
           productionNotes: orderLineItems.productionNotes,
           createdAt: orderLineItems.createdAt,
         })
@@ -561,6 +604,9 @@ export function registerProductionJobsRoutes(
           status: string;
           sortOrder: number;
           selectedOptions: any; // ADDED: For Sides derivation
+          optionSelectionsJson: any;
+          pbv2SnapshotJson: any;
+          specsJson: any;
           productionNotes: string | null;
           createdAt: any;
         }>
@@ -580,6 +626,9 @@ export function registerProductionJobsRoutes(
           status: string;
           sortOrder: number;
           selectedOptions: any; // ADDED: For Sides derivation
+          optionSelectionsJson: any;
+          pbv2SnapshotJson: any;
+          specsJson: any;
           productionNotes: string | null;
           createdAt: any;
         }
@@ -598,6 +647,9 @@ export function registerProductionJobsRoutes(
           status: li.status,
           sortOrder: Number(li.sortOrder) || 0,
           selectedOptions: li.selectedOptions ?? [], // ADDED: Pass through selected_options
+          optionSelectionsJson: li.optionSelectionsJson ?? null,
+          pbv2SnapshotJson: li.pbv2SnapshotJson ?? null,
+          specsJson: li.specsJson ?? null,
           productionNotes: li.productionNotes ?? null,
           createdAt: li.createdAt,
         };
@@ -902,6 +954,15 @@ export function registerProductionJobsRoutes(
 
         // Job description: Prefer line item description, fallback to "Job #{id}"
         const jobDescription = String(primaryLineItem?.description || "").trim() || `Job #${row.id.slice(-8)}`;
+        const lineItemDisplay = buildLineItemProductionDisplay(primaryLineItem);
+        if (primaryLineItem) {
+          (primaryLineItem as any).optionSelectionsJson = {
+            ...((primaryLineItem as any).optionSelectionsJson ?? {}),
+            lamination: lineItemDisplay.lamination.label,
+          };
+          (primaryLineItem as any).optionRows = lineItemDisplay.optionRows;
+        }
+        const printerOptions = resolvePrinterOptionsForStation(config, row.stationKey);
 
         const artworkThumbs = (artwork ?? []).slice(0, 2).map((a) => ({
           id: a.id,
@@ -959,6 +1020,14 @@ export function registerProductionJobsRoutes(
           size,              // LIVE: computed from line item width/height
           sides,             // LIVE: parsed from line item selectedOptions
           media,             // LIVE: from line item material or description
+          optionRows: lineItemDisplay.optionRows,
+          finishingRequirements: lineItemDisplay.finishingRequirements,
+          lamination: lineItemDisplay.lamination,
+          printerOptions,
+          assignedPrinterId: row.assignedPrinterId ?? null,
+          assignedPrinterName: row.assignedPrinterName ?? null,
+          assignedPrinterByUserId: row.assignedPrinterByUserId ?? null,
+          assignedPrinterAt: row.assignedPrinterAt ? new Date(row.assignedPrinterAt as any).toISOString() : null,
           // Legacy field for backwards compatibility
           mediaLabel: media,
           // NEW: explicit preview URLs for Production Overview thumbnails
@@ -1088,6 +1157,10 @@ export function registerProductionJobsRoutes(
           stationKey: productionJobs.stationKey,
           stepKey: productionJobs.stepKey,
           status: productionJobs.status,
+          assignedPrinterId: productionJobs.assignedPrinterId,
+          assignedPrinterName: productionJobs.assignedPrinterName,
+          assignedPrinterByUserId: productionJobs.assignedPrinterByUserId,
+          assignedPrinterAt: productionJobs.assignedPrinterAt,
           startedAt: productionJobs.startedAt,
           completedAt: productionJobs.completedAt,
           totalSeconds: productionJobs.totalSeconds,
@@ -1224,6 +1297,9 @@ export function registerProductionJobsRoutes(
           status: orderLineItems.status,
           sortOrder: orderLineItems.sortOrder,
           selectedOptions: orderLineItems.selectedOptions,
+          optionSelectionsJson: orderLineItems.optionSelectionsJson,
+          pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
+          specsJson: orderLineItems.specsJson,
           productionNotes: orderLineItems.productionNotes,
           createdAt: orderLineItems.createdAt,
         })
@@ -1257,6 +1333,9 @@ export function registerProductionJobsRoutes(
         status: li.status,
         sortOrder: Number(li.sortOrder) || 0,
         selectedOptions: li.selectedOptions ?? [],
+        optionSelectionsJson: li.optionSelectionsJson ?? null,
+        pbv2SnapshotJson: li.pbv2SnapshotJson ?? null,
+        specsJson: li.specsJson ?? null,
         productionNotes: li.productionNotes ?? null,
         createdAt: li.createdAt,
       }));
@@ -1446,6 +1525,14 @@ export function registerProductionJobsRoutes(
 
       const qty = Number(primaryLineItem?.quantity ?? 0) || 0;
       const jobDescription = String(primaryLineItem?.description || "").trim() || `Job #${job.id.slice(-8)}`;
+      const config = await getProductionConfigForOrganization(organizationId);
+      const lineItemDisplay = buildLineItemProductionDisplay(primaryLineItem);
+      (primaryLineItem as any).optionSelectionsJson = {
+        ...((primaryLineItem as any).optionSelectionsJson ?? {}),
+        lamination: lineItemDisplay.lamination.label,
+      };
+      (primaryLineItem as any).optionRows = lineItemDisplay.optionRows;
+      const printerOptions = resolvePrinterOptionsForStation(config, job.stationKey);
 
       // Sibling jobs list for operator workflow
       const otherJobsRows = await db
@@ -1559,6 +1646,15 @@ export function registerProductionJobsRoutes(
           sides,
           media,
           mediaLabel: media,
+          optionRows: lineItemDisplay.optionRows,
+          finishingRequirements: lineItemDisplay.finishingRequirements,
+          lamination: lineItemDisplay.lamination,
+          finishingMode: config.finishingMode,
+          printerOptions,
+          assignedPrinterId: job.assignedPrinterId ?? null,
+          assignedPrinterName: job.assignedPrinterName ?? null,
+          assignedPrinterByUserId: job.assignedPrinterByUserId ?? null,
+          assignedPrinterAt: job.assignedPrinterAt ? new Date(job.assignedPrinterAt as any).toISOString() : null,
           // Convenience top-level order context
           orderNumber: order.orderNumber,
           displayNumber: order.displayNumber,
@@ -1779,6 +1875,96 @@ export function registerProductionJobsRoutes(
       }
     },
   );
+
+  // 2c) PATCH /api/production/jobs/:jobId/printer-assignment
+  app.patch("/api/production/jobs/:jobId/printer-assignment", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+
+      const bodySchema = z
+        .object({
+          assignedPrinterId: z.string().trim().max(120).optional().nullable(),
+          assignedPrinterName: z.string().trim().max(120).optional().nullable(),
+        })
+        .strict();
+
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const printerName = String(parsed.data.assignedPrinterName ?? "").trim();
+      const printerId = String(parsed.data.assignedPrinterId ?? "").trim();
+      if (!printerName && !printerId) {
+        return res.status(400).json({ error: "Printer / Machine is required" });
+      }
+
+      const jobId = String(req.params.jobId || "");
+      const now = new Date();
+
+      const result = await db.transaction(async (tx) => {
+        const rows = await tx
+          .select({
+            id: productionJobs.id,
+            orderId: productionJobs.orderId,
+            lineItemId: productionJobs.lineItemId,
+            assignedPrinterId: productionJobs.assignedPrinterId,
+            assignedPrinterName: productionJobs.assignedPrinterName,
+          })
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+
+        const job = rows[0];
+        if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+
+        await tx
+          .update(productionJobs)
+          .set({
+            assignedPrinterId: printerId || null,
+            assignedPrinterName: printerName || printerId,
+            assignedPrinterByUserId: userId ?? null,
+            assignedPrinterAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+
+        await appendEvent({
+          tx,
+          organizationId,
+          productionJobId: jobId,
+          type: "printer_assigned",
+          actorUserId: userId ?? null,
+          payload: {
+            from: {
+              assignedPrinterId: job.assignedPrinterId ?? null,
+              assignedPrinterName: job.assignedPrinterName ?? null,
+            },
+            to: {
+              assignedPrinterId: printerId || null,
+              assignedPrinterName: printerName || printerId,
+            },
+          },
+        });
+
+        const updatedRows = await tx
+          .select()
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        return updatedRows[0];
+      });
+
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("Error assigning production printer:", error);
+      res.status(status).json({ error: error?.message || "Failed to assign printer" });
+    }
+  });
 
   // 3) POST /api/production/jobs/:jobId/start
   app.post("/api/production/jobs/:jobId/start", isAuthenticated, tenantContext, async (req: any, res) => {

@@ -3519,7 +3519,8 @@ export type ProductionEventType =
   | "timer_stopped"
   | "note"
   | "reprint_incremented"
-  | "media_used_set";
+  | "media_used_set"
+  | "printer_assigned";
 
 export const productionStationStepTriggerSchema = z.object({
   type: z.string().min(1),
@@ -3538,6 +3539,10 @@ export const productionJobs = pgTable("production_jobs", {
   stationKey: varchar("station_key", { length: 40 }).notNull().default("flatbed"),
   stepKey: varchar("step_key", { length: 40 }).notNull().default("prepress"),
   status: varchar("status", { length: 20 }).notNull().default("queued"),
+  assignedPrinterId: varchar("assigned_printer_id", { length: 120 }),
+  assignedPrinterName: varchar("assigned_printer_name", { length: 120 }),
+  assignedPrinterByUserId: varchar("assigned_printer_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  assignedPrinterAt: timestamp("assigned_printer_at", { withTimezone: true }),
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   totalSeconds: integer("total_seconds").notNull().default(0),
@@ -3548,6 +3553,7 @@ export const productionJobs = pgTable("production_jobs", {
   index("production_jobs_org_station_status_idx").on(table.organizationId, table.stationKey, table.status),
   index("production_jobs_order_id_idx").on(table.orderId),
   index("production_jobs_line_item_id_idx").on(table.lineItemId),
+  index("production_jobs_assigned_printer_idx").on(table.organizationId, table.assignedPrinterName),
 ]);
 
 export const productionEvents = pgTable("production_events", {

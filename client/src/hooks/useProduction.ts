@@ -8,6 +8,15 @@ import { buildProofingLineItemPath, PROOF_APPROVAL_REQUIRED_ROUTING_REASON } fro
 export type ProductionConfig = {
   enabledViews: string[];
   defaultView: string;
+  finishingMode?: "integrated_with_print" | "dedicated_finishing_queue";
+  printerOptionsByStation?: Record<string, string[]>;
+};
+
+export type ProductionDisplayOptionRow = {
+  groupLabel?: string | null;
+  optionLabel: string;
+  selectedLabel: string;
+  isDefault?: boolean;
 };
 
 export type ProductionTimerSummary = {
@@ -28,6 +37,9 @@ export type ProductionOrderLineItemSummary = {
   status: string;
   productionNotes?: string | null; // Line-item production/finish notes
   optionSelectionsJson?: any; // PBV2 options (lamination, etc.)
+  pbv2SnapshotJson?: any;
+  specsJson?: any;
+  optionRows?: ProductionDisplayOptionRow[];
   selectedOptions?: Array<{ // Legacy options format
     optionId: string;
     optionName: string;
@@ -75,6 +87,18 @@ export type ProductionJobListItem = {
   sides?: string; // "Single", "Double", or "—" (parsed from selectedOptions)
   media?: string; // Material name or "—"
   mediaLabel?: string; // Alias for media (legacy)
+  optionRows?: ProductionDisplayOptionRow[];
+  finishingRequirements?: string[];
+  lamination?: {
+    label: string;
+    source: "option" | "none";
+  };
+  finishingMode?: "integrated_with_print" | "dedicated_finishing_queue";
+  printerOptions?: string[];
+  assignedPrinterId?: string | null;
+  assignedPrinterName?: string | null;
+  assignedPrinterByUserId?: string | null;
+  assignedPrinterAt?: string | null;
   // Explicit preview URLs for fast Overview thumbnails
   frontPreviewUrl?: string;
   backPreviewUrl?: string;
@@ -129,7 +153,8 @@ export type ProductionEvent = {
     | "media_used_set"
     | "intake"
     | "routing_override"
-    | "ticket_printed";
+    | "ticket_printed"
+    | "printer_assigned";
   payload: any;
   actorUserId?: string | null;
   createdAt: string;
@@ -637,6 +662,31 @@ export function useUpdateProductionJobStatus(jobId: string) {
     },
     onError: (e: Error) => {
       toast({ title: "Status update failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useAssignProductionPrinter(jobId: string) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (data: { assignedPrinterId?: string | null; assignedPrinterName: string }) => {
+      const res = await fetch(`/api/production/jobs/${jobId}/printer-assignment`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to save printer assignment");
+      return json.data;
+    },
+    onSuccess: () => {
+      invalidateProduction(qc, jobId);
+      toast({ title: "Printer / Machine saved" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Save failed", description: e.message, variant: "destructive" });
     },
   });
 }
