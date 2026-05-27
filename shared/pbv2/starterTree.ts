@@ -365,6 +365,446 @@ export function createPbv2BannerGrommetsPricingTreeJson(): Record<string, unknow
 }
 
 /**
+ * Publish-valid PBV2 Banner product configuration.
+ *
+ * This is the real banner option tree used for catalog seeding/imports:
+ * - Weight and print side drive the base sqft rate.
+ * - 13oz hides Double Sided so stale 13oz + double-sided selections are rejected.
+ * - Pole pocket and grommet child options use generic visibility/rule validation.
+ */
+export function createPbv2BannerProductTreeJson(): Record<string, unknown> {
+  const trueCondition = { op: "EXISTS", value: { op: "literal", value: true } };
+  const visibleWhen = (selectionKey: string, value: string) => ({
+    rules: [{ type: "equals", selectionKey, value }],
+  });
+  const visibleWhenAll = (rules: Array<Record<string, unknown>>) => ({ rules });
+  const structuralEdge = (fromNodeId: string, toNodeId: string, index: number) => ({
+    id: `edge_${fromNodeId}_${toNodeId}`,
+    status: "DISABLED",
+    fromNodeId,
+    toNodeId,
+    priority: index,
+    condition: trueCondition,
+  });
+
+  const tree: Record<string, unknown> = {
+    status: "DRAFT",
+    schemaVersion: 2,
+    rootNodeIds: [
+      "banner_weight",
+      "print_side",
+      "hems",
+      "pole_pockets",
+      "pole_pocket_location",
+      "pole_pocket_depth",
+      "custom_pole_pocket_depth",
+      "grommets",
+      "grommet_placement",
+      "custom_grommet_count",
+    ],
+    nodes: {
+      group_banner_media: {
+        id: "group_banner_media",
+        type: "GROUP",
+        kind: "group",
+        label: "Banner Media",
+        displayOrder: 0,
+        ui: { sortOrder: 0 },
+        status: "ENABLED",
+      },
+      banner_weight: {
+        id: "banner_weight",
+        type: "INPUT",
+        kind: "question",
+        key: "banner.weight",
+        label: "Banner Weight",
+        displayOrder: 0,
+        ui: { sortOrder: 0 },
+        status: "ENABLED",
+        input: {
+          type: "select",
+          valueType: "ENUM",
+          selectionKey: "banner_weight",
+          required: true,
+        },
+        choices: [
+          {
+            value: "13oz",
+            label: "13oz",
+            pricingOverride: {
+              mode: "set_base_rate",
+              amount: 125,
+              unit: "perSqft",
+              appliesTo: "area",
+              label: "13oz banner",
+            },
+          },
+          {
+            value: "18oz",
+            label: "18oz",
+            pricingOverride: {
+              mode: "set_base_rate",
+              amount: 250,
+              unit: "perSqft",
+              appliesTo: "area",
+              label: "18oz banner",
+            },
+          },
+        ],
+      },
+      print_side: {
+        id: "print_side",
+        type: "INPUT",
+        kind: "question",
+        key: "banner.print_side",
+        label: "Print Side",
+        displayOrder: 1,
+        ui: { sortOrder: 1 },
+        status: "ENABLED",
+        input: {
+          type: "select",
+          valueType: "ENUM",
+          selectionKey: "print_side",
+          required: true,
+        },
+        choices: [
+          {
+            value: "single_sided",
+            label: "Single Sided",
+          },
+          {
+            value: "double_sided",
+            label: "Double Sided",
+            visibilityRules: [
+              {
+                type: "not",
+                rule: { type: "equals", selectionKey: "banner_weight", value: "13oz" },
+              },
+            ],
+            pricingOverride: {
+              mode: "add_base_rate",
+              amount: 150,
+              unit: "perSqft",
+              appliesTo: "area",
+              label: "18oz double sided",
+            },
+          },
+        ],
+      },
+      group_banner_finishing: {
+        id: "group_banner_finishing",
+        type: "GROUP",
+        kind: "group",
+        label: "Banner Finishing",
+        displayOrder: 1,
+        ui: { sortOrder: 1 },
+        status: "ENABLED",
+      },
+      hems: {
+        id: "hems",
+        type: "INPUT",
+        kind: "question",
+        key: "banner.hems",
+        label: "Hems",
+        displayOrder: 0,
+        ui: { sortOrder: 0 },
+        status: "ENABLED",
+        input: {
+          type: "select",
+          valueType: "ENUM",
+          selectionKey: "hems",
+          required: true,
+        },
+        choices: [
+          { value: "none", label: "None" },
+          { value: "welded", label: "Welded" },
+        ],
+      },
+      pole_pockets: {
+        id: "pole_pockets",
+        type: "INPUT",
+        kind: "question",
+        key: "banner.pole_pockets.enabled",
+        label: "Pole Pockets",
+        displayOrder: 1,
+        ui: { sortOrder: 1 },
+        status: "ENABLED",
+        input: {
+          type: "select",
+          valueType: "ENUM",
+          selectionKey: "pole_pockets",
+          required: true,
+        },
+        choices: [
+          { value: "no", label: "No" },
+          { value: "yes", label: "Yes" },
+        ],
+      },
+      pole_pocket_location: {
+        id: "pole_pocket_location",
+        type: "INPUT",
+        kind: "question",
+        key: "banner.pole_pockets.location",
+        label: "Pole Pocket Location",
+        displayOrder: 2,
+        ui: { sortOrder: 2 },
+        status: "ENABLED",
+        visibility: visibleWhen("pole_pockets", "yes"),
+        input: {
+          type: "select",
+          valueType: "ENUM",
+          selectionKey: "pole_pocket_location",
+          required: false,
+        },
+        choices: [
+          {
+            value: "top",
+            label: "Top",
+            pricingImpact: [{ mode: "addFormula", formula: "(ordered_width / 12) * q" }],
+          },
+          {
+            value: "top_bottom",
+            label: "Top/Bottom",
+            pricingImpact: [{ mode: "addFormula", formula: "((ordered_width * 2) / 12) * q" }],
+          },
+          {
+            value: "sides",
+            label: "Sides",
+            pricingImpact: [{ mode: "addFormula", formula: "((ordered_height * 2) / 12) * q" }],
+          },
+        ],
+      },
+      pole_pocket_depth: {
+        id: "pole_pocket_depth",
+        type: "INPUT",
+        kind: "question",
+        key: "banner.pole_pockets.depth",
+        label: "Pole Pocket Depth",
+        displayOrder: 3,
+        ui: { sortOrder: 3 },
+        status: "ENABLED",
+        visibility: visibleWhen("pole_pockets", "yes"),
+        input: {
+          type: "select",
+          valueType: "ENUM",
+          selectionKey: "pole_pocket_depth",
+          required: false,
+        },
+        choices: [
+          { value: "2in", label: "2 inch" },
+          { value: "3in", label: "3 inch" },
+          { value: "4in", label: "4 inch" },
+          { value: "custom", label: "Custom" },
+        ],
+      },
+      custom_pole_pocket_depth: {
+        id: "custom_pole_pocket_depth",
+        type: "INPUT",
+        kind: "question",
+        key: "banner.pole_pockets.custom_depth",
+        label: "Custom Pole Pocket Depth",
+        displayOrder: 4,
+        ui: { sortOrder: 4 },
+        status: "ENABLED",
+        visibility: visibleWhenAll([
+          { type: "equals", selectionKey: "pole_pockets", value: "yes" },
+          { type: "equals", selectionKey: "pole_pocket_depth", value: "custom" },
+        ]),
+        input: {
+          type: "text",
+          valueType: "TEXT",
+          selectionKey: "custom_pole_pocket_depth",
+          required: false,
+          constraints: { text: { minLen: 1, maxLen: 80 } },
+        },
+      },
+      group_banner_grommets: {
+        id: "group_banner_grommets",
+        type: "GROUP",
+        kind: "group",
+        label: "Grommets",
+        displayOrder: 2,
+        ui: { sortOrder: 2 },
+        status: "ENABLED",
+      },
+      grommets: {
+        id: "grommets",
+        type: "INPUT",
+        kind: "question",
+        key: "banner.grommets.enabled",
+        label: "Grommets",
+        displayOrder: 0,
+        ui: { sortOrder: 0 },
+        status: "ENABLED",
+        input: {
+          type: "select",
+          valueType: "ENUM",
+          selectionKey: "grommets",
+          required: true,
+        },
+        choices: [
+          { value: "no", label: "No" },
+          { value: "yes", label: "Yes" },
+        ],
+      },
+      grommet_placement: {
+        id: "grommet_placement",
+        type: "INPUT",
+        kind: "question",
+        key: "banner.grommets.placement",
+        label: "Grommet Placement",
+        displayOrder: 1,
+        ui: { sortOrder: 1 },
+        status: "ENABLED",
+        visibility: visibleWhen("grommets", "yes"),
+        input: {
+          type: "select",
+          valueType: "ENUM",
+          selectionKey: "grommet_placement",
+          required: false,
+        },
+        choices: [
+          { value: "corners_only", label: "Corners Only" },
+          { value: "every_2_feet", label: "Every 2 Feet" },
+          { value: "every_3_feet", label: "Every 3 Feet" },
+          { value: "every_4_feet", label: "Every 4 Feet" },
+          { value: "custom", label: "Custom" },
+        ],
+      },
+      custom_grommet_count: {
+        id: "custom_grommet_count",
+        type: "INPUT",
+        kind: "question",
+        key: "banner.grommets.custom_count",
+        label: "Custom Grommet Count",
+        displayOrder: 2,
+        ui: { sortOrder: 2 },
+        status: "ENABLED",
+        visibility: visibleWhenAll([
+          { type: "equals", selectionKey: "grommets", value: "yes" },
+          { type: "equals", selectionKey: "grommet_placement", value: "custom" },
+        ]),
+        input: {
+          type: "number",
+          valueType: "NUMBER",
+          selectionKey: "custom_grommet_count",
+          required: false,
+          constraints: { number: { min: 1, step: 1, integerOnly: true } },
+        },
+      },
+    },
+    edges: [
+      structuralEdge("group_banner_media", "banner_weight", 0),
+      structuralEdge("group_banner_media", "print_side", 1),
+      structuralEdge("group_banner_finishing", "hems", 0),
+      structuralEdge("group_banner_finishing", "pole_pockets", 1),
+      structuralEdge("group_banner_finishing", "pole_pocket_location", 2),
+      structuralEdge("group_banner_finishing", "pole_pocket_depth", 3),
+      structuralEdge("group_banner_finishing", "custom_pole_pocket_depth", 4),
+      structuralEdge("group_banner_grommets", "grommets", 0),
+      structuralEdge("group_banner_grommets", "grommet_placement", 1),
+      structuralEdge("group_banner_grommets", "custom_grommet_count", 2),
+    ],
+    optionRules: [
+      {
+        id: "rule_13oz_defaults_single_sided",
+        label: "13oz is single sided only",
+        when: { all: [{ optionGroup: "banner_weight", operator: "equals", value: "13oz" }] },
+        then: [{ action: "set_default", targetOptionGroup: "print_side", value: "single_sided" }],
+      },
+      {
+        id: "rule_pole_pockets_children",
+        label: "Pole pocket child options",
+        when: { all: [{ optionGroup: "pole_pockets", operator: "equals", value: "yes" }] },
+        then: [
+          { action: "show", targetOptionGroup: "pole_pocket_location" },
+          { action: "require", targetOptionGroup: "pole_pocket_location" },
+          { action: "show", targetOptionGroup: "pole_pocket_depth" },
+          { action: "require", targetOptionGroup: "pole_pocket_depth" },
+        ],
+        else: [
+          { action: "hide", targetOptionGroup: "pole_pocket_location" },
+          { action: "optional", targetOptionGroup: "pole_pocket_location" },
+          { action: "clear", targetOptionGroup: "pole_pocket_location" },
+          { action: "hide", targetOptionGroup: "pole_pocket_depth" },
+          { action: "optional", targetOptionGroup: "pole_pocket_depth" },
+          { action: "clear", targetOptionGroup: "pole_pocket_depth" },
+          { action: "hide", targetOptionGroup: "custom_pole_pocket_depth" },
+          { action: "optional", targetOptionGroup: "custom_pole_pocket_depth" },
+          { action: "clear", targetOptionGroup: "custom_pole_pocket_depth" },
+        ],
+      },
+      {
+        id: "rule_custom_pole_pocket_depth",
+        label: "Custom pole pocket depth text",
+        when: { all: [{ optionGroup: "pole_pocket_depth", operator: "equals", value: "custom" }] },
+        then: [
+          { action: "show", targetOptionGroup: "custom_pole_pocket_depth" },
+          { action: "require", targetOptionGroup: "custom_pole_pocket_depth" },
+        ],
+        else: [
+          { action: "hide", targetOptionGroup: "custom_pole_pocket_depth" },
+          { action: "optional", targetOptionGroup: "custom_pole_pocket_depth" },
+          { action: "clear", targetOptionGroup: "custom_pole_pocket_depth" },
+        ],
+      },
+      {
+        id: "rule_grommet_children",
+        label: "Grommet child options",
+        when: { all: [{ optionGroup: "grommets", operator: "equals", value: "yes" }] },
+        then: [
+          { action: "show", targetOptionGroup: "grommet_placement" },
+          { action: "require", targetOptionGroup: "grommet_placement" },
+        ],
+        else: [
+          { action: "hide", targetOptionGroup: "grommet_placement" },
+          { action: "optional", targetOptionGroup: "grommet_placement" },
+          { action: "clear", targetOptionGroup: "grommet_placement" },
+          { action: "hide", targetOptionGroup: "custom_grommet_count" },
+          { action: "optional", targetOptionGroup: "custom_grommet_count" },
+          { action: "clear", targetOptionGroup: "custom_grommet_count" },
+        ],
+      },
+      {
+        id: "rule_custom_grommet_count",
+        label: "Custom grommet count",
+        when: { all: [{ optionGroup: "grommet_placement", operator: "equals", value: "custom" }] },
+        then: [
+          { action: "show", targetOptionGroup: "custom_grommet_count" },
+          { action: "require", targetOptionGroup: "custom_grommet_count" },
+        ],
+        else: [
+          { action: "hide", targetOptionGroup: "custom_grommet_count" },
+          { action: "optional", targetOptionGroup: "custom_grommet_count" },
+          { action: "clear", targetOptionGroup: "custom_grommet_count" },
+        ],
+      },
+    ],
+    meta: {
+      title: "Banner",
+      baseWeightOz: 1,
+      pricingProfileKey: "default",
+      requiresDimensions: true,
+      pricingV2: {
+        unitSystem: "imperial",
+        base: { perSqftCents: 0 },
+      },
+    },
+  };
+
+  const res = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+  if (res.errors.length > 0 || res.warnings.length > 0) {
+    const summary = {
+      errors: res.errors.map((f) => ({ code: f.code, path: f.path })),
+      warnings: res.warnings.map((f) => ({ code: f.code, path: f.path })),
+    };
+    throw new Error(`PBV2 banner product template is no longer publish-valid: ${JSON.stringify(summary)}`);
+  }
+
+  return tree;
+}
+
+/**
  * Publish-valid PBV2 template proving ChildItemEffect proposals for sign-shop assemblies.
  *
  * Proof target: an optional aluminum extrusion frame proposal derived from perimeter.

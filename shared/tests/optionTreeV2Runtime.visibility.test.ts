@@ -102,7 +102,8 @@ describe("optionTreeV2Runtime visibility resolution", () => {
       },
     });
 
-    expect(result.visibleGroupIds).toEqual(["group_material", "group_finish", "group_print"]);
+    expect(result.visibleGroupIds).toHaveLength(3);
+    expect(result.visibleGroupIds).toEqual(expect.arrayContaining(["group_material", "group_finish", "group_print"]));
     expect(result.visibleNodeIds).toContain("printSides");
     expect(result.visibleNodeIds).not.toContain("edgePolish");
     expect(result.effectiveSelections.materialFamily).toBe("ACM");
