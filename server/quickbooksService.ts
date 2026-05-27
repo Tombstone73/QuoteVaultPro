@@ -9,6 +9,7 @@ import { generateNextInvoiceNumber } from './invoicesService';
 import { buildDocumentNumberParts } from './services/documentNumberingService';
 import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHelpers';
 import { fetchAllQBEntities } from './lib/qbPaginationHelper';
+import { buildQuickBooksInvoiceLinePayloads } from './lib/downstreamEffectivePricing';
 
 // Initialize QuickBooks OAuth client
 const getOAuthClient = (): any => {
@@ -1184,6 +1185,9 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
     .select({
       id: invoiceLineItems.id,
       description: invoiceLineItems.description,
+      quantity: invoiceLineItems.quantity,
+      unitPriceCents: invoiceLineItems.unitPriceCents,
+      unitPrice: invoiceLineItems.unitPrice,
       lineTotalCents: invoiceLineItems.lineTotalCents,
       totalPrice: invoiceLineItems.totalPrice,
     })
@@ -1200,20 +1204,7 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
     DocNumber: invoiceDisplayNumber,
     TxnDate: new Date(txnDate).toISOString().split('T')[0],
     DueDate: invoice.dueDate ? new Date(invoice.dueDate as any).toISOString().split('T')[0] : undefined,
-    Line: (lineItems || []).map((r: any, index: number) => {
-      const cents = Number(r.lineTotalCents ?? 0);
-      const amount = Number.isFinite(cents) && cents > 0 ? cents / 100 : Number(r.totalPrice || 0);
-      return {
-        LineNum: index + 1,
-        Amount: Number(amount || 0),
-        DetailType: 'SalesItemLineDetail',
-        SalesItemLineDetail: {
-          Qty: 1,
-          UnitPrice: Number(amount || 0),
-        },
-        Description: String(r.description || ''),
-      };
-    }),
+    Line: buildQuickBooksInvoiceLinePayloads(lineItems as any[]),
   };
 
   // Remove undefined properties for QB API
