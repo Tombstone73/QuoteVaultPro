@@ -2188,12 +2188,28 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           : {}),
       };
 
+      const savedPricingDrivers = savedSnapshotRef.current[itemId];
+      const pricingDriversChangedForSave = Boolean(
+        savedPricingDrivers && (
+          currentDraftProductId !== savedPricingDrivers.productId ||
+          normalizeVariantId(currentDraftProductVariantId) !== normalizeVariantId(savedPricingDrivers.productVariantId) ||
+          Math.abs(widthNum - savedPricingDrivers.width) > 0.01 ||
+          Math.abs(heightNum - savedPricingDrivers.height) > 0.01 ||
+          qtyNum !== savedPricingDrivers.quantity ||
+          (
+            isPbv2Mode
+              ? stableStringify(optionSelectionsV2?.selected || {}) !== stableStringify(savedPricingDrivers.optionSelectionsV2 || {})
+              : JSON.stringify(optionSelections || {}) !== JSON.stringify(savedPricingDrivers.optionSelections || {})
+          )
+        )
+      );
       const isPbv2 = Boolean(effectivePbv2Tree || pbv2SnapshotJson?.treeJson);
       const v2Patch = isPbv2
         ? { 
             optionSelectionsJson: optionSelectionsV2,
-            // Store PBV2 snapshot from /calculate for future reference
-            pbv2SnapshotJson: pbv2SnapshotJson || undefined,
+            // Store PBV2 preview snapshots only when the user changed pricing
+            // drivers. Override-only saves must preserve the persisted base.
+            ...(pricingDriversChangedForSave ? { pbv2SnapshotJson: pbv2SnapshotJson || undefined } : {}),
           }
         : {
             optionSelectionsJson: null,

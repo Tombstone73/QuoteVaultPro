@@ -8,6 +8,116 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`;
+}
+
+function withoutUndefined<T extends Record<string, unknown>>(record: T): Partial<T> {
+  return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined)) as Partial<T>;
+}
+
+function nullableString(value: unknown): string | null {
+  if (value === undefined || value === null || value === "" || value === "_none") return null;
+  return String(value);
+}
+
+function nullableNumber(value: unknown): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const n = typeof value === "number" ? value : Number(String(value));
+  return Number.isFinite(n) ? Math.round(n * 10000) / 10000 : null;
+}
+
+function toFiniteCents(value: unknown): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const n = typeof value === "number" ? value : Number(String(value));
+  return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+function getNestedRecord(record: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = record[key];
+  return isPlainRecord(value) ? value : {};
+}
+
+function getSelectedOptionsForFingerprint(lineItem: Record<string, unknown>): unknown {
+  if (lineItem.optionSelectionsJson !== undefined) {
+    const optionSelectionsJson = lineItem.optionSelectionsJson;
+    if (isPlainRecord(optionSelectionsJson) && isPlainRecord(optionSelectionsJson.selected)) {
+      return optionSelectionsJson.selected;
+    }
+    if (optionSelectionsJson !== null) return optionSelectionsJson;
+  }
+
+  if (lineItem.selectedOptions !== undefined) return lineItem.selectedOptions ?? null;
+
+  const specs = getNestedRecord(lineItem, "specsJson");
+  return specs.selectedOptions ?? null;
+}
+
+export function getPersistedBaseCalculatedTotalCents(lineItem: Record<string, any>): number {
+  const effectiveTotalCents = Math.round((Number(lineItem.totalPrice) || 0) * 100);
+  const specsJson = isPlainRecord(lineItem.specsJson) ? lineItem.specsJson : {};
+  const specsOverride = isPlainRecord(specsJson.priceOverride) ? specsJson.priceOverride : {};
+  const snapshotPricing = isPlainRecord(lineItem.pbv2SnapshotJson?.pricing) ? lineItem.pbv2SnapshotJson.pricing : {};
+  const repairBase =
+    toFiniteCents(specsOverride.originalBaseCalculatedTotalCents) ??
+    toFiniteCents(specsOverride.previousBaseCalculatedTotalCents) ??
+    toFiniteCents(specsOverride.lastKnownBaseCalculatedTotalCents) ??
+    toFiniteCents(specsJson.originalBaseCalculatedTotalCents) ??
+    toFiniteCents(snapshotPricing.originalTotalCents) ??
+    toFiniteCents(snapshotPricing.previousTotalCents);
+  if (repairBase !== null) return repairBase;
+
+  const baseFromSpecs = isPlainRecord(lineItem.specsJson) && isPlainRecord(lineItem.specsJson.priceOverride)
+    ? Number(lineItem.specsJson.priceOverride.baseCalculatedTotalCents)
+    : NaN;
+  const baseFromSnapshot = Number(lineItem.pbv2SnapshotJson?.pricing?.totalCents);
+
+  if (Number.isFinite(baseFromSpecs)) return Math.round(baseFromSpecs);
+  if (Number.isFinite(baseFromSnapshot)) return Math.round(baseFromSnapshot);
+  return effectiveTotalCents;
+}
+
+export function buildLineItemPricingDriverFingerprint(lineItem: Record<string, unknown>): string {
+  const snapshot = getNestedRecord(lineItem, "pbv2SnapshotJson");
+  return stableStringify({
+    productId: nullableString(lineItem.productId),
+    productVariantId: nullableString(lineItem.productVariantId ?? lineItem.variantId),
+    materialId: nullableString(lineItem.materialId),
+    width: nullableNumber(lineItem.width),
+    height: nullableNumber(lineItem.height),
+    quantity: nullableNumber(lineItem.quantity),
+    pbv2TreeVersionId: nullableString(lineItem.pbv2TreeVersionId ?? snapshot.treeVersionId),
+    selectedOptions: getSelectedOptionsForFingerprint(lineItem),
+  });
+}
+
+export function haveLineItemPricingDriversChanged(input: {
+  existingLineItem: Record<string, unknown>;
+  incomingUpdate: Record<string, unknown>;
+  pbv2ExplicitSelections?: unknown;
+}): boolean {
+  const incomingUpdate = withoutUndefined(input.incomingUpdate);
+  const merged = {
+    ...input.existingLineItem,
+    ...incomingUpdate,
+  };
+
+  if (input.pbv2ExplicitSelections !== undefined && input.pbv2ExplicitSelections !== null) {
+    merged.optionSelectionsJson = {
+      schemaVersion: 2,
+      selected: input.pbv2ExplicitSelections,
+    };
+  }
+
+  return buildLineItemPricingDriverFingerprint(input.existingLineItem) !== buildLineItemPricingDriverFingerprint(merged);
+}
+
 export function getPersistedPriceOverrideSource(input: {
   body?: unknown;
   specsJson?: unknown;
@@ -92,15 +202,7 @@ export function mergePricingIntoSpecsJson(input: {
 export function enrichLineItemWithEffectivePricing<T extends Record<string, any>>(lineItem: T): T & LineItemEffectivePricing {
   const quantity = Number(lineItem.quantity) > 0 ? Number(lineItem.quantity) : 1;
   const effectiveTotalCents = Math.round((Number(lineItem.totalPrice) || 0) * 100);
-  const baseFromSpecs = isPlainRecord(lineItem.specsJson) && isPlainRecord(lineItem.specsJson.priceOverride)
-    ? Number(lineItem.specsJson.priceOverride.baseCalculatedTotalCents)
-    : NaN;
-  const baseFromSnapshot = Number(lineItem.pbv2SnapshotJson?.pricing?.totalCents);
-  const baseCalculatedTotalCents = Number.isFinite(baseFromSpecs)
-    ? Math.round(baseFromSpecs)
-    : Number.isFinite(baseFromSnapshot)
-      ? Math.round(baseFromSnapshot)
-      : effectiveTotalCents;
+  const baseCalculatedTotalCents = getPersistedBaseCalculatedTotalCents(lineItem);
 
   const pricing = resolvePersistedLineItemPricing({
     baseCalculatedTotalCents,
