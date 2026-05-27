@@ -2055,6 +2055,9 @@ export function registerQuoteRoutes(
         };
         updateData.formulaLinePrice = null;
         updateData.priceOverride = null;
+        updateData.overridePriceCents = null;
+        updateData.overrideAt = null;
+        updateData.overrideByUserId = null;
       }
 
       // Apply other field updates
@@ -2076,6 +2079,11 @@ export function registerQuoteRoutes(
       // Line item enhancements (migrations 0039, 0040)
       if (lineItem.description !== undefined) updateData.description = lineItem.description;
       if (lineItem.productionNotes !== undefined) updateData.productionNotes = lineItem.productionNotes;
+      if ((lineItem as any).overridePriceCents !== undefined) updateData.overridePriceCents = (lineItem as any).overridePriceCents;
+      if ((lineItem as any).priceOverride !== undefined) updateData.priceOverride = (lineItem as any).priceOverride;
+      if ((lineItem as any).overrideReason !== undefined) updateData.overrideReason = (lineItem as any).overrideReason;
+      if ((lineItem as any).overrideAt !== undefined) updateData.overrideAt = (lineItem as any).overrideAt;
+      if ((lineItem as any).overrideByUserId !== undefined) updateData.overrideByUserId = (lineItem as any).overrideByUserId;
       // Canonical routing intent (migration 0015)
       if (lineItem.requiresDesign !== undefined) updateData.requiresDesign = lineItem.requiresDesign === true;
       if (lineItem.requiresPrepress !== undefined) updateData.requiresPrepress = typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : null;

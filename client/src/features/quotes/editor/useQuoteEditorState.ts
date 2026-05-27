@@ -682,14 +682,17 @@ export function useQuoteEditorState() {
             materialUsages: (item as any).materialUsages ?? [],
             selectedOptions: item.selectedOptions || [],
             linePrice: parseFloat(item.linePrice),
+            priceOverride: (item as any).priceOverride ?? null,
             overridePriceCents: typeof item.overridePriceCents === "number" ? item.overridePriceCents : null,
             overrideAt: item.overrideAt || null,
             overrideByUserId: item.overrideByUserId || null,
             overrideReason: item.overrideReason || null,
-            // Price override fields are client-side for now; default to formula pricing on load.
+            // Preserve the backend base price when an override is active.
             priceOverridden: false,
             overriddenPrice: null,
-            formulaLinePrice: parseFloat(item.linePrice),
+            formulaLinePrice: Number.isFinite(Number((item as any).priceOverride?.baseCalculatedTotalCents))
+                ? Number((item as any).priceOverride.baseCalculatedTotalCents) / 100
+                : parseFloat(item.linePrice),
             priceBreakdown: item.priceBreakdown,
             displayOrder: idx,
             notes: (item.specsJson as any)?.notes || undefined,
@@ -751,13 +754,16 @@ export function useQuoteEditorState() {
                 materialUsages: (item as any).materialUsages ?? [],
                 selectedOptions: item.selectedOptions || [],
                 linePrice: parseFloat(item.linePrice),
+                priceOverride: (item as any).priceOverride ?? null,
                 overridePriceCents: typeof item.overridePriceCents === "number" ? item.overridePriceCents : null,
                 overrideAt: item.overrideAt || null,
                 overrideByUserId: item.overrideByUserId || null,
                 overrideReason: item.overrideReason || null,
                 priceOverridden: false,
                 overriddenPrice: null,
-                formulaLinePrice: parseFloat(item.linePrice),
+                formulaLinePrice: Number.isFinite(Number((item as any).priceOverride?.baseCalculatedTotalCents))
+                    ? Number((item as any).priceOverride.baseCalculatedTotalCents) / 100
+                    : parseFloat(item.linePrice),
                 priceBreakdown: item.priceBreakdown,
                 displayOrder: idx,
                 notes: (item.specsJson as any)?.notes || undefined,
@@ -787,6 +793,10 @@ export function useQuoteEditorState() {
                         ...item,
                         priceOverridden: false,
                         overriddenPrice: null,
+                        priceOverride: null,
+                        overridePriceCents: null,
+                        overrideAt: null,
+                        overrideByUserId: null,
                         linePrice: restored,
                         priceBreakdown: {
                             ...(item.priceBreakdown || {}),
@@ -797,6 +807,9 @@ export function useQuoteEditorState() {
                 }
 
                 const sanitized = Number.isFinite(nextPrice) ? Math.max(0, nextPrice) : 0;
+                const valueCents = Math.round(sanitized * 100);
+                const baseCalculatedTotalCents = Math.round(formulaLinePrice * 100);
+                const quantity = Number(item.quantity) > 0 ? Number(item.quantity) : 1;
 
                 // TODO: log price override to audit log
                 return {
@@ -804,10 +817,24 @@ export function useQuoteEditorState() {
                     formulaLinePrice,
                     priceOverridden: true,
                     overriddenPrice: sanitized,
+                    priceOverride: {
+                        schemaVersion: 1,
+                        mode: "override_total_after_margin",
+                        valueCents,
+                        valuePercent: null,
+                        baseCalculatedUnitPriceCents: Math.round(baseCalculatedTotalCents / quantity),
+                        baseCalculatedTotalCents,
+                        effectiveUnitPriceCents: Math.round(valueCents / quantity),
+                        effectiveTotalCents: valueCents,
+                        appliedAt: new Date().toISOString(),
+                    },
+                    overridePriceCents: valueCents,
+                    overrideAt: new Date().toISOString(),
+                    overrideByUserId: null,
                     linePrice: sanitized,
                     priceBreakdown: {
                         ...(item.priceBreakdown || {}),
-                        basePrice: sanitized,
+                        basePrice: formulaLinePrice,
                         total: sanitized,
                     },
                 };
@@ -2192,6 +2219,7 @@ export function useQuoteEditorState() {
                 materialUsages: item.materialUsages ?? [],
                 selectedOptions: item.selectedOptions || [],
                 linePrice: item.linePrice ?? 0,
+                priceOverride: item.priceOverride ?? null,
                 overridePriceCents: item.overridePriceCents ?? null,
                 overrideAt: item.overrideAt ?? null,
                 overrideByUserId: item.overrideByUserId ?? null,

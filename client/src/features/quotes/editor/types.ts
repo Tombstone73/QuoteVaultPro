@@ -30,6 +30,7 @@ export type QuoteLineItemDraft = {
    */
   formulaLinePrice?: number;
   // NEW: Migration 0039 override fields
+  priceOverride?: any | null;
   overridePriceCents?: number | null; // Manual price override in cents
   overrideAt?: string | null; // ISO timestamp when override was set
   overrideByUserId?: string | null; // User who set the override

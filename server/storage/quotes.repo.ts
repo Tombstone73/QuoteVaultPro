@@ -617,6 +617,7 @@ export class QuotesRepository {
                 calculatedCost: number;
             }>,
             linePrice: item.linePrice.toString(),
+            priceOverride: (item as any).priceOverride ?? null,
             priceBreakdown: sanitizeJsonForPostgres({
                 ...item.priceBreakdown,
                 variantInfo: item.priceBreakdown.variantInfo as string | undefined,
@@ -630,6 +631,8 @@ export class QuotesRepository {
             pbv2TreeVersionId: (item as any).pbv2TreeVersionId || null,
             pbv2SnapshotJson: sanitizeJsonForPostgres((item as any).pbv2SnapshotJson || {}).value as any,
             pricedAt: (item as any).pricedAt || new Date(),
+            overridePriceCents: Number.isFinite(Number((item as any).overridePriceCents)) ? Math.round(Number((item as any).overridePriceCents)) : null,
+            overrideReason: (item as any).overrideReason ?? null,
             // Canonical routing intent (migration 0015)
             requiresDesign: materializeLineItemDesignSnapshot({
                 config: designConfigMap.get(item.productId) ?? null,
@@ -955,6 +958,7 @@ export class QuotesRepository {
                 calculatedCost: number;
             }>,
             linePrice: lineItem.linePrice.toString(),
+            priceOverride: (lineItem as any).priceOverride ?? null,
             priceBreakdown: {
                 ...lineItem.priceBreakdown,
                 variantInfo: lineItem.priceBreakdown.variantInfo as string | undefined,
@@ -964,6 +968,8 @@ export class QuotesRepository {
             pbv2TreeVersionId: (lineItem as any).pbv2TreeVersionId || null,
             pbv2SnapshotJson: (lineItem as any).pbv2SnapshotJson || {},
             pricedAt: (lineItem as any).pricedAt || new Date(),
+            overridePriceCents: Number.isFinite(Number((lineItem as any).overridePriceCents)) ? Math.round(Number((lineItem as any).overridePriceCents)) : null,
+            overrideReason: (lineItem as any).overrideReason ?? null,
             // Canonical routing intent (migration 0015)
             requiresDesign: designSnapshot.effectiveRequiresDesign,
             requiresPrepress: typeof (lineItem as any).requiresPrepress === 'boolean' ? (lineItem as any).requiresPrepress : null,
@@ -1012,8 +1018,16 @@ export class QuotesRepository {
         if ((lineItem as any).optionSelectionsJson !== undefined) updateData.optionSelectionsJson = (lineItem as any).optionSelectionsJson;
         if (lineItem.selectedOptions !== undefined) updateData.selectedOptions = lineItem.selectedOptions;
         if (lineItem.linePrice !== undefined) updateData.linePrice = lineItem.linePrice.toString();
+        if ((lineItem as any).priceOverride !== undefined) updateData.priceOverride = (lineItem as any).priceOverride;
         if (lineItem.priceBreakdown !== undefined) updateData.priceBreakdown = lineItem.priceBreakdown;
         if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
+        if ((lineItem as any).overridePriceCents !== undefined) {
+            const cents = Number((lineItem as any).overridePriceCents);
+            updateData.overridePriceCents = Number.isFinite(cents) ? Math.round(cents) : null;
+        }
+        if ((lineItem as any).overrideReason !== undefined) updateData.overrideReason = (lineItem as any).overrideReason;
+        if ((lineItem as any).overrideAt !== undefined) updateData.overrideAt = (lineItem as any).overrideAt;
+        if ((lineItem as any).overrideByUserId !== undefined) updateData.overrideByUserId = (lineItem as any).overrideByUserId;
         // Canonical routing intent (migration 0015)
         if ((lineItem as any).requiresDesign !== undefined) updateData.requiresDesign = (lineItem as any).requiresDesign === true;
         if ((lineItem as any).requiresPrepress !== undefined) updateData.requiresPrepress = typeof (lineItem as any).requiresPrepress === 'boolean' ? (lineItem as any).requiresPrepress : null;
@@ -1090,9 +1104,12 @@ export class QuotesRepository {
             optionSelectionsJson: (lineItem as any).optionSelectionsJson ?? null,
             selectedOptions: lineItem.selectedOptions ?? [],
             linePrice: lineItem.linePrice.toString(),
+            priceOverride: (lineItem as any).priceOverride ?? null,
             priceBreakdown: lineItem.priceBreakdown as any,
             materialUsages: (lineItem as any).materialUsages ?? [],
             displayOrder: lineItem.displayOrder ?? 0,
+            overridePriceCents: Number.isFinite(Number((lineItem as any).overridePriceCents)) ? Math.round(Number((lineItem as any).overridePriceCents)) : null,
+            overrideReason: (lineItem as any).overrideReason ?? null,
             requiresDesign: designSnapshot.effectiveRequiresDesign,
         } as any;
 

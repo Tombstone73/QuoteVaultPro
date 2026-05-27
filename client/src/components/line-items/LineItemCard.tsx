@@ -78,6 +78,7 @@ export type LineItemCardProps = {
   // Expanded view - Price
   price: number; // Total price
   priceOverride?: number | null;
+  priceOverrideLabel?: string;
   editingPrice?: boolean;
   priceEditText?: string;
   onPriceClick?: () => void;
@@ -176,6 +177,7 @@ export function LineItemCard({
   dimsRequired = true,
   price,
   priceOverride,
+  priceOverrideLabel = "Override",
   editingPrice = false,
   priceEditText = "",
   onPriceClick,
@@ -512,7 +514,7 @@ export function LineItemCard({
             )}
             {hasOverride && (
               <span className="bg-muted/60 text-muted-foreground px-1.5 py-0.5 rounded font-medium">
-                Overridden
+                {priceOverrideLabel}
               </span>
             )}
             {hasProductionNotes && (
@@ -625,7 +627,7 @@ export function LineItemCard({
                   {priceOverride != null && (
                     <div className="flex items-center gap-1">
                       <span className="text-xs bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded font-medium">
-                        Override
+                        {priceOverrideLabel}
                       </span>
                       {!readOnly && onUndoOverride && (
                         <Button
