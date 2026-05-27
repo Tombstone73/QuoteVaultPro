@@ -4145,8 +4145,14 @@ export async function registerOrderRoutes(
             if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
             const userId = getUserId(req.user);
             if (!userId) return res.status(401).json({ success: false, message: "User not authenticated" });
-            const { dueDate, promisedDate, priority, notesInternal } = req.body || {};
-            const order = await storage.convertQuoteToOrder(organizationId, req.params.id, userId, { dueDate: dueDate ? new Date(dueDate) : undefined, promisedDate: promisedDate ? new Date(promisedDate) : undefined, priority: priority || "normal", notesInternal: notesInternal ?? undefined });
+            const { poNumber, dueDate, promisedDate, priority, notesInternal } = req.body || {};
+            const order = await storage.convertQuoteToOrder(organizationId, req.params.id, userId, {
+                poNumber: poNumber ? String(poNumber) : undefined,
+                dueDate: dueDate ? new Date(dueDate) : undefined,
+                promisedDate: promisedDate ? new Date(promisedDate) : undefined,
+                priority: priority || "normal",
+                notesInternal: notesInternal ?? undefined,
+            });
             res.status(201).json({ success: true, data: { order } });
         } catch (error: any) {
             console.error("[QUOTE TO ORDER CONVERSION] failed", error);
@@ -4171,7 +4177,7 @@ export async function registerOrderRoutes(
             }
 
             const { quoteId } = req.params;
-            const { dueDate, promisedDate, priority, notesInternal, customerId, contactId } = req.body;
+            const { poNumber, dueDate, promisedDate, priority, notesInternal, customerId, contactId } = req.body;
             const userRole = req.user.role || 'employee';
 
             console.log('[CONVERT QUOTE TO ORDER] Starting conversion:', {
@@ -4244,6 +4250,7 @@ export async function registerOrderRoutes(
             }
 
             const order = await storage.convertQuoteToOrder(organizationId, quoteId, userId, {
+                poNumber: poNumber ? String(poNumber) : undefined,
                 dueDate: dueDate || undefined,
                 promisedDate: promisedDate || undefined,
                 priority,

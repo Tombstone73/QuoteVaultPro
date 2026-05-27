@@ -589,7 +589,14 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 // Fire-and-forget-ish: convert hook handles toast + navigation.
                 void (async () => {
                     try {
-                        await state.convertToOrderHook?.mutateAsync({ quoteId: result.quoteId });
+                        await state.convertToOrderHook?.mutateAsync({
+                            quoteId: result.quoteId,
+                            poNumber: state.orderPoNumber.trim() || undefined,
+                            dueDate: state.requestedDueDate || undefined,
+                            promisedDate: state.orderPromisedDate || undefined,
+                            priority: state.orderPriority || "normal",
+                            notesInternal: state.orderInternalNotes.trim() || undefined,
+                        });
                     } catch (err) {
                         // Fall back to the quote editor (with id) so the user doesn't lose work.
                         navigate(ROUTES.quotes.edit(result.quoteId), {
@@ -642,7 +649,14 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             customerSelectRef.current?.commitPendingFlags?.();
 
             const result = await state.handlers.saveQuote();
-            await state.convertToOrderHook?.mutateAsync({ quoteId: result.quoteId });
+            await state.convertToOrderHook?.mutateAsync({
+                quoteId: result.quoteId,
+                poNumber: state.orderPoNumber.trim() || undefined,
+                dueDate: state.requestedDueDate || undefined,
+                promisedDate: state.orderPromisedDate || undefined,
+                priority: state.orderPriority || "normal",
+                notesInternal: state.orderInternalNotes.trim() || undefined,
+            });
         } catch (err) {
             // saveQuote / convertToOrder both toast already; just fail-soft.
             console.error("[QuoteEditorPage] Create Order failed", err);
@@ -947,11 +961,18 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             readOnly={readOnly}
                             jobLabel={state.jobLabel}
                             requestedDueDate={state.requestedDueDate}
+                            poNumber={state.orderPoNumber}
+                            promisedDate={state.orderPromisedDate}
+                            priority={state.orderPriority}
+                            showOrderFields={createTarget === "order"}
                             tags={state.tags}
                             onCustomerChange={state.handlers.setCustomer}
                             onContactChange={state.handlers.setContactId}
                             onJobLabelChange={state.handlers.setJobLabel}
                             onRequestedDueDateChange={state.handlers.setRequestedDueDate}
+                            onPoNumberChange={state.handlers.setOrderPoNumber}
+                            onPromisedDateChange={state.handlers.setOrderPromisedDate}
+                            onPriorityChange={state.handlers.setOrderPriority}
                             onAddTag={state.handlers.addTag}
                             onRemoveTag={state.handlers.removeTag}
                         />
@@ -1071,15 +1092,23 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             <CardContent>
                                 <Textarea
                                     placeholder="Visible to internal staff only"
-                                    value={state.quoteNotes}
-                                    onChange={(e) => state.handlers.setQuoteNotes(e.target.value)}
+                                    value={createTarget === "order" ? state.orderInternalNotes : state.quoteNotes}
+                                    onChange={(e) => {
+                                        if (createTarget === "order") {
+                                            state.handlers.setOrderInternalNotes(e.target.value);
+                                        } else {
+                                            state.handlers.setQuoteNotes(e.target.value);
+                                        }
+                                    }}
                                     readOnly={readOnly}
                                     rows={5}
                                     className="w-full"
                                 />
-                                {!readOnly && state.quoteNotes.trim().length === 0 && (
+                                {!readOnly && (createTarget === "order" ? state.orderInternalNotes : state.quoteNotes).trim().length === 0 && (
                                     <div className="mt-2 text-xs text-muted-foreground">
-                                        Add internal production notes before converting (optional)
+                                        {createTarget === "order"
+                                            ? "Add internal order notes before creating the order (optional)"
+                                            : "Add internal production notes before converting (optional)"}
                                     </div>
                                 )}
                             </CardContent>

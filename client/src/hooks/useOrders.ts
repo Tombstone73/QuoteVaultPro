@@ -684,7 +684,7 @@ export function useConvertQuoteToOrder(quoteId?: string | null) {
   const navigate = useNavigate();
 
   return useMutation({
-    mutationFn: async (data: { quoteId?: string; dueDate?: string; promisedDate?: string; priority?: string; notesInternal?: string; customerId?: string; contactId?: string }) => {
+    mutationFn: async (data: { quoteId?: string; poNumber?: string; dueDate?: string; promisedDate?: string; priority?: string; notesInternal?: string; customerId?: string; contactId?: string }) => {
       const targetQuoteId = data.quoteId ?? quoteId;
       if (!targetQuoteId) throw new Error("Missing quote id");
       const { quoteId: _omit, ...rest } = data;
@@ -715,6 +715,16 @@ export function useConvertQuoteToOrder(quoteId?: string | null) {
       
       // Invalidate order queries
       queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      if (orderId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+        queryClient.invalidateQueries({ queryKey: ["orders", "timeline", orderId] });
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/design/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/fulfillment/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["customers"] });
       
       // Invalidate quote list queries (still using old keys for quotes)
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });

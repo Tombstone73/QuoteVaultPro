@@ -20,6 +20,10 @@ type CustomerCardProps = {
     contacts: any[];
     jobLabel: string;
     requestedDueDate: string; // YYYY-MM-DD
+    poNumber?: string;
+    promisedDate?: string; // YYYY-MM-DD
+    priority?: string;
+    showOrderFields?: boolean;
     tags?: string[];
     effectiveTaxRate: number;
     pricingTier: string;
@@ -32,6 +36,9 @@ type CustomerCardProps = {
     onContactChange: (contactId: string | null) => void;
     onJobLabelChange: (label: string) => void;
     onRequestedDueDateChange: (date: string) => void;
+    onPoNumberChange?: (poNumber: string) => void;
+    onPromisedDateChange?: (date: string) => void;
+    onPriorityChange?: (priority: string) => void;
     onAddTag?: (tag: string) => void;
     onRemoveTag?: (tag: string) => void;
 };
@@ -43,6 +50,10 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     contacts,
     jobLabel,
     requestedDueDate,
+    poNumber = "",
+    promisedDate = "",
+    priority = "normal",
+    showOrderFields = false,
     tags = [],
     effectiveTaxRate,
     pricingTier,
@@ -54,6 +65,9 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     onContactChange,
     onJobLabelChange,
     onRequestedDueDateChange,
+    onPoNumberChange,
+    onPromisedDateChange,
+    onPriorityChange,
     onAddTag,
     onRemoveTag,
 }, ref) => {
@@ -337,9 +351,27 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                     </div>
                 </div>
 
-                {/* Quote meta (Orders parity: no PO# here) */}
+                {/* Quote/order meta */}
                 <div className="min-w-0 space-y-4">
                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                        {showOrderFields && (
+                            <div className="space-y-1">
+                                <div className="text-xs text-muted-foreground">PO #</div>
+                                {readOnly ? (
+                                    <div className="min-h-9 px-3 py-2 rounded-md bg-muted/30 border border-border/50 text-sm whitespace-normal break-words">
+                                        {poNumber || "—"}
+                                    </div>
+                                ) : (
+                                    <Input
+                                        value={poNumber}
+                                        onChange={(e) => onPoNumberChange?.(e.target.value)}
+                                        placeholder="Customer PO"
+                                        className="h-9"
+                                    />
+                                )}
+                            </div>
+                        )}
+
                         <div className="space-y-1">
                             <div className="text-xs text-muted-foreground">Job Label</div>
                             {readOnly ? (
@@ -375,6 +407,50 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                                 </div>
                             )}
                         </div>
+
+                        {showOrderFields && (
+                            <>
+                                <div className="space-y-1">
+                                    <div className="text-xs text-muted-foreground">Promised date</div>
+                                    {readOnly ? (
+                                        <div className="min-h-9 px-3 py-2 rounded-md bg-muted/30 border border-border/50 flex items-center justify-between text-sm">
+                                            <span className="whitespace-normal break-words">{promisedDate || "—"}</span>
+                                            <Calendar className="h-4 w-4 text-muted-foreground" />
+                                        </div>
+                                    ) : (
+                                        <div className="relative">
+                                            <Input
+                                                type="date"
+                                                value={promisedDate}
+                                                onChange={(e) => onPromisedDateChange?.(e.target.value)}
+                                                className="h-9 pr-9 [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:right-0 [&::-webkit-calendar-picker-indicator]:w-9 [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:cursor-pointer"
+                                            />
+                                            <Calendar className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="space-y-1">
+                                    <div className="text-xs text-muted-foreground">Priority</div>
+                                    {readOnly ? (
+                                        <div className="min-h-9 px-3 py-2 rounded-md bg-muted/30 border border-border/50 text-sm capitalize">
+                                            {priority || "normal"}
+                                        </div>
+                                    ) : (
+                                        <Select value={priority || "normal"} onValueChange={(value) => onPriorityChange?.(value)}>
+                                            <SelectTrigger className="h-9">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="rush">Rush</SelectItem>
+                                                <SelectItem value="normal">Normal</SelectItem>
+                                                <SelectItem value="low">Low</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    )}
+                                </div>
+                            </>
+                        )}
                     </div>
 
                     {/* Tags section - only show if handlers are provided (tags are functional) */}
