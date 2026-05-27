@@ -25,6 +25,19 @@ type QuotesResponse = {
   items?: QuoteRow[];
 };
 
+type LowInventoryItem = {
+  id: string;
+  name: string;
+  currentQty: number;
+  reorderThreshold: number;
+  unit: string | null;
+  supplier: string | null;
+};
+
+type LowInventoryResponse = {
+  items?: LowInventoryItem[];
+};
+
 function formatDate(value?: string | null) {
   if (!value) return "—";
   const date = new Date(value);
@@ -37,6 +50,12 @@ function formatCurrency(value?: string | number | null) {
   const n = Number(value);
   if (!Number.isFinite(n)) return "—";
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
+}
+
+function formatQty(value?: number | null, unit?: string | null) {
+  if (value == null || !Number.isFinite(Number(value))) return "â€”";
+  const formatted = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(Number(value));
+  return unit ? `${formatted} ${unit}` : formatted;
 }
 
 function startOfDay(d: Date) {
@@ -84,6 +103,18 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
       return response.json();
     },
     enabled: panel === "quotes_pending",
+    staleTime: 60_000,
+  });
+
+  const lowInventoryQuery = useQuery<LowInventoryResponse>({
+    queryKey: ["dashboard", "low-inventory", "details"],
+    queryFn: async () => {
+      const response = await fetch("/api/dashboard/low-inventory?limit=50", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to load low inventory details");
+      const json = await response.json();
+      return json?.data ?? json;
+    },
+    enabled: panel === "low_inventory_items",
     staleTime: 60_000,
   });
 
@@ -149,18 +180,22 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
   const isLoading =
     panel === "quotes_pending"
       ? quotesQuery.isLoading
+      : panel === "low_inventory_items"
+        ? lowInventoryQuery.isLoading
       : panel === "invoices_overdue" || panel === "invoices_unpaid"
         ? invoicesQuery.isLoading
-        : panel === "my_work" || panel === "low_inventory_items"
+        : panel === "my_work"
           ? false
           : ordersQuery.isLoading;
 
   const errorMessage =
     panel === "quotes_pending"
       ? (quotesQuery.error as Error | null)?.message
+      : panel === "low_inventory_items"
+        ? (lowInventoryQuery.error as Error | null)?.message
       : panel === "invoices_overdue" || panel === "invoices_unpaid"
         ? (invoicesQuery.error as Error | null)?.message
-        : panel === "my_work" || panel === "low_inventory_items"
+        : panel === "my_work"
           ? null
           : (ordersQuery.error as Error | null)?.message;
 
@@ -178,14 +213,46 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
   }
 
   if (panel === "low_inventory_items") {
+    const rows = lowInventoryQuery.data?.items ?? [];
     return (
       <Card className="border-border bg-card h-full">
         <CardHeader className="border-b border-border flex-row items-center justify-between">
           <CardTitle className="text-base">{panelTitle(panel)}</CardTitle>
           {openTarget ? <Button asChild variant="ghost" size="sm"><Link to={openTarget.href}>{openTarget.label}</Link></Button> : null}
         </CardHeader>
-        <CardContent className="py-10 text-center text-sm text-muted-foreground">
-          No detail view yet for low inventory.
+        <CardContent className="p-0">
+          {isLoading ? <LoadingState /> : null}
+          {!isLoading && errorMessage ? <DetailErrorState message={errorMessage} /> : null}
+          {!isLoading && !errorMessage ? (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Material</TableHead>
+                <TableHead className="text-right">Current</TableHead>
+                <TableHead className="text-right">Threshold</TableHead>
+                <TableHead>Supplier</TableHead>
+                <TableHead className="text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.length === 0 ? (
+                <TableRow><TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No low-stock materials.</TableCell></TableRow>
+              ) : rows.map((item) => (
+                <TableRow key={item.id}>
+                  <TableCell className="font-medium">{item.name}</TableCell>
+                  <TableCell className="text-right text-amber-600">{formatQty(item.currentQty, item.unit)}</TableCell>
+                  <TableCell className="text-right">{formatQty(item.reorderThreshold, item.unit)}</TableCell>
+                  <TableCell>{item.supplier || "â€”"}</TableCell>
+                  <TableCell className="text-right">
+                    <Button asChild variant="ghost" size="sm">
+                      <Link to={ROUTES.materials.detail(item.id)}>Open</Link>
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          ) : null}
         </CardContent>
       </Card>
     );

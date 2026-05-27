@@ -2651,47 +2651,13 @@ export function registerProductionJobsRoutes(
     }
   });
 
-  // PATCH /api/production/notes/:noteId - Edit production note
+  // PATCH /api/production/notes/:noteId - Notes are append-only; add a new note instead.
   app.patch("/api/production/notes/:noteId", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
-
-      const noteId = req.params.noteId;
-      const noteSchema = z.object({ text: z.string().trim().min(1).max(1000) });
-      const parsed = noteSchema.safeParse(req.body || {});
-      if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
-
-      await db.transaction(async (tx) => {
-        const noteRows = await tx
-          .select({
-            id: productionEvents.id,
-            type: productionEvents.type,
-            productionJobId: productionEvents.productionJobId,
-            payload: productionEvents.payload,
-          })
-          .from(productionEvents)
-          .where(and(eq(productionEvents.organizationId, organizationId), eq(productionEvents.id, noteId)))
-          .limit(1);
-
-        const note = noteRows[0];
-        if (!note) throw Object.assign(new Error("Note not found"), { statusCode: 404 });
-        if (note.type !== "note") throw Object.assign(new Error("Event is not a note"), { statusCode: 400 });
-
-        const updatedPayload = { ...(note.payload ?? {}), text: parsed.data.text, edited: true };
-        await tx
-          .update(productionEvents)
-          .set({ payload: updatedPayload })
-          .where(and(eq(productionEvents.organizationId, organizationId), eq(productionEvents.id, noteId)));
-
-        await tx
-          .update(productionJobs)
-          .set({ updatedAt: new Date() })
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, note.productionJobId)));
-      });
-
-      res.json({ success: true, data: { success: true } });
+      return res.status(409).json({ error: "Production notes are append-only. Add a new note instead." });
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("Error editing production note:", error);
@@ -2699,44 +2665,13 @@ export function registerProductionJobsRoutes(
     }
   });
 
-  // DELETE /api/production/notes/:noteId - Delete production note (soft delete)
+  // DELETE /api/production/notes/:noteId - Notes are append-only and cannot be deleted.
   app.delete("/api/production/notes/:noteId", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
-
-      const noteId = req.params.noteId;
-
-      await db.transaction(async (tx) => {
-        const noteRows = await tx
-          .select({
-            id: productionEvents.id,
-            type: productionEvents.type,
-            productionJobId: productionEvents.productionJobId,
-            payload: productionEvents.payload,
-          })
-          .from(productionEvents)
-          .where(and(eq(productionEvents.organizationId, organizationId), eq(productionEvents.id, noteId)))
-          .limit(1);
-
-        const note = noteRows[0];
-        if (!note) throw Object.assign(new Error("Note not found"), { statusCode: 404 });
-        if (note.type !== "note") throw Object.assign(new Error("Event is not a note"), { statusCode: 400 });
-
-        const updatedPayload = { ...(note.payload ?? {}), deleted: true };
-        await tx
-          .update(productionEvents)
-          .set({ payload: updatedPayload })
-          .where(and(eq(productionEvents.organizationId, organizationId), eq(productionEvents.id, noteId)));
-
-        await tx
-          .update(productionJobs)
-          .set({ updatedAt: new Date() })
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, note.productionJobId)));
-      });
-
-      res.json({ success: true, data: { success: true } });
+      return res.status(409).json({ error: "Production notes are append-only and cannot be deleted." });
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("Error deleting production note:", error);

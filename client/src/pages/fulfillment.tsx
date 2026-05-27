@@ -84,6 +84,39 @@ function FulfillmentProductionTickets({ row }: { row: FulfillmentQueueRow }) {
   );
 }
 
+function FulfillmentProductionContext({ row }: { row: FulfillmentQueueRow }) {
+  const context = row.productionContext;
+  const printer = context?.primaryPrinterName || "Unassigned";
+  const finishing = context?.finishingRequirements ?? [];
+  const registrationMarks = context?.registrationMarks ?? [];
+  const notes = context?.productionNotes ?? [];
+  const completedAt = context?.completedAt ? new Date(context.completedAt) : null;
+
+  return (
+    <div className="max-w-[260px] space-y-1 text-xs">
+      <div className="font-semibold text-foreground">{printer}</div>
+      <div className="flex flex-wrap gap-1">
+        {context?.lamination ? (
+          <span className="rounded border border-border bg-muted px-1.5 py-0.5">Lam: {context.lamination}</span>
+        ) : null}
+        {finishing.slice(0, 2).map((item) => (
+          <span key={item} className="rounded border border-border bg-muted px-1.5 py-0.5">{item}</span>
+        ))}
+        {registrationMarks.slice(0, 1).map((item) => (
+          <span key={item} className="rounded border border-border bg-muted px-1.5 py-0.5">{item}</span>
+        ))}
+        {finishing.length > 2 ? (
+          <span className="rounded border border-border bg-muted px-1.5 py-0.5">+{finishing.length - 2} finish</span>
+        ) : null}
+      </div>
+      {notes[0] ? <div className="truncate text-muted-foreground" title={notes[0]}>Note: {notes[0]}</div> : null}
+      {completedAt && !Number.isNaN(completedAt.getTime()) ? (
+        <div className="text-[11px] text-muted-foreground">Printed {completedAt.toLocaleString()}</div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function FulfillmentPage({ title = "Fulfillment", initialType = "all" }: FulfillmentPageProps = {}) {
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -91,6 +124,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
 
   const [type, setType] = useState<"all" | "ship" | "pickup">(initialType);
   const [status, setStatus] = useState("all");
+  const [printerFilter, setPrinterFilter] = useState("all");
   const [overdueOnly, setOverdueOnly] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [search, setSearch] = useState("");
@@ -113,7 +147,24 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
   const createShipment = useCreateShipmentMutation();
   const createPickupTicket = useCreatePickupTicketMutation();
 
-  const rows = queueQuery.data?.rows ?? [];
+  const allRows = queueQuery.data?.rows ?? [];
+  const printerOptions = useMemo(() => {
+    const names = new Set<string>();
+    for (const row of allRows) {
+      for (const name of row.productionContext?.printerNames ?? []) {
+        const trimmed = String(name || "").trim();
+        if (trimmed) names.add(trimmed);
+      }
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [allRows]);
+  const rows = useMemo(() => {
+    if (printerFilter === "all") return allRows;
+    if (printerFilter === "unassigned") {
+      return allRows.filter((row) => !(row.productionContext?.primaryPrinterName || "").trim());
+    }
+    return allRows.filter((row) => (row.productionContext?.printerNames ?? []).includes(printerFilter));
+  }, [allRows, printerFilter]);
   const selectedRows = rows.filter((row) => selectedOrderIds.has(row.orderId));
 
   const disableCombinedReason = useMemo(() => {
@@ -307,6 +358,21 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                 </button>
               ))}
             </div>
+
+            <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 shadow-sm">
+              <span className="px-2 text-[10px] font-bold uppercase text-muted-foreground">Printer</span>
+              <select
+                value={printerFilter}
+                onChange={(event) => setPrinterFilter(event.target.value)}
+                className="h-7 rounded border-0 bg-transparent px-2 text-xs font-medium outline-none"
+              >
+                <option value="all">All Printers</option>
+                <option value="unassigned">Unassigned</option>
+                {printerOptions.map((name) => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="flex shrink-0 items-center gap-6">
@@ -369,13 +435,14 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Items Remaining</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ready Since</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ship To</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Production</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Print Tickets</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {queueQuery.isLoading && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={10} className="px-4 py-12 text-center text-sm text-muted-foreground">
                     <div className="inline-flex items-center gap-2">
                       <Loader2 className="h-4 w-4 animate-spin" />
                       Loading queue...
@@ -386,7 +453,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
 
               {!queueQuery.isLoading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center">
+                  <td colSpan={10} className="px-4 py-12 text-center">
                     <div className="mx-auto mb-4 w-fit rounded-full bg-muted p-4">
                       <Box className="h-8 w-8 text-muted-foreground" />
                     </div>
@@ -450,6 +517,9 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                     <td className="px-4 py-4 text-sm font-medium">{row.itemsRemaining}</td>
                     <td className="px-4 py-4 text-sm text-muted-foreground">{readySince}</td>
                     <td className="px-4 py-4 text-sm text-muted-foreground">{row.shipTo}</td>
+                    <td className="px-4 py-4">
+                      <FulfillmentProductionContext row={row} />
+                    </td>
                     <td className="px-4 py-4">
                       <FulfillmentProductionTickets row={row} />
                     </td>

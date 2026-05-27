@@ -31,8 +31,6 @@ import {
   ProductionOrderArtworkSummary,
   ProductionOrderLineItemSummary,
   useAddProductionNote,
-  useEditProductionNote,
-  useDeleteProductionNote,
   useCompleteProductionJob,
   useProductionJob,
   useProductionJobs,
@@ -58,8 +56,6 @@ import {
   Undo2,
   Download,
   Upload,
-  Edit2,
-  Trash2,
 } from "lucide-react";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
@@ -551,8 +547,6 @@ function ActionRail({
   const reopen = useReopenProductionJob(job.id);
   const submitReprint = useSubmitReprintRequest(job.id);
   const addNote = useAddProductionNote(job.id);
-  const editNote = useEditProductionNote(job.id);
-  const deleteNote = useDeleteProductionNote(job.id);
   const setMedia = useSetProductionMediaUsed(job.id);
 
   const defaultReprintFilename = useMemo(() => {
@@ -564,8 +558,6 @@ function ActionRail({
   const [skipCompleteOpen, setSkipCompleteOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState("");
-  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
-  const [deleteConfirmNoteId, setDeleteConfirmNoteId] = useState<string | null>(null);
   const [wasteOpen, setWasteOpen] = useState(false);
   const [wasteText, setWasteText] = useState("");
   const [wasteQty, setWasteQty] = useState<string>("");
@@ -600,14 +592,17 @@ function ActionRail({
     reopen.isPending ||
     submitReprint.isPending ||
     addNote.isPending ||
-    editNote.isPending ||
-    deleteNote.isPending ||
     setMedia.isPending ||
     sendToPrepress.isPending;
 
   const canAct = job.status !== "done";
   const canStart = canAct && !timerIsRunning;
   const canPause = canAct && timerIsRunning;
+  const reprintCompletedAt = job.completedAt ? new Date(job.completedAt) : null;
+  const reprintCompletedLabel =
+    reprintCompletedAt && !Number.isNaN(reprintCompletedAt.getTime())
+      ? reprintCompletedAt.toLocaleString()
+      : "Not completed";
 
   return (
     <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-3">
@@ -739,14 +734,14 @@ function ActionRail({
         <div className="h-px bg-titan-border-subtle" />
 
         <Button className="w-full justify-start bg-sky-700 hover:bg-sky-700/90 text-white" onClick={() => setNoteOpen(true)} disabled={isBusy}>
-          <MessageSquarePlus className="w-4 h-4 mr-2" /> ADD NOTES
+          <MessageSquarePlus className="w-4 h-4 mr-2" /> ADD PRODUCTION NOTE
         </Button>
 
         <AlertDialog open={noteOpen} onOpenChange={setNoteOpen}>
           <AlertDialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
             <AlertDialogHeader>
               <AlertDialogTitle>Production Notes</AlertDialogTitle>
-              <AlertDialogDescription>Manage notes for this production job. All changes are logged to the timeline.</AlertDialogDescription>
+              <AlertDialogDescription>Add append-only production notes. Previous notes stay in the timeline history.</AlertDialogDescription>
             </AlertDialogHeader>
             <div className="space-y-4">
               {notes && notes.length > 0 && (
@@ -761,7 +756,6 @@ function ActionRail({
                         hour: '2-digit', 
                         minute: '2-digit' 
                       });
-                      const isEditing = editingNoteId === n.id;
                       
                       return (
                         <div key={n.id} className="rounded-md border border-muted bg-muted/30 p-3">
@@ -770,146 +764,42 @@ function ActionRail({
                               {timeStr}
                               {n.edited && <span className="ml-2 text-amber-600">(edited)</span>}
                             </div>
-                            <div className="flex gap-1">
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-6 w-6 p-0"
-                                onClick={() => {
-                                  if (isEditing) {
-                                    setEditingNoteId(null);
-                                    setNoteText("");
-                                  } else {
-                                    setEditingNoteId(n.id);
-                                    setNoteText(n.text);
-                                  }
-                                }}
-                                disabled={isBusy}
-                              >
-                                <Edit2 className="h-3 w-3" />
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-6 w-6 p-0 text-destructive hover:text-destructive"
-                                onClick={() => setDeleteConfirmNoteId(n.id)}
-                                disabled={isBusy}
-                              >
-                                <Trash2 className="h-3 w-3" />
-                              </Button>
-                            </div>
                           </div>
-                          {isEditing ? (
-                            <div className="space-y-2">
-                              <Textarea
-                                value={noteText}
-                                onChange={(e) => setNoteText(e.target.value)}
-                                className="min-h-[64px]"
-                                disabled={isBusy}
-                                autoFocus
-                              />
-                              <div className="flex gap-2">
-                                <Button
-                                  size="sm"
-                                  onClick={() => {
-                                    const text = noteText.trim();
-                                    if (!text) return;
-                                    editNote.mutate({ noteId: n.id, text }, {
-                                      onSuccess: () => {
-                                        setEditingNoteId(null);
-                                        setNoteText("");
-                                      },
-                                    });
-                                  }}
-                                  disabled={isBusy || !noteText.trim()}
-                                >
-                                  Save
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => {
-                                    setEditingNoteId(null);
-                                    setNoteText("");
-                                  }}
-                                  disabled={isBusy}
-                                >
-                                  Cancel
-                                </Button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="text-sm text-foreground whitespace-pre-wrap">{n.text}</div>
-                          )}
+                          <div className="text-sm text-foreground whitespace-pre-wrap">{n.text}</div>
                         </div>
                       );
                     })}
                   </div>
                 </div>
               )}
-              {!editingNoteId && (
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">Add New Note:</div>
-                  <Textarea
-                    value={noteText}
-                    onChange={(e) => setNoteText(e.target.value)}
-                    placeholder="Enter new note here..."
-                    className="min-h-[96px]"
-                    disabled={isBusy}
-                  />
-                </div>
-              )}
+              <div className="space-y-2">
+                <div className="text-sm font-medium">Add New Note:</div>
+                <Textarea
+                  value={noteText}
+                  onChange={(e) => setNoteText(e.target.value)}
+                  placeholder="Enter new note here..."
+                  className="min-h-[96px]"
+                  disabled={isBusy}
+                />
+              </div>
             </div>
             <AlertDialogFooter>
               <AlertDialogCancel disabled={isBusy} onClick={() => {
                 setNoteText("");
-                setEditingNoteId(null);
               }}>Close</AlertDialogCancel>
-              {!editingNoteId && (
-                <AlertDialogAction
-                  onClick={() => {
-                    const text = noteText.trim();
-                    if (!text) return;
-                    addNote.mutate(text, {
-                      onSuccess: () => {
-                        setNoteText("");
-                      },
-                    });
-                  }}
-                  disabled={isBusy || !noteText.trim()}
-                >
-                  Add Note
-                </AlertDialogAction>
-              )}
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-
-        {/* Delete confirmation dialog */}
-        <AlertDialog open={!!deleteConfirmNoteId} onOpenChange={(open) => !open && setDeleteConfirmNoteId(null)}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete Note</AlertDialogTitle>
-              <AlertDialogDescription>
-                Are you sure you want to delete this note? This action will be logged in the timeline.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={isBusy}>Cancel</AlertDialogCancel>
               <AlertDialogAction
                 onClick={() => {
-                  if (deleteConfirmNoteId) {
-                    deleteNote.mutate(deleteConfirmNoteId, {
-                      onSuccess: () => {
-                        setDeleteConfirmNoteId(null);
-                      },
-                    });
-                  }
+                  const text = noteText.trim();
+                  if (!text) return;
+                  addNote.mutate(text, {
+                    onSuccess: () => {
+                      setNoteText("");
+                    },
+                  });
                 }}
-                disabled={isBusy}
-                className="bg-destructive hover:bg-destructive/90"
+                disabled={isBusy || !noteText.trim()}
               >
-                Delete
+                Add Production Note
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -1052,6 +942,21 @@ function ActionRail({
                   readOnly
                   className="bg-muted text-muted-foreground cursor-default"
                 />
+              </div>
+              <div className="grid grid-cols-2 gap-2 rounded-md border border-border bg-muted/30 p-2 text-xs">
+                <div>
+                  <div className="text-muted-foreground">Original printer</div>
+                  <div className="font-medium">{job.assignedPrinterName || "Unassigned"}</div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Completed</div>
+                  <div className="font-medium">{reprintCompletedLabel}</div>
+                </div>
+                {job.assignedPrinterAt ? (
+                  <div className="col-span-2 text-muted-foreground">
+                    Latest assignment saved {new Date(job.assignedPrinterAt).toLocaleString()}
+                  </div>
+                ) : null}
               </div>
               {/* Quantity + Units */}
               <div className="grid grid-cols-2 gap-2">
@@ -1511,11 +1416,27 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
+  const [printerFilter, setPrinterFilter] = useState("all");
 
-  const jobsSafe = useMemo(
+  const tabJobs = useMemo(
     () => filterProductionJobsForTab(props.jobs ?? data ?? [], props.status),
     [data, props.jobs, props.status],
   );
+  const printerOptions = useMemo(() => {
+    const names = new Set<string>();
+    for (const job of tabJobs) {
+      const name = String((job as any).assignedPrinterName || "").trim();
+      if (name) names.add(name);
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [tabJobs]);
+  const jobsSafe = useMemo(() => {
+    if (printerFilter === "all") return tabJobs;
+    if (printerFilter === "unassigned") {
+      return tabJobs.filter((job) => !String((job as any).assignedPrinterName || "").trim());
+    }
+    return tabJobs.filter((job) => String((job as any).assignedPrinterName || "").trim() === printerFilter);
+  }, [tabJobs, printerFilter]);
 
   const sortedJobs = useMemo(() => {
     return [...jobsSafe];
@@ -1617,7 +1538,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     );
   }
 
-  if (jobsSafe.length === 0) {
+  if (tabJobs.length === 0) {
     if (props.status === "queued") {
       return (
         <div className="space-y-3">
@@ -1681,7 +1602,23 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
         ) : null}
 
         <div>
-          <div className="text-sm font-semibold text-titan-text-primary">JOB QUEUE</div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm font-semibold text-titan-text-primary">JOB QUEUE</div>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="font-semibold uppercase tracking-wide text-titan-text-muted">Printer</span>
+              <select
+                value={printerFilter}
+                onChange={(event) => setPrinterFilter(event.target.value)}
+                className="h-8 rounded-md border border-titan-border-subtle bg-titan-bg-card px-2 text-xs text-titan-text-primary"
+              >
+                <option value="all">All Printers</option>
+                <option value="unassigned">Unassigned</option>
+                {printerOptions.map((name) => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
           <div className="mt-2 rounded-lg border border-titan-border-subtle bg-titan-bg-card overflow-hidden">
             <Table>
               <TableHeader>
@@ -1698,6 +1635,13 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                 </TableRow>
               </TableHeader>
               <TableBody>
+                {sortedJobs.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={9} className="py-8 text-center text-sm text-titan-text-muted">
+                      No jobs match this printer filter.
+                    </TableCell>
+                  </TableRow>
+                ) : null}
                 {sortedJobs.map((job) => {
                   const selected = job.id === selectedJobId;
                   const li = primaryLineItem(job);

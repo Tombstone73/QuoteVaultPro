@@ -14,8 +14,10 @@ import {
 } from '@shared/schema';
 import type { DerivedOrderFulfillmentStatus, QueueRowDto } from './types';
 import { TERMINAL_PRODUCTION_STATUSES } from '@shared/operationalState';
+import { buildPrepressOptionRows, extractFinishingBullets } from '../../routes/flatStockNesting.shared';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
+const PRINT_CONTEXT_EXCLUDED_STATIONS = new Set(['fulfillment', 'prepress', 'design']);
 
 type DbExecutor = typeof db;
 
@@ -40,6 +42,51 @@ function toShipAddressKey(order: {
     normalize(order.shipToPostalCode),
     normalize(order.shipToCountry),
   ].join('|');
+}
+
+function cleanText(value: unknown): string {
+  return String(value ?? '').trim();
+}
+
+function uniqueNonEmpty(values: unknown[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const text = cleanText(value);
+    if (!text || seen.has(text.toLowerCase())) continue;
+    seen.add(text.toLowerCase());
+    out.push(text);
+  }
+  return out;
+}
+
+function latestIso(values: unknown[]): string | null {
+  const latest = values
+    .map((value) => {
+      const ms = value ? new Date(value as any).getTime() : Number.NaN;
+      return Number.isFinite(ms) ? ms : null;
+    })
+    .filter((value): value is number => value != null)
+    .sort((a, b) => b - a)[0];
+  return latest ? new Date(latest).toISOString() : null;
+}
+
+function buildLineItemProductionContext(lineItem: any) {
+  const optionRows = buildPrepressOptionRows(lineItem);
+  const lamination = optionRows.find((row) =>
+    /laminat/i.test(row.optionLabel) && !/^(none|no|false|not selected|n\/a)$/i.test(cleanText(row.selectedLabel)),
+  );
+  const registrationMarks = optionRows
+    .filter((row) => /(registration|reg\.?\s*mark|marks?)/i.test(row.optionLabel))
+    .filter((row) => !/^(none|no|false|not selected|n\/a)$/i.test(cleanText(row.selectedLabel)))
+    .map((row) => `${row.optionLabel}: ${row.selectedLabel}`);
+
+  return {
+    finishingRequirements: extractFinishingBullets(lineItem),
+    lamination: lamination?.selectedLabel ?? null,
+    registrationMarks,
+    productionNotes: cleanText(lineItem?.productionNotes) ? [cleanText(lineItem.productionNotes)] : [],
+  };
 }
 
 export class ShipmentRepo {
@@ -807,6 +854,35 @@ export class FulfillmentDashboardRepo {
         .orderBy(desc(productionJobs.updatedAt))
       : [];
 
+    const productionContextRows = orderIds.length > 0
+      ? await this.dbInstance
+        .select({
+          id: productionJobs.id,
+          orderId: productionJobs.orderId,
+          stationKey: productionJobs.stationKey,
+          status: productionJobs.status,
+          assignedPrinterName: productionJobs.assignedPrinterName,
+          assignedPrinterAt: productionJobs.assignedPrinterAt,
+          completedAt: productionJobs.completedAt,
+          updatedAt: productionJobs.updatedAt,
+          lineItemId: productionJobs.lineItemId,
+          description: orderLineItems.description,
+          productionNotes: orderLineItems.productionNotes,
+          optionSelectionsJson: orderLineItems.optionSelectionsJson,
+          pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
+          specsJson: orderLineItems.specsJson,
+          selectedOptions: orderLineItems.selectedOptions,
+        })
+        .from(productionJobs)
+        .leftJoin(orderLineItems, eq(orderLineItems.id, productionJobs.lineItemId))
+        .where(and(
+          eq(productionJobs.organizationId, orgId),
+          inArray(productionJobs.orderId, orderIds),
+          ne(productionJobs.status, 'cancelled' as any),
+        ))
+        .orderBy(desc(productionJobs.updatedAt))
+      : [];
+
     const orderedMap = new Map(lineItemAgg.map((row) => [row.orderId, row.orderedQty]));
     const shippedMap = new Map(shippedAgg.map((row) => [row.orderId, row.shippedQty]));
     const ticketMap = new Map(ticketRows.map((row) => [row.orderId, row]));
@@ -819,6 +895,40 @@ export class FulfillmentDashboardRepo {
         quantity: job.quantity == null ? null : Number(job.quantity),
       });
       productionJobsByOrder.set(job.orderId, list);
+    }
+
+    type ProductionContextRow = (typeof productionContextRows)[number];
+    const productionContextByOrder = new Map<string, QueueRowDto['productionContext']>();
+    const rowsByOrder = new Map<string, ProductionContextRow[]>();
+    for (const row of productionContextRows) {
+      const list = rowsByOrder.get(row.orderId) ?? [];
+      list.push(row);
+      rowsByOrder.set(row.orderId, list);
+    }
+
+    for (const [orderId, contextRows] of Array.from(rowsByOrder.entries())) {
+      const printRows = contextRows.filter((row) => {
+        const station = cleanText(row.stationKey).toLowerCase();
+        return !PRINT_CONTEXT_EXCLUDED_STATIONS.has(station);
+      });
+      const sourceRows = printRows.length > 0 ? printRows : contextRows;
+      const printerRows = sourceRows
+        .filter((row) => cleanText(row.assignedPrinterName))
+        .sort((a, b) => {
+          const left = new Date((a.assignedPrinterAt ?? a.completedAt ?? a.updatedAt) as any).getTime();
+          const right = new Date((b.assignedPrinterAt ?? b.completedAt ?? b.updatedAt) as any).getTime();
+          return (Number.isFinite(right) ? right : 0) - (Number.isFinite(left) ? left : 0);
+        });
+      const lineItemContexts = sourceRows.map((row) => buildLineItemProductionContext(row));
+      productionContextByOrder.set(orderId, {
+        primaryPrinterName: cleanText(printerRows[0]?.assignedPrinterName) || null,
+        printerNames: uniqueNonEmpty(sourceRows.map((row) => row.assignedPrinterName)),
+        finishingRequirements: uniqueNonEmpty(lineItemContexts.flatMap((ctx) => ctx.finishingRequirements)),
+        lamination: uniqueNonEmpty(lineItemContexts.map((ctx) => ctx.lamination))[0] ?? null,
+        registrationMarks: uniqueNonEmpty(lineItemContexts.flatMap((ctx) => ctx.registrationMarks)),
+        productionNotes: uniqueNonEmpty(lineItemContexts.flatMap((ctx) => ctx.productionNotes)),
+        completedAt: latestIso(sourceRows.map((row) => row.completedAt)),
+      });
     }
 
     const nowMs = Date.now();
@@ -856,6 +966,7 @@ export class FulfillmentDashboardRepo {
           shipTo: 'In-Store',
           overdue: false,
           productionJobs: productionJobsByOrder.get(order.id) ?? [],
+          productionContext: productionContextByOrder.get(order.id),
         };
 
         if (filters.status !== 'all' && filters.status.toLowerCase() !== status.toLowerCase()) continue;
@@ -891,6 +1002,7 @@ export class FulfillmentDashboardRepo {
         shipTo: [order.shipToCity, order.shipToState].filter(Boolean).join(', ') || 'Unknown',
         overdue,
         productionJobs: productionJobsByOrder.get(order.id) ?? [],
+        productionContext: productionContextByOrder.get(order.id),
       });
     }
 

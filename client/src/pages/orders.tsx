@@ -57,6 +57,7 @@ function ProductionSummaryBadge({
     inProductionCount: 0,
     completeCount: 0,
     status: "none" as const,
+    printerNames: [],
   };
 
   const config: Record<NonNullable<OrderRow["productionSummary"]>["status"], { label: string; className: string }> = {
@@ -74,6 +75,7 @@ function ProductionSummaryBadge({
     `Pending: ${normalized.pendingHandoffCount}`,
     `Active: ${normalized.inProductionCount}`,
     `Complete: ${normalized.completeCount}`,
+    normalized.printerNames?.length ? `Printers: ${normalized.printerNames.join(", ")}` : "Printers: Unassigned",
   ].join(" | ");
 
   const countSuffix = normalized.pendingHandoffCount > 0 && (normalized.status === "needs_handoff" || normalized.status === "partial")

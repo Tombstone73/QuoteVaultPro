@@ -19,6 +19,7 @@ import {
     quotes,
     quoteAttachments,
     quoteLineItems,
+    productionJobs,
     jobs,
     jobStatusLog,
     auditLogs,
@@ -62,6 +63,7 @@ type OrderProductionSummary = {
     inProductionCount: number;
     completeCount: number;
     status: ProductionSummaryStatus;
+    printerNames: string[];
 };
 
 type OrderWithProofSummary = Order & {
@@ -327,6 +329,25 @@ export class OrdersRepository {
                 debugLabel: "OrdersRepository.buildProductionSummaries",
             })
             : new Map<string, any>();
+        const printerRows = await this.dbInstance
+            .select({
+                orderId: productionJobs.orderId,
+                assignedPrinterName: productionJobs.assignedPrinterName,
+            })
+            .from(productionJobs)
+            .where(and(
+                eq(productionJobs.organizationId, organizationId),
+                inArray(productionJobs.orderId, orderIds),
+                sql`LOWER(COALESCE(${productionJobs.stationKey}, '')) NOT IN ('prepress', 'design', 'fulfillment')`,
+            ));
+        const printerNamesByOrder = new Map<string, string[]>();
+        for (const row of printerRows) {
+            const name = String(row.assignedPrinterName || "").trim();
+            if (!name) continue;
+            const list = printerNamesByOrder.get(row.orderId) ?? [];
+            if (!list.some((existing) => existing.toLowerCase() === name.toLowerCase())) list.push(name);
+            printerNamesByOrder.set(row.orderId, list);
+        }
 
         const terminalStates = new Set(["completed", "canceled"]);
         const readyStates = new Set(["ready_for_prepress", "ready_for_production"]);
@@ -340,6 +361,7 @@ export class OrdersRepository {
                 inProductionCount: 0,
                 completeCount: 0,
                 status: "none",
+                printerNames: printerNamesByOrder.get(orderId) ?? [],
             });
         }
 
@@ -833,6 +855,7 @@ export class OrdersRepository {
                 inProductionCount: 0,
                 completeCount: 0,
                 status: "none",
+                printerNames: [],
             },
             previewThumbnails: previewData.get(order.id)?.thumbnails || [],
             thumbsCount: previewData.get(order.id)?.totalCount || 0,
@@ -927,6 +950,7 @@ export class OrdersRepository {
                     inProductionCount: 0,
                     completeCount: 0,
                     status: "none",
+                    printerNames: [],
                 },
                 proofStatus: orderSummaries.get(order.id)?.proofStatus ?? "no_proof_required",
                 proofStatusLabel: orderSummaries.get(order.id)?.proofStatusLabel ?? "No Proof Needed",

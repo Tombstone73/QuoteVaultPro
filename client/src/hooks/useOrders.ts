@@ -292,6 +292,7 @@ export type OrderRow = Order & {
     inProductionCount: number;
     completeCount: number;
     status: "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
+    printerNames?: string[];
   };
   listLabel?: string | null; // List-only note (always editable)
   previewThumbnails?: string[]; // GCS thumbnail keys

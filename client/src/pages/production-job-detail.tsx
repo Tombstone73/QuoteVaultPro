@@ -76,6 +76,14 @@ function formatEventLabel(type: string) {
   }
 }
 
+function formatPrinterAssignmentPayload(payload: any): string | null {
+  const toName = String(payload?.to?.assignedPrinterName || "").trim();
+  const fromName = String(payload?.from?.assignedPrinterName || "").trim();
+  if (!toName) return null;
+  if (fromName && fromName !== toName) return `${toName} (was ${fromName})`;
+  return toName;
+}
+
 /**
  * Get the best available image source for artwork
  * Priority: thumbnailUrl > fileUrl (if image) > null
@@ -540,9 +548,9 @@ export default function ProductionJobDetailPage() {
                                 {String(e.payload.reason)} ticket
                               </div>
                             )}
-                            {e.type === "printer_assigned" && e.payload?.to?.assignedPrinterName && (
+                            {e.type === "printer_assigned" && formatPrinterAssignmentPayload(e.payload) && (
                               <div className="text-sm text-muted-foreground mt-2">
-                                {String(e.payload.to.assignedPrinterName)}
+                                {formatPrinterAssignmentPayload(e.payload)}
                               </div>
                             )}
                           </div>
@@ -686,6 +694,13 @@ export default function ProductionJobDetailPage() {
                   <div className="text-muted-foreground">Quantity:</div>
                   <div className="font-medium">{qty}</div>
 
+                  {data.completedAt ? (
+                    <>
+                      <div className="text-muted-foreground">Completed:</div>
+                      <div>{new Date(data.completedAt).toLocaleString()}</div>
+                    </>
+                  ) : null}
+
                   <div className="text-muted-foreground">Sides:</div>
                   <div>{sidesDisplay}</div>
 
@@ -821,7 +836,7 @@ export default function ProductionJobDetailPage() {
             {/* ADD NOTE */}
             <Card>
               <CardHeader className="p-4 pb-2">
-                <CardTitle className="text-base">Add Note</CardTitle>
+                <CardTitle className="text-base">Add Production Note</CardTitle>
               </CardHeader>
               <CardContent className="p-4 pt-2 space-y-3">
                 <Textarea
@@ -838,7 +853,7 @@ export default function ProductionJobDetailPage() {
                   }}
                   disabled={isBusy || !noteText.trim()}
                 >
-                  Add
+                  Add Production Note
                 </Button>
               </CardContent>
             </Card>
