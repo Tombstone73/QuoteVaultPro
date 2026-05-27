@@ -43,6 +43,16 @@ import {
   useSaveProductionLineItemStatusRules,
   type ProductionLineItemStatusRule,
 } from "@/hooks/useProductionSettings";
+import {
+  type ProductionAlertPreset,
+  type ProductionAlertSeverity,
+  type ProductionAlertStation,
+  type ProductionAlertType,
+  useArchiveProductionAlertPreset,
+  useCreateProductionAlertPreset,
+  useProductionAlertPresets,
+  useUpdateProductionAlertPreset,
+} from "@/hooks/useProduction";
 import { StationStepEditor } from "@/components/production/StationStepEditor";
 import { JobStatusSettings } from "@/components/job-status-settings";
 import { InvoiceRemindersTab } from "@/components/admin-settings";
@@ -530,6 +540,270 @@ function ProductionSettingsSection({
   );
 }
 
+const ALERT_STATION_OPTIONS: Array<{ value: ProductionAlertStation; label: string }> = [
+  { value: "roll", label: "Roll" },
+  { value: "flatbed", label: "Flatbed" },
+  { value: "fulfillment", label: "Fulfillment" },
+  { value: "all", label: "All" },
+];
+
+const ALERT_TYPE_OPTIONS: Array<{ value: ProductionAlertType; label: string }> = [
+  { value: "general_warning", label: "General Warning" },
+  { value: "color_match", label: "Color Match" },
+  { value: "pms_match", label: "PMS Match" },
+  { value: "customer_specific", label: "Customer Specific" },
+  { value: "machine_setting", label: "Machine Setting" },
+  { value: "finishing_instruction", label: "Finishing Instruction" },
+  { value: "registration_instruction", label: "Registration Instruction" },
+];
+
+type AlertPresetDraft = {
+  id?: string;
+  name: string;
+  title: string;
+  message: string;
+  alertType: ProductionAlertType;
+  severity: ProductionAlertSeverity;
+  visibleStations: ProductionAlertStation[];
+  isActive: boolean;
+  sortOrder: number;
+};
+
+const emptyAlertPresetDraft = (): AlertPresetDraft => ({
+  name: "",
+  title: "",
+  message: "",
+  alertType: "general_warning",
+  severity: "warning",
+  visibleStations: ["all"],
+  isActive: true,
+  sortOrder: 100,
+});
+
+function presetToDraft(preset: ProductionAlertPreset): AlertPresetDraft {
+  return {
+    id: preset.id,
+    name: preset.name,
+    title: preset.title,
+    message: preset.message ?? "",
+    alertType: preset.alertType,
+    severity: preset.severity,
+    visibleStations: preset.visibleStations.length ? preset.visibleStations : ["all"],
+    isActive: preset.isActive,
+    sortOrder: preset.sortOrder,
+  };
+}
+
+function ProductionAlertPresetSettings() {
+  const presets = useProductionAlertPresets({ includeInactive: true });
+  const createPreset = useCreateProductionAlertPreset();
+  const updatePreset = useUpdateProductionAlertPreset();
+  const archivePreset = useArchiveProductionAlertPreset();
+  const [draft, setDraft] = React.useState<AlertPresetDraft>(() => emptyAlertPresetDraft());
+
+  const isEditing = Boolean(draft.id);
+  const activeCount = (presets.data ?? []).filter((preset) => preset.isActive).length;
+
+  const setDraftField = (patch: Partial<AlertPresetDraft>) => {
+    setDraft((current) => ({ ...current, ...patch }));
+  };
+
+  const toggleStation = (station: ProductionAlertStation, checked: boolean) => {
+    setDraft((current) => {
+      if (station === "all") {
+        return { ...current, visibleStations: checked ? ["all"] : [] };
+      }
+      const withoutAll = current.visibleStations.filter((value) => value !== "all");
+      const next = checked
+        ? Array.from(new Set([...withoutAll, station]))
+        : withoutAll.filter((value) => value !== station);
+      return { ...current, visibleStations: next.length ? next : ["all"] };
+    });
+  };
+
+  const resetDraft = () => setDraft(emptyAlertPresetDraft());
+
+  const savePreset = () => {
+    const payload = {
+      name: draft.name.trim(),
+      title: draft.title.trim(),
+      message: draft.message.trim() || null,
+      alertType: draft.alertType,
+      severity: draft.severity,
+      visibleStations: (draft.visibleStations.length ? draft.visibleStations : ["all"]) as ProductionAlertStation[],
+      isActive: draft.isActive,
+      sortOrder: Number(draft.sortOrder) || 100,
+    };
+    if (draft.id) {
+      updatePreset.mutate({ id: draft.id, ...payload }, { onSuccess: resetDraft });
+      return;
+    }
+    createPreset.mutate(payload, { onSuccess: resetDraft });
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-titan-lg border border-titan-border-subtle p-4">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-titan-text-primary">
+              {isEditing ? "Edit preset" : "Create preset"}
+            </div>
+            <div className="text-xs text-titan-text-muted">
+              Presets only populate new alerts. Existing alerts keep their saved snapshot.
+            </div>
+          </div>
+          {isEditing ? (
+            <Button variant="outline" onClick={resetDraft}>Cancel Edit</Button>
+          ) : null}
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="space-y-2">
+            <Label>Name</Label>
+            <Input value={draft.name} onChange={(event) => setDraftField({ name: event.target.value })} placeholder="Rick Red" />
+          </div>
+          <div className="space-y-2">
+            <Label>Alert Title</Label>
+            <Input value={draft.title} onChange={(event) => setDraftField({ title: event.target.value })} placeholder="Rick Red" />
+          </div>
+          <div className="space-y-2">
+            <Label>Type</Label>
+            <Select value={draft.alertType} onValueChange={(value) => setDraftField({ alertType: value as ProductionAlertType })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {ALERT_TYPE_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>Severity</Label>
+            <Select value={draft.severity} onValueChange={(value) => setDraftField({ severity: value as ProductionAlertSeverity })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="warning">Warning</SelectItem>
+                <SelectItem value="critical">Critical</SelectItem>
+                <SelectItem value="info">Info</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
+          <div className="space-y-2">
+            <Label>Notes</Label>
+            <Textarea
+              value={draft.message}
+              onChange={(event) => setDraftField({ message: event.target.value })}
+              placeholder="Use Rick Red density preset in Onyx. Adjust reds before printing."
+              className="min-h-[90px]"
+            />
+          </div>
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label>Visible To</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {ALERT_STATION_OPTIONS.map((option) => (
+                  <label key={option.value} className="flex items-center gap-2 rounded-md border border-titan-border-subtle px-2 py-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={draft.visibleStations.includes(option.value)}
+                      onChange={(event) => toggleStation(option.value, event.target.checked)}
+                    />
+                    {option.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Sort</Label>
+                <Input
+                  inputMode="numeric"
+                  value={draft.sortOrder}
+                  onChange={(event) => setDraftField({ sortOrder: Number(event.target.value) || 0 })}
+                />
+              </div>
+              <label className="flex items-center gap-2 pt-7 text-sm">
+                <Switch checked={draft.isActive} onCheckedChange={(checked) => setDraftField({ isActive: checked })} />
+                Active
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 flex justify-end">
+          <Button
+            onClick={savePreset}
+            disabled={!draft.name.trim() || !draft.title.trim() || createPreset.isPending || updatePreset.isPending}
+          >
+            {createPreset.isPending || updatePreset.isPending ? "Saving..." : isEditing ? "Save Preset" : "Create Preset"}
+          </Button>
+        </div>
+      </div>
+
+      <div className="rounded-titan-lg border border-titan-border-subtle overflow-hidden">
+        <div className="flex items-center justify-between gap-3 border-b border-titan-border-subtle px-4 py-3">
+          <div className="text-sm font-semibold text-titan-text-primary">Presets</div>
+          <Badge variant="outline">{activeCount} active</Badge>
+        </div>
+        {presets.isLoading ? (
+          <div className="p-4 text-sm text-titan-text-muted">Loading presets...</div>
+        ) : presets.isError ? (
+          <div className="p-4 text-sm text-red-600">{(presets.error as any)?.message || "Failed to load presets"}</div>
+        ) : (presets.data ?? []).length === 0 ? (
+          <div className="p-4 text-sm text-titan-text-muted">No production alert presets yet.</div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Severity</TableHead>
+                <TableHead>Visible</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(presets.data ?? []).map((preset) => (
+                <TableRow key={preset.id}>
+                  <TableCell>
+                    <div className="font-medium">{preset.name}</div>
+                    <div className="text-xs text-titan-text-muted">{preset.title}</div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={preset.severity === "critical" ? "destructive" : "outline"}>
+                      {preset.severity}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-sm">{preset.visibleStations.join(", ")}</TableCell>
+                  <TableCell>
+                    <Badge variant={preset.isActive ? "outline" : "secondary"}>
+                      {preset.isActive ? "Active" : "Archived"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-2">
+                      <Button variant="outline" size="sm" onClick={() => setDraft(presetToDraft(preset))}>Edit</Button>
+                      {preset.isActive ? (
+                        <Button variant="outline" size="sm" onClick={() => archivePreset.mutate(preset.id)} disabled={archivePreset.isPending}>
+                          Archive
+                        </Button>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const dedupeWorkflowStatuses = (statuses: Array<{
   key: string;
   label: string;
@@ -912,6 +1186,14 @@ export function ProductionSettings() {
               <Ticket className="h-4 w-4" /> Print Test Ticket
             </Button>
           </div>
+        </ProductionSettingsSection>
+
+        <ProductionSettingsSection
+          title="Production Alert Presets"
+          summary="Reusable shop-floor alert templates for Prepress"
+          help="Preset edits affect future alerts only. Alerts already created keep their copied title, notes, severity, and station visibility."
+        >
+          <ProductionAlertPresetSettings />
         </ProductionSettingsSection>
 
         <ProductionSettingsSection

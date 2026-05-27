@@ -22,6 +22,7 @@ import {
   type ProductionAlertStation,
   type ProductionAlertType,
   useCreateProductionAlert,
+  useProductionAlertPresets,
   useProductionAlerts,
 } from "@/hooks/useProduction";
 import type { PrepressQueueItem, PrepressQueueWorkflowState } from "@/hooks/useOrders";
@@ -273,6 +274,7 @@ export default function PrepressProductionPageV2() {
   const [issueType, setIssueType] = useState("");
   const [productionAlertOpen, setProductionAlertOpen] = useState(false);
   const [productionAlertTitle, setProductionAlertTitle] = useState("");
+  const [productionAlertPresetId, setProductionAlertPresetId] = useState("manual");
   const [productionAlertType, setProductionAlertType] = useState<ProductionAlertType>("general_warning");
   const [productionAlertSeverity, setProductionAlertSeverity] = useState<ProductionAlertSeverity>("warning");
   const [productionAlertStations, setProductionAlertStations] = useState<ProductionAlertStation[]>(["all"]);
@@ -703,6 +705,7 @@ export default function PrepressProductionPageV2() {
     { lineItemId: selectedLineItemId ?? undefined },
     { enabled: !!selectedLineItemId },
   );
+  const productionAlertPresetsQuery = useProductionAlertPresets();
   const createProductionAlert = useCreateProductionAlert();
   const selectedOwnerLabel = formatOwnerLabel(selectedItem);
   const originalFiles = filesData?.originals || [];
@@ -865,6 +868,7 @@ export default function PrepressProductionPageV2() {
   React.useEffect(() => {
     setProductionAlertOpen(false);
     setProductionAlertTitle("");
+    setProductionAlertPresetId("manual");
     setProductionAlertType("general_warning");
     setProductionAlertSeverity("warning");
     setProductionAlertStations([selectedAlertStation]);
@@ -921,8 +925,21 @@ export default function PrepressProductionPageV2() {
   };
 
   const handleOpenProductionAlert = () => {
+    setProductionAlertPresetId("manual");
     setProductionAlertStations([selectedAlertStation]);
     setProductionAlertOpen(true);
+  };
+
+  const handleProductionAlertPresetChange = (presetId: string) => {
+    setProductionAlertPresetId(presetId);
+    if (presetId === "manual") return;
+    const preset = productionAlertPresetsQuery.data?.find((entry) => entry.id === presetId);
+    if (!preset) return;
+    setProductionAlertTitle(preset.title);
+    setProductionAlertType(preset.alertType);
+    setProductionAlertSeverity(preset.severity);
+    setProductionAlertStations(preset.visibleStations.length ? preset.visibleStations : ["all"]);
+    setProductionAlertMessage(preset.message ?? "");
   };
 
   const handleToggleProductionAlertStation = (station: ProductionAlertStation, checked: boolean) => {
@@ -947,11 +964,13 @@ export default function PrepressProductionPageV2() {
         severity: productionAlertSeverity,
         visibleStations: productionAlertStations.length ? productionAlertStations : ["all"],
         message: productionAlertMessage,
+        presetId: productionAlertPresetId === "manual" ? null : productionAlertPresetId,
       },
       {
         onSuccess: () => {
           setProductionAlertOpen(false);
           setProductionAlertTitle("");
+          setProductionAlertPresetId("manual");
           setProductionAlertType("general_warning");
           setProductionAlertSeverity("warning");
           setProductionAlertStations([selectedAlertStation]);
@@ -2099,6 +2118,26 @@ export default function PrepressProductionPageV2() {
             <DialogTitle>Add Production Alert</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
+            <div>
+              <Label className="text-xs text-slate-400 mb-1 block">Use Preset</Label>
+              <Select value={productionAlertPresetId} onValueChange={handleProductionAlertPresetChange}>
+                <SelectTrigger className="bg-[#0f172a] border-[#2d3748]">
+                  <SelectValue placeholder="Manual alert" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="manual">Manual / Freeform</SelectItem>
+                  {(productionAlertPresetsQuery.data ?? []).map((preset) => (
+                    <SelectItem key={preset.id} value={preset.id}>
+                      {preset.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {productionAlertPresetsQuery.isLoading ? (
+                <div className="mt-1 text-[11px] text-slate-500">Loading presets...</div>
+              ) : null}
+            </div>
+
             <div>
               <Label className="text-xs text-slate-400 mb-1 block">Title</Label>
               <Input

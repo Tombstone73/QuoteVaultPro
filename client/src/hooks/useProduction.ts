@@ -46,6 +46,22 @@ export type ProductionAlertSummary = {
   updatedAt?: string | null;
 };
 
+export type ProductionAlertPreset = {
+  id: string;
+  name: string;
+  title: string;
+  message: string | null;
+  alertType: ProductionAlertType;
+  severity: ProductionAlertSeverity;
+  visibleStations: ProductionAlertStation[];
+  isActive: boolean;
+  sortOrder: number;
+  createdByUserId: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
 export type ProductionDisplayOptionRow = {
   groupLabel?: string | null;
   optionLabel: string;
@@ -421,6 +437,25 @@ export function useProductionAlerts(
   });
 }
 
+export function useProductionAlertPresets(options?: { includeInactive?: boolean; enabled?: boolean }) {
+  return useQuery<ProductionAlertPreset[]>({
+    queryKey: ["/api/production-alert-presets", { includeInactive: options?.includeInactive === true }],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (options?.includeInactive) params.set("includeInactive", "true");
+      const res = await fetch(`/api/production-alert-presets${params.toString() ? `?${params.toString()}` : ""}`, {
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to fetch production alert presets");
+      return json.data || [];
+    },
+    enabled: options?.enabled !== false,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
 function invalidateProduction(qc: ReturnType<typeof useQueryClient>, jobId?: string) {
   qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
   if (jobId) qc.invalidateQueries({ queryKey: ["/api/production/jobs", jobId] });
@@ -441,6 +476,7 @@ export function useCreateProductionAlert() {
       alertType: ProductionAlertType;
       severity: ProductionAlertSeverity;
       visibleStations: ProductionAlertStation[];
+      presetId?: string | null;
       metadata?: Record<string, unknown> | null;
     }) => {
       const res = await fetch("/api/production-alerts", {
@@ -461,6 +497,89 @@ export function useCreateProductionAlert() {
     },
     onError: (e: Error) => {
       toast({ title: "Alert failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useCreateProductionAlertPreset() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (data: {
+      name: string;
+      title: string;
+      message?: string | null;
+      alertType: ProductionAlertType;
+      severity: ProductionAlertSeverity;
+      visibleStations: ProductionAlertStation[];
+      isActive?: boolean;
+      sortOrder?: number;
+      metadata?: Record<string, unknown> | null;
+    }) => {
+      const res = await fetch("/api/production-alert-presets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to create production alert preset");
+      return json.data as ProductionAlertPreset;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/production-alert-presets"] });
+      toast({ title: "Production alert preset created" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Preset failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useUpdateProductionAlertPreset() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async ({ id, ...data }: Partial<ProductionAlertPreset> & { id: string }) => {
+      const res = await fetch(`/api/production-alert-presets/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to update production alert preset");
+      return json.data as ProductionAlertPreset;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/production-alert-presets"] });
+      toast({ title: "Production alert preset updated" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Preset update failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useArchiveProductionAlertPreset() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`/api/production-alert-presets/${id}/archive`, {
+        method: "PATCH",
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to archive production alert preset");
+      return json.data as ProductionAlertPreset;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/production-alert-presets"] });
+      toast({ title: "Production alert preset archived" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Archive failed", description: e.message, variant: "destructive" });
     },
   });
 }
