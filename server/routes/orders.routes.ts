@@ -82,6 +82,8 @@ import {
     mergePricingIntoSpecsJson,
     resolvePersistedLineItemPricing,
     enrichLineItemWithEffectivePricing,
+    getPersistedBaseCalculatedTotalCents,
+    haveLineItemPricingDriversChanged,
 } from "../lib/lineItemPricingPersistence";
 import { convertReservationInputToBaseQty } from "@shared/uomConversions";
 import {
@@ -5581,20 +5583,44 @@ export async function registerOrderRoutes(
                 };
             }
 
-            // Server-authoritative: detect pricing-relevant changes
-            const pricingFieldsChanged =
-                updateData.productId !== undefined ||
-                updateData.width !== undefined ||
-                updateData.height !== undefined ||
-                updateData.quantity !== undefined ||
-                updateData.optionSelectionsJson !== undefined ||
-                (pbv2ExplicitSelections !== undefined && pbv2ExplicitSelections !== null);
+            // Server-authoritative: detect actual pricing-driver changes, not merely
+            // full edit-form payloads that repeat persisted product/dimension/options.
+            const pricingFieldsChanged = haveLineItemPricingDriversChanged({
+                existingLineItem: oldLineItem as any,
+                incomingUpdate: updateData as any,
+                pbv2ExplicitSelections,
+            });
             const overrideFieldsChanged =
                 Object.prototype.hasOwnProperty.call(req.body ?? {}, "overridePriceCents") ||
                 Object.prototype.hasOwnProperty.call(req.body ?? {}, "priceOverride") ||
                 Object.prototype.hasOwnProperty.call(req.body ?? {}, "priceOverrideMode") ||
                 Object.prototype.hasOwnProperty.call(req.body ?? {}, "priceOverrideValueCents") ||
                 Object.prototype.hasOwnProperty.call(req.body ?? {}, "priceOverrideValuePercent");
+
+            if (!pricingFieldsChanged) {
+                const incomingSnapshotTotalCents = Number((updateData as any)?.pbv2SnapshotJson?.pricing?.totalCents);
+                const persistedBaseCalculatedTotalCents = getPersistedBaseCalculatedTotalCents(oldLineItem as any);
+                if (
+                    Number.isFinite(incomingSnapshotTotalCents) &&
+                    Math.round(incomingSnapshotTotalCents) !== persistedBaseCalculatedTotalCents &&
+                    process.env.NODE_ENV === "development"
+                ) {
+                    console.warn("[ORDER_LINE_ITEM_UPDATE] Ignoring client PBV2 preview base because pricing drivers are unchanged", {
+                        lineItemId,
+                        incomingSnapshotTotalCents: Math.round(incomingSnapshotTotalCents),
+                        persistedBaseCalculatedTotalCents,
+                    });
+                }
+                delete (updateData as any).pbv2TreeVersionId;
+                delete (updateData as any).pbv2SnapshotJson;
+                delete (updateData as any).pricedAt;
+            }
+
+            if (!pricingFieldsChanged && !overrideFieldsChanged) {
+                delete (updateData as any).unitPrice;
+                delete (updateData as any).totalPrice;
+                delete (updateData as any).overridePriceCents;
+            }
 
             let latestBaseCalculatedTotalCents: number | null = null;
             if (pricingFieldsChanged) {
@@ -5633,15 +5659,8 @@ export async function registerOrderRoutes(
                 const previousSpecs = (oldLineItem as any).specsJson && typeof (oldLineItem as any).specsJson === "object"
                     ? (oldLineItem as any).specsJson
                     : {};
-                const baseFromPreviousOverride = Number((previousSpecs as any)?.priceOverride?.baseCalculatedTotalCents);
-                const baseFromSnapshot = Number((oldLineItem as any)?.pbv2SnapshotJson?.pricing?.totalCents);
-                const fallbackPersistedTotal = Math.round((Number((oldLineItem as any).totalPrice) || 0) * 100);
                 const baseCalculatedTotalCents = latestBaseCalculatedTotalCents
-                    ?? (Number.isFinite(baseFromPreviousOverride)
-                        ? Math.round(baseFromPreviousOverride)
-                        : Number.isFinite(baseFromSnapshot)
-                            ? Math.round(baseFromSnapshot)
-                            : fallbackPersistedTotal);
+                    ?? getPersistedBaseCalculatedTotalCents(oldLineItem as any);
                 const quantityForPricing = Number(updateData.quantity ?? oldLineItem.quantity);
                 const effectivePricing = resolvePersistedLineItemPricing({
                     baseCalculatedTotalCents,
