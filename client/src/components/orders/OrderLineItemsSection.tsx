@@ -67,8 +67,11 @@ import {
   type InitialOrderLineItemDraftDebug,
 } from "@shared/orderLineItemInitialization";
 import {
+  applyLineItemEditPriceOverride,
   getLineItemPriceOverrideLabel,
+  hydrateLineItemEditPricingState,
   isLineItemPriceOverrideMode,
+  type LineItemEffectivePricing,
   type LineItemPriceOverrideMode,
 } from "@shared/lineItemPriceOverrides";
 import {
@@ -206,15 +209,19 @@ function getLineItemPriceOverrideMeta(lineItem: any): any | null {
 }
 
 function getLineItemPriceOverrideMode(lineItem: any): LineItemPriceOverrideMode | null {
+  if (lineItem?.hasPriceOverride === false) return null;
+  if (isLineItemPriceOverrideMode(lineItem?.priceOverrideMode)) return lineItem.priceOverrideMode;
   const meta = getLineItemPriceOverrideMeta(lineItem);
   if (isLineItemPriceOverrideMode(meta?.mode)) return meta.mode;
-  if (typeof lineItem?.overridePriceCents === "number" && Number.isFinite(lineItem.overridePriceCents)) {
+  if (lineItem?.hasPriceOverride === true && typeof lineItem?.overridePriceCents === "number" && Number.isFinite(lineItem.overridePriceCents)) {
     return "override_total_after_margin";
   }
   return null;
 }
 
 function getLineItemBaseCalculatedTotalCents(lineItem: any, fallbackTotal: number): number {
+  const topLevelBase = Number(lineItem?.baseCalculatedTotalCents);
+  if (Number.isFinite(topLevelBase)) return Math.round(topLevelBase);
   const meta = getLineItemPriceOverrideMeta(lineItem);
   const metaBase = Number(meta?.baseCalculatedTotalCents);
   if (Number.isFinite(metaBase)) return Math.round(metaBase);
@@ -224,6 +231,8 @@ function getLineItemBaseCalculatedTotalCents(lineItem: any, fallbackTotal: numbe
 }
 
 function getLineItemOverrideInputValue(lineItem: any, mode: LineItemPriceOverrideMode | null, fallbackTotal: number): number {
+  const topLevelValueCents = Number(lineItem?.priceOverrideValueCents);
+  if (Number.isFinite(topLevelValueCents)) return topLevelValueCents / 100;
   const meta = getLineItemPriceOverrideMeta(lineItem);
   const metaValueCents = Number(meta?.valueCents);
   if (Number.isFinite(metaValueCents)) return metaValueCents / 100;
@@ -231,10 +240,22 @@ function getLineItemOverrideInputValue(lineItem: any, mode: LineItemPriceOverrid
     const qty = Number(lineItem?.quantity) > 0 ? Number(lineItem.quantity) : 1;
     return fallbackTotal / qty;
   }
-  const overrideCents = Number(lineItem?.overridePriceCents);
+  const overrideCents = lineItem?.hasPriceOverride === false ? NaN : Number(lineItem?.overridePriceCents);
   if (Number.isFinite(overrideCents)) return overrideCents / 100;
   return fallbackTotal;
 }
+
+type PendingLineItemPriceOverride = Pick<
+  LineItemEffectivePricing,
+  | "baseCalculatedUnitPriceCents"
+  | "baseCalculatedTotalCents"
+  | "effectiveUnitPriceCents"
+  | "effectiveTotalCents"
+  | "priceOverrideMode"
+  | "priceOverrideValueCents"
+  | "priceOverrideValuePercent"
+  | "hasPriceOverride"
+>;
 
 function buildSelectedOptionsArray(
   productOptions: ProductOptionItem[],
@@ -613,6 +634,8 @@ type OrderLineItemsSectionProps = {
   onAfterLineItemsChange?: () => Promise<void>;
   /** Reports whether the expanded line item has unsaved edits. */
   onDirtyStateChange?: (hasUnsavedLineItem: boolean) => void;
+  /** Reports temporary edit-state line totals so the parent totals card can mirror the pending save payload. */
+  onDraftLineItemPricingChange?: (lineItemId: string, effectiveTotalCents: number | null) => void;
 };
 
 export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, OrderLineItemsSectionProps>(
@@ -625,6 +648,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   productionPriorityLineItemIds = [],
   onAfterLineItemsChange,
   onDirtyStateChange,
+  onDraftLineItemPricingChange,
 }, ref) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -887,6 +911,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [editingPriceItemId, setEditingPriceItemId] = useState<string | null>(null);
   const [priceEditTextById, setPriceEditTextById] = useState<Record<string, string>>({});
   const [priceOverrideModeById, setPriceOverrideModeById] = useState<Record<string, LineItemPriceOverrideMode>>({});
+  const [pendingPriceOverrideById, setPendingPriceOverrideById] = useState<Record<string, PendingLineItemPriceOverride>>({});
 
   const [pendingJumpToLineItemId, setPendingJumpToLineItemId] = useState<string | null>(null);
   const lineItemTopAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -912,6 +937,18 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         delete lineItemWidthInputRefs.current[lineItemId];
       }
     }
+    setPendingPriceOverrideById((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const lineItemId of Object.keys(next)) {
+        if (!liveIds.has(lineItemId)) {
+          delete next[lineItemId];
+          onDraftLineItemPricingChange?.(lineItemId, null);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
   }, [lineItems]);
 
   useEffect(() => {
@@ -1422,17 +1459,22 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
     setCalcError(null);
 
-    const currentTotal = Number.parseFloat(expandedItem.totalPrice || "0") || 0;
+    const persistedPricing = hydrateLineItemEditPricingState(expandedItem);
+    const currentTotal = persistedPricing.persistedEffectiveTotalCents / 100;
     setComputedTotal(Number.isFinite(currentTotal) ? currentTotal : 0);
     setComputedTotalQty(expandedItem.quantity || 1);
-    const currentOverrideCents = (expandedItem as any)?.overridePriceCents;
-    const currentOverrideMode = getLineItemPriceOverrideMode(expandedItem);
+    setPendingPriceOverrideById((prev) => {
+      if (!prev[itemId]) return prev;
+      const next = { ...prev };
+      delete next[itemId];
+      return next;
+    });
+    onDraftLineItemPricingChange?.(itemId, null);
+    const currentOverrideMode = persistedPricing.priceOverrideMode;
     const priceForEditor =
       currentOverrideMode
         ? getLineItemOverrideInputValue(expandedItem, currentOverrideMode, currentTotal)
-        : typeof currentOverrideCents === "number" && Number.isFinite(currentOverrideCents)
-          ? currentOverrideCents / 100
-          : currentTotal;
+        : currentTotal;
     if (currentOverrideMode) {
       setPriceOverrideModeById((prev) => ({ ...prev, [itemId]: currentOverrideMode }));
     }
@@ -1606,10 +1648,48 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     lastCalcKeyRef.current = "";
   }, [expandedId]);
 
+  useEffect(() => {
+    if (!expandedItem) return;
+    const itemId = expandedItem.id;
+    const pendingPricing = pendingPriceOverrideById[itemId];
+    if (!pendingPricing?.hasPriceOverride || !pendingPricing.priceOverrideMode) return;
+
+    const nextPricing = applyLineItemEditPriceOverride({
+      baseCalculatedTotalCents: pendingPricing.baseCalculatedTotalCents,
+      quantity: qtyNum,
+      mode: pendingPricing.priceOverrideMode,
+      valueCents: pendingPricing.priceOverrideValueCents,
+      valuePercent: pendingPricing.priceOverrideValuePercent,
+    });
+
+    if (nextPricing.effectiveTotalCents === pendingPricing.effectiveTotalCents) return;
+
+    setPendingPriceOverrideById((prev) => ({
+      ...prev,
+      [itemId]: nextPricing,
+    }));
+    setComputedTotal(nextPricing.effectiveTotalCents / 100);
+    setComputedTotalQty(qtyNum);
+    onDraftLineItemPricingChange?.(itemId, nextPricing.effectiveTotalCents);
+  }, [expandedItem?.id, qtyNum, pendingPriceOverrideById[expandedItem?.id ?? ""], onDraftLineItemPricingChange]);
+
   const isDirty = useMemo(() => {
     if (!expandedItem) return false;
     const saved = savedSnapshotRef.current[expandedItem.id];
     if (!saved) return true;
+    const pendingPricing = pendingPriceOverrideById[expandedItem.id];
+    if (pendingPricing) {
+      const persistedPricing = hydrateLineItemEditPricingState(expandedItem);
+      if (
+        pendingPricing.hasPriceOverride !== persistedPricing.hasPriceOverride ||
+        pendingPricing.priceOverrideMode !== persistedPricing.priceOverrideMode ||
+        pendingPricing.priceOverrideValueCents !== persistedPricing.priceOverrideValueCents ||
+        pendingPricing.priceOverrideValuePercent !== persistedPricing.priceOverrideValuePercent ||
+        pendingPricing.effectiveTotalCents !== persistedPricing.effectiveTotalCents
+      ) {
+        return true;
+      }
+    }
     const savedBrief = designBriefSnapshotRef.current[expandedItem.id] ?? EMPTY_DESIGN_BRIEF_DRAFT;
 
     const currentNotes = notes || "";
@@ -1685,6 +1765,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     computedTotal,
     // Forces recompute against the freshly-written savedSnapshotRef after a save.
     savedSnapshotVersion,
+    pendingPriceOverrideById,
   ]);
 
   // Surface unsaved line item state to the parent order editor so it can guard
@@ -1770,6 +1851,45 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       }
 
       if (calcKey === lastCalcKeyRef.current) {
+        return;
+      }
+
+      if (pendingPriceOverrideById[expandedItem.id]?.hasPriceOverride) {
+        lastCalcKeyRef.current = calcKey;
+        return;
+      }
+
+      const saved = savedSnapshotRef.current[expandedItem.id];
+      const pricingInputsMatchSaved =
+        Boolean(saved) &&
+        currentDraftProductId === saved!.productId &&
+        normalizeVariantId(currentDraftProductVariantId) === normalizeVariantId(saved!.productVariantId) &&
+        pbv2TreeVersionId === saved!.pbv2TreeVersionId &&
+        Math.abs(widthNum - saved!.width) <= 0.01 &&
+        Math.abs(heightNum - saved!.height) <= 0.01 &&
+        qtyNum === saved!.quantity &&
+        (isPbv2Mode
+          ? stableStringify(optionSelectionsV2?.selected || {}) === stableStringify(saved!.optionSelectionsV2 || {})
+          : JSON.stringify(optionSelections || {}) === JSON.stringify(saved!.optionSelections || {}));
+
+      if (pricingInputsMatchSaved && !pendingPriceOverrideById[expandedItem.id]) {
+        const persistedPricing = hydrateLineItemEditPricingState(expandedItem);
+        const persistedTotal = persistedPricing.persistedEffectiveTotalCents / 100;
+        if (
+          import.meta.env.DEV &&
+          Number.isFinite(Number(computedTotal)) &&
+          Math.abs(Number(computedTotal) - persistedTotal) > 0.005
+        ) {
+          console.warn("[OrderLineItemsSection] Suppressed initial edit reprice; persisted effective price wins until a user changes pricing inputs.", {
+            lineItemId: expandedItem.id,
+            persistedEffectiveTotalCents: persistedPricing.persistedEffectiveTotalCents,
+            computedTotal,
+            calcKey,
+          });
+        }
+        setComputedTotal(persistedTotal);
+        setComputedTotalQty(saved?.quantity ?? qtyNum);
+        lastCalcKeyRef.current = calcKey;
         return;
       }
       lastCalcKeyRef.current = calcKey;
@@ -1871,6 +1991,13 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       isPbv2Mode,
       optionsV2Valid,
       customerId,
+      pbv2TreeVersionId,
+      widthNum,
+      heightNum,
+      qtyNum,
+      v1SelectionsKey,
+      v2SelectionsKey,
+      pendingPriceOverrideById[expandedItem?.id ?? ""],
     ],
     400
   );
@@ -1894,7 +2021,24 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setSavedItemId(null);
 
     try {
-      const totalPrice = Number.isFinite(computedTotal) ? (computedTotal as number) : Number.parseFloat(expandedItem.totalPrice || "0") || 0;
+      const persistedPricing = hydrateLineItemEditPricingState(expandedItem);
+      const pendingPricing = pendingPriceOverrideById[itemId];
+      const pricingForSave = pendingPricing ?? (
+        persistedPricing.hasPriceOverride && persistedPricing.priceOverrideMode
+          ? applyLineItemEditPriceOverride({
+              baseCalculatedTotalCents: persistedPricing.baseCalculatedTotalCents,
+              quantity: qtyNum,
+              mode: persistedPricing.priceOverrideMode,
+              valueCents: persistedPricing.priceOverrideValueCents,
+              valuePercent: persistedPricing.priceOverrideValuePercent,
+            })
+          : null
+      );
+      const totalPrice = pricingForSave
+        ? pricingForSave.effectiveTotalCents / 100
+        : Number.isFinite(computedTotal)
+          ? (computedTotal as number)
+          : persistedPricing.persistedEffectiveTotalCents / 100;
       const unitPrice = qtyNum > 0 ? totalPrice / qtyNum : 0;
       const productionNotesDraft = notesDraftById[itemId] ?? "";
       const productChanged =
@@ -1952,6 +2096,15 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           requiresPrepress: requiresPrepressInput,
           unitPrice: unitPrice.toFixed(2),
           totalPrice: totalPrice.toFixed(2),
+          ...(pricingForSave
+            ? {
+                priceOverrideMode: pricingForSave.hasPriceOverride ? pricingForSave.priceOverrideMode : null,
+                priceOverrideValueCents: pricingForSave.hasPriceOverride ? pricingForSave.priceOverrideValueCents : null,
+                priceOverrideValuePercent: pricingForSave.hasPriceOverride ? pricingForSave.priceOverrideValuePercent : null,
+                overridePriceCents: pricingForSave.hasPriceOverride ? pricingForSave.effectiveTotalCents : null,
+                overrideReason: null,
+              }
+            : {}),
           selectedOptions: selectedOptionsArray,
           specsJson: nextSpecsJson,
           ...(v2Patch as any),
@@ -1964,6 +2117,13 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       const resolvedTotal = Number.isFinite(authoritativeTotal) ? authoritativeTotal : totalPrice;
       setComputedTotal(resolvedTotal);
       setComputedTotalQty(qtyNum);
+      setPendingPriceOverrideById((prev) => {
+        if (!prev[itemId]) return prev;
+        const next = { ...prev };
+        delete next[itemId];
+        return next;
+      });
+      onDraftLineItemPricingChange?.(itemId, null);
 
       const shouldPersistDesignBrief = Boolean(designBriefQuery.data?.id)
         || Boolean(designBriefQuery.data?.effectiveRequiresDesign)
@@ -2050,22 +2210,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     },
     getDirtyDiagnostics: () => lineItemDirtyDiagnostics,
   }));
-
-  const refreshPricingAfterOverrideChange = async ({
-    nextOverrideCents,
-    previousOverrideCents,
-  }: {
-    item: OrderLineItem;
-    nextOverrideCents: number | null;
-    previousOverrideCents: number | null;
-  }) => {
-    if (nextOverrideCents === previousOverrideCents) return;
-
-    await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
-    await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
-    await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
-    await onAfterLineItemsChange?.();
-  };
 
   const handleDuplicateItem = async (item: OrderLineItem) => {
     try {
@@ -2237,13 +2381,19 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
                   const persistedDescription = typeof item.description === "string" ? item.description.trim() : "";
 
-                  const total = Number.parseFloat(item.totalPrice || "0") || 0;
+                  const persistedPricing = hydrateLineItemEditPricingState(item);
+                  const pendingPricing = pendingPriceOverrideById[String(item.id)];
+                  const total = persistedPricing.persistedEffectiveTotalCents / 100;
+                  const displayPersistedTotal = pendingPricing ? pendingPricing.effectiveTotalCents / 100 : total;
                   const parsedUnit = Number.parseFloat(item.unitPrice || "");
                   const perEa = Number.isFinite(parsedUnit)
                     ? parsedUnit
                     : item.quantity > 0
                       ? total / item.quantity
                       : 0;
+                  const displayPersistedPerEa = pendingPricing
+                    ? pendingPricing.effectiveUnitPriceCents / 100
+                    : perEa;
 
                   const itemNotes = (itemSpecsJson as any)?.lineItemNotes as
                     | { sku?: string | null; descShort?: string | null; descLong?: string | null }
@@ -2252,16 +2402,15 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const persistedProductionNotes = typeof itemNotes?.descLong === "string" ? itemNotes.descLong : "";
                   const hasProductionNotes = Boolean(persistedProductionNotes && persistedProductionNotes.trim());
 
-                  const currentOverrideCents =
-                    typeof (item as any)?.overridePriceCents === "number" && Number.isFinite((item as any).overridePriceCents)
-                      ? ((item as any).overridePriceCents as number)
-                      : null;
+                  const currentOverrideCents = pendingPricing
+                    ? (pendingPricing.hasPriceOverride ? pendingPricing.effectiveTotalCents : null)
+                    : (persistedPricing.hasPriceOverride ? persistedPricing.effectiveTotalCents : null);
                   const isOverride = currentOverrideCents !== null;
-                  const persistedOverrideMode = getLineItemPriceOverrideMode(item);
+                  const persistedOverrideMode = persistedPricing.priceOverrideMode ?? getLineItemPriceOverrideMode(item);
                   const selectedOverrideMode =
-                    priceOverrideModeById[String(item.id)] ?? persistedOverrideMode ?? "override_total_after_margin";
+                    pendingPricing?.priceOverrideMode ?? priceOverrideModeById[String(item.id)] ?? persistedOverrideMode ?? "override_total_after_margin";
                   const overrideLabel = getLineItemPriceOverrideLabel(persistedOverrideMode ?? selectedOverrideMode);
-                  const baseCalculatedTotalCents = getLineItemBaseCalculatedTotalCents(item, total);
+                  const baseCalculatedTotalCents = persistedPricing.baseCalculatedTotalCents || getLineItemBaseCalculatedTotalCents(item, total);
                   const baseCalculatedTotal = baseCalculatedTotalCents / 100;
 
                   // Live preview price for the currently-expanded item (not yet saved).
@@ -2272,8 +2421,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     deriveLineItemPricingDisplay({
                       isActiveItem,
                       isOverride,
-                      persistedTotal: total,
-                      persistedPerEach: perEa,
+                      persistedTotal: displayPersistedTotal,
+                      persistedPerEach: displayPersistedPerEa,
                       computedTotal: isActiveItem ? computedTotal : null,
                       computedTotalQty: isActiveItem ? computedTotalQty : null,
                       isDirty,
@@ -2282,8 +2431,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     });
                   const displayPrice = isOverride ? currentOverrideCents / 100 : total;
                   const editorPriceValue = isOverride
-                    ? getLineItemOverrideInputValue(item, selectedOverrideMode, total)
-                    : total;
+                    ? pendingPricing?.priceOverrideValueCents != null
+                      ? pendingPricing.priceOverrideValueCents / 100
+                      : getLineItemOverrideInputValue(item, selectedOverrideMode, total)
+                    : displayPersistedTotal;
                   const priceEditText = priceEditTextById[String(item.id)] ?? editorPriceValue.toFixed(2);
                   const isEditingPrice = editingPriceItemId === String(item.id);
 
@@ -2540,12 +2691,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 onQuantityIncrement={() => setQty((q) => (q || 1) + 1)}
                                 onQuantityDecrement={() => setQty((q) => Math.max(1, (q || 1) - 1))}
                                 dimsRequired={dimsRequired}
-                                price={
-                                  isExpanded && expandedItem && expandedItem.id === item.id && !isOverride && Number.isFinite(computedTotal)
-                                    ? (computedTotal as number)
-                                    : total
-                                }
-                                priceOverride={isOverride ? currentOverrideCents! / 100 : null}
+                                price={displayTotal}
+                                priceOverride={isOverride ? displayTotal : null}
                                 priceOverrideLabel={overrideLabel}
                                 editingPrice={isEditingPrice}
                                 priceEditText={priceEditText}
@@ -2581,59 +2728,38 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
                                         const nextCents = Math.round(parsed * 100);
                                         const calculatedCents = baseCalculatedTotalCents;
-                                        const previousOverrideCents = currentOverrideCents;
                                         const mode = selectedOverrideMode;
-                                        const qtyForOverride = Number(item.quantity) > 0 ? Number(item.quantity) : 1;
-                                        const nextEffectiveCents =
-                                          mode === "override_unit_after_margin" || mode === "override_unit_before_margin"
-                                            ? nextCents * qtyForOverride
-                                            : nextCents;
+                                        const qtyForOverride = isExpanded && expandedItem?.id === item.id ? qtyNum : (Number(item.quantity) > 0 ? Number(item.quantity) : 1);
+                                        const nextPricing = applyLineItemEditPriceOverride({
+                                          baseCalculatedTotalCents: calculatedCents,
+                                          quantity: qtyForOverride,
+                                          mode,
+                                          valueCents: nextCents,
+                                        });
 
-                                        try {
-                                          if (nextEffectiveCents !== calculatedCents || mode !== "override_total_after_margin") {
-                                            if (previousOverrideCents === nextEffectiveCents && persistedOverrideMode === mode) {
-                                              setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (nextCents / 100).toFixed(2) }));
-                                              return;
-                                            }
-                                            await updateLineItemSilent.mutateAsync({
-                                              id: lineItemId,
-                                              data: {
-                                                priceOverrideMode: mode,
-                                                priceOverrideValueCents: nextCents,
-                                                overridePriceCents: nextEffectiveCents,
-                                                overrideReason: null,
-                                              },
-                                            });
-                                            await refreshPricingAfterOverrideChange({
-                                              item,
-                                              nextOverrideCents: nextEffectiveCents,
-                                              previousOverrideCents,
-                                            });
-                                            setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (nextCents / 100).toFixed(2) }));
-                                          } else if (currentOverrideCents !== null) {
-                                            await updateLineItemSilent.mutateAsync({
-                                              id: lineItemId,
-                                              data: {
-                                                overridePriceCents: null,
-                                                overrideReason: null,
-                                              },
-                                            });
-                                            await refreshPricingAfterOverrideChange({
-                                              item,
-                                              nextOverrideCents: null,
-                                              previousOverrideCents,
-                                            });
-                                            setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (calculatedCents / 100).toFixed(2) }));
-                                          }
-                                        } catch (e) {
-                                          toast({
-                                            variant: "destructive",
-                                            title: "Could not update price override",
-                                            description: "Please try again.",
-                                          });
-                                        } finally {
-                                          setEditingPriceItemId((prev) => (prev === lineItemId ? null : prev));
+                                        if (nextPricing.effectiveTotalCents !== calculatedCents || mode !== "override_total_after_margin") {
+                                          setPendingPriceOverrideById((prev) => ({ ...prev, [lineItemId]: nextPricing }));
+                                          setComputedTotal(nextPricing.effectiveTotalCents / 100);
+                                          setComputedTotalQty(qtyForOverride);
+                                          onDraftLineItemPricingChange?.(lineItemId, nextPricing.effectiveTotalCents);
+                                          setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (nextCents / 100).toFixed(2) }));
+                                        } else {
+                                          const clearPricing: PendingLineItemPriceOverride = {
+                                            ...nextPricing,
+                                            hasPriceOverride: false,
+                                            priceOverrideMode: null,
+                                            priceOverrideValueCents: null,
+                                            priceOverrideValuePercent: null,
+                                            effectiveTotalCents: calculatedCents,
+                                            effectiveUnitPriceCents: Math.round(calculatedCents / Math.max(1, qtyForOverride)),
+                                          };
+                                          setPendingPriceOverrideById((prev) => ({ ...prev, [lineItemId]: clearPricing }));
+                                          setComputedTotal(clearPricing.effectiveTotalCents / 100);
+                                          setComputedTotalQty(qtyForOverride);
+                                          onDraftLineItemPricingChange?.(lineItemId, clearPricing.effectiveTotalCents);
+                                          setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (calculatedCents / 100).toFixed(2) }));
                                         }
+                                        setEditingPriceItemId((prev) => (prev === lineItemId ? null : prev));
                                       }
                                 }
                                 onPriceKeyDown={
@@ -2655,37 +2781,30 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 onUndoOverride={
                                   readOnly || currentOverrideCents === null
                                     ? undefined
-                                    : async () => {
+                                    : () => {
                                         const lineItemId = String(item.id);
                                         const calculatedCents = baseCalculatedTotalCents;
-                                        const previousOverrideCents = currentOverrideCents;
-                                        try {
-                                          await updateLineItemSilent.mutateAsync({
-                                            id: lineItemId,
-                                            data: {
-                                              overridePriceCents: null,
-                                              priceOverrideMode: null,
-                                              overrideReason: null,
-                                            },
-                                          });
-                                          await refreshPricingAfterOverrideChange({
-                                            item,
-                                            nextOverrideCents: null,
-                                            previousOverrideCents,
-                                          });
-                                          setPriceOverrideModeById((prev) => {
-                                            const next = { ...prev };
-                                            delete next[lineItemId];
-                                            return next;
-                                          });
-                                          setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (calculatedCents / 100).toFixed(2) }));
-                                        } catch (e) {
-                                          toast({
-                                            variant: "destructive",
-                                            title: "Could not clear price override",
-                                            description: "Please try again.",
-                                          });
-                                        }
+                                        const qtyForOverride = isExpanded && expandedItem?.id === item.id ? qtyNum : (Number(item.quantity) > 0 ? Number(item.quantity) : 1);
+                                        const clearPricing: PendingLineItemPriceOverride = {
+                                          baseCalculatedTotalCents: calculatedCents,
+                                          baseCalculatedUnitPriceCents: Math.round(calculatedCents / Math.max(1, qtyForOverride)),
+                                          effectiveTotalCents: calculatedCents,
+                                          effectiveUnitPriceCents: Math.round(calculatedCents / Math.max(1, qtyForOverride)),
+                                          priceOverrideMode: null,
+                                          priceOverrideValueCents: null,
+                                          priceOverrideValuePercent: null,
+                                          hasPriceOverride: false,
+                                        };
+                                        setPendingPriceOverrideById((prev) => ({ ...prev, [lineItemId]: clearPricing }));
+                                        setComputedTotal(clearPricing.effectiveTotalCents / 100);
+                                        setComputedTotalQty(qtyForOverride);
+                                        onDraftLineItemPricingChange?.(lineItemId, clearPricing.effectiveTotalCents);
+                                        setPriceOverrideModeById((prev) => {
+                                          const next = { ...prev };
+                                          delete next[lineItemId];
+                                          return next;
+                                        });
+                                        setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (calculatedCents / 100).toFixed(2) }));
                                       }
                                 }
                                 isCalculating={isCalculating}
