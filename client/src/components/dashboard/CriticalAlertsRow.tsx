@@ -1,8 +1,10 @@
 import { AlertTriangle, CalendarClock, Boxes, FileClock, ReceiptText } from "lucide-react";
+import type { ReactNode } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { DASHBOARD_PANELS, type DashboardPanel } from "@/components/dashboard/dashboardPanels";
 
 type CriticalAlertsRowProps = {
+  actions?: ReactNode;
   dueToday?: number | null;
   dueTomorrow?: number | null;
   lowInventoryItems?: number | null;
@@ -17,6 +19,7 @@ function displayCount(value?: number | null) {
 }
 
 export default function CriticalAlertsRow({
+  actions,
   dueToday,
   dueTomorrow,
   lowInventoryItems,
@@ -35,7 +38,10 @@ export default function CriticalAlertsRow({
 
   return (
     <section className="space-y-3">
-      <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Critical Alerts</h2>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Critical Alerts</h2>
+        {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+      </div>
       {tiles.length > 0 ? (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
           {tiles.map((tile) => {

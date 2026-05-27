@@ -1,9 +1,12 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
 import {
+  collectLineItemProductionMaterialIds,
   buildPrepressOptionRows,
+  resolveLineItemMaterialDisplayLabel,
   resolveLineItemProductionDisplayData,
 } from "../routes/flatStockNesting.shared";
+import { buildOrderTravelerData } from "../../shared/productionTicket";
 
 describe("production display data", () => {
   test("resolves media from product primary material when line item material is blank", () => {
@@ -18,6 +21,94 @@ describe("production display data", () => {
     });
 
     expect(display.mediaLabel).toBe("Reflective Vinyl - Nikkalite");
+  });
+
+  test("order traveler uses product primary material when line item material is blank", () => {
+    const lineItem = {
+      id: "li-traveler-primary",
+      materialId: null,
+      productPrimaryMaterialId: "mat-primary",
+      pbv2SnapshotJson: null,
+    };
+    const materialById = new Map([["mat-primary", "Reflective Vinyl - Nikkalite"]]);
+
+    expect(collectLineItemProductionMaterialIds({ lineItem })).toEqual(["mat-primary"]);
+
+    const material = resolveLineItemMaterialDisplayLabel({
+      lineItem,
+      materialById,
+      productPrimaryMaterialId: "mat-primary",
+    });
+    const traveler = buildOrderTravelerData({
+      orderId: "order-1",
+      orderNumber: "ORD-1",
+      customerName: "Customer",
+      lineItems: [{ description: "Sign", quantity: 1, material }],
+    });
+
+    expect(traveler.lineItems[0].material).toBe("Reflective Vinyl - Nikkalite");
+  });
+
+  test("order traveler renders missing material references safely as dash", () => {
+    const material = resolveLineItemMaterialDisplayLabel({
+      lineItem: {
+        id: "li-traveler-missing",
+        materialId: null,
+        productPrimaryMaterialId: "missing-material",
+      },
+      materialById: new Map(),
+      productPrimaryMaterialId: "missing-material",
+    });
+    const traveler = buildOrderTravelerData({
+      orderId: "order-2",
+      orderNumber: "ORD-2",
+      customerName: "Customer",
+      lineItems: [{ description: "Sign", quantity: 1, material }],
+    });
+
+    expect(material).toBeNull();
+    expect(traveler.lineItems[0].material).toMatch(/\u2014|\u00e2\u20ac\u201d/);
+  });
+
+  test("resolves selected PBV2 choice material override before product primary material", () => {
+    const lineItem = {
+      id: "li-traveler-pbv2",
+      materialId: null,
+      productPrimaryMaterialId: "mat-primary",
+      optionSelectionsJson: {
+        schemaVersion: 2,
+        selected: {
+          substrate: { value: "reflective" },
+        },
+      },
+      pbv2SnapshotJson: {
+        treeJson: {
+          schemaVersion: 2,
+          nodes: {
+            substrate: {
+              id: "substrate",
+              kind: "question",
+              label: "Substrate",
+              input: { type: "select", selectionKey: "substrate" },
+              choices: [
+                { value: "standard", label: "Standard", materialOverride: { materialId: "mat-standard" } },
+                { value: "reflective", label: "Reflective", materialOverride: { materialId: "mat-reflective" } },
+              ],
+            },
+          },
+        },
+      },
+    };
+    const materialById = new Map([
+      ["mat-primary", "Default ACM"],
+      ["mat-reflective", "Reflective Vinyl"],
+    ]);
+
+    expect(collectLineItemProductionMaterialIds({ lineItem })).toEqual([
+      "mat-reflective",
+      "mat-primary",
+    ]);
+    expect(resolveLineItemMaterialDisplayLabel({ lineItem, materialById })).toBe("Reflective Vinyl");
   });
 
   test("renders imported PBV2 option keys as operator labels and ignores internal metadata", () => {

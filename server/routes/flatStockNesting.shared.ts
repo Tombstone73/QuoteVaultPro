@@ -207,6 +207,25 @@ function pickFirstString(...values: unknown[]): string | null {
   return null;
 }
 
+function getChoiceList(node: any): any[] {
+  if (Array.isArray(node?.choices)) return node.choices;
+  if (Array.isArray(node?.input?.choices)) return node.input.choices;
+  if (Array.isArray(node?.input?.options)) return node.input.options;
+  if (Array.isArray(node?.input?.constraints?.enum?.options)) return node.input.constraints.enum.options;
+  if (Array.isArray(node?.options)) return node.options;
+  return [];
+}
+
+function choiceMatches(choice: any, value: unknown): boolean {
+  const selectedVariants = new Set(lookupTokenVariants(value));
+  return [choice?.value, choice?.id, choice?.key, choice?.choiceId, choice?.valueId, choice?.importedChoiceId]
+    .some((candidate) => lookupTokenVariants(candidate).some((variant) => selectedVariants.has(variant)));
+}
+
+function choiceDisplayLabel(choice: any): string | null {
+  return getDisplayLabelFromRecord(choice, ["label", "name", "displayLabel", "title", "value"]);
+}
+
 function extractMaterialLabelFromUnknown(value: unknown): string | null {
   if (!value) return null;
   if (typeof value === "string") return cleanString(value) || null;
@@ -239,22 +258,190 @@ function extractMaterialLabelFromUnknown(value: unknown): string | null {
   return null;
 }
 
-export function resolveLineItemMediaLabel(args: {
+type MaterialDisplayLookup = Map<string, string> | Record<string, string | null | undefined>;
+
+function materialNameFromLookup(materialById: MaterialDisplayLookup | null | undefined, materialId: unknown): string | null {
+  const id = cleanString(materialId);
+  if (!id || !materialById) return null;
+  if (materialById instanceof Map) return cleanString(materialById.get(id)) || null;
+  return cleanString(materialById[id]) || null;
+}
+
+function getLineItemSelectionRecord(lineItem: any): Record<string, unknown> {
+  const snapshot = isRecord(lineItem?.pbv2SnapshotJson) ? lineItem.pbv2SnapshotJson : null;
+  const optionSelections = lineItem?.optionSelectionsJson as any;
+  const selectedRecordRaw =
+    optionSelections &&
+    typeof optionSelections === "object" &&
+    optionSelections.selected &&
+    typeof optionSelections.selected === "object"
+      ? optionSelections.selected
+      : optionSelections && typeof optionSelections === "object"
+        ? optionSelections
+        : snapshot && isRecord(snapshot.selections)
+          ? snapshot.selections
+          : null;
+
+  return selectedRecordRaw && typeof selectedRecordRaw === "object" ? selectedRecordRaw : {};
+}
+
+function collectNormalizedTreeNodes(...candidateTrees: unknown[]): any[] {
+  const normalizedNodes: any[] = [];
+  const seenNodeObjects = new Set<any>();
+  for (const candidateTree of candidateTrees) {
+    if (!candidateTree || typeof candidateTree !== "object") continue;
+    const tree = candidateTree as any;
+    const candidateNodes = Array.isArray(tree?.nodes)
+      ? tree.nodes
+      : Object.values(tree?.nodes || {});
+    for (const node of candidateNodes) {
+      if (!node || seenNodeObjects.has(node)) continue;
+      seenNodeObjects.add(node);
+      normalizedNodes.push(node);
+    }
+  }
+  return normalizedNodes;
+}
+
+function getNodeSelectionAliases(node: any): unknown[] {
+  return [
+    node?.input?.selectionKey,
+    node?.selectionKey,
+    node?.id,
+    node?.key,
+    node?.internalId,
+    node?.optionId,
+    node?.sourceOptionId,
+    node?.importedOptionId,
+  ];
+}
+
+function buildSelectedOptionLookup(lineItem: any, snapshot: Record<string, unknown> | null): Map<string, any> {
+  const selectedOptionById = new Map<string, any>();
+  const snapshotSelectedOptions = Array.isArray(snapshot?.selectedOptions) ? snapshot.selectedOptions : [];
+  const persistedSelectedOptions = Array.isArray(lineItem?.selectedOptions) ? lineItem.selectedOptions : [];
+  for (const opt of [...snapshotSelectedOptions, ...persistedSelectedOptions]) {
+    for (const alias of [opt?.optionId, opt?.id, opt?.key, opt?.selectionKey]) {
+      indexLookupAlias(selectedOptionById, alias, opt);
+    }
+  }
+  return selectedOptionById;
+}
+
+function findSelectedPbv2MaterialOverrideIds(lineItem: any, treeJson?: unknown): string[] {
+  const snapshot = isRecord(lineItem?.pbv2SnapshotJson) ? lineItem.pbv2SnapshotJson : null;
+  const effectiveTreeJson = treeJson ?? snapshot?.treeJson;
+  const selectedRecord = getLineItemSelectionRecord(lineItem);
+  const normalizedNodes = collectNormalizedTreeNodes(snapshot?.treeJson, treeJson, effectiveTreeJson);
+  const selectedOptionById = buildSelectedOptionLookup(lineItem, snapshot);
+  const materialIds: string[] = [];
+  const seen = new Set<string>();
+
+  const pushMaterialId = (value: unknown) => {
+    const materialId = cleanString(value);
+    if (!materialId || seen.has(materialId)) return;
+    seen.add(materialId);
+    materialIds.push(materialId);
+  };
+
+  const inspectChoice = (choice: any) => {
+    if (!isRecord(choice?.materialOverride)) return;
+    pushMaterialId(choice.materialOverride.materialId);
+  };
+
+  for (const [selectionKey, rawSelection] of Object.entries(selectedRecord)) {
+    const selectedValue = normalizeSelectionValue(rawSelection);
+    if (isEmptySelectionValue(selectedValue)) continue;
+    const node = normalizedNodes.find((candidate) =>
+      getNodeSelectionAliases(candidate).some((alias) =>
+        lookupTokenVariants(alias).some((variant) => lookupTokenVariants(selectionKey).includes(variant)),
+      ),
+    );
+    const choiceList = getChoiceList(node);
+    const selectedValues = Array.isArray(selectedValue) ? selectedValue : [selectedValue];
+    for (const value of selectedValues) {
+      const choice = choiceList.find((candidate) => choiceMatches(candidate, value));
+      inspectChoice(choice);
+    }
+  }
+
+  for (const [optionId, opt] of Array.from(selectedOptionById.entries())) {
+    const node = normalizedNodes.find((candidate) =>
+      getNodeSelectionAliases(candidate).some((alias) =>
+        lookupTokenVariants(alias).some((variant) => lookupTokenVariants(optionId).includes(variant)),
+      ),
+    );
+    const choice = getChoiceList(node).find((candidate) => choiceMatches(candidate, opt?.value));
+    inspectChoice(choice);
+  }
+
+  return materialIds;
+}
+
+export function collectLineItemProductionMaterialIds(args: {
+  lineItem?: any;
+  productPrimaryMaterialId?: string | null;
+  treeJson?: unknown;
+}): string[] {
+  const ids = new Set<string>();
+  const add = (value: unknown) => {
+    const id = cleanString(value);
+    if (id) ids.add(id);
+  };
+  const lineItem = args.lineItem ?? {};
+  add(lineItem.materialId);
+  for (const materialId of findSelectedPbv2MaterialOverrideIds(lineItem, args.treeJson)) add(materialId);
+  add(args.productPrimaryMaterialId ?? lineItem.productPrimaryMaterialId);
+  return Array.from(ids);
+}
+
+export function resolveLineItemMaterialDisplayLabel(args: {
   lineItem?: any;
   materialName?: string | null;
+  materialById?: MaterialDisplayLookup | null;
   primaryMaterialName?: string | null;
-}): string {
+  productPrimaryMaterialId?: string | null;
+  treeJson?: unknown;
+}): string | null {
   const lineItem = args.lineItem ?? {};
-  const label = pickFirstString(
+  const explicit = pickFirstString(
     args.materialName,
     lineItem.materialName,
     extractMaterialLabelFromUnknown(lineItem.materialUsageJson),
     extractMaterialLabelFromUnknown(lineItem.materialUsages),
-    extractMaterialLabelFromUnknown(lineItem.pbv2SnapshotJson),
-    extractMaterialLabelFromUnknown(lineItem.specsJson),
+  );
+  if (explicit) return explicit;
+
+  for (const materialId of findSelectedPbv2MaterialOverrideIds(lineItem, args.treeJson)) {
+    const materialName = materialNameFromLookup(args.materialById, materialId);
+    if (materialName) return materialName;
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[Production display resolver] PBV2 material override reference missing", {
+        lineItemId: lineItem.id ?? lineItem.lineItemId ?? null,
+        materialId,
+      });
+    }
+  }
+
+  const primaryMaterialId = args.productPrimaryMaterialId ?? lineItem.productPrimaryMaterialId;
+  return pickFirstString(
     args.primaryMaterialName,
     lineItem.primaryMaterialName,
+    materialNameFromLookup(args.materialById, primaryMaterialId),
+    extractMaterialLabelFromUnknown(lineItem.pbv2SnapshotJson),
+    extractMaterialLabelFromUnknown(lineItem.specsJson),
   );
+}
+
+export function resolveLineItemMediaLabel(args: {
+  lineItem?: any;
+  materialName?: string | null;
+  materialById?: MaterialDisplayLookup | null;
+  primaryMaterialName?: string | null;
+  productPrimaryMaterialId?: string | null;
+  treeJson?: unknown;
+}): string {
+  const label = resolveLineItemMaterialDisplayLabel(args);
   return label || "Not specified";
 }
 
@@ -421,24 +608,6 @@ export const buildPrepressOptionRows = (
       });
     }
   }
-
-  const getChoiceList = (node: any): any[] => {
-    if (Array.isArray(node?.choices)) return node.choices;
-    if (Array.isArray(node?.input?.choices)) return node.input.choices;
-    if (Array.isArray(node?.input?.options)) return node.input.options;
-    if (Array.isArray(node?.input?.constraints?.enum?.options)) return node.input.constraints.enum.options;
-    if (Array.isArray(node?.options)) return node.options;
-    return [];
-  };
-
-  const choiceMatches = (choice: any, value: unknown): boolean => {
-    const selectedVariants = new Set(lookupTokenVariants(value));
-    return [choice?.value, choice?.id, choice?.key, choice?.choiceId, choice?.valueId, choice?.importedChoiceId]
-      .some((candidate) => lookupTokenVariants(candidate).some((variant) => selectedVariants.has(variant)));
-  };
-
-  const choiceDisplayLabel = (choice: any): string | null =>
-    getDisplayLabelFromRecord(choice, ["label", "name", "displayLabel", "title", "value"]);
 
   for (const [selectionKey, rawSelection] of Object.entries(selectedRecord)) {
     if (isInternalDisplayKey(selectionKey)) continue;

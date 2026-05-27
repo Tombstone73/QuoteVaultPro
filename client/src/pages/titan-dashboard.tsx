@@ -14,7 +14,7 @@ import { useNavigate } from "react-router-dom";
 
 export default function TitanDashboard() {
   const navigate = useNavigate();
-  const { data: summary, isLoading } = useDashboardSummary();
+  const { data: summary } = useDashboardSummary();
   const { selectedPanel, selectPanel } = useDashboardSelection();
   const [activeTab, setActiveTab] = useState<"my_work" | "details">("my_work");
   const [isActivityCollapsed, setIsActivityCollapsed] = useState<boolean>(() => {
@@ -43,26 +43,27 @@ export default function TitanDashboard() {
     }
   }, [isActivityCollapsed]);
 
-  return (
-    <div className="w-full p-4 md:p-6 space-y-6">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Titan Dashboard</h1>
-          <p className="min-h-4 text-xs text-muted-foreground">{isLoading ? "Loading dashboard summary…" : ""}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button onClick={() => navigate(ROUTES.quotes.new)}>
-            <FilePlus2 className="h-4 w-4" />
-            New Quote
-          </Button>
-          <Button variant="outline" onClick={() => navigate(ROUTES.orders.new)}>
-            <ShoppingCart className="h-4 w-4" />
-            New Order
-          </Button>
-        </div>
-      </div>
+  const dashboardActions = (
+    <>
+      <Button onClick={() => navigate(ROUTES.quotes.new)}>
+        <FilePlus2 className="h-4 w-4" />
+        New Quote
+      </Button>
+      <Button variant="outline" onClick={() => navigate(ROUTES.orders.new)}>
+        <ShoppingCart className="h-4 w-4" />
+        New Order
+      </Button>
+    </>
+  );
 
-      <CriticalAlertsRow {...summary?.criticalAlerts} selectedPanel={selectedPanel} onSelectPanel={handleSelectPanel} />
+  return (
+    <div className="w-full space-y-4 px-4 pb-4 pt-3 md:px-6 md:pb-6 md:pt-4">
+      <CriticalAlertsRow
+        {...summary?.criticalAlerts}
+        selectedPanel={selectedPanel}
+        onSelectPanel={handleSelectPanel}
+        actions={dashboardActions}
+      />
 
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <OrdersPipelineCard {...summary?.ordersPipeline} selectedPanel={selectedPanel} onSelectPanel={handleSelectPanel} />
