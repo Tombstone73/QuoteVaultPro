@@ -308,6 +308,8 @@ export default function OrderDetail() {
 
   const orderId = params.id;
   const { data: orderRaw, isLoading } = useOrder(orderId);
+  const [draftLineItemTotalsCents, setDraftLineItemTotalsCents] = useState<Record<string, number>>({});
+  const [lineItemsEditorResetKey, setLineItemsEditorResetKey] = useState(0);
   let order = orderRaw as OrderDetailOrder | undefined;
   if (order && Object.keys(pendingOrderPatch).length > 0) {
     order = {
@@ -388,6 +390,55 @@ export default function OrderDetail() {
       inProgressCount,
     };
   }, [order]);
+
+  useEffect(() => {
+    setDraftLineItemTotalsCents({});
+  }, [orderId]);
+
+  const handleDraftLineItemPricingChange = useCallback((lineItemId: string, effectiveTotalCents: number | null) => {
+    setDraftLineItemTotalsCents((prev) => {
+      const next = { ...prev };
+      if (effectiveTotalCents === null) {
+        delete next[lineItemId];
+      } else {
+        next[lineItemId] = effectiveTotalCents;
+      }
+      return next;
+    });
+  }, []);
+
+  const displayedOrderTotals = useMemo(() => {
+    if (!order) {
+      return { subtotal: 0, discount: 0, tax: 0, shipping: 0, total: 0 };
+    }
+
+    const discount = parseFloat(order.discount) || 0;
+    const tax = parseFloat(order.tax) || 0;
+    const shipping = (Number((order as any).shippingCents) || 0) / 100;
+    if (Object.keys(draftLineItemTotalsCents).length === 0) {
+      return {
+        subtotal: parseFloat(order.subtotal) || 0,
+        discount,
+        tax,
+        shipping,
+        total: parseFloat(order.total) || 0,
+      };
+    }
+
+    const lineItems = Array.isArray(order.lineItems) ? order.lineItems : [];
+    const subtotal = lineItems.reduce((sum: number, item: any) => {
+      const draftCents = draftLineItemTotalsCents[String(item.id)];
+      if (Number.isFinite(draftCents)) return sum + draftCents / 100;
+      return sum + (parseFloat(item?.totalPrice) || 0);
+    }, 0);
+    return {
+      subtotal,
+      discount,
+      tax,
+      shipping,
+      total: subtotal - discount + tax + shipping,
+    };
+  }, [order, draftLineItemTotalsCents]);
 
   useEffect(() => {
     if (!focusProduction || productionFocus.prioritizedIds.length === 0) return;
@@ -1296,6 +1347,7 @@ export default function OrderDetail() {
       // global guard only intercepts explicit guardedNavigate() calls.
       orderDirtyRef.current = false;
       setHasDirtyLineItem(false);
+      setDraftLineItemTotalsCents({});
       setPendingOrderPatch({});
       logOrderDirtyAudit("after-clear-before-navigate");
       const postSavePath = isOrderEditRoute ? ROUTES.orders.detail(orderId) : ROUTES.orders.list;
@@ -1313,6 +1365,9 @@ export default function OrderDetail() {
 
   const handleCancelOrderEdits = async () => {
     setPendingOrderPatch({});
+    setDraftLineItemTotalsCents({});
+    setHasDirtyLineItem(false);
+    setLineItemsEditorResetKey((value) => value + 1);
     setJobLabelDraft((orderRaw as OrderDetailOrder | undefined)?.label ?? "");
     setPoNumberDraft((orderRaw as OrderDetailOrder | undefined)?.poNumber ?? "");
     setEditingDueDate(false);
@@ -2529,6 +2584,7 @@ export default function OrderDetail() {
               </div>
 
               <OrderLineItemsSection
+                key={lineItemsEditorResetKey}
                 ref={orderLineItemsApiRef}
                 orderId={orderId!}
                 customerId={order.customerId}
@@ -2538,6 +2594,7 @@ export default function OrderDetail() {
                 productionPriorityLineItemIds={productionFocus.prioritizedIds}
                 onAfterLineItemsChange={recalculateOrderTotals}
                 onDirtyStateChange={setHasDirtyLineItem}
+                onDraftLineItemPricingChange={handleDraftLineItemPricingChange}
               />
 
               {/* Totals */}
@@ -2549,12 +2606,12 @@ export default function OrderDetail() {
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">Subtotal</span>
-                      <span>{formatCurrency(order.subtotal)}</span>
+                      <span>{formatCurrency(displayedOrderTotals.subtotal)}</span>
                     </div>
-                    {parseFloat(order.discount) > 0 && (
+                    {displayedOrderTotals.discount > 0 && (
                       <div className="flex justify-between text-sm text-red-500">
                         <span>Discount</span>
-                        <span>-{formatCurrency(order.discount)}</span>
+                        <span>-{formatCurrency(displayedOrderTotals.discount)}</span>
                       </div>
                     )}
                       {currentFulfillmentMethod !== "pickup" && (order as any).shippingCents > 0 && (
@@ -2567,12 +2624,12 @@ export default function OrderDetail() {
                       )}
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">Tax</span>
-                      <span>{formatCurrency(order.tax)}</span>
+                      <span>{formatCurrency(displayedOrderTotals.tax)}</span>
                     </div>
                     <Separator />
                     <div className="flex justify-between font-bold text-lg">
                       <span>Total</span>
-                      <span>{formatCurrency(order.total)}</span>
+                      <span>{formatCurrency(displayedOrderTotals.total)}</span>
                     </div>
                   </div>
                 </CardContent>

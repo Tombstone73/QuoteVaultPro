@@ -27,6 +27,11 @@ export type LineItemEffectivePricing = {
   warnings: string[];
 };
 
+export type LineItemEditPricingState = LineItemEffectivePricing & {
+  persistedEffectiveTotalCents: number;
+  persistedEffectiveUnitPriceCents: number;
+};
+
 const modeSet = new Set<string>(lineItemPriceOverrideModes);
 
 export function isLineItemPriceOverrideMode(value: unknown): value is LineItemPriceOverrideMode {
@@ -81,6 +86,115 @@ function normalizeMode(value: unknown): LineItemPriceOverrideMode | null {
   if (value === "total") return "override_total_after_margin";
   if (value === "unit") return "override_unit_after_margin";
   return null;
+}
+
+function getObjectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function getLineItemPriceOverrideRecord(lineItem: unknown): Record<string, unknown> {
+  const record = getObjectRecord(lineItem);
+  const specs = getObjectRecord(record.specsJson);
+  const specsOverride = getObjectRecord(specs.priceOverride);
+  const topLevelOverride = {
+    priceOverrideMode: record.priceOverrideMode,
+    priceOverrideValueCents: record.priceOverrideValueCents,
+    priceOverrideValuePercent: record.priceOverrideValuePercent,
+    overridePriceCents: record.overridePriceCents,
+  };
+  return { ...specsOverride, ...topLevelOverride };
+}
+
+function getPbv2SnapshotTotalCents(lineItem: unknown): number | null {
+  const record = getObjectRecord(lineItem);
+  const snapshot = getObjectRecord(record.pbv2SnapshotJson);
+  const pricing = getObjectRecord(snapshot.pricing);
+  return toCents(pricing.totalCents);
+}
+
+function getLineItemQuantity(lineItem: unknown): number {
+  const record = getObjectRecord(lineItem);
+  const quantityRaw = toFiniteNumber(record.quantity);
+  return quantityRaw !== null && quantityRaw > 0 ? quantityRaw : 1;
+}
+
+export function hydrateLineItemEditPricingState(lineItem: unknown): LineItemEditPricingState {
+  const record = getObjectRecord(lineItem);
+  const quantity = getLineItemQuantity(record);
+  const overrideRecord = getLineItemPriceOverrideRecord(record);
+  const topLevelHasOverride = typeof record.hasPriceOverride === "boolean" ? record.hasPriceOverride : null;
+  const hasExplicitOverrideShape =
+    normalizeMode(overrideRecord.priceOverrideMode ?? overrideRecord.mode) !== null ||
+    toCents(overrideRecord.priceOverrideValueCents ?? overrideRecord.valueCents) !== null ||
+    toPercent(overrideRecord.priceOverrideValuePercent ?? overrideRecord.valuePercent) !== null;
+
+  const allowLegacyOverride = topLevelHasOverride !== false && (topLevelHasOverride === true || hasExplicitOverrideShape);
+  const normalized = topLevelHasOverride === false
+    ? { override: null, warnings: [] as string[] }
+    : normalizeLineItemPriceOverride(
+        overrideRecord,
+        allowLegacyOverride ? overrideRecord.overridePriceCents : null,
+      );
+
+  const persistedEffectiveTotalCents =
+    toCents(record.effectiveTotalCents) ??
+    toCents(overrideRecord.effectiveTotalCents) ??
+    toDollarsAsCents(record.totalPrice) ??
+    0;
+
+  const baseCalculatedTotalCents =
+    toCents(record.baseCalculatedTotalCents) ??
+    toCents(overrideRecord.baseCalculatedTotalCents) ??
+    getPbv2SnapshotTotalCents(record) ??
+    (normalized.override ? persistedEffectiveTotalCents : persistedEffectiveTotalCents);
+
+  const resolved = resolveLineItemEffectivePricing({
+    baseCalculatedTotalCents,
+    quantity,
+    override: normalized.override,
+  });
+  resolved.warnings.push(...normalized.warnings);
+
+  const effectiveTotalCents =
+    toCents(record.effectiveTotalCents) ??
+    toCents(overrideRecord.effectiveTotalCents) ??
+    (resolved.hasPriceOverride ? resolved.effectiveTotalCents : persistedEffectiveTotalCents);
+  const effectiveUnitPriceCents =
+    toCents(record.effectiveUnitPriceCents) ??
+    toCents(overrideRecord.effectiveUnitPriceCents) ??
+    Math.round(effectiveTotalCents / quantity);
+
+  return {
+    ...resolved,
+    effectiveTotalCents,
+    effectiveUnitPriceCents,
+    persistedEffectiveTotalCents: effectiveTotalCents,
+    persistedEffectiveUnitPriceCents: effectiveUnitPriceCents,
+    hasPriceOverride: normalized.override !== null,
+    priceOverrideMode: normalized.override?.mode ?? null,
+    priceOverrideValueCents: normalized.override?.valueCents ?? null,
+    priceOverrideValuePercent: normalized.override?.valuePercent ?? null,
+  };
+}
+
+export function applyLineItemEditPriceOverride(input: {
+  baseCalculatedTotalCents: unknown;
+  quantity: unknown;
+  mode: LineItemPriceOverrideMode;
+  valueCents?: unknown;
+  valuePercent?: unknown;
+}): LineItemEffectivePricing {
+  return resolveLineItemEffectivePricing({
+    baseCalculatedTotalCents: input.baseCalculatedTotalCents,
+    quantity: input.quantity,
+    override: {
+      mode: input.mode,
+      valueCents: toCents(input.valueCents),
+      valuePercent: toPercent(input.valuePercent),
+    },
+  });
 }
 
 export function normalizeLineItemPriceOverride(
@@ -224,4 +338,3 @@ export function resolveLineItemEffectivePricing(input: {
     warnings,
   };
 }
-
