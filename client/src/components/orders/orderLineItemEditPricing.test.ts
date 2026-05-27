@@ -3,6 +3,7 @@ import {
   applyLineItemEditPriceOverride,
   hydrateLineItemEditPricingState,
 } from "@shared/lineItemPriceOverrides";
+import { shouldApplyOrderLineItemPreviewResult } from "./orderLineItemEditState";
 
 describe("order line item edit pricing state", () => {
   it("hydrates a saved $15 item as $15 without letting stale legacy cents win", () => {
@@ -75,5 +76,64 @@ describe("order line item edit pricing state", () => {
     expect(state.priceOverrideMode).toBe("override_unit_after_margin");
     expect(state.priceOverrideValueCents).toBe(1980);
     expect(state.effectiveTotalCents).toBe(3960);
+  });
+
+  it("ignores a delayed preview response when the edit draft is not dirty by user", () => {
+    const gate = shouldApplyOrderLineItemPreviewResult({
+      requestId: 1,
+      latestRequestId: 1,
+      requestFingerprint: "saved-15",
+      currentFingerprint: "saved-15",
+      isDirtyByUser: false,
+      requestedBecauseOfUserChange: false,
+      hasPendingManualOverride: false,
+    });
+
+    expect(gate.apply).toBe(false);
+    expect(gate.reasonIgnored).toBe("not_dirty_by_user");
+  });
+
+  it("ignores a delayed preview response with a stale fingerprint", () => {
+    const gate = shouldApplyOrderLineItemPreviewResult({
+      requestId: 2,
+      latestRequestId: 2,
+      requestFingerprint: "qty-1",
+      currentFingerprint: "qty-2",
+      isDirtyByUser: true,
+      requestedBecauseOfUserChange: true,
+      hasPendingManualOverride: false,
+    });
+
+    expect(gate.apply).toBe(false);
+    expect(gate.reasonIgnored).toBe("stale_fingerprint");
+  });
+
+  it("applies preview only after an explicit user pricing-driving change", () => {
+    const gate = shouldApplyOrderLineItemPreviewResult({
+      requestId: 3,
+      latestRequestId: 3,
+      requestFingerprint: "qty-2",
+      currentFingerprint: "qty-2",
+      isDirtyByUser: true,
+      requestedBecauseOfUserChange: true,
+      hasPendingManualOverride: false,
+    });
+
+    expect(gate.apply).toBe(true);
+  });
+
+  it("does not let a preview overwrite a pending manual override", () => {
+    const gate = shouldApplyOrderLineItemPreviewResult({
+      requestId: 4,
+      latestRequestId: 4,
+      requestFingerprint: "override-1980",
+      currentFingerprint: "override-1980",
+      isDirtyByUser: true,
+      requestedBecauseOfUserChange: true,
+      hasPendingManualOverride: true,
+    });
+
+    expect(gate.apply).toBe(false);
+    expect(gate.reasonIgnored).toBe("manual_override_active");
   });
 });
