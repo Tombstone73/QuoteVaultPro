@@ -27,6 +27,7 @@ export const productionEventTypeSchema = z.enum([
   "reprint_incremented",
   "media_used_set",
   "ticket_printed",
+  "printer_assigned",
 ]);
 
 const productionLineItemStatusRuleSchema = z
@@ -115,9 +116,25 @@ export const getProductionConfigForOrganization = async (organizationId: string)
     (settings?.preferences?.production?.enabledViews as string[] | undefined) ?? ["flatbed", "roll"];
   const defaultView =
     (settings?.preferences?.production?.defaultView as string | undefined) ?? "flatbed";
+  const finishingModeRaw = settings?.preferences?.production?.finishingMode;
+  const finishingMode =
+    finishingModeRaw === "dedicated_finishing_queue"
+      ? "dedicated_finishing_queue"
+      : "integrated_with_print";
+  const printerOptionsByStationRaw = settings?.preferences?.production?.printerOptionsByStation;
+  const printerOptionsByStation =
+    printerOptionsByStationRaw && typeof printerOptionsByStationRaw === "object"
+      ? printerOptionsByStationRaw
+      : {
+          roll: ["S40", "S60", "Canon"],
+          wide_roll: ["S40", "S60", "Canon"],
+          flatbed: ["Jetson"],
+        };
   return {
     enabledViews: Array.isArray(enabledViews) && enabledViews.length > 0 ? enabledViews : ["flatbed", "roll"],
     defaultView: typeof defaultView === "string" && defaultView.trim() ? defaultView : "flatbed",
+    finishingMode,
+    printerOptionsByStation,
   };
 };
 

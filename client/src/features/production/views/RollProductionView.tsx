@@ -64,6 +64,7 @@ import {
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
+import { PrinterMachineAssignment, hasProductionPrinterAssignment } from "@/components/production/PrinterMachineAssignment";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
 import { filterProductionJobsForTab, type ProductionBoardTab } from "@/lib/productionBoard";
@@ -643,7 +644,15 @@ function ActionRail({
         <div className="space-y-2">
           <Button
             className="w-full justify-start bg-emerald-600 hover:bg-emerald-600/90 text-white"
-            onClick={() => start.mutate()}
+            onClick={() => {
+              if (
+                !hasProductionPrinterAssignment(job) &&
+                !window.confirm("No printer / machine is assigned yet. Start this job anyway?")
+              ) {
+                return;
+              }
+              start.mutate();
+            }}
             disabled={!canStart || isBusy}
           >
             <Play className="w-4 h-4 mr-2" /> START
@@ -670,6 +679,12 @@ function ActionRail({
                   <Button
                     className="w-full justify-start bg-emerald-700 hover:bg-emerald-700/90 text-white"
                     onClick={() => {
+                      if (
+                        !hasProductionPrinterAssignment(job) &&
+                        !window.confirm("No printer / machine is assigned yet. Complete this job anyway?")
+                      ) {
+                        return;
+                      }
                       if (job.status === "queued") {
                         setSkipCompleteOpen(true);
                         return;
@@ -1266,6 +1281,11 @@ function PreviewPanel({
       ? job.order.fulfillmentStatus
       : "—";
 
+  const laminationLabel = sanitizeDisplayText((job as any).lamination?.label ?? "None");
+  const finishingRequirements = Array.isArray((job as any).finishingRequirements)
+    ? (job as any).finishingRequirements.filter((entry: unknown) => String(entry || "").trim())
+    : [];
+
   // Show Order # and Production Job ID (Order # is primary identifier)
   const jobRefParts = [
     orderNumber && orderNumber !== "—" ? `Order ${orderNumber}` : null,
@@ -1365,6 +1385,17 @@ function PreviewPanel({
               {formattedNotes}
             </div>
           </div>
+          <div className="rounded-md border border-titan-border-subtle bg-titan-bg-subtle px-3 py-2">
+            <PrinterMachineAssignment
+              jobId={job.id}
+              stationKey={job.stationKey}
+              assignedPrinterName={(job as any).assignedPrinterName}
+              assignedPrinterId={(job as any).assignedPrinterId}
+              assignedPrinterAt={(job as any).assignedPrinterAt}
+              printerOptions={(job as any).printerOptions}
+              compact
+            />
+          </div>
           {li?.description && li.description !== "—" && (
             <div className="rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2">
               <div className="text-[11px] uppercase tracking-wide text-amber-200">Description</div>
@@ -1422,6 +1453,22 @@ function PreviewPanel({
                 return "—";
               })()}
             />
+            <Fact
+              label="Finishing"
+              value={
+                finishingRequirements.length > 0 ? (
+                  <span className="flex flex-wrap gap-1">
+                    {finishingRequirements.map((requirement: string) => (
+                      <Badge key={requirement} variant="outline">
+                        {requirement}
+                      </Badge>
+                    ))}
+                  </span>
+                ) : (
+                  "None"
+                )
+              }
+            />
           </div>
 
           <div className="space-y-3">
@@ -1444,6 +1491,10 @@ function PreviewPanel({
 export default function RollProductionView(props: { viewKey: string; status: ProductionStatus; jobs?: ProductionJobListItem[] }) {
   const { preferences } = useOrgPreferences();
   const productionNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
+  const previewsDisabled = useMemo(
+    () => typeof window !== "undefined" && window.localStorage.getItem("titan.production.overview.showThumbnails") === "false",
+    [],
+  );
   const shouldFetchJobs = !props.jobs;
   const { data, isLoading, error } = useProductionJobs(
     { view: props.viewKey },
@@ -1590,6 +1641,11 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4">
       <div className="space-y-4">
+        {previewsDisabled ? (
+          <div className="rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-titan-text-primary">
+            Art previews are disabled. Enable in <Link className="underline" to={ROUTES.production.board}>Production Overview</Link>.
+          </div>
+        ) : null}
         {selectedJob ? (
           <ActionRail job={selectedJob} timerSeconds={liveTimerSeconds} timerIsRunning={derivedTimer.isRunning} notes={recentNotes} />
         ) : (
@@ -1627,6 +1683,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                   <TableHead className="w-[200px]">DUE DATE</TableHead>
                   <TableHead className="text-right w-[80px]">QTY</TableHead>
                   <TableHead className="text-right w-[80px]">SIDES</TableHead>
+                  <TableHead className="w-[120px]">MACHINE</TableHead>
                   <TableHead className="w-[140px]">STATUS</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1785,6 +1842,9 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                       <TableCell className="py-5 text-sm text-right font-semibold">{Number.isFinite(Number(qty)) ? Number(qty) : "—"}</TableCell>
                       <TableCell className="py-5 text-sm text-right font-semibold">
                         {sidesDisplay}
+                      </TableCell>
+                      <TableCell className="py-5 text-sm">
+                        {(job as any).assignedPrinterName || "Unassigned"}
                       </TableCell>
                       <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
                         <StatusDropdown jobId={job.id} currentStatus={job.status} />

@@ -267,7 +267,8 @@ export function resolveLineItemMediaLabel(args: {
  */
 export const extractFinishingBullets = (lineItem: any): string[] => {
   return buildPrepressOptionRows(lineItem)
-    .filter((row) => /(finish|laminat|grommet|hem|trim|weld|mount|sew|pocket|tape|edge|contour|cut)/i.test(row.optionLabel))
+    .filter((row) => /(finish|laminat|grommet|hem|trim|weld|mount|sew|pocket|tap|weed|edge|contour|cut)/i.test(row.optionLabel))
+    .filter((row) => !/^(none|no|false|not selected|n\/a)$/i.test(cleanString(row.selectedLabel)))
     .map((row) => `${row.optionLabel}: ${row.selectedLabel}`);
 };
 

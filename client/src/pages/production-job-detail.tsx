@@ -26,8 +26,9 @@ import {
   useUpdateProductionJobStatus,
   ProductionOrderArtworkSummary,
 } from "@/hooks/useProduction";
-import { deriveLaminationDisplay, isRollJob, formatDimensions } from "@/lib/productionHelpers";
+import { deriveLaminationDisplay } from "@/lib/productionHelpers";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
+import { PrinterMachineAssignment, hasProductionPrinterAssignment } from "@/components/production/PrinterMachineAssignment";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import {
@@ -66,6 +67,8 @@ function formatEventLabel(type: string) {
       return "Ticket printed";
     case "media_used_set":
       return "Media used set";
+    case "printer_assigned":
+      return "Printer / Machine assigned";
     case "note":
       return "Note";
     default:
@@ -262,8 +265,13 @@ export default function ProductionJobDetailPage() {
   // Lamination display (for Roll jobs)
   const lamination = useMemo(() => {
     if (!data) return null;
-    const isRoll = isRollJob(data.stationKey);
-    if (!isRoll) return null;
+    if (data.lamination?.label) {
+      return {
+        kind: data.lamination.label.toLowerCase() === "none" ? "none" : "custom",
+        label: data.lamination.label,
+        source: data.lamination.source,
+      } as const;
+    }
 
     const primaryLineItem = data.order.lineItems?.primary ?? null;
     const orderNotes = data.order as any; // May have notes field
@@ -394,7 +402,19 @@ export default function ProductionJobDetailPage() {
                   <div className="flex items-center gap-2">
                     <Button
                       size="sm"
-                      onClick={() => (data.timer.isRunning ? stop.mutate() : start.mutate())}
+                      onClick={() => {
+                        if (data.timer.isRunning) {
+                          stop.mutate();
+                          return;
+                        }
+                        if (
+                          !hasProductionPrinterAssignment(data) &&
+                          !window.confirm("No printer / machine is assigned yet. Start this job anyway?")
+                        ) {
+                          return;
+                        }
+                        start.mutate();
+                      }}
                       disabled={isBusy}
                       className="gap-1.5"
                     >
@@ -420,12 +440,18 @@ export default function ProductionJobDetailPage() {
                   ) : data.status === "queued" ? (
                     <Button
                       variant="default"
-                      onClick={() =>
+                      onClick={() => {
+                        if (
+                          !hasProductionPrinterAssignment(data) &&
+                          !window.confirm("No printer / machine is assigned yet. Complete this job anyway?")
+                        ) {
+                          return;
+                        }
                         complete.mutate(
                           { skipProduction: true },
                           { onSuccess: () => setCompletionPromptOpen(true) },
-                        )
-                      }
+                        );
+                      }}
                       disabled={isBusy}
                       className="gap-1.5"
                     >
@@ -434,9 +460,15 @@ export default function ProductionJobDetailPage() {
                   ) : (
                     <Button
                       variant="default"
-                      onClick={() =>
-                        complete.mutate({}, { onSuccess: () => setCompletionPromptOpen(true) })
-                      }
+                      onClick={() => {
+                        if (
+                          !hasProductionPrinterAssignment(data) &&
+                          !window.confirm("No printer / machine is assigned yet. Complete this job anyway?")
+                        ) {
+                          return;
+                        }
+                        complete.mutate({}, { onSuccess: () => setCompletionPromptOpen(true) });
+                      }}
                       disabled={isBusy}
                       className="gap-1.5"
                     >
@@ -506,6 +538,11 @@ export default function ProductionJobDetailPage() {
                             {e.type === "ticket_printed" && e.payload?.reason && (
                               <div className="text-xs text-muted-foreground mt-1 capitalize">
                                 {String(e.payload.reason)} ticket
+                              </div>
+                            )}
+                            {e.type === "printer_assigned" && e.payload?.to?.assignedPrinterName && (
+                              <div className="text-sm text-muted-foreground mt-2">
+                                {String(e.payload.to.assignedPrinterName)}
                               </div>
                             )}
                           </div>
@@ -652,6 +689,19 @@ export default function ProductionJobDetailPage() {
                   <div className="text-muted-foreground">Sides:</div>
                   <div>{sidesDisplay}</div>
 
+                  <div className="text-muted-foreground">Printer / Machine:</div>
+                  <div>
+                    <PrinterMachineAssignment
+                      jobId={data.id}
+                      stationKey={data.stationKey}
+                      assignedPrinterName={data.assignedPrinterName}
+                      assignedPrinterId={data.assignedPrinterId}
+                      assignedPrinterAt={data.assignedPrinterAt}
+                      printerOptions={data.printerOptions}
+                      compact
+                    />
+                  </div>
+
                   {lamination && (
                     <>
                       <div className="text-muted-foreground">Lamination:</div>
@@ -678,6 +728,19 @@ export default function ProductionJobDetailPage() {
                       </div>
                     </>
                   )}
+
+                  <div className="text-muted-foreground">Finishing:</div>
+                  <div className="space-y-1">
+                    {data.finishingRequirements && data.finishingRequirements.length > 0 ? (
+                      data.finishingRequirements.map((requirement) => (
+                        <Badge key={requirement} variant="outline" className="mr-1">
+                          {requirement}
+                        </Badge>
+                      ))
+                    ) : (
+                      <span>None</span>
+                    )}
+                  </div>
 
                   <div className="text-muted-foreground">Station:</div>
                   <div className="capitalize">{data.stationKey || "—"}</div>
