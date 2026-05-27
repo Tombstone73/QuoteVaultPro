@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { isSessionExpiredError, notifySessionExpired } from "@/lib/authUtils";
 import { useAuth } from "@/hooks/useAuth";
 import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import { ROUTES } from "@/config/routes";
@@ -1930,6 +1931,10 @@ export function useQuoteEditorState() {
             queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes"] });
             if (quoteId) {
                 queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+            }
+            if (isSessionExpiredError(error)) {
+                notifySessionExpired("quote-save");
+                throw error;
             }
             toast({
                 title: "Failed to save quote",

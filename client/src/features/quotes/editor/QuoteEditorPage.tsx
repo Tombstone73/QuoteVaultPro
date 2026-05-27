@@ -24,6 +24,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
 import { useQuoteEditorState } from "./useQuoteEditorState";
 import type { QuoteDuplicateMode } from "./useQuoteEditorState";
 import { QuoteHeader } from "./components/QuoteHeader";
@@ -51,10 +52,11 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const location = useLocation();
     const { registerGuard } = useNavigationGuard();
     const { preferences } = useUserPreferences();
-    const { user } = useAuth();
+    const { user, isAuthenticated } = useAuth();
     const { preferences: orgPreferences } = useOrgPreferences();
     const { toast } = useToast();
     const state = useQuoteEditorState();
+    const [draftShipToData, setDraftShipToData] = useState<Record<string, string | null>>({});
 
     const backPath = createTarget === "order" ? ROUTES.orders.list : ROUTES.quotes.list;
 
@@ -68,6 +70,78 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         : '';
     const convertedToOrderId = (state.quote as any)?.convertedToOrderId ?? null;
     const lockToastShownRef = useRef(false);
+
+    const handleSessionExpired = (source: string) => {
+        notifySessionExpired(source);
+    };
+
+    const ensureAuthenticatedForSave = async () => {
+        if (!isAuthenticated) {
+            handleSessionExpired("quote-editor-preflight-cache");
+            return false;
+        }
+
+        try {
+            const res = await fetch("/api/auth/session", { credentials: "include" });
+            if (res.status === 401 || res.status === 403) {
+                handleSessionExpired("quote-editor-preflight");
+                return false;
+            }
+            if (!res.ok) {
+                return true;
+            }
+            const session = await res.json().catch(() => null);
+            if (session?.authenticated !== true) {
+                handleSessionExpired("quote-editor-preflight");
+                return false;
+            }
+            return true;
+        } catch {
+            handleSessionExpired("quote-editor-preflight-network");
+            return false;
+        }
+    };
+
+    const mapShipToPayloadToQuotePatch = (payload: Record<string, any>) => {
+        const mappedPayload: Record<string, any> = {};
+        if (payload.company !== undefined) mappedPayload.shipToCompany = payload.company;
+        if (payload.name !== undefined) mappedPayload.shipToName = payload.name;
+        if (payload.email !== undefined) mappedPayload.shipToEmail = payload.email;
+        if (payload.phone !== undefined) mappedPayload.shipToPhone = payload.phone;
+        if (payload.address1 !== undefined) mappedPayload.shipToAddress1 = payload.address1;
+        if (payload.address2 !== undefined) mappedPayload.shipToAddress2 = payload.address2;
+        if (payload.city !== undefined) mappedPayload.shipToCity = payload.city;
+        if (payload.state !== undefined) mappedPayload.shipToState = payload.state;
+        if (payload.postalCode !== undefined) mappedPayload.shipToPostalCode = payload.postalCode;
+        if (payload.country !== undefined) mappedPayload.shipToCountry = payload.country;
+        return mappedPayload;
+    };
+
+    const persistDraftShipToData = async (quoteId: string) => {
+        const hasPendingShipTo = Object.values(draftShipToData).some((value) => String(value ?? "").trim().length > 0);
+        if (!hasPendingShipTo) return;
+
+        const patch = mapShipToPayloadToQuotePatch(draftShipToData);
+        if (Object.keys(patch).length === 0) return;
+
+        const res = await apiRequest("PATCH", `/api/quotes/${quoteId}`, patch);
+        await res.json().catch(() => null);
+        setDraftShipToData({});
+        queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+    };
+
+    const fulfillmentShipToData = useMemo(() => ({
+        company: draftShipToData.company ?? (state.quote as any)?.shipToCompany,
+        name: draftShipToData.name ?? (state.quote as any)?.shipToName,
+        email: draftShipToData.email ?? (state.quote as any)?.shipToEmail,
+        phone: draftShipToData.phone ?? (state.quote as any)?.shipToPhone,
+        address1: draftShipToData.address1 ?? (state.quote as any)?.shipToAddress1,
+        address2: draftShipToData.address2 ?? (state.quote as any)?.shipToAddress2,
+        city: draftShipToData.city ?? (state.quote as any)?.shipToCity,
+        state: draftShipToData.state ?? (state.quote as any)?.shipToState,
+        postalCode: draftShipToData.postalCode ?? (state.quote as any)?.shipToPostalCode,
+        country: draftShipToData.country ?? (state.quote as any)?.shipToCountry,
+    }), [draftShipToData, state.quote]);
     
     // Revise quote mutation (creates new draft from approved/converted)
     const reviseMutation = useMutation({
@@ -225,23 +299,18 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     // Quote update mutation for shipTo fields (like orders)
     const updateQuote = useMutation({
         mutationFn: async (updates: Record<string, any>) => {
-            if (!state.quoteId) throw new Error("No quote ID");
-            const res = await fetch(`/api/quotes/${state.quoteId}`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(updates),
-                credentials: "include",
-            });
-            if (!res.ok) {
-                const error = await res.json().catch(() => ({ message: "Failed to update quote" }));
-                throw new Error(error.message || "Failed to update quote");
-            }
+            if (!state.quoteId) return { skipped: true };
+            const res = await apiRequest("PATCH", `/api/quotes/${state.quoteId}`, updates);
             return res.json();
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
         },
         onError: (error: Error) => {
+            if (isSessionExpiredError(error)) {
+                handleSessionExpired("quote-editor-update");
+                return;
+            }
             toast({
                 title: "Update Failed",
                 description: error.message,
@@ -253,19 +322,12 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     // Save shipTo fields (similar to orders)
     const saveShipTo = async (payload: Record<string, any>) => {
         try {
-            // Map ShipToData field names to quote field names
-            const mappedPayload: Record<string, any> = {};
-            if (payload.company !== undefined) mappedPayload.shipToCompany = payload.company;
-            if (payload.name !== undefined) mappedPayload.shipToName = payload.name;
-            if (payload.email !== undefined) mappedPayload.shipToEmail = payload.email;
-            if (payload.phone !== undefined) mappedPayload.shipToPhone = payload.phone;
-            if (payload.address1 !== undefined) mappedPayload.shipToAddress1 = payload.address1;
-            if (payload.address2 !== undefined) mappedPayload.shipToAddress2 = payload.address2;
-            if (payload.city !== undefined) mappedPayload.shipToCity = payload.city;
-            if (payload.state !== undefined) mappedPayload.shipToState = payload.state;
-            if (payload.postalCode !== undefined) mappedPayload.shipToPostalCode = payload.postalCode;
-            if (payload.country !== undefined) mappedPayload.shipToCountry = payload.country;
-            
+            if (!state.quoteId) {
+                setDraftShipToData((prev) => ({ ...prev, ...payload }));
+                return;
+            }
+
+            const mappedPayload = mapShipToPayloadToQuotePatch(payload);
             await updateQuote.mutateAsync(mappedPayload);
         } catch (error) {
             // Error toast handled by mutation
@@ -277,6 +339,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         try {
             // Update local state immediately so Save Changes has the latest value
             state.handlers.setShippingCents(cents);
+            if (!state.quoteId) return;
             await updateQuote.mutateAsync({ shippingCents: cents });
         } catch (error) {
             // Error toast handled by mutation
@@ -288,6 +351,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         try {
             // Update local state immediately for UI responsiveness
             state.handlers.setDeliveryMethod(method);
+            if (!state.quoteId) return;
             // Persist to server
             await updateQuote.mutateAsync({ shippingMethod: method });
         } catch (error) {
@@ -629,12 +693,19 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      */
     const handleSave = async () => {
         try {
+            if (!(await ensureAuthenticatedForSave())) return;
+
             // Commit any pending flags before saving
             customerSelectRef.current?.commitPendingFlags?.();
             
             const result = await state.handlers.saveQuote();
+            await persistDraftShipToData(result.quoteId);
             handlePostSaveNavigation(result);
         } catch (err) {
+            if (isSessionExpiredError(err)) {
+                handleSessionExpired("quote-editor-save");
+                return;
+            }
             // Error handling is already done inside saveQuote (toast shown)
             console.error("[QuoteEditorPage] Save failed", err);
         }
@@ -646,9 +717,12 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      */
     const handleCreateOrder = async () => {
         try {
+            if (!(await ensureAuthenticatedForSave())) return;
+
             customerSelectRef.current?.commitPendingFlags?.();
 
             const result = await state.handlers.saveQuote();
+            await persistDraftShipToData(result.quoteId);
             await state.convertToOrderHook?.mutateAsync({
                 quoteId: result.quoteId,
                 poNumber: state.orderPoNumber.trim() || undefined,
@@ -658,6 +732,10 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 notesInternal: state.orderInternalNotes.trim() || undefined,
             });
         } catch (err) {
+            if (isSessionExpiredError(err)) {
+                handleSessionExpired("quote-editor-create-order");
+                return;
+            }
             // saveQuote / convertToOrder both toast already; just fail-soft.
             console.error("[QuoteEditorPage] Create Order failed", err);
         }
@@ -674,8 +752,13 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             return state.quoteId;
         }
 
+        if (!(await ensureAuthenticatedForSave())) {
+            throw new Error(SESSION_EXPIRED_MESSAGE);
+        }
+
         // New quote - save it first
         const result = await state.handlers.saveQuote();
+        await persistDraftShipToData(result.quoteId);
 
         // In the standard quote flow, we navigate to the newly created quote so the editor adopts
         // it as canonical. In the /orders/new flow, we intentionally avoid route changes.
@@ -1048,19 +1131,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             mode="quote"
                             parentType="quote"
                             fulfillmentMethod={state.deliveryMethod as 'pickup' | 'ship' | 'deliver'}
-                            shipToData={{
-                                // Use persisted quote shipTo fields from DB
-                                company: (state.quote as any)?.shipToCompany,
-                                name: (state.quote as any)?.shipToName,
-                                email: (state.quote as any)?.shipToEmail,
-                                phone: (state.quote as any)?.shipToPhone,
-                                address1: (state.quote as any)?.shipToAddress1,
-                                address2: (state.quote as any)?.shipToAddress2,
-                                city: (state.quote as any)?.shipToCity,
-                                state: (state.quote as any)?.shipToState,
-                                postalCode: (state.quote as any)?.shipToPostalCode,
-                                country: (state.quote as any)?.shipToCountry,
-                            }}
+                            shipToData={fulfillmentShipToData}
                             shippingInstructions={state.quoteNotes}
                             shippingCents={state.shippingCents}
                             canEditOrder={!readOnly}

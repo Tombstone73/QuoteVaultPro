@@ -15,6 +15,7 @@ import { CSS } from "@dnd-kit/utilities";
 import type { Product, ProductOptionItem } from "@shared/schema";
 import type { QuoteLineItemDraft, OptionSelection } from "../types";
 import { apiRequest } from "@/lib/queryClient";
+import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
 import { ProductOptionsPanel } from "./ProductOptionsPanel";
 import { ProductOptionsPanelV2 } from "./ProductOptionsPanelV2";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
@@ -748,7 +749,12 @@ export function LineItemsSection({
       if (Number.isFinite(nextFormula)) {
         formulaPrice = nextFormula;
       }
-    } catch {
+    } catch (error) {
+      if (isSessionExpiredError(error)) {
+        setCalcError(SESSION_EXPIRED_MESSAGE);
+        notifySessionExpired("quote-line-price-override-refresh");
+        return;
+      }
       // Keep current formula fallback
     }
 
@@ -910,6 +916,11 @@ export function LineItemsSection({
           }
         })
         .catch((err: any) => {
+          if (isSessionExpiredError(err)) {
+            setCalcError(SESSION_EXPIRED_MESSAGE);
+            notifySessionExpired("quote-line-price-preview");
+            return;
+          }
           // Parse JSON error for PBV2 schema mismatch
           let errorMessage = err?.message || "Calculation failed";
           try {
