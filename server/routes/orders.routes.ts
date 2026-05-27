@@ -120,6 +120,7 @@ import {
     collectLineItemProductionMaterialIds,
     resolveLineItemMaterialDisplayLabel,
 } from "./flatStockNesting.shared";
+import { generatePackingSlipHtmlForOrder } from "../services/packingSlipService";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -1618,6 +1619,36 @@ export async function registerOrderRoutes(
         } catch (error) {
             console.error("Error building order traveler:", error);
             return res.status(500).json({ message: "Failed to build order traveler" });
+        }
+    });
+
+    // Packing slip preview/generation. Read-only: this does not create shipments
+    // and does not update fulfillment/order state.
+    app.post("/api/orders/:orderId/packing-slip", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+            const orderId = String(req.params.orderId || "");
+            if (!orderId.trim()) {
+                return res.status(400).json({ success: false, message: "orderId required", code: "VALIDATION_ERROR" });
+            }
+
+            const html = await generatePackingSlipHtmlForOrder(organizationId, orderId);
+            if (!html) {
+                return res.status(404).json({ success: false, message: "Order not found", code: "NOT_FOUND" });
+            }
+
+            return res.json({
+                success: true,
+                data: {
+                    html,
+                    filename: `packing-slip-${orderId}.html`,
+                },
+            });
+        } catch (error) {
+            console.error("Error building packing slip:", error);
+            return res.status(500).json({ success: false, message: "Failed to build packing slip" });
         }
     });
 

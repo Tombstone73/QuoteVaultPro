@@ -91,8 +91,6 @@ export function useDeleteShipment(orderId: string) {
 
 // Generate packing slip HTML
 export function useGeneratePackingSlip(orderId: string) {
-  const queryClient = useQueryClient();
-  
   return useMutation({
     mutationFn: async () => {
       const response = await fetch(`/api/orders/${orderId}/packing-slip`, {
@@ -100,14 +98,11 @@ export function useGeneratePackingSlip(orderId: string) {
         credentials: 'include',
       });
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to generate packing slip');
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || error.error || 'Failed to generate packing slip');
       }
       const data = await response.json();
       return data.data.html;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['order', orderId] });
     },
   });
 }

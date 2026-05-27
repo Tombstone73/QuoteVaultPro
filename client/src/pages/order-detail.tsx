@@ -239,6 +239,7 @@ export default function OrderDetail() {
   const [showShipmentForm, setShowShipmentForm] = useState(false);
   const [editingShipment, setEditingShipment] = useState<Shipment | null>(null);
   const [showPackingSlipModal, setShowPackingSlipModal] = useState(false);
+  const [packingSlipHtml, setPackingSlipHtml] = useState<string | null>(null);
   const [shipmentToDelete, setShipmentToDelete] = useState<string | null>(null);
   
   // Status transition confirmation state
@@ -1534,7 +1535,8 @@ export default function OrderDetail() {
 
   const handleGeneratePackingSlip = async () => {
     try {
-      await generatePackingSlip.mutateAsync();
+      const html = await generatePackingSlip.mutateAsync();
+      setPackingSlipHtml(html);
       setShowPackingSlipModal(true);
     } catch (error: any) {
       toast({ 
@@ -3746,11 +3748,11 @@ export default function OrderDetail() {
       />
 
       {/* Packing Slip Modal */}
-      {order.packingSlipHtml && (
+      {packingSlipHtml && (
         <PackingSlipModal
           open={showPackingSlipModal}
           onOpenChange={setShowPackingSlipModal}
-          packingSlipHtml={order.packingSlipHtml}
+          packingSlipHtml={packingSlipHtml}
         />
       )}
 
