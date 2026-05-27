@@ -61,6 +61,7 @@ import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrinterMachineAssignment, hasProductionPrinterAssignment } from "@/components/production/PrinterMachineAssignment";
+import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsPanel";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
 import { filterProductionJobsForTab, type ProductionBoardTab } from "@/lib/productionBoard";
@@ -1284,6 +1285,12 @@ function PreviewPanel({
             {job.order.priority === "rush" ? <Badge variant="destructive">RUSH</Badge> : null}
           </div>
 
+          <ProductionAlertsPanel
+            alerts={(job as any).productionAlerts}
+            productionJobId={job.id}
+            compact
+          />
+
           <div className="rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2">
             <div className="text-[11px] uppercase tracking-wide text-amber-200">Production notes</div>
             <div className="text-sm text-titan-text-primary max-h-24 overflow-y-auto whitespace-pre-wrap">
@@ -1682,6 +1689,15 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                         ) : (
                           <span className="text-sm font-semibold">{job.order.customerName || "—"}</span>
                         )}
+                        {Array.isArray((job as any).productionAlerts) && (job as any).productionAlerts.length > 0 ? (
+                          <div className="mt-1">
+                            <Badge variant="destructive" className="text-[10px] uppercase tracking-wide">
+                              {(job as any).productionAlerts.some((alert: any) => alert.severity === "critical")
+                                ? "Critical alert"
+                                : `${(job as any).productionAlerts.length} alert(s)`}
+                            </Badge>
+                          </div>
+                        ) : null}
                       </TableCell>
                       <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
                         {orderId && orderNumber !== "—" ? (

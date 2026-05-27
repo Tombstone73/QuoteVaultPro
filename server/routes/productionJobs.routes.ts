@@ -13,6 +13,7 @@ import {
   orderAttachments,
   orderLineItems,
   orders,
+  productionAlerts,
   productionEvents,
   productionJobs,
   reprintRequests,
@@ -110,6 +111,41 @@ function buildLineItemProductionDisplay(lineItem: any) {
     optionRows,
     finishingRequirements: extractFinishingBullets(lineItem),
     lamination: resolveLaminationFromOptionRows(optionRows),
+  };
+}
+
+function normalizeProductionAlertStations(value: unknown): string[] {
+  if (!Array.isArray(value)) return ["all"];
+  const stations = value.map((entry) => String(entry || "").trim().toLowerCase()).filter(Boolean);
+  return stations.length ? Array.from(new Set(stations)) : ["all"];
+}
+
+function productionAlertVisibleForStation(alert: { visibleStations: unknown }, stationKey: unknown): boolean {
+  const station = normalizeProductionStationKey(String(stationKey ?? "")) ?? String(stationKey ?? "").trim().toLowerCase();
+  const visibleStations = normalizeProductionAlertStations(alert.visibleStations);
+  return visibleStations.includes("all") || (station ? visibleStations.includes(station) : true);
+}
+
+function serializeProductionAlert(row: typeof productionAlerts.$inferSelect) {
+  return {
+    id: row.id,
+    orderId: row.orderId,
+    orderLineItemId: row.orderLineItemId ?? null,
+    productionJobId: row.productionJobId ?? null,
+    title: row.title,
+    message: row.message ?? null,
+    alertType: row.alertType,
+    severity: row.severity,
+    visibleStations: normalizeProductionAlertStations(row.visibleStations),
+    status: row.status,
+    createdByUserId: row.createdByUserId ?? null,
+    createdAt: row.createdAt ? new Date(row.createdAt as any).toISOString() : null,
+    acknowledgedByUserId: row.acknowledgedByUserId ?? null,
+    acknowledgedAt: row.acknowledgedAt ? new Date(row.acknowledgedAt as any).toISOString() : null,
+    resolvedByUserId: row.resolvedByUserId ?? null,
+    resolvedAt: row.resolvedAt ? new Date(row.resolvedAt as any).toISOString() : null,
+    metadata: row.metadataJson ?? null,
+    updatedAt: row.updatedAt ? new Date(row.updatedAt as any).toISOString() : null,
   };
 }
 
@@ -658,6 +694,38 @@ export function registerProductionJobsRoutes(
         lineItemById.set(li.id, mapped);
       }
 
+      const alertScopeClauses: any[] = [
+        inArray(productionAlerts.orderId, orderIds),
+        inArray(productionAlerts.productionJobId, jobIds),
+      ];
+      if (productionLineItemIds.length > 0) {
+        alertScopeClauses.push(inArray(productionAlerts.orderLineItemId, productionLineItemIds));
+      }
+      const productionAlertRows = await db
+        .select()
+        .from(productionAlerts)
+        .where(
+          and(
+            eq(productionAlerts.organizationId, organizationId),
+            inArray(productionAlerts.status, ["active", "acknowledged"]),
+            or(...alertScopeClauses),
+          ),
+        )
+        .orderBy(desc(productionAlerts.createdAt));
+
+      const alertsByProductionJobId = new Map<string, ReturnType<typeof serializeProductionAlert>[]>();
+      for (const row of filteredRows) {
+        const alerts = productionAlertRows
+          .filter((alert) => {
+            const directJobMatch = alert.productionJobId && alert.productionJobId === row.id;
+            const lineItemMatch = row.lineItemId && alert.orderLineItemId && alert.orderLineItemId === row.lineItemId;
+            const orderMatch = !alert.orderLineItemId && !alert.productionJobId && alert.orderId === row.orderId;
+            return (directJobMatch || lineItemMatch || orderMatch) && productionAlertVisibleForStation(alert, row.stationKey);
+          })
+          .map((alert) => serializeProductionAlert(alert));
+        alertsByProductionJobId.set(row.id, alerts);
+      }
+
       const attachmentRows = await db
         .select({
           id: orderAttachments.id,
@@ -1023,6 +1091,7 @@ export function registerProductionJobsRoutes(
           optionRows: lineItemDisplay.optionRows,
           finishingRequirements: lineItemDisplay.finishingRequirements,
           lamination: lineItemDisplay.lamination,
+          productionAlerts: alertsByProductionJobId.get(row.id) ?? [],
           printerOptions,
           assignedPrinterId: row.assignedPrinterId ?? null,
           assignedPrinterName: row.assignedPrinterName ?? null,
@@ -1533,6 +1602,29 @@ export function registerProductionJobsRoutes(
       };
       (primaryLineItem as any).optionRows = lineItemDisplay.optionRows;
       const printerOptions = resolvePrinterOptionsForStation(config, job.stationKey);
+      const productionAlertRows = await db
+        .select()
+        .from(productionAlerts)
+        .where(
+          and(
+            eq(productionAlerts.organizationId, organizationId),
+            inArray(productionAlerts.status, ["active", "acknowledged", "resolved"]),
+            or(
+              eq(productionAlerts.productionJobId, jobId),
+              eq(productionAlerts.orderLineItemId, lineItemId),
+              eq(productionAlerts.orderId, orderId),
+            ),
+          ),
+        )
+        .orderBy(desc(productionAlerts.createdAt));
+      const productionAlertList = productionAlertRows
+        .filter((alert) => {
+          const directJobMatch = alert.productionJobId && alert.productionJobId === jobId;
+          const lineItemMatch = alert.orderLineItemId && alert.orderLineItemId === lineItemId;
+          const orderMatch = !alert.orderLineItemId && !alert.productionJobId && alert.orderId === orderId;
+          return (directJobMatch || lineItemMatch || orderMatch) && productionAlertVisibleForStation(alert, job.stationKey);
+        })
+        .map((alert) => serializeProductionAlert(alert));
 
       // Sibling jobs list for operator workflow
       const otherJobsRows = await db
@@ -1650,6 +1742,7 @@ export function registerProductionJobsRoutes(
           finishingRequirements: lineItemDisplay.finishingRequirements,
           lamination: lineItemDisplay.lamination,
           finishingMode: config.finishingMode,
+          productionAlerts: productionAlertList,
           printerOptions,
           assignedPrinterId: job.assignedPrinterId ?? null,
           assignedPrinterName: job.assignedPrinterName ?? null,

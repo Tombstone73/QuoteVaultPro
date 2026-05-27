@@ -16,6 +16,14 @@ import { formatDistanceToNow } from "date-fns";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
+import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsPanel";
+import {
+  type ProductionAlertSeverity,
+  type ProductionAlertStation,
+  type ProductionAlertType,
+  useCreateProductionAlert,
+  useProductionAlerts,
+} from "@/hooks/useProduction";
 import type { PrepressQueueItem, PrepressQueueWorkflowState } from "@/hooks/useOrders";
 import { usePageVisible } from "@/hooks/usePageVisible";
 import type { FileUploadNamingPolicy } from "@shared/fileUploadNaming";
@@ -263,6 +271,12 @@ export default function PrepressProductionPageV2() {
   const [prepressNotes, setPrepressNotes] = useState("");
   const [flagForQc, setFlagForQc] = useState(false);
   const [issueType, setIssueType] = useState("");
+  const [productionAlertOpen, setProductionAlertOpen] = useState(false);
+  const [productionAlertTitle, setProductionAlertTitle] = useState("");
+  const [productionAlertType, setProductionAlertType] = useState<ProductionAlertType>("general_warning");
+  const [productionAlertSeverity, setProductionAlertSeverity] = useState<ProductionAlertSeverity>("warning");
+  const [productionAlertStations, setProductionAlertStations] = useState<ProductionAlertStation[]>(["all"]);
+  const [productionAlertMessage, setProductionAlertMessage] = useState("");
   const [uploadRole, setUploadRole] = useState<"original" | "final">("final");
   const [selectedTag, setSelectedTag] = useState("none");
   const [uploadingFiles, setUploadingFiles] = useState<UploadProgress[]>([]);
@@ -681,6 +695,15 @@ export default function PrepressProductionPageV2() {
   const queue = queueData || [];
   const filteredQueue = queue;
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId) ?? null;
+  const selectedAlertStation = useMemo<ProductionAlertStation>(() => {
+    const station = selectedItem?.selectedProductionDestination || selectedItem?.suggestedProductionDestination;
+    return station === "roll" || station === "flatbed" ? station : "all";
+  }, [selectedItem?.selectedProductionDestination, selectedItem?.suggestedProductionDestination]);
+  const productionAlertsQuery = useProductionAlerts(
+    { lineItemId: selectedLineItemId ?? undefined },
+    { enabled: !!selectedLineItemId },
+  );
+  const createProductionAlert = useCreateProductionAlert();
   const selectedOwnerLabel = formatOwnerLabel(selectedItem);
   const originalFiles = filesData?.originals || [];
   const finalFiles = filesData?.finals || [];
@@ -840,6 +863,15 @@ export default function PrepressProductionPageV2() {
   }, [selectedItem?.lineItemId, selectedItem?.prepressNotes, selectedItem?.issueFlag, selectedItem?.issueType]);
 
   React.useEffect(() => {
+    setProductionAlertOpen(false);
+    setProductionAlertTitle("");
+    setProductionAlertType("general_warning");
+    setProductionAlertSeverity("warning");
+    setProductionAlertStations([selectedAlertStation]);
+    setProductionAlertMessage("");
+  }, [selectedItem?.lineItemId, selectedAlertStation]);
+
+  React.useEffect(() => {
     if (!import.meta.env.DEV || !selectedItem) return;
     console.log("[Prepress Options]", {
       lineItemId: selectedItem.lineItemId,
@@ -886,6 +918,47 @@ export default function PrepressProductionPageV2() {
   const handleProductionDestinationChange = (value: string) => {
     if (!selectedItem || !selectedLineItemId) return;
     updateProductionDestinationMutation.mutate({ lineItemId: selectedLineItemId, destination: value });
+  };
+
+  const handleOpenProductionAlert = () => {
+    setProductionAlertStations([selectedAlertStation]);
+    setProductionAlertOpen(true);
+  };
+
+  const handleToggleProductionAlertStation = (station: ProductionAlertStation, checked: boolean) => {
+    setProductionAlertStations((current) => {
+      if (station === "all") return checked ? ["all"] : [];
+      const withoutAll = current.filter((entry) => entry !== "all");
+      const next = checked
+        ? Array.from(new Set([...withoutAll, station]))
+        : withoutAll.filter((entry) => entry !== station);
+      return next.length ? next : ["all"];
+    });
+  };
+
+  const handleCreateProductionAlert = () => {
+    if (!selectedItem || !selectedLineItemId) return;
+    createProductionAlert.mutate(
+      {
+        orderId: selectedItem.orderId,
+        orderLineItemId: selectedLineItemId,
+        title: productionAlertTitle,
+        alertType: productionAlertType,
+        severity: productionAlertSeverity,
+        visibleStations: productionAlertStations.length ? productionAlertStations : ["all"],
+        message: productionAlertMessage,
+      },
+      {
+        onSuccess: () => {
+          setProductionAlertOpen(false);
+          setProductionAlertTitle("");
+          setProductionAlertType("general_warning");
+          setProductionAlertSeverity("warning");
+          setProductionAlertStations([selectedAlertStation]);
+          setProductionAlertMessage("");
+        },
+      },
+    );
   };
 
   const handleStartPrepress = () => {
@@ -1891,6 +1964,40 @@ export default function PrepressProductionPageV2() {
                     Flagged jobs will appear in the QC queue for manager review
                   </p>
                 </div>
+
+                <div className="rounded-lg border border-red-500/30 bg-red-950/20 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-white">Production Alerts</div>
+                      <p className="mt-1 text-xs text-slate-400">
+                        Color, machine, registration, and finishing warnings that follow this item into production.
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleOpenProductionAlert}
+                      disabled={!selectedItem}
+                      className="bg-red-600 text-white hover:bg-red-700"
+                    >
+                      Add Production Alert
+                    </Button>
+                  </div>
+                  <div className="mt-3">
+                    <ProductionAlertsPanel
+                      alerts={productionAlertsQuery.data}
+                      showAcknowledge={false}
+                      compact
+                      empty={
+                        productionAlertsQuery.isLoading ? (
+                          <div className="text-xs text-slate-500">Loading alerts...</div>
+                        ) : (
+                          <div className="text-xs text-slate-500">No production alerts for this item.</div>
+                        )
+                      }
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           </section>
@@ -1985,6 +2092,102 @@ export default function PrepressProductionPageV2() {
           </div>
         </div>
       </main>
+
+      <Dialog open={productionAlertOpen} onOpenChange={setProductionAlertOpen}>
+        <DialogContent className="max-w-lg bg-[#111921] border-[#2d3748] text-slate-100">
+          <DialogHeader>
+            <DialogTitle>Add Production Alert</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label className="text-xs text-slate-400 mb-1 block">Title</Label>
+              <Input
+                value={productionAlertTitle}
+                onChange={(event) => setProductionAlertTitle(event.target.value)}
+                placeholder="Rick Red"
+                className="bg-[#0f172a] border-[#2d3748]"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs text-slate-400 mb-1 block">Alert Type</Label>
+                <Select value={productionAlertType} onValueChange={(value) => setProductionAlertType(value as ProductionAlertType)}>
+                  <SelectTrigger className="bg-[#0f172a] border-[#2d3748]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="general_warning">General Warning</SelectItem>
+                    <SelectItem value="color_match">Color Match</SelectItem>
+                    <SelectItem value="pms_match">PMS Match</SelectItem>
+                    <SelectItem value="customer_specific">Customer Specific</SelectItem>
+                    <SelectItem value="machine_setting">Machine Setting</SelectItem>
+                    <SelectItem value="finishing_instruction">Finishing Instruction</SelectItem>
+                    <SelectItem value="registration_instruction">Registration Instruction</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs text-slate-400 mb-1 block">Severity</Label>
+                <Select value={productionAlertSeverity} onValueChange={(value) => setProductionAlertSeverity(value as ProductionAlertSeverity)}>
+                  <SelectTrigger className="bg-[#0f172a] border-[#2d3748]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="warning">Warning</SelectItem>
+                    <SelectItem value="critical">Critical</SelectItem>
+                    <SelectItem value="info">Info</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-xs text-slate-400 mb-2 block">Visible To</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  ["roll", "Roll Production"],
+                  ["flatbed", "Flatbed Production"],
+                  ["fulfillment", "Fulfillment"],
+                  ["all", "All Stations"],
+                ] as Array<[ProductionAlertStation, string]>).map(([station, label]) => (
+                  <label key={station} className="flex items-center gap-2 rounded-md border border-[#2d3748] bg-[#0f172a] px-3 py-2 text-sm">
+                    <Checkbox
+                      checked={productionAlertStations.includes(station)}
+                      onCheckedChange={(checked) => handleToggleProductionAlertStation(station, checked === true)}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-xs text-slate-400 mb-1 block">Notes</Label>
+              <Textarea
+                value={productionAlertMessage}
+                onChange={(event) => setProductionAlertMessage(event.target.value)}
+                placeholder="Use Rick Red density preset in Onyx. Adjust reds before printing."
+                className="min-h-[100px] bg-[#0f172a] border-[#2d3748]"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setProductionAlertOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={handleCreateProductionAlert}
+                disabled={!productionAlertTitle.trim() || createProductionAlert.isPending}
+                className="bg-red-600 text-white hover:bg-red-700"
+              >
+                {createProductionAlert.isPending ? "Saving..." : "Save Alert"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={materialOverrideOpen} onOpenChange={setMaterialOverrideOpen}>
         <DialogContent className="max-w-xl bg-[#111921] border-[#2d3748] text-slate-100">
