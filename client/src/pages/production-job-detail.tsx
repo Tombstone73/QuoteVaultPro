@@ -29,6 +29,7 @@ import {
 import { deriveLaminationDisplay } from "@/lib/productionHelpers";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrinterMachineAssignment, hasProductionPrinterAssignment } from "@/components/production/PrinterMachineAssignment";
+import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsPanel";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import {
@@ -69,6 +70,8 @@ function formatEventLabel(type: string) {
       return "Media used set";
     case "printer_assigned":
       return "Printer / Machine assigned";
+    case "production_alert_acknowledged":
+      return "Production alert acknowledged";
     case "note":
       return "Note";
     default:
@@ -553,6 +556,11 @@ export default function ProductionJobDetailPage() {
                                 {formatPrinterAssignmentPayload(e.payload)}
                               </div>
                             )}
+                            {e.type === "production_alert_acknowledged" && e.payload?.title && (
+                              <div className="text-sm text-muted-foreground mt-2">
+                                {String(e.payload.title)}
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -565,6 +573,11 @@ export default function ProductionJobDetailPage() {
 
           {/* RIGHT COLUMN: Artwork thumbs + Job Specs + Order Jobs + Notes */}
           <div className="space-y-4">
+            <ProductionAlertsPanel
+              alerts={data.productionAlerts}
+              productionJobId={data.id}
+            />
+
             {/* ARTWORK THUMBNAILS (compact) */}
             <Card>
               <CardHeader className="p-4 pb-3">

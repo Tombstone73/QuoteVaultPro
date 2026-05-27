@@ -12,6 +12,40 @@ export type ProductionConfig = {
   printerOptionsByStation?: Record<string, string[]>;
 };
 
+export type ProductionAlertType =
+  | "color_match"
+  | "pms_match"
+  | "customer_specific"
+  | "machine_setting"
+  | "finishing_instruction"
+  | "registration_instruction"
+  | "general_warning";
+
+export type ProductionAlertSeverity = "info" | "warning" | "critical";
+export type ProductionAlertStation = "prepress" | "roll" | "flatbed" | "fulfillment" | "all";
+export type ProductionAlertStatus = "active" | "acknowledged" | "resolved" | "cancelled" | "archived";
+
+export type ProductionAlertSummary = {
+  id: string;
+  orderId: string;
+  orderLineItemId: string | null;
+  productionJobId: string | null;
+  title: string;
+  message: string | null;
+  alertType: ProductionAlertType;
+  severity: ProductionAlertSeverity;
+  visibleStations: ProductionAlertStation[];
+  status: ProductionAlertStatus;
+  createdByUserId: string | null;
+  createdAt: string | null;
+  acknowledgedByUserId: string | null;
+  acknowledgedAt: string | null;
+  resolvedByUserId: string | null;
+  resolvedAt: string | null;
+  metadata?: Record<string, unknown> | null;
+  updatedAt?: string | null;
+};
+
 export type ProductionDisplayOptionRow = {
   groupLabel?: string | null;
   optionLabel: string;
@@ -89,6 +123,7 @@ export type ProductionJobListItem = {
   mediaLabel?: string; // Alias for media (legacy)
   optionRows?: ProductionDisplayOptionRow[];
   finishingRequirements?: string[];
+  productionAlerts?: ProductionAlertSummary[];
   lamination?: {
     label: string;
     source: "option" | "none";
@@ -154,7 +189,8 @@ export type ProductionEvent = {
     | "intake"
     | "routing_override"
     | "ticket_printed"
-    | "printer_assigned";
+    | "printer_assigned"
+    | "production_alert_acknowledged";
   payload: any;
   actorUserId?: string | null;
   createdAt: string;
@@ -353,9 +389,128 @@ export function useScheduleOrderLineItemsForProduction(orderId: string) {
   });
 }
 
+export function useProductionAlerts(
+  filters?: {
+    orderId?: string;
+    lineItemId?: string;
+    productionJobId?: string;
+    station?: ProductionAlertStation;
+    status?: ProductionAlertStatus;
+  },
+  options?: { enabled?: boolean },
+) {
+  return useQuery<ProductionAlertSummary[]>({
+    queryKey: ["/api/production-alerts", filters],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (filters?.orderId) params.set("orderId", filters.orderId);
+      if (filters?.lineItemId) params.set("lineItemId", filters.lineItemId);
+      if (filters?.productionJobId) params.set("productionJobId", filters.productionJobId);
+      if (filters?.station) params.set("station", filters.station);
+      if (filters?.status) params.set("status", filters.status);
+      const res = await fetch(`/api/production-alerts${params.toString() ? `?${params.toString()}` : ""}`, {
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to fetch production alerts");
+      return json.data || [];
+    },
+    enabled: options?.enabled !== false,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
 function invalidateProduction(qc: ReturnType<typeof useQueryClient>, jobId?: string) {
   qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
   if (jobId) qc.invalidateQueries({ queryKey: ["/api/production/jobs", jobId] });
+  qc.invalidateQueries({ queryKey: ["/api/production-alerts"] });
+}
+
+export function useCreateProductionAlert() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (data: {
+      orderId?: string;
+      orderLineItemId?: string;
+      lineItemId?: string;
+      productionJobId?: string;
+      title: string;
+      message?: string | null;
+      alertType: ProductionAlertType;
+      severity: ProductionAlertSeverity;
+      visibleStations: ProductionAlertStation[];
+      metadata?: Record<string, unknown> | null;
+    }) => {
+      const res = await fetch("/api/production-alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to create production alert");
+      return json.data as ProductionAlertSummary;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/production-alerts"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      toast({ title: "Production alert added" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Alert failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useAcknowledgeProductionAlert(productionJobId?: string) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (alertId: string) => {
+      const res = await fetch(`/api/production-alerts/${alertId}/acknowledge`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productionJobId }),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to acknowledge alert");
+      return json.data as ProductionAlertSummary;
+    },
+    onSuccess: () => {
+      invalidateProduction(qc, productionJobId);
+      toast({ title: "Alert acknowledged" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Acknowledge failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useResolveProductionAlert(productionJobId?: string) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (alertId: string) => {
+      const res = await fetch(`/api/production-alerts/${alertId}/resolve`, {
+        method: "PATCH",
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.error || "Failed to resolve alert");
+      return json.data as ProductionAlertSummary;
+    },
+    onSuccess: () => {
+      invalidateProduction(qc, productionJobId);
+      toast({ title: "Alert resolved" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Resolve failed", description: e.message, variant: "destructive" });
+    },
+  });
 }
 
 export function useStartProductionTimer(jobId: string) {

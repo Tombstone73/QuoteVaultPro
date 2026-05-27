@@ -435,6 +435,13 @@
       "when": 1780444800000,
       "tag": "0066_production_job_printer_assignment",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1780531200000,
+      "tag": "0067_production_alerts",
+      "breakpoints": true
     }
   ]
 }

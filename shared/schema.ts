@@ -3520,7 +3520,27 @@ export type ProductionEventType =
   | "note"
   | "reprint_incremented"
   | "media_used_set"
-  | "printer_assigned";
+  | "printer_assigned"
+  | "production_alert_acknowledged";
+
+export const productionAlertTypeValues = [
+  "color_match",
+  "pms_match",
+  "customer_specific",
+  "machine_setting",
+  "finishing_instruction",
+  "registration_instruction",
+  "general_warning",
+] as const;
+
+export const productionAlertSeverityValues = ["info", "warning", "critical"] as const;
+export const productionAlertStationValues = ["prepress", "roll", "flatbed", "fulfillment", "all"] as const;
+export const productionAlertStatusValues = ["active", "acknowledged", "resolved", "cancelled", "archived"] as const;
+
+export type ProductionAlertType = typeof productionAlertTypeValues[number];
+export type ProductionAlertSeverity = typeof productionAlertSeverityValues[number];
+export type ProductionAlertStation = typeof productionAlertStationValues[number];
+export type ProductionAlertStatus = typeof productionAlertStatusValues[number];
 
 export const productionStationStepTriggerSchema = z.object({
   type: z.string().min(1),
@@ -3574,6 +3594,34 @@ export const productionEvents = pgTable("production_events", {
   index("production_events_actor_user_id_idx").on(table.actorUserId),
 ]);
 
+export const productionAlerts = pgTable("production_alerts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  orderLineItemId: varchar("order_line_item_id").references(() => orderLineItems.id, { onDelete: "set null" }),
+  productionJobId: varchar("production_job_id").references(() => productionJobs.id, { onDelete: "set null" }),
+  title: varchar("title", { length: 160 }).notNull(),
+  message: text("message"),
+  alertType: varchar("alert_type", { length: 40 }).$type<ProductionAlertType>().notNull().default("general_warning"),
+  severity: varchar("severity", { length: 20 }).$type<ProductionAlertSeverity>().notNull().default("warning"),
+  visibleStations: jsonb("visible_stations").$type<ProductionAlertStation[]>().notNull().default(sql`'["all"]'::jsonb`),
+  status: varchar("status", { length: 20 }).$type<ProductionAlertStatus>().notNull().default("active"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  acknowledgedByUserId: varchar("acknowledged_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+  resolvedByUserId: varchar("resolved_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  metadataJson: jsonb("metadata_json").$type<Record<string, any>>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("production_alerts_org_status_idx").on(table.organizationId, table.status),
+  index("production_alerts_order_id_idx").on(table.orderId),
+  index("production_alerts_order_line_item_id_idx").on(table.orderLineItemId),
+  index("production_alerts_production_job_id_idx").on(table.productionJobId),
+  index("production_alerts_org_severity_idx").on(table.organizationId, table.severity),
+]);
+
 export const productionStationSteps = pgTable("production_station_steps", {
   id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()::text`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
@@ -3602,6 +3650,8 @@ export type ProductionJob = typeof productionJobs.$inferSelect;
 export type InsertProductionJob = typeof productionJobs.$inferInsert;
 export type ProductionEvent = typeof productionEvents.$inferSelect;
 export type InsertProductionEvent = typeof productionEvents.$inferInsert;
+export type ProductionAlert = typeof productionAlerts.$inferSelect;
+export type InsertProductionAlert = typeof productionAlerts.$inferInsert;
 export type ProductionStationStep = typeof productionStationSteps.$inferSelect;
 export type InsertProductionStationStep = z.infer<typeof insertProductionStationStepSchema>;
 
