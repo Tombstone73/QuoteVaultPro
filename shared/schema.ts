@@ -3622,6 +3622,26 @@ export const productionAlerts = pgTable("production_alerts", {
   index("production_alerts_org_severity_idx").on(table.organizationId, table.severity),
 ]);
 
+export const productionAlertPresets = pgTable("production_alert_presets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 120 }).notNull(),
+  title: varchar("title", { length: 160 }).notNull(),
+  message: text("message"),
+  alertType: varchar("alert_type", { length: 40 }).$type<ProductionAlertType>().notNull().default("general_warning"),
+  severity: varchar("severity", { length: 20 }).$type<ProductionAlertSeverity>().notNull().default("warning"),
+  visibleStations: jsonb("visible_stations").$type<ProductionAlertStation[]>().notNull().default(sql`'["all"]'::jsonb`),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  metadataJson: jsonb("metadata_json").$type<Record<string, any>>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("production_alert_presets_org_active_sort_idx").on(table.organizationId, table.isActive, table.sortOrder),
+  uniqueIndex("production_alert_presets_org_name_uidx").on(table.organizationId, table.name),
+]);
+
 export const productionStationSteps = pgTable("production_station_steps", {
   id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()::text`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
@@ -3652,6 +3672,8 @@ export type ProductionEvent = typeof productionEvents.$inferSelect;
 export type InsertProductionEvent = typeof productionEvents.$inferInsert;
 export type ProductionAlert = typeof productionAlerts.$inferSelect;
 export type InsertProductionAlert = typeof productionAlerts.$inferInsert;
+export type ProductionAlertPreset = typeof productionAlertPresets.$inferSelect;
+export type InsertProductionAlertPreset = typeof productionAlertPresets.$inferInsert;
 export type ProductionStationStep = typeof productionStationSteps.$inferSelect;
 export type InsertProductionStationStep = z.infer<typeof insertProductionStationStepSchema>;
 
