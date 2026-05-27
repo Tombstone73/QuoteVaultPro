@@ -119,7 +119,7 @@ function fmt(
  * Default ticket template. Emphasis defaults per spec:
  *  - Order #: extra large, bold (kept at the very top, below Rush)
  *  - PO #: directly under Order #
- *  - Customer: large, bold
+ *  - Customer: extra large, bold (equal visual priority to Order #)
  *  - Fulfillment + Station/Route: near the top for shop routing
  *  - Assigned To: hidden by default (Station/Route replaces it)
  *  - Due date: bold
@@ -131,20 +131,20 @@ export const DEFAULT_TICKET_TEMPLATE: TicketTemplate = {
     rush: fmt({ order: 0, fontSize: "xlarge", fontWeight: "bold", align: "center", dividerAfter: true }),
     orderNumber: fmt({ order: 1, fontSize: "xlarge", fontWeight: "bold" }),
     poNumber: fmt({ order: 2, fontWeight: "bold" }),
-    customerName: fmt({ order: 3, fontSize: "large", fontWeight: "bold" }),
-    contactName: fmt({ order: 4 }),
+    customerName: fmt({ order: 3, fontSize: "xlarge", fontWeight: "bold" }),
+    contactName: fmt({ order: 4, fontWeight: "bold" }),
     fulfillment: fmt({ order: 5, fontWeight: "bold" }),
     stationRoute: fmt({ order: 6, fontWeight: "bold" }),
     assignedTo: fmt({ order: 7, show: false }),
     dueDate: fmt({ order: 8, fontWeight: "bold", dividerAfter: true }),
-    description: fmt({ order: 9 }),
+    description: fmt({ order: 9, fontSize: "large", fontWeight: "bold" }),
     quantity: fmt({ order: 10, fontSize: "large", fontWeight: "bold" }),
-    size: fmt({ order: 11 }),
-    material: fmt({ order: 12 }),
-    productionNotes: fmt({ order: 13, dividerBefore: true }),
-    internalNotes: fmt({ order: 14 }),
+    size: fmt({ order: 11, fontSize: "large", fontWeight: "bold" }),
+    material: fmt({ order: 12, fontSize: "large", fontWeight: "bold" }),
+    productionNotes: fmt({ order: 13, fontWeight: "bold", dividerBefore: true }),
+    internalNotes: fmt({ order: 14, fontWeight: "bold" }),
     ticketNote: fmt({ order: 15, fontWeight: "bold", dividerBefore: true }),
-    jobId: fmt({ order: 16, fontSize: "small", align: "center", dividerBefore: true }),
+    jobId: fmt({ order: 16, align: "center", dividerBefore: true }),
   },
 };
 
@@ -211,6 +211,28 @@ const OPTIONAL_FIELDS: ReadonlySet<TicketFieldKey> = new Set<TicketFieldKey>([
 ]);
 
 const EM_DASH = "—";
+
+const FONT_SIZE_RANK: Record<TicketFontSize, number> = {
+  small: 0,
+  normal: 1,
+  large: 2,
+  xlarge: 3,
+};
+
+const THERMAL_MIN_FONT_SIZE_BY_FIELD: Partial<Record<TicketFieldKey, TicketFontSize>> = {
+  rush: "xlarge",
+  orderNumber: "xlarge",
+  customerName: "xlarge",
+  description: "large",
+  quantity: "large",
+  size: "large",
+  material: "large",
+};
+
+function thermalReadableFontSize(key: TicketFieldKey, requested: TicketFontSize): TicketFontSize {
+  const minimum = THERMAL_MIN_FONT_SIZE_BY_FIELD[key] ?? "normal";
+  return FONT_SIZE_RANK[requested] >= FONT_SIZE_RANK[minimum] ? requested : minimum;
+}
 
 /**
  * Format an ISO date as a compact, locale-independent ticket date
@@ -296,8 +318,12 @@ function assembleRows(
 ): TicketRow[] {
   const rows: TicketRow[] = [];
   for (const key of keys) {
-    const format = template.fields[key];
-    if (!format || !format.show) continue;
+    const templateFormat = template.fields[key];
+    if (!templateFormat || !templateFormat.show) continue;
+    const format: TicketFieldFormat = {
+      ...templateFormat,
+      fontSize: thermalReadableFontSize(key, templateFormat.fontSize),
+    };
     if (key === "rush" && !isRush) continue;
 
     const value = getValue(key);
