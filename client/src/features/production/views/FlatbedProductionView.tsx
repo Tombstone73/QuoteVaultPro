@@ -1449,6 +1449,14 @@ function PreviewPanel({
   );
 }
 
+function PreviewDisabledHint() {
+  return (
+    <div className="rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-titan-text-primary">
+      Art previews are disabled. Enable in <Link className="underline" to={ROUTES.production.board}>Production Overview</Link>.
+    </div>
+  );
+}
+
 export default function FlatbedProductionView(props: { viewKey: string; status: ProductionStatus; jobs?: ProductionJobListItem[] }) {
   const { preferences } = useOrgPreferences();
   const productionNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
@@ -1573,40 +1581,42 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   if (jobsSafe.length === 0) {
     if (props.status === "queued") {
       return (
-        <Card className="bg-titan-bg-card border-titan-border-subtle">
-          <CardContent className="p-6">
-            <div className="text-sm font-medium text-titan-text-primary">No production jobs yet</div>
-            <div className="mt-1 text-sm text-titan-text-muted">
-              Production jobs are created per line item from order routing. Open an order and send line items to production.
-            </div>
-            <div className="mt-4 flex flex-wrap items-center gap-3">
-              <Button asChild size="sm">
-                <Link to={ROUTES.orders.list}>Go to Orders</Link>
-              </Button>
-              <Button asChild size="sm" variant="outline">
-                <Link to={ROUTES.settings.production}>Production Settings</Link>
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+        <div className="space-y-3">
+          {previewsDisabled ? <PreviewDisabledHint /> : null}
+          <Card className="bg-titan-bg-card border-titan-border-subtle">
+            <CardContent className="p-6">
+              <div className="text-sm font-medium text-titan-text-primary">No production jobs yet</div>
+              <div className="mt-1 text-sm text-titan-text-muted">
+                Production jobs are created per line item from order routing. Open an order and send line items to production.
+              </div>
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <Button asChild size="sm">
+                  <Link to={ROUTES.orders.list}>Go to Orders</Link>
+                </Button>
+                <Button asChild size="sm" variant="outline">
+                  <Link to={ROUTES.settings.production}>Production Settings</Link>
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       );
     }
 
     return (
-      <Card className="bg-titan-bg-card border-titan-border-subtle">
-        <CardContent className="p-4 text-sm text-titan-text-muted">No flatbed jobs in this state.</CardContent>
-      </Card>
+      <div className="space-y-3">
+        {previewsDisabled ? <PreviewDisabledHint /> : null}
+        <Card className="bg-titan-bg-card border-titan-border-subtle">
+          <CardContent className="p-4 text-sm text-titan-text-muted">No flatbed jobs in this state.</CardContent>
+        </Card>
+      </div>
     );
   }
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-4">
       <div className="space-y-4">
-        {previewsDisabled ? (
-          <div className="rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-titan-text-primary">
-            Art previews are disabled. Enable in <Link className="underline" to={ROUTES.production.board}>Production Overview</Link>.
-          </div>
-        ) : null}
+        {previewsDisabled ? <PreviewDisabledHint /> : null}
         {selectedJob ? (
           <ActionRail job={selectedJob} timerSeconds={liveTimerSeconds} timerIsRunning={derivedTimer.isRunning} notes={recentNotes} />
         ) : (
