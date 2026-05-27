@@ -506,6 +506,7 @@ export function registerProductionJobsRoutes(
         .select({
           id: productionEvents.id,
           productionJobId: productionEvents.productionJobId,
+          actorUserId: productionEvents.actorUserId,
           payload: productionEvents.payload,
           createdAt: productionEvents.createdAt,
         })
@@ -520,13 +521,19 @@ export function registerProductionJobsRoutes(
         .orderBy(desc(productionEvents.createdAt))
         .limit(500);
 
-      const notesByJobId = new Map<string, Array<{ id: string; text: string; createdAt: string }>>();
+      const notesByJobId = new Map<string, Array<{ id: string; text: string; createdAt: string; actorUserId: string | null }>>();
       for (const row of noteRows) {
         const list = notesByJobId.get(row.productionJobId) ?? [];
         if (list.length >= 5) continue;
         const text = typeof (row.payload as any)?.text === "string" ? (row.payload as any).text : "";
         if (!text.trim()) continue;
-        list.push({ id: row.id, text, createdAt: new Date(row.createdAt as any).toISOString() });
+        const actorUserId =
+          typeof row.actorUserId === "string" && row.actorUserId
+            ? row.actorUserId
+            : typeof (row.payload as any)?.actorUserId === "string"
+              ? (row.payload as any).actorUserId
+              : null;
+        list.push({ id: row.id, text, actorUserId, createdAt: new Date(row.createdAt as any).toISOString() });
         notesByJobId.set(row.productionJobId, list);
       }
 
