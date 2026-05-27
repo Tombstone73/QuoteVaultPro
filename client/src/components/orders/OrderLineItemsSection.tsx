@@ -3017,7 +3017,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                           onDraftLineItemPricingChange?.(lineItemId, nextPricing.effectiveTotalCents);
                                           setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (valueCents / 100).toFixed(2) }));
                                         }}
-                                        className="h-8 w-32 rounded-md border border-input bg-background px-2 text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                                        className="h-8 w-36 rounded-md border border-input bg-background px-2 text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
                                         disabled={readOnly}
                                       >
                                         <option value="__none">No override</option>
@@ -3028,7 +3028,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         <option value="apply_discount">Discount</option>
                                         <option value="append_value">Add value</option>
                                       </select>
-                                      <div className="text-[11px] text-muted-foreground">
+                                      <div className="ml-auto max-w-36 text-[11px] leading-tight text-muted-foreground">
                                         Calculated {formatMoney(baseCalculatedTotal)} · Effective {formatMoney(displayTotal)}
                                       </div>
                                     </div>
