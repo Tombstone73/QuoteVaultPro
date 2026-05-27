@@ -605,7 +605,7 @@ export function LineItemCard({
                 </div>
               </div>
 
-              <div className="ml-auto min-h-[60px] w-[280px] text-right">
+              <div className="ml-auto min-h-[60px] w-[220px] text-right">
                 <div className="text-xs text-muted-foreground">Total</div>
                 <div className="flex items-center gap-2 justify-end">
                   {editingPrice ? (
@@ -654,7 +654,7 @@ export function LineItemCard({
                   )}
                 </div>
                 {priceControlSlot ? (
-                  <div className="mt-1.5">{priceControlSlot}</div>
+                  <div className="mt-1">{priceControlSlot}</div>
                 ) : null}
                 <div className="h-5 flex items-center justify-end">
                   {isCalculating && <div className="text-[11px] text-muted-foreground">Calculating…</div>}
