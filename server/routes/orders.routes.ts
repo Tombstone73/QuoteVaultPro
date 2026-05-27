@@ -116,6 +116,10 @@ import { canonicalFileReadResolver } from "../services/storage/CanonicalFileRead
 import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { buildManualInventoryAdjustment } from "../services/materialInventoryLogic";
+import {
+    collectLineItemProductionMaterialIds,
+    resolveLineItemMaterialDisplayLabel,
+} from "./flatStockNesting.shared";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -1550,16 +1554,27 @@ export async function registerOrderRoutes(
                     width: orderLineItems.width,
                     height: orderLineItems.height,
                     materialId: orderLineItems.materialId,
+                    productPrimaryMaterialId: products.primaryMaterialId,
+                    pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
+                    materialUsageJson: orderLineItems.materialUsageJson,
+                    materialUsages: orderLineItems.materialUsages,
+                    specsJson: orderLineItems.specsJson,
+                    optionSelectionsJson: orderLineItems.optionSelectionsJson,
+                    selectedOptions: orderLineItems.selectedOptions,
                     productionNotes: orderLineItems.productionNotes,
                     sortOrder: orderLineItems.sortOrder,
                     createdAt: orderLineItems.createdAt,
                 })
                 .from(orderLineItems)
+                .leftJoin(products, and(eq(orderLineItems.productId, products.id), eq(products.organizationId, organizationId)))
                 .where(eq(orderLineItems.orderId, orderId))
                 .orderBy(orderLineItems.sortOrder, orderLineItems.createdAt);
 
             const materialIds = Array.from(
-                new Set(lineItemRows.map((li) => li.materialId).filter((v): v is string => typeof v === "string" && !!v.trim())),
+                new Set(lineItemRows.flatMap((li) => collectLineItemProductionMaterialIds({
+                    lineItem: li,
+                    productPrimaryMaterialId: li.productPrimaryMaterialId ?? null,
+                }))),
             );
             const materialNameById = new Map<string, string>();
             if (materialIds.length > 0) {
@@ -1576,7 +1591,13 @@ export async function registerOrderRoutes(
                     description: li.description ?? "",
                     quantity: Number(li.quantity) || 0,
                     size,
-                    material: li.materialId ? materialNameById.get(li.materialId) ?? null : null,
+                    material: resolveLineItemMaterialDisplayLabel({
+                        lineItem: li,
+                        materialName: li.materialId ? materialNameById.get(li.materialId) ?? null : null,
+                        materialById: materialNameById,
+                        productPrimaryMaterialId: li.productPrimaryMaterialId ?? null,
+                        primaryMaterialName: li.productPrimaryMaterialId ? materialNameById.get(li.productPrimaryMaterialId) ?? null : null,
+                    }),
                     productionNotes: li.productionNotes ?? null,
                 };
             });
