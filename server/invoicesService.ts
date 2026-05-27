@@ -9,6 +9,7 @@ import {
   isDocumentNumberUniqueViolation,
   toDocumentNumberConflictError,
 } from './services/documentNumberingService';
+import { resolveOrderLineItemInvoicePricing } from './lib/downstreamEffectivePricing';
 
 // Map payment terms to days offset
 const TERM_OFFSETS: Record<string, number> = {
@@ -299,13 +300,17 @@ async function createInvoiceFromOrderImpl(
     const issueDate = new Date();
     const dueDate = calculateDueDate(issueDate, opts.terms, opts.customDueDate || null);
 
-    const subtotal = lineItems.reduce((s, li) => s + Number(li.totalPrice), 0);
+    const pricedLineItems = lineItems.map((li) => ({
+      lineItem: li,
+      pricing: resolveOrderLineItemInvoicePricing(li as any),
+    }));
+    const subtotalCents = pricedLineItems.reduce((sum, item) => sum + item.pricing.effectiveTotalCents, 0);
+    const subtotal = subtotalCents / 100;
     const tax = Number(order.tax || '0');
     const shippingCents = Number((order as any).shippingCents ?? 0) || 0;
     const shipping = shippingCents / 100;
     const total = subtotal + tax + shipping;
 
-    const subtotalCents = toCents(subtotal);
     const taxCents = toCents(tax);
     const totalCents = Math.max(0, subtotalCents + taxCents + shippingCents);
 
@@ -343,8 +348,8 @@ async function createInvoiceFromOrderImpl(
     const [invoice] = await tx.insert(invoices).values(invoiceInsert as any).returning();
 
     // Snapshot line items
-    if (lineItems.length) {
-      const snapshotRows: InsertInvoiceLineItem[] = lineItems.map((li, idx) => ({
+    if (pricedLineItems.length) {
+      const snapshotRows: InsertInvoiceLineItem[] = pricedLineItems.map(({ lineItem: li, pricing }, idx) => ({
         invoiceId: invoice.id,
         orderLineItemId: li.id,
         productId: li.productId,
@@ -355,12 +360,12 @@ async function createInvoiceFromOrderImpl(
         description: li.description,
         width: li.width ? Number(li.width) : null,
         height: li.height ? Number(li.height) : null,
-        quantity: li.quantity,
+        quantity: pricing.quantity,
         sqft: li.sqft ? Number(li.sqft) : null,
-        unitPrice: Number(li.unitPrice),
-        totalPrice: Number(li.totalPrice),
-        unitPriceCents: toCents(li.unitPrice),
-        lineTotalCents: toCents(li.totalPrice),
+        unitPrice: pricing.effectiveUnitPriceCents / 100,
+        totalPrice: pricing.effectiveTotalCents / 100,
+        unitPriceCents: pricing.effectiveUnitPriceCents,
+        lineTotalCents: pricing.effectiveTotalCents,
         sortOrder: typeof (li as any).sortOrder === 'number' ? (li as any).sortOrder : idx,
         specsJson: li.specsJson as any,
         selectedOptions: li.selectedOptions as any,
