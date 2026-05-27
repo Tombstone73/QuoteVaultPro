@@ -15,7 +15,7 @@ describe("product pricing rotation helpers", () => {
     })).toBe(true);
   });
 
-  it("shows the pricing engine rotation control when the formula uses sheet consumption", () => {
+  it("shows the pricing engine rotation control in formula library mode when the resolved formula uses sheet consumption", () => {
     expect(shouldShowPricingEngineRotationControl({
       pricingProfileKey: "default",
       pricingFormula: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,24,12,3) * base_price",

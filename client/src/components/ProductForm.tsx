@@ -639,12 +639,15 @@ function PricingEngineRadioSection({
   const currentFormula = form.watch("pricingFormula");
   const currentProfile = form.watch("pricingProfileKey");
   const currentProfileConfig = form.watch("pricingProfileConfig") as FlatGoodsConfig | null;
+  const selectedFormulaLibraryValues = formulaId
+    ? getPricingFormulaSelectionValues(pricingFormulas, formulaId)
+    : { pricingFormula: null };
   const isAdvancedMode = pricingMode === "advanced";
   const hasTrimAllowance = (Number(trimAllowanceX) || 0) > 0 || (Number(trimAllowanceY) || 0) > 0;
   const formulaUsesOrderedDimsPattern = /\bw\s*\*\s*h\b|\bh\s*\*\s*w\b|\/\s*144\b|\bwidth\s*\*\s*height\b|\bordered_/i.test(String(currentFormula || ""));
   const shouldShowFinishedSizeWarning = isAdvancedMode && hasTrimAllowance && formulaUsesOrderedDimsPattern;
   const recommendedFormula = getDefaultFormula(currentProfile || pricingProfileKey || "default");
-  const formulaForValidation = String(currentFormula || recommendedFormula || "");
+  const formulaForValidation = String(currentFormula || selectedFormulaLibraryValues.pricingFormula || recommendedFormula || "");
   const formulaReferencesFlatFee = /\bflatFee\b/.test(formulaForValidation);
   const shouldShowRotationControl = shouldShowPricingEngineRotationControl({
     pricingProfileKey: currentProfile || pricingProfileKey,
@@ -928,6 +931,22 @@ function PricingEngineRadioSection({
         </div>
       </div>
 
+      {shouldShowRotationControl ? (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-slate-700 bg-slate-900/30 px-3 py-2">
+          <div className="min-w-0">
+            <Label className="text-xs font-medium text-slate-300">Allow Rotation / Mixed Sheet Layout</Label>
+            <p className="mt-0.5 text-[11px] leading-snug text-slate-500">Used by sheet-yield formulas and flat goods nesting.</p>
+          </div>
+          <Switch
+            checked={getAllowRotationFromPricingConfig(getSafeFlatGoodsConfig(currentProfileConfig))}
+            onCheckedChange={(checked) => {
+              onUpdateAllowRotation?.(Boolean(checked));
+            }}
+            disabled={!onUpdateAllowRotation}
+          />
+        </div>
+      ) : null}
+
       <RadioGroup
         value={effectiveMode}
         onValueChange={(v) => handleModeChange(v as PricingEngineMode)}
@@ -1043,7 +1062,7 @@ function PricingEngineRadioSection({
               )}
             />
 
-            {shouldShowRotationControl ? (
+            {currentProfile === "flat_goods" ? (
               <div className="mt-2 rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
                 <div className="text-xs font-medium text-slate-300">Sheet Settings</div>
                 <p className="text-[11px] text-slate-400">Used only for Flat Goods nesting (sheet yield and waste). Does not change Finished Size or total_sqft geometry.</p>
@@ -1115,16 +1134,6 @@ function PricingEngineRadioSection({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 pt-1">
-                  <Switch
-                    checked={getAllowRotationFromPricingConfig(getSafeFlatGoodsConfig(currentProfileConfig))}
-                    onCheckedChange={(checked) => {
-                      onUpdateAllowRotation?.(Boolean(checked));
-                    }}
-                    disabled={!onUpdateAllowRotation}
-                  />
-                  <Label className="text-xs text-slate-300">Allow Rotation / Mixed Sheet Layout</Label>
-                </div>
               </div>
             ) : null}
 
