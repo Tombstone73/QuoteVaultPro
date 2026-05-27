@@ -157,7 +157,7 @@ export type ProductionJobListItem = {
   backFileUrl?: string;
   // Artwork at job level (for Production Overview)
   artwork?: ProductionOrderArtworkSummary[];
-  notes?: Array<{ id: string; text: string; createdAt: string; edited?: boolean }>;
+  notes?: Array<{ id: string; text: string; createdAt: string; actorUserId?: string | null; edited?: boolean }>;
   // Production ticket fields (top-level, populated by job detail endpoint)
   contactName?: string | null;
   assignedTo?: string | null;

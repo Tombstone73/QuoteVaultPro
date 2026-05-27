@@ -62,6 +62,7 @@ import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrinterMachineAssignment, hasProductionPrinterAssignment } from "@/components/production/PrinterMachineAssignment";
 import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsPanel";
+import { ProductionNotesSection } from "@/components/production/ProductionNotesSection";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
 import { filterProductionJobsForTab, type ProductionBoardTab } from "@/lib/productionBoard";
@@ -539,7 +540,7 @@ function ActionRail({
   job: ProductionJobListItem;
   timerSeconds: number | null;
   timerIsRunning: boolean;
-  notes: Array<{ id: string; text: string; createdAt: string; edited?: boolean }>;
+  notes: Array<{ id: string; text: string; createdAt: string; actorUserId?: string | null; edited?: boolean }>;
 }) {
   const navigate = useNavigate();
   const start = useStartProductionTimer(job.id);
@@ -1154,7 +1155,7 @@ function PreviewPanel({
   job: ProductionJobListItem;
   timerSeconds: number | null;
   timerIsRunning: boolean;
-  notes: Array<{ id: string; text: string; createdAt: string; edited?: boolean }>;
+  notes: Array<{ id: string; text: string; createdAt: string; actorUserId?: string | null; edited?: boolean }>;
   onPreviewArtwork: (side: "front" | "back") => void;
   documentNumberDisplayMode: ProductionDocumentNumberDisplayMode;
 }) {
@@ -1291,12 +1292,7 @@ function PreviewPanel({
             compact
           />
 
-          <div className="rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-wide text-amber-200">Production notes</div>
-            <div className="text-sm text-titan-text-primary max-h-24 overflow-y-auto whitespace-pre-wrap">
-              {formattedNotes}
-            </div>
-          </div>
+          <ProductionNotesSection jobId={job.id} notes={notes} />
           <div className="rounded-md border border-titan-border-subtle bg-titan-bg-subtle px-3 py-2">
             <PrinterMachineAssignment
               jobId={job.id}
@@ -1476,6 +1472,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
         id: e.id,
         text: sanitizeDisplayText(e.payload?.text ?? e.payload?.note ?? ""),
         createdAt: e.createdAt,
+        actorUserId: e.actorUserId ?? (e.payload as any)?.actorUserId ?? null,
         edited: !!(e.payload as any)?.edited,
       }))
       .filter((n) => n.text.trim());

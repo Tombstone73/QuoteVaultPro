@@ -532,9 +532,14 @@ export default function ProductionJobDetailPage() {
                               </div>
                             </div>
                             {e.type === "note" && e.payload?.text && (
-                              <div className="text-sm text-muted-foreground mt-2 whitespace-pre-wrap">
-                                {e.payload.text}
-                              </div>
+                              <>
+                                <div className="text-xs text-muted-foreground mt-1">
+                                  {e.actorUserId ? `User ${String(e.actorUserId).slice(-6)}` : "Operator"}
+                                </div>
+                                <div className="text-sm text-muted-foreground mt-2 whitespace-pre-wrap">
+                                  {e.payload.text}
+                                </div>
+                              </>
                             )}
                             {e.type === "timer_stopped" && typeof e.payload?.seconds === "number" && (
                               <div className="text-xs text-muted-foreground mt-1">+{e.payload.seconds}s</div>
@@ -861,8 +866,9 @@ export default function ProductionJobDetailPage() {
                   size="sm"
                   variant="secondary"
                   onClick={() => {
-                    addNote.mutate(noteText);
-                    setNoteText("");
+                    const text = noteText.trim();
+                    if (!text) return;
+                    addNote.mutate(text, { onSuccess: () => setNoteText("") });
                   }}
                   disabled={isBusy || !noteText.trim()}
                 >
