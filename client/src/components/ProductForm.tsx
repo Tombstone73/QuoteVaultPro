@@ -20,6 +20,12 @@ import { FormulaReferenceModal } from "@/components/pbv2/builder-v2/FormulaRefer
 import { CircleHelp } from "lucide-react";
 import { formatMaterialWeightStatus } from "@/lib/materialWeightDisplay";
 import { getPricingFormulaSelectionValues } from "@/lib/pricingFormulaSelection";
+import {
+  buildPricingConfigWithAllowRotation,
+  getAllowRotationFromPricingConfig,
+  pricingConfigHasRotationState,
+  shouldShowPricingEngineRotationControl,
+} from "@/lib/productPricingRotation";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -53,30 +59,6 @@ function UnknownLookupWarning({ children }: { children: React.ReactNode }) {
 }
 
 const MATERIAL_SELECT_CONTENT_CLASS = "max-h-80 overflow-y-auto";
-
-function parseBooleanLikeConfigValue(value: unknown): boolean | null {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number" && Number.isFinite(value)) {
-    if (value === 1) return true;
-    if (value === 0) return false;
-  }
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (["true", "yes", "y", "1", "on", "allow", "allowed"].includes(normalized)) return true;
-    if (["false", "no", "n", "0", "off", "deny", "denied", "disallow", "disallowed"].includes(normalized)) return false;
-  }
-  return null;
-}
-
-function getAllowRotationFromPricingConfig(config: unknown): boolean {
-  if (!config || typeof config !== "object" || Array.isArray(config)) return false;
-  const record = config as Record<string, any>;
-  const fromFormulaVariables = parseBooleanLikeConfigValue(record.formulaVariables?.allow_rotation);
-  if (fromFormulaVariables !== null) return fromFormulaVariables;
-  const fromTopLevel = parseBooleanLikeConfigValue(record.allowRotation);
-  if (fromTopLevel !== null) return fromTopLevel;
-  return false;
-}
 
 export const ProductForm = ({
   form,
@@ -172,26 +154,7 @@ export const ProductForm = ({
   }, [shippingPolicy, baseWeight, weightUnit, weightBasis, onUpdateTreeMeta, form]);
 
   const updateProductAllowRotation = useCallback((allowRotation: boolean) => {
-    const current = form.getValues("pricingProfileConfig");
-    const currentRecord = current && typeof current === "object" && !Array.isArray(current)
-      ? { ...(current as Record<string, any>) }
-      : {};
-    const currentFormulaVariables = currentRecord.formulaVariables && typeof currentRecord.formulaVariables === "object" && !Array.isArray(currentRecord.formulaVariables)
-      ? currentRecord.formulaVariables
-      : {};
-
-    form.setValue(
-      "pricingProfileConfig",
-      {
-        ...currentRecord,
-        allowRotation,
-        formulaVariables: {
-          ...currentFormulaVariables,
-          allow_rotation: allowRotation,
-        },
-      },
-      { shouldDirty: true },
-    );
+    form.setValue("pricingProfileConfig", buildPricingConfigWithAllowRotation(form.getValues("pricingProfileConfig"), allowRotation), { shouldDirty: true });
   }, [form]);
 
   const isWeightDisabled = shippingPolicy === "pickup_only";
@@ -337,6 +300,7 @@ export const ProductForm = ({
           onPricingModeChange={onPbv2PricingModeChange}
           trimAllowanceX={safeTrimAllowanceX}
           trimAllowanceY={safeTrimAllowanceY}
+          onUpdateAllowRotation={updateProductAllowRotation}
         />
 
         {/* RIGHT: Material & Weight Configuration */}
@@ -640,6 +604,7 @@ function PricingEngineRadioSection({
   onPricingModeChange,
   trimAllowanceX,
   trimAllowanceY,
+  onUpdateAllowRotation,
 }: {
   form: any;
   pricingFormulas: any;
@@ -657,6 +622,7 @@ function PricingEngineRadioSection({
   onPricingModeChange?: (mode: "basic" | "advanced") => void;
   trimAllowanceX?: number;
   trimAllowanceY?: number;
+  onUpdateAllowRotation?: (allowRotation: boolean) => void;
 }) {
   type PricingEngineMode = "formulaLibrary" | "pricingProfile" | "pricingFormula";
   const LEGACY_SQFT_BASIC_FORMULA = "ceil(total_sqft) * base_price";
@@ -680,6 +646,11 @@ function PricingEngineRadioSection({
   const recommendedFormula = getDefaultFormula(currentProfile || pricingProfileKey || "default");
   const formulaForValidation = String(currentFormula || recommendedFormula || "");
   const formulaReferencesFlatFee = /\bflatFee\b/.test(formulaForValidation);
+  const shouldShowRotationControl = shouldShowPricingEngineRotationControl({
+    pricingProfileKey: currentProfile || pricingProfileKey,
+    pricingFormula: formulaForValidation,
+    pricingProfileConfig: currentProfileConfig,
+  });
   const feeFormulaUsesSqftPricing = currentProfile === "fee" && /\b(?:total_sqft|sqft|w|h|width|height|base_price|p)\b/i.test(formulaForValidation);
   const currentConfigRecord = currentProfileConfig && typeof currentProfileConfig === "object" && !Array.isArray(currentProfileConfig)
     ? (currentProfileConfig as Record<string, any>)
@@ -710,15 +681,28 @@ function PricingEngineRadioSection({
   const getSafeFlatGoodsConfig = useCallback((config: FlatGoodsConfig | null | undefined): FlatGoodsConfig => {
     const safeSheetWidth = parsePositiveFinite(config?.sheetWidth) ?? DEFAULT_FLAT_GOODS_CONFIG.sheetWidth;
     const safeSheetHeight = parsePositiveFinite(config?.sheetHeight) ?? DEFAULT_FLAT_GOODS_CONFIG.sheetHeight;
+    const allowRotation = pricingConfigHasRotationState(config)
+      ? getAllowRotationFromPricingConfig(config)
+      : DEFAULT_FLAT_GOODS_CONFIG.allowRotation;
+    const configRecord = config && typeof config === "object" && !Array.isArray(config)
+      ? (config as Record<string, any>)
+      : {};
+    const formulaVariables = configRecord.formulaVariables && typeof configRecord.formulaVariables === "object" && !Array.isArray(configRecord.formulaVariables)
+      ? configRecord.formulaVariables
+      : {};
     return {
       ...DEFAULT_FLAT_GOODS_CONFIG,
       ...(config || {}),
       sheetWidth: safeSheetWidth,
       sheetHeight: safeSheetHeight,
-      allowRotation: typeof config?.allowRotation === "boolean" ? config.allowRotation : DEFAULT_FLAT_GOODS_CONFIG.allowRotation,
+      allowRotation,
+      formulaVariables: {
+        ...formulaVariables,
+        allow_rotation: allowRotation,
+      },
       materialType: config?.materialType === "roll" ? "roll" : "sheet",
       minPricePerItem: config?.minPricePerItem ?? null,
-    };
+    } as FlatGoodsConfig;
   }, []);
 
   const updateFlatGoodsConfig = useCallback((updates: Partial<FlatGoodsConfig>, shouldDirty = true) => {
@@ -834,12 +818,18 @@ function PricingEngineRadioSection({
     if (currentProfile !== "flat_goods") return;
     const current = form.getValues("pricingProfileConfig") as FlatGoodsConfig | null;
     const safe = getSafeFlatGoodsConfig(current);
+    const currentRecord = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, any> : {};
+    const currentFormulaVariables = currentRecord.formulaVariables && typeof currentRecord.formulaVariables === "object" && !Array.isArray(currentRecord.formulaVariables)
+      ? currentRecord.formulaVariables
+      : {};
 
     const shouldSeed =
       !current ||
       parsePositiveFinite(current.sheetWidth) === null ||
       parsePositiveFinite(current.sheetHeight) === null ||
-      typeof current.allowRotation !== "boolean";
+      typeof current.allowRotation !== "boolean" ||
+      !Object.prototype.hasOwnProperty.call(currentFormulaVariables, "allow_rotation") ||
+      getAllowRotationFromPricingConfig(current) !== current.allowRotation;
 
     if (shouldSeed) {
       form.setValue("pricingProfileConfig", safe, { shouldDirty: false });
@@ -1053,7 +1043,7 @@ function PricingEngineRadioSection({
               )}
             />
 
-            {currentProfile === "flat_goods" ? (
+            {shouldShowRotationControl ? (
               <div className="mt-2 rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
                 <div className="text-xs font-medium text-slate-300">Sheet Settings</div>
                 <p className="text-[11px] text-slate-400">Used only for Flat Goods nesting (sheet yield and waste). Does not change Finished Size or total_sqft geometry.</p>
@@ -1127,12 +1117,13 @@ function PricingEngineRadioSection({
 
                 <div className="flex items-center gap-2 pt-1">
                   <Switch
-                    checked={getSafeFlatGoodsConfig(currentProfileConfig).allowRotation}
+                    checked={getAllowRotationFromPricingConfig(getSafeFlatGoodsConfig(currentProfileConfig))}
                     onCheckedChange={(checked) => {
-                      updateFlatGoodsConfig({ allowRotation: Boolean(checked) }, true);
+                      onUpdateAllowRotation?.(Boolean(checked));
                     }}
+                    disabled={!onUpdateAllowRotation}
                   />
-                  <Label className="text-xs text-slate-300">Allow Rotation</Label>
+                  <Label className="text-xs text-slate-300">Allow Rotation / Mixed Sheet Layout</Label>
                 </div>
               </div>
             ) : null}
