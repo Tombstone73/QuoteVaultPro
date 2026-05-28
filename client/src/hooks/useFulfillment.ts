@@ -13,6 +13,10 @@ export interface FulfillmentQueueRow {
   readySince: string | null;
   shipTo: string;
   overdue: boolean;
+  pickupTicketId?: string | null;
+  shipmentId?: string | null;
+  isArchived: boolean;
+  archivedReason?: string | null;
   productionJobs?: Array<{
     id: string;
     lineItemId: string | null;
@@ -27,6 +31,57 @@ export interface FulfillmentQueueRow {
     productionNotes: string[];
     completedAt: string | null;
   };
+}
+
+export interface FulfillmentDetail extends FulfillmentQueueRow {
+  customer: {
+    name: string;
+    email: string | null;
+    phone: string | null;
+  };
+  lineItems: Array<{
+    id: string;
+    description: string | null;
+    productType: string | null;
+    quantity: number | null;
+  }>;
+  productionSummary: Array<{
+    id: string;
+    stationKey: string;
+    stepKey: string;
+    status: string;
+    completedAt: string | null;
+    assignedPrinterName: string | null;
+  }>;
+  pickupTicket: {
+    id: string;
+    status: string;
+    readyAt: string | null;
+    pickedUpAt: string | null;
+    stagingLocation: string | null;
+    pickupNotes: string | null;
+    contactName: string | null;
+    contactEmail: string | null;
+    contactPhone: string | null;
+  } | null;
+  shipments: Array<{
+    id: string;
+    status: string;
+    carrier: string | null;
+    serviceLevel: string | null;
+    trackingNumber: string | null;
+    shippedAt: string | null;
+    updatedAt: string | null;
+  }>;
+  events: Array<{
+    id: string;
+    entityType: string;
+    entityId: string;
+    eventType: string;
+    actorUserId: string | null;
+    payloadJson: Record<string, any>;
+    createdAt: string;
+  }>;
 }
 
 export interface FulfillmentQueueFilters {
@@ -176,6 +231,57 @@ export function useFulfillmentQueueQuery(filters: FulfillmentQueueFilters) {
   });
 }
 
+function invalidateFulfillment(queryClient: ReturnType<typeof useQueryClient>, orderId?: string) {
+  queryClient.invalidateQueries({ queryKey: ["fulfillment", "queue"] });
+  if (orderId) queryClient.invalidateQueries({ queryKey: ["fulfillment", "order", orderId] });
+  queryClient.invalidateQueries({ queryKey: ["dashboardSummary"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] });
+}
+
+export function useFulfillmentOrderDetailQuery(orderId: string | undefined) {
+  return useQuery({
+    queryKey: ["fulfillment", "order", orderId],
+    queryFn: () => apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}`),
+    enabled: !!orderId,
+  });
+}
+
+export function useMarkFulfillmentReadyMutation(orderId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}/ready`, { method: "POST" }),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
+  });
+}
+
+export function useMarkOrderReadyForPickupMutation(orderId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload?: {
+      stagingLocation?: string | null;
+      pickupNotes?: string | null;
+      contactName?: string | null;
+      contactEmail?: string | null;
+      contactPhone?: string | null;
+    }) => apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}/ready-for-pickup`, {
+      method: "POST",
+      body: JSON.stringify(payload ?? {}),
+    }),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
+  });
+}
+
+export function useAddFulfillmentNoteMutation(orderId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (note: string) => apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}/note`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
+    }),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
+  });
+}
+
 export function useCreateShipmentMutation() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -188,7 +294,7 @@ export function useCreateShipmentMutation() {
       body: JSON.stringify(payload),
     }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["fulfillment", "queue"] });
+      invalidateFulfillment(queryClient);
     },
   });
 }
@@ -220,7 +326,7 @@ export function useUpdateShipmentMutation(shipmentId: string) {
     }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipment", shipmentId] });
-      queryClient.invalidateQueries({ queryKey: ["fulfillment", "queue"] });
+      invalidateFulfillment(queryClient);
     },
   });
 }
@@ -233,7 +339,7 @@ export function useMarkShippedMutation(shipmentId: string) {
     }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipment", shipmentId] });
-      queryClient.invalidateQueries({ queryKey: ["fulfillment", "queue"] });
+      invalidateFulfillment(queryClient);
     },
   });
 }
@@ -246,7 +352,7 @@ export function useVoidShipmentMutation(shipmentId: string) {
     }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipment", shipmentId] });
-      queryClient.invalidateQueries({ queryKey: ["fulfillment", "queue"] });
+      invalidateFulfillment(queryClient);
     },
   });
 }
@@ -258,8 +364,33 @@ export function useCreatePickupTicketMutation() {
       method: "POST",
     }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["fulfillment", "queue"] });
+      invalidateFulfillment(queryClient);
     },
+  });
+}
+
+export function useMarkPickupReadyMutation(ticketId: string, orderId?: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: {
+      stagingLocation?: string | null;
+      pickupNotes?: string | null;
+      contactName?: string | null;
+      contactEmail?: string | null;
+      contactPhone?: string | null;
+    }) => apiCall<any>(`/api/fulfillment/pickup/${ticketId}/ready`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
+  });
+}
+
+export function useMarkPickupPickedUpMutation(ticketId: string, orderId?: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiCall<any>(`/api/fulfillment/pickup/${ticketId}/picked-up`, { method: "POST" }),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
   });
 }
 
