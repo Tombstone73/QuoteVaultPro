@@ -20,6 +20,9 @@ import { TERMINAL_JOB_STATUSES } from "./productionOwnership";
 import { isCanceledOrder } from "@shared/operationalState";
 import { normalizeProductionStationKey } from "@shared/productionStations";
 
+const PRODUCTION_JOB_STATION_UNIQUE_CONSTRAINT = "production_jobs_org_line_item_station_unique";
+const FULFILLMENT_STATION_KEY = "fulfillment";
+
 export type RouteLineItemTrigger = "scheduler" | "intake" | "line_item_status" | "prepress" | "prepress_handoff";
 
 export interface RouteLineItemArgs {
@@ -53,6 +56,167 @@ export interface RouteLineItemResult {
   ignoredDueToDone: boolean;
   ignoredDueToExistingRouting: boolean;
   reason?: string;
+}
+
+function isProductionJobStationUniqueConflict(error: any): boolean {
+  return error?.code === "23505" && (
+    error?.constraint === PRODUCTION_JOB_STATION_UNIQUE_CONSTRAINT ||
+    String(error?.message || "").includes(PRODUCTION_JOB_STATION_UNIQUE_CONSTRAINT)
+  );
+}
+
+async function ensureSystemFulfillmentStation(runner: any, organizationId: string, stationKey: string): Promise<void> {
+  if (stationKey !== FULFILLMENT_STATION_KEY) return;
+
+  await runner.execute(sql`
+    insert into stations (organization_id, key, name, sort, active)
+    values (${organizationId}, ${FULFILLMENT_STATION_KEY}, 'Fulfillment', 90, true)
+    on conflict (organization_id, key)
+    do update set active = true
+  `);
+
+  await runner.execute(sql`
+    insert into production_station_steps (
+      organization_id,
+      station_key,
+      key,
+      label,
+      sort_order,
+      active,
+      triggers
+    )
+    values (
+      ${organizationId},
+      ${FULFILLMENT_STATION_KEY},
+      ${FULFILLMENT_STATION_KEY},
+      'Fulfillment',
+      10,
+      true,
+      '[]'::jsonb
+    )
+    on conflict (organization_id, station_key, key) do nothing
+  `);
+}
+
+async function findExistingJobForStationUniqueKey(runner: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  stationId: string;
+}) {
+  const result = await runner.execute(sql`
+    select
+      id,
+      order_id as "orderId",
+      station_key as "stationKey",
+      step_key as "stepKey",
+      status
+    from production_jobs
+    where organization_id = ${args.organizationId}
+      and line_item_id = ${args.lineItemId}
+      and station_id = ${args.stationId}
+    order by
+      case
+        when lower(coalesce(status, '')) not in ('done', 'void', 'canceled', 'cancelled') then 0
+        when lower(coalesce(status, '')) in ('canceled', 'cancelled', 'void') then 1
+        else 2
+      end,
+      updated_at desc,
+      created_at desc
+    limit 1
+  `);
+
+  return (result.rows?.[0] as {
+    id: string;
+    orderId: string;
+    stationKey: string;
+    stepKey: string;
+    status: string;
+  } | undefined) ?? null;
+}
+
+async function reuseExistingStationJob(runner: any, args: {
+  organizationId: string;
+  orderId: string;
+  lineItemId: string;
+  stationKey: string;
+  stationId: string;
+  stepKey: string;
+  trigger: RouteLineItemTrigger;
+  actorUserId: string | null;
+  extraEventPayload: Record<string, any>;
+  existing: {
+    id: string;
+    orderId: string;
+    stationKey: string;
+    stepKey: string;
+    status: string;
+  };
+  reason: string;
+}): Promise<RouteLineItemResult> {
+  const normalizedStatus = String(args.existing.status || "").trim().toLowerCase();
+  const isCanceledLike = normalizedStatus === "canceled" || normalizedStatus === "cancelled" || normalizedStatus === "void";
+  const isDone = normalizedStatus === "done";
+
+  if (args.stationKey === FULFILLMENT_STATION_KEY && isCanceledLike) {
+    await runner.execute(sql`
+      update production_jobs
+      set
+        order_id = ${args.orderId},
+        step_key = ${args.stepKey},
+        status = 'queued',
+        updated_at = now()
+      where organization_id = ${args.organizationId}
+        and id = ${args.existing.id}
+    `);
+
+    await appendEvent({
+      tx: runner,
+      organizationId: args.organizationId,
+      productionJobId: args.existing.id,
+      type: "intake",
+      payload: {
+        trigger: args.trigger,
+        stationKey: args.stationKey,
+        stationId: args.stationId,
+        stepKey: args.stepKey,
+        outcome: "reactivated",
+        actorUserId: args.actorUserId,
+        previousStatus: args.existing.status,
+        ...args.extraEventPayload,
+      },
+    });
+
+    return {
+      jobId: args.existing.id,
+      outcome: "existing",
+      stationKey: args.stationKey,
+      stepKey: args.stepKey,
+      status: "queued",
+      stationId: args.stationId,
+      ignoredDueToDone: false,
+      ignoredDueToExistingRouting: false,
+      reason: `${args.reason}:reactivated_canceled_fulfillment_job`,
+    };
+  }
+
+  if (!isDone && args.existing.orderId !== args.orderId) {
+    await runner
+      .update(productionJobs)
+      .set({ orderId: args.orderId, updatedAt: new Date() })
+      .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.existing.id)));
+  }
+
+  return {
+    jobId: args.existing.id,
+    outcome: "existing",
+    stationKey: args.existing.stationKey,
+    stepKey: args.existing.stepKey,
+    status: args.existing.status,
+    stationId: args.stationId,
+    ignoredDueToDone: isDone,
+    ignoredDueToExistingRouting: args.existing.stationKey !== args.stationKey || args.existing.stepKey !== args.stepKey,
+    reason: args.reason,
+  };
 }
 
 export async function routeLineItemToProduction(args: RouteLineItemArgs): Promise<RouteLineItemResult> {
@@ -103,6 +267,8 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
     step = "resolve_station_id";
     let stationId: string;
     try {
+      await ensureSystemFulfillmentStation(runner, organizationId, stationKey);
+
       const stationResult = await runner.execute(sql`
         select id
         from stations
@@ -130,6 +296,28 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
         new Error(`[productionRoutingService] station_id resolution DB error for key="${stationKey}": ${(error as Error).message}`),
         { statusCode: 500, cause: error, stationKey, lineItemId },
       );
+    }
+
+    const existingStationJob = await findExistingJobForStationUniqueKey(runner, {
+      organizationId,
+      lineItemId,
+      stationId,
+    });
+
+    if (existingStationJob) {
+      return reuseExistingStationJob(runner, {
+        organizationId,
+        orderId,
+        lineItemId,
+        stationKey,
+        stationId,
+        stepKey,
+        trigger,
+        actorUserId,
+        extraEventPayload,
+        existing: existingStationJob,
+        reason: "existing_job_for_station_unique_key",
+      });
     }
 
     // B) Active-owner idempotency guard: historical done jobs must not block a new owner.
@@ -266,7 +454,9 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
 
     // C) Insert new production job (stationId guaranteed non-null — fail-closed above)
     step = "insert_production_job";
-    const insertedResult = await runner.execute(sql`
+    let insertedResult: any;
+    try {
+      insertedResult = await runner.execute(sql`
         insert into production_jobs (
           organization_id,
           order_id,
@@ -289,6 +479,36 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
         )
         returning id, station_key as "stationKey", step_key as "stepKey", status
       `);
+    } catch (insertError: any) {
+      if (!isProductionJobStationUniqueConflict(insertError)) throw insertError;
+
+      const existingAfterConflict = await findExistingJobForStationUniqueKey(runner, {
+        organizationId,
+        lineItemId,
+        stationId,
+      });
+
+      if (existingAfterConflict) {
+        return reuseExistingStationJob(runner, {
+          organizationId,
+          orderId,
+          lineItemId,
+          stationKey,
+          stationId,
+          stepKey,
+          trigger,
+          actorUserId,
+          extraEventPayload,
+          existing: existingAfterConflict,
+          reason: "unique_conflict_requery",
+        });
+      }
+
+      throw Object.assign(
+        new Error("[productionRoutingService] Production job already exists for this line item and station, but it could not be reloaded safely. Please retry."),
+        { statusCode: 409, cause: insertError, constraint: PRODUCTION_JOB_STATION_UNIQUE_CONSTRAINT },
+      );
+    }
 
     const inserted = insertedResult.rows[0] as {
       id: string;

@@ -146,11 +146,8 @@ export function validateOrderStateTransition(
  * Determine routing target based on shipping method
  */
 export function determineRoutingTarget(order: Order): 'fulfillment' | 'invoicing' {
-  // Pickup orders go directly to invoicing (no shipping needed)
-  if (order.shippingMethod === 'pickup') {
-    return 'invoicing';
-  }
-  // All other orders (ship, deliver) go to fulfillment first
+  // Fulfillment is the required checkpoint for ship, pickup, delivery, and billing.
+  // Invoice automation must attach after fulfillment completion, not production completion.
   return 'fulfillment';
 }
 
