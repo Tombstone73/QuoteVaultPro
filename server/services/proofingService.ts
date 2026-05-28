@@ -40,6 +40,7 @@ import { ensureSharp, generateImageDerivatives, isSupportedImageType } from "./t
 import { storageApplicationService } from "./storage/StorageApplicationService";
 import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 import { resolveActiveProductionOwners } from "./productionOwnership";
+import { resolveLineItemProofReleaseGate } from "./proofGateService";
 import { isCanceledOrder } from "@shared/operationalState";
 
 type ProofDecision = "approved" | "rejected" | "revision_requested";
@@ -1303,6 +1304,98 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
     };
   }
 
+  const [orderLevelAttachmentSource] = await tx
+    .select({
+      sourceId: orderAttachments.id,
+      orderId: orderAttachments.orderId,
+      fileRecordId: orderAttachments.fileRecordId,
+      fileName: orderAttachments.fileName,
+      fileUrl: orderAttachments.fileUrl,
+      fileSize: orderAttachments.fileSize,
+      sizeBytes: orderAttachments.sizeBytes,
+      mimeType: orderAttachments.mimeType,
+      description: orderAttachments.description,
+      originalFilename: orderAttachments.originalFilename,
+      storedFilename: orderAttachments.storedFilename,
+      relativePath: orderAttachments.relativePath,
+      storageProvider: orderAttachments.storageProvider,
+      extension: orderAttachments.extension,
+      checksum: orderAttachments.checksum,
+      thumbKey: orderAttachments.thumbKey,
+      previewKey: orderAttachments.previewKey,
+      thumbStatus: orderAttachments.thumbStatus,
+      thumbError: orderAttachments.thumbError,
+      thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
+      thumbnailGeneratedAt: orderAttachments.thumbnailGeneratedAt,
+      thumbnailUrl: orderAttachments.thumbnailUrl,
+      pagePreviewFileRecordId: sql<string | null>`(
+        select ${quoteAttachmentPages.previewFileRecordId}
+        from ${quoteAttachmentPages}
+        where ${quoteAttachmentPages.attachmentId} = ${orderAttachments.id}
+          and ${quoteAttachmentPages.previewFileRecordId} is not null
+        order by ${quoteAttachmentPages.pageIndex} asc
+        limit 1
+      )`,
+      pageThumbFileRecordId: sql<string | null>`(
+        select ${quoteAttachmentPages.thumbFileRecordId}
+        from ${quoteAttachmentPages}
+        where ${quoteAttachmentPages.attachmentId} = ${orderAttachments.id}
+          and ${quoteAttachmentPages.thumbFileRecordId} is not null
+        order by ${quoteAttachmentPages.pageIndex} asc
+        limit 1
+      )`,
+      uploadedByUserId: orderAttachments.uploadedByUserId,
+      uploadedByName: orderAttachments.uploadedByName,
+      updatedAt: orderAttachments.updatedAt,
+    })
+    .from(orderLineItems)
+    .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+    .innerJoin(orderAttachments, eq(orderAttachments.orderId, orders.id))
+    .where(
+      and(
+        eq(orders.organizationId, args.organizationId),
+        eq(orderLineItems.id, args.lineItemId),
+        isNull(orderAttachments.orderLineItemId),
+        eq(orderAttachments.role, "artwork"),
+      ),
+    )
+    .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.updatedAt), desc(orderAttachments.createdAt))
+    .limit(1);
+
+  if (orderLevelAttachmentSource) {
+    return {
+      sourceType: "attachment",
+      sourceId: orderLevelAttachmentSource.sourceId,
+      orderId: orderLevelAttachmentSource.orderId,
+      orderLineItemId: args.lineItemId,
+      fileRecordId: orderLevelAttachmentSource.fileRecordId ?? null,
+      fileName: orderLevelAttachmentSource.fileName,
+      fileUrl: orderLevelAttachmentSource.fileUrl ?? null,
+      fileSize: orderLevelAttachmentSource.fileSize ?? null,
+      sizeBytes: orderLevelAttachmentSource.sizeBytes ?? null,
+      mimeType: orderLevelAttachmentSource.mimeType ?? null,
+      description: orderLevelAttachmentSource.description ?? null,
+      originalFilename: orderLevelAttachmentSource.originalFilename ?? null,
+      storedFilename: orderLevelAttachmentSource.storedFilename ?? null,
+      relativePath: orderLevelAttachmentSource.relativePath ?? null,
+      storageProvider: orderLevelAttachmentSource.storageProvider ?? null,
+      extension: orderLevelAttachmentSource.extension ?? null,
+      checksum: orderLevelAttachmentSource.checksum ?? null,
+      thumbKey: orderLevelAttachmentSource.thumbKey ?? null,
+      previewKey: orderLevelAttachmentSource.previewKey ?? null,
+      thumbStatus: orderLevelAttachmentSource.thumbStatus ?? null,
+      thumbError: orderLevelAttachmentSource.thumbError ?? null,
+      thumbnailRelativePath: orderLevelAttachmentSource.thumbnailRelativePath ?? null,
+      thumbnailGeneratedAt: orderLevelAttachmentSource.thumbnailGeneratedAt ?? null,
+      thumbnailUrl: orderLevelAttachmentSource.thumbnailUrl ?? null,
+      pagePreviewFileRecordId: orderLevelAttachmentSource.pagePreviewFileRecordId ?? null,
+      pageThumbFileRecordId: orderLevelAttachmentSource.pageThumbFileRecordId ?? null,
+      uploadedByUserId: orderLevelAttachmentSource.uploadedByUserId ?? null,
+      uploadedByName: orderLevelAttachmentSource.uploadedByName ?? null,
+      updatedAt: orderLevelAttachmentSource.updatedAt ?? null,
+    };
+  }
+
   const [assetSource] = await tx
     .select({
       sourceId: assets.id,
@@ -1563,6 +1656,129 @@ async function ensureProofAttachmentForSource(tx: any, args: {
   return created.id;
 }
 
+async function ensureProofAttachmentForExistingAttachment(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  attachmentId: string;
+}): Promise<string> {
+  const lineItem = await loadProofLineItem(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+
+  const [attachment] = await tx
+    .select({
+      sourceId: orderAttachments.id,
+      orderId: orderAttachments.orderId,
+      orderLineItemId: orderAttachments.orderLineItemId,
+      role: orderAttachments.role,
+      fileRecordId: orderAttachments.fileRecordId,
+      fileName: orderAttachments.fileName,
+      fileUrl: orderAttachments.fileUrl,
+      fileSize: orderAttachments.fileSize,
+      sizeBytes: orderAttachments.sizeBytes,
+      mimeType: orderAttachments.mimeType,
+      description: orderAttachments.description,
+      originalFilename: orderAttachments.originalFilename,
+      storedFilename: orderAttachments.storedFilename,
+      relativePath: orderAttachments.relativePath,
+      storageProvider: orderAttachments.storageProvider,
+      extension: orderAttachments.extension,
+      checksum: orderAttachments.checksum,
+      thumbKey: orderAttachments.thumbKey,
+      previewKey: orderAttachments.previewKey,
+      thumbStatus: orderAttachments.thumbStatus,
+      thumbError: orderAttachments.thumbError,
+      thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
+      thumbnailGeneratedAt: orderAttachments.thumbnailGeneratedAt,
+      thumbnailUrl: orderAttachments.thumbnailUrl,
+      uploadedByUserId: orderAttachments.uploadedByUserId,
+      uploadedByName: orderAttachments.uploadedByName,
+      updatedAt: orderAttachments.updatedAt,
+    })
+    .from(orderAttachments)
+    .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+    .where(and(eq(orderAttachments.id, args.attachmentId), eq(orders.organizationId, args.organizationId)))
+    .limit(1);
+
+  if (!attachment) {
+    throw Object.assign(new Error("Proof source file not found"), { statusCode: 404 });
+  }
+
+  if (attachment.orderId !== lineItem.orderId) {
+    throwProofingConflict("Proof source file does not belong to the target order");
+  }
+
+  if (attachment.orderLineItemId && attachment.orderLineItemId !== lineItem.lineItemId) {
+    throwProofingConflict("Proof source file belongs to a different line item");
+  }
+
+  if (String(attachment.role || "") === "proof" && attachment.orderLineItemId === lineItem.lineItemId) {
+    return attachment.sourceId;
+  }
+
+  if (!["artwork", "attachment", "reference", "proof"].includes(String(attachment.role || ""))) {
+    throwProofingConflict("Selected file is not eligible for proof draft creation");
+  }
+
+  return ensureProofAttachmentForSource(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    source: {
+      sourceType: "attachment",
+      sourceId: attachment.sourceId,
+      orderId: attachment.orderId,
+      orderLineItemId: lineItem.lineItemId,
+      fileRecordId: attachment.fileRecordId ?? null,
+      fileName: attachment.fileName,
+      fileUrl: attachment.fileUrl ?? null,
+      fileSize: attachment.fileSize ?? null,
+      sizeBytes: attachment.sizeBytes ?? null,
+      mimeType: attachment.mimeType ?? null,
+      description: attachment.description ?? null,
+      originalFilename: attachment.originalFilename ?? null,
+      storedFilename: attachment.storedFilename ?? null,
+      relativePath: attachment.relativePath ?? null,
+      storageProvider: attachment.storageProvider ?? null,
+      extension: attachment.extension ?? null,
+      checksum: attachment.checksum ?? null,
+      thumbKey: attachment.thumbKey ?? null,
+      previewKey: attachment.previewKey ?? null,
+      thumbStatus: attachment.thumbStatus ?? null,
+      thumbError: attachment.thumbError ?? null,
+      thumbnailRelativePath: attachment.thumbnailRelativePath ?? null,
+      thumbnailGeneratedAt: attachment.thumbnailGeneratedAt ?? null,
+      thumbnailUrl: attachment.thumbnailUrl ?? null,
+      uploadedByUserId: attachment.uploadedByUserId ?? null,
+      uploadedByName: attachment.uploadedByName ?? null,
+      updatedAt: attachment.updatedAt ?? null,
+    },
+  });
+}
+
+export async function createLineItemProofVersionFromExistingAttachment(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  attachmentId: string;
+  createdByUserId: string;
+  internalNotes?: string | null;
+}) {
+  const proofFileId = await ensureProofAttachmentForExistingAttachment(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    attachmentId: args.attachmentId,
+  });
+
+  return createLineItemProofVersion(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    proofFileId,
+    createdByUserId: args.createdByUserId,
+    internalNotes: args.internalNotes ?? null,
+    sourceAction: proofFileId === args.attachmentId ? null : "proof_file_uploaded",
+  });
+}
+
 async function invalidateApprovedProofContext(tx: any, args: {
   organizationId: string;
   orderId: string;
@@ -1795,6 +2011,43 @@ export async function cancelProofVersion(tx: any, args: {
 
     if (proofVersion.status === "approved") {
       throwProofingBadRequest("Approved proof versions cannot be cancelled from this workflow.");
+    }
+
+    if (proofVersion.status === "draft") {
+      const [updatedDraft] = await tx
+        .update(lineItemProofVersions)
+        .set({
+          status: "superseded",
+          updatedAt: new Date(),
+        })
+        .where(eq(lineItemProofVersions.id, proofVersion.id))
+        .returning();
+
+      const lineItem = await loadProofLineItem(tx, {
+        organizationId: args.organizationId,
+        lineItemId: proofVersion.lineItemId,
+      });
+
+      await appendProofingEvent(tx, {
+        organizationId: args.organizationId,
+        orderId: proofVersion.orderId,
+        lineItemId: proofVersion.lineItemId,
+        eventType: "proof_draft_cancelled",
+        actorUserId: args.actorUserId,
+        payload: {
+          proofVersionId: proofVersion.id,
+          versionNumber: proofVersion.versionNumber,
+          previousProofStatus: proofVersion.status,
+          newProofStatus: updatedDraft.status,
+          reason: trimNullable(args.reason),
+        },
+      });
+
+      return {
+        proofVersion: updatedDraft,
+        lineItem,
+        workflowTransition: null,
+      };
     }
 
     if (proofVersion.status !== "awaiting_response") {
@@ -2567,8 +2820,16 @@ export async function recordProofResponse(tx: any, args: {
       proofVersionId: args.proofVersionId,
     });
 
+    if (proofVersion.status === "superseded") {
+      throwProofingConflict("This proof version has been cancelled or superseded and is no longer available for approval.");
+    }
+
+    if (proofVersion.status === "approved" || proofVersion.status === "rejected" || proofVersion.status === "revision_requested") {
+      throwProofingConflict("This proof has already been reviewed.");
+    }
+
     if (proofVersion.status !== "awaiting_response") {
-      throwProofingConflict("Only proof versions awaiting response can be decided");
+      throwProofingConflict("Only active sent proof versions awaiting response can be decided");
     }
 
     const lineItem = await loadProofLineItem(tx, {
@@ -2577,10 +2838,6 @@ export async function recordProofResponse(tx: any, args: {
     });
     assertProofOrderNotCancelled(lineItem);
 
-    if (!lineItem.requiresProofApproval) {
-      throwProofingConflict("This line item is not currently awaiting proof approval");
-    }
-
     const [existingResponse] = await tx
       .select({ id: lineItemProofApprovals.id })
       .from(lineItemProofApprovals)
@@ -2588,7 +2845,7 @@ export async function recordProofResponse(tx: any, args: {
       .limit(1);
 
     if (existingResponse) {
-      throwProofingConflict("A response has already been recorded for this proof version");
+      throwProofingConflict("This proof has already been reviewed.");
     }
 
     const [approval] = await tx
@@ -2695,12 +2952,50 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
     });
     assertProofOrderNotCancelled(lineItem);
 
-    if (!lineItem.requiresProofApproval || lineItem.workflowState !== "awaiting_proof_approval") {
-      throwProofingConflict("Line item is not eligible for manual approval override");
-    }
-
     if (lineItem.approvedProofVersionId) {
       throwProofingConflict("This line item already has an approved proof");
+    }
+
+    const candidateVersions = await tx
+      .select({
+        id: lineItemProofVersions.id,
+        status: lineItemProofVersions.status,
+        versionNumber: lineItemProofVersions.versionNumber,
+        createdAt: lineItemProofVersions.createdAt,
+      })
+      .from(lineItemProofVersions)
+      .where(
+        and(
+          eq(lineItemProofVersions.organizationId, args.organizationId),
+          eq(lineItemProofVersions.lineItemId, lineItem.lineItemId),
+        ),
+      )
+      .orderBy(
+        sql`case ${lineItemProofVersions.status}
+          when 'awaiting_response' then 0
+          when 'draft' then 1
+          when 'revision_requested' then 2
+          when 'rejected' then 3
+          when 'superseded' then 4
+          else 5
+        end`,
+        desc(lineItemProofVersions.versionNumber),
+        desc(lineItemProofVersions.createdAt),
+      );
+
+    const proofGate = await resolveLineItemProofReleaseGate(tx, {
+      organizationId: args.organizationId,
+      lineItemId: lineItem.lineItemId,
+    });
+
+    const overrideEligible =
+      lineItem.requiresProofApproval ||
+      lineItem.workflowState === "awaiting_proof_approval" ||
+      candidateVersions.length > 0 ||
+      !proofGate.allowed;
+
+    if (!overrideEligible) {
+      throwProofingConflict("Line item is not eligible for manual approval override");
     }
 
     const requestedProofVersionId = trimNullable(args.proofVersionId);
@@ -2715,31 +3010,19 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
       if (proofVersion.lineItemId !== lineItem.lineItemId || proofVersion.orderId !== lineItem.orderId) {
         throwProofingConflict("Proof version does not belong to the target line item");
       }
-    } else {
-      const candidateVersions = await tx
-        .select({ id: lineItemProofVersions.id })
-        .from(lineItemProofVersions)
-        .where(
-          and(
-            eq(lineItemProofVersions.organizationId, args.organizationId),
-            eq(lineItemProofVersions.lineItemId, lineItem.lineItemId),
-            eq(lineItemProofVersions.status, "awaiting_response"),
-          ),
-        )
-        .orderBy(desc(lineItemProofVersions.versionNumber), desc(lineItemProofVersions.createdAt));
-
-      if (candidateVersions.length !== 1) {
-        throwProofingConflict("Proof context is ambiguous or unavailable for manual approval override");
-      }
-
+    } else if (candidateVersions.length > 0) {
       proofVersion = await loadProofVersion(tx, {
         organizationId: args.organizationId,
         proofVersionId: candidateVersions[0].id,
       });
     }
 
-    if (!proofVersion || proofVersion.status !== "awaiting_response") {
-      throwProofingConflict("Only proof versions awaiting response are eligible for manual approval override");
+    if (!proofVersion) {
+      throwProofingConflict("Proof context is unavailable for manual approval override. Use Mark Proof Not Required to bypass the proof gate without a proof version.");
+    }
+
+    if (proofVersion.status === "approved") {
+      throwProofingConflict("This proof version is already approved");
     }
 
     const [existingResponse] = await tx
@@ -2747,10 +3030,6 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
       .from(lineItemProofApprovals)
       .where(eq(lineItemProofApprovals.proofVersionId, proofVersion.id))
       .limit(1);
-
-    if (existingResponse) {
-      throwProofingConflict("A normal proof response already exists for this proof version");
-    }
 
     const [existingOverride] = await tx
       .select({ id: lineItemProofManualApprovalOverrides.id })
@@ -2826,6 +3105,7 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
         internalNote: trimNullable(args.internalNote),
         customerAction: false,
         workflowToState: workflowTransition.toState,
+        previousNormalResponseId: existingResponse?.id ?? null,
       },
     });
 
@@ -2837,6 +3117,83 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
   } catch (error: any) {
     normalizeProofingWriteError(error);
   }
+}
+
+export async function markLineItemProofNotRequired(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  actorUserId: string;
+  reason: string;
+  internalNote?: string | null;
+}) {
+  const reason = trimNullable(args.reason);
+  if (!reason) {
+    throwProofingBadRequest("Reason is required to mark proof not required");
+  }
+
+  const lineItem = await loadProofLineItem(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+  assertProofOrderNotCancelled(lineItem);
+
+  const proofGate = await resolveLineItemProofReleaseGate(tx, {
+    organizationId: args.organizationId,
+    lineItemId: lineItem.lineItemId,
+  });
+
+  if (!lineItem.requiresProofApproval && lineItem.workflowState !== "awaiting_proof_approval" && proofGate.allowed) {
+    throwProofingConflict("Proof approval is not blocking this line item");
+  }
+
+  await supersedeActionableProofVersions(tx, {
+    organizationId: args.organizationId,
+    orderId: lineItem.orderId,
+    lineItemId: lineItem.lineItemId,
+    actorUserId: args.actorUserId,
+    reason: "proof_not_required",
+  });
+
+  await tx
+    .update(orderLineItems)
+    .set({
+      requiresProofApproval: false,
+      approvedProofVersionId: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(orderLineItems.id, lineItem.lineItemId));
+
+  const workflowTransition = await transitionLineItemWorkflowState(tx, {
+    organizationId: args.organizationId,
+    lineItemId: lineItem.lineItemId,
+    toState: lineItem.requiresPrepress ? "ready_for_prepress" : "ready_for_production",
+    actorUserId: args.actorUserId,
+    metadata: {
+      source: "proofing_mark_not_required",
+      reason,
+      internalNote: trimNullable(args.internalNote),
+    },
+  });
+
+  await appendProofingEvent(tx, {
+    organizationId: args.organizationId,
+    orderId: lineItem.orderId,
+    lineItemId: lineItem.lineItemId,
+    eventType: "proof_not_required",
+    actorUserId: args.actorUserId,
+    payload: {
+      previousRequiresProofApproval: lineItem.requiresProofApproval,
+      newRequiresProofApproval: false,
+      reason,
+      internalNote: trimNullable(args.internalNote),
+      workflowToState: workflowTransition.toState,
+    },
+  });
+
+  return {
+    lineItemId: lineItem.lineItemId,
+    workflowTransition,
+  };
 }
 
 export async function resolveLineItemProofingTruth(tx: any, args: {

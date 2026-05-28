@@ -494,6 +494,34 @@ function ActionPanel({
   );
 }
 
+function getProofActionErrorMessage(error: Error | null) {
+  const raw = error?.message || "";
+  let message = raw;
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart));
+      message = parsed?.message || parsed?.error || raw;
+    } catch {
+      message = raw;
+    }
+  }
+
+  if (message === "This proof version has been cancelled and is no longer available for approval.") {
+    return "This proof version has been cancelled and is no longer available for approval. Please use the newest proof link or contact us.";
+  }
+  if (message === "This proof does not include an artwork preview and cannot be sent to the customer.") {
+    return "This proof preview is unavailable. Please contact us before approving.";
+  }
+  if (message === "This proof has already been reviewed.") {
+    return "This proof has already been reviewed. Please refresh the page.";
+  }
+  if (message === "Only active sent proof versions awaiting response can be decided") {
+    return "This proof is not currently awaiting a response. Please refresh the page.";
+  }
+  return "Something went wrong. Please try again or contact your account manager.";
+}
+
 // ---- Main page ---------------------------------------------------------------
 
 export default function PortalProofPage() {
@@ -671,13 +699,7 @@ export default function PortalProofPage() {
             <div className="flex items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3">
               <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-destructive" />
               <p className="text-sm text-destructive">
-                {mutation.error?.message === "This proof version has been cancelled and is no longer available for approval."
-                  ? "This proof version has been cancelled and is no longer available for approval. Please use the newest proof link or contact us."
-                  : mutation.error?.message === "This proof does not include an artwork preview and cannot be sent to the customer."
-                  ? "This proof preview is unavailable. Please contact us before approving."
-                  : mutation.error?.message?.startsWith("409")
-                    ? "This proof has already been reviewed. Please refresh the page."
-                    : "Something went wrong. Please try again or contact your account manager."}
+                {getProofActionErrorMessage(mutation.error ?? null)}
               </p>
             </div>
           )}

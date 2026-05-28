@@ -279,12 +279,21 @@ export function registerPortalProofRoutes(app: Express): void {
           throw Object.assign(new Error("This proof has already been resolved by manual approval override"), { statusCode: 409 });
         }
 
-        if (validation.currentApprovalState.status === "cancelled") {
+        if (validation.proofVersion.status === "superseded" || validation.currentApprovalState.status === "cancelled") {
           throw Object.assign(new Error("This proof version has been cancelled and is no longer available for approval."), { statusCode: 409 });
         }
 
-        if (validation.currentApprovalState.status !== "pending") {
-          throw Object.assign(new Error("This proof has already been resolved"), { statusCode: 409 });
+        if (
+          validation.proofVersion.status === "approved" ||
+          validation.proofVersion.status === "rejected" ||
+          validation.proofVersion.status === "revision_requested" ||
+          validation.currentApprovalState.isResolved
+        ) {
+          throw Object.assign(new Error("This proof has already been reviewed."), { statusCode: 409 });
+        }
+
+        if (validation.proofVersion.status !== "awaiting_response" || validation.currentApprovalState.status !== "pending") {
+          throw Object.assign(new Error("Only active sent proof versions awaiting response can be decided"), { statusCode: 409 });
         }
 
         const [attachment] = await tx
@@ -372,9 +381,13 @@ export function registerPortalProofRoutes(app: Express): void {
       const status = error?.statusCode || 500;
       console.error("[PortalProof] Error recording customer proof action:", error);
       if (status === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
-        return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
+        return res.status(400).json({ success: false, error: INCOMPLETE_PROOF_MESSAGE, message: INCOMPLETE_PROOF_MESSAGE });
       }
-      return res.status(status).json({ error: error?.message || "Failed to record customer proof action" });
+      return res.status(status).json({
+        success: false,
+        error: error?.message || "Failed to record customer proof action",
+        message: error?.message || "Failed to record customer proof action",
+      });
     }
   });
 }
