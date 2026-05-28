@@ -113,6 +113,130 @@ function userDisplayName(row: { firstName?: string | null; lastName?: string | n
   return name || row.email || null;
 }
 
+async function markOrderReadyForFulfillmentIfProductionComplete(
+  tx: any,
+  args: {
+    organizationId: string;
+    orderId: string;
+    actorUserId: string;
+    productionJobId: string;
+  },
+) {
+  const remainingActiveProduction = await tx
+    .select({ id: productionJobs.id })
+    .from(productionJobs)
+    .where(and(
+      eq(productionJobs.organizationId, args.organizationId),
+      eq(productionJobs.orderId, args.orderId),
+      sql`lower(coalesce(${productionJobs.stationKey}, '')) <> ${FULFILLMENT_STATION_KEY}`,
+      sql`lower(coalesce(${productionJobs.status}, '')) not in ('done', 'void', 'canceled', 'cancelled')`,
+    ))
+    .limit(1);
+
+  if (remainingActiveProduction[0]) {
+    return { changed: false, reason: "active_production_jobs_remaining" as const };
+  }
+
+  const [order] = await tx
+    .select({
+      id: orders.id,
+      state: orders.state,
+      status: orders.status,
+      canceledAt: orders.canceledAt,
+      productionCompletedAt: orders.productionCompletedAt,
+    })
+    .from(orders)
+    .where(and(eq(orders.organizationId, args.organizationId), eq(orders.id, args.orderId)))
+    .limit(1);
+
+  if (!order || isCanceledOrder(order)) {
+    return { changed: false, reason: "order_missing_or_canceled" as const };
+  }
+
+  const nowIso = new Date().toISOString();
+  await tx
+    .update(orders)
+    .set({
+      state: "production_complete",
+      status: "ready_for_shipment",
+      routingTarget: FULFILLMENT_STATION_KEY,
+      productionCompletedAt: order.productionCompletedAt ?? nowIso,
+      updatedAt: sql`now()`,
+    } as any)
+    .where(and(eq(orders.organizationId, args.organizationId), eq(orders.id, args.orderId)));
+
+  await appendEvent({
+    tx,
+    organizationId: args.organizationId,
+    productionJobId: args.productionJobId,
+    type: "note",
+    actorUserId: args.actorUserId,
+    payload: {
+      eventType: "order_ready_for_fulfillment",
+      orderId: args.orderId,
+      routingTarget: FULFILLMENT_STATION_KEY,
+      previousOrderState: order.state ?? null,
+      previousOrderStatus: order.status ?? null,
+    },
+  });
+
+  return { changed: true, reason: "order_marked_ready_for_fulfillment" as const };
+}
+
+async function restoreOrderProductionStateAfterUndo(
+  tx: any,
+  args: {
+    organizationId: string;
+    orderId: string;
+    actorUserId: string;
+    productionJobId: string;
+  },
+) {
+  const activeFulfillment = await tx
+    .select({ id: productionJobs.id })
+    .from(productionJobs)
+    .where(and(
+      eq(productionJobs.organizationId, args.organizationId),
+      eq(productionJobs.orderId, args.orderId),
+      eq(productionJobs.stationKey, FULFILLMENT_STATION_KEY),
+      sql`lower(coalesce(${productionJobs.status}, '')) not in ('done', 'void', 'canceled', 'cancelled')`,
+    ))
+    .limit(1);
+
+  if (activeFulfillment[0]) {
+    return { changed: false, reason: "active_fulfillment_remains" as const };
+  }
+
+  await tx
+    .update(orders)
+    .set({
+      state: "open",
+      status: "in_production",
+      routingTarget: null,
+      productionCompletedAt: null,
+      updatedAt: sql`now()`,
+    } as any)
+    .where(and(
+      eq(orders.organizationId, args.organizationId),
+      eq(orders.id, args.orderId),
+      eq(orders.state as any, "production_complete"),
+    ));
+
+  await appendEvent({
+    tx,
+    organizationId: args.organizationId,
+    productionJobId: args.productionJobId,
+    type: "note",
+    actorUserId: args.actorUserId,
+    payload: {
+      eventType: "order_fulfillment_readiness_restored_by_undo",
+      orderId: args.orderId,
+    },
+  });
+
+  return { changed: true, reason: "order_restored_to_production" as const };
+}
+
 async function completeProductionJobWorkflow(
   tx: any,
   args: {
@@ -278,6 +402,13 @@ async function completeProductionJobWorkflow(
               previousStationKey: completingStationKey,
               previousJobId: args.jobId,
             },
+          });
+
+          await markOrderReadyForFulfillmentIfProductionComplete(tx, {
+            organizationId: args.organizationId,
+            orderId: job.orderId,
+            actorUserId: args.userId,
+            productionJobId: args.jobId,
           });
         } catch (routeErr: any) {
           throw Object.assign(
@@ -2726,6 +2857,15 @@ export function registerProductionJobsRoutes(
             updatedAt: now,
           })
           .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+
+        if (job.orderId) {
+          await restoreOrderProductionStateAfterUndo(tx, {
+            organizationId,
+            orderId: job.orderId,
+            actorUserId: userId,
+            productionJobId: jobId,
+          });
+        }
 
         await appendEvent({
           tx,

@@ -201,6 +201,11 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(400, result.message, result.code);
     }
 
+    // Billing boundary: automatic invoice drafts belong after fulfillment reaches
+    // this milestone, never in production completion. A future fulfillment-billing
+    // trigger must be setting-gated, idempotent by organizationId + orderId +
+    // billing milestone, skip cancelled/already-invoiced orders, and create drafts
+    // only unless an explicit auto-send setting exists.
     return result.shipment;
   }
 
@@ -400,6 +405,8 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(400, result.message, result.code);
     }
 
+    // Billing boundary: pickup invoicing should be triggered from fulfilled pickup,
+    // with the same idempotency and draft-only guardrails as shipped orders.
     return result.ticket;
   }
 }
