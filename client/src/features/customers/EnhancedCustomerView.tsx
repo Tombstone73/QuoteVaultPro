@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { formatDistanceToNow, format } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -99,6 +99,7 @@ interface EnhancedCustomerViewProps {
   layoutMode?: LayoutMode;
   onBack?: () => void;
   onSectionHome?: () => void;
+  notFoundFallback?: ReactNode;
 }
 
 interface CustomerActivitySummary {
@@ -2024,6 +2025,7 @@ export default function EnhancedCustomerView({
   layoutMode = "full",
   onBack,
   onSectionHome,
+  notFoundFallback,
 }: EnhancedCustomerViewProps) {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<TabType>("orders");
@@ -2073,6 +2075,10 @@ export default function EnhancedCustomerView({
 
   // Not found state
   if (!customer) {
+    if (notFoundFallback) {
+      return <>{notFoundFallback}</>;
+    }
+
     return (
       <div className={cn(
         "flex items-center justify-center",

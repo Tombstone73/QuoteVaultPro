@@ -19,7 +19,63 @@ import {
     type InsertCustomerCreditTransaction,
     type User,
 } from "@shared/schema";
-import { eq, and, or, ilike, desc, sql, inArray } from "drizzle-orm";
+import { eq, and, or, ilike, desc, asc, sql, inArray } from "drizzle-orm";
+
+type CustomerSortBy =
+    | "name"
+    | "companyName"
+    | "primaryContact"
+    | "email"
+    | "phone"
+    | "status"
+    | "customerType"
+    | "type"
+    | "createdAt"
+    | "updatedAt"
+    | "lastUpdated";
+
+type CustomerSortDir = "asc" | "desc";
+
+const customerSortExpressions: Record<CustomerSortBy, any> = {
+    name: sql`lower(coalesce(${customers.companyName}, ''))`,
+    companyName: sql`lower(coalesce(${customers.companyName}, ''))`,
+    primaryContact: sql`lower(coalesce((
+        select concat_ws(' ', cc.first_name, cc.last_name)
+        from customer_contacts cc
+        where cc.customer_id = ${customers.id}
+        order by cc.is_primary desc, cc.created_at asc, cc.id asc
+        limit 1
+    ), ''))`,
+    email: sql`lower(coalesce(${customers.email}, ''))`,
+    phone: sql`lower(coalesce(${customers.phone}, ''))`,
+    status: sql`lower(coalesce(${customers.status}, ''))`,
+    customerType: sql`lower(coalesce(${customers.customerType}, ''))`,
+    type: sql`lower(coalesce(${customers.customerType}, ''))`,
+    createdAt: customers.createdAt,
+    updatedAt: customers.updatedAt,
+    lastUpdated: customers.updatedAt,
+};
+
+function normalizeCustomerSort(sortBy?: string, sortDir?: string): {
+    sortBy: CustomerSortBy;
+    sortDir: CustomerSortDir;
+} {
+    const allowedSortBy = Object.keys(customerSortExpressions) as CustomerSortBy[];
+    const normalizedSortBy = allowedSortBy.includes(sortBy as CustomerSortBy)
+        ? (sortBy as CustomerSortBy)
+        : "name";
+    const normalizedSortDir = sortDir === "desc" ? "desc" : "asc";
+    return { sortBy: normalizedSortBy, sortDir: normalizedSortDir };
+}
+
+function buildCustomerOrderBy(sortBy?: string, sortDir?: string) {
+    const normalized = normalizeCustomerSort(sortBy, sortDir);
+    const direction = normalized.sortDir === "desc" ? desc : asc;
+    return [
+        direction(customerSortExpressions[normalized.sortBy]),
+        asc(customers.id),
+    ];
+}
 
 export class CustomersRepository {
     constructor(private readonly dbInstance = db) { }
@@ -583,6 +639,8 @@ export class CustomersRepository {
             assignedTo?: string;
             page?: number;
             pageSize?: number;
+            sortBy?: string;
+            sortDir?: string;
         },
     ): Promise<{
         items: (Customer & { contacts?: CustomerContact[] })[];
@@ -657,20 +715,24 @@ export class CustomersRepository {
         const totalPages = Math.max(1, Math.ceil(total / pageSize));
         const safePageClamped = Math.min(page, totalPages);
         const offset = (safePageClamped - 1) * pageSize;
-        const pageIds = matchingIds.slice(offset, offset + pageSize);
-
         let items: (Customer & { contacts?: CustomerContact[] })[] = [];
-        if (pageIds.length > 0) {
+        if (matchingIds.length > 0) {
             const rows = await this.dbInstance
                 .select()
                 .from(customers)
-                .where(inArray(customers.id, pageIds))
-                .orderBy(customers.companyName);
+                .where(and(eq(customers.organizationId, organizationId), inArray(customers.id, matchingIds)))
+                .orderBy(...buildCustomerOrderBy(opts.sortBy, opts.sortDir))
+                .limit(pageSize)
+                .offset(offset);
 
-            const allContacts = await this.dbInstance
-                .select()
-                .from(customerContacts)
-                .where(inArray(customerContacts.customerId, pageIds));
+            const pageIds = rows.map(c => c.id);
+
+            const allContacts = pageIds.length > 0
+                ? await this.dbInstance
+                    .select()
+                    .from(customerContacts)
+                    .where(inArray(customerContacts.customerId, pageIds))
+                : [];
 
             items = rows.map(c => ({
                 ...c,

@@ -106,7 +106,7 @@ export function registerCustomerRoutes(
       const filters = {
         search: req.query.search as string | undefined,
         status: req.query.status as string | undefined,
-        customerType: req.query.customerType as string | undefined,
+        customerType: (req.query.customerType || req.query.type) as string | undefined,
         assignedTo: req.query.assignedTo as string | undefined,
       };
 
@@ -116,15 +116,32 @@ export function registerCustomerRoutes(
       if (hasPaginationParams) {
         const page = parseInt(req.query.page as string) || 1;
         const pageSize = Math.min(200, parseInt(req.query.pageSize as string) || 50);
-        const result = await storage.getCustomersPaged(organizationId, { ...filters, page, pageSize });
+        const result = await storage.getCustomersPaged(organizationId, {
+          ...filters,
+          page,
+          pageSize,
+          sortBy: req.query.sortBy as string | undefined,
+          sortDir: req.query.sortDir as string | undefined,
+        });
 
         // Attach availableCredit to each item
-        result.items = result.items.map((customer: any) => ({
+        const customersWithCredit = result.items.map((customer: any) => ({
           ...customer,
           availableCredit: (parseFloat(customer.creditLimit || "0") - parseFloat(customer.currentBalance || "0")).toString(),
         }));
 
-        return res.json(result);
+        return res.json({
+          success: true,
+          data: {
+            customers: customersWithCredit,
+            pagination: {
+              page: result.page,
+              pageSize: result.pageSize,
+              total: result.total,
+              totalPages: result.totalPages,
+            },
+          },
+        });
       }
 
       // Legacy flat-array path (backward compat for edit-quote, order-detail, customer-form, etc.)

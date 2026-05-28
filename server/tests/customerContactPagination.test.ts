@@ -38,6 +38,23 @@ function ctctId(n: number) {
   return `ctct_pg_${suffix}_${String(n).padStart(3, "0")}`;
 }
 
+function sortedCustId(label: string) {
+  return `cust_sort_${suffix}_${label}`;
+}
+
+function customerPage(body: any) {
+  const pagination = body.data.pagination;
+  return {
+    items: body.data.customers,
+    total: pagination.total,
+    page: pagination.page,
+    pageSize: pagination.pageSize,
+    totalPages: pagination.totalPages,
+    hasNextPage: pagination.page < pagination.totalPages,
+    hasPreviousPage: pagination.page > 1,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Minimal Express test app wiring real routes via storage helpers
 // ---------------------------------------------------------------------------
@@ -82,8 +99,25 @@ function createTestApp() {
       if (hasPaginationParams) {
         const page = parseInt(req.query.page as string) || 1;
         const pageSize = Math.min(200, parseInt(req.query.pageSize as string) || 50);
-        const result = await getCustomersPaged(organizationId, { ...filters, page, pageSize });
-        return res.json(result);
+        const result = await getCustomersPaged(organizationId, {
+          ...filters,
+          page,
+          pageSize,
+          sortBy: req.query.sortBy as string | undefined,
+          sortDir: req.query.sortDir as string | undefined,
+        });
+        return res.json({
+          success: true,
+          data: {
+            customers: result.items,
+            pagination: {
+              page: result.page,
+              pageSize: result.pageSize,
+              total: result.total,
+              totalPages: result.totalPages,
+            },
+          },
+        });
       }
 
       // Legacy: flat array (capped at 500)
@@ -169,6 +203,21 @@ beforeAll(async () => {
     `);
   }
 
+  const sortedCustomers = [
+    { id: sortedCustId("zulu"), companyName: `SortCase ${suffix} Zulu` },
+    { id: sortedCustId("alpha"), companyName: `SortCase ${suffix} Alpha` },
+    { id: sortedCustId("charlie"), companyName: `SortCase ${suffix} Charlie` },
+    { id: sortedCustId("bravo"), companyName: `SortCase ${suffix} Bravo` },
+  ];
+
+  for (const customer of sortedCustomers) {
+    await db.execute(sql`
+      insert into customers (id, organization_id, company_name, status, customer_type, current_balance, credit_limit)
+      values (${customer.id}, ${ORG_A}, ${customer.companyName}, ${"active"}, ${"business"}, ${"0"}, ${"0"})
+      on conflict (id) do nothing
+    `);
+  }
+
   // 7 contacts for ORG_A customers (spread across first 7 customers)
   for (let i = 1; i <= 7; i++) {
     await db.execute(sql`
@@ -186,7 +235,15 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const allCustIds = [...Array.from({length: 12}, (_, i) => custId(i + 1)), custId(101), custId(102)];
+  const allCustIds = [
+    ...Array.from({length: 12}, (_, i) => custId(i + 1)),
+    custId(101),
+    custId(102),
+    sortedCustId("zulu"),
+    sortedCustId("alpha"),
+    sortedCustId("charlie"),
+    sortedCustId("bravo"),
+  ];
   const allCtctIds = [...Array.from({length: 7}, (_, i) => ctctId(i + 1)), ctctId(200)];
 
   for (const id of allCtctIds) {
@@ -247,13 +304,13 @@ describe("GET /api/customers?page=1&pageSize=10 — paginated envelope", () => {
       .set(authHeaders)
       .expect(200);
 
-    expect(res.body).toHaveProperty("items");
-    expect(res.body).toHaveProperty("total");
-    expect(res.body).toHaveProperty("page");
-    expect(res.body).toHaveProperty("pageSize");
-    expect(res.body).toHaveProperty("totalPages");
-    expect(res.body).toHaveProperty("hasNextPage");
-    expect(res.body).toHaveProperty("hasPreviousPage");
+    expect(res.body).toHaveProperty("success", true);
+    expect(res.body).toHaveProperty("data.customers");
+    expect(res.body).toHaveProperty("data.pagination.page");
+    expect(res.body).toHaveProperty("data.pagination.pageSize");
+    expect(res.body).toHaveProperty("data.pagination.total");
+    expect(res.body).toHaveProperty("data.pagination.totalPages");
+    expect(Array.isArray(res.body.data.customers)).toBe(true);
   });
 
   test("total equals the real customer count for the org", async () => {
@@ -262,10 +319,11 @@ describe("GET /api/customers?page=1&pageSize=10 — paginated envelope", () => {
       .set(authHeaders)
       .expect(200);
 
-    // We seeded 12 customers in ORG_A
-    expect(res.body.total).toBeGreaterThanOrEqual(12);
+    const body = customerPage(res.body);
+    // We seeded 12 baseline customers in ORG_A
+    expect(body.total).toBeGreaterThanOrEqual(12);
     // ORG_B's 2 customers must NOT inflate the total
-    expect(res.body.total).not.toBeGreaterThan(res.body.total); // tautology guard; real check below
+    expect(body.total).not.toBeGreaterThan(body.total); // tautology guard; real check below
   });
 
   test("page 1 has 10 items, hasNextPage=true, hasPreviousPage=false", async () => {
@@ -274,10 +332,11 @@ describe("GET /api/customers?page=1&pageSize=10 — paginated envelope", () => {
       .set(authHeaders)
       .expect(200);
 
-    expect(res.body.items).toHaveLength(10);
-    expect(res.body.hasNextPage).toBe(true);
-    expect(res.body.hasPreviousPage).toBe(false);
-    expect(res.body.page).toBe(1);
+    const body = customerPage(res.body);
+    expect(body.items).toHaveLength(10);
+    expect(body.hasNextPage).toBe(true);
+    expect(body.hasPreviousPage).toBe(false);
+    expect(body.page).toBe(1);
   });
 
   test("page 2 returns a different (non-overlapping) set of items", async () => {
@@ -290,8 +349,8 @@ describe("GET /api/customers?page=1&pageSize=10 — paginated envelope", () => {
       .set(authHeaders)
       .expect(200);
 
-    const idsP1: string[] = resP1.body.items.map((c: any) => c.id);
-    const idsP2: string[] = resP2.body.items.map((c: any) => c.id);
+    const idsP1: string[] = customerPage(resP1.body).items.map((c: any) => c.id);
+    const idsP2: string[] = customerPage(resP2.body).items.map((c: any) => c.id);
 
     expect(idsP2.length).toBeGreaterThan(0);
     // No overlap between pages
@@ -304,15 +363,16 @@ describe("GET /api/customers?page=1&pageSize=10 — paginated envelope", () => {
       .get("/api/customers?page=1&pageSize=10")
       .set(authHeaders)
       .expect(200);
-    const totalPages = resP1.body.totalPages;
+    const totalPages = customerPage(resP1.body).totalPages;
 
     const resLast = await request(app)
       .get(`/api/customers?page=${totalPages}&pageSize=10`)
       .set(authHeaders)
       .expect(200);
 
-    expect(resLast.body.hasPreviousPage).toBe(true);
-    expect(resLast.body.hasNextPage).toBe(false);
+    const body = customerPage(resLast.body);
+    expect(body.hasPreviousPage).toBe(true);
+    expect(body.hasNextPage).toBe(false);
   });
 
   test("search filter narrows total, not just visible items", async () => {
@@ -322,9 +382,10 @@ describe("GET /api/customers?page=1&pageSize=10 — paginated envelope", () => {
       .expect(200);
 
     // Should find exactly 1 match ("Alpha Corp 01")
-    expect(res.body.total).toBe(1);
-    expect(res.body.items).toHaveLength(1);
-    expect(res.body.hasNextPage).toBe(false);
+    const body = customerPage(res.body);
+    expect(body.total).toBe(1);
+    expect(body.items).toHaveLength(1);
+    expect(body.hasNextPage).toBe(false);
   });
 
   test("pageSize is capped at 200 server-side", async () => {
@@ -333,7 +394,7 @@ describe("GET /api/customers?page=1&pageSize=10 — paginated envelope", () => {
       .set(authHeaders)
       .expect(200);
 
-    expect(res.body.pageSize).toBeLessThanOrEqual(200);
+    expect(customerPage(res.body).pageSize).toBeLessThanOrEqual(200);
   });
 
   test("tenant isolation: ORG_B customers do not appear in ORG_A query", async () => {
@@ -342,7 +403,7 @@ describe("GET /api/customers?page=1&pageSize=10 — paginated envelope", () => {
       .set(authHeaders)
       .expect(200);
 
-    const ids: string[] = res.body.items.map((c: any) => c.id);
+    const ids: string[] = customerPage(res.body).items.map((c: any) => c.id);
     expect(ids).not.toContain(custId(101));
     expect(ids).not.toContain(custId(102));
   });
@@ -353,12 +414,51 @@ describe("GET /api/customers?page=1&pageSize=10 — paginated envelope", () => {
       .set(authHeaders)
       .expect(200);
 
-    expect(res.body.total).toBe(0);
-    expect(res.body.items).toHaveLength(0);
-    expect(res.body.hasNextPage).toBe(false);
-    expect(res.body.hasPreviousPage).toBe(false);
+    const body = customerPage(res.body);
+    expect(body.total).toBe(0);
+    expect(body.items).toHaveLength(0);
+    expect(body.hasNextPage).toBe(false);
+    expect(body.hasPreviousPage).toBe(false);
     // totalPages should be at least 1 (not 0) to avoid divide-by-zero in UI
-    expect(res.body.totalPages).toBeGreaterThanOrEqual(1);
+    expect(body.totalPages).toBeGreaterThanOrEqual(1);
+  });
+
+  test("sortBy=name asc is applied before pagination across pages", async () => {
+    const resP1 = await request(app)
+      .get(`/api/customers?page=1&pageSize=2&search=${encodeURIComponent(`SortCase ${suffix}`)}&sortBy=name&sortDir=asc`)
+      .set(authHeaders)
+      .expect(200);
+    const resP2 = await request(app)
+      .get(`/api/customers?page=2&pageSize=2&search=${encodeURIComponent(`SortCase ${suffix}`)}&sortBy=name&sortDir=asc`)
+      .set(authHeaders)
+      .expect(200);
+
+    const page1Names = customerPage(resP1.body).items.map((c: any) => c.companyName);
+    const page2Names = customerPage(resP2.body).items.map((c: any) => c.companyName);
+
+    expect(page1Names).toEqual([
+      `SortCase ${suffix} Alpha`,
+      `SortCase ${suffix} Bravo`,
+    ]);
+    expect(page2Names).toEqual([
+      `SortCase ${suffix} Charlie`,
+      `SortCase ${suffix} Zulu`,
+    ]);
+  });
+
+  test("invalid sortBy falls back safely to default company-name sort", async () => {
+    const res = await request(app)
+      .get(`/api/customers?page=1&pageSize=4&search=${encodeURIComponent(`SortCase ${suffix}`)}&sortBy=company_name;drop table customers&sortDir=asc`)
+      .set(authHeaders)
+      .expect(200);
+
+    const names = customerPage(res.body).items.map((c: any) => c.companyName);
+    expect(names).toEqual([
+      `SortCase ${suffix} Alpha`,
+      `SortCase ${suffix} Bravo`,
+      `SortCase ${suffix} Charlie`,
+      `SortCase ${suffix} Zulu`,
+    ]);
   });
 });
 
