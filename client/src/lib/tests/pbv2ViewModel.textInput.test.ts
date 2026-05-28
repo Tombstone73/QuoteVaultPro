@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { applyPatchToTree, createUpdateGroupPatch, createUpdateOptionPatch, pbv2TreeToEditorModel } from "../pbv2/pbv2ViewModel";
+import { applyPatchToTree, createUpdateGroupPatch, createUpdateOptionPatch, normalizeTreeJson, pbv2TreeToEditorModel } from "../pbv2/pbv2ViewModel";
 
 function makeTextOptionTree() {
   return {
@@ -91,5 +91,31 @@ describe("pbv2ViewModel — text input type", () => {
     const { patch } = createUpdateGroupPatch(tree, "grp", { isRequired: true });
     const updated = applyPatchToTree(tree, patch) as any;
     expect(updated.nodes.grp.input).toMatchObject({ type: "select", required: true });
+  });
+
+  test("normalizeTreeJson creates a draft builder group for runtime-only input roots", () => {
+    const normalized = normalizeTreeJson({
+      schemaVersion: 2,
+      status: "ACTIVE",
+      rootNodeIds: ["imprint"],
+      nodes: {
+        imprint: {
+          id: "imprint",
+          type: "INPUT",
+          kind: "question",
+          status: "ENABLED",
+          label: "Custom Imprint Text",
+          key: "imprint",
+          input: { type: "text", selectionKey: "imprint", required: true },
+        },
+      },
+      edges: [],
+    });
+    const model = pbv2TreeToEditorModel(normalized);
+
+    expect(model.groups).toHaveLength(1);
+    expect(model.groups[0].optionIds).toEqual(["imprint"]);
+    expect(model.options.imprint).toBeDefined();
+    expect(normalized.status).toBe("DRAFT");
   });
 });

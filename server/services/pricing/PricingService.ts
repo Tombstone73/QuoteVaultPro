@@ -18,7 +18,7 @@ import type {
   Pbv2TierBasis,
   PricingV2Tier,
 } from '../../../shared/optionTreeV2';
-import { normalizeSelectionMap, resolveRuntimeVisibility } from '../../../shared/optionTreeV2Runtime';
+import { normalizeSelectionMap, resolveRuntimeVisibility, type ResolvedRuntimeVisibility } from '../../../shared/optionTreeV2Runtime';
 import {
   evaluateProductOptionRules,
   type ProductOptionRule,
@@ -1328,29 +1328,25 @@ function resolveRuleValidatedSelectionsForPricing(
     return { selected: toSelectionEntryMap(selections) };
   }
 
-  const explicitSelections = normalizeSelectionMap(selections);
   const runtimeVisibility = resolveRuntimeVisibility(tree, {
     schemaVersion: 2,
     selected: toSelectionEntryMap(selections),
   });
 
-  const structuralDetails: Pbv2OptionRuleValidationDetail[] = [];
-  for (const optionGroup of Object.keys(explicitSelections).sort((a, b) => a.localeCompare(b))) {
-    if (Object.prototype.hasOwnProperty.call(runtimeVisibility.effectiveSelections, optionGroup)) continue;
-    structuralDetails.push({
-      optionGroup,
-      code: "PBV2_OPTION_SELECTION_NOT_VISIBLE",
-      message: `${optionGroup} is not available for the current product selections.`,
-    });
-  }
-
-  const ruleEvaluation = evaluateProductOptionRules({
+  const evaluateVisibleRules = (visibility: ResolvedRuntimeVisibility) => evaluateProductOptionRules({
     rules,
-    selections: runtimeVisibility.effectiveSelections,
+    selections: visibility.effectiveSelections,
     optionGroups: collectTreeOptionGroupKeys(tree),
-    visibleOptionGroups: collectVisibleOptionGroupKeys(tree, runtimeVisibility.visibleNodeIds),
+    visibleOptionGroups: collectVisibleOptionGroupKeys(tree, visibility.visibleNodeIds),
     requiredOptionGroups: collectRequiredOptionGroupKeys(tree),
   });
+
+  let ruleEvaluation = evaluateVisibleRules(runtimeVisibility);
+  const finalRuntimeVisibility = resolveRuntimeVisibility(tree, {
+    schemaVersion: 2,
+    selected: toSelectionEntryMap(ruleEvaluation.effectiveSelections),
+  });
+  ruleEvaluation = evaluateVisibleRules(finalRuntimeVisibility);
 
   const ruleDetails: Pbv2OptionRuleValidationDetail[] = [
     ...ruleEvaluation.errors.map((entry) => ({
@@ -1358,16 +1354,10 @@ function resolveRuleValidatedSelectionsForPricing(
       code: entry.code,
       message: entry.message,
     })),
-    ...ruleEvaluation.clearedOptionGroups.map((optionGroup) => ({
-      optionGroup,
-      code: "PBV2_OPTION_SELECTION_CLEARED_BY_RULE",
-      message: `${optionGroup} is not valid for the current selections and must be cleared before pricing.`,
-    })),
   ];
 
-  const details = [...structuralDetails, ...ruleDetails];
-  if (details.length > 0) {
-    throw optionRuleValidationError(details, ruleEvaluation);
+  if (ruleDetails.length > 0) {
+    throw optionRuleValidationError(ruleDetails, ruleEvaluation);
   }
 
   return {

@@ -211,7 +211,7 @@ describe("PricingService pricing matrix variable resolution", () => {
   });
 
   test("hidden or cleared option selections do not resolve pricing", () => {
-    const error = expectOptionRuleError(() =>
+    const error = expectPricingMatrixError(() =>
       runPreview(makeRuleMatrixTree(), {
         finishing: { value: "pole_pockets" },
         welded_hems: { value: true },
@@ -223,7 +223,7 @@ describe("PricingService pricing matrix variable resolution", () => {
       expect.arrayContaining([
         expect.objectContaining({
           optionGroup: "welded_hems",
-          code: "PBV2_OPTION_SELECTION_CLEARED_BY_RULE",
+          code: "PBV2_PRICING_MATRIX_MISSING_SELECTION",
         }),
       ])
     );

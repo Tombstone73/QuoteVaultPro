@@ -172,7 +172,7 @@ export function normalizeTreeJson(treeJson: any): any {
   });
 
   // Normalize edges according to rules A/B
-  const normalizedEdges = liveEdges.map((edge: any) => {
+  let normalizedEdges = liveEdges.map((edge: any) => {
     if (!edge || !edge.id) return edge;
 
     const fromType = edge.fromNodeId ? nodeTypeById.get(edge.fromNodeId) : null;
@@ -264,6 +264,55 @@ export function normalizeTreeJson(treeJson: any): any {
         return { ...n, displayOrder: newOrder, ui: { ...(n.ui || {}), sortOrder: newOrder } };
       });
     }
+  }
+
+  // Some imported/published runtime trees have valid INPUT roots but no
+  // structural GROUP layer. The runtime can price those, but the Product
+  // Builder sidebar and preview need a TEMP draft group to expose the options.
+  const liveGroups = normalizedNodes.filter((n: any) => {
+    const status = (n?.status || 'ENABLED').toUpperCase();
+    return status !== 'DELETED' && (n?.type || '').toUpperCase() === 'GROUP';
+  });
+  const liveInputNodes = normalizedNodes.filter((n: any) => {
+    const status = (n?.status || 'ENABLED').toUpperCase();
+    const type = (n?.type || '').toUpperCase();
+    const kind = (n?.kind || '').toUpperCase();
+    return status !== 'DELETED' && (type === 'INPUT' || kind === 'QUESTION');
+  });
+  if (liveGroups.length === 0 && liveInputNodes.length > 0) {
+    const existingIds = new Set<string>([
+      ...normalizedNodes.map((n: any) => String(n?.id || '')).filter(Boolean),
+      ...normalizedEdges.map((e: any) => String(e?.id || '')).filter(Boolean),
+    ]);
+    let groupId = 'group_options';
+    let suffix = 1;
+    while (existingIds.has(groupId)) groupId = `group_options_${suffix++}`;
+
+    normalizedNodes = [
+      {
+        id: groupId,
+        kind: 'group',
+        type: 'GROUP',
+        status: 'ENABLED',
+        key: groupId,
+        label: 'Options',
+        displayOrder: 0,
+        ui: { sortOrder: 0 },
+      },
+      ...normalizedNodes,
+    ];
+
+    normalizedEdges = [
+      ...normalizedEdges,
+      ...liveInputNodes.map((node: any, index: number) => ({
+        id: existingIds.has(`edge_${groupId}_${node.id}`) ? `edge_${groupId}_${node.id}_${index}` : `edge_${groupId}_${node.id}`,
+        status: 'DISABLED',
+        fromNodeId: groupId,
+        toNodeId: node.id,
+        priority: index,
+        condition: TRUE_CONDITION,
+      })),
+    ];
   }
 
   // Reconstruct tree with normalized data

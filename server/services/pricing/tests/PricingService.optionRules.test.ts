@@ -118,23 +118,15 @@ function expectDefinitionError(fn: () => unknown): Pbv2DefinitionValidationError
 }
 
 describe("PricingService option rule validation gate", () => {
-  test("backend rejects a hidden option selection before pricing", () => {
-    const error = expectOptionRuleError(() =>
-      runPreview(makeBannerTree(polePocketRules), {
-        finishing: { value: "pole_pockets" },
-        welded_hems: { value: true },
-        pole_pocket_size: { value: "3in" },
-      })
-    );
+  test("backend clears hidden option selections before pricing", () => {
+    const result = runPreview(makeBannerTree(polePocketRules), {
+      finishing: { value: "pole_pockets" },
+      welded_hems: { value: true },
+      pole_pocket_size: { value: "3in" },
+    });
 
-    expect(error.details).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          optionGroup: "welded_hems",
-          code: "PBV2_OPTION_SELECTION_CLEARED_BY_RULE",
-        }),
-      ])
-    );
+    expect(result.debug?.runtimeSelectionContext?.selectedChoices.welded_hems).toBeUndefined();
+    expect(result.totalPrice).toBeGreaterThan(0);
   });
 
   test("backend rejects missing required option selection before pricing", () => {

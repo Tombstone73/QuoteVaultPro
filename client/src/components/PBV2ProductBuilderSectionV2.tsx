@@ -19,7 +19,7 @@ import { stringifyPbv2TreeJson } from "@shared/pbv2/starterTree";
 import { buildSymbolTable } from "@shared/pbv2/symbolTable";
 import { pbv2ToPricingAddons, pbv2ToWeightTotal } from "@shared/pbv2/pricingAdapter";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
-import { normalizePbv2ProductIdentity, shouldBlockPbv2TreeHydration } from "@shared/pbv2/draftTreeHydration";
+import { choosePbv2BuilderTreeSource, normalizePbv2ProductIdentity, shouldBlockPbv2TreeHydration } from "@shared/pbv2/draftTreeHydration";
 import type { Finding } from "@shared/pbv2/findings";
 import type { ValidationResult } from "@shared/pbv2/validator/types";
 import type { ProductOptionRule } from "@shared/productOptionRules";
@@ -538,8 +538,9 @@ export default function PBV2ProductBuilderSectionV2({
       return;
     }
 
-    // Prefer draft over active, but fallback to active if draft missing (auto_on_save case)
-    const sourceTree = draft || active;
+    // Prefer a usable draft, but repair empty/skeletal draft state from ACTIVE when runtime has a published tree.
+    const sourceChoice = choosePbv2BuilderTreeSource({ draft, active });
+    const sourceTree = sourceChoice.source;
     if (!sourceTree) {
       console.error('[PBV2_LOAD_ERROR] No draft or active tree found, should have been handled above');
       return;
@@ -550,7 +551,7 @@ export default function PBV2ProductBuilderSectionV2({
     const matrixSanitizer = sanitizePbv2PricingMatrix(normalizedSourceTree, { allowIncompleteMatrix: true });
     const pricingImpactNormalizer = normalizeTreePricingImpacts(matrixSanitizer.tree);
     const normalizedTree = pricingImpactNormalizer.tree;
-    const treeSource = draft ? 'DRAFT' : 'ACTIVE';
+    const treeSource = sourceChoice.sourceKind ?? 'DRAFT';
     if (import.meta.env.DEV) {
       const nc = Object.keys((normalizedTree as any)?.nodes || {}).length;
       const gc = Object.values((normalizedTree as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length;
@@ -564,7 +565,17 @@ export default function PBV2ProductBuilderSectionV2({
         groups: gc,
         hasDraft: !!draft,
         hasActive: !!active,
+        sourceReason: sourceChoice.reason,
+        repairedFromActive: sourceChoice.repairedFromActive,
       });
+      if (sourceChoice.repairedFromActive) {
+        console.warn('[PBV2_HYDRATE] Empty draft ignored; hydrating builder draft state from ACTIVE tree', {
+          productId,
+          draftId: draft?.id,
+          activeId: active?.id,
+          reason: sourceChoice.reason,
+        });
+      }
     }
     
     setLocalTreeJson(normalizedTree);
@@ -586,10 +597,12 @@ export default function PBV2ProductBuilderSectionV2({
         productId,
         draftId: draft?.id,
         activeId: active?.id,
+        sourceReason: sourceChoice.reason,
         stack: new Error().stack?.split('\n').slice(0, 6).join('\n')
       });
-    setHasLocalChanges(matrixSanitizer.changed || pricingImpactNormalizer.changed);
-    setIsLocalDirty(matrixSanitizer.changed || pricingImpactNormalizer.changed);
+    const hydrationRepairedDraft = matrixSanitizer.changed || pricingImpactNormalizer.changed || sourceChoice.repairedFromActive;
+    setHasLocalChanges(hydrationRepairedDraft);
+    setIsLocalDirty(hydrationRepairedDraft);
     
     if (import.meta.env.DEV) {
       console.log('[PBV2_HYDRATE] Dirty flag cleared after tree load from', treeSource);
