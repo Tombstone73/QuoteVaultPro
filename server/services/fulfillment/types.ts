@@ -43,12 +43,51 @@ export interface FulfillmentDetailDto extends QueueRowDto {
   };
   lineItems: Array<{
     id: string;
+    productName: string | null;
     description: string | null;
     productType: string | null;
     quantity: number | null;
+    size: string | null;
+    materialName: string | null;
+    optionSummary: string[];
+    finishing: {
+      requirements: string[];
+      lamination: string | null;
+    };
+    production: {
+      jobId: string | null;
+      stationKey: string | null;
+      stationLabel: string | null;
+      status: string | null;
+      completedAt: string | null;
+    };
+    artwork: Array<{
+      id: string;
+      fileName: string;
+      fileUrl: string | null;
+      thumbnailUrl: string | null;
+      thumbKey: string | null;
+      previewKey: string | null;
+      side: string | null;
+      role: string | null;
+    }>;
+    checklist: {
+      id: string;
+      checked: boolean;
+      checkedByUserId: string | null;
+      checkedAt: string | null;
+      notes: string | null;
+    };
   }>;
+  checklistComplete: boolean;
+  checklistSummary: {
+    total: number;
+    checked: number;
+    unchecked: number;
+  };
   productionSummary: Array<{
     id: string;
+    lineItemId: string | null;
     stationKey: string;
     stepKey: string;
     status: string;

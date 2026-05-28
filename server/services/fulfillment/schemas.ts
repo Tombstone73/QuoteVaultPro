@@ -62,8 +62,14 @@ export const fulfillmentNoteSchema = z.object({
   note: z.string().trim().min(1).max(2000),
 });
 
+export const fulfillmentChecklistItemSchema = z.object({
+  checked: z.boolean(),
+  notes: z.string().trim().max(2000).optional().nullable(),
+});
+
 export type ListQueueQueryInput = z.infer<typeof listQueueQuerySchema>;
 export type CreateShipmentInput = z.infer<typeof createShipmentSchema>;
 export type PatchShipmentInput = z.infer<typeof patchShipmentSchema>;
 export type PickupReadyInput = z.infer<typeof pickupReadySchema>;
 export type FulfillmentNoteInput = z.infer<typeof fulfillmentNoteSchema>;
+export type FulfillmentChecklistItemInput = z.infer<typeof fulfillmentChecklistItemSchema>;

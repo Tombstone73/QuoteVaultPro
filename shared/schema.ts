@@ -4108,12 +4108,17 @@ export const pickupTicketStatusSchema = z.enum(['DRAFT', 'READY_FOR_PICKUP', 'PI
 export const outboundNotificationChannelSchema = z.enum(['email', 'sms']);
 export const outboundNotificationStatusSchema = z.enum(['PENDING', 'SENT', 'FAILED']);
 export const outboundNotificationRelatedTypeSchema = z.enum(['PICKUP_TICKET']);
-export const fulfillmentEntityTypeSchema = z.enum(['SHIPMENT', 'PICKUP_TICKET']);
+export const fulfillmentEntityTypeSchema = z.enum(['SHIPMENT', 'PICKUP_TICKET', 'ORDER']);
 export const fulfillmentEventTypeSchema = z.enum([
   'SHIPMENT_CREATED',
   'SHIPMENT_UPDATED',
   'SHIPMENT_SHIPPED',
   'SHIPMENT_VOIDED',
+  'FULFILLMENT_READY',
+  'FULFILLMENT_NOTE',
+  'FULFILLMENT_AUTO_ARCHIVED',
+  'FULFILLMENT_CHECKLIST_ITEM_UPDATED',
+  'FULFILLMENT_CHECKLIST_VERIFIED',
   'PICKUP_READY',
   'PICKUP_PICKED_UP',
   'PICKUP_VOIDED',
@@ -4352,6 +4357,33 @@ export const insertFulfillmentEventSchema = createInsertSchema(fulfillmentEvents
 
 export type InsertFulfillmentEvent = z.infer<typeof insertFulfillmentEventSchema>;
 export type FulfillmentEvent = typeof fulfillmentEvents.$inferSelect;
+
+export const fulfillmentChecklistItems = pgTable("fulfillment_checklist_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  checked: boolean("checked").notNull().default(false),
+  checkedByUserId: varchar("checked_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  checkedAt: timestamp("checked_at", { withTimezone: true }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("fulfillment_checklist_items_org_order_line_uidx").on(table.organizationId, table.orderId, table.lineItemId),
+  index("fulfillment_checklist_items_org_order_idx").on(table.organizationId, table.orderId),
+  index("fulfillment_checklist_items_org_line_idx").on(table.organizationId, table.lineItemId),
+  index("fulfillment_checklist_items_org_checked_idx").on(table.organizationId, table.checked),
+]);
+
+export const insertFulfillmentChecklistItemSchema = createInsertSchema(fulfillmentChecklistItems).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertFulfillmentChecklistItem = z.infer<typeof insertFulfillmentChecklistItemSchema>;
+export type FulfillmentChecklistItem = typeof fulfillmentChecklistItems.$inferSelect;
 
 // Append-only job notes & status log tables (no duplicate jobs table)
 export const jobNotes = pgTable('job_notes', {

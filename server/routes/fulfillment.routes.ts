@@ -33,6 +33,7 @@ import { storage } from "../storage";
 import { updateOrderFulfillmentStatus, sendShipmentEmail } from "../fulfillmentService";
 import {
   createShipmentSchema as createFulfillmentShipmentSchema,
+  fulfillmentChecklistItemSchema,
   fulfillmentNoteSchema,
   listQueueQuerySchema,
   patchShipmentSchema as patchFulfillmentShipmentSchema,
@@ -153,6 +154,32 @@ export function registerFulfillmentRoutes(
       }
       console.error('[fulfillment] note error:', error);
       return res.status(500).json({ success: false, message: 'Failed to add fulfillment note' });
+    }
+  });
+
+  app.patch('/api/fulfillment/orders/:orderId/checklist/:lineItemId', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
+      const parsed = fulfillmentChecklistItemSchema.parse(req.body || {});
+      const actorUserId = getUserId(req.user) || null;
+      const data = await fulfillmentServiceV2.updateChecklistItem(
+        organizationId,
+        req.params.orderId,
+        req.params.lineItemId,
+        parsed,
+        actorUserId,
+      );
+      return res.json({ success: true, data, message: 'Fulfillment checklist updated' });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, message: 'Invalid fulfillment checklist payload', code: 'VALIDATION_ERROR' });
+      }
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] checklist update error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to update fulfillment checklist' });
     }
   });
 
