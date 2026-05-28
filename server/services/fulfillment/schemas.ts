@@ -58,7 +58,12 @@ export const pickupReadySchema = z.object({
   overrideProductionComplete: z.coerce.boolean().optional().default(false),
 });
 
+export const fulfillmentNoteSchema = z.object({
+  note: z.string().trim().min(1).max(2000),
+});
+
 export type ListQueueQueryInput = z.infer<typeof listQueueQuerySchema>;
 export type CreateShipmentInput = z.infer<typeof createShipmentSchema>;
 export type PatchShipmentInput = z.infer<typeof patchShipmentSchema>;
 export type PickupReadyInput = z.infer<typeof pickupReadySchema>;
+export type FulfillmentNoteInput = z.infer<typeof fulfillmentNoteSchema>;

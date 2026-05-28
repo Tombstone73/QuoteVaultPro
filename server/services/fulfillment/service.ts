@@ -37,6 +37,44 @@ export class FulfillmentService {
     return this.dashboardRepo.listFulfillmentQueue(orgId, filters);
   }
 
+  async getOrderDetail(orgId: string, orderId: string) {
+    const detail = await this.dashboardRepo.getFulfillmentDetail(orgId, orderId);
+    if (!detail) {
+      throw new FulfillmentHttpError(404, 'Fulfillment row not found', 'NOT_FOUND');
+    }
+    return detail;
+  }
+
+  async markOrderReady(orgId: string, orderId: string, actorUserId?: string | null) {
+    const result = await this.dashboardRepo.markOrderReady(orgId, orderId, actorUserId);
+    if (!result.ok) {
+      if (result.code === 'NOT_FOUND') throw new FulfillmentHttpError(404, result.message, result.code);
+      throw new FulfillmentHttpError(400, result.message, result.code);
+    }
+    return this.getOrderDetail(orgId, orderId);
+  }
+
+  async markOrderReadyForPickup(orgId: string, orderId: string, payload: {
+    stagingLocation?: string | null;
+    pickupNotes?: string | null;
+    contactName?: string | null;
+    contactEmail?: string | null;
+    contactPhone?: string | null;
+  }, actorUserId?: string | null, actorUserRole?: string | null) {
+    const ticket = await this.createOrGetPickupTicket(orgId, orderId, actorUserId);
+    await this.markPickupReady(orgId, ticket.id, payload, actorUserId, actorUserRole);
+    return this.getOrderDetail(orgId, orderId);
+  }
+
+  async addOrderNote(orgId: string, orderId: string, note: string, actorUserId?: string | null) {
+    const result = await this.dashboardRepo.addOrderNote(orgId, orderId, note, actorUserId);
+    if (!result.ok) {
+      if (result.code === 'NOT_FOUND') throw new FulfillmentHttpError(404, result.message, result.code);
+      throw new FulfillmentHttpError(400, result.message, result.code);
+    }
+    return this.getOrderDetail(orgId, orderId);
+  }
+
   private async validateCombinedShipmentEligibility(orgId: string, orderIds: string[]) {
     if (orderIds.length === 0) {
       throw new FulfillmentHttpError(400, 'At least one order is required', 'EMPTY_ORDER_IDS');

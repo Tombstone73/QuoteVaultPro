@@ -152,6 +152,9 @@ export const organizations = pgTable("organizations", {
       orders?: {
         billingReadyPolicy?: 'all_line_items_done' | 'manual' | 'none';
       };
+      fulfillment?: {
+        pickupRetentionDaysAfterPickedUp?: number;
+      };
     };
     branding?: {
       logoUrl?: string;

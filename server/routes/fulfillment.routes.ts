@@ -33,6 +33,7 @@ import { storage } from "../storage";
 import { updateOrderFulfillmentStatus, sendShipmentEmail } from "../fulfillmentService";
 import {
   createShipmentSchema as createFulfillmentShipmentSchema,
+  fulfillmentNoteSchema,
   listQueueQuerySchema,
   patchShipmentSchema as patchFulfillmentShipmentSchema,
   pickupReadySchema,
@@ -80,6 +81,78 @@ export function registerFulfillmentRoutes(
       }
       console.error('[fulfillment] queue error:', error);
       return res.status(500).json({ success: false, message: 'Failed to fetch fulfillment queue' });
+    }
+  });
+
+  app.get('/api/fulfillment/orders/:orderId', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
+      const data = await fulfillmentServiceV2.getOrderDetail(organizationId, req.params.orderId);
+      return res.json({ success: true, data });
+    } catch (error) {
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] order detail error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to fetch fulfillment detail' });
+    }
+  });
+
+  app.post('/api/fulfillment/orders/:orderId/ready', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
+      const actorUserId = getUserId(req.user) || null;
+      const data = await fulfillmentServiceV2.markOrderReady(organizationId, req.params.orderId, actorUserId);
+      return res.json({ success: true, data, message: 'Fulfillment marked ready' });
+    } catch (error) {
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] mark ready error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to mark fulfillment ready' });
+    }
+  });
+
+  app.post('/api/fulfillment/orders/:orderId/ready-for-pickup', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
+      const actorUserId = getUserId(req.user) || null;
+      const actorUserRole = (req.user as any)?.role || (req.user as any)?.orgRole || null;
+      const parsed = pickupReadySchema.parse(req.body || {});
+      const data = await fulfillmentServiceV2.markOrderReadyForPickup(organizationId, req.params.orderId, parsed, actorUserId, actorUserRole);
+      return res.json({ success: true, data, message: 'Pickup marked ready' });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, message: 'Invalid pickup ready payload', code: 'VALIDATION_ERROR' });
+      }
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] order pickup ready error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to mark pickup ready' });
+    }
+  });
+
+  app.post('/api/fulfillment/orders/:orderId/note', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
+      const parsed = fulfillmentNoteSchema.parse(req.body || {});
+      const actorUserId = getUserId(req.user) || null;
+      const data = await fulfillmentServiceV2.addOrderNote(organizationId, req.params.orderId, parsed.note, actorUserId);
+      return res.json({ success: true, data, message: 'Fulfillment note added' });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, message: 'Invalid fulfillment note', code: 'VALIDATION_ERROR' });
+      }
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] note error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to add fulfillment note' });
     }
   });
 

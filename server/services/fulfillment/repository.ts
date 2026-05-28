@@ -5,6 +5,7 @@ import {
   fulfillmentEvents,
   orderLineItems,
   orders,
+  organizations,
   outboundNotifications,
   pickupTickets,
   productionJobs,
@@ -12,12 +13,13 @@ import {
   shipmentOrders,
   shipments,
 } from '@shared/schema';
-import type { DerivedOrderFulfillmentStatus, QueueRowDto } from './types';
+import type { DerivedOrderFulfillmentStatus, FulfillmentDetailDto, QueueRowDto } from './types';
 import { TERMINAL_PRODUCTION_STATUSES } from '@shared/operationalState';
 import { buildPrepressOptionRows, extractFinishingBullets } from '../../routes/flatStockNesting.shared';
 import { fulfillmentQueueEligibleOrderCondition, isFulfillmentQueueEligibleOrder } from './eligibility';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
+const DEFAULT_PICKUP_RETENTION_DAYS_AFTER_PICKED_UP = 7;
 const PRINT_CONTEXT_EXCLUDED_STATIONS = new Set(['fulfillment', 'prepress', 'design']);
 
 type DbExecutor = typeof db;
@@ -70,6 +72,27 @@ function latestIso(values: unknown[]): string | null {
     .filter((value): value is number => value != null)
     .sort((a, b) => b - a)[0];
   return latest ? new Date(latest).toISOString() : null;
+}
+
+function toIso(value: unknown): string | null {
+  if (!value) return null;
+  const date = new Date(value as any);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function getPickupRetentionDaysFromSettings(settings: unknown): number {
+  const raw = (settings as any)?.preferences?.fulfillment?.pickupRetentionDaysAfterPickedUp;
+  const days = Number(raw);
+  if (!Number.isFinite(days) || days < 0) return DEFAULT_PICKUP_RETENTION_DAYS_AFTER_PICKED_UP;
+  return Math.min(Math.floor(days), 365);
+}
+
+export function isPickedUpArchivedForRetention(ticket: { status?: string | null; pickedUpAt?: unknown }, retentionDays: number, nowMs = Date.now()): boolean {
+  if (String(ticket?.status || '').toUpperCase() !== 'PICKED_UP') return false;
+  if (retentionDays <= 0) return true;
+  const pickedUpMs = ticket?.pickedUpAt ? new Date(ticket.pickedUpAt as any).getTime() : Number.NaN;
+  if (!Number.isFinite(pickedUpMs)) return false;
+  return nowMs - pickedUpMs >= retentionDays * 24 * 60 * 60 * 1000;
 }
 
 function buildLineItemProductionContext(lineItem: any) {
@@ -491,6 +514,9 @@ export class ShipmentRepo {
       | 'SHIPMENT_UPDATED'
       | 'SHIPMENT_SHIPPED'
       | 'SHIPMENT_VOIDED'
+      | 'FULFILLMENT_READY'
+      | 'FULFILLMENT_NOTE'
+      | 'FULFILLMENT_AUTO_ARCHIVED'
       | 'PICKUP_READY'
       | 'PICKUP_PICKED_UP'
       | 'NOTIFICATION_SENT'
@@ -760,6 +786,46 @@ export class FulfillmentDashboardRepo {
     return 'PARTIAL';
   }
 
+  private async getPickupRetentionDays(orgId: string): Promise<number> {
+    const [org] = await this.dbInstance
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    return getPickupRetentionDaysFromSettings(org?.settings);
+  }
+
+  private isPickedUpTicketArchived(ticket: any, retentionDays: number, nowMs = Date.now()): boolean {
+    return isPickedUpArchivedForRetention(ticket, retentionDays, nowMs);
+  }
+
+  private async logPickupAutoArchiveOnce(orgId: string, ticketId: string, retentionDays: number) {
+    const [existing] = await this.dbInstance
+      .select({ id: fulfillmentEvents.id })
+      .from(fulfillmentEvents)
+      .where(and(
+        eq(fulfillmentEvents.organizationId, orgId),
+        eq(fulfillmentEvents.entityType, 'PICKUP_TICKET'),
+        eq(fulfillmentEvents.entityId, ticketId),
+        eq(fulfillmentEvents.eventType, 'FULFILLMENT_AUTO_ARCHIVED'),
+      ))
+      .limit(1);
+
+    if (existing) return;
+
+    await this.dbInstance.insert(fulfillmentEvents).values({
+      organizationId: orgId,
+      actorUserId: null,
+      entityType: 'PICKUP_TICKET',
+      entityId: ticketId,
+      eventType: 'FULFILLMENT_AUTO_ARCHIVED',
+      payloadJson: {
+        reason: `Auto-archived picked-up fulfillment after ${retentionDays} days`,
+        retentionDays,
+      },
+    });
+  }
+
   async listFulfillmentQueue(orgId: string, filters: {
     type: 'all' | 'ship' | 'pickup';
     status: string;
@@ -799,6 +865,7 @@ export class FulfillmentDashboardRepo {
       .where(and(...baseOrderConditions));
 
     const orderIds = orderRows.map((o) => o.id);
+    const pickupRetentionDays = await this.getPickupRetentionDays(orgId);
 
     const lineItemAgg = orderIds.length > 0
       ? await this.dbInstance
@@ -816,6 +883,7 @@ export class FulfillmentDashboardRepo {
         .select({
           orderId: shipmentItems.orderId,
           shippedQty: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int`,
+          shippedAt: sql<string | null>`MAX(${shipments.shippedAt})`,
         })
         .from(shipmentItems)
         .innerJoin(shipments, eq(shipments.id, shipmentItems.shipmentId))
@@ -825,6 +893,25 @@ export class FulfillmentDashboardRepo {
           inArray(shipmentItems.orderId, orderIds),
         ))
         .groupBy(shipmentItems.orderId)
+      : [];
+
+    const shipmentRows = orderIds.length > 0
+      ? await this.dbInstance
+        .select({
+          id: shipments.id,
+          orderId: shipmentOrders.orderId,
+          status: shipments.status,
+          shippedAt: shipments.shippedAt,
+          updatedAt: shipments.updatedAt,
+        })
+        .from(shipmentOrders)
+        .innerJoin(shipments, eq(shipments.id, shipmentOrders.shipmentId))
+        .where(and(
+          eq(shipmentOrders.organizationId, orgId),
+          eq(shipments.organizationId, orgId),
+          inArray(shipmentOrders.orderId, orderIds),
+        ))
+        .orderBy(desc(shipments.updatedAt), desc(shipments.createdAt))
       : [];
 
     const ticketRows = orderIds.length > 0
@@ -886,7 +973,12 @@ export class FulfillmentDashboardRepo {
 
     const orderedMap = new Map(lineItemAgg.map((row) => [row.orderId, row.orderedQty]));
     const shippedMap = new Map(shippedAgg.map((row) => [row.orderId, row.shippedQty]));
+    const shippedAtMap = new Map(shippedAgg.map((row) => [row.orderId, row.shippedAt]));
     const ticketMap = new Map(ticketRows.map((row) => [row.orderId, row]));
+    const shipmentMap = new Map<string, (typeof shipmentRows)[number]>();
+    for (const shipment of shipmentRows) {
+      if (!shipmentMap.has(shipment.orderId)) shipmentMap.set(shipment.orderId, shipment);
+    }
     const productionJobsByOrder = new Map<string, QueueRowDto['productionJobs']>();
     for (const job of productionJobRows) {
       const list = productionJobsByOrder.get(job.orderId) ?? [];
@@ -949,7 +1041,10 @@ export class FulfillmentDashboardRepo {
       if (isPickup) {
         const ticket = ticketMap.get(order.id);
         const status = ticket?.status || 'DRAFT';
-        const isArchivedPickup = status === 'PICKED_UP';
+        const isArchivedPickup = ticket ? this.isPickedUpTicketArchived(ticket, pickupRetentionDays, nowMs) : false;
+        if (isArchivedPickup && ticket?.id) {
+          await this.logPickupAutoArchiveOnce(orgId, ticket.id, pickupRetentionDays);
+        }
         if (!filters.showArchived && isArchivedPickup) continue;
         const readySince = (ticket?.readyAt as Date | null)?.toISOString?.() || null;
         const row: QueueRowDto = {
@@ -962,6 +1057,10 @@ export class FulfillmentDashboardRepo {
           readySince,
           shipTo: 'In-Store',
           overdue: false,
+          pickupTicketId: ticket?.id ?? null,
+          shipmentId: null,
+          isArchived: isArchivedPickup,
+          archivedReason: isArchivedPickup ? `Picked up more than ${pickupRetentionDays} day(s) ago` : null,
           productionJobs: productionJobsByOrder.get(order.id) ?? [],
           productionContext: productionContextByOrder.get(order.id),
         };
@@ -972,7 +1071,10 @@ export class FulfillmentDashboardRepo {
       }
 
       const shipStatus = this.deriveShipStatus(orderedQty, shippedQty);
-      const isArchivedShip = shipStatus === 'SHIPPED';
+      const shippedAtMs = Date.parse(String(shippedAtMap.get(order.id) || ''));
+      const isArchivedShip = shipStatus === 'SHIPPED' &&
+        Number.isFinite(shippedAtMs) &&
+        nowMs - shippedAtMs >= pickupRetentionDays * 24 * 60 * 60 * 1000;
       if (!filters.showArchived && isArchivedShip) continue;
       const readySinceIso = order.productionCompletedAt
         ? new Date(order.productionCompletedAt).toISOString()
@@ -998,6 +1100,10 @@ export class FulfillmentDashboardRepo {
         readySince: readySinceIso,
         shipTo: [order.shipToCity, order.shipToState].filter(Boolean).join(', ') || 'Unknown',
         overdue,
+        pickupTicketId: null,
+        shipmentId: shipmentMap.get(order.id)?.id ?? null,
+        isArchived: isArchivedShip,
+        archivedReason: isArchivedShip ? `Shipped more than ${pickupRetentionDays} day(s) ago` : null,
         productionJobs: productionJobsByOrder.get(order.id) ?? [],
         productionContext: productionContextByOrder.get(order.id),
       });
@@ -1025,6 +1131,214 @@ export class FulfillmentDashboardRepo {
       pageSize: 1,
     });
     return result.total;
+  }
+
+  async markOrderReady(orgId: string, orderId: string, actorUserId?: string | null) {
+    const [order] = await this.dbInstance
+      .select({
+        id: orders.id,
+        state: orders.state,
+        status: orders.status,
+        canceledAt: orders.canceledAt,
+        routingTarget: orders.routingTarget,
+        shippingMethod: orders.shippingMethod,
+      })
+      .from(orders)
+      .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)))
+      .limit(1);
+
+    if (!order) return { ok: false as const, code: 'NOT_FOUND', message: 'Fulfillment row not found' };
+    if (!isFulfillmentQueueEligibleOrder(order as any)) {
+      return { ok: false as const, code: 'INVALID_STATE', message: 'Order is not ready for fulfillment' };
+    }
+
+    await this.dbInstance.transaction(async (tx) => {
+      await tx
+        .update(orders)
+        .set({ fulfillmentStatus: 'packed', updatedAt: new Date().toISOString() })
+        .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)));
+
+      await tx.insert(fulfillmentEvents).values({
+        organizationId: orgId,
+        actorUserId: actorUserId || null,
+        entityType: 'ORDER',
+        entityId: orderId,
+        eventType: 'FULFILLMENT_READY',
+        payloadJson: { fulfillmentStatus: 'packed' },
+      });
+    });
+
+    return { ok: true as const };
+  }
+
+  async addOrderNote(orgId: string, orderId: string, note: string, actorUserId?: string | null) {
+    const [order] = await this.dbInstance
+      .select({ id: orders.id })
+      .from(orders)
+      .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)))
+      .limit(1);
+
+    if (!order) return { ok: false as const, code: 'NOT_FOUND', message: 'Fulfillment row not found' };
+
+    await this.dbInstance.insert(fulfillmentEvents).values({
+      organizationId: orgId,
+      actorUserId: actorUserId || null,
+      entityType: 'ORDER',
+      entityId: orderId,
+      eventType: 'FULFILLMENT_NOTE',
+      payloadJson: { note },
+    });
+
+    return { ok: true as const };
+  }
+
+  async getFulfillmentDetail(orgId: string, orderId: string): Promise<FulfillmentDetailDto | null> {
+    const queue = await this.listFulfillmentQueue(orgId, {
+      type: 'all',
+      status: 'all',
+      showArchived: true,
+      overdueOnly: false,
+      page: 1,
+      pageSize: 5000,
+    });
+    const row = queue.rows.find((entry) => entry.orderId === orderId);
+    if (!row) return null;
+
+    const [orderRow] = await this.dbInstance
+      .select({
+        id: orders.id,
+        customerName: customers.companyName,
+        customerEmail: customers.email,
+        customerPhone: customers.phone,
+      })
+      .from(orders)
+      .leftJoin(customers, eq(customers.id, orders.customerId))
+      .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)))
+      .limit(1);
+
+    const lineItems = await this.dbInstance
+      .select({
+        id: orderLineItems.id,
+        description: orderLineItems.description,
+        productType: orderLineItems.productType,
+        quantity: orderLineItems.quantity,
+      })
+      .from(orderLineItems)
+      .where(eq(orderLineItems.orderId, orderId));
+
+    const productionSummary = await this.dbInstance
+      .select({
+        id: productionJobs.id,
+        stationKey: productionJobs.stationKey,
+        stepKey: productionJobs.stepKey,
+        status: productionJobs.status,
+        completedAt: productionJobs.completedAt,
+        assignedPrinterName: productionJobs.assignedPrinterName,
+      })
+      .from(productionJobs)
+      .where(and(eq(productionJobs.organizationId, orgId), eq(productionJobs.orderId, orderId)))
+      .orderBy(desc(productionJobs.updatedAt));
+
+    const [pickupTicket] = await this.dbInstance
+      .select()
+      .from(pickupTickets)
+      .where(and(eq(pickupTickets.organizationId, orgId), eq(pickupTickets.orderId, orderId)))
+      .limit(1);
+
+    const shipmentRows = await this.dbInstance
+      .select({
+        id: shipments.id,
+        status: shipments.status,
+        carrier: shipments.carrier,
+        serviceLevel: shipments.serviceLevel,
+        trackingNumber: shipments.trackingNumber,
+        shippedAt: shipments.shippedAt,
+        updatedAt: shipments.updatedAt,
+      })
+      .from(shipmentOrders)
+      .innerJoin(shipments, eq(shipments.id, shipmentOrders.shipmentId))
+      .where(and(
+        eq(shipmentOrders.organizationId, orgId),
+        eq(shipments.organizationId, orgId),
+        eq(shipmentOrders.orderId, orderId),
+      ))
+      .orderBy(desc(shipments.updatedAt));
+
+    const eventConditions = [
+      and(eq(fulfillmentEvents.entityType, 'ORDER'), eq(fulfillmentEvents.entityId, orderId)),
+    ] as any[];
+    if (pickupTicket?.id) {
+      eventConditions.push(and(eq(fulfillmentEvents.entityType, 'PICKUP_TICKET'), eq(fulfillmentEvents.entityId, pickupTicket.id)));
+    }
+    if (shipmentRows.length > 0) {
+      eventConditions.push(and(eq(fulfillmentEvents.entityType, 'SHIPMENT'), inArray(fulfillmentEvents.entityId, shipmentRows.map((s) => s.id))));
+    }
+
+    const events = await this.dbInstance
+      .select({
+        id: fulfillmentEvents.id,
+        entityType: fulfillmentEvents.entityType,
+        entityId: fulfillmentEvents.entityId,
+        eventType: fulfillmentEvents.eventType,
+        actorUserId: fulfillmentEvents.actorUserId,
+        payloadJson: fulfillmentEvents.payloadJson,
+        createdAt: fulfillmentEvents.createdAt,
+      })
+      .from(fulfillmentEvents)
+      .where(and(eq(fulfillmentEvents.organizationId, orgId), or(...eventConditions)))
+      .orderBy(desc(fulfillmentEvents.createdAt));
+
+    return {
+      ...row,
+      customer: {
+        name: orderRow?.customerName || row.customerName,
+        email: orderRow?.customerEmail ?? null,
+        phone: orderRow?.customerPhone ?? null,
+      },
+      lineItems: lineItems.map((item) => ({
+        id: item.id,
+        description: item.description ?? null,
+        productType: item.productType ?? null,
+        quantity: item.quantity == null ? null : Number(item.quantity),
+      })),
+      productionSummary: productionSummary.map((job) => ({
+        id: job.id,
+        stationKey: job.stationKey,
+        stepKey: job.stepKey,
+        status: job.status,
+        completedAt: toIso(job.completedAt),
+        assignedPrinterName: job.assignedPrinterName ?? null,
+      })),
+      pickupTicket: pickupTicket ? {
+        id: pickupTicket.id,
+        status: pickupTicket.status,
+        readyAt: toIso(pickupTicket.readyAt),
+        pickedUpAt: toIso(pickupTicket.pickedUpAt),
+        stagingLocation: pickupTicket.stagingLocation ?? null,
+        pickupNotes: pickupTicket.pickupNotes ?? null,
+        contactName: pickupTicket.contactName ?? null,
+        contactEmail: pickupTicket.contactEmail ?? null,
+        contactPhone: pickupTicket.contactPhone ?? null,
+      } : null,
+      shipments: shipmentRows.map((shipment) => ({
+        id: shipment.id,
+        status: shipment.status,
+        carrier: shipment.carrier ?? null,
+        serviceLevel: shipment.serviceLevel ?? null,
+        trackingNumber: shipment.trackingNumber ?? null,
+        shippedAt: toIso(shipment.shippedAt),
+        updatedAt: toIso(shipment.updatedAt),
+      })),
+      events: events.map((event) => ({
+        id: event.id,
+        entityType: event.entityType,
+        entityId: event.entityId,
+        eventType: event.eventType,
+        actorUserId: event.actorUserId ?? null,
+        payloadJson: event.payloadJson ?? {},
+        createdAt: toIso(event.createdAt) || new Date().toISOString(),
+      })),
+    };
   }
 
   async getOrdersForCombinedShipmentValidation(orgId: string, orderIds: string[]) {
