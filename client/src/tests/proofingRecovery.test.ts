@@ -55,7 +55,7 @@ describe("proofing recovery helpers", () => {
   });
 
   test("surfaces no-artwork disabled reason for proof draft generation", () => {
-    expect(getGenerateProofDraftDisabledReason({ hasEligibleArtwork: false })).toBe("no artwork found");
+    expect(getGenerateProofDraftDisabledReason({ hasEligibleArtwork: false })).toBe("no eligible artwork found");
   });
 
   test("enables proof draft generation when eligible artwork exists", () => {

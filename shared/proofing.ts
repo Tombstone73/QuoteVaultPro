@@ -79,7 +79,7 @@ export const proofInputSnapshotSchema = z.object({
   orderNumber: z.string().nullable(),
   lineItemLabel: z.string(),
   sourceArtwork: z.object({
-    sourceType: z.enum(["attachment", "asset"]),
+    sourceType: z.enum(["attachment", "asset", "line_item_file"]),
     sourceId: z.string(),
     fileRecordId: z.string().nullable(),
     fileName: z.string(),

@@ -23,6 +23,7 @@ import {
   lineItemProofApprovals,
   lineItemProofManualApprovalOverrides,
   lineItemProofVersions,
+  lineItemFiles,
   orderAttachments,
   orderAuditLog,
   orderLineItems,
@@ -57,7 +58,7 @@ const GENERATED_PROOF_PREVIEW_ERROR_PREFIX = "[proof-preview-error:";
 export const INCOMPLETE_PROOF_MESSAGE = "This proof does not include an artwork preview and cannot be sent to the customer.";
 
 type ArtworkProofSource = {
-  sourceType: "attachment" | "asset";
+  sourceType: "attachment" | "asset" | "line_item_file";
   sourceId: string;
   orderId: string;
   orderLineItemId: string;
@@ -88,6 +89,23 @@ type ArtworkProofSource = {
   updatedAt: Date | null;
   assetPreviewStatus?: "pending" | "ready" | "failed" | null;
   assetPreviewError?: string | null;
+};
+
+export type EligibleProofArtworkSource = {
+  id: string;
+  sourceType: "line_item_artwork" | "line_item_asset" | "line_item_file";
+  sourceId: string;
+  attachmentId: string | null;
+  fileRecordId: string | null;
+  fileName: string;
+  originalFilename: string | null;
+  mimeType: string | null;
+  fileUrl: string | null;
+  thumbnailUrl: string | null;
+  previewUrl: string | null;
+  role: string | null;
+  eligible: boolean;
+  eligibilityReason: string | null;
 };
 
 type LoadedProofSnapshotLineItem = {
@@ -225,6 +243,48 @@ function sourceHasUsablePreviewDerivative(source: ArtworkProofSource | null) {
     source.pagePreviewFileRecordId ||
     source.pageThumbFileRecordId,
   );
+}
+
+function isSupportedProofArtworkSource(source: {
+  fileName?: string | null;
+  mimeType?: string | null;
+  fileRecordId?: string | null;
+  fileUrl?: string | null;
+  relativePath?: string | null;
+  previewKey?: string | null;
+  thumbKey?: string | null;
+  thumbnailUrl?: string | null;
+  pagePreviewFileRecordId?: string | null;
+  pageThumbFileRecordId?: string | null;
+}) {
+  const mime = String(source.mimeType || "").toLowerCase();
+  const fileName = String(source.fileName || "").toLowerCase();
+  const hasReadableReference = Boolean(
+    source.fileRecordId ||
+    source.fileUrl ||
+    source.relativePath ||
+    source.previewKey ||
+    source.thumbKey ||
+    source.thumbnailUrl ||
+    source.pagePreviewFileRecordId ||
+    source.pageThumbFileRecordId,
+  );
+
+  if (!hasReadableReference) {
+    return { eligible: false, reason: "missing file reference" };
+  }
+
+  const supported =
+    mime.startsWith("image/") ||
+    mime.includes("pdf") ||
+    /(illustrator|postscript)/i.test(mime) ||
+    /\.(png|jpe?g|webp|tiff?|pdf|ai|eps)$/i.test(fileName);
+
+  if (!supported) {
+    return { eligible: false, reason: "unsupported file type" };
+  }
+
+  return { eligible: true, reason: null };
 }
 
 function buildPreviewGenerationUnavailableMessage(source: ArtworkProofSource) {
@@ -676,9 +736,17 @@ function buildSelectedOptionMap(lineItem: LoadedProofSnapshotLineItem): Record<s
   return map;
 }
 
-export async function buildProofInputSnapshot(tx: any, args: { organizationId: string; lineItemId: string }): Promise<ProofInputSnapshot> {
+export async function buildProofInputSnapshot(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  selectedArtworkSourceIds?: string[] | null;
+}): Promise<ProofInputSnapshot> {
   const lineItem = await loadProofSnapshotLineItem(tx, args);
-  const source = await loadLatestArtworkProofSource(tx, args);
+  const source = await loadLatestArtworkProofSource(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    selectedSourceIds: args.selectedArtworkSourceIds ?? null,
+  });
   const finishedWidth = parseNullableNumber(lineItem.width);
   const finishedHeight = parseNullableNumber(lineItem.height);
   const snapshotBasisAt = maxIsoTimestamp([
@@ -1049,6 +1117,7 @@ export async function createAndSendProofVersion(tx: any, args: {
   actorUserId: string;
   mode: ProofSendMode;
   proofFileId?: string | null;
+  artworkSourceIds?: string[] | null;
   internalNotes?: string | null;
   sentToName?: string | null;
   sentToEmail?: string | null;
@@ -1058,6 +1127,7 @@ export async function createAndSendProofVersion(tx: any, args: {
   const snapshot = await buildProofInputSnapshot(tx, {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
+    selectedArtworkSourceIds: args.artworkSourceIds ?? null,
   });
 
   let proofFileId = trimNullable(args.proofFileId);
@@ -1067,10 +1137,14 @@ export async function createAndSendProofVersion(tx: any, args: {
     const source = await loadLatestArtworkProofSource(tx, {
       organizationId: args.organizationId,
       lineItemId: args.lineItemId,
+      selectedSourceIds: args.artworkSourceIds ?? null,
     });
 
     if (!source) {
-      throw Object.assign(new Error("A saved artwork source is required before generating a proof"), { statusCode: 409 });
+      throw Object.assign(new Error("No eligible artwork files found for this line item"), {
+        statusCode: 409,
+        code: "no_eligible_artwork_found",
+      });
     }
 
     artifact = await createGeneratedProofAttachment(tx, {
@@ -1138,22 +1212,25 @@ export async function createGeneratedDraftProofVersion(tx: any, args: {
   organizationId: string;
   lineItemId: string;
   actorUserId: string;
+  artworkSourceIds?: string[] | null;
   internalNotes?: string | null;
 }) {
   const snapshot = await buildProofInputSnapshot(tx, {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
+    selectedArtworkSourceIds: args.artworkSourceIds ?? null,
   });
 
   const source = await loadLatestArtworkProofSource(tx, {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
+    selectedSourceIds: args.artworkSourceIds ?? null,
   });
 
   if (!source) {
     throw Object.assign(
-      new Error("A saved artwork source is required before generating a proof"),
-      { statusCode: 409 },
+      new Error("No eligible artwork files found for this line item"),
+      { statusCode: 409, code: "no_eligible_artwork_found" },
     );
   }
 
@@ -1272,102 +1349,46 @@ function logProofAutoSync(event: string, payload: Record<string, unknown>) {
   console.info(`[ProofingAutoSync] ${event}`, payload);
 }
 
-async function loadLatestArtworkProofSource(tx: any, args: { organizationId: string; lineItemId: string }): Promise<ArtworkProofSource | null> {
-  const [attachmentSource] = await tx
+type ResolvedEligibleArtworkSource = EligibleProofArtworkSource & {
+  artworkSource: ArtworkProofSource | null;
+};
+
+function buildEligibleArtworkSource(source: ArtworkProofSource, args: {
+  publicSourceType: EligibleProofArtworkSource["sourceType"];
+  role: string | null;
+}): ResolvedEligibleArtworkSource {
+  const displayName = source.originalFilename || source.fileName;
+  const eligibility = isSupportedProofArtworkSource(source);
+
+  return {
+    id: source.sourceId,
+    sourceType: args.publicSourceType,
+    sourceId: source.sourceId,
+    attachmentId: source.sourceType === "attachment" ? source.sourceId : null,
+    fileRecordId: source.fileRecordId ?? null,
+    fileName: displayName,
+    originalFilename: source.originalFilename ?? null,
+    mimeType: source.mimeType ?? null,
+    fileUrl: source.fileUrl ?? null,
+    thumbnailUrl: source.thumbnailUrl ?? null,
+    previewUrl: source.previewKey ?? null,
+    role: args.role,
+    eligible: eligibility.eligible,
+    eligibilityReason: eligibility.reason,
+    artworkSource: eligibility.eligible ? source : null,
+  };
+}
+
+async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+}): Promise<ResolvedEligibleArtworkSource[]> {
+  const attachmentSources = await tx
     .select({
       sourceId: orderAttachments.id,
       orderId: orderAttachments.orderId,
       orderLineItemId: orderAttachments.orderLineItemId,
-      fileRecordId: orderAttachments.fileRecordId,
-      fileName: orderAttachments.fileName,
-      fileUrl: orderAttachments.fileUrl,
-      fileSize: orderAttachments.fileSize,
-      sizeBytes: orderAttachments.sizeBytes,
-      mimeType: orderAttachments.mimeType,
-      description: orderAttachments.description,
-      originalFilename: orderAttachments.originalFilename,
-      storedFilename: orderAttachments.storedFilename,
-      relativePath: orderAttachments.relativePath,
-      storageProvider: orderAttachments.storageProvider,
-      extension: orderAttachments.extension,
-      checksum: orderAttachments.checksum,
-      thumbKey: orderAttachments.thumbKey,
-      previewKey: orderAttachments.previewKey,
-      thumbStatus: orderAttachments.thumbStatus,
-      thumbError: orderAttachments.thumbError,
-      thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
-      thumbnailGeneratedAt: orderAttachments.thumbnailGeneratedAt,
-      thumbnailUrl: orderAttachments.thumbnailUrl,
-      pagePreviewFileRecordId: sql<string | null>`(
-        select ${quoteAttachmentPages.previewFileRecordId}
-        from ${quoteAttachmentPages}
-        where ${quoteAttachmentPages.attachmentId} = ${orderAttachments.id}
-          and ${quoteAttachmentPages.previewFileRecordId} is not null
-        order by ${quoteAttachmentPages.pageIndex} asc
-        limit 1
-      )`,
-      pageThumbFileRecordId: sql<string | null>`(
-        select ${quoteAttachmentPages.thumbFileRecordId}
-        from ${quoteAttachmentPages}
-        where ${quoteAttachmentPages.attachmentId} = ${orderAttachments.id}
-          and ${quoteAttachmentPages.thumbFileRecordId} is not null
-        order by ${quoteAttachmentPages.pageIndex} asc
-        limit 1
-      )`,
-      uploadedByUserId: orderAttachments.uploadedByUserId,
-      uploadedByName: orderAttachments.uploadedByName,
-      updatedAt: orderAttachments.updatedAt,
-    })
-    .from(orderAttachments)
-    .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
-    .where(
-      and(
-        eq(orders.organizationId, args.organizationId),
-        eq(orderAttachments.orderLineItemId, args.lineItemId),
-        eq(orderAttachments.role, "artwork"),
-      ),
-    )
-    .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.updatedAt), desc(orderAttachments.createdAt))
-    .limit(1);
-
-  if (attachmentSource) {
-    return {
-      sourceType: "attachment",
-      sourceId: attachmentSource.sourceId,
-      orderId: attachmentSource.orderId,
-      orderLineItemId: String(attachmentSource.orderLineItemId),
-      fileRecordId: attachmentSource.fileRecordId ?? null,
-      fileName: attachmentSource.fileName,
-      fileUrl: attachmentSource.fileUrl ?? null,
-      fileSize: attachmentSource.fileSize ?? null,
-      sizeBytes: attachmentSource.sizeBytes ?? null,
-      mimeType: attachmentSource.mimeType ?? null,
-      description: attachmentSource.description ?? null,
-      originalFilename: attachmentSource.originalFilename ?? null,
-      storedFilename: attachmentSource.storedFilename ?? null,
-      relativePath: attachmentSource.relativePath ?? null,
-      storageProvider: attachmentSource.storageProvider ?? null,
-      extension: attachmentSource.extension ?? null,
-      checksum: attachmentSource.checksum ?? null,
-      thumbKey: attachmentSource.thumbKey ?? null,
-      previewKey: attachmentSource.previewKey ?? null,
-      thumbStatus: attachmentSource.thumbStatus ?? null,
-      thumbError: attachmentSource.thumbError ?? null,
-      thumbnailRelativePath: attachmentSource.thumbnailRelativePath ?? null,
-      thumbnailGeneratedAt: attachmentSource.thumbnailGeneratedAt ?? null,
-      thumbnailUrl: attachmentSource.thumbnailUrl ?? null,
-      pagePreviewFileRecordId: attachmentSource.pagePreviewFileRecordId ?? null,
-      pageThumbFileRecordId: attachmentSource.pageThumbFileRecordId ?? null,
-      uploadedByUserId: attachmentSource.uploadedByUserId ?? null,
-      uploadedByName: attachmentSource.uploadedByName ?? null,
-      updatedAt: attachmentSource.updatedAt ?? null,
-    };
-  }
-
-  const [orderLevelAttachmentSource] = await tx
-    .select({
-      sourceId: orderAttachments.id,
-      orderId: orderAttachments.orderId,
+      role: orderAttachments.role,
       fileRecordId: orderAttachments.fileRecordId,
       fileName: orderAttachments.fileName,
       fileUrl: orderAttachments.fileUrl,
@@ -1415,48 +1436,60 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
       and(
         eq(orders.organizationId, args.organizationId),
         eq(orderLineItems.id, args.lineItemId),
-        isNull(orderAttachments.orderLineItemId),
-        eq(orderAttachments.role, "artwork"),
+        or(
+          eq(orderAttachments.orderLineItemId, args.lineItemId),
+          isNull(orderAttachments.orderLineItemId),
+        ),
+        inArray(orderAttachments.role, ["artwork", "reference"]),
       ),
     )
-    .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.updatedAt), desc(orderAttachments.createdAt))
-    .limit(1);
+    .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.updatedAt), desc(orderAttachments.createdAt));
 
-  if (orderLevelAttachmentSource) {
-    return {
+  const resolved: ResolvedEligibleArtworkSource[] = [];
+  const seen = new Set<string>();
+
+  for (const attachmentSource of attachmentSources) {
+    const source: ArtworkProofSource = {
       sourceType: "attachment",
-      sourceId: orderLevelAttachmentSource.sourceId,
-      orderId: orderLevelAttachmentSource.orderId,
-      orderLineItemId: args.lineItemId,
-      fileRecordId: orderLevelAttachmentSource.fileRecordId ?? null,
-      fileName: orderLevelAttachmentSource.fileName,
-      fileUrl: orderLevelAttachmentSource.fileUrl ?? null,
-      fileSize: orderLevelAttachmentSource.fileSize ?? null,
-      sizeBytes: orderLevelAttachmentSource.sizeBytes ?? null,
-      mimeType: orderLevelAttachmentSource.mimeType ?? null,
-      description: orderLevelAttachmentSource.description ?? null,
-      originalFilename: orderLevelAttachmentSource.originalFilename ?? null,
-      storedFilename: orderLevelAttachmentSource.storedFilename ?? null,
-      relativePath: orderLevelAttachmentSource.relativePath ?? null,
-      storageProvider: orderLevelAttachmentSource.storageProvider ?? null,
-      extension: orderLevelAttachmentSource.extension ?? null,
-      checksum: orderLevelAttachmentSource.checksum ?? null,
-      thumbKey: orderLevelAttachmentSource.thumbKey ?? null,
-      previewKey: orderLevelAttachmentSource.previewKey ?? null,
-      thumbStatus: orderLevelAttachmentSource.thumbStatus ?? null,
-      thumbError: orderLevelAttachmentSource.thumbError ?? null,
-      thumbnailRelativePath: orderLevelAttachmentSource.thumbnailRelativePath ?? null,
-      thumbnailGeneratedAt: orderLevelAttachmentSource.thumbnailGeneratedAt ?? null,
-      thumbnailUrl: orderLevelAttachmentSource.thumbnailUrl ?? null,
-      pagePreviewFileRecordId: orderLevelAttachmentSource.pagePreviewFileRecordId ?? null,
-      pageThumbFileRecordId: orderLevelAttachmentSource.pageThumbFileRecordId ?? null,
-      uploadedByUserId: orderLevelAttachmentSource.uploadedByUserId ?? null,
-      uploadedByName: orderLevelAttachmentSource.uploadedByName ?? null,
-      updatedAt: orderLevelAttachmentSource.updatedAt ?? null,
+      sourceId: attachmentSource.sourceId,
+      orderId: attachmentSource.orderId,
+      orderLineItemId: String(attachmentSource.orderLineItemId || args.lineItemId),
+      fileRecordId: attachmentSource.fileRecordId ?? null,
+      fileName: attachmentSource.fileName,
+      fileUrl: attachmentSource.fileUrl ?? null,
+      fileSize: attachmentSource.fileSize ?? null,
+      sizeBytes: attachmentSource.sizeBytes ?? null,
+      mimeType: attachmentSource.mimeType ?? null,
+      description: attachmentSource.description ?? null,
+      originalFilename: attachmentSource.originalFilename ?? null,
+      storedFilename: attachmentSource.storedFilename ?? null,
+      relativePath: attachmentSource.relativePath ?? null,
+      storageProvider: attachmentSource.storageProvider ?? null,
+      extension: attachmentSource.extension ?? null,
+      checksum: attachmentSource.checksum ?? null,
+      thumbKey: attachmentSource.thumbKey ?? null,
+      previewKey: attachmentSource.previewKey ?? null,
+      thumbStatus: attachmentSource.thumbStatus ?? null,
+      thumbError: attachmentSource.thumbError ?? null,
+      thumbnailRelativePath: attachmentSource.thumbnailRelativePath ?? null,
+      thumbnailGeneratedAt: attachmentSource.thumbnailGeneratedAt ?? null,
+      thumbnailUrl: attachmentSource.thumbnailUrl ?? null,
+      pagePreviewFileRecordId: attachmentSource.pagePreviewFileRecordId ?? null,
+      pageThumbFileRecordId: attachmentSource.pageThumbFileRecordId ?? null,
+      uploadedByUserId: attachmentSource.uploadedByUserId ?? null,
+      uploadedByName: attachmentSource.uploadedByName ?? null,
+      updatedAt: attachmentSource.updatedAt ?? null,
     };
+    if (!seen.has(`attachment:${source.sourceId}`)) {
+      resolved.push(buildEligibleArtworkSource(source, {
+        publicSourceType: "line_item_artwork",
+        role: attachmentSource.role ?? null,
+      }));
+      seen.add(`attachment:${source.sourceId}`);
+    }
   }
 
-  const [assetSource] = await tx
+  const assetSources = await tx
     .select({
       sourceId: assets.id,
       orderId: orderLineItems.orderId,
@@ -1495,47 +1528,139 @@ async function loadLatestArtworkProofSource(tx: any, args: { organizationId: str
         eq(assetLinks.organizationId, args.organizationId),
         eq(assetLinks.parentType, "order_line_item"),
         eq(assetLinks.parentId, args.lineItemId),
-        inArray(assetLinks.role, ["primary", "attachment"]),
+        inArray(assetLinks.role, ["primary", "attachment", "reference"]),
       ),
     )
-    .orderBy(sql`case when ${assetLinks.role} = 'primary' then 0 else 1 end`, desc(assetLinks.createdAt), desc(assets.updatedAt), desc(assets.createdAt))
-    .limit(1);
+    .orderBy(sql`case when ${assetLinks.role} = 'primary' then 0 else 1 end`, desc(assetLinks.createdAt), desc(assets.updatedAt), desc(assets.createdAt));
 
-  if (!assetSource) {
-    return null;
+  for (const assetSource of assetSources) {
+    const source: ArtworkProofSource = {
+      sourceType: "asset",
+      sourceId: assetSource.sourceId,
+      orderId: assetSource.orderId,
+      orderLineItemId: assetSource.orderLineItemId,
+      fileRecordId: assetSource.fileRecordId ?? null,
+      fileName: assetSource.fileName,
+      fileUrl: assetSource.fileUrl ?? null,
+      fileSize: assetSource.fileSize ?? null,
+      sizeBytes: assetSource.sizeBytes ?? null,
+      mimeType: assetSource.mimeType ?? null,
+      description: assetSource.description ?? null,
+      originalFilename: assetSource.originalFilename ?? null,
+      storedFilename: assetSource.storedFilename ?? null,
+      relativePath: assetSource.relativePath ?? null,
+      storageProvider: assetSource.storageProvider ?? null,
+      extension: assetSource.extension ?? null,
+      checksum: assetSource.checksum ?? null,
+      thumbKey: assetSource.thumbKey ?? null,
+      previewKey: assetSource.previewKey ?? null,
+      thumbStatus: null,
+      thumbError: null,
+      thumbnailRelativePath: assetSource.thumbnailRelativePath ?? null,
+      thumbnailGeneratedAt: assetSource.thumbnailGeneratedAt ?? null,
+      thumbnailUrl: assetSource.thumbnailUrl ?? null,
+      uploadedByUserId: assetSource.uploadedByUserId ?? null,
+      uploadedByName: assetSource.uploadedByName ?? null,
+      updatedAt: assetSource.updatedAt ?? null,
+      assetPreviewStatus: assetSource.assetPreviewStatus ?? null,
+      assetPreviewError: assetSource.assetPreviewError ?? null,
+    };
+    if (!seen.has(`asset:${source.sourceId}`)) {
+      resolved.push(buildEligibleArtworkSource(source, {
+        publicSourceType: "line_item_asset",
+        role: assetSource.role ?? null,
+      }));
+      seen.add(`asset:${source.sourceId}`);
+    }
   }
 
-  return {
-    sourceType: "asset",
-    sourceId: assetSource.sourceId,
-    orderId: assetSource.orderId,
-    orderLineItemId: assetSource.orderLineItemId,
-    fileRecordId: assetSource.fileRecordId ?? null,
-    fileName: assetSource.fileName,
-    fileUrl: assetSource.fileUrl ?? null,
-    fileSize: assetSource.fileSize ?? null,
-    sizeBytes: assetSource.sizeBytes ?? null,
-    mimeType: assetSource.mimeType ?? null,
-    description: assetSource.description ?? null,
-    originalFilename: assetSource.originalFilename ?? null,
-    storedFilename: assetSource.storedFilename ?? null,
-    relativePath: assetSource.relativePath ?? null,
-    storageProvider: assetSource.storageProvider ?? null,
-    extension: assetSource.extension ?? null,
-    checksum: assetSource.checksum ?? null,
-    thumbKey: assetSource.thumbKey ?? null,
-    previewKey: assetSource.previewKey ?? null,
-    thumbStatus: null,
-    thumbError: null,
-    thumbnailRelativePath: assetSource.thumbnailRelativePath ?? null,
-    thumbnailGeneratedAt: assetSource.thumbnailGeneratedAt ?? null,
-    thumbnailUrl: assetSource.thumbnailUrl ?? null,
-    uploadedByUserId: assetSource.uploadedByUserId ?? null,
-    uploadedByName: assetSource.uploadedByName ?? null,
-    updatedAt: assetSource.updatedAt ?? null,
-    assetPreviewStatus: assetSource.assetPreviewStatus ?? null,
-    assetPreviewError: assetSource.assetPreviewError ?? null,
-  };
+  const lineItemFileSources = await tx
+    .select({
+      sourceId: lineItemFiles.id,
+      orderId: lineItemFiles.orderId,
+      orderLineItemId: lineItemFiles.lineItemId,
+      fileRecordId: lineItemFiles.fileRecordId,
+      fileName: lineItemFiles.originalFilename,
+      fileUrl: lineItemFiles.storageKey,
+      mimeType: lineItemFiles.mimeType,
+      sizeBytes: lineItemFiles.sizeBytes,
+      relativePath: lineItemFiles.storagePath,
+      storageProvider: lineItemFiles.storageBucket,
+      role: lineItemFiles.role,
+      updatedAt: lineItemFiles.createdAt,
+    })
+    .from(lineItemFiles)
+    .where(
+      and(
+        eq(lineItemFiles.organizationId, args.organizationId),
+        eq(lineItemFiles.lineItemId, args.lineItemId),
+        eq(lineItemFiles.status, "active"),
+        inArray(lineItemFiles.role, ["original", "reference"]),
+      ),
+    )
+    .orderBy(sql`case when ${lineItemFiles.role} = 'original' then 0 else 1 end`, desc(lineItemFiles.createdAt));
+
+  for (const lineItemFile of lineItemFileSources) {
+    const source: ArtworkProofSource = {
+      sourceType: "line_item_file",
+      sourceId: lineItemFile.sourceId,
+      orderId: lineItemFile.orderId,
+      orderLineItemId: lineItemFile.orderLineItemId,
+      fileRecordId: lineItemFile.fileRecordId ?? null,
+      fileName: lineItemFile.fileName,
+      fileUrl: lineItemFile.fileUrl ?? lineItemFile.relativePath ?? null,
+      fileSize: lineItemFile.sizeBytes ?? null,
+      sizeBytes: lineItemFile.sizeBytes ?? null,
+      mimeType: lineItemFile.mimeType ?? null,
+      description: null,
+      originalFilename: lineItemFile.fileName,
+      storedFilename: null,
+      relativePath: lineItemFile.relativePath ?? null,
+      storageProvider: lineItemFile.storageProvider ?? null,
+      extension: null,
+      checksum: null,
+      thumbKey: null,
+      previewKey: lineItemFile.fileRecordId ? null : (lineItemFile.fileUrl ?? lineItemFile.relativePath ?? null),
+      thumbStatus: null,
+      thumbError: null,
+      thumbnailRelativePath: null,
+      thumbnailGeneratedAt: null,
+      thumbnailUrl: null,
+      uploadedByUserId: null,
+      uploadedByName: null,
+      updatedAt: lineItemFile.updatedAt ?? null,
+    };
+    if (!seen.has(`line-item-file:${source.sourceId}`)) {
+      resolved.push(buildEligibleArtworkSource(source, {
+        publicSourceType: "line_item_file",
+        role: lineItemFile.role ?? null,
+      }));
+      seen.add(`line-item-file:${source.sourceId}`);
+    }
+  }
+
+  return resolved;
+}
+
+export async function listEligibleProofArtworkSources(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+}): Promise<EligibleProofArtworkSource[]> {
+  const rows = await resolveEligibleProofArtworkSourceRows(tx, args);
+  return rows.map(({ artworkSource: _artworkSource, ...publicSource }) => publicSource);
+}
+
+async function loadLatestArtworkProofSource(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  selectedSourceIds?: string[] | null;
+}): Promise<ArtworkProofSource | null> {
+  const sources = await resolveEligibleProofArtworkSourceRows(tx, args);
+  const selectedIds = new Set((args.selectedSourceIds ?? []).map((id) => String(id || "").trim()).filter(Boolean));
+  if (selectedIds.size > 0) {
+    return sources.find((source) => source.eligible && source.artworkSource && selectedIds.has(source.id))?.artworkSource ?? null;
+  }
+  return sources.find((source) => source.eligible && source.artworkSource)?.artworkSource ?? null;
 }
 
 export async function generateLineItemArtworkPreviewDerivative(tx: any, args: {
