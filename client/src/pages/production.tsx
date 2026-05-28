@@ -6,11 +6,11 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ROUTES } from "@/config/routes";
-import { useProductionConfig, useProductionJobs } from "@/hooks/useProduction";
+import { useProductionConfig, useProductionJobs, useRecentlyCompletedProductionJobs } from "@/hooks/useProduction";
 import ProductionViewRenderer from "@/features/production/ProductionViewRenderer";
 import ProductionOverviewPage from "@/features/production/views/ProductionOverviewPage";
 import {
-  getProductionTabCounts,
+  getProductionTabCountsWithRecentlyCompleted,
   persistProductionTab,
   persistProductionQueueControls,
   readPersistedProductionQueueControls,
@@ -122,9 +122,14 @@ export default function ProductionBoard() {
     { enabled: !!activeStation && !isLoading && !error && hasImplementedEnabledView },
   );
 
+  const { data: recentlyCompletedJobs } = useRecentlyCompletedProductionJobs(
+    activeStation ? { station: activeStation } : undefined,
+    { enabled: !!activeStation && !isLoading && !error && hasImplementedEnabledView },
+  );
+
   const tabCounts = useMemo(
-    () => getProductionTabCounts(stationJobs ?? []),
-    [stationJobs],
+    () => getProductionTabCountsWithRecentlyCompleted(stationJobs ?? [], recentlyCompletedJobs?.length ?? 0),
+    [recentlyCompletedJobs?.length, stationJobs],
   );
 
   const stationToolbar = activeStation ? (

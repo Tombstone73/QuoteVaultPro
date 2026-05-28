@@ -203,3 +203,15 @@ export function getProductionTabCounts<T extends ProductionBoardJob>(
     done: filterProductionJobsForTab(jobs, "done", nowMs, retentionDays).length,
   };
 }
+
+export function getProductionTabCountsWithRecentlyCompleted<T extends ProductionBoardJob>(
+  jobs: T[],
+  recentlyCompletedCount: number,
+  nowMs = Date.now(),
+  retentionDays = DONE_RETENTION_DAYS,
+): Record<ProductionBoardTab, number> {
+  return {
+    ...getProductionTabCounts(jobs, nowMs, retentionDays),
+    done: Math.max(0, recentlyCompletedCount),
+  };
+}
