@@ -17,6 +17,7 @@ import {
   Search,
   Send,
   ShieldAlert,
+  Trash2,
   Upload,
   ZoomIn,
   ZoomOut,
@@ -49,7 +50,7 @@ import { useOrderLineItemFiles, type OrderFileWithUser } from "@/hooks/useOrderF
 import { useOrder, useUpdateOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
-import { canGeneratePreviewRecovery, canRegenerateGeneratedProof } from "@/lib/proofingRecovery";
+import { canGeneratePreviewRecovery, canRegenerateGeneratedProof, getGenerateProofDraftDisabledReason } from "@/lib/proofingRecovery";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import {
   getInitialProofingFilter,
@@ -195,7 +196,7 @@ function getProofPreviewUrl(file: ProofFileRow | null | undefined) {
   const fileName = file.originalFilename || file.fileName || "Proof";
   const mimeType = file.mimeType || null;
   if (isPdfFile(mimeType, fileName)) {
-    return buildPdfViewUrl(file.objectPath) || file.originalUrl || file.previewUrl || file.fileUrl || null;
+    return file.originalUrl || file.previewUrl || buildPdfViewUrl(file.objectPath) || file.fileUrl || null;
   }
   return file.previewUrl || file.originalUrl || file.thumbUrl || file.fileUrl || null;
 }
@@ -619,6 +620,9 @@ export default function StaffProofingPage() {
   const [overrideNote, setOverrideNote] = useState("");
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
+  const [proofNotRequiredDialogOpen, setProofNotRequiredDialogOpen] = useState(false);
+  const [proofNotRequiredReason, setProofNotRequiredReason] = useState("");
+  const [proofNotRequiredNote, setProofNotRequiredNote] = useState("");
 
   const queueQuery = useQuery<JsonEnvelope<ProofingQueueResponse>>({
     queryKey: ["/api/proofing/queue", "all"],
@@ -752,6 +756,22 @@ export default function StaffProofingPage() {
     [lineItemFiles],
   );
 
+  const selectableArtworkFiles = useMemo(
+    () =>
+      lineItemFiles.filter(
+        (file): file is ProofAttachmentRow =>
+          file.__source !== "asset" &&
+          Boolean(file.id) &&
+          ["artwork", "attachment", "reference"].includes(String(file.role || "").toLowerCase()),
+      ),
+    [lineItemFiles],
+  );
+
+  const selectableDraftSourceFiles = useMemo(
+    () => [...selectableProofFiles, ...selectableArtworkFiles],
+    [selectableArtworkFiles, selectableProofFiles],
+  );
+
   const displayedVersion = detail?.proofVersionHistory.find((version) => version.id === selectedVersionId) ?? null;
   const displayedFile = displayedVersion
     ? lineItemFiles.find((file) => file.id === displayedVersion.proofFileId) ?? null
@@ -799,11 +819,24 @@ export default function StaffProofingPage() {
   const canResendDisplayedVersion = displayedVersion?.status === "awaiting_response" && currentArtifact?.previewStatus === "ready";
   const canCancelDisplayedVersion =
     displayedVersion?.id === detail?.currentActionableProofVersionId &&
-    displayedVersion?.status === "awaiting_response";
+    (displayedVersion?.status === "awaiting_response" || displayedVersion?.status === "draft");
   const canRecordDecision =
     displayedVersion?.id === detail?.currentActionableProofVersionId && displayedVersion?.status === "awaiting_response";
   const primaryActionLabel = getPrimaryActionLabel(canSendCurrentVersion, displayedVersion);
   const hasSourceArtwork = Boolean(currentSnapshot?.sourceArtwork);
+  const hasEligibleArtwork = hasSourceArtwork || selectableArtworkFiles.length > 0;
+  const hasBlockingSentProof = detail?.currentActionableProofVersion?.status === "awaiting_response";
+  const generatedDraftDisabledReason = getGenerateProofDraftDisabledReason({
+    hasEligibleArtwork,
+    hasBlockingSentProof,
+    hasPermission: Boolean(selectedRow),
+  });
+  const uploadedDraftDisabledReason = (() => {
+    if (!selectedRow) return "permission missing";
+    if (hasBlockingSentProof) return "existing sent proof must be cancelled or revised first";
+    if (!uploadFile && !selectedExistingAttachmentId) return "select artwork or proof file";
+    return null;
+  })();
   const canGeneratePreviewAction = canGeneratePreviewRecovery({
     hasSourceArtwork,
     previewStatus: currentArtifact?.previewStatus,
@@ -847,11 +880,11 @@ export default function StaffProofingPage() {
 
   useEffect(() => {
     if (!createDialogOpen) return;
-    if (!selectedExistingAttachmentId && selectableProofFiles.length > 0) {
-      const preferred = selectableProofFiles.find((file) => file.id === displayedFile?.id);
-      setSelectedExistingAttachmentId(preferred?.id || selectableProofFiles[0]?.id || "");
+    if (!selectedExistingAttachmentId && selectableDraftSourceFiles.length > 0) {
+      const preferred = selectableDraftSourceFiles.find((file) => file.id === displayedFile?.id);
+      setSelectedExistingAttachmentId(preferred?.id || selectableDraftSourceFiles[0]?.id || "");
     }
-  }, [createDialogOpen, selectableProofFiles, selectedExistingAttachmentId, displayedFile?.id]);
+  }, [createDialogOpen, selectableDraftSourceFiles, selectedExistingAttachmentId, displayedFile?.id]);
 
   useEffect(() => {
     setPreviewRecoveryState((current) => {
@@ -947,8 +980,8 @@ export default function StaffProofingPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            mode: "uploaded",
-            proofFileId,
+            mode: uploadFile ? "uploaded" : "existing_attachment",
+            ...(uploadFile ? { proofFileId } : { attachmentId: proofFileId }),
             internalNotes: createInternalNotes.trim() || null,
           }),
         },
@@ -1156,12 +1189,39 @@ export default function StaffProofingPage() {
       setCancelDialogOpen(false);
       setCancelReason("");
       toast({
-        title: "Proof cancelled",
-        description: "The active customer proof link is no longer approvable. You can generate and send a corrected proof now.",
+        title: displayedVersion?.status === "draft" ? "Draft discarded" : "Proof cancelled",
+        description: displayedVersion?.status === "draft"
+          ? "The draft is no longer active. You can create a corrected proof draft now."
+          : "The active customer proof link is no longer approvable. You can generate and send a corrected proof now.",
       });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to cancel proof", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const proofNotRequiredMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedRow?.lineItemId) throw new Error("Select a queue row first");
+      return readJson<JsonEnvelope<unknown>>(`/api/proofing/line-item/${selectedRow.lineItemId}/mark-proof-not-required`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reason: proofNotRequiredReason.trim(),
+          internalNote: proofNotRequiredNote.trim() || null,
+        }),
+      });
+    },
+    onSuccess: async () => {
+      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      setProofNotRequiredDialogOpen(false);
+      setProofNotRequiredReason("");
+      setProofNotRequiredNote("");
+      toast({ title: "Proof gate removed", description: "The line item can continue without proof approval." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to remove proof gate", description: error.message, variant: "destructive" });
     },
   });
 
@@ -1635,6 +1695,11 @@ export default function StaffProofingPage() {
                       This proof does not include an artwork preview and cannot be sent to the customer.
                     </p>
                   ) : null}
+                  {!canSendCurrentVersion && generatedDraftDisabledReason ? (
+                    <p className="mt-3 text-center text-[10px] text-slate-400">
+                      Draft generation: {generatedDraftDisabledReason}.
+                    </p>
+                  ) : null}
                   {canGeneratePreviewAction || canRegenerateProofAction ? (
                     <div className="mt-3 grid grid-cols-1 gap-2">
                       {canGeneratePreviewAction ? (
@@ -1675,7 +1740,17 @@ export default function StaffProofingPage() {
                       onClick={() => setCancelDialogOpen(true)}
                       disabled={cancelProofMutation.isPending}
                     >
-                      Cancel / Supersede Proof
+                      {displayedVersion?.status === "draft" ? "Discard Draft" : "Cancel Sent Proof"}
+                    </Button>
+                  ) : null}
+                  {detail && !canSendCurrentVersion ? (
+                    <Button
+                      variant="outline"
+                      className="mt-3 h-10 w-full rounded-xl border-[#232948] bg-transparent text-[10px] font-bold uppercase tracking-wider text-slate-200 transition-all hover:bg-slate-800"
+                      onClick={() => setCreateDialogOpen(true)}
+                      disabled={Boolean(hasBlockingSentProof)}
+                    >
+                      Create New Revision
                     </Button>
                   ) : null}
                   {latestCustomerFeedback ? (
@@ -1914,10 +1989,18 @@ export default function StaffProofingPage() {
                     variant="outline"
                     className="h-10 w-full rounded-xl border-[#232948] bg-[#141824] text-[10px] font-bold uppercase tracking-wider text-slate-100 transition-all hover:border-[#1337ec] hover:bg-[#1337ec]/10"
                     onClick={() => setOverrideDialogOpen(true)}
-                    disabled={!detail?.currentActionableProofVersionId || detail.approvedProofSource === "manual_override"}
+                    disabled={!detail || detail.approvedProofSource === "manual_override"}
                   >
                     <ShieldAlert className="mr-2 h-4 w-4" />
                     Manual Override
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="mt-2 h-10 w-full rounded-xl border-amber-500/40 bg-amber-500/10 text-[10px] font-bold uppercase tracking-wider text-amber-100 transition-all hover:bg-amber-500/15"
+                    onClick={() => setProofNotRequiredDialogOpen(true)}
+                    disabled={!detail}
+                  >
+                    Remove Proof Gate
                   </Button>
                 </div>
               ) : null}
@@ -2044,6 +2127,9 @@ export default function StaffProofingPage() {
                 <p className="font-medium text-foreground">Generated proof uses permanent saved data only.</p>
                 <p className="mt-2">It will build a normalized proof snapshot from the saved line item, use the latest saved artwork source, render a basic PDF artifact, and create a draft proof version. You will confirm the recipient before it is sent.</p>
                 <p className="mt-2">Current source: {currentSnapshot?.sourceArtwork?.fileName || "No saved artwork source available"}</p>
+                {generatedDraftDisabledReason ? (
+                  <p className="mt-2 font-medium text-amber-600">Disabled: {generatedDraftDisabledReason}.</p>
+                ) : null}
               </div>
             ) : (
               <>
@@ -2055,17 +2141,26 @@ export default function StaffProofingPage() {
                     accept=".pdf,image/*"
                     onChange={(event) => setUploadFile(event.target.files?.[0] || null)}
                   />
-                  <p className="text-xs text-muted-foreground">If you upload a file here, it will be attached as the proof artifact. You will confirm the recipient before it is sent.</p>
+                  <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                    <p>If you upload a file here, it will be attached as the proof artifact. You will confirm the recipient before it is sent.</p>
+                    {uploadFile ? (
+                      <Button type="button" variant="ghost" size="sm" onClick={() => setUploadFile(null)}>
+                        <Trash2 className="mr-1 h-3 w-3" />
+                        Remove
+                      </Button>
+                    ) : null}
+                  </div>
+                  {uploadFile ? <p className="text-xs font-medium text-foreground">Selected upload: {uploadFile.name}</p> : null}
                 </div>
 
                 <div className="grid gap-2">
-                  <Label>Select existing line-item proof file</Label>
+                  <Label>Select existing artwork or proof file</Label>
                   <ScrollArea className="h-56 rounded-lg border p-3">
                     <div className="space-y-2">
-                      {selectableProofFiles.length === 0 ? (
-                        <div className="text-sm text-muted-foreground">No proof-role line-item files are available yet.</div>
+                      {selectableDraftSourceFiles.length === 0 ? (
+                        <div className="text-sm text-muted-foreground">No eligible artwork or proof files are available yet.</div>
                       ) : (
-                        selectableProofFiles.map((file) => {
+                        selectableDraftSourceFiles.map((file) => {
                           const isSelected = selectedExistingAttachmentId === file.id;
                           return (
                             <button
@@ -2089,6 +2184,9 @@ export default function StaffProofingPage() {
                     </div>
                   </ScrollArea>
                   {uploadFile ? <p className="text-xs text-muted-foreground">Uploaded file will be used instead of an existing proof attachment.</p> : null}
+                  {uploadedDraftDisabledReason ? (
+                    <p className="text-xs text-amber-600">Disabled: {uploadedDraftDisabledReason}.</p>
+                  ) : null}
                 </div>
               </>
             )}
@@ -2113,8 +2211,8 @@ export default function StaffProofingPage() {
               onClick={() => createDraftMutation.mutate()}
               disabled={
                 createDraftMutation.isPending ||
-                (createMode === "uploaded" && !uploadFile && !selectedExistingAttachmentId) ||
-                (createMode === "generated" && !currentSnapshot?.sourceArtwork)
+                (createMode === "uploaded" && Boolean(uploadedDraftDisabledReason)) ||
+                (createMode === "generated" && Boolean(generatedDraftDisabledReason))
               }
             >
               {createDraftMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
@@ -2334,9 +2432,11 @@ export default function StaffProofingPage() {
       <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Cancel / Supersede Proof</DialogTitle>
+            <DialogTitle>{displayedVersion?.status === "draft" ? "Discard Draft" : "Cancel Sent Proof"}</DialogTitle>
             <DialogDescription>
-              This will cancel the active customer proof link. The customer will no longer be able to approve this version. You can generate and send a corrected proof after cancellation.
+              {displayedVersion?.status === "draft"
+                ? "This will discard the temporary draft. It will remain in history but cannot be sent."
+                : "This will cancel the active customer proof link. The customer will no longer be able to approve this version. You can generate and send a corrected proof after cancellation."}
             </DialogDescription>
           </DialogHeader>
 
@@ -2358,7 +2458,51 @@ export default function StaffProofingPage() {
             </Button>
             <Button variant="destructive" onClick={() => cancelProofMutation.mutate()} disabled={cancelProofMutation.isPending || !canCancelDisplayedVersion}>
               {cancelProofMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Cancel Proof
+              {displayedVersion?.status === "draft" ? "Discard Draft" : "Cancel Proof"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={proofNotRequiredDialogOpen} onOpenChange={setProofNotRequiredDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Remove Proof Gate</DialogTitle>
+            <DialogDescription>
+              Use this only when proof approval is not required for this line item. The reason is written to the audit log.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid gap-2">
+              <Label htmlFor="proof-not-required-reason">Reason</Label>
+              <Textarea
+                id="proof-not-required-reason"
+                rows={3}
+                value={proofNotRequiredReason}
+                onChange={(event) => setProofNotRequiredReason(event.target.value)}
+                placeholder="Why is proof approval no longer required?"
+                disabled={proofNotRequiredMutation.isPending}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="proof-not-required-note">Internal note</Label>
+              <Textarea
+                id="proof-not-required-note"
+                rows={3}
+                value={proofNotRequiredNote}
+                onChange={(event) => setProofNotRequiredNote(event.target.value)}
+                placeholder="Optional operational context"
+                disabled={proofNotRequiredMutation.isPending}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setProofNotRequiredDialogOpen(false)} disabled={proofNotRequiredMutation.isPending}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => proofNotRequiredMutation.mutate()} disabled={proofNotRequiredMutation.isPending || !proofNotRequiredReason.trim()}>
+              {proofNotRequiredMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldAlert className="mr-2 h-4 w-4" />}
+              Remove Gate
             </Button>
           </DialogFooter>
         </DialogContent>

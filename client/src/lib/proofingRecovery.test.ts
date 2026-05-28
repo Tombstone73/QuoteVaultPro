@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 
-import { canGeneratePreviewRecovery, canRegenerateGeneratedProof } from "./proofingRecovery";
+import { canGeneratePreviewRecovery, canRegenerateGeneratedProof, getGenerateProofDraftDisabledReason } from "./proofingRecovery";
 
 describe("proofing recovery helpers", () => {
   test("shows generate preview only for incomplete proofs with saved artwork", () => {
@@ -46,5 +46,13 @@ describe("proofing recovery helpers", () => {
         previewRecoveryReady: false,
       }),
     ).toBe(false);
+  });
+
+  test("surfaces no-artwork disabled reason for proof draft generation", () => {
+    expect(getGenerateProofDraftDisabledReason({ hasEligibleArtwork: false })).toBe("no artwork found");
+  });
+
+  test("enables proof draft generation when eligible artwork exists", () => {
+    expect(getGenerateProofDraftDisabledReason({ hasEligibleArtwork: true })).toBeNull();
   });
 });

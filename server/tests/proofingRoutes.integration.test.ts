@@ -45,6 +45,7 @@ import {
   cancelProofVersion,
   createAndSendProofVersion,
   createLineItemProofVersion,
+  createLineItemProofVersionFromExistingAttachment,
   generateLineItemArtworkPreviewDerivative,
   INCOMPLETE_PROOF_MESSAGE,
   listProofingQueue,
@@ -725,12 +726,21 @@ function createTestApp() {
           throw Object.assign(new Error("This proof has already been resolved by manual approval override"), { statusCode: 409 });
         }
 
-        if (validation.currentApprovalState.status === "cancelled") {
+        if (validation.proofVersion.status === "superseded" || validation.currentApprovalState.status === "cancelled") {
           throw Object.assign(new Error("This proof version has been cancelled and is no longer available for approval."), { statusCode: 409 });
         }
 
-        if (validation.currentApprovalState.status !== "pending") {
-          throw Object.assign(new Error("This proof has already been resolved"), { statusCode: 409 });
+        if (
+          validation.proofVersion.status === "approved" ||
+          validation.proofVersion.status === "rejected" ||
+          validation.proofVersion.status === "revision_requested" ||
+          validation.currentApprovalState.isResolved
+        ) {
+          throw Object.assign(new Error("This proof has already been reviewed."), { statusCode: 409 });
+        }
+
+        if (validation.proofVersion.status !== "awaiting_response" || validation.currentApprovalState.status !== "pending") {
+          throw Object.assign(new Error("Only active sent proof versions awaiting response can be decided"), { statusCode: 409 });
         }
 
         const [attachment] = await tx
@@ -1339,6 +1349,44 @@ describe("proofing route integration", () => {
     expect(audit?.description).toContain("Cancelled proof version");
   });
 
+  test("discarding a draft only removes the draft reference, not original artwork", async () => {
+    const { lineItemId, artworkFileId } = await createLineItemFixture("discard_draft_keeps_artwork", {
+      attachProofFiles: false,
+      addArtwork: true,
+      artworkPreviewKey: "proofing-tests/artwork-preview.png",
+      artworkThumbKey: "proofing-tests/artwork-thumb.png",
+    });
+
+    const proofVersion = await db.transaction((tx) =>
+      createLineItemProofVersionFromExistingAttachment(tx, {
+        organizationId: orgId,
+        lineItemId,
+        attachmentId: artworkFileId,
+        createdByUserId: userId,
+        internalNotes: "draft from artwork",
+      }),
+    );
+
+    const cancelResult = await db.transaction((tx) =>
+      cancelProofVersion(tx, {
+        organizationId: orgId,
+        proofVersionId: proofVersion.id,
+        actorUserId: userId,
+        reason: "operator discarded temp draft",
+      }),
+    );
+
+    expect(cancelResult.proofVersion.status).toBe("superseded");
+
+    const [artwork] = await db
+      .select({ id: orderAttachments.id, role: orderAttachments.role })
+      .from(orderAttachments)
+      .where(eq(orderAttachments.id, artworkFileId))
+      .limit(1);
+
+    expect(artwork).toMatchObject({ id: artworkFileId, role: "artwork" });
+  });
+
   test("staff cannot cancel approved or already-resolved proof versions", async () => {
     const approvedFixture = await createLineItemFixture("cancel_approved_proof");
     const approvedSend = await createAndSendProof(approvedFixture.lineItemId, approvedFixture.proofFileA);
@@ -1867,6 +1915,37 @@ describe("proofing route integration", () => {
     expect(auditRow?.entityType).toBe("line_item_proof_manual_approval_override");
   });
 
+  test("manual approval override recovers a proof-blocked rejected line item", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("override_rejected_recovery");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+
+    await request(app)
+      .post(`/api/proofing/versions/${proofVersionId}/respond`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ decision: "rejected", responseNotes: "Customer called back and approved offline later" })
+      .expect(200);
+
+    await db
+      .update(orderLineItems)
+      .set({ workflowState: "awaiting_proof_approval", requiresProofApproval: true, approvedProofVersionId: null })
+      .where(eq(orderLineItems.id, lineItemId));
+
+    const overrideRes = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/manual-approval-override`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofVersionId, overrideReason: "Customer approved offline after rejection" })
+      .expect(200);
+
+    expect(overrideRes.body?.data?.workflowTransition?.toState).toBe("ready_for_prepress");
+    const proofing = proofingReadModelSchema.parse(overrideRes.body?.data?.proofing);
+    expect(proofing.approvedProofSource).toBe("manual_override");
+    expect(proofing.approvedProofVersionId).toBe(proofVersionId);
+  });
+
   test("rejects manual approval override when reason is missing", async () => {
     const { lineItemId, proofFileA } = await createLineItemFixture("override_missing_reason");
     const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
@@ -1901,11 +1980,12 @@ describe("proofing route integration", () => {
       .set("x-test-user-role", "admin")
       .set("x-test-org-id", orgId)
       .send({ proofVersionId: draftProofVersionId, overrideReason: "Force approval" })
-      .expect(409);
+      .expect(200);
 
-    expect(invalidDraftOverrideRes.body?.error).toBe("Line item is not eligible for manual approval override");
+    expect(invalidDraftOverrideRes.body?.data?.workflowTransition?.toState).toBe("ready_for_prepress");
 
-    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+    const staleFixture = await createLineItemFixture("override_invalid_approved");
+    const { proofVersionId } = await createAndSendProof(staleFixture.lineItemId, staleFixture.proofFileA);
     await request(app)
       .post(`/api/proofing/versions/${proofVersionId}/respond`)
       .set("x-test-user-id", userId)
@@ -1915,7 +1995,7 @@ describe("proofing route integration", () => {
       .expect(200);
 
     const staleOverrideRes = await request(app)
-      .post(`/api/proofing/line-item/${lineItemId}/manual-approval-override`)
+      .post(`/api/proofing/line-item/${staleFixture.lineItemId}/manual-approval-override`)
       .set("x-test-user-id", userId)
       .set("x-test-user-role", "admin")
       .set("x-test-org-id", orgId)
@@ -2039,6 +2119,38 @@ describe("proofing route integration", () => {
     const truth = proofingReadModelSchema.parse(truthRes.body?.data);
     expect(truth.approvedProofVersionId).toBe(proofVersionId);
     expect(truth.proofDecisionHistory[0]?.responderSource).toBe("customer");
+  });
+
+  test("portal approve and reject share terminal validation", async () => {
+    const approveFixture = await createLineItemFixture("portal_terminal_approve");
+    const approveSend = await createAndSendProof(approveFixture.lineItemId, approveFixture.proofFileA);
+    const approveToken = await createPortalToken(approveFixture.lineItemId, approveSend.proofVersionId);
+
+    await request(app)
+      .post(`/api/portal/proof/${approveToken}/action`)
+      .send({ action: "approve", comment: "Approved" })
+      .expect(200);
+
+    const secondApprove = await request(app)
+      .post(`/api/portal/proof/${approveToken}/action`)
+      .send({ action: "approve", comment: "Again" })
+      .expect(409);
+    expect(secondApprove.body?.error).toBe("This proof has already been reviewed.");
+
+    const rejectFixture = await createLineItemFixture("portal_terminal_reject");
+    const rejectSend = await createAndSendProof(rejectFixture.lineItemId, rejectFixture.proofFileA);
+    const rejectToken = await createPortalToken(rejectFixture.lineItemId, rejectSend.proofVersionId);
+
+    await request(app)
+      .post(`/api/portal/proof/${rejectToken}/action`)
+      .send({ action: "reject", comment: "Wrong file" })
+      .expect(200);
+
+    const secondReject = await request(app)
+      .post(`/api/portal/proof/${rejectToken}/action`)
+      .send({ action: "reject", comment: "Again" })
+      .expect(409);
+    expect(secondReject.body?.error).toBe("This proof has already been reviewed.");
   });
 
   test("blocks portal approval when the proof artifact is metadata-only", async () => {

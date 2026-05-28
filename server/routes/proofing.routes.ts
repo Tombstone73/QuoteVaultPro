@@ -28,10 +28,12 @@ import {
   cancelProofVersion,
   createAndSendProofVersion,
   createGeneratedDraftProofVersion,
+  createLineItemProofVersionFromExistingAttachment,
   createLineItemProofVersion,
   generateLineItemArtworkPreviewDerivative,
   INCOMPLETE_PROOF_MESSAGE,
   listProofingQueue,
+  markLineItemProofNotRequired,
   markProofVersionSent,
   recordManualProofApprovalOverride,
   recordProofResponse,
@@ -213,6 +215,12 @@ export function registerProofingRoutes(
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: "User ID not found" });
 
+      const requestBody = req.body?.mode
+        ? req.body
+        : req.body?.proofFileId
+          ? { ...req.body, mode: "uploaded" }
+          : req.body;
+
       const parsed = z.discriminatedUnion("mode", [
         z.object({
           mode: z.literal("uploaded"),
@@ -220,10 +228,15 @@ export function registerProofingRoutes(
           internalNotes: z.string().optional().nullable(),
         }),
         z.object({
+          mode: z.literal("existing_attachment"),
+          attachmentId: z.string().min(1),
+          internalNotes: z.string().optional().nullable(),
+        }),
+        z.object({
           mode: z.literal("generated"),
           internalNotes: z.string().optional().nullable(),
         }),
-      ]).safeParse(req.body);
+      ]).safeParse(requestBody);
 
       if (!parsed.success) {
         return res.status(400).json({ error: fromZodError(parsed.error).message });
@@ -243,6 +256,18 @@ export function registerProofingRoutes(
           });
           proofVersion = result.proofVersion;
           proofing = result.proofing;
+        } else if (parsed.data.mode === "existing_attachment") {
+          proofVersion = await createLineItemProofVersionFromExistingAttachment(tx, {
+            organizationId,
+            lineItemId,
+            attachmentId: parsed.data.attachmentId,
+            createdByUserId: userId,
+            internalNotes: parsed.data.internalNotes ?? null,
+          });
+          proofing = await resolveLineItemProofingTruth(tx, {
+            organizationId,
+            lineItemId,
+          });
         } else {
           proofVersion = await createLineItemProofVersion(tx, {
             organizationId,
@@ -862,6 +887,46 @@ export function registerProofingRoutes(
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error recording manual approval override:", error);
       return res.status(status).json({ error: error?.message || "Failed to record manual approval override" });
+    }
+  });
+
+  app.post("/api/proofing/line-item/:lineItemId/mark-proof-not-required", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ success: false, message: "User ID not found" });
+
+      const parsed = z.object({
+        reason: z.string().min(1, "Reason is required").max(1000),
+        internalNote: z.string().max(2000).optional().nullable(),
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ success: false, message: fromZodError(parsed.error).message });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const markResult = await markLineItemProofNotRequired(tx, {
+          organizationId,
+          lineItemId: String(req.params.lineItemId),
+          actorUserId: userId,
+          reason: parsed.data.reason,
+          internalNote: parsed.data.internalNote ?? null,
+        });
+        const proofing = await resolveLineItemProofingTruth(tx, {
+          organizationId,
+          lineItemId: String(req.params.lineItemId),
+        });
+        return { ...markResult, proofing };
+      });
+
+      return res.json({ success: true, data: result, message: "Proof gate removed for this line item." });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error marking proof not required:", error);
+      return res.status(status).json({ success: false, message: error?.message || "Failed to mark proof not required" });
     }
   });
 }
