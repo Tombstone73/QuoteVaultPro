@@ -24,6 +24,7 @@ import { stationResolver } from "./stations/stationResolver";
 import { normalizeProductionStationKey } from "@shared/productionStations";
 import { listProofingQueue } from "./proofingService";
 import type { ProofingQueueRow } from "@shared/proofing";
+import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 
 export interface OperationalSummary {
   inboundOrders: number;
@@ -185,15 +186,7 @@ export async function computeOperationalSummary(organizationId: string): Promise
     countVisibleProductionJobs(organizationId, "flatbed"),
     countVisibleProductionJobs(organizationId, "roll"),
 
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(orders)
-      .where(
-        and(
-          eq(orders.organizationId, organizationId),
-          eq(orders.state as any, "production_complete"),
-        ),
-      ),
+    new FulfillmentDashboardRepo(db).countFulfillmentQueue(organizationId),
 
     db
       .select({ count: sql<number>`count(*)::int` })
@@ -224,7 +217,7 @@ export async function computeOperationalSummary(organizationId: string): Promise
     prepress: count(prepressResult),
     flatbed: flatbedCount,
     roll: rollCount,
-    fulfillment: count(fulfillmentResult),
+    fulfillment: fulfillmentResult,
     invoices: {
       pendingSend: count(invoiceDraftResult),
       unpaid: count(invoiceUnpaidResult),

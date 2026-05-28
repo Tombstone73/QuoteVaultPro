@@ -178,6 +178,14 @@ type ReleaseCheck =
   | { type: "row_exists"; table: string; where: string; label: string };
 
 const RELEASE_CHECKS: ReleaseCheck[] = [
+  // migration 0070 - production completion recovery.
+  { type: "column_exists", table: "production_jobs", column: "completed_by_user_id", label: "production_jobs.completed_by_user_id" },
+  { type: "column_exists", table: "production_jobs", column: "previous_status", label: "production_jobs.previous_status" },
+  { type: "column_exists", table: "production_jobs", column: "previous_station", label: "production_jobs.previous_station" },
+  { type: "column_exists", table: "production_jobs", column: "restore_until", label: "production_jobs.restore_until" },
+  { type: "column_exists", table: "production_jobs", column: "restored_at", label: "production_jobs.restored_at" },
+  { type: "column_exists", table: "production_jobs", column: "restored_by_user_id", label: "production_jobs.restored_by_user_id" },
+  { type: "column_exists", table: "production_jobs", column: "restore_reason", label: "production_jobs.restore_reason" },
   // migration 0059 - staff-controlled portal file visibility.
   { type: "column_exists", table: "order_attachments", column: "customer_visible", label: "order_attachments.customer_visible" },
   { type: "column_exists", table: "quote_attachments", column: "customer_visible", label: "quote_attachments.customer_visible" },

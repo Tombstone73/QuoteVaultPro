@@ -15,6 +15,7 @@ import {
 import type { DerivedOrderFulfillmentStatus, QueueRowDto } from './types';
 import { TERMINAL_PRODUCTION_STATUSES } from '@shared/operationalState';
 import { buildPrepressOptionRows, extractFinishingBullets } from '../../routes/flatStockNesting.shared';
+import { fulfillmentQueueEligibleOrderCondition, isFulfillmentQueueEligibleOrder } from './eligibility';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
 const PRINT_CONTEXT_EXCLUDED_STATIONS = new Set(['fulfillment', 'prepress', 'design']);
@@ -768,7 +769,7 @@ export class FulfillmentDashboardRepo {
     page: number;
     pageSize: number;
   }) {
-    const baseOrderConditions = [eq(orders.organizationId, orgId)] as any[];
+    const baseOrderConditions = [fulfillmentQueueEligibleOrderCondition(orgId)] as any[];
 
     if (filters.search?.trim()) {
       const pattern = `%${filters.search.trim()}%`;
@@ -940,11 +941,7 @@ export class FulfillmentDashboardRepo {
       const remaining = Math.max(orderedQty - shippedQty, 0);
 
       const isPickup = order.shippingMethod === 'pickup';
-      const productionComplete = order.state === 'production_complete';
-      const shipEligible = !isPickup && productionComplete && order.routingTarget === 'fulfillment';
-      const pickupEligible = isPickup && productionComplete;
-
-      if (!shipEligible && !pickupEligible) continue;
+      if (!isFulfillmentQueueEligibleOrder(order)) continue;
 
       if (filters.type === 'ship' && isPickup) continue;
       if (filters.type === 'pickup' && !isPickup) continue;
@@ -1013,6 +1010,23 @@ export class FulfillmentDashboardRepo {
     return { rows: paged, total };
   }
 
+  async countFulfillmentQueue(orgId: string, filters?: Partial<{
+    type: 'all' | 'ship' | 'pickup';
+    status: string;
+    showArchived: boolean;
+    overdueOnly: boolean;
+  }>) {
+    const result = await this.listFulfillmentQueue(orgId, {
+      type: filters?.type ?? 'all',
+      status: filters?.status ?? 'all',
+      showArchived: filters?.showArchived ?? false,
+      overdueOnly: filters?.overdueOnly ?? false,
+      page: 1,
+      pageSize: 1,
+    });
+    return result.total;
+  }
+
   async getOrdersForCombinedShipmentValidation(orgId: string, orderIds: string[]) {
     if (orderIds.length === 0) return [];
     return this.dbInstance
@@ -1020,6 +1034,8 @@ export class FulfillmentDashboardRepo {
         id: orders.id,
         shippingMethod: orders.shippingMethod,
         state: orders.state,
+        status: orders.status,
+        canceledAt: orders.canceledAt,
         routingTarget: orders.routingTarget,
         shipToName: orders.shipToName,
         shipToCompany: orders.shipToCompany,

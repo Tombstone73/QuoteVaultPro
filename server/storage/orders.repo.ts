@@ -71,6 +71,8 @@ type OrderProductionSummary = {
     completeCount: number;
     status: ProductionSummaryStatus;
     printerNames: string[];
+    stationKeys: string[];
+    stationLabel: string;
 };
 
 type OrderWithProofSummary = Order & {
@@ -302,6 +304,21 @@ type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'requiresP
     priceOverride?: any;
 };
 
+function formatProductionStationLabel(value: unknown): string {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (!normalized) return "Unassigned";
+    if (normalized === "wide_roll" || normalized === "roll") return "Roll";
+    if (normalized === "flatbed") return "Flatbed";
+    if (normalized === "prepress") return "Prepress";
+    if (normalized === "design") return "Design";
+    if (normalized === "fulfillment") return "Fulfillment";
+    return normalized
+        .split(/[_\s-]+/)
+        .filter(Boolean)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ") || "Unassigned";
+}
+
 export class OrdersRepository {
     constructor(private readonly dbInstance = db) { }
 
@@ -370,6 +387,8 @@ export class OrdersRepository {
                 completeCount: 0,
                 status: "none",
                 printerNames: printerNamesByOrder.get(orderId) ?? [],
+                stationKeys: [],
+                stationLabel: "Unassigned",
             });
         }
 
@@ -383,7 +402,14 @@ export class OrdersRepository {
             summary.requiredCount += 1;
 
             const workflowState = this.normalizeWorkflowStateForSummary(lineItem.workflowState ?? lineItem.status);
-            const hasActiveOwner = activeOwners.has(String(lineItem.lineItemId));
+            const activeOwner = activeOwners.get(String(lineItem.lineItemId));
+            const hasActiveOwner = !!activeOwner;
+            if (hasActiveOwner) {
+                const stationKey = String(activeOwner.stationKey || "").trim();
+                if (stationKey && !summary.stationKeys.includes(stationKey)) {
+                    summary.stationKeys.push(stationKey);
+                }
+            }
 
             if (terminalStates.has(workflowState)) {
                 summary.completeCount += 1;
@@ -408,13 +434,19 @@ export class OrdersRepository {
         }
 
         for (const summary of Array.from(summaries.values())) {
+            summary.stationLabel = summary.stationKeys.length > 0
+                ? summary.stationKeys.map((key) => formatProductionStationLabel(key)).join(", ")
+                : (summary.status === "complete" ? "Completed" : "Unassigned");
+
             if (summary.requiredCount === 0) {
                 summary.status = "none";
+                summary.stationLabel = "Unassigned";
                 continue;
             }
 
             if (summary.completeCount === summary.requiredCount) {
                 summary.status = "complete";
+                summary.stationLabel = "Completed";
                 continue;
             }
 
@@ -864,6 +896,8 @@ export class OrdersRepository {
                 completeCount: 0,
                 status: "none",
                 printerNames: [],
+                stationKeys: [],
+                stationLabel: "Unassigned",
             },
             previewThumbnails: previewData.get(order.id)?.thumbnails || [],
             thumbsCount: previewData.get(order.id)?.totalCount || 0,
@@ -959,6 +993,8 @@ export class OrdersRepository {
                     completeCount: 0,
                     status: "none",
                     printerNames: [],
+                    stationKeys: [],
+                    stationLabel: "Unassigned",
                 },
                 proofStatus: orderSummaries.get(order.id)?.proofStatus ?? "no_proof_required",
                 proofStatusLabel: orderSummaries.get(order.id)?.proofStatusLabel ?? "No Proof Needed",

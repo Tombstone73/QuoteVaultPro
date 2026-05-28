@@ -1,5 +1,5 @@
 import type { Express } from "express";
-import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 
@@ -59,6 +59,7 @@ import {
  * Fulfillment jobs route the line item to "completed" on completion.
  */
 const FULFILLMENT_STATION_KEY = "fulfillment";
+const COMPLETION_RECOVERY_HOURS = 24;
 const DEFAULT_PRINTER_OPTIONS_BY_STATION: Record<string, string[]> = {
   roll: ["S40", "S60", "Canon"],
   wide_roll: ["S40", "S60", "Canon"],
@@ -67,6 +68,49 @@ const DEFAULT_PRINTER_OPTIONS_BY_STATION: Record<string, string[]> = {
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub ?? user?.id;
+}
+
+function addHours(date: Date, hours: number): Date {
+  return new Date(date.getTime() + hours * 60 * 60 * 1000);
+}
+
+function toIso(value: unknown): string | null {
+  if (!value) return null;
+  const date = new Date(value as any);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function stationLabel(value: unknown): string {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return "Unassigned";
+  switch (normalized) {
+    case "wide_roll":
+    case "roll":
+      return "Roll";
+    case "flatbed":
+      return "Flatbed";
+    case "prepress":
+      return "Prepress";
+    case "design":
+      return "Design";
+    case "fulfillment":
+      return "Fulfillment";
+    case "done":
+    case "completed":
+      return "Completed";
+    default:
+      return normalized
+        .split(/[_\s-]+/)
+        .filter(Boolean)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ") || "Unassigned";
+  }
+}
+
+function userDisplayName(row: { firstName?: string | null; lastName?: string | null; email?: string | null } | null | undefined): string | null {
+  if (!row) return null;
+  const name = [row.firstName, row.lastName].map((part) => String(part || "").trim()).filter(Boolean).join(" ");
+  return name || row.email || null;
 }
 
 /**
@@ -374,6 +418,13 @@ export function registerProductionJobsRoutes(
           assignedPrinterAt: productionJobs.assignedPrinterAt,
           startedAt: productionJobs.startedAt,
           completedAt: productionJobs.completedAt,
+          completedByUserId: productionJobs.completedByUserId,
+          previousStatus: productionJobs.previousStatus,
+          previousStation: productionJobs.previousStation,
+          restoreUntil: productionJobs.restoreUntil,
+          restoredAt: productionJobs.restoredAt,
+          restoredByUserId: productionJobs.restoredByUserId,
+          restoreReason: productionJobs.restoreReason,
           totalSeconds: productionJobs.totalSeconds,
           createdAt: productionJobs.createdAt,
           updatedAt: productionJobs.updatedAt,
@@ -1119,8 +1170,17 @@ export function registerProductionJobsRoutes(
           // Back-compat: treat view as stationKey
           view: station ?? view ?? config.defaultView,
           status: row.status,
-          startedAt: row.startedAt,
-          completedAt: row.completedAt,
+          startedAt: toIso(row.startedAt),
+          completedAt: toIso(row.completedAt),
+          completedByUserId: row.completedByUserId ?? null,
+          previousStatus: row.previousStatus ?? null,
+          previousStation: row.previousStation ?? null,
+          previousStationLabel: stationLabel(row.previousStation),
+          restoreUntil: toIso(row.restoreUntil),
+          restoredAt: toIso(row.restoredAt),
+          restoredByUserId: row.restoredByUserId ?? null,
+          restoreReason: row.restoreReason ?? null,
+          undoAllowed: !!row.completedAt && !!row.restoreUntil && new Date(row.restoreUntil as any).getTime() > Date.now(),
           totalSeconds: Number(row.totalSeconds) || 0,
           timer: {
             isRunning,
@@ -1214,6 +1274,101 @@ export function registerProductionJobsRoutes(
     }
   });
 
+  app.get("/api/production/jobs/recently-completed", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const stationRaw = (req.query.station as string | undefined) ?? (req.query.view as string | undefined);
+      const stationParsed = stationRaw ? productionViewKeySchema.safeParse(stationRaw) : null;
+      if (stationRaw && !stationParsed?.success) {
+        return res.status(400).json({ success: false, message: "Invalid station" });
+      }
+
+      const station = normalizeProductionStationKey(stationParsed?.data) ?? stationParsed?.data;
+      const stationAliases = station === "roll"
+        ? ["roll", "wide_roll"]
+        : station === "flatbed"
+          ? ["flatbed"]
+          : station ? [station] : [];
+      const cutoff = addHours(new Date(), -COMPLETION_RECOVERY_HOURS);
+      const nowMs = Date.now();
+
+      const rows = await db
+        .select({
+          id: productionJobs.id,
+          orderId: productionJobs.orderId,
+          lineItemId: productionJobs.lineItemId,
+          stationKey: productionJobs.stationKey,
+          stepKey: productionJobs.stepKey,
+          status: productionJobs.status,
+          previousStatus: productionJobs.previousStatus,
+          previousStation: productionJobs.previousStation,
+          completedAt: productionJobs.completedAt,
+          completedByUserId: productionJobs.completedByUserId,
+          restoreUntil: productionJobs.restoreUntil,
+          restoredAt: productionJobs.restoredAt,
+          restoreReason: productionJobs.restoreReason,
+          orderNumber: orders.orderNumber,
+          displayNumber: orders.displayNumber,
+          customerName: customers.companyName,
+          itemDescription: orderLineItems.description,
+          productType: orderLineItems.productType,
+          completedByFirstName: users.firstName,
+          completedByLastName: users.lastName,
+          completedByEmail: users.email,
+        })
+        .from(productionJobs)
+        .innerJoin(orders, eq(orders.id, productionJobs.orderId))
+        .leftJoin(customers, eq(customers.id, orders.customerId))
+        .leftJoin(orderLineItems, eq(orderLineItems.id, productionJobs.lineItemId))
+        .leftJoin(users, eq(users.id, productionJobs.completedByUserId))
+        .where(and(
+          eq(productionJobs.organizationId, organizationId),
+          eq(productionJobs.status, "done"),
+          gte(productionJobs.completedAt, cutoff),
+          stationAliases.length > 0 ? inArray(productionJobs.stationKey as any, stationAliases) : undefined,
+        ))
+        .orderBy(desc(productionJobs.completedAt), desc(productionJobs.updatedAt));
+
+      return res.json({
+        success: true,
+        data: rows.map((row) => {
+          const restoreUntilMs = row.restoreUntil ? new Date(row.restoreUntil as any).getTime() : Number.NaN;
+          return {
+            id: row.id,
+            orderId: row.orderId,
+            lineItemId: row.lineItemId ?? null,
+            orderNumber: row.displayNumber || row.orderNumber,
+            customerName: row.customerName || "Unknown Customer",
+            itemName: String(row.itemDescription || row.productType || `Job ${String(row.id).slice(-6)}`).trim(),
+            stationKey: row.stationKey,
+            stationLabel: stationLabel(row.stationKey),
+            previousStatus: row.previousStatus ?? null,
+            previousStation: row.previousStation ?? null,
+            previousStationLabel: stationLabel(row.previousStation ?? row.stationKey),
+            completedAt: toIso(row.completedAt),
+            completedByUserId: row.completedByUserId ?? null,
+            completedBy: userDisplayName({
+              firstName: row.completedByFirstName,
+              lastName: row.completedByLastName,
+              email: row.completedByEmail,
+            }),
+            restoreUntil: toIso(row.restoreUntil),
+            restoredAt: toIso(row.restoredAt),
+            restoreReason: row.restoreReason ?? null,
+            undoAllowed: !!row.completedAt && Number.isFinite(restoreUntilMs) && restoreUntilMs > nowMs,
+          };
+        }),
+        message: "Recently completed production jobs fetched",
+      });
+    } catch (error: any) {
+      console.error("Error fetching recently completed production jobs:", error);
+      return res.status(500).json({ success: false, message: error?.message || "Failed to fetch recently completed jobs" });
+    }
+  });
+
   // Extra (needed for detail UI): GET /api/production/jobs/:jobId
   app.get("/api/production/jobs/:jobId", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -1239,6 +1394,13 @@ export function registerProductionJobsRoutes(
           assignedPrinterAt: productionJobs.assignedPrinterAt,
           startedAt: productionJobs.startedAt,
           completedAt: productionJobs.completedAt,
+          completedByUserId: productionJobs.completedByUserId,
+          previousStatus: productionJobs.previousStatus,
+          previousStation: productionJobs.previousStation,
+          restoreUntil: productionJobs.restoreUntil,
+          restoredAt: productionJobs.restoredAt,
+          restoredByUserId: productionJobs.restoredByUserId,
+          restoreReason: productionJobs.restoreReason,
           totalSeconds: productionJobs.totalSeconds,
           createdAt: productionJobs.createdAt,
           updatedAt: productionJobs.updatedAt,
@@ -1729,8 +1891,17 @@ export function registerProductionJobsRoutes(
           lineItemId: job.lineItemId,
           orderId,
           status: job.status,
-          startedAt: job.startedAt,
-          completedAt: job.completedAt,
+          startedAt: toIso(job.startedAt),
+          completedAt: toIso(job.completedAt),
+          completedByUserId: job.completedByUserId ?? null,
+          previousStatus: job.previousStatus ?? null,
+          previousStation: job.previousStation ?? null,
+          previousStationLabel: stationLabel(job.previousStation),
+          restoreUntil: toIso(job.restoreUntil),
+          restoredAt: toIso(job.restoredAt),
+          restoredByUserId: job.restoredByUserId ?? null,
+          restoreReason: job.restoreReason ?? null,
+          undoAllowed: !!job.completedAt && !!job.restoreUntil && new Date(job.restoreUntil as any).getTime() > Date.now(),
           totalSeconds: Number(job.totalSeconds) || 0,
           timer: {
             isRunning: timerState.isRunning,
@@ -2215,6 +2386,7 @@ export function registerProductionJobsRoutes(
 
       const jobId = req.params.jobId;
       const now = new Date();
+      const restoreUntil = addHours(now, COMPLETION_RECOVERY_HOURS);
       const skipProduction = req.body?.skipProduction === true;
 
       const result = await db.transaction(async (tx) => {
@@ -2273,7 +2445,18 @@ export function registerProductionJobsRoutes(
 
         await tx
           .update(productionJobs)
-          .set({ status: "done", completedAt: now, updatedAt: now })
+          .set({
+            status: "done",
+            completedAt: now,
+            completedByUserId: userId,
+            previousStatus: job.status,
+            previousStation: job.stationKey,
+            restoreUntil,
+            restoredAt: null,
+            restoredByUserId: null,
+            restoreReason: null,
+            updatedAt: now,
+          })
           .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
 
         if (job.lineItemId && job.orderId) {
@@ -2383,11 +2566,27 @@ export function registerProductionJobsRoutes(
           entityId: jobId,
           entityName: jobId,
           description: skipProduction ? "Production job completed (skip production)" : "Production job completed",
-          oldValues: { status: job.status },
-          newValues: { status: "done" },
+          oldValues: { status: job.status, stationKey: job.stationKey },
+          newValues: { status: "done", completedAt: now.toISOString(), restoreUntil: restoreUntil.toISOString() },
           ipAddress: req.ip || null,
           userAgent: req.headers["user-agent"] || null,
         } as any);
+
+        await appendEvent({
+          tx,
+          organizationId,
+          productionJobId: jobId,
+          type: "note",
+          actorUserId: userId,
+          payload: {
+            eventType: "production_job_completed",
+            previousStatus: job.status,
+            previousStation: job.stationKey,
+            completedAt: now.toISOString(),
+            restoreUntil: restoreUntil.toISOString(),
+            skipProduction,
+          },
+        });
 
         const updatedRows = await tx
           .select()
@@ -2402,6 +2601,164 @@ export function registerProductionJobsRoutes(
       const status = error?.statusCode || 500;
       console.error("Error completing production job:", error);
       res.status(status).json({ error: error?.message || "Failed to complete job" });
+    }
+  });
+
+  app.post("/api/production-jobs/:jobId/undo-complete", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, data: null, message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ success: false, data: null, message: "User ID not found" });
+
+      const jobId = String(req.params.jobId || "");
+      const parsed = z.object({ reason: z.string().max(500).optional().nullable() }).safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ success: false, data: null, message: fromZodError(parsed.error).message });
+      }
+
+      const now = new Date();
+      const result = await db.transaction(async (tx) => {
+        const [job] = await tx
+          .select()
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+
+        if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+        if (!job.completedAt || job.status !== "done") {
+          throw Object.assign(new Error("Only completed production jobs can be restored"), { statusCode: 409 });
+        }
+
+        const restoreUntilMs = job.restoreUntil ? new Date(job.restoreUntil as any).getTime() : Number.NaN;
+        if (!Number.isFinite(restoreUntilMs) || restoreUntilMs <= now.getTime()) {
+          throw Object.assign(new Error("The undo window for this production job has expired"), { statusCode: 409 });
+        }
+
+        const restoredStatus = String(job.previousStatus || "").trim() || "in_progress";
+        const restoredStation = String(job.previousStation || "").trim() || job.stationKey;
+
+        const fulfillmentRows = job.lineItemId
+          ? await tx
+            .select({
+              id: productionJobs.id,
+              status: productionJobs.status,
+            })
+            .from(productionJobs)
+            .where(and(
+              eq(productionJobs.organizationId, organizationId),
+              eq(productionJobs.lineItemId, job.lineItemId),
+              eq(productionJobs.stationKey, FULFILLMENT_STATION_KEY),
+              inArray(productionJobs.status as any, ["queued", "in_progress", "paused"]),
+            ))
+          : [];
+
+        const fulfillmentJobIds = fulfillmentRows.map((row) => row.id);
+        const createdByCompletionRows = fulfillmentJobIds.length > 0
+          ? await tx
+            .select({ productionJobId: productionEvents.productionJobId })
+            .from(productionEvents)
+            .where(and(
+              eq(productionEvents.organizationId, organizationId),
+              inArray(productionEvents.productionJobId, fulfillmentJobIds),
+              eq(productionEvents.type, "intake"),
+              sql`${productionEvents.payload}->>'previousJobId' = ${jobId}`,
+            ))
+          : [];
+        const fulfillmentJobsToCancel = new Set(createdByCompletionRows.map((row) => row.productionJobId));
+
+        if (fulfillmentJobsToCancel.size > 0) {
+          const ids = Array.from(fulfillmentJobsToCancel);
+          await tx
+            .update(productionJobs)
+            .set({ status: "canceled", updatedAt: now })
+            .where(and(eq(productionJobs.organizationId, organizationId), inArray(productionJobs.id, ids)));
+
+          for (const canceledJobId of ids) {
+            await appendEvent({
+              tx,
+              organizationId,
+              productionJobId: canceledJobId,
+              type: "note",
+              actorUserId: userId,
+              payload: {
+                eventType: "fulfillment_successor_cancelled_by_undo",
+                restoredProductionJobId: jobId,
+              },
+            });
+          }
+        }
+
+        await tx
+          .update(productionJobs)
+          .set({
+            status: restoredStatus,
+            stationKey: restoredStation,
+            completedAt: null,
+            restoreUntil: null,
+            restoredAt: now,
+            restoredByUserId: userId,
+            restoreReason: parsed.data.reason?.trim() || null,
+            updatedAt: now,
+          })
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+
+        await appendEvent({
+          tx,
+          organizationId,
+          productionJobId: jobId,
+          type: "note",
+          actorUserId: userId,
+          payload: {
+            eventType: "production_job_completion_restored",
+            restoredStatus,
+            restoredStation,
+            canceledFulfillmentJobIds: Array.from(fulfillmentJobsToCancel),
+            reason: parsed.data.reason?.trim() || null,
+          },
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "production_job",
+          entityId: jobId,
+          entityName: jobId,
+          description: "Production job completion undone",
+          oldValues: { status: job.status, stationKey: job.stationKey, completedAt: toIso(job.completedAt) },
+          newValues: { status: restoredStatus, stationKey: restoredStation, restoredAt: now.toISOString() },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const [updated] = await tx
+          .select()
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+
+        return {
+          job: updated,
+          canceledFulfillmentJobIds: Array.from(fulfillmentJobsToCancel),
+        };
+      });
+
+      return res.json({
+        success: true,
+        data: result,
+        message: "Production job restored to its previous station",
+      });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("Error undoing production completion:", error);
+      return res.status(status).json({
+        success: false,
+        data: null,
+        message: error?.message || "Failed to undo production completion",
+      });
     }
   });
 

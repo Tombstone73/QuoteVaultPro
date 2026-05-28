@@ -1,6 +1,7 @@
 import { and, eq, gte, inArray, isNull, lt, not, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { invoices, materials, orders, payments, productionJobs, quotes, vendors } from "@shared/schema";
+import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 
 export type DashboardSummary = {
   criticalAlerts: {
@@ -334,20 +335,7 @@ export async function getDashboardSummary(organizationId: string): Promise<Dashb
 
   // Fulfillment & Finance
   try {
-    summary.fulfillmentFinance.readyToShip = await countFrom(
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(orders)
-        .where(
-          and(
-            eq(orders.organizationId, organizationId),
-            or(
-              eq(orders.canonicalState, "ready"),
-              and(isNull(orders.canonicalState), eq(orders.status, "ready_for_shipment")),
-            ),
-          ),
-        ),
-    );
+    summary.fulfillmentFinance.readyToShip = await new FulfillmentDashboardRepo(db).countFulfillmentQueue(organizationId);
 
     summary.fulfillmentFinance.shippedToday = await countFrom(
       db

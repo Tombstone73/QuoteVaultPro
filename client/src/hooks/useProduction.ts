@@ -127,6 +127,15 @@ export type ProductionJobListItem = {
   status: "queued" | "in_progress" | "paused" | "done";
   startedAt: string | null;
   completedAt: string | null;
+  completedByUserId?: string | null;
+  previousStatus?: string | null;
+  previousStation?: string | null;
+  previousStationLabel?: string | null;
+  restoreUntil?: string | null;
+  restoredAt?: string | null;
+  restoredByUserId?: string | null;
+  restoreReason?: string | null;
+  undoAllowed?: boolean;
   totalSeconds: number;
   timer: ProductionTimerSummary;
   reprintCount: number;
@@ -192,6 +201,27 @@ export type ProductionJobListItem = {
   };
   createdAt: string;
   updatedAt: string;
+};
+
+export type RecentlyCompletedProductionJob = {
+  id: string;
+  orderId: string;
+  lineItemId: string | null;
+  orderNumber: string;
+  customerName: string;
+  itemName: string;
+  stationKey: string;
+  stationLabel: string;
+  previousStatus: string | null;
+  previousStation: string | null;
+  previousStationLabel: string;
+  completedAt: string | null;
+  completedByUserId: string | null;
+  completedBy: string | null;
+  restoreUntil: string | null;
+  restoredAt: string | null;
+  restoreReason: string | null;
+  undoAllowed: boolean;
 };
 
 export type ProductionEvent = {
@@ -458,8 +488,37 @@ export function useProductionAlertPresets(options?: { includeInactive?: boolean;
 
 function invalidateProduction(qc: ReturnType<typeof useQueryClient>, jobId?: string) {
   qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+  qc.invalidateQueries({ queryKey: ["/api/production/jobs/recently-completed"] });
   if (jobId) qc.invalidateQueries({ queryKey: ["/api/production/jobs", jobId] });
   qc.invalidateQueries({ queryKey: ["/api/production-alerts"] });
+  qc.invalidateQueries({ queryKey: ["dashboardSummary"] });
+  qc.invalidateQueries({ queryKey: ["/api/operational-summary"] });
+  qc.invalidateQueries({ queryKey: ["fulfillment"] });
+  qc.invalidateQueries({ queryKey: ["/api/fulfillment/queue"] });
+  qc.invalidateQueries({ queryKey: ["/api/orders"] });
+}
+
+export function useRecentlyCompletedProductionJobs(
+  filters?: { station?: string; view?: string },
+  options?: { enabled?: boolean },
+) {
+  return useQuery<RecentlyCompletedProductionJob[]>({
+    queryKey: ["/api/production/jobs/recently-completed", filters],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (filters?.station) params.set("station", filters.station);
+      else if (filters?.view) params.set("view", filters.view);
+      const res = await fetch(`/api/production/jobs/recently-completed${params.toString() ? `?${params.toString()}` : ""}`, {
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to fetch recently completed jobs");
+      return json.data || [];
+    },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    enabled: options?.enabled !== false,
+  });
 }
 
 export function useCreateProductionAlert() {
@@ -727,6 +786,32 @@ export function useReopenProductionJob(jobId: string) {
     },
     onError: (e: Error) => {
       toast({ title: "Reopen failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useUndoCompleteProductionJob(jobId: string) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (payload?: { reason?: string | null }) => {
+      const res = await fetch(`/api/production-jobs/${jobId}/undo-complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: payload?.reason ?? null }),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to undo completion");
+      return json.data;
+    },
+    onSuccess: () => {
+      invalidateProduction(qc, jobId);
+      qc.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
+      toast({ title: "Job restored" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Undo failed", description: e.message, variant: "destructive" });
     },
   });
 }

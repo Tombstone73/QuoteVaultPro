@@ -7,6 +7,7 @@ export type MyWorkItem = {
   priority?: string | null;
   subject?: string | null;
   stage?: string | null;
+  station?: string | null;
   due?: string | null;
   actionLabel?: string | null;
   onAction?: () => void;
@@ -49,6 +50,7 @@ export default function MyWorkPanel({ items = [], assignedCount, onViewAll }: My
               <TableHead className="h-10 text-[11px] uppercase tracking-wide">Priority</TableHead>
               <TableHead className="h-10 text-[11px] uppercase tracking-wide">Subject / Task</TableHead>
               <TableHead className="h-10 text-[11px] uppercase tracking-wide">Stage</TableHead>
+              <TableHead className="h-10 text-[11px] uppercase tracking-wide">Station</TableHead>
               <TableHead className="h-10 text-[11px] uppercase tracking-wide">Due</TableHead>
               <TableHead className="h-10 text-right text-[11px] uppercase tracking-wide">Action</TableHead>
             </TableRow>
@@ -56,7 +58,7 @@ export default function MyWorkPanel({ items = [], assignedCount, onViewAll }: My
           <TableBody>
             {items.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
                   No assigned work yet.
                 </TableCell>
               </TableRow>
@@ -71,6 +73,7 @@ export default function MyWorkPanel({ items = [], assignedCount, onViewAll }: My
                   </TableCell>
                   <TableCell className="font-medium">{item.subject || "Not available"}</TableCell>
                   <TableCell className="text-muted-foreground">{item.stage || "Not available"}</TableCell>
+                  <TableCell className="text-muted-foreground">{item.station || "No station assigned"}</TableCell>
                   <TableCell className="text-muted-foreground">{item.due || "Not available"}</TableCell>
                   <TableCell className="text-right">
                     {item.onAction ? (
