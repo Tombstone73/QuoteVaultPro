@@ -1504,12 +1504,20 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
     );
   }
 
+  if (props.status === "done") {
+    return (
+      <div className="space-y-3">
+        {previewsDisabled ? <PreviewDisabledHint /> : null}
+        <RecentlyCompletedProductionJobs station={props.viewKey} />
+      </div>
+    );
+  }
+
   if (tabJobs.length === 0) {
     if (props.status === "queued") {
       return (
         <div className="space-y-3">
           {previewsDisabled ? <PreviewDisabledHint /> : null}
-          <RecentlyCompletedProductionJobs station={props.viewKey} />
           <Card className="bg-titan-bg-card border-titan-border-subtle">
             <CardContent className="p-6">
               <div className="text-sm font-medium text-titan-text-primary">No production jobs yet</div>
@@ -1533,7 +1541,6 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
     return (
       <div className="space-y-3">
         {previewsDisabled ? <PreviewDisabledHint /> : null}
-        <RecentlyCompletedProductionJobs station={props.viewKey} />
         <Card className="bg-titan-bg-card border-titan-border-subtle">
           <CardContent className="p-4 text-sm text-titan-text-muted">No flatbed jobs in this state.</CardContent>
         </Card>
@@ -1545,7 +1552,6 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
     <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-4">
       <div className="space-y-4">
         {previewsDisabled ? <PreviewDisabledHint /> : null}
-        <RecentlyCompletedProductionJobs station={props.viewKey} />
         {selectedJob ? (
           <ActionRail job={selectedJob} timerSeconds={liveTimerSeconds} timerIsRunning={derivedTimer.isRunning} notes={recentNotes} />
         ) : (

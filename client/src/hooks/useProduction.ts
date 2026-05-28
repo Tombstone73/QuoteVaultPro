@@ -795,7 +795,7 @@ export function useUndoCompleteProductionJob(jobId: string) {
   const { toast } = useToast();
   return useMutation({
     mutationFn: async (payload?: { reason?: string | null }) => {
-      const res = await fetch(`/api/production-jobs/${jobId}/undo-complete`, {
+      const res = await fetch(`/api/production/jobs/${jobId}/undo-complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reason: payload?.reason ?? null }),

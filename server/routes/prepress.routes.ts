@@ -642,6 +642,10 @@ const consumeReservedMaterialsForLineItem = async (
     userId: string;
   }
 ) => {
+  if (!args.organizationId) {
+    throw Object.assign(new Error("Missing organization context for inventory adjustment"), { statusCode: 500 });
+  }
+
   const reserved = await listReservedMaterialsForLineItem(tx, {
     organizationId: args.organizationId,
     orderId: args.orderId,
@@ -701,6 +705,7 @@ const consumeReservedMaterialsForLineItem = async (
 
     if (deductionDecision.allowed) {
       await tx.insert(inventoryAdjustments).values({
+        organizationId: args.organizationId,
         materialId,
         type: "job_usage",
         quantityChange: normalizeQty2dp(-qty),
