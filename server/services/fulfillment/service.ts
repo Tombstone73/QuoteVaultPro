@@ -5,6 +5,7 @@ import { customers, orders, pickupTickets, shipmentItems, shipmentOrders, shipme
 import { FulfillmentDashboardRepo, PickupRepo, ShipmentRepo } from './repository';
 import { FulfillmentHttpError } from './types';
 import { isCanceledOrder } from '@shared/operationalState';
+import { isFulfillmentQueueEligibleOrder } from './eligibility';
 
 export class FulfillmentService {
   private readonly shipmentRepo = new ShipmentRepo(db);
@@ -56,7 +57,7 @@ export class FulfillmentService {
         throw new FulfillmentHttpError(400, `Order ${order.id} is cancelled and not ship-eligible`, 'ORDER_NOT_SHIP_ELIGIBLE');
       }
 
-      if (order.state !== 'production_complete' || order.routingTarget !== 'fulfillment') {
+      if (!isFulfillmentQueueEligibleOrder(order)) {
         throw new FulfillmentHttpError(400, `Order ${order.id} is not yet eligible for fulfillment`, 'ORDER_NOT_FULFILLMENT_ELIGIBLE');
       }
 

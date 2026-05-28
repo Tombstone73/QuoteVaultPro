@@ -339,6 +339,7 @@ async function applyOwnershipForState(tx: any, args: {
       organizationId: args.lineItem.organizationId,
       lineItemId: args.lineItem.id,
       reason: `workflow_${args.toState}`,
+      actorUserId: args.actorUserId ?? null,
     });
 
     if (closedJob) {

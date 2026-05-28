@@ -38,7 +38,7 @@ export const DASHBOARD_PANELS = {
     entity: "invoices",
   },
   ready_to_ship: {
-    title: "Ready to Ship",
+    title: "Ready for Fulfillment",
     entity: "orders",
   },
   shipped_today: {
@@ -84,7 +84,7 @@ export function getPanelOpenTarget(panel: DashboardPanel): { label: string; href
     case "orders_status_on_hold":
       return { label: "Open in Orders", href: `${ROUTES.orders.list}?status=on_hold` };
     case "ready_to_ship":
-      return { label: "Open in Orders", href: `${ROUTES.orders.list}?status=ready_for_shipment` };
+      return { label: "Open Fulfillment", href: ROUTES.fulfillment.list };
     case "shipped_today":
       return { label: "Open in Orders", href: ROUTES.orders.list };
     case "quotes_pending":

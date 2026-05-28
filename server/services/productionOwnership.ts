@@ -486,9 +486,11 @@ export async function completeActiveJob(
     organizationId: string;
     lineItemId: string;
     reason?: string;
+    actorUserId?: string | null;
   },
 ): Promise<ActiveProductionJob | null> {
   const now = new Date();
+  const restoreUntil = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
   const activeJob = await findActiveJobForLineItem(tx, {
     organizationId: args.organizationId,
@@ -502,6 +504,13 @@ export async function completeActiveJob(
     .set({
       status: "done",
       completedAt: now,
+      completedByUserId: args.actorUserId ?? null,
+      previousStatus: activeJob.status,
+      previousStation: activeJob.stationKey,
+      restoreUntil,
+      restoredAt: null,
+      restoredByUserId: null,
+      restoreReason: null,
       updatedAt: now,
     })
     .where(

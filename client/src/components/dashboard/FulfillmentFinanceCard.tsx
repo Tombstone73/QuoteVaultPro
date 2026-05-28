@@ -78,7 +78,7 @@ export default function FulfillmentFinanceCard({
             onClick={() => onSelectPanel?.("ready_to_ship")}
             className={`flex w-full items-center justify-between rounded-md border-b border-border px-2 pb-2 text-sm hover:bg-muted/20 ${selectedPanel === "ready_to_ship" ? "bg-muted/30" : ""}`}
           >
-            <span className="text-muted-foreground">Ready to Ship</span>
+            <span className="text-muted-foreground">Ready for Fulfillment</span>
             <span className="font-semibold">{valueOrDash(readyToShip)}</span>
           </button>
           <button

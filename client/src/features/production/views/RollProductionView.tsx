@@ -63,6 +63,7 @@ import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrinterMachineAssignment, hasProductionPrinterAssignment } from "@/components/production/PrinterMachineAssignment";
 import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsPanel";
 import { ProductionNotesSection } from "@/components/production/ProductionNotesSection";
+import { RecentlyCompletedProductionJobs } from "@/components/production/RecentlyCompletedProductionJobs";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
 import { filterProductionJobsForTab, type ProductionBoardTab } from "@/lib/productionBoard";
@@ -1547,6 +1548,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
       return (
         <div className="space-y-3">
           {previewsDisabled ? <PreviewDisabledHint /> : null}
+          <RecentlyCompletedProductionJobs station={props.viewKey} />
           <Card className="bg-titan-bg-card border-titan-border-subtle">
             <CardContent className="p-6">
               <div className="text-sm font-medium text-titan-text-primary">No production jobs yet</div>
@@ -1570,6 +1572,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     return (
       <div className="space-y-3">
         {previewsDisabled ? <PreviewDisabledHint /> : null}
+        <RecentlyCompletedProductionJobs station={props.viewKey} />
         <Card className="bg-titan-bg-card border-titan-border-subtle">
           <CardContent className="p-4 text-sm text-titan-text-muted">No roll jobs in this state.</CardContent>
         </Card>
@@ -1581,6 +1584,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4">
       <div className="space-y-4">
         {previewsDisabled ? <PreviewDisabledHint /> : null}
+        <RecentlyCompletedProductionJobs station={props.viewKey} />
         {selectedJob ? (
           <ActionRail job={selectedJob} timerSeconds={liveTimerSeconds} timerIsRunning={derivedTimer.isRunning} notes={recentNotes} />
         ) : (

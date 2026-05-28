@@ -302,6 +302,8 @@ export type OrderRow = Order & {
     completeCount: number;
     status: "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
     printerNames?: string[];
+    stationKeys?: string[];
+    stationLabel?: string;
   };
   listLabel?: string | null; // List-only note (always editable)
   previewThumbnails?: string[]; // GCS thumbnail keys

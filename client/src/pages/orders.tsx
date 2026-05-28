@@ -58,6 +58,8 @@ function ProductionSummaryBadge({
     completeCount: 0,
     status: "none" as const,
     printerNames: [],
+    stationKeys: [],
+    stationLabel: "Unassigned",
   };
 
   const config: Record<NonNullable<OrderRow["productionSummary"]>["status"], { label: string; className: string }> = {
@@ -75,6 +77,7 @@ function ProductionSummaryBadge({
     `Pending: ${normalized.pendingHandoffCount}`,
     `Active: ${normalized.inProductionCount}`,
     `Complete: ${normalized.completeCount}`,
+    `Station: ${normalized.stationLabel || "Unassigned"}`,
     normalized.printerNames?.length ? `Printers: ${normalized.printerNames.join(", ")}` : "Printers: Unassigned",
   ].join(" | ");
 
@@ -102,6 +105,7 @@ function ProductionSummaryBadge({
       title={details}
     >
       {config[normalized.status].label}{countSuffix}
+      <span className="ml-1 font-normal opacity-80">/ {normalized.stationLabel || "Unassigned"}</span>
     </Badge>
   );
 

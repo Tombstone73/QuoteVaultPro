@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ROUTES } from "@/config/routes";
 import { useOrders } from "@/hooks/useOrders";
 import { useInvoices } from "@/hooks/useInvoices";
+import { useFulfillmentQueueQuery } from "@/hooks/useFulfillment";
 import { DASHBOARD_PANELS, getPanelOpenTarget, type DashboardPanel } from "@/components/dashboard/dashboardPanels";
 import { buildReferrer } from "@/lib/nav/smartBack";
 
@@ -92,6 +93,13 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
   const location = useLocation();
   const ordersQuery = useOrders();
   const invoicesQuery = useInvoices();
+  const fulfillmentQueueQuery = useFulfillmentQueueQuery({
+    type: "all",
+    status: "all",
+    showArchived: false,
+    overdueOnly: false,
+    search: "",
+  });
   const openTarget = getPanelOpenTarget(panel);
 
   const quotesQuery = useQuery<QuotesResponse>({
@@ -184,6 +192,8 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
         ? lowInventoryQuery.isLoading
       : panel === "invoices_overdue" || panel === "invoices_unpaid"
         ? invoicesQuery.isLoading
+        : panel === "ready_to_ship"
+          ? fulfillmentQueueQuery.isLoading
         : panel === "my_work"
           ? false
           : ordersQuery.isLoading;
@@ -195,6 +205,8 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
         ? (lowInventoryQuery.error as Error | null)?.message
       : panel === "invoices_overdue" || panel === "invoices_unpaid"
         ? (invoicesQuery.error as Error | null)?.message
+        : panel === "ready_to_ship"
+          ? (fulfillmentQueueQuery.error as Error | null)?.message
         : panel === "my_work"
           ? null
           : (ordersQuery.error as Error | null)?.message;
@@ -294,6 +306,48 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
               ))}
             </TableBody>
           </Table>
+          ) : null}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (panel === "ready_to_ship") {
+    const rows = fulfillmentQueueQuery.data?.rows ?? [];
+    return (
+      <Card className="border-border bg-card h-full">
+        <CardHeader className="border-b border-border flex-row items-center justify-between">
+          <CardTitle className="text-base">{panelTitle(panel)}</CardTitle>
+          {openTarget ? <Button asChild variant="ghost" size="sm"><Link to={openTarget.href}>{openTarget.label}</Link></Button> : null}
+        </CardHeader>
+        <CardContent className="p-0">
+          {isLoading ? <LoadingState /> : null}
+          {!isLoading && errorMessage ? <DetailErrorState message={errorMessage} /> : null}
+          {!isLoading && !errorMessage ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Order #</TableHead>
+                  <TableHead>Customer</TableHead>
+                  <TableHead>Fulfillment</TableHead>
+                  <TableHead>Station</TableHead>
+                  <TableHead>Ready Since</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.length === 0 ? (
+                  <TableRow><TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No results.</TableCell></TableRow>
+                ) : rows.map((row) => (
+                  <TableRow key={row.orderId} className="cursor-pointer" onClick={() => navigate(ROUTES.orders.detail(row.orderId), { state: { referrer: buildReferrer(location) } })}>
+                    <TableCell className="font-medium">{row.orderNumber || "Not available"}</TableCell>
+                    <TableCell>{row.customerName || "Not available"}</TableCell>
+                    <TableCell>{row.fulfillmentType === "PICKUP" ? "Pickup" : "Ship"}</TableCell>
+                    <TableCell>{row.productionContext?.completedAt ? "Fulfillment" : "No station assigned"}</TableCell>
+                    <TableCell>{formatDate(row.readySince)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           ) : null}
         </CardContent>
       </Card>
