@@ -6,7 +6,7 @@ import {
   getGenerateProofDraftDisabledReason,
   getProofVersionRecoveryStatusLabel,
   getProofVersionRecoveryStatusNote,
-} from "./proofingRecovery";
+} from "../lib/proofingRecovery";
 
 describe("proofing recovery helpers", () => {
   test("shows generate preview only for incomplete proofs with saved artwork", () => {
