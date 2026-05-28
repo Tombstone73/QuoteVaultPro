@@ -787,7 +787,7 @@ export function createPbv2BannerProductTreeJson(): Record<string, unknown> {
       requiresDimensions: true,
       pricingV2: {
         unitSystem: "imperial",
-        base: { perSqftCents: 0 },
+        base: { perSqftCents: 125 },
       },
     },
   };

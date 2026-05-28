@@ -54,6 +54,7 @@ import {
 } from "../services/pricing/pricingPreviewValidation";
 import { applyProductTypeIdUpdateGuard } from "../lib/productUpdateGuards";
 import { getDefaultFormula } from "@shared/pricingProfiles";
+import { filterProductsForCatalog } from "@shared/productCatalogVisibility";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -339,9 +340,9 @@ export function registerProductRoutes(
         };
       });
       res.json(
-        activeOnly === "true" || activeOnly === "1"
-          ? enrichedProducts.filter((product) => product.isActive)
-          : enrichedProducts,
+        filterProductsForCatalog(enrichedProducts, {
+          activeOnly: activeOnly === "true" || activeOnly === "1",
+        }),
       );
     } catch (error) {
       console.error("Error fetching products:", error);
