@@ -192,6 +192,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
               onSelectCustomer={handleSelectCustomer}
               onNewCustomer={handleNewCustomer}
               search={search}
+              viewMode="split"
             />
           </div>
           <div className="flex-1 overflow-hidden">
@@ -199,6 +200,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
               <EnhancedCustomerView 
                 customerId={selectedCustomerId} 
                 layoutMode="embedded" 
+                notFoundFallback={<EmptyDetailPanel />}
               />
             ) : (
               <EmptyDetailPanel />
@@ -270,6 +272,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
                 onSelectCustomer={handleSelectCustomer}
                 onNewCustomer={handleNewCustomer}
                 search={search}
+                viewMode="split"
               />
             </DataCard>
             
@@ -279,6 +282,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
                 <EnhancedCustomerView 
                   customerId={selectedCustomerId} 
                   layoutMode="embedded"
+                  notFoundFallback={<EmptyDetailPanel />}
                 />
               ) : (
                 <EmptyDetailPanel />
@@ -287,12 +291,13 @@ export default function Customers({ embedded = false }: CustomersProps) {
           </div>
         ) : (
           // ENHANCED MODE: List only, clicking navigates to full page
-          <DataCard noPadding className="overflow-hidden bg-titan-bg-card border-titan-border-subtle">
+          <DataCard noPadding className="overflow-hidden bg-titan-bg-card border-titan-border-subtle h-[calc(100vh-280px)]">
             <CustomerList
               selectedCustomerId={undefined}
               onSelectCustomer={handleSelectCustomer}
               onNewCustomer={handleNewCustomer}
               search={search}
+              viewMode="enhanced"
             />
           </DataCard>
         )}
