@@ -213,6 +213,7 @@ export type PortalProofStatus =
   | "approved"
   | "rejected"
   | "revision_requested"
+  | "cancelled"
   | "superseded"
   | "unavailable"
   | "under_review";

@@ -17,6 +17,7 @@ function proofVariant(proof: PortalProofDto): "default" | "secondary" | "destruc
   if (proof.status === "approved") return "default";
   if (proof.status === "rejected") return "secondary";
   if (proof.status === "revision_requested" || proof.status === "superseded") return "secondary";
+  if (proof.status === "cancelled") return "secondary";
   if (proof.status === "unavailable") return "destructive";
   if (proof.customerActionRequired) return "outline";
   return "secondary";

@@ -11,7 +11,7 @@ import {
 import { sha256Hex } from "../lib/tokenHash";
 import { resolveLineItemProofingTruth } from "./proofingService";
 
-export type PortalProofStatus = "pending" | "approved" | "rejected" | "revision_requested" | "cancelled";
+export type PortalProofStatus = "pending" | "approved" | "rejected" | "revision_requested" | "cancelled" | "superseded";
 
 export type ProofTokenApprovalState = {
   status: PortalProofStatus;
@@ -67,6 +67,8 @@ function normalizePortalProofStatus(args: {
   decision: "approved" | "rejected" | "revision_requested" | null;
   isOverridden: boolean;
 }): PortalProofStatus {
+  if (args.proofVersionStatus === "cancelled") return "cancelled";
+  if (args.proofVersionStatus === "superseded") return "superseded";
   if (args.isOverridden) return "approved";
   if (args.decision === "approved" || args.decision === "rejected" || args.decision === "revision_requested") {
     return args.decision;
@@ -75,7 +77,6 @@ function normalizePortalProofStatus(args: {
   if (args.proofVersionStatus === "approved") return "approved";
   if (args.proofVersionStatus === "rejected") return "rejected";
   if (args.proofVersionStatus === "revision_requested") return "revision_requested";
-  if (args.proofVersionStatus === "superseded" || args.proofVersionStatus === "cancelled") return "cancelled";
   throwConflict("Proof token is not valid for the current proof state");
 }
 
@@ -214,8 +215,8 @@ export async function validateProofToken(tx: any, rawToken: string): Promise<Pro
     // Draft proofs should never have tokens; this is an internal consistency error.
     throwConflict("Proof token is not valid for the current proof state");
   }
-  // "superseded" is handled below in normalizePortalProofStatus → returns "revision_requested"
-  // so the page renders as read-only resolved instead of an error.
+  // Terminal proof statuses are normalized below so the customer page can render
+  // them as read-only states without consuming or invalidating the token.
 
   const truth = await resolveLineItemProofingTruth(tx, {
     organizationId: proofContext.organizationId,

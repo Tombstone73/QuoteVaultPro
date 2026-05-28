@@ -136,6 +136,7 @@ export type PortalProofStatus =
   | "approved"
   | "rejected"
   | "revision_requested"
+  | "cancelled"
   | "superseded"
   | "unavailable"
   | "under_review";
@@ -721,8 +722,9 @@ export function mapPortalProofStatus(raw: unknown): { status: PortalProofStatus;
   if (status === "approved") return { status: "approved", displayStatus: "Approved", customerActionRequired: false };
   if (status === "rejected") return { status: "rejected", displayStatus: "Declined", customerActionRequired: false };
   if (status === "revision_requested") return { status: "revision_requested", displayStatus: "Revision Requested", customerActionRequired: false };
+  if (status === "cancelled" || status === "canceled") return { status: "cancelled", displayStatus: "Cancelled", customerActionRequired: false };
   if (status === "superseded") return { status: "superseded", displayStatus: "Superseded", customerActionRequired: false };
-  if (status === "canceled" || status === "cancelled" || status === "void") {
+  if (status === "void") {
     return { status: "unavailable", displayStatus: "Unavailable", customerActionRequired: false };
   }
   return { status: "under_review", displayStatus: "Under Review", customerActionRequired: false };
@@ -1547,7 +1549,7 @@ async function getCustomerVisibleProofAttachmentIds(scope: PortalScope, orderId:
       and(
         eq(lineItemProofVersions.organizationId, scope.organizationId),
         eq(lineItemProofVersions.orderId, orderId),
-        inArray(lineItemProofVersions.status, ["awaiting_response", "approved", "rejected", "revision_requested"]),
+        inArray(lineItemProofVersions.status, ["awaiting_response", "approved", "rejected", "revision_requested", "cancelled", "superseded"]),
       ),
     );
   return new Set(proofRows.map((row) => row.proofFileId).filter(Boolean));
@@ -1803,7 +1805,7 @@ async function loadPortalProofRows(scope: PortalScope, proofId?: string, tx: any
       and(
         eq(lineItemProofVersions.organizationId, scope.organizationId),
         eq(orders.customerId, scope.customerId),
-        inArray(lineItemProofVersions.status, ["awaiting_response", "approved", "rejected", "revision_requested", "superseded"]),
+        inArray(lineItemProofVersions.status, ["awaiting_response", "approved", "rejected", "revision_requested", "cancelled", "superseded"]),
         proofId ? eq(lineItemProofVersions.id, proofId) : sql`true`,
       ),
     )
@@ -1834,7 +1836,7 @@ async function loadPortalProofHistory(scope: PortalScope, lineItemId: string, tx
         eq(lineItemProofVersions.organizationId, scope.organizationId),
         eq(lineItemProofVersions.lineItemId, lineItemId),
         eq(orders.customerId, scope.customerId),
-        inArray(lineItemProofVersions.status, ["awaiting_response", "approved", "rejected", "revision_requested", "superseded"]),
+        inArray(lineItemProofVersions.status, ["awaiting_response", "approved", "rejected", "revision_requested", "cancelled", "superseded"]),
       ),
     )
     .orderBy(desc(lineItemProofVersions.versionNumber));
@@ -1896,7 +1898,13 @@ export async function submitPortalProofAction(req: Request, proofId: string, act
 
       const mapped = mapPortalProofStatus(row.status);
       if (!mapped.customerActionRequired) {
-        if (mapped.status === "superseded" || mapped.status === "unavailable" || mapped.status === "under_review") {
+        if (mapped.status === "cancelled") {
+          throw new PortalAccessError(409, "This proof has been cancelled and is no longer available for customer action.");
+        }
+        if (mapped.status === "superseded") {
+          throw new PortalAccessError(409, "This proof has been replaced by a newer proof and is no longer available for customer action.");
+        }
+        if (mapped.status === "unavailable" || mapped.status === "under_review") {
           throw new PortalAccessError(409, "This proof is not available for customer action.");
         }
         return {

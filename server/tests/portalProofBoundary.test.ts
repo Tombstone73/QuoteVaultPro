@@ -18,6 +18,16 @@ describe("portal proof boundary", () => {
     });
     expect(mapPortalProofStatus("approved").displayStatus).toBe("Approved");
     expect(mapPortalProofStatus("revision_requested").displayStatus).toBe("Revision Requested");
+    expect(mapPortalProofStatus("cancelled")).toEqual({
+      status: "cancelled",
+      displayStatus: "Cancelled",
+      customerActionRequired: false,
+    });
+    expect(mapPortalProofStatus("superseded")).toEqual({
+      status: "superseded",
+      displayStatus: "Superseded",
+      customerActionRequired: false,
+    });
     expect(mapPortalProofStatus("draft").displayStatus).toBe("Under Review");
   });
 

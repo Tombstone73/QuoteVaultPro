@@ -50,7 +50,13 @@ import { useOrderLineItemFiles, type OrderFileWithUser } from "@/hooks/useOrderF
 import { useOrder, useUpdateOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
-import { canGeneratePreviewRecovery, canRegenerateGeneratedProof, getGenerateProofDraftDisabledReason } from "@/lib/proofingRecovery";
+import {
+  canGeneratePreviewRecovery,
+  canRegenerateGeneratedProof,
+  getGenerateProofDraftDisabledReason,
+  getProofVersionRecoveryStatusLabel,
+  getProofVersionRecoveryStatusNote,
+} from "@/lib/proofingRecovery";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import {
   getInitialProofingFilter,
@@ -328,8 +334,9 @@ function getStatusNote(args: {
     return displayedVersion.sentAt ? `Sent ${formatRelativeTime(displayedVersion.sentAt)}.` : "Waiting on customer approval.";
   }
 
-  if (displayedVersion?.status === "superseded") {
-    return "This proof version has been cancelled or replaced and is no longer customer-actionable.";
+  const terminalRecoveryNote = getProofVersionRecoveryStatusNote(displayedVersion?.status);
+  if (terminalRecoveryNote) {
+    return terminalRecoveryNote;
   }
 
   if (displayedVersion?.status === "draft") {
@@ -513,6 +520,8 @@ function getVersionStatusBadgeClass(status: ProofVersionStatus) {
       return "border-[#244f45] bg-[#102b24] text-[#72d4b8]";
     case "rejected":
       return "border-[#74324d] bg-[#3a1725] text-[#ff7f9f]";
+    case "cancelled":
+      return "border-[#4a5568] bg-[#111827] text-[#d1d5db]";
     case "superseded":
       return "border-[#4a5568] bg-[#1f2937] text-[#d1d5db]";
     default:
@@ -550,19 +559,7 @@ function getProofPreviewIssue(args: {
 }
 
 function getVersionStatusLabel(status: ProofVersionStatus | null | undefined) {
-  switch (status) {
-    case "awaiting_response":
-      return "Awaiting Customer Approval";
-    case "superseded":
-      return "Cancelled / Superseded";
-    case "approved":
-      return "Approved";
-    case "rejected":
-      return "Rejected";
-    case "draft":
-    default:
-      return "Ready to Send";
-  }
+  return getProofVersionRecoveryStatusLabel(status);
 }
 
 export default function StaffProofingPage() {

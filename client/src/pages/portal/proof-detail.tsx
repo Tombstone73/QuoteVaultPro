@@ -166,7 +166,13 @@ export default function PortalProofDetailPage() {
                 ) : null}
               </>
             ) : (
-              <p className="text-sm text-muted-foreground">This proof has already been reviewed.</p>
+              <p className="text-sm text-muted-foreground">
+                {proof.status === "cancelled"
+                  ? "This proof was cancelled and is no longer available for approval."
+                  : proof.status === "superseded"
+                    ? "This proof was replaced by a newer version."
+                    : "This proof has already been reviewed."}
+              </p>
             )}
           </CardContent>
         </Card>

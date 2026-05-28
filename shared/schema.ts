@@ -5986,6 +5986,7 @@ export const lineItemProofVersionStatusEnum = pgEnum('line_item_proof_version_st
   'approved',
   'rejected',
   'revision_requested',
+  'cancelled',
   'superseded',
 ]);
 

@@ -44,7 +44,7 @@ import { resolveLineItemProofReleaseGate } from "./proofGateService";
 import { isCanceledOrder } from "@shared/operationalState";
 
 type ProofDecision = "approved" | "rejected" | "revision_requested";
-type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "superseded";
+type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "cancelled" | "superseded";
 type ProofSyncReason = "order_saved" | "line_item_saved" | "artwork_saved" | "artwork_deleted" | "design_completed";
 type ProofSendMode = "generated" | "uploaded";
 
@@ -368,6 +368,66 @@ async function supersedeActionableProofVersions(tx: any, args: {
     ...args,
     statuses: ["draft", "awaiting_response"],
   });
+}
+
+async function cancelActionableProofVersions(tx: any, args: {
+  organizationId: string;
+  orderId: string;
+  lineItemId: string;
+  actorUserId?: string | null;
+  reason?: string | null;
+}) {
+  const existing = await tx
+    .select({
+      id: lineItemProofVersions.id,
+      versionNumber: lineItemProofVersions.versionNumber,
+      status: lineItemProofVersions.status,
+    })
+    .from(lineItemProofVersions)
+    .where(
+      and(
+        eq(lineItemProofVersions.organizationId, args.organizationId),
+        eq(lineItemProofVersions.lineItemId, args.lineItemId),
+        inArray(lineItemProofVersions.status, ["draft", "awaiting_response"]),
+      ),
+    );
+
+  if (existing.length === 0) {
+    return [];
+  }
+
+  await tx
+    .update(lineItemProofVersions)
+    .set({
+      status: "cancelled",
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(lineItemProofVersions.organizationId, args.organizationId),
+        eq(lineItemProofVersions.lineItemId, args.lineItemId),
+        inArray(lineItemProofVersions.status, ["draft", "awaiting_response"]),
+      ),
+    );
+
+  for (const version of existing) {
+    await appendProofingEvent(tx, {
+      organizationId: args.organizationId,
+      orderId: args.orderId,
+      lineItemId: args.lineItemId,
+      eventType: version.status === "draft" ? "proof_draft_cancelled" : "proof_version_cancelled",
+      actorUserId: args.actorUserId ?? null,
+      payload: {
+        proofVersionId: version.id,
+        versionNumber: version.versionNumber,
+        previousProofStatus: version.status,
+        newProofStatus: "cancelled",
+        reason: args.reason ?? null,
+      },
+    });
+  }
+
+  return existing;
 }
 
 function isActionableProofStatus(status: string | null | undefined): status is "draft" | "awaiting_response" {
@@ -2009,15 +2069,15 @@ export async function cancelProofVersion(tx: any, args: {
       proofVersionId: args.proofVersionId,
     });
 
-    if (proofVersion.status === "approved") {
-      throwProofingBadRequest("Approved proof versions cannot be cancelled from this workflow.");
+    if (proofVersion.status === "approved" || proofVersion.status === "rejected" || proofVersion.status === "revision_requested") {
+      throwProofingBadRequest("Resolved proof versions cannot be cancelled from this workflow.");
     }
 
     if (proofVersion.status === "draft") {
       const [updatedDraft] = await tx
         .update(lineItemProofVersions)
         .set({
-          status: "superseded",
+          status: "cancelled",
           updatedAt: new Date(),
         })
         .where(eq(lineItemProofVersions.id, proofVersion.id))
@@ -2063,7 +2123,7 @@ export async function cancelProofVersion(tx: any, args: {
     const [updatedVersion] = await tx
       .update(lineItemProofVersions)
       .set({
-        status: "superseded",
+        status: "cancelled",
         updatedAt: new Date(),
       })
       .where(eq(lineItemProofVersions.id, proofVersion.id))
@@ -2820,8 +2880,12 @@ export async function recordProofResponse(tx: any, args: {
       proofVersionId: args.proofVersionId,
     });
 
+    if (proofVersion.status === "cancelled") {
+      throwProofingConflict("This proof version has been cancelled and is no longer available for approval.");
+    }
+
     if (proofVersion.status === "superseded") {
-      throwProofingConflict("This proof version has been cancelled or superseded and is no longer available for approval.");
+      throwProofingConflict("This proof version has been replaced by a newer proof and is no longer available for approval.");
     }
 
     if (proofVersion.status === "approved" || proofVersion.status === "rejected" || proofVersion.status === "revision_requested") {
@@ -2976,8 +3040,9 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
           when 'draft' then 1
           when 'revision_requested' then 2
           when 'rejected' then 3
-          when 'superseded' then 4
-          else 5
+          when 'cancelled' then 4
+          when 'superseded' then 5
+          else 6
         end`,
         desc(lineItemProofVersions.versionNumber),
         desc(lineItemProofVersions.createdAt),
@@ -3057,13 +3122,18 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
       })
       .returning();
 
-    await tx
-      .update(lineItemProofVersions)
-      .set({
-        status: "approved",
-        updatedAt: new Date(),
-      })
-      .where(eq(lineItemProofVersions.id, proofVersion.id));
+    const preservesTerminalProofStatus = proofVersion.status === "cancelled" || proofVersion.status === "superseded";
+    const manualOverrideProofStatus = preservesTerminalProofStatus ? proofVersion.status : "approved";
+
+    if (!preservesTerminalProofStatus) {
+      await tx
+        .update(lineItemProofVersions)
+        .set({
+          status: "approved",
+          updatedAt: new Date(),
+        })
+        .where(eq(lineItemProofVersions.id, proofVersion.id));
+    }
 
     await tx
       .update(orderLineItems)
@@ -3099,7 +3169,7 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
         manualApprovalOverrideId: manualApprovalOverride.id,
         proofVersionId: proofVersion.id,
         previousProofStatus: proofVersion.status,
-        newProofStatus: "approved",
+        newProofStatus: manualOverrideProofStatus,
         approvalSource: "manual_override",
         reason: overrideReason,
         internalNote: trimNullable(args.internalNote),
@@ -3146,7 +3216,7 @@ export async function markLineItemProofNotRequired(tx: any, args: {
     throwProofingConflict("Proof approval is not blocking this line item");
   }
 
-  await supersedeActionableProofVersions(tx, {
+  await cancelActionableProofVersions(tx, {
     organizationId: args.organizationId,
     orderId: lineItem.orderId,
     lineItemId: lineItem.lineItemId,
