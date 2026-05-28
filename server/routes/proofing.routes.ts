@@ -32,6 +32,7 @@ import {
   createLineItemProofVersion,
   generateLineItemArtworkPreviewDerivative,
   INCOMPLETE_PROOF_MESSAGE,
+  listEligibleProofArtworkSources,
   listProofingQueue,
   markLineItemProofNotRequired,
   markProofVersionSent,
@@ -188,6 +189,38 @@ export function registerProofingRoutes(
     }
   });
 
+  app.get("/api/proofing/line-item/:lineItemId/eligible-artwork", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const sources = await listEligibleProofArtworkSources(db, {
+        organizationId,
+        lineItemId: String(req.params.lineItemId),
+      });
+      const eligibleCount = sources.filter((source) => source.eligible).length;
+
+      return res.json({
+        success: true,
+        data: {
+          sources,
+          eligibleCount,
+          disabledReason: eligibleCount > 0 ? null : "no eligible artwork found",
+          disabledReasonCode: eligibleCount > 0 ? null : "no_eligible_artwork_found",
+        },
+      });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error resolving eligible artwork:", error);
+      return res.status(status).json({
+        success: false,
+        error: error?.message || "Failed to resolve eligible artwork",
+        reason: error?.code || "eligible_artwork_lookup_failed",
+      });
+    }
+  });
+
   app.post("/api/proofing/line-items/:lineItemId/generate-preview", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -234,6 +267,7 @@ export function registerProofingRoutes(
         }),
         z.object({
           mode: z.literal("generated"),
+          artworkSourceIds: z.array(z.string().min(1)).optional(),
           internalNotes: z.string().optional().nullable(),
         }),
       ]).safeParse(requestBody);
@@ -252,6 +286,7 @@ export function registerProofingRoutes(
             organizationId,
             lineItemId,
             actorUserId: userId,
+            artworkSourceIds: parsed.data.artworkSourceIds ?? null,
             internalNotes: parsed.data.internalNotes ?? null,
           });
           proofVersion = result.proofVersion;
@@ -310,7 +345,11 @@ export function registerProofingRoutes(
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error creating proof version:", error);
-      return res.status(status).json({ error: error?.message || "Failed to create proof version" });
+      return res.status(status).json({
+        success: false,
+        error: error?.message || "Failed to create proof version",
+        reason: error?.code || null,
+      });
     }
   });
 
@@ -334,6 +373,7 @@ export function registerProofingRoutes(
         }),
         z.object({
           mode: z.literal("generated"),
+          artworkSourceIds: z.array(z.string().min(1)).optional(),
           internalNotes: z.string().optional().nullable(),
           sentToName: z.string().optional().nullable(),
           sentToEmail: z.string().optional().nullable(),
@@ -359,6 +399,7 @@ export function registerProofingRoutes(
           actorUserId: userId,
           mode: parsed.data.mode,
           proofFileId: "proofFileId" in parsed.data ? parsed.data.proofFileId : null,
+          artworkSourceIds: "artworkSourceIds" in parsed.data ? parsed.data.artworkSourceIds ?? null : null,
           internalNotes: parsed.data.internalNotes ?? null,
           sentToName: parsed.data.sentToName ?? null,
           sentToEmail: normalizedSentToEmail,
@@ -446,7 +487,11 @@ export function registerProofingRoutes(
       if (status === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
         return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
       }
-      return res.status(status).json({ error: error?.message || "Failed to create and send proof" });
+      return res.status(status).json({
+        success: false,
+        error: error?.message || "Failed to create and send proof",
+        reason: error?.code || null,
+      });
     }
   });
 

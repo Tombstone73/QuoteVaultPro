@@ -110,6 +110,23 @@ type ProofAttachmentRow = ProofFileRow & {
   role?: string | null;
 };
 
+type EligibleProofArtworkSource = {
+  id: string;
+  sourceType: "line_item_artwork" | "line_item_asset" | "line_item_file";
+  sourceId: string;
+  attachmentId: string | null;
+  fileRecordId: string | null;
+  fileName: string;
+  originalFilename: string | null;
+  mimeType: string | null;
+  fileUrl: string | null;
+  thumbnailUrl: string | null;
+  previewUrl: string | null;
+  role: string | null;
+  eligible: boolean;
+  eligibilityReason: string | null;
+};
+
 type ProofRecipientOption = {
   id: string;
   name: string;
@@ -591,6 +608,7 @@ export default function StaffProofingPage() {
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [createMode, setCreateMode] = useState<"generated" | "uploaded">("uploaded");
   const [selectedExistingAttachmentId, setSelectedExistingAttachmentId] = useState<string>("");
+  const [selectedArtworkSourceIds, setSelectedArtworkSourceIds] = useState<string[]>([]);
   const [createInternalNotes, setCreateInternalNotes] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [previewRecoveryState, setPreviewRecoveryState] = useState<{
@@ -709,6 +727,25 @@ export default function StaffProofingPage() {
   });
 
   const detail = detailQuery.data?.data;
+  const eligibleArtworkQuery = useQuery<JsonEnvelope<{
+    sources: EligibleProofArtworkSource[];
+    eligibleCount: number;
+    disabledReason: string | null;
+    disabledReasonCode: string | null;
+  }>>({
+    queryKey: ["/api/proofing/line-item", activeLineItemId, "eligible-artwork"],
+    queryFn: () => readJson(`/api/proofing/line-item/${activeLineItemId}/eligible-artwork`),
+    enabled: Boolean(isInternalUser && activeLineItemId && createDialogOpen),
+    staleTime: 10_000,
+  });
+  const eligibleArtworkSources = useMemo(
+    () => eligibleArtworkQuery.data?.data?.sources ?? [],
+    [eligibleArtworkQuery.data?.data?.sources],
+  );
+  const selectableGeneratedArtworkSources = useMemo(
+    () => eligibleArtworkSources.filter((source) => source.eligible),
+    [eligibleArtworkSources],
+  );
   const activeOrderId = detail?.orderId ?? activeRow?.orderId ?? null;
   const recipientsQuery = useQuery<JsonEnvelope<{ defaultRecipient: ProofRecipientOption | null; contacts: ProofRecipientOption[] }>>({
     queryKey: ["/api/orders", activeOrderId, "proof-recipients"],
@@ -821,13 +858,21 @@ export default function StaffProofingPage() {
     displayedVersion?.id === detail?.currentActionableProofVersionId && displayedVersion?.status === "awaiting_response";
   const primaryActionLabel = getPrimaryActionLabel(canSendCurrentVersion, displayedVersion);
   const hasSourceArtwork = Boolean(currentSnapshot?.sourceArtwork);
-  const hasEligibleArtwork = hasSourceArtwork || selectableArtworkFiles.length > 0;
+  const selectedGeneratedArtworkCount = selectedArtworkSourceIds.filter((id) =>
+    selectableGeneratedArtworkSources.some((source) => source.id === id),
+  ).length;
+  const hasEligibleArtwork = selectableGeneratedArtworkSources.length > 0 || hasSourceArtwork || selectableArtworkFiles.length > 0;
   const hasBlockingSentProof = detail?.currentActionableProofVersion?.status === "awaiting_response";
   const generatedDraftDisabledReason = getGenerateProofDraftDisabledReason({
-    hasEligibleArtwork,
+    hasEligibleArtwork: eligibleArtworkQuery.isLoading ? true : hasEligibleArtwork,
     hasBlockingSentProof,
     hasPermission: Boolean(selectedRow),
   });
+  const effectiveGeneratedDraftDisabledReason =
+    (eligibleArtworkQuery.isLoading ? "checking artwork files" : null) ||
+    generatedDraftDisabledReason ||
+    (selectableGeneratedArtworkSources.length > 0 && selectedGeneratedArtworkCount === 0 ? "select at least one artwork file" : null) ||
+    (eligibleArtworkQuery.data?.data?.disabledReason ?? null);
   const uploadedDraftDisabledReason = (() => {
     if (!selectedRow) return "permission missing";
     if (hasBlockingSentProof) return "existing sent proof must be cancelled or revised first";
@@ -884,6 +929,20 @@ export default function StaffProofingPage() {
   }, [createDialogOpen, selectableDraftSourceFiles, selectedExistingAttachmentId, displayedFile?.id]);
 
   useEffect(() => {
+    if (!createDialogOpen || createMode !== "generated") return;
+    const eligibleIds = selectableGeneratedArtworkSources.map((source) => source.id);
+    setSelectedArtworkSourceIds((current) => {
+      const currentValid = current.filter((id) => eligibleIds.includes(id));
+      if (currentValid.length > 0) {
+        return currentValid.length === current.length && currentValid.every((id, index) => id === current[index])
+          ? current
+          : currentValid;
+      }
+      return eligibleIds;
+    });
+  }, [createDialogOpen, createMode, selectableGeneratedArtworkSources]);
+
+  useEffect(() => {
     setPreviewRecoveryState((current) => {
       if (!selectedRow?.lineItemId) return null;
       return current?.lineItemId === selectedRow.lineItemId ? current : null;
@@ -902,6 +961,7 @@ export default function StaffProofingPage() {
     await queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
     if (lineItemId) {
       await queryClient.invalidateQueries({ queryKey: ["/api/proofing/line-item", lineItemId] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/proofing/line-item", lineItemId, "eligible-artwork"] });
       if (orderId) {
         await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "line-items", lineItemId, "files"] });
       }
@@ -941,6 +1001,7 @@ export default function StaffProofingPage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               mode: "generated",
+              artworkSourceIds: selectedArtworkSourceIds,
               internalNotes: createInternalNotes.trim() || null,
             }),
           },
@@ -992,6 +1053,7 @@ export default function StaffProofingPage() {
       setCreateDialogOpen(false);
       setCreateMode("uploaded");
       setSelectedExistingAttachmentId("");
+      setSelectedArtworkSourceIds([]);
       setCreateInternalNotes("");
       setUploadFile(null);
 
@@ -1027,7 +1089,7 @@ export default function StaffProofingPage() {
         derivativeStatus: "ready" | "pending" | "failed";
         previewStatus: ProofArtifactPreviewStatus;
         sourceFileName: string;
-        sourceType: "attachment" | "asset";
+        sourceType: "attachment" | "asset" | "line_item_file";
         sourceId: string;
         message: string;
       }>>(`/api/proofing/line-items/${selectedRow.lineItemId}/generate-preview`, {
@@ -2122,10 +2184,56 @@ export default function StaffProofingPage() {
             {createMode === "generated" ? (
               <div className="rounded-lg border p-4 text-sm text-muted-foreground">
                 <p className="font-medium text-foreground">Generated proof uses permanent saved data only.</p>
-                <p className="mt-2">It will build a normalized proof snapshot from the saved line item, use the latest saved artwork source, render a basic PDF artifact, and create a draft proof version. You will confirm the recipient before it is sent.</p>
-                <p className="mt-2">Current source: {currentSnapshot?.sourceArtwork?.fileName || "No saved artwork source available"}</p>
-                {generatedDraftDisabledReason ? (
-                  <p className="mt-2 font-medium text-amber-600">Disabled: {generatedDraftDisabledReason}.</p>
+                <p className="mt-2">It will build a normalized proof snapshot from the saved line item, use selected eligible artwork, render a basic PDF artifact, and create a draft proof version. You will confirm the recipient before it is sent.</p>
+                <p className="mt-2 font-medium text-foreground">
+                  {selectableGeneratedArtworkSources.length > 0
+                    ? `Eligible artwork: ${selectableGeneratedArtworkSources.length} file${selectableGeneratedArtworkSources.length === 1 ? "" : "s"} found`
+                    : eligibleArtworkQuery.isLoading
+                      ? "Checking eligible artwork files..."
+                      : "No eligible artwork files found for this line item"}
+                </p>
+                {eligibleArtworkSources.length > 0 ? (
+                  <div className="mt-3 space-y-2">
+                    {eligibleArtworkSources.map((source) => {
+                      const isSelected = selectedArtworkSourceIds.includes(source.id);
+                      const displayName = source.originalFilename || source.fileName;
+                      return (
+                        <label
+                          key={`${source.sourceType}:${source.id}`}
+                          className={`flex items-center gap-3 rounded-md border p-3 ${source.eligible ? "cursor-pointer" : "opacity-60"}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            disabled={!source.eligible || createDraftMutation.isPending}
+                            onChange={(event) => {
+                              setSelectedArtworkSourceIds((current) =>
+                                event.target.checked
+                                  ? Array.from(new Set([...current, source.id]))
+                                  : current.filter((id) => id !== source.id),
+                              );
+                            }}
+                            className="h-4 w-4"
+                          />
+                          {source.thumbnailUrl ? (
+                            <img src={source.thumbnailUrl} alt="" className="h-10 w-10 rounded border object-cover" />
+                          ) : (
+                            <FileImage className="h-10 w-10 rounded border p-2 text-muted-foreground" />
+                          )}
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium text-foreground">{displayName}</span>
+                            <span className="block text-xs text-muted-foreground">
+                              {source.mimeType || "unknown type"} / {source.sourceType.replace(/_/g, " ")}
+                              {!source.eligible && source.eligibilityReason ? ` / ${source.eligibilityReason}` : ""}
+                            </span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {effectiveGeneratedDraftDisabledReason ? (
+                  <p className="mt-2 font-medium text-amber-600">Disabled: {effectiveGeneratedDraftDisabledReason}.</p>
                 ) : null}
               </div>
             ) : (
@@ -2209,7 +2317,7 @@ export default function StaffProofingPage() {
               disabled={
                 createDraftMutation.isPending ||
                 (createMode === "uploaded" && Boolean(uploadedDraftDisabledReason)) ||
-                (createMode === "generated" && Boolean(generatedDraftDisabledReason))
+                (createMode === "generated" && Boolean(effectiveGeneratedDraftDisabledReason))
               }
             >
               {createDraftMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}

@@ -30,7 +30,7 @@ export function getGenerateProofDraftDisabledReason(args: {
   if (args.hasPermission === false) return "permission missing";
   if (args.schemaReady === false) return "migration/schema missing";
   if (args.hasBlockingSentProof) return "existing sent proof must be cancelled or revised first";
-  if (!args.hasEligibleArtwork) return "no artwork found";
+  if (!args.hasEligibleArtwork) return "no eligible artwork found";
   if (args.unsupportedFileType) return "unsupported file type";
   if (args.previewGenerationAvailable === false) return "preview generation unavailable";
   return null;

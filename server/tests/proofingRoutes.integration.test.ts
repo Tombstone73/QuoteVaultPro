@@ -44,10 +44,12 @@ import {
   autoSyncCanonicalProofForLineItem,
   cancelProofVersion,
   createAndSendProofVersion,
+  createGeneratedDraftProofVersion,
   createLineItemProofVersion,
   createLineItemProofVersionFromExistingAttachment,
   generateLineItemArtworkPreviewDerivative,
   INCOMPLETE_PROOF_MESSAGE,
+  listEligibleProofArtworkSources,
   listProofingQueue,
   markProofVersionSent,
   recordManualProofApprovalOverride,
@@ -307,6 +309,32 @@ function createTestApp() {
     }
   });
 
+  app.get("/api/proofing/line-item/:lineItemId/eligible-artwork", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const sources = await listEligibleProofArtworkSources(db, {
+        organizationId,
+        lineItemId: String(req.params.lineItemId),
+      });
+      const eligibleCount = sources.filter((source) => source.eligible).length;
+
+      return res.json({
+        success: true,
+        data: {
+          sources,
+          eligibleCount,
+          disabledReason: eligibleCount > 0 ? null : "no eligible artwork found",
+          disabledReasonCode: eligibleCount > 0 ? null : "no_eligible_artwork_found",
+        },
+      });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to resolve eligible artwork" });
+    }
+  });
+
   app.post("/api/proofing/line-item/:lineItemId/versions", isAuthenticated, tenantContext, async (req: any, res: Response) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -315,10 +343,24 @@ function createTestApp() {
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: "User ID not found" });
 
-      const parsed = z.object({
-        proofFileId: z.string().min(1),
-        internalNotes: z.string().optional().nullable(),
-      }).safeParse(req.body);
+      const requestBody = req.body?.mode
+        ? req.body
+        : req.body?.proofFileId
+          ? { ...req.body, mode: "uploaded" }
+          : req.body;
+
+      const parsed = z.discriminatedUnion("mode", [
+        z.object({
+          mode: z.literal("uploaded"),
+          proofFileId: z.string().min(1),
+          internalNotes: z.string().optional().nullable(),
+        }),
+        z.object({
+          mode: z.literal("generated"),
+          artworkSourceIds: z.array(z.string().min(1)).optional(),
+          internalNotes: z.string().optional().nullable(),
+        }),
+      ]).safeParse(requestBody);
 
       if (!parsed.success) {
         return res.status(400).json({ error: fromZodError(parsed.error).message });
@@ -326,13 +368,25 @@ function createTestApp() {
 
       const lineItemId = String(req.params.lineItemId);
       const created = await db.transaction(async (tx) => {
-        const proofVersion = await createLineItemProofVersion(tx, {
-          organizationId,
-          lineItemId,
-          proofFileId: parsed.data.proofFileId,
-          createdByUserId: userId,
-          internalNotes: parsed.data.internalNotes ?? null,
-        });
+        const result = parsed.data.mode === "generated"
+          ? await createGeneratedDraftProofVersion(tx, {
+              organizationId,
+              lineItemId,
+              actorUserId: userId,
+              artworkSourceIds: parsed.data.artworkSourceIds ?? null,
+              internalNotes: parsed.data.internalNotes ?? null,
+            })
+          : {
+              proofVersion: await createLineItemProofVersion(tx, {
+                organizationId,
+                lineItemId,
+                proofFileId: parsed.data.proofFileId,
+                createdByUserId: userId,
+                internalNotes: parsed.data.internalNotes ?? null,
+              }),
+              proofing: null,
+            };
+        const proofVersion = result.proofVersion;
 
         await tx.insert(auditLogs).values({
           organizationId,
@@ -353,7 +407,7 @@ function createTestApp() {
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        const proofing = await resolveLineItemProofingTruth(tx, {
+        const proofing = result.proofing ?? await resolveLineItemProofingTruth(tx, {
           organizationId,
           lineItemId,
         });
@@ -434,6 +488,7 @@ function createTestApp() {
         }),
         z.object({
           mode: z.literal("generated"),
+          artworkSourceIds: z.array(z.string().min(1)).optional(),
           internalNotes: z.string().optional().nullable(),
           sentToName: z.string().optional().nullable(),
           sentToEmail: z.string().optional().nullable(),
@@ -453,6 +508,7 @@ function createTestApp() {
           actorUserId: userId,
           mode: parsed.data.mode,
           proofFileId: "proofFileId" in parsed.data ? parsed.data.proofFileId : null,
+          artworkSourceIds: "artworkSourceIds" in parsed.data ? parsed.data.artworkSourceIds ?? null : null,
           internalNotes: parsed.data.internalNotes ?? null,
           sentToName: parsed.data.sentToName ?? null,
           sentToEmail: parsed.data.sentToEmail ?? null,
@@ -475,7 +531,11 @@ function createTestApp() {
       if ((error?.statusCode || 500) === 400 && error?.message === INCOMPLETE_PROOF_MESSAGE) {
         return res.status(400).json({ success: false, message: INCOMPLETE_PROOF_MESSAGE });
       }
-      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to create and send proof" });
+      return res.status(error?.statusCode || 500).json({
+        success: false,
+        error: error?.message || "Failed to create and send proof",
+        reason: error?.code || null,
+      });
     }
   });
 
@@ -1204,6 +1264,51 @@ describe("proofing route integration", () => {
     });
   });
 
+  test("eligible artwork resolver finds visible line item artwork attachments", async () => {
+    const { lineItemId, artworkFileId } = await createLineItemFixture("eligible_artwork_attachment", {
+      addArtwork: true,
+      artworkMimeType: "image/png",
+      artworkFileName: "visible-artwork.png",
+      artworkPreviewKey: "proofing-tests/visible-artwork-preview.png",
+    });
+
+    const res = await request(app)
+      .get(`/api/proofing/line-item/${lineItemId}/eligible-artwork`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(200);
+
+    expect(res.body?.data?.eligibleCount).toBeGreaterThan(0);
+    expect(res.body?.data?.sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: artworkFileId,
+          sourceType: "line_item_artwork",
+          eligible: true,
+        }),
+      ]),
+    );
+  });
+
+  test("eligible artwork resolver returns clear reason when no artwork exists", async () => {
+    const { lineItemId } = await createLineItemFixture("eligible_artwork_missing", {
+      addArtwork: false,
+    });
+
+    const res = await request(app)
+      .get(`/api/proofing/line-item/${lineItemId}/eligible-artwork`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(200);
+
+    expect(res.body?.data).toMatchObject({
+      eligibleCount: 0,
+      disabledReasonCode: "no_eligible_artwork_found",
+    });
+  });
+
   test("returns success when a preview derivative already exists", async () => {
     const { lineItemId } = await createLineItemFixture("generate_preview_exists", {
       addArtwork: true,
@@ -1613,7 +1718,11 @@ describe("proofing route integration", () => {
       .send({ mode: "generated" })
       .expect(409);
 
-    expect(res.body?.error).toBe("A saved artwork source is required before generating a proof");
+    expect(res.body).toMatchObject({
+      success: false,
+      error: "No eligible artwork files found for this line item",
+      reason: "no_eligible_artwork_found",
+    });
 
     const truth = await resolveLineItemProofingTruth(db, {
       organizationId: orgId,
@@ -1621,6 +1730,38 @@ describe("proofing route integration", () => {
     });
 
     expect(truth.currentActionableProofVersionId).toBeNull();
+  });
+
+  test("creates generated draft from selected line item artwork without mutating original artwork", async () => {
+    const { lineItemId, artworkFileId } = await createLineItemFixture("generated_draft_selected_artwork", {
+      attachProofFiles: false,
+      addArtwork: true,
+      artworkMimeType: "image/png",
+      artworkFileName: "selected-artwork.png",
+      artworkPreviewKey: "proofing-tests/selected-artwork-preview.png",
+      requiresProofApproval: true,
+    });
+
+    const res = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/versions`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ mode: "generated", artworkSourceIds: [artworkFileId], internalNotes: "selected artwork draft" })
+      .expect(200);
+
+    expect(res.body?.data?.proofVersion?.status).toBe("draft");
+    const proofing = proofingReadModelSchema.parse(res.body?.data?.proofing);
+    expect(proofing.currentProofInputSnapshot?.sourceArtwork?.sourceId).toBe(artworkFileId);
+    expect(proofing.currentActionableProofVersion?.proofFileId).not.toBe(artworkFileId);
+
+    const [artwork] = await db
+      .select({ id: orderAttachments.id, role: orderAttachments.role })
+      .from(orderAttachments)
+      .where(eq(orderAttachments.id, artworkFileId))
+      .limit(1);
+
+    expect(artwork).toMatchObject({ id: artworkFileId, role: "artwork" });
   });
 
   test("auto-syncs a canonical proof from persisted artwork and exposes it in the proofing queue", async () => {
