@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import type { LineItemOptionSelectionsV2, OptionNodeV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { normalizeSelectionMap, resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
-import { sortPbv2Choices, sortPbv2NodeIdsByBuilderOrder } from "@shared/pbv2OrderEntryRuntime";
+import { filterPbv2ChoicesForRuntime, sortPbv2NodeIdsByBuilderOrder } from "@shared/pbv2OrderEntryRuntime";
 import { evaluateProductOptionRules, type ProductOptionRule } from "@shared/productOptionRules";
 import { extractProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 
@@ -50,8 +50,8 @@ function isRenderableInputType(inputType: string): boolean {
   return isRenderablePbv2InputType(inputType);
 }
 
-function getSortedChoices(node: OptionNodeV2) {
-  return sortPbv2Choices(node.choices ?? []);
+function getRuntimeChoices(node: OptionNodeV2, visibleChoiceIds?: string[] | null) {
+  return filterPbv2ChoicesForRuntime(node.id, node.choices ?? [], visibleChoiceIds);
 }
 
 /**
@@ -645,7 +645,7 @@ export function ProductOptionsPanelV2({
             }
 
             if (inputType === "select") {
-              const choices = getSortedChoices(node);
+              const choices = getRuntimeChoices(node, runtimeVisibility?.visibleChoiceIds ?? null);
 
               const allowEmpty = node.input.constraints?.select?.allowEmpty === true;
               const emptyLabel = node.input.constraints?.select?.emptyLabel ?? "(None)";
@@ -680,7 +680,7 @@ export function ProductOptionsPanelV2({
             }
 
             if (inputType === "radio") {
-              const choices = getSortedChoices(node);
+              const choices = getRuntimeChoices(node, runtimeVisibility?.visibleChoiceIds ?? null);
 
               return (
                 <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
@@ -717,7 +717,7 @@ export function ProductOptionsPanelV2({
             }
 
             if (inputType === "multiselect") {
-              const choices = getSortedChoices(node);
+              const choices = getRuntimeChoices(node, runtimeVisibility?.visibleChoiceIds ?? null);
               const selectedValues = Array.isArray(currentValue) ? currentValue.map(String) : [];
 
               return (
