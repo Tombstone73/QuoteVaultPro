@@ -76,25 +76,18 @@ describe("PBV2 Banner product configuration", () => {
 
     expect(runtime.effectiveSelections.print_side).toBeUndefined();
 
-    const error = expectOptionRuleError(() =>
-      preview({
+    const result = preview({
         ...validBaseSelections(),
         banner_weight: { value: "13oz" },
         print_side: { value: "double_sided" },
-      }, tree)
-    );
+      }, tree);
 
-    expect(error.details).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          optionGroup: "print_side",
-          code: "PBV2_OPTION_SELECTION_NOT_VISIBLE",
-        }),
-      ])
-    );
+    expect(result.debug?.runtimeSelectionContext?.selectedChoices.print_side).toBe("single_sided");
+    expect(result.debug?.runtimeSelectionContext?.selectedChoices.print_side).not.toBe("double_sided");
+    expect(result.totalPrice).toBeCloseTo(13.13, 2);
   });
 
-  test("Pole Pockets = No hides and rejects stale depth, location, and custom depth", () => {
+  test("Pole Pockets = No hides and clears stale depth, location, and custom depth before pricing", () => {
     const tree = bannerTree();
     const selections = {
       ...validBaseSelections(),
@@ -111,13 +104,11 @@ describe("PBV2 Banner product configuration", () => {
     expect(runtime.effectiveSelections.pole_pocket_depth).toBeUndefined();
     expect(runtime.effectiveSelections.custom_pole_pocket_depth).toBeUndefined();
 
-    const error = expectOptionRuleError(() => preview(selections, tree));
-    expect(error.details).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ optionGroup: "pole_pocket_depth" }),
-        expect.objectContaining({ optionGroup: "custom_pole_pocket_depth" }),
-      ])
-    );
+    const result = preview(selections, tree);
+    expect(result.debug?.runtimeSelectionContext?.selectedChoices.pole_pocket_location).toBeUndefined();
+    expect(result.debug?.runtimeSelectionContext?.selectedChoices.pole_pocket_depth).toBeUndefined();
+    expect(result.debug?.variables.custom_pole_pocket_depth).toBeUndefined();
+    expect(result.totalPrice).toBeCloseTo(13.13, 2);
   });
 
   test("Pole Pockets = Yes requires location and depth", () => {
@@ -163,7 +154,7 @@ describe("PBV2 Banner product configuration", () => {
     );
   });
 
-  test("Grommets = No hides and rejects stale placement and custom count", () => {
+  test("Grommets = No hides and clears stale placement and custom count before pricing", () => {
     const tree = bannerTree();
     const selections = {
       ...validBaseSelections(),
@@ -177,13 +168,9 @@ describe("PBV2 Banner product configuration", () => {
     expect(runtime.effectiveSelections.grommet_placement).toBeUndefined();
     expect(runtime.effectiveSelections.custom_grommet_count).toBeUndefined();
 
-    const error = expectOptionRuleError(() => preview(selections, tree));
-    expect(error.details).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ optionGroup: "grommet_placement" }),
-        expect.objectContaining({ optionGroup: "custom_grommet_count" }),
-      ])
-    );
+    const result = preview(selections, tree);
+    expect(result.debug?.runtimeSelectionContext?.selectedChoices.grommet_placement).toBeUndefined();
+    expect(result.totalPrice).toBeCloseTo(13.13, 2);
   });
 
   test("Grommets = Yes requires placement", () => {
@@ -245,9 +232,8 @@ describe("PBV2 Banner product configuration", () => {
     expect(withPolePockets.totalPrice).toBeCloseTo(19.13, 2);
   });
 
-  test("invalid hidden stale values cannot produce a priced quote/order snapshot", () => {
-    const error = expectOptionRuleError(() =>
-      preview({
+  test("invalid hidden stale values are cleared before building a priced quote/order snapshot", () => {
+    const result = preview({
         ...validBaseSelections(),
         banner_weight: { value: "13oz" },
         print_side: { value: "double_sided" },
@@ -255,15 +241,11 @@ describe("PBV2 Banner product configuration", () => {
         pole_pocket_depth: { value: "4in" },
         grommets: { value: "no" },
         grommet_placement: { value: "corners_only" },
-      })
-    );
+      });
 
-    expect(error.details).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ optionGroup: "print_side" }),
-        expect.objectContaining({ optionGroup: "pole_pocket_depth" }),
-        expect.objectContaining({ optionGroup: "grommet_placement" }),
-      ])
-    );
+    expect(result.debug?.runtimeSelectionContext?.selectedChoices.print_side).toBe("single_sided");
+    expect(result.debug?.runtimeSelectionContext?.selectedChoices.pole_pocket_depth).toBeUndefined();
+    expect(result.debug?.runtimeSelectionContext?.selectedChoices.grommet_placement).toBeUndefined();
+    expect(result.totalPrice).toBeCloseTo(13.13, 2);
   });
 });

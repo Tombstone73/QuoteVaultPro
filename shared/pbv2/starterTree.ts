@@ -710,7 +710,10 @@ export function createPbv2BannerProductTreeJson(): Record<string, unknown> {
         id: "rule_13oz_defaults_single_sided",
         label: "13oz is single sided only",
         when: { all: [{ optionGroup: "banner_weight", operator: "equals", value: "13oz" }] },
-        then: [{ action: "set_default", targetOptionGroup: "print_side", value: "single_sided" }],
+        then: [
+          { action: "clear", targetOptionGroup: "print_side" },
+          { action: "set_default", targetOptionGroup: "print_side", value: "single_sided" },
+        ],
       },
       {
         id: "rule_pole_pockets_children",
