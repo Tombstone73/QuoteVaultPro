@@ -138,6 +138,18 @@ export function sortPbv2Choices<T extends { value?: string; label?: string }>(ch
     .map((entry) => entry.choice);
 }
 
+export function filterPbv2ChoicesForRuntime<T extends { value?: string; label?: string }>(
+  nodeId: string,
+  choices: T[] | null | undefined,
+  visibleChoiceIds?: Iterable<string> | null,
+): T[] {
+  const sortedChoices = sortPbv2Choices(choices);
+  if (!visibleChoiceIds) return sortedChoices;
+
+  const visibleChoiceIdSet = visibleChoiceIds instanceof Set ? visibleChoiceIds : new Set(visibleChoiceIds);
+  return sortedChoices.filter((choice) => visibleChoiceIdSet.has(`${nodeId}:${String(choice.value ?? "")}`));
+}
+
 export function sortPbv2NodeIdsByBuilderOrder(tree: OptionTreeV2 | null | undefined, nodeIds: string[]): string[] {
   const normalized = normalizePbv2Tree(tree);
   if (!normalized) return nodeIds.slice();

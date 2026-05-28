@@ -24,6 +24,7 @@ import { compareCanonicalGeometryPricing, detectsManualGeometryRebuild } from "@
 import type { Finding } from "@shared/pbv2/findings";
 import { pbv2TreeToEditorModel, type EditorModel } from "@/lib/pbv2/pbv2ViewModel";
 import { resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
+import { filterPbv2ChoicesForRuntime } from "@shared/pbv2OrderEntryRuntime";
 
 export type PricingPreviewState = {
   width: number;
@@ -315,13 +316,16 @@ function buildPreviewGroups(treeJson: unknown | null, selectedOptionValues: Reco
   const nodes = toNodesRecord(treeJson);
   let visibleNodeIds: Set<string> | null = null;
   let visibleGroupIds: Set<string> | null = null;
+  let visibleChoiceIds: Set<string> | null = null;
   try {
     const runtimeVisibility = resolveRuntimeVisibility(treeJson as any, selectedOptionValues);
     visibleNodeIds = new Set(runtimeVisibility.visibleNodeIds);
     visibleGroupIds = new Set(runtimeVisibility.visibleGroupIds);
+    visibleChoiceIds = new Set(runtimeVisibility.visibleChoiceIds);
   } catch {
     visibleNodeIds = null;
     visibleGroupIds = null;
+    visibleChoiceIds = null;
   }
 
   return model.groups
@@ -332,7 +336,9 @@ function buildPreviewGroups(treeJson: unknown | null, selectedOptionValues: Reco
           if (visibleNodeIds && !visibleNodeIds.has(optionId)) return null;
           const optionMeta = model?.options?.[optionId];
           const node = nodes?.[optionId] ?? null;
-          const choicesRaw = Array.isArray(node?.choices) ? node.choices : [];
+          const choicesRaw = Array.isArray(node?.choices)
+            ? filterPbv2ChoicesForRuntime(optionId, node.choices, visibleChoiceIds)
+            : [];
           const mappedChoices: Array<{ value: string; label: string }> = choicesRaw.map((choice: any) => ({
               value: String(choice?.value ?? ""),
               label: String(choice?.label ?? choice?.value ?? ""),

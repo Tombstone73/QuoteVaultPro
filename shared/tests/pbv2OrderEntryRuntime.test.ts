@@ -3,12 +3,15 @@ import type { OptionTreeV2 } from "../optionTreeV2";
 import {
   buildPbv2DefaultSelections,
   buildPbv2DefaultsHydrationKey,
+  filterPbv2ChoicesForRuntime,
   getRenderablePbv2QuestionNodeIds,
   hasRenderablePbv2Tree,
   shouldHydratePbv2Defaults,
   sortPbv2Choices,
 } from "../pbv2OrderEntryRuntime";
 import { buildInitialOrderLineItemDraftFromProduct } from "../orderLineItemInitialization";
+import { createPbv2BannerProductTreeJson } from "../pbv2/starterTree";
+import { resolveRuntimeVisibility } from "../optionTreeV2Runtime";
 
 function makeTree(): OptionTreeV2 {
   return {
@@ -198,6 +201,36 @@ describe("PBV2 order-entry runtime", () => {
       "fallback-first",
       "fallback-second",
     ]);
+  });
+
+  test("runtime choice filtering removes unavailable Banner Double Sided when 13oz is selected", () => {
+    const tree = createPbv2BannerProductTreeJson() as any;
+    const runtime = resolveRuntimeVisibility(tree, {
+      selected: {
+        banner_weight: { value: "13oz" },
+      },
+    });
+
+    const choices = filterPbv2ChoicesForRuntime("print_side", tree.nodes.print_side.choices, runtime.visibleChoiceIds);
+
+    expect(runtime.visibleChoiceIds).toContain("print_side:single_sided");
+    expect(runtime.visibleChoiceIds).not.toContain("print_side:double_sided");
+    expect(choices.map((choice) => choice.value)).toEqual(["single_sided"]);
+  });
+
+  test("runtime choice filtering restores Banner Double Sided when 18oz is selected", () => {
+    const tree = createPbv2BannerProductTreeJson() as any;
+    const runtime = resolveRuntimeVisibility(tree, {
+      selected: {
+        banner_weight: { value: "18oz" },
+      },
+    });
+
+    const choices = filterPbv2ChoicesForRuntime("print_side", tree.nodes.print_side.choices, runtime.visibleChoiceIds);
+
+    expect(runtime.visibleChoiceIds).toContain("print_side:single_sided");
+    expect(runtime.visibleChoiceIds).toContain("print_side:double_sided");
+    expect(choices.map((choice) => choice.value)).toEqual(["single_sided", "double_sided"]);
   });
 
   test("buildInitialOrderLineItemDraftFromProduct centralizes routing defaults, PBV2 defaults, and render order", () => {
