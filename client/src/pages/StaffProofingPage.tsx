@@ -50,6 +50,7 @@ import { useOrderLineItemFiles, type OrderFileWithUser } from "@/hooks/useOrderF
 import { useOrder, useUpdateOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { apiFetchBlob } from "@/lib/queryClient";
 import {
   canGeneratePreviewRecovery,
   canRegenerateGeneratedProof,
@@ -57,6 +58,7 @@ import {
   getProofVersionRecoveryStatusLabel,
   getProofVersionRecoveryStatusNote,
 } from "@/lib/proofingRecovery";
+import { getStaffProofDownloadUrl, getStaffProofPreviewUrl, shouldFetchStaffPreviewAsBlob } from "@/lib/proofingPreviewUrls";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import {
   getInitialProofingFilter,
@@ -96,6 +98,7 @@ type JsonEnvelope<T> = {
 type ProofFileRow = OrderFileWithUser & {
   fileRecordId?: string | null;
   originalFilename?: string | null;
+  authenticatedUrl?: string | null;
   downloadUrl?: string | null;
   objectPath?: string | null;
   previewUrl?: string | null;
@@ -218,16 +221,12 @@ function getProofPreviewUrl(file: ProofFileRow | null | undefined) {
   if (!file) return null;
   const fileName = file.originalFilename || file.fileName || "Proof";
   const mimeType = file.mimeType || null;
-  const serverProvidedUrl = file.originalUrl || file.previewUrl || file.downloadUrl || file.fileUrl || null;
-  if (isPdfFile(mimeType, fileName)) {
-    return serverProvidedUrl || buildPdfViewUrl(file.objectPath);
-  }
-  return serverProvidedUrl || file.thumbUrl || null;
+  const isPdf = isPdfFile(mimeType, fileName);
+  return getStaffProofPreviewUrl(file, isPdf) || (isPdf ? buildPdfViewUrl(file.objectPath) : null);
 }
 
 function getDownloadUrl(file: ProofFileRow | null | undefined) {
-  if (!file) return null;
-  return file.downloadUrl || file.originalUrl || file.fileUrl || null;
+  return getStaffProofDownloadUrl(file);
 }
 
 function getDefaultVersionId(detail: ProofingReadModel | undefined, row: ProofingQueueRow | undefined) {
@@ -613,6 +612,9 @@ export default function StaffProofingPage() {
   const [createInternalNotes, setCreateInternalNotes] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [previewImageError, setPreviewImageError] = useState(false);
+  const [staffPreviewBlobUrl, setStaffPreviewBlobUrl] = useState<string | null>(null);
+  const [staffPreviewError, setStaffPreviewError] = useState<string | null>(null);
+  const [staffPreviewLoading, setStaffPreviewLoading] = useState(false);
   const [previewRecoveryState, setPreviewRecoveryState] = useState<{
     lineItemId: string;
     derivativeStatus: "ready" | "pending" | "failed";
@@ -814,11 +816,24 @@ export default function StaffProofingPage() {
     : null;
   const currentSnapshot = detail?.currentProofInputSnapshot ?? null;
   const currentArtifact = detail?.currentDisplayedProofArtifact ?? null;
-  const previewUrl = getProofPreviewUrl(displayedFile);
+  const rawPreviewUrl = getProofPreviewUrl(displayedFile);
+  const previewUrl = staffPreviewBlobUrl || (rawPreviewUrl && !shouldFetchStaffPreviewAsBlob(rawPreviewUrl) ? rawPreviewUrl : null);
   const downloadUrl = getDownloadUrl(displayedFile);
   const previewName = displayedFile?.originalFilename || displayedFile?.fileName || "Proof";
   const previewIsPdf = Boolean(displayedFile && isPdfFile(displayedFile.mimeType || null, previewName));
   const previewIsImage = Boolean(displayedFile?.mimeType?.startsWith("image/"));
+  const displayedFileForViewer = useMemo(
+    () =>
+      displayedFile
+        ? {
+            ...displayedFile,
+            originalUrl: rawPreviewUrl ?? displayedFile.originalUrl ?? null,
+            previewUrl: rawPreviewUrl ?? displayedFile.previewUrl ?? null,
+            downloadUrl: downloadUrl ?? displayedFile.downloadUrl ?? null,
+          }
+        : null,
+    [displayedFile, downloadUrl, rawPreviewUrl],
+  );
   const staffStatus = getStaffFacingStatus({ row: activeRow ?? undefined, detail, displayedVersion, artifact: currentArtifact });
   const latestCustomerFeedback = detail?.proofDecisionHistory?.[0] ?? null;
   const statusNote = getStatusNote({ detail, displayedVersion });
@@ -831,6 +846,46 @@ export default function StaffProofingPage() {
     return `${url}${separator}page=${viewerPage}&zoom=${viewerZoom}`;
   }, [pdfViewerMode, previewIsPdf, previewUrl, viewerPage, viewerZoom]);
   const jobSpecificationRows = useMemo(() => getJobSpecificationRows(selectedLineItem, activeRow ?? undefined), [activeRow, selectedLineItem]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+
+    setStaffPreviewBlobUrl(null);
+    setStaffPreviewError(null);
+    setStaffPreviewLoading(false);
+
+    if (!rawPreviewUrl || !shouldFetchStaffPreviewAsBlob(rawPreviewUrl)) {
+      return () => {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+      };
+    }
+
+    setStaffPreviewLoading(true);
+
+    void (async () => {
+      try {
+        const blob = await apiFetchBlob(rawPreviewUrl, { method: "GET", credentials: "include" });
+        if (blob.type.includes("application/json")) {
+          throw new Error("Preview route returned JSON instead of a proof file");
+        }
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setStaffPreviewBlobUrl(objectUrl);
+      } catch (error) {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : "Preview failed to load";
+        setStaffPreviewError(message);
+      } finally {
+        if (!cancelled) setStaffPreviewLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [rawPreviewUrl]);
 
   useEffect(() => {
     if (!sendDialogOpen || !defaultProofRecipient || sendToEmail.trim()) return;
@@ -921,7 +976,7 @@ export default function StaffProofingPage() {
     setViewerZoom(previewIsPdf ? 85 : 100);
     setViewerPage(1);
     setPreviewImageError(false);
-  }, [previewIsPdf, selectedVersionId]);
+  }, [previewIsPdf, rawPreviewUrl, selectedVersionId]);
 
   function openCreateProofDialog(mode: "generated" | "uploaded" = "generated") {
     setCreateMode(mode);
@@ -967,6 +1022,8 @@ export default function StaffProofingPage() {
 
   async function refreshProofing(lineItemId?: string | null, orderId?: string | null) {
     await queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
+    await queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] });
+    await queryClient.refetchQueries({ queryKey: ["/api/operational-summary"], type: "active" });
     if (lineItemId) {
       await queryClient.invalidateQueries({ queryKey: ["/api/proofing/line-item", lineItemId] });
       await queryClient.invalidateQueries({ queryKey: ["/api/proofing/line-item", lineItemId, "eligible-artwork"] });
@@ -1597,6 +1654,33 @@ export default function StaffProofingPage() {
                         <p className="mt-1 text-xs text-slate-500">The file linked to this version is not accessible.<br />Try regenerating the proof.</p>
                       </div>
                     </div>
+                  ) : staffPreviewLoading ? (
+                    <div className="flex flex-1 items-center justify-center p-8">
+                      <div className="w-full max-w-sm rounded-xl bg-slate-900/60 py-14 text-center text-slate-400">
+                        <Loader2 className="mx-auto mb-3 h-10 w-10 animate-spin opacity-60" />
+                        <p className="text-sm font-medium">Loading proof preview</p>
+                        <p className="mt-1 text-xs text-slate-500">{previewName}</p>
+                      </div>
+                    </div>
+                  ) : staffPreviewError ? (
+                    <div className="flex flex-1 items-center justify-center p-8">
+                      <div className="w-full max-w-sm rounded-xl border border-rose-500/30 bg-rose-500/10 py-12 text-center text-rose-100">
+                        <FileImage className="mx-auto mb-3 h-10 w-10 opacity-70" />
+                        <p className="text-sm font-semibold">Preview failed to load</p>
+                        <p className="mt-1 px-6 text-xs text-rose-100/80">{previewName}</p>
+                        <p className="mt-1 px-6 text-[11px] text-rose-100/70">{staffPreviewError}</p>
+                        {downloadUrl ? (
+                          <button
+                            type="button"
+                            onClick={() => void downloadFileFromUrl(downloadUrl, previewName)}
+                            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-rose-300/50 bg-rose-950/40 px-3 py-1.5 text-xs font-medium text-rose-50 hover:bg-rose-900/60"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            Open / Download
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
                   ) : previewIsPdf && embeddedPdfUrl ? (
                     /* PDF: fill 100% of the pane width; height driven by viewport. */
                     <div className="relative flex-1">
@@ -2178,7 +2262,7 @@ export default function StaffProofingPage() {
         </main>
       </div>
 
-      <AttachmentViewerDialog attachment={displayedFile as any} open={viewerOpen} onOpenChange={setViewerOpen} />
+      <AttachmentViewerDialog attachment={displayedFileForViewer as any} open={viewerOpen} onOpenChange={setViewerOpen} />
 
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent className="sm:max-w-2xl">

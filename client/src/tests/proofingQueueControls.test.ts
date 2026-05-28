@@ -30,6 +30,10 @@ const rows = [
     hasApprovedProof: false,
     requiresProofApproval: true,
     requiresPrepress: false,
+    activeOwnerJobId: null,
+    activeOwnerStationKey: null,
+    activeOwnerStepKey: null,
+    productionJobId: null,
     proofCount: 0,
   },
   {
@@ -55,6 +59,10 @@ const rows = [
     hasApprovedProof: false,
     requiresProofApproval: true,
     requiresPrepress: false,
+    activeOwnerJobId: null,
+    activeOwnerStationKey: null,
+    activeOwnerStepKey: null,
+    productionJobId: null,
     proofCount: 2,
   },
   {
@@ -80,6 +88,10 @@ const rows = [
     hasApprovedProof: true,
     requiresProofApproval: true,
     requiresPrepress: false,
+    activeOwnerJobId: null,
+    activeOwnerStationKey: null,
+    activeOwnerStepKey: null,
+    productionJobId: null,
     proofCount: 1,
   },
   {
@@ -105,6 +117,10 @@ const rows = [
     hasApprovedProof: false,
     requiresProofApproval: true,
     requiresPrepress: false,
+    activeOwnerJobId: null,
+    activeOwnerStationKey: null,
+    activeOwnerStepKey: null,
+    productionJobId: null,
     proofCount: 3,
   },
 ] as const;

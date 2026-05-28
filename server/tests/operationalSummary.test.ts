@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from "@jest/globals";
 import { normalizeProductionStationKey } from "@shared/productionStations";
+import { countAwaitingProofQueueRows } from "../services/operationalSummary";
 
 // ---------------------------------------------------------------------------
 // Re-implement the pure mapping function here to keep tests DB-free.
@@ -251,6 +252,31 @@ describe("buildBadgeCounts — full mapping", () => {
     const counts = buildBadgeCounts(makeZeroSummary(), 5);
     expect(counts.approvals).toBe(5);
     expect(counts["inbound-orders"]).toBe(0);
+  });
+});
+
+describe("proofing sidebar count", () => {
+  test("matches the Staff Proofing Awaiting Proof tab statuses", () => {
+    expect(
+      countAwaitingProofQueueRows([
+        { currentQueueStatus: "awaiting_send" },
+        { currentQueueStatus: "revision_requested" },
+        { currentQueueStatus: "no_active_proof" },
+        { currentQueueStatus: "awaiting_approval" },
+        { currentQueueStatus: "approved" },
+      ] as any),
+    ).toBe(3);
+  });
+
+  test("does not count approved or sent proofs as awaiting proof action", () => {
+    expect(
+      countAwaitingProofQueueRows([
+        { currentQueueStatus: "approved" },
+        { currentQueueStatus: "approved_by_override" },
+        { currentQueueStatus: "awaiting_approval" },
+        { currentQueueStatus: "rejected" },
+      ] as any),
+    ).toBe(0);
   });
 });
 
