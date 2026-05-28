@@ -60,6 +60,7 @@ export type OrderCancellationSideEffects = {
   voidedInvoiceIds: string[];
   voidedShipmentIds: string[];
   voidedPickupTicketIds: string[];
+  cancelledProofVersionIds: string[];
   supersededProofVersionIds: string[];
   releasedInventoryReservationIds: string[];
 };
@@ -149,6 +150,7 @@ function emptySideEffects(): OrderCancellationSideEffects {
     voidedInvoiceIds: [],
     voidedShipmentIds: [],
     voidedPickupTicketIds: [],
+    cancelledProofVersionIds: [],
     supersededProofVersionIds: [],
     releasedInventoryReservationIds: [],
   };
@@ -446,7 +448,7 @@ export async function cancelOrder(args: {
     if (proofVersionIds.length > 0) {
       await tx
         .update(lineItemProofVersions)
-        .set({ status: "superseded", updatedAt: now })
+        .set({ status: "cancelled", updatedAt: now })
         .where(inArray(lineItemProofVersions.id, proofVersionIds));
 
       await tx
@@ -462,7 +464,7 @@ export async function cancelOrder(args: {
           userName: actorName,
           actionType: "proof_version_cancelled",
           fromStatus: proof.status,
-          toStatus: "superseded",
+          toStatus: "cancelled",
           note: noteText,
           metadata: {
             source: "order_cancellation",
@@ -472,7 +474,7 @@ export async function cancelOrder(args: {
           },
         });
       }
-      sideEffects.supersededProofVersionIds.push(...proofVersionIds);
+      sideEffects.cancelledProofVersionIds.push(...proofVersionIds);
     }
 
     for (const decision of invoiceDecisions) {

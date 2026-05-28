@@ -8,6 +8,7 @@ export const proofVersionStatusValues = [
   "approved",
   "rejected",
   "revision_requested",
+  "cancelled",
   "superseded",
 ] as const;
 

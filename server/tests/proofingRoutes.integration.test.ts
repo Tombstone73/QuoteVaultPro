@@ -36,7 +36,7 @@ jest.mock("../services/productionRoutingService", () => {
 import { db } from "../db";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { tenantContext, getRequestOrganizationId } from "../tenantContext";
-import { auditLogs, lineItemProofManualApprovalOverrides, orderAttachments, orderLineItems, productionJobs } from "../../shared/schema";
+import { auditLogs, lineItemProofManualApprovalOverrides, lineItemProofVersions, orderAttachments, orderLineItems, productionJobs } from "../../shared/schema";
 import { proofingQueueResponseSchema, proofingReadModelSchema, type ProofVersionHistoryEntry } from "../../shared/proofing";
 import { createProofAccessToken, validateProofToken } from "../services/proofAccessTokenService";
 import {
@@ -55,6 +55,7 @@ import {
   resolveLineItemProofingTruth,
 } from "../services/proofingService";
 import { completeLineItemDesign, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
+import { resolveLineItemProofReleaseGate } from "../services/proofGateService";
 
 async function ensureProofingSchemaReady() {
   await db.execute(sql`alter table order_line_items add column if not exists requires_proof_approval boolean not null default false`);
@@ -70,12 +71,15 @@ async function ensureProofingSchemaReady() {
         'approved',
         'rejected',
         'revision_requested',
+        'cancelled',
         'superseded'
       );
     exception
       when duplicate_object then null;
     end $$;
   `);
+
+  await db.execute(sql`alter type line_item_proof_version_status add value if not exists 'cancelled'`);
 
   await db.execute(sql`
     do $$
@@ -726,8 +730,12 @@ function createTestApp() {
           throw Object.assign(new Error("This proof has already been resolved by manual approval override"), { statusCode: 409 });
         }
 
-        if (validation.proofVersion.status === "superseded" || validation.currentApprovalState.status === "cancelled") {
+        if (validation.proofVersion.status === "cancelled" || validation.currentApprovalState.status === "cancelled") {
           throw Object.assign(new Error("This proof version has been cancelled and is no longer available for approval."), { statusCode: 409 });
+        }
+
+        if (validation.proofVersion.status === "superseded" || validation.currentApprovalState.status === "superseded") {
+          throw Object.assign(new Error("This proof version has been replaced by a newer proof and is no longer available for approval."), { statusCode: 409 });
         }
 
         if (
@@ -1313,7 +1321,7 @@ describe("proofing route integration", () => {
       data: {
         proofId: lineItemId,
         versionId: proofVersionId,
-        status: "superseded",
+        status: "cancelled",
       },
     });
 
@@ -1376,7 +1384,7 @@ describe("proofing route integration", () => {
       }),
     );
 
-    expect(cancelResult.proofVersion.status).toBe("superseded");
+    expect(cancelResult.proofVersion.status).toBe("cancelled");
 
     const [artwork] = await db
       .select({ id: orderAttachments.id, role: orderAttachments.role })
@@ -1407,7 +1415,7 @@ describe("proofing route integration", () => {
       .send({ reason: "too late" })
       .expect(400);
 
-    expect(approvedRes.body.message).toBe("Approved proof versions cannot be cancelled from this workflow.");
+    expect(approvedRes.body.message).toBe("Resolved proof versions cannot be cancelled from this workflow.");
 
     const revisionFixture = await createLineItemFixture("cancel_revision_requested");
     const revisionSend = await createAndSendProof(revisionFixture.lineItemId, revisionFixture.proofFileA);
@@ -1428,7 +1436,7 @@ describe("proofing route integration", () => {
       .send({ reason: "already handled" })
       .expect(400);
 
-    expect(revisionRes.body.message).toContain("Only active sent proof versions can be cancelled.");
+    expect(revisionRes.body.message).toBe("Resolved proof versions cannot be cancelled from this workflow.");
   });
 
   test("cancelled proof tokens become read-only and cannot approve", async () => {
@@ -1456,6 +1464,52 @@ describe("proofing route integration", () => {
       .expect(409);
 
     expect(actionRes.body?.error).toBe("This proof version has been cancelled and is no longer available for approval.");
+  });
+
+  test("portal superseded proof tokens remain read-only with replaced messaging", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("superseded_portal_token");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+    const token = await createPortalToken(lineItemId, proofVersionId);
+
+    await db
+      .update(lineItemProofVersions)
+      .set({ status: "superseded", updatedAt: new Date() })
+      .where(eq(lineItemProofVersions.id, proofVersionId));
+
+    const getRes = await request(app)
+      .get(`/api/portal/proof/${token}`)
+      .expect(200);
+
+    expect(getRes.body?.data?.status).toBe("superseded");
+
+    const actionRes = await request(app)
+      .post(`/api/portal/proof/${token}/action`)
+      .send({ action: "reject", comment: "old link" })
+      .expect(409);
+
+    expect(actionRes.body?.error).toBe("This proof version has been replaced by a newer proof and is no longer available for approval.");
+  });
+
+  test("cancelled proofs do not satisfy the production proof gate", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("cancelled_gate_blocked");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+
+    await request(app)
+      .post(`/api/proofing/versions/${proofVersionId}/cancel`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ reason: "Wrong proof sent" })
+      .expect(200);
+
+    const gate = await resolveLineItemProofReleaseGate(db, {
+      organizationId: orgId,
+      lineItemId,
+    });
+
+    expect(gate.allowed).toBe(false);
+    expect(gate.approved).toBe(false);
+    expect(gate.blockedReason).toBe("Cannot release to production until proof approved");
   });
 
   test("after cancellation, staff can send a corrected proof version", async () => {
@@ -1491,6 +1545,8 @@ describe("proofing route integration", () => {
     expect(sendRes.body?.data?.proofVersion?.status).toBe("awaiting_response");
     const proofing = proofingReadModelSchema.parse(sendRes.body?.data?.proofing);
     expect(proofing.currentActionableProofVersion?.id).toBe(replacementVersionId);
+    const cancelledVersion = proofing.proofVersionHistory.find((version) => version.id === proofVersionId);
+    expect(cancelledVersion?.status).toBe("cancelled");
   });
 
   test("uploads or selects a manual proof file and sends it through the canonical flow", async () => {
@@ -1944,6 +2000,33 @@ describe("proofing route integration", () => {
     const proofing = proofingReadModelSchema.parse(overrideRes.body?.data?.proofing);
     expect(proofing.approvedProofSource).toBe("manual_override");
     expect(proofing.approvedProofVersionId).toBe(proofVersionId);
+  });
+
+  test("manual approval override can recover after staff cancellation without converting cancelled proof status", async () => {
+    const { lineItemId, proofFileA } = await createLineItemFixture("override_cancelled_recovery");
+    const { proofVersionId } = await createAndSendProof(lineItemId, proofFileA);
+
+    await request(app)
+      .post(`/api/proofing/versions/${proofVersionId}/cancel`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ reason: "Customer approved cancelled proof by phone" })
+      .expect(200);
+
+    const overrideRes = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/manual-approval-override`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ proofVersionId, overrideReason: "Customer approved cancelled proof by phone" })
+      .expect(200);
+
+    expect(overrideRes.body?.data?.workflowTransition?.toState).toBe("ready_for_prepress");
+    const proofing = proofingReadModelSchema.parse(overrideRes.body?.data?.proofing);
+    expect(proofing.approvedProofSource).toBe("manual_override");
+    expect(proofing.approvedProofVersionId).toBe(proofVersionId);
+    expect(proofing.approvedProofVersion?.status).toBe("cancelled");
   });
 
   test("rejects manual approval override when reason is missing", async () => {

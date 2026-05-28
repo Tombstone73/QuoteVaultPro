@@ -1,6 +1,12 @@
 import { describe, expect, test } from "@jest/globals";
 
-import { canGeneratePreviewRecovery, canRegenerateGeneratedProof, getGenerateProofDraftDisabledReason } from "./proofingRecovery";
+import {
+  canGeneratePreviewRecovery,
+  canRegenerateGeneratedProof,
+  getGenerateProofDraftDisabledReason,
+  getProofVersionRecoveryStatusLabel,
+  getProofVersionRecoveryStatusNote,
+} from "./proofingRecovery";
 
 describe("proofing recovery helpers", () => {
   test("shows generate preview only for incomplete proofs with saved artwork", () => {
@@ -54,5 +60,12 @@ describe("proofing recovery helpers", () => {
 
   test("enables proof draft generation when eligible artwork exists", () => {
     expect(getGenerateProofDraftDisabledReason({ hasEligibleArtwork: true })).toBeNull();
+  });
+
+  test("distinguishes cancelled proof recovery text from superseded replacement text", () => {
+    expect(getProofVersionRecoveryStatusLabel("cancelled")).toBe("Cancelled");
+    expect(getProofVersionRecoveryStatusLabel("superseded")).toBe("Superseded / Replaced");
+    expect(getProofVersionRecoveryStatusNote("cancelled")).toContain("cancelled by staff");
+    expect(getProofVersionRecoveryStatusNote("superseded")).toContain("replaced by a newer sent proof");
   });
 });

@@ -18,7 +18,7 @@ export const orderProofStatusValues = [
 
 export type LineItemProofStatus = (typeof lineItemProofStatusValues)[number];
 export type OrderProofStatus = (typeof orderProofStatusValues)[number];
-export type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "superseded" | null;
+export type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "cancelled" | "superseded" | null;
 export type ProofDecision = "approved" | "rejected" | "revision_requested" | null;
 
 export type LineItemProofSummary = {

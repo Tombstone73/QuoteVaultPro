@@ -279,8 +279,12 @@ export function registerPortalProofRoutes(app: Express): void {
           throw Object.assign(new Error("This proof has already been resolved by manual approval override"), { statusCode: 409 });
         }
 
-        if (validation.proofVersion.status === "superseded" || validation.currentApprovalState.status === "cancelled") {
+        if (validation.proofVersion.status === "cancelled" || validation.currentApprovalState.status === "cancelled") {
           throw Object.assign(new Error("This proof version has been cancelled and is no longer available for approval."), { statusCode: 409 });
+        }
+
+        if (validation.proofVersion.status === "superseded" || validation.currentApprovalState.status === "superseded") {
+          throw Object.assign(new Error("This proof version has been replaced by a newer proof and is no longer available for approval."), { statusCode: 409 });
         }
 
         if (

@@ -95,4 +95,20 @@ describe("order proof status derivation", () => {
     expect(summary.proofStatus).toBe("proof_needed");
     expect(summary.proofCounts.awaitingApproval).toBe(0);
   });
+
+  it("treats cancelled proofs as needing a new proof instead of satisfying approval", () => {
+    const lineItem = deriveLineItemProofSummary({
+      lineItemId: "line-cancelled",
+      requiresProofApproval: true,
+      latestProofVersionStatus: "cancelled",
+      hasAnyProofVersion: true,
+      hasSentProofVersion: false,
+    });
+
+    expect(lineItem.status).toBe("proof_needed");
+
+    const summary = deriveOrderProofSummary([lineItem]);
+    expect(summary.proofStatus).toBe("proof_needed");
+    expect(summary.proofCounts.approved).toBe(0);
+  });
 });

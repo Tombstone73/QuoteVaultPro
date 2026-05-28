@@ -353,12 +353,18 @@ const STATUS_CONFIG = {
     color: "text-slate-700",
     bg: "bg-slate-100 border-slate-300",
   },
+  superseded: {
+    icon: RotateCcw,
+    label: "Replaced",
+    color: "text-slate-700",
+    bg: "bg-slate-100 border-slate-300",
+  },
 } as const;
 
 function AlreadyReviewedBanner({
   status,
 }: {
-  status: "approved" | "rejected" | "revision_requested" | "cancelled";
+  status: "approved" | "rejected" | "revision_requested" | "cancelled" | "superseded";
 }) {
   const cfg = STATUS_CONFIG[status];
   const Icon = cfg.icon;
@@ -370,6 +376,8 @@ function AlreadyReviewedBanner({
         <p className="text-sm text-muted-foreground mt-0.5">
           {status === "cancelled"
             ? "This proof version has been cancelled and is no longer available for approval. Please contact us or use the newest proof link."
+            : status === "superseded"
+              ? "This proof version was replaced by a newer proof and is no longer available for approval. Please use the newest proof link."
             : "This proof has already been reviewed. Contact your account manager if you need to make a change."}
         </p>
       </div>
@@ -509,6 +517,9 @@ function getProofActionErrorMessage(error: Error | null) {
 
   if (message === "This proof version has been cancelled and is no longer available for approval.") {
     return "This proof version has been cancelled and is no longer available for approval. Please use the newest proof link or contact us.";
+  }
+  if (message === "This proof version has been replaced by a newer proof and is no longer available for approval.") {
+    return "This proof version was replaced by a newer proof and is no longer available for approval. Please use the newest proof link.";
   }
   if (message === "This proof does not include an artwork preview and cannot be sent to the customer.") {
     return "This proof preview is unavailable. Please contact us before approving.";
