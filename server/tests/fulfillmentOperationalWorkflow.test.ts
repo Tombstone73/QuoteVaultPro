@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { isPickedUpArchivedForRetention } from "../services/fulfillment/repository";
+import { isPickedUpArchivedForRetention, summarizeFulfillmentChecklist } from "../services/fulfillment/repository";
 
 describe("fulfillment operational workflow helpers", () => {
   test("picked-up rows remain active before retention window", () => {
@@ -24,5 +24,37 @@ describe("fulfillment operational workflow helpers", () => {
       status: "READY_FOR_PICKUP",
       pickedUpAt: "2026-05-20T12:00:00Z",
     }, 3, now)).toBe(false);
+  });
+
+  test("checklist summary requires every generated item to be checked", () => {
+    expect(summarizeFulfillmentChecklist([
+      { checked: true },
+      { checked: false },
+      { checked: true },
+    ])).toEqual({
+      total: 3,
+      checked: 2,
+      unchecked: 1,
+      complete: false,
+    });
+
+    expect(summarizeFulfillmentChecklist([
+      { checked: true },
+      { checked: true },
+    ])).toEqual({
+      total: 2,
+      checked: 2,
+      unchecked: 0,
+      complete: true,
+    });
+  });
+
+  test("empty checklist is not treated as ready for terminal fulfillment", () => {
+    expect(summarizeFulfillmentChecklist([])).toEqual({
+      total: 0,
+      checked: 0,
+      unchecked: 0,
+      complete: false,
+    });
   });
 });

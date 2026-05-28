@@ -2,12 +2,17 @@ import { and, desc, eq, ilike, inArray, ne, notInArray, or, sql } from 'drizzle-
 import { db } from '../../db';
 import {
   customers,
+  fulfillmentChecklistItems,
   fulfillmentEvents,
+  lineItemFiles,
+  materials,
+  orderAttachments,
   orderLineItems,
   orders,
   organizations,
   outboundNotifications,
   pickupTickets,
+  products,
   productionJobs,
   shipmentItems,
   shipmentOrders,
@@ -110,6 +115,36 @@ function buildLineItemProductionContext(lineItem: any) {
     lamination: lamination?.selectedLabel ?? null,
     registrationMarks,
     productionNotes: cleanText(lineItem?.productionNotes) ? [cleanText(lineItem.productionNotes)] : [],
+  };
+}
+
+function formatLineItemSize(width: unknown, height: unknown): string | null {
+  const w = cleanText(width);
+  const h = cleanText(height);
+  if (!w && !h) return null;
+  if (!w || !h) return null;
+  return `${w}" x ${h}"`;
+}
+
+function stationLabel(value: string | null | undefined): string | null {
+  const station = cleanText(value);
+  if (!station) return null;
+  if (station === 'flatbed') return 'Flatbed';
+  if (station === 'roll') return 'Roll';
+  if (station === 'prepress') return 'Prepress';
+  if (station === 'fulfillment') return 'Fulfillment';
+  return station.charAt(0).toUpperCase() + station.slice(1);
+}
+
+export function summarizeFulfillmentChecklist(items: Array<{ checked?: boolean | null }>) {
+  const total = items.length;
+  const checked = items.filter((item) => item.checked === true).length;
+  const unchecked = total - checked;
+  return {
+    total,
+    checked,
+    unchecked,
+    complete: total > 0 && unchecked === 0,
   };
 }
 
@@ -507,7 +542,7 @@ export class ShipmentRepo {
   async insertEvent(
     orgId: string,
     actorUserId: string | null,
-    entityType: 'SHIPMENT' | 'PICKUP_TICKET',
+    entityType: 'SHIPMENT' | 'PICKUP_TICKET' | 'ORDER',
     entityId: string,
     eventType:
       | 'SHIPMENT_CREATED'
@@ -517,6 +552,8 @@ export class ShipmentRepo {
       | 'FULFILLMENT_READY'
       | 'FULFILLMENT_NOTE'
       | 'FULFILLMENT_AUTO_ARCHIVED'
+      | 'FULFILLMENT_CHECKLIST_ITEM_UPDATED'
+      | 'FULFILLMENT_CHECKLIST_VERIFIED'
       | 'PICKUP_READY'
       | 'PICKUP_PICKED_UP'
       | 'NOTIFICATION_SENT'
@@ -1133,6 +1170,142 @@ export class FulfillmentDashboardRepo {
     return result.total;
   }
 
+  async ensureChecklistItemsForOrder(orgId: string, orderId: string) {
+    const lineRows = await this.dbInstance
+      .select({
+        id: orderLineItems.id,
+      })
+      .from(orderLineItems)
+      .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+      .where(and(eq(orders.organizationId, orgId), eq(orderLineItems.orderId, orderId)));
+
+    if (lineRows.length === 0) {
+      return [];
+    }
+
+    const existingRows = await this.dbInstance
+      .select({
+        lineItemId: fulfillmentChecklistItems.lineItemId,
+      })
+      .from(fulfillmentChecklistItems)
+      .where(and(eq(fulfillmentChecklistItems.organizationId, orgId), eq(fulfillmentChecklistItems.orderId, orderId)));
+
+    const existingLineItemIds = new Set(existingRows.map((row) => row.lineItemId));
+    const missingRows = lineRows
+      .filter((line) => !existingLineItemIds.has(line.id))
+      .map((line) => ({
+        organizationId: orgId,
+        orderId,
+        lineItemId: line.id,
+        checked: false,
+      }));
+
+    if (missingRows.length > 0) {
+      await this.dbInstance
+        .insert(fulfillmentChecklistItems)
+        .values(missingRows)
+        .onConflictDoNothing();
+    }
+
+    return this.dbInstance
+      .select()
+      .from(fulfillmentChecklistItems)
+      .where(and(eq(fulfillmentChecklistItems.organizationId, orgId), eq(fulfillmentChecklistItems.orderId, orderId)));
+  }
+
+  async getChecklistCompletion(orgId: string, orderId: string) {
+    const rows = await this.ensureChecklistItemsForOrder(orgId, orderId);
+    return summarizeFulfillmentChecklist(rows);
+  }
+
+  async assertOrderChecklistComplete(orgId: string, orderId: string) {
+    const summary = await this.getChecklistCompletion(orgId, orderId);
+    if (!summary.complete) {
+      return {
+        ok: false as const,
+        code: 'FULFILLMENT_CHECKLIST_INCOMPLETE',
+        message: 'Verify all fulfillment checklist items before marking ready.',
+        summary,
+      };
+    }
+    return { ok: true as const, summary };
+  }
+
+  async logChecklistVerified(orgId: string, orderId: string, actorUserId?: string | null, payload?: Record<string, any>) {
+    const summary = await this.getChecklistCompletion(orgId, orderId);
+    await this.dbInstance.insert(fulfillmentEvents).values({
+      organizationId: orgId,
+      actorUserId: actorUserId || null,
+      entityType: 'ORDER',
+      entityId: orderId,
+      eventType: 'FULFILLMENT_CHECKLIST_VERIFIED',
+      payloadJson: {
+        total: summary.total,
+        checked: summary.checked,
+        ...(payload ?? {}),
+      },
+    });
+  }
+
+  async updateChecklistItem(orgId: string, orderId: string, lineItemId: string, input: {
+    checked: boolean;
+    notes?: string | null;
+  }, actorUserId?: string | null) {
+    const [lineItem] = await this.dbInstance
+      .select({ id: orderLineItems.id })
+      .from(orderLineItems)
+      .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+      .where(and(
+        eq(orders.organizationId, orgId),
+        eq(orderLineItems.orderId, orderId),
+        eq(orderLineItems.id, lineItemId),
+      ))
+      .limit(1);
+
+    if (!lineItem) {
+      return { ok: false as const, code: 'NOT_FOUND', message: 'Fulfillment checklist item not found' };
+    }
+
+    await this.ensureChecklistItemsForOrder(orgId, orderId);
+
+    const now = new Date();
+    const [updated] = await this.dbInstance
+      .update(fulfillmentChecklistItems)
+      .set({
+        checked: input.checked,
+        checkedByUserId: input.checked ? actorUserId || null : null,
+        checkedAt: input.checked ? now : null,
+        notes: input.notes ?? null,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(fulfillmentChecklistItems.organizationId, orgId),
+        eq(fulfillmentChecklistItems.orderId, orderId),
+        eq(fulfillmentChecklistItems.lineItemId, lineItemId),
+      ))
+      .returning();
+
+    if (!updated) {
+      return { ok: false as const, code: 'NOT_FOUND', message: 'Fulfillment checklist item not found' };
+    }
+
+    await this.dbInstance.insert(fulfillmentEvents).values({
+      organizationId: orgId,
+      actorUserId: actorUserId || null,
+      entityType: 'ORDER',
+      entityId: orderId,
+      eventType: 'FULFILLMENT_CHECKLIST_ITEM_UPDATED',
+      payloadJson: {
+        lineItemId,
+        checklistItemId: updated.id,
+        checked: updated.checked,
+        hasNotes: !!cleanText(updated.notes),
+      },
+    });
+
+    return { ok: true as const, item: updated };
+  }
+
   async markOrderReady(orgId: string, orderId: string, actorUserId?: string | null) {
     const [order] = await this.dbInstance
       .select({
@@ -1219,16 +1392,77 @@ export class FulfillmentDashboardRepo {
     const lineItems = await this.dbInstance
       .select({
         id: orderLineItems.id,
+        productName: products.name,
         description: orderLineItems.description,
         productType: orderLineItems.productType,
         quantity: orderLineItems.quantity,
+        width: orderLineItems.width,
+        height: orderLineItems.height,
+        materialName: materials.name,
+        productionNotes: orderLineItems.productionNotes,
+        optionSelectionsJson: orderLineItems.optionSelectionsJson,
+        selectedOptions: orderLineItems.selectedOptions,
+        specsJson: orderLineItems.specsJson,
+        pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
       })
       .from(orderLineItems)
+      .innerJoin(products, eq(products.id, orderLineItems.productId))
+      .leftJoin(materials, eq(materials.id, orderLineItems.materialId))
       .where(eq(orderLineItems.orderId, orderId));
+
+    const lineItemIds = lineItems.map((item) => item.id);
+    const checklistRows = await this.ensureChecklistItemsForOrder(orgId, orderId);
+    const checklistByLineItemId = new Map(checklistRows.map((item) => [item.lineItemId, item]));
+    const checklistSummary = summarizeFulfillmentChecklist(checklistRows);
+
+    const attachmentRows = lineItemIds.length > 0
+      ? await this.dbInstance
+        .select({
+          id: orderAttachments.id,
+          lineItemId: orderAttachments.orderLineItemId,
+          fileName: orderAttachments.fileName,
+          fileUrl: orderAttachments.fileUrl,
+          thumbnailUrl: orderAttachments.thumbnailUrl,
+          thumbKey: orderAttachments.thumbKey,
+          previewKey: orderAttachments.previewKey,
+          side: orderAttachments.side,
+          role: orderAttachments.role,
+          createdAt: orderAttachments.createdAt,
+        })
+        .from(orderAttachments)
+        .where(and(
+          eq(orderAttachments.orderId, orderId),
+          inArray(orderAttachments.orderLineItemId, lineItemIds),
+        ))
+        .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.createdAt))
+      : [];
+
+    const fileRows = lineItemIds.length > 0
+      ? await this.dbInstance
+        .select({
+          id: lineItemFiles.id,
+          lineItemId: lineItemFiles.lineItemId,
+          fileName: lineItemFiles.originalFilename,
+          storageKey: lineItemFiles.storageKey,
+          storagePath: lineItemFiles.storagePath,
+          role: lineItemFiles.role,
+          tag: lineItemFiles.tag,
+          createdAt: lineItemFiles.createdAt,
+        })
+        .from(lineItemFiles)
+        .where(and(
+          eq(lineItemFiles.organizationId, orgId),
+          eq(lineItemFiles.orderId, orderId),
+          inArray(lineItemFiles.lineItemId, lineItemIds),
+          eq(lineItemFiles.status, 'active'),
+        ))
+        .orderBy(desc(lineItemFiles.createdAt))
+      : [];
 
     const productionSummary = await this.dbInstance
       .select({
         id: productionJobs.id,
+        lineItemId: productionJobs.lineItemId,
         stationKey: productionJobs.stationKey,
         stepKey: productionJobs.stepKey,
         status: productionJobs.status,
@@ -1238,6 +1472,52 @@ export class FulfillmentDashboardRepo {
       .from(productionJobs)
       .where(and(eq(productionJobs.organizationId, orgId), eq(productionJobs.orderId, orderId)))
       .orderBy(desc(productionJobs.updatedAt));
+
+    const productionByLineItemId = new Map<string, typeof productionSummary[number]>();
+    for (const job of productionSummary) {
+      if (!job.lineItemId || productionByLineItemId.has(job.lineItemId)) continue;
+      productionByLineItemId.set(job.lineItemId, job);
+    }
+
+    const artworkByLineItemId = new Map<string, Array<{
+      id: string;
+      fileName: string;
+      fileUrl: string | null;
+      thumbnailUrl: string | null;
+      thumbKey: string | null;
+      previewKey: string | null;
+      side: string | null;
+      role: string | null;
+    }>>();
+    for (const attachment of attachmentRows) {
+      if (!attachment.lineItemId) continue;
+      const bucket = artworkByLineItemId.get(attachment.lineItemId) ?? [];
+      bucket.push({
+        id: attachment.id,
+        fileName: attachment.fileName,
+        fileUrl: attachment.fileUrl ?? null,
+        thumbnailUrl: attachment.thumbnailUrl ?? null,
+        thumbKey: attachment.thumbKey ?? null,
+        previewKey: attachment.previewKey ?? null,
+        side: attachment.side ?? null,
+        role: attachment.role ?? null,
+      });
+      artworkByLineItemId.set(attachment.lineItemId, bucket);
+    }
+    for (const file of fileRows) {
+      const bucket = artworkByLineItemId.get(file.lineItemId) ?? [];
+      bucket.push({
+        id: file.id,
+        fileName: file.fileName,
+        fileUrl: file.storageKey || file.storagePath || null,
+        thumbnailUrl: null,
+        thumbKey: null,
+        previewKey: null,
+        side: file.tag ?? null,
+        role: file.role ?? null,
+      });
+      artworkByLineItemId.set(file.lineItemId, bucket);
+    }
 
     const [pickupTicket] = await this.dbInstance
       .select()
@@ -1297,12 +1577,44 @@ export class FulfillmentDashboardRepo {
       },
       lineItems: lineItems.map((item) => ({
         id: item.id,
+        productName: item.productName ?? null,
         description: item.description ?? null,
         productType: item.productType ?? null,
         quantity: item.quantity == null ? null : Number(item.quantity),
+        size: formatLineItemSize(item.width, item.height),
+        materialName: item.materialName ?? null,
+        optionSummary: buildPrepressOptionRows(item)
+          .map((option) => `${option.optionLabel}: ${option.selectedLabel}`)
+          .filter((value) => !!cleanText(value)),
+        finishing: {
+          requirements: extractFinishingBullets(item),
+          lamination: buildLineItemProductionContext(item).lamination,
+        },
+        production: {
+          jobId: productionByLineItemId.get(item.id)?.id ?? null,
+          stationKey: productionByLineItemId.get(item.id)?.stationKey ?? null,
+          stationLabel: stationLabel(productionByLineItemId.get(item.id)?.stationKey),
+          status: productionByLineItemId.get(item.id)?.status ?? null,
+          completedAt: toIso(productionByLineItemId.get(item.id)?.completedAt),
+        },
+        artwork: artworkByLineItemId.get(item.id) ?? [],
+        checklist: {
+          id: checklistByLineItemId.get(item.id)?.id ?? '',
+          checked: checklistByLineItemId.get(item.id)?.checked === true,
+          checkedByUserId: checklistByLineItemId.get(item.id)?.checkedByUserId ?? null,
+          checkedAt: toIso(checklistByLineItemId.get(item.id)?.checkedAt),
+          notes: checklistByLineItemId.get(item.id)?.notes ?? null,
+        },
       })),
+      checklistComplete: checklistSummary.complete,
+      checklistSummary: {
+        total: checklistSummary.total,
+        checked: checklistSummary.checked,
+        unchecked: checklistSummary.unchecked,
+      },
       productionSummary: productionSummary.map((job) => ({
         id: job.id,
+        lineItemId: job.lineItemId ?? null,
         stationKey: job.stationKey,
         stepKey: job.stepKey,
         status: job.status,

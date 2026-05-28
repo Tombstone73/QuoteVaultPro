@@ -41,12 +41,51 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
   };
   lineItems: Array<{
     id: string;
+    productName: string | null;
     description: string | null;
     productType: string | null;
     quantity: number | null;
+    size: string | null;
+    materialName: string | null;
+    optionSummary: string[];
+    finishing: {
+      requirements: string[];
+      lamination: string | null;
+    };
+    production: {
+      jobId: string | null;
+      stationKey: string | null;
+      stationLabel: string | null;
+      status: string | null;
+      completedAt: string | null;
+    };
+    artwork: Array<{
+      id: string;
+      fileName: string;
+      fileUrl: string | null;
+      thumbnailUrl: string | null;
+      thumbKey: string | null;
+      previewKey: string | null;
+      side: string | null;
+      role: string | null;
+    }>;
+    checklist: {
+      id: string;
+      checked: boolean;
+      checkedByUserId: string | null;
+      checkedAt: string | null;
+      notes: string | null;
+    };
   }>;
+  checklistComplete: boolean;
+  checklistSummary: {
+    total: number;
+    checked: number;
+    unchecked: number;
+  };
   productionSummary: Array<{
     id: string;
+    lineItemId: string | null;
     stationKey: string;
     stepKey: string;
     status: string;
@@ -278,6 +317,18 @@ export function useAddFulfillmentNoteMutation(orderId: string) {
       method: "POST",
       body: JSON.stringify({ note }),
     }),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
+  });
+}
+
+export function useUpdateFulfillmentChecklistItemMutation(orderId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { lineItemId: string; checked: boolean; notes?: string | null }) =>
+      apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}/checklist/${payload.lineItemId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ checked: payload.checked, notes: payload.notes ?? null }),
+      }),
     onSuccess: () => invalidateFulfillment(queryClient, orderId),
   });
 }

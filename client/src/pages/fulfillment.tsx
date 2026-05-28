@@ -34,6 +34,7 @@ import {
   useMarkOrderReadyForPickupMutation,
   useMarkPickupPickedUpMutation,
   useMarkShippedMutation,
+  useUpdateFulfillmentChecklistItemMutation,
 } from "@/hooks/useFulfillment";
 import { formatDistanceToNowStrict } from "date-fns";
 
@@ -144,6 +145,7 @@ function FulfillmentDetailDrawer({
   const markReady = useMarkFulfillmentReadyMutation(orderId || "");
   const markReadyForPickup = useMarkOrderReadyForPickupMutation(orderId || "");
   const addNote = useAddFulfillmentNoteMutation(orderId || "");
+  const updateChecklist = useUpdateFulfillmentChecklistItemMutation(orderId || "");
   const ticketId = detail?.pickupTicket?.id || detail?.pickupTicketId || "";
   const markPickedUp = useMarkPickupPickedUpMutation(ticketId, orderId || undefined);
   const shipmentId = detail?.shipmentId || detail?.shipments?.[0]?.id || "";
@@ -168,6 +170,14 @@ function FulfillmentDetailDrawer({
   const canMarkPickedUp = isPickup && normalizedStatus === "READY_FOR_PICKUP" && !!ticketId;
   const canMarkReady = isShip && normalizedStatus !== "SHIPPED";
   const canMarkShipped = isShip && !!shipmentId && normalizedStatus !== "SHIPPED";
+  const checklistBlocking = detail ? !detail.checklistComplete : true;
+  const checklistBlockMessage = "Verify all fulfillment checklist items before marking ready.";
+
+  const toggleChecklistItem = async (lineItemId: string, checked: boolean, notes?: string | null) => {
+    await runAction(checked ? "Item verified" : "Item unverified", () =>
+      updateChecklist.mutateAsync({ lineItemId, checked, notes: notes ?? null }),
+    );
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40" role="dialog" aria-modal="true">
@@ -199,7 +209,13 @@ function FulfillmentDetailDrawer({
                 </button>
               ) : null}
               {canMarkPickupReady ? (
-                <button type="button" className="rounded-lg bg-primary px-3 py-2 text-sm font-bold text-primary-foreground" onClick={() => void runAction("Ready for pickup", () => markReadyForPickup.mutateAsync({}))}>
+                <button
+                  type="button"
+                  className="rounded-lg bg-primary px-3 py-2 text-sm font-bold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={checklistBlocking}
+                  title={checklistBlocking ? checklistBlockMessage : "Mark ready for pickup"}
+                  onClick={() => void runAction("Ready for pickup", () => markReadyForPickup.mutateAsync({}))}
+                >
                   Ready for Pickup
                 </button>
               ) : null}
@@ -209,7 +225,13 @@ function FulfillmentDetailDrawer({
                 </button>
               ) : null}
               {canMarkShipped ? (
-                <button type="button" className="rounded-lg bg-primary px-3 py-2 text-sm font-bold text-primary-foreground" onClick={() => void runAction("Marked shipped", () => markShipped.mutateAsync())}>
+                <button
+                  type="button"
+                  className="rounded-lg bg-primary px-3 py-2 text-sm font-bold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={checklistBlocking}
+                  title={checklistBlocking ? checklistBlockMessage : "Mark shipped"}
+                  onClick={() => void runAction("Marked shipped", () => markShipped.mutateAsync())}
+                >
                   Mark Shipped
                 </button>
               ) : null}
@@ -222,6 +244,12 @@ function FulfillmentDetailDrawer({
                 Open Order
               </button>
             </div>
+            {checklistBlocking ? (
+              <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                <AlertTriangle className="mr-2 inline h-4 w-4" />
+                {checklistBlockMessage}
+              </div>
+            ) : null}
 
             <div className="grid gap-4 md:grid-cols-2">
               <section className="rounded-xl border border-border bg-card p-4">
@@ -247,21 +275,6 @@ function FulfillmentDetailDrawer({
             </div>
 
             <section className="mt-4 rounded-xl border border-border bg-card p-4">
-              <h3 className="mb-3 text-sm font-bold">Line Items</h3>
-              <div className="divide-y divide-border">
-                {detail.lineItems.map((item) => (
-                  <div key={item.id} className="flex items-center justify-between py-2 text-sm">
-                    <div>
-                      <div className="font-medium">{item.description || item.productType || "Line item"}</div>
-                      <div className="text-xs text-muted-foreground">{item.productType || "--"}</div>
-                    </div>
-                    <div className="font-semibold">{item.quantity ?? "--"}</div>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <section className="mt-4 rounded-xl border border-border bg-card p-4">
               <h3 className="mb-3 text-sm font-bold">Production Summary</h3>
               <div className="divide-y divide-border">
                 {detail.productionSummary.map((job) => (
@@ -276,6 +289,87 @@ function FulfillmentDetailDrawer({
               </div>
               <div className="mt-3">
                 <FulfillmentProductionTickets row={detail} />
+              </div>
+            </section>
+
+            <section className="mt-4 rounded-xl border border-border bg-card p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-bold">Fulfillment Checklist</h3>
+                <span className="rounded-full bg-muted px-2 py-1 text-xs font-semibold text-muted-foreground">
+                  {detail.checklistSummary.checked}/{detail.checklistSummary.total} verified
+                </span>
+              </div>
+              <div className="divide-y divide-border">
+                {detail.lineItems.map((item) => {
+                  const firstArtwork = item.artwork[0] ?? null;
+                  const productionIncomplete = item.production.status && !["done", "completed"].includes(String(item.production.status).toLowerCase());
+                  return (
+                    <div key={item.id} className="grid gap-3 py-3 md:grid-cols-[auto_72px_1fr]">
+                      <div className="pt-1">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-border"
+                          checked={item.checklist.checked}
+                          disabled={updateChecklist.isPending}
+                          aria-label={`Verify ${item.productName || item.description || "line item"}`}
+                          onChange={(event) => void toggleChecklistItem(item.id, event.target.checked, item.checklist.notes)}
+                        />
+                      </div>
+                      <div className="h-16 w-16 overflow-hidden rounded-md border border-border bg-muted">
+                        {firstArtwork?.thumbnailUrl ? (
+                          <img src={firstArtwork.thumbnailUrl} alt="" className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center px-2 text-center text-[10px] text-muted-foreground">
+                            No artwork preview
+                          </div>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="font-semibold">{item.productName || item.description || "Line item"}</div>
+                          {item.checklist.checked ? (
+                            <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">Verified</span>
+                          ) : (
+                            <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-700">Needs check</span>
+                          )}
+                          {productionIncomplete ? (
+                            <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-[11px] font-semibold text-red-700">Production incomplete</span>
+                          ) : null}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          Qty {item.quantity ?? "Not captured"} · {item.size || "Not captured"} · {item.materialName || item.productType || "Not captured"}
+                          {item.finishing.lamination ? ` · Lamination: ${item.finishing.lamination}` : ""}
+                        </div>
+                        {item.optionSummary.length > 0 ? (
+                          <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.optionSummary.join(" · ")}</div>
+                        ) : null}
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          Artwork: {item.artwork.length > 0 ? item.artwork.map((art) => art.fileName).join(", ") : "No artwork preview."}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          Production: {item.production.stationLabel || item.production.stationKey || "No station assigned"} {item.production.status || "unknown"}
+                        </div>
+                        {item.checklist.notes ? <div className="mt-1 text-xs text-muted-foreground">Issue: {item.checklist.notes}</div> : null}
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            className="rounded-md border border-border px-2 py-1 text-xs font-semibold hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled={!firstArtwork?.fileUrl}
+                            onClick={() => firstArtwork?.fileUrl && window.open(firstArtwork.fileUrl, "_blank")}
+                          >
+                            View Art
+                          </button>
+                          {item.production.jobId ? (
+                            <PrintTicketActions jobId={item.production.jobId} jobQuantity={item.quantity ?? undefined} size="sm" variant="outline" />
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                {detail.lineItems.length === 0 ? (
+                  <div className="py-4 text-sm text-muted-foreground">No fulfillment checklist items found.</div>
+                ) : null}
               </div>
             </section>
 

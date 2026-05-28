@@ -61,8 +61,21 @@ export class FulfillmentService {
     contactEmail?: string | null;
     contactPhone?: string | null;
   }, actorUserId?: string | null, actorUserRole?: string | null) {
+    await this.requireChecklistComplete(orgId, orderId);
     const ticket = await this.createOrGetPickupTicket(orgId, orderId, actorUserId);
     await this.markPickupReady(orgId, ticket.id, payload, actorUserId, actorUserRole);
+    return this.getOrderDetail(orgId, orderId);
+  }
+
+  async updateChecklistItem(orgId: string, orderId: string, lineItemId: string, payload: {
+    checked: boolean;
+    notes?: string | null;
+  }, actorUserId?: string | null) {
+    const result = await this.dashboardRepo.updateChecklistItem(orgId, orderId, lineItemId, payload, actorUserId);
+    if (!result.ok) {
+      if (result.code === 'NOT_FOUND') throw new FulfillmentHttpError(404, result.message, result.code);
+      throw new FulfillmentHttpError(400, result.message, result.code);
+    }
     return this.getOrderDetail(orgId, orderId);
   }
 
@@ -73,6 +86,14 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(400, result.message, result.code);
     }
     return this.getOrderDetail(orgId, orderId);
+  }
+
+  private async requireChecklistComplete(orgId: string, orderId: string) {
+    const result = await this.dashboardRepo.assertOrderChecklistComplete(orgId, orderId);
+    if (!result.ok) {
+      throw new FulfillmentHttpError(409, result.message, result.code);
+    }
+    return result.summary;
   }
 
   private async validateCombinedShipmentEligibility(orgId: string, orderIds: string[]) {
@@ -232,6 +253,11 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(409, 'Cancelled orders cannot be marked shipped', 'ORDER_CANCELLED');
     }
 
+    const orderIds = Array.from(new Set((existing.orders || []).map((order: any) => String(order.orderId)).filter(Boolean)));
+    for (const orderId of orderIds) {
+      await this.requireChecklistComplete(orgId, orderId);
+    }
+
     const result = await this.shipmentRepo.markShipped(orgId, shipmentId, actorUserId);
 
     if (!result.ok) {
@@ -244,6 +270,9 @@ export class FulfillmentService {
     // trigger must be setting-gated, idempotent by organizationId + orderId +
     // billing milestone, skip cancelled/already-invoiced orders, and create drafts
     // only unless an explicit auto-send setting exists.
+    for (const orderId of orderIds) {
+      await this.dashboardRepo.logChecklistVerified(orgId, orderId, actorUserId, { terminalAction: 'SHIPMENT_SHIPPED', shipmentId });
+    }
     return result.shipment;
   }
 
@@ -336,6 +365,8 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(403, 'Only Owner/Admin may override production-complete for pickup-ready', 'PICKUP_READY_OVERRIDE_FORBIDDEN');
     }
 
+    await this.requireChecklistComplete(orgId, ticketWithOrder.orderId);
+
     const markResult = await this.pickupRepo.markReady(orgId, ticketId, {
       stagingLocation: payload.stagingLocation,
       pickupNotes: payload.pickupNotes,
@@ -352,6 +383,10 @@ export class FulfillmentService {
     }
 
     const { notification, ticket } = markResult;
+    await this.dashboardRepo.logChecklistVerified(orgId, ticketWithOrder.orderId, actorUserId, {
+      terminalAction: 'PICKUP_READY',
+      pickupTicketId: ticket.id,
+    });
 
     // Fail-soft notification attempt.
     if (!notification.toAddress) {
