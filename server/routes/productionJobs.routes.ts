@@ -113,6 +113,225 @@ function userDisplayName(row: { firstName?: string | null; lastName?: string | n
   return name || row.email || null;
 }
 
+async function completeProductionJobWorkflow(
+  tx: any,
+  args: {
+    organizationId: string;
+    userId: string;
+    jobId: string;
+    skipProduction: boolean | "auto";
+    auditUserName?: string | null;
+    ipAddress?: string | null;
+    userAgent?: string | null;
+  },
+) {
+  if (!args.organizationId) {
+    throw Object.assign(new Error("Missing organization context"), { statusCode: 500 });
+  }
+  if (!args.userId) {
+    throw Object.assign(new Error("User ID not found"), { statusCode: 401 });
+  }
+
+  const now = new Date();
+  const restoreUntil = addHours(now, COMPLETION_RECOVERY_HOURS);
+  const jobRows = await tx
+    .select()
+    .from(productionJobs)
+    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)))
+    .limit(1);
+  const job = jobRows[0];
+  if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+  if (job.status === "done") return job;
+  if (isTerminalProductionStatus(job.status)) {
+    throw Object.assign(new Error("Cannot complete a terminal production job."), { statusCode: 409 });
+  }
+
+  const effectiveSkipProduction = args.skipProduction === "auto" ? job.status === "queued" : args.skipProduction;
+
+  await assertParentOrderInProductionForJob(tx, {
+    organizationId: args.organizationId,
+    job,
+    action: "complete production job",
+  });
+
+  if (job.status === "queued" && !effectiveSkipProduction) {
+    throw Object.assign(new Error("Cannot complete from queued without skipProduction"), { statusCode: 400 });
+  }
+
+  const lastTimer = await tx
+    .select({ createdAt: productionEvents.createdAt, type: productionEvents.type })
+    .from(productionEvents)
+    .where(
+      and(
+        eq(productionEvents.organizationId, args.organizationId),
+        eq(productionEvents.productionJobId, args.jobId),
+        inArray(productionEvents.type, ["timer_started", "timer_stopped"]),
+      ),
+    )
+    .orderBy(desc(productionEvents.createdAt))
+    .limit(1);
+  const last = lastTimer[0];
+  if (last?.type === "timer_started") {
+    const startedAtMs = new Date(last.createdAt as any).getTime();
+    const deltaSeconds = toSeconds(now.getTime() - startedAtMs);
+    await appendEvent({
+      tx,
+      organizationId: args.organizationId,
+      productionJobId: args.jobId,
+      type: "timer_stopped",
+      actorUserId: args.userId,
+      payload: { seconds: deltaSeconds },
+    });
+    await tx
+      .update(productionJobs)
+      .set({ totalSeconds: (Number(job.totalSeconds) || 0) + deltaSeconds })
+      .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)));
+  }
+
+  await tx
+    .update(productionJobs)
+    .set({
+      status: "done",
+      completedAt: now,
+      completedByUserId: args.userId,
+      previousStatus: job.status,
+      previousStation: job.stationKey,
+      restoreUntil,
+      restoredAt: null,
+      restoredByUserId: null,
+      restoreReason: null,
+      updatedAt: now,
+    })
+    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)));
+
+  if (job.lineItemId && job.orderId) {
+    await consumeReservedMaterialsForLineItem(tx, {
+      organizationId: args.organizationId,
+      orderId: job.orderId,
+      lineItemId: job.lineItemId,
+      productionJobId: args.jobId,
+      userId: args.userId,
+    });
+
+    const [lineItem] = await tx
+      .select({
+        workflowState: orderLineItems.workflowState,
+        status: orderLineItems.status,
+      })
+      .from(orderLineItems)
+      .where(and(eq(orderLineItems.orderId, job.orderId), eq(orderLineItems.id, job.lineItemId)))
+      .limit(1);
+
+    if (lineItem && lineItem.workflowState !== "completed" && lineItem.workflowState !== "canceled") {
+      const completingStationKey = String(job.stationKey ?? "").trim().toLowerCase();
+      const isFulfillmentStation = completingStationKey === FULFILLMENT_STATION_KEY;
+      const isPrepressStation = isPrepressOwnershipJob(job);
+      const isDesignStation = isDesignOwnershipJob(job);
+
+      if (isFulfillmentStation) {
+        await tx
+          .update(orderLineItems)
+          .set({ workflowState: "completed", status: "complete", updatedAt: now })
+          .where(eq(orderLineItems.id, job.lineItemId));
+
+        await appendEvent({
+          tx,
+          organizationId: args.organizationId,
+          productionJobId: args.jobId,
+          type: "note",
+          payload: {
+            eventType: "workflow_transition",
+            fromState: lineItem.workflowState,
+            toState: "completed",
+            lifecycleStatus: "complete",
+            ownerAction: "completed",
+            actorUserId: args.userId,
+            metadata: {
+              source: "fulfillment_job_complete",
+              skipProduction: effectiveSkipProduction,
+              previousLifecycleStatus: lineItem.status,
+            },
+          },
+        });
+      } else if (isPrepressStation || isDesignStation) {
+        console.warn(
+          `[ProductionJobComplete] Station "${completingStationKey}" job ${args.jobId} completed via job-complete endpoint. ` +
+          `Line item workflow state unchanged (was: ${lineItem.workflowState}). ` +
+          `Use /prepress/.../send-to-print or design-complete routes for workflow advancement.`,
+        );
+      } else {
+        console.log(
+          `[ProductionJobComplete] Station "${completingStationKey}" job ${args.jobId} complete - routing line item ${job.lineItemId} to Fulfillment.`,
+        );
+        try {
+          await routeLineItemToProduction({
+            tx,
+            organizationId: args.organizationId,
+            orderId: job.orderId,
+            lineItemId: job.lineItemId,
+            stationKey: FULFILLMENT_STATION_KEY,
+            stepKey: "fulfillment",
+            trigger: "line_item_status",
+            actorUserId: args.userId,
+            extraEventPayload: {
+              routingReason: "production_station_complete",
+              previousStationKey: completingStationKey,
+              previousJobId: args.jobId,
+            },
+          });
+        } catch (routeErr: any) {
+          throw Object.assign(
+            new Error(
+              `[ProductionJobComplete] Cannot route line item ${job.lineItemId} to Fulfillment after completing station "${completingStationKey}". ` +
+              (routeErr?.message ?? String(routeErr)) +
+              ` - ensure a station with key="${FULFILLMENT_STATION_KEY}" exists in Production Settings for this organization.`,
+            ),
+            { statusCode: routeErr?.statusCode ?? 409, cause: routeErr },
+          );
+        }
+      }
+    }
+  }
+
+  await tx.insert(auditLogs).values({
+    organizationId: args.organizationId,
+    userId: args.userId,
+    userName: args.auditUserName || null,
+    actionType: "UPDATE",
+    entityType: "production_job",
+    entityId: args.jobId,
+    entityName: args.jobId,
+    description: effectiveSkipProduction ? "Production job completed (skip production)" : "Production job completed",
+    oldValues: { status: job.status, stationKey: job.stationKey },
+    newValues: { status: "done", completedAt: now.toISOString(), restoreUntil: restoreUntil.toISOString() },
+    ipAddress: args.ipAddress || null,
+    userAgent: args.userAgent || null,
+  } as any);
+
+  await appendEvent({
+    tx,
+    organizationId: args.organizationId,
+    productionJobId: args.jobId,
+    type: "note",
+    actorUserId: args.userId,
+    payload: {
+      eventType: "production_job_completed",
+      previousStatus: job.status,
+      previousStation: job.stationKey,
+      completedAt: now.toISOString(),
+      restoreUntil: restoreUntil.toISOString(),
+      skipProduction: effectiveSkipProduction,
+    },
+  });
+
+  const updatedRows = await tx
+    .select()
+    .from(productionJobs)
+    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)))
+    .limit(1);
+  return updatedRows[0];
+}
+
 /**
  * Map the order's stored shipping method onto a human ticket label.
  * Returns null when no method is set (the ticket then shows blank/unknown).
@@ -2385,218 +2604,19 @@ export function registerProductionJobsRoutes(
       if (!userId) return res.status(401).json({ error: "User ID not found" });
 
       const jobId = req.params.jobId;
-      const now = new Date();
-      const restoreUntil = addHours(now, COMPLETION_RECOVERY_HOURS);
       const skipProduction = req.body?.skipProduction === true;
 
-      const result = await db.transaction(async (tx) => {
-        const jobRows = await tx
-          .select()
-          .from(productionJobs)
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
-          .limit(1);
-        const job = jobRows[0];
-        if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
-        if (job.status === "done") return job;
-        if (isTerminalProductionStatus(job.status)) {
-          throw Object.assign(new Error("Cannot complete a terminal production job."), { statusCode: 409 });
-        }
-        await assertParentOrderInProductionForJob(tx, {
-          organizationId,
-          job,
-          action: "complete production job",
-        });
+      const completedJob = await db.transaction((tx) => completeProductionJobWorkflow(tx, {
+        organizationId,
+        userId,
+        jobId,
+        skipProduction,
+        auditUserName: req.user?.email || req.user?.name || null,
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+      }));
 
-        // queued -> done requires explicit skipProduction
-        if (job.status === "queued" && !skipProduction) {
-          throw Object.assign(new Error("Cannot complete from queued without skipProduction"), { statusCode: 400 });
-        }
-
-        // If timer is running, stop it first.
-        const lastTimer = await tx
-          .select({ createdAt: productionEvents.createdAt, type: productionEvents.type })
-          .from(productionEvents)
-          .where(
-            and(
-              eq(productionEvents.organizationId, organizationId),
-              eq(productionEvents.productionJobId, jobId),
-              inArray(productionEvents.type, ["timer_started", "timer_stopped"]),
-            ),
-          )
-          .orderBy(desc(productionEvents.createdAt))
-          .limit(1);
-        const last = lastTimer[0];
-        if (last?.type === "timer_started") {
-          const startedAtMs = new Date(last.createdAt as any).getTime();
-          const deltaSeconds = toSeconds(now.getTime() - startedAtMs);
-          await appendEvent({
-            tx,
-            organizationId,
-            productionJobId: jobId,
-            type: "timer_stopped",
-            actorUserId: userId,
-            payload: { seconds: deltaSeconds },
-          });
-          await tx
-            .update(productionJobs)
-            .set({ totalSeconds: (Number(job.totalSeconds) || 0) + deltaSeconds })
-            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
-        }
-
-        await tx
-          .update(productionJobs)
-          .set({
-            status: "done",
-            completedAt: now,
-            completedByUserId: userId,
-            previousStatus: job.status,
-            previousStation: job.stationKey,
-            restoreUntil,
-            restoredAt: null,
-            restoredByUserId: null,
-            restoreReason: null,
-            updatedAt: now,
-          })
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
-
-        if (job.lineItemId && job.orderId) {
-          await consumeReservedMaterialsForLineItem(tx, {
-            organizationId,
-            orderId: job.orderId,
-            lineItemId: job.lineItemId,
-            productionJobId: jobId,
-            userId,
-          });
-
-          const [lineItem] = await tx
-            .select({
-              workflowState: orderLineItems.workflowState,
-              status: orderLineItems.status,
-            })
-            .from(orderLineItems)
-            .where(and(eq(orderLineItems.orderId, job.orderId), eq(orderLineItems.id, job.lineItemId)))
-            .limit(1);
-
-          if (lineItem && lineItem.workflowState !== "completed" && lineItem.workflowState !== "canceled") {
-            const completingStationKey = String(job.stationKey ?? "").trim().toLowerCase();
-            const isFulfillmentStation = completingStationKey === FULFILLMENT_STATION_KEY;
-            const isPrepressStation = isPrepressOwnershipJob(job);
-            const isDesignStation = isDesignOwnershipJob(job);
-
-            if (isFulfillmentStation) {
-              // Fulfillment done → complete the line item.
-              await tx
-                .update(orderLineItems)
-                .set({ workflowState: "completed", status: "complete", updatedAt: now })
-                .where(eq(orderLineItems.id, job.lineItemId));
-
-              await appendEvent({
-                tx,
-                organizationId,
-                productionJobId: jobId,
-                type: "note",
-                payload: {
-                  eventType: "workflow_transition",
-                  fromState: lineItem.workflowState,
-                  toState: "completed",
-                  lifecycleStatus: "complete",
-                  ownerAction: "completed",
-                  actorUserId: userId,
-                  metadata: {
-                    source: "fulfillment_job_complete",
-                    skipProduction,
-                    previousLifecycleStatus: lineItem.status,
-                  },
-                },
-              });
-            } else if (isPrepressStation || isDesignStation) {
-              // Prepress/Design jobs have dedicated handoff routes (send-to-print,
-              // design-complete). Completing the job record here does NOT advance the
-              // line-item workflow — callers must use those routes instead.
-              console.warn(
-                `[ProductionJobComplete] Station "${completingStationKey}" job ${jobId} completed via job-complete endpoint. ` +
-                `Line item workflow state unchanged (was: ${lineItem.workflowState}). ` +
-                `Use /prepress/.../send-to-print or design-complete routes for workflow advancement.`,
-              );
-            } else {
-              // Production station (Roll, Flatbed, CNC, Lamination, Fabrication, Finishing, etc.)
-              // done → route line item to Fulfillment station for packing/shipping.
-              // routeLineItemToProduction fails closed with a clear error if the
-              // "fulfillment" station does not exist in this org's stations table.
-              console.log(
-                `[ProductionJobComplete] Station "${completingStationKey}" job ${jobId} complete — routing line item ${job.lineItemId} to Fulfillment.`,
-              );
-              try {
-                await routeLineItemToProduction({
-                  tx,
-                  organizationId,
-                  orderId: job.orderId,
-                  lineItemId: job.lineItemId,
-                  stationKey: FULFILLMENT_STATION_KEY,
-                  stepKey: "fulfillment",
-                  trigger: "line_item_status",
-                  actorUserId: userId,
-                  extraEventPayload: {
-                    routingReason: "production_station_complete",
-                    previousStationKey: completingStationKey,
-                    previousJobId: jobId,
-                  },
-                });
-              } catch (routeErr: any) {
-                // Re-throw with enriched context so the caller sees exactly what to fix.
-                throw Object.assign(
-                  new Error(
-                    `[ProductionJobComplete] Cannot route line item ${job.lineItemId} to Fulfillment after completing station "${completingStationKey}". ` +
-                    (routeErr?.message ?? String(routeErr)) +
-                    ` — ensure a station with key="${FULFILLMENT_STATION_KEY}" exists in Production Settings for this organisation.`,
-                  ),
-                  { statusCode: routeErr?.statusCode ?? 409, cause: routeErr },
-                );
-              }
-            }
-          }
-        }
-
-        await tx.insert(auditLogs).values({
-          organizationId,
-          userId: userId ?? null,
-          userName: req.user?.email || req.user?.name || null,
-          actionType: "UPDATE",
-          entityType: "production_job",
-          entityId: jobId,
-          entityName: jobId,
-          description: skipProduction ? "Production job completed (skip production)" : "Production job completed",
-          oldValues: { status: job.status, stationKey: job.stationKey },
-          newValues: { status: "done", completedAt: now.toISOString(), restoreUntil: restoreUntil.toISOString() },
-          ipAddress: req.ip || null,
-          userAgent: req.headers["user-agent"] || null,
-        } as any);
-
-        await appendEvent({
-          tx,
-          organizationId,
-          productionJobId: jobId,
-          type: "note",
-          actorUserId: userId,
-          payload: {
-            eventType: "production_job_completed",
-            previousStatus: job.status,
-            previousStation: job.stationKey,
-            completedAt: now.toISOString(),
-            restoreUntil: restoreUntil.toISOString(),
-            skipProduction,
-          },
-        });
-
-        const updatedRows = await tx
-          .select()
-          .from(productionJobs)
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
-          .limit(1);
-        return updatedRows[0];
-      });
-
-      res.json({ success: true, data: result });
+      return res.json({ success: true, data: completedJob, message: "Production job completed" });
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("Error completing production job:", error);
@@ -2604,7 +2624,7 @@ export function registerProductionJobsRoutes(
     }
   });
 
-  app.post("/api/production-jobs/:jobId/undo-complete", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post(["/api/production-jobs/:jobId/undo-complete", "/api/production/jobs/:jobId/undo-complete"], isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
@@ -2629,6 +2649,9 @@ export function registerProductionJobsRoutes(
         if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
         if (!job.completedAt || job.status !== "done") {
           throw Object.assign(new Error("Only completed production jobs can be restored"), { statusCode: 409 });
+        }
+        if (!job.previousStatus) {
+          throw Object.assign(new Error("Missing completion recovery metadata"), { statusCode: 409 });
         }
 
         const restoreUntilMs = job.restoreUntil ? new Date(job.restoreUntil as any).getTime() : Number.NaN;
@@ -3154,6 +3177,21 @@ export function registerProductionJobsRoutes(
 
       const newStatus = parsed.data.status;
       const newStepKey = parsed.data.stepKey !== undefined ? parsed.data.stepKey : undefined;
+
+      if (newStatus === "done") {
+        if (!userId) return res.status(401).json({ error: "User ID not found" });
+        const completedJob = await db.transaction((tx) => completeProductionJobWorkflow(tx, {
+          organizationId,
+          userId,
+          jobId,
+          skipProduction: "auto",
+          auditUserName: req.user?.email || req.user?.name || null,
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        }));
+        return res.json({ success: true, data: completedJob, message: "Production job completed" });
+      }
+
       const now = new Date();
 
       const result = await db.transaction(async (tx) => {
@@ -3190,47 +3228,10 @@ export function registerProductionJobsRoutes(
           });
         }
 
-        // If setting to done, stop timer if running
-        if (newStatus === "done") {
-          const lastTimer = await tx
-            .select({ createdAt: productionEvents.createdAt, type: productionEvents.type })
-            .from(productionEvents)
-            .where(
-              and(
-                eq(productionEvents.organizationId, organizationId),
-                eq(productionEvents.productionJobId, jobId),
-                inArray(productionEvents.type, ["timer_started", "timer_stopped"]),
-              ),
-            )
-            .orderBy(desc(productionEvents.createdAt))
-            .limit(1);
-          const last = lastTimer[0];
-          if (last?.type === "timer_started") {
-            const startedAtMs = new Date(last.createdAt as any).getTime();
-            const deltaSeconds = toSeconds(now.getTime() - startedAtMs);
-            await appendEvent({
-              tx,
-              organizationId,
-              productionJobId: jobId,
-              type: "timer_stopped",
-              payload: { seconds: deltaSeconds },
-            });
-            await tx
-              .update(productionJobs)
-              .set({ totalSeconds: (Number(job.totalSeconds) || 0) + deltaSeconds })
-              .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
-          }
-        }
-
         // Update status and stepKey
         const updateData: any = { status: newStatus, updatedAt: now };
         if (newStepKey !== undefined) {
           updateData.stepKey = newStepKey;
-        }
-        if (newStatus === "done") {
-          updateData.completedAt = now;
-        } else if ((job.status as string) === "done" && (newStatus as string) !== "done") {
-          updateData.completedAt = null; // Reopening
         }
         if (newStatus === "in_progress" && !job.startedAt) {
           updateData.startedAt = now;
@@ -3254,20 +3255,6 @@ export function registerProductionJobsRoutes(
             actorUserId: userId ?? null,
           },
         });
-
-        if (newStatus === "done" && job.lineItemId && job.orderId) {
-          const actorUserId = userId;
-          if (!actorUserId) {
-            throw new Error("Missing user id for inventory consumption");
-          }
-          await consumeReservedMaterialsForLineItem(tx, {
-            organizationId,
-            orderId: job.orderId,
-            lineItemId: job.lineItemId,
-            productionJobId: jobId,
-            userId: actorUserId,
-          });
-        }
 
         await tx.insert(auditLogs).values({
           organizationId,
