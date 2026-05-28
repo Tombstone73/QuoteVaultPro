@@ -5,6 +5,7 @@ import {
   filterProductionJobsForTab,
   getProductionQueueControlsStorageKey,
   getProductionTabCounts,
+  getProductionTabCountsWithRecentlyCompleted,
   getProductionTabStorageKey,
   normalizeProductionQueueControls,
   persistProductionQueueControls,
@@ -93,6 +94,27 @@ describe("productionBoard helpers", () => {
       paused: 1,
       done: 1,
     });
+  });
+
+  test("completed tab count can be aligned to the recently completed queue", () => {
+    expect(getProductionTabCountsWithRecentlyCompleted(jobs, 2, now)).toEqual({
+      all: 4,
+      queued: 1,
+      in_progress: 1,
+      paused: 1,
+      done: 2,
+    });
+  });
+
+  test("recently completed count override does not double count all tab work", () => {
+    const countsBeforeCompletion = getProductionTabCountsWithRecentlyCompleted(jobs, 0, now);
+    const countsAfterCompletion = getProductionTabCountsWithRecentlyCompleted(jobs, 1, now);
+    const countsAfterUndo = getProductionTabCountsWithRecentlyCompleted(jobs, 0, now);
+
+    expect(countsBeforeCompletion.done).toBe(0);
+    expect(countsAfterCompletion.done).toBe(1);
+    expect(countsAfterUndo.done).toBe(0);
+    expect(countsAfterCompletion.all).toBe(countsBeforeCompletion.all);
   });
 
   test("done tab only includes jobs within the default 7 day window", () => {
