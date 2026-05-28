@@ -218,10 +218,11 @@ function getProofPreviewUrl(file: ProofFileRow | null | undefined) {
   if (!file) return null;
   const fileName = file.originalFilename || file.fileName || "Proof";
   const mimeType = file.mimeType || null;
+  const serverProvidedUrl = file.originalUrl || file.previewUrl || file.downloadUrl || file.fileUrl || null;
   if (isPdfFile(mimeType, fileName)) {
-    return file.originalUrl || file.previewUrl || buildPdfViewUrl(file.objectPath) || file.fileUrl || null;
+    return serverProvidedUrl || buildPdfViewUrl(file.objectPath);
   }
-  return file.previewUrl || file.originalUrl || file.thumbUrl || file.fileUrl || null;
+  return serverProvidedUrl || file.thumbUrl || null;
 }
 
 function getDownloadUrl(file: ProofFileRow | null | undefined) {
@@ -606,11 +607,12 @@ export default function StaffProofingPage() {
   const versionHistoryRef = useRef<HTMLDivElement | null>(null);
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [createMode, setCreateMode] = useState<"generated" | "uploaded">("uploaded");
+  const [createMode, setCreateMode] = useState<"generated" | "uploaded">("generated");
   const [selectedExistingAttachmentId, setSelectedExistingAttachmentId] = useState<string>("");
   const [selectedArtworkSourceIds, setSelectedArtworkSourceIds] = useState<string[]>([]);
   const [createInternalNotes, setCreateInternalNotes] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [previewImageError, setPreviewImageError] = useState(false);
   const [previewRecoveryState, setPreviewRecoveryState] = useState<{
     lineItemId: string;
     derivativeStatus: "ready" | "pending" | "failed";
@@ -861,7 +863,7 @@ export default function StaffProofingPage() {
   const selectedGeneratedArtworkCount = selectedArtworkSourceIds.filter((id) =>
     selectableGeneratedArtworkSources.some((source) => source.id === id),
   ).length;
-  const hasEligibleArtwork = selectableGeneratedArtworkSources.length > 0 || hasSourceArtwork || selectableArtworkFiles.length > 0;
+  const hasEligibleArtwork = selectableGeneratedArtworkSources.length > 0;
   const hasBlockingSentProof = detail?.currentActionableProofVersion?.status === "awaiting_response";
   const generatedDraftDisabledReason = getGenerateProofDraftDisabledReason({
     hasEligibleArtwork: eligibleArtworkQuery.isLoading ? true : hasEligibleArtwork,
@@ -918,7 +920,13 @@ export default function StaffProofingPage() {
   useEffect(() => {
     setViewerZoom(previewIsPdf ? 85 : 100);
     setViewerPage(1);
+    setPreviewImageError(false);
   }, [previewIsPdf, selectedVersionId]);
+
+  function openCreateProofDialog(mode: "generated" | "uploaded" = "generated") {
+    setCreateMode(mode);
+    setCreateDialogOpen(true);
+  }
 
   useEffect(() => {
     if (!createDialogOpen) return;
@@ -1051,7 +1059,7 @@ export default function StaffProofingPage() {
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
       setSelectedVersionId(data.proofVersion.id);
       setCreateDialogOpen(false);
-      setCreateMode("uploaded");
+      setCreateMode("generated");
       setSelectedExistingAttachmentId("");
       setSelectedArtworkSourceIds([]);
       setCreateInternalNotes("");
@@ -1332,7 +1340,7 @@ export default function StaffProofingPage() {
               </Select>
               <Button
                 className="h-9 rounded-lg bg-[#1337ec] px-4 text-sm font-bold text-white transition-all hover:bg-[#1a43ff]"
-                onClick={() => setCreateDialogOpen(true)}
+                onClick={() => openCreateProofDialog("generated")}
                 disabled={!selectedRow}
               >
                 <Upload className="mr-2 h-4 w-4" />
@@ -1610,7 +1618,7 @@ export default function StaffProofingPage() {
                         </a>
                       )}
                     </div>
-                  ) : previewIsImage && previewUrl ? (
+                  ) : previewIsImage && previewUrl && !previewImageError ? (
                     /* Image: natural width is viewerZoom% of the pane; height auto.
                        At 100% the image fills the full pane width. Zoom > 100 overflows
                        horizontally so the outer div's overflow-auto allows panning. */
@@ -1648,7 +1656,27 @@ export default function StaffProofingPage() {
                         className="block h-auto max-w-none shadow-2xl"
                         style={{ width: `${viewerZoom}%`, pointerEvents: isDragging ? "none" : "auto" }}
                         draggable={false}
+                        onError={() => setPreviewImageError(true)}
                       />
+                    </div>
+                  ) : previewIsImage && previewImageError ? (
+                    <div className="flex flex-1 items-center justify-center p-8">
+                      <div className="w-full max-w-sm rounded-xl border border-rose-500/30 bg-rose-500/10 py-12 text-center text-rose-100">
+                        <FileImage className="mx-auto mb-3 h-10 w-10 opacity-70" />
+                        <p className="text-sm font-semibold">Preview failed to load</p>
+                        <p className="mt-1 px-6 text-xs text-rose-100/80">{previewName}</p>
+                        {downloadUrl ? (
+                          <a
+                            href={downloadUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-rose-300/50 bg-rose-950/40 px-3 py-1.5 text-xs font-medium text-rose-50 hover:bg-rose-900/60"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            Open file
+                          </a>
+                        ) : null}
+                      </div>
                     </div>
                   ) : previewUrl ? (
                     <div className="flex flex-1 items-center justify-center p-8">
@@ -1741,7 +1769,7 @@ export default function StaffProofingPage() {
                         setSendDialogMode("send");
                         setSendDialogOpen(true);
                       } else {
-                        setCreateDialogOpen(true);
+                        openCreateProofDialog("generated");
                       }
                     }}
                     disabled={!activeRow || (canSendCurrentVersion && !canSendDisplayedVersion)}
@@ -1806,7 +1834,7 @@ export default function StaffProofingPage() {
                     <Button
                       variant="outline"
                       className="mt-3 h-10 w-full rounded-xl border-[#232948] bg-transparent text-[10px] font-bold uppercase tracking-wider text-slate-200 transition-all hover:bg-slate-800"
-                      onClick={() => setCreateDialogOpen(true)}
+                      onClick={() => openCreateProofDialog("generated")}
                       disabled={Boolean(hasBlockingSentProof)}
                     >
                       Create New Revision
@@ -2046,7 +2074,7 @@ export default function StaffProofingPage() {
                   <h4 className="mb-4 text-[10px] font-bold uppercase tracking-widest text-slate-500">Manual Override</h4>
                   <Button
                     variant="outline"
-                    className="h-10 w-full rounded-xl border-[#232948] bg-[#141824] text-[10px] font-bold uppercase tracking-wider text-slate-100 transition-all hover:border-[#1337ec] hover:bg-[#1337ec]/10"
+                    className="h-10 w-full rounded-xl border-rose-500/60 bg-rose-500/10 text-[10px] font-bold uppercase tracking-wider text-rose-100 transition-all hover:bg-rose-500/20"
                     onClick={() => setOverrideDialogOpen(true)}
                     disabled={!detail || detail.approvedProofSource === "manual_override"}
                   >
@@ -2055,7 +2083,7 @@ export default function StaffProofingPage() {
                   </Button>
                   <Button
                     variant="outline"
-                    className="mt-2 h-10 w-full rounded-xl border-amber-500/40 bg-amber-500/10 text-[10px] font-bold uppercase tracking-wider text-amber-100 transition-all hover:bg-amber-500/15"
+                    className="mt-2 h-10 w-full rounded-xl border-rose-500/60 bg-rose-500/10 text-[10px] font-bold uppercase tracking-wider text-rose-100 transition-all hover:bg-rose-500/20"
                     onClick={() => setProofNotRequiredDialogOpen(true)}
                     disabled={!detail}
                   >
