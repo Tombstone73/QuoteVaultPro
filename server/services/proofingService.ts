@@ -210,7 +210,7 @@ function derivePreviewStatusFromSource(source: ArtworkProofSource | null): { sta
 
 type AutoSyncProofResult =
   | { status: "not_required" | "no_source" | "already_current" }
-  | { status: "created" | "refreshed" | "invalidated"; proofVersionId?: string | null; proofFileId?: string | null; toState?: string | null };
+  | { status: "draft_created" | "draft_refreshed" | "invalidated"; proofVersionId?: string | null; proofFileId?: string | null; toState?: string | null };
 
 type PreviewDerivativeGenerationResult = {
   sourceType: ArtworkProofSource["sourceType"];
@@ -536,6 +536,27 @@ export function deriveProofResponseWorkflowState(args: { decision: ProofDecision
   return "needs_design";
 }
 
+export function deriveProofRecoveryWorkflowTransition(args: {
+  lineItemId: string;
+  workflowState: string;
+  lifecycleStatus?: string | null;
+  activeOwnerJobId?: string | null;
+  activeOwnerStationKey?: string | null;
+  activeOwnerStepKey?: string | null;
+}) {
+  const currentState = normalizeProofingWorkflowState(args.workflowState);
+  return {
+    lineItemId: args.lineItemId,
+    fromState: currentState,
+    toState: currentState,
+    lifecycleStatus: args.lifecycleStatus ?? null,
+    activeOwnerJobId: args.activeOwnerJobId ?? null,
+    activeOwnerStationKey: args.activeOwnerStationKey ?? null,
+    activeOwnerStepKey: args.activeOwnerStepKey ?? null,
+    ownershipAction: "none" as const,
+  };
+}
+
 type LoadedProofLineItem = {
   lineItemId: string;
   orderId: string;
@@ -544,6 +565,7 @@ type LoadedProofLineItem = {
   orderStatus: string | null;
   orderCanceledAt: string | Date | null;
   workflowState: string;
+  lifecycleStatus: string | null;
   requiresPrepress: boolean;
   requiresProofApproval: boolean;
   approvedProofVersionId: string | null;
@@ -571,6 +593,7 @@ async function loadProofLineItem(tx: any, args: { organizationId: string; lineIt
       orderStatus: orders.status,
       orderCanceledAt: orders.canceledAt,
       workflowState: orderLineItems.workflowState,
+      lifecycleStatus: orderLineItems.status,
       requiresPrepress: orderLineItems.requiresPrepress,
       requiresProofApproval: orderLineItems.requiresProofApproval,
       approvedProofVersionId: orderLineItems.approvedProofVersionId,
@@ -2097,31 +2120,22 @@ export async function autoSyncCanonicalProofForLineItem(tx: any, args: {
     internalNotes: `Auto-synced from persisted artwork (${args.reason})`,
   });
 
-  const sendResult = await markProofVersionSent(tx, {
-    organizationId: args.organizationId,
-    proofVersionId: proofVersion.id,
-    actorUserId: args.actorUserId,
-    sentToName: null,
-    sentToEmail: null,
-    customerMessage: null,
-  });
-
-  logProofAutoSync(currentRelevantVersion ? "refreshed" : "created", {
+  logProofAutoSync(currentRelevantVersion ? "draft_refreshed" : "draft_created", {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
     reason: args.reason,
     proofVersionId: proofVersion.id,
     proofFileId,
-    workflowToState: sendResult.workflowTransition.toState,
+    workflowToState: lineItem.workflowState,
     sourceType: source.sourceType,
     sourceId: source.sourceId,
   });
 
   return {
-    status: currentRelevantVersion ? "refreshed" : "created",
+    status: currentRelevantVersion ? "draft_refreshed" : "draft_created",
     proofVersionId: proofVersion.id,
     proofFileId,
-    toState: sendResult.workflowTransition.toState,
+    toState: lineItem.workflowState,
   };
 }
 
@@ -3268,20 +3282,10 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
       })
       .where(eq(orderLineItems.id, lineItem.lineItemId));
 
-    const workflowTransition = await transitionLineItemWorkflowState(tx, {
-      organizationId: args.organizationId,
+    const workflowTransition = deriveProofRecoveryWorkflowTransition({
       lineItemId: lineItem.lineItemId,
-      toState: deriveProofResponseWorkflowState({
-        decision: "approved",
-        requiresPrepress: lineItem.requiresPrepress,
-      }),
-      actorUserId: args.actorUserId,
-      metadata: {
-        source: "proofing_manual_approval_override",
-        proofVersionId: proofVersion.id,
-        manualApprovalOverrideId: manualApprovalOverride.id,
-        overrideReason,
-      },
+      workflowState: lineItem.workflowState,
+      lifecycleStatus: lineItem.lifecycleStatus,
     });
 
     await appendProofingEvent(tx, {
@@ -3358,16 +3362,10 @@ export async function markLineItemProofNotRequired(tx: any, args: {
     })
     .where(eq(orderLineItems.id, lineItem.lineItemId));
 
-  const workflowTransition = await transitionLineItemWorkflowState(tx, {
-    organizationId: args.organizationId,
+  const workflowTransition = deriveProofRecoveryWorkflowTransition({
     lineItemId: lineItem.lineItemId,
-    toState: lineItem.requiresPrepress ? "ready_for_prepress" : "ready_for_production",
-    actorUserId: args.actorUserId,
-    metadata: {
-      source: "proofing_mark_not_required",
-      reason,
-      internalNote: trimNullable(args.internalNote),
-    },
+    workflowState: lineItem.workflowState,
+    lifecycleStatus: lineItem.lifecycleStatus,
   });
 
   await appendProofingEvent(tx, {
