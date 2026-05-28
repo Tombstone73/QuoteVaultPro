@@ -22,6 +22,8 @@ import { getProductionConfigForOrganization } from "../routes/production.shared"
 import { isPrepressOwnershipJob, resolveActiveProductionOwners } from "./productionOwnership";
 import { stationResolver } from "./stations/stationResolver";
 import { normalizeProductionStationKey } from "@shared/productionStations";
+import { listProofingQueue } from "./proofingService";
+import type { ProofingQueueRow } from "@shared/proofing";
 
 export interface OperationalSummary {
   inboundOrders: number;
@@ -42,6 +44,14 @@ const CLOSED_ORDER_STATES = ["closed", "canceled", "production_complete"];
 
 function count(rows: { count: number }[]): number {
   return rows[0]?.count ?? 0;
+}
+
+export function countAwaitingProofQueueRows(rows: Array<Pick<ProofingQueueRow, "currentQueueStatus">>): number {
+  return rows.filter((row) =>
+    row.currentQueueStatus === "awaiting_send" ||
+    row.currentQueueStatus === "revision_requested" ||
+    row.currentQueueStatus === "no_active_proof"
+  ).length;
 }
 
 async function countVisibleProductionJobs(
@@ -123,7 +133,7 @@ export async function computeOperationalSummary(organizationId: string): Promise
   const [
     inboundResult,
     designResult,
-    proofingResult,
+    proofingQueue,
     prepressResult,
     overviewCount,
     flatbedCount,
@@ -154,17 +164,10 @@ export async function computeOperationalSummary(organizationId: string): Promise
         ),
       ),
 
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(orderLineItems)
-      .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
-      .where(
-        and(
-          eq(orders.organizationId, organizationId),
-          eq(orderLineItems.workflowState as any, "awaiting_proof_approval"),
-          notInArray(orders.state as any, CLOSED_ORDER_STATES),
-        ),
-      ),
+    listProofingQueue(db, {
+      organizationId,
+      slice: "all",
+    }),
 
     db
       .select({ count: sql<number>`count(*)::int` })
@@ -217,7 +220,7 @@ export async function computeOperationalSummary(organizationId: string): Promise
     inboundOrders: count(inboundResult),
     overview: overviewCount,
     design: count(designResult),
-    proofing: count(proofingResult),
+    proofing: countAwaitingProofQueueRows(proofingQueue.rows),
     prepress: count(prepressResult),
     flatbed: flatbedCount,
     roll: rollCount,
