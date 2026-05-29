@@ -46,6 +46,17 @@ import { fulfillmentServiceV2 } from "../services/fulfillment/service";
 // Handles both Replit auth (claims.sub) and local auth (id) formats
 const getUserId = (user: any): string | undefined => user?.claims?.sub || user?.id;
 
+function fulfillmentFailureResponse(error: any, fallbackMessage: string, fallbackCode: string) {
+  const message = error?.message ? `${fallbackMessage}: ${error.message}` : fallbackMessage;
+  return {
+    success: false,
+    message,
+    code: error?.code || fallbackCode,
+    detail: error?.detail,
+    constraint: error?.constraint,
+  };
+}
+
 export function registerFulfillmentRoutes(
   app: Express,
   middleware: {
@@ -110,12 +121,16 @@ export function registerFulfillmentRoutes(
       const actorOrgRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
       const data = await fulfillmentServiceV2.markOrderReady(organizationId, req.params.orderId, actorUserId, actorOrgRole);
       return res.json({ success: true, data, message: 'Fulfillment marked ready' });
-    } catch (error) {
+    } catch (error: any) {
       if (error instanceof FulfillmentHttpError) {
         return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       }
       console.error('[fulfillment] mark ready error:', error);
-      return res.status(500).json({ success: false, message: 'Failed to mark fulfillment ready' });
+      return res.status(500).json(fulfillmentFailureResponse(
+        error,
+        'Failed to mark fulfillment ready',
+        'FULFILLMENT_MARK_READY_FAILED',
+      ));
     }
   });
 

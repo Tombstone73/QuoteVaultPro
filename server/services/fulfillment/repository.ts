@@ -1396,6 +1396,7 @@ export class FulfillmentDashboardRepo {
       return { ok: false as const, code: 'INVALID_STATE', message: 'Order is not ready for fulfillment' };
     }
 
+    const safeActorUserId = await this.resolveExistingActorUserId(actorUserId);
     await this.dbInstance.transaction(async (tx) => {
       await tx
         .update(orders)
@@ -1404,7 +1405,7 @@ export class FulfillmentDashboardRepo {
 
       await tx.insert(fulfillmentEvents).values({
         organizationId: orgId,
-        actorUserId: actorUserId || null,
+        actorUserId: safeActorUserId,
         entityType: 'ORDER',
         entityId: orderId,
         eventType: 'FULFILLMENT_READY',

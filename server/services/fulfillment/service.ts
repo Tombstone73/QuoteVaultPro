@@ -18,9 +18,25 @@ export function canRevertFulfillmentStatus(actorOrgRole?: string | null): boolea
 }
 
 export class FulfillmentService {
-  private readonly shipmentRepo = new ShipmentRepo(db);
-  private readonly pickupRepo = new PickupRepo(db);
-  private readonly dashboardRepo = new FulfillmentDashboardRepo(db);
+  private readonly shipmentRepo: ShipmentRepo;
+  private readonly pickupRepo: PickupRepo;
+  private readonly dashboardRepo: FulfillmentDashboardRepo;
+  private readonly dbInstance: typeof db;
+  private readonly billingAutomationService: typeof billingInvoiceAutomationService;
+
+  constructor(deps?: {
+    shipmentRepo?: ShipmentRepo;
+    pickupRepo?: PickupRepo;
+    dashboardRepo?: FulfillmentDashboardRepo;
+    dbInstance?: typeof db;
+    billingAutomationService?: typeof billingInvoiceAutomationService;
+  }) {
+    this.dbInstance = deps?.dbInstance ?? db;
+    this.shipmentRepo = deps?.shipmentRepo ?? new ShipmentRepo(this.dbInstance);
+    this.pickupRepo = deps?.pickupRepo ?? new PickupRepo(this.dbInstance);
+    this.dashboardRepo = deps?.dashboardRepo ?? new FulfillmentDashboardRepo(this.dbInstance);
+    this.billingAutomationService = deps?.billingAutomationService ?? billingInvoiceAutomationService;
+  }
 
   private canOverridePickupReady(actorRole?: string | null): boolean {
     const normalizedRole = String(actorRole || '').trim().toLowerCase();
@@ -68,20 +84,38 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(400, result.message, result.code);
     }
     let billingAutomation: BillingInvoiceAutomationResult | null = null;
-    const [order] = await db
+    const [order] = await this.dbInstance
       .select({ shippingMethod: orders.shippingMethod })
       .from(orders)
       .where(and(eq(orders.id, orderId), eq(orders.organizationId, orgId)))
       .limit(1);
 
     if (order?.shippingMethod !== 'pickup') {
-      billingAutomation = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
-        organizationId: orgId,
-        orderId,
-        trigger: 'ready_for_pickup_or_ready_to_ship',
-        sourceEvent: 'FULFILLMENT_READY_TO_SHIP',
-        actorUserId,
-      });
+      try {
+        billingAutomation = await this.billingAutomationService.ensureDraftInvoiceForOrderTrigger({
+          organizationId: orgId,
+          orderId,
+          trigger: 'ready_for_pickup_or_ready_to_ship',
+          sourceEvent: 'FULFILLMENT_READY_TO_SHIP',
+          actorUserId,
+        });
+      } catch (error: any) {
+        console.error('[fulfillment] ready billing automation warning:', {
+          organizationId: orgId,
+          orderId,
+          message: error?.message || String(error),
+          code: error?.code,
+          constraint: error?.constraint,
+        });
+        billingAutomation = {
+          status: 'failed_controlled_error',
+          policy: 'ready_for_pickup_or_ready_to_ship',
+          trigger: 'ready_for_pickup_or_ready_to_ship',
+          invoice: null,
+          code: 'INVOICE_AUTOMATION_FAILED',
+          message: error?.message || 'Invoice automation failed after fulfillment was marked ready',
+        };
+      }
     }
 
     const detail = await this.getOrderDetail(orgId, orderId, actorOrgRole);
