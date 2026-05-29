@@ -54,6 +54,13 @@ function toInvoiceSummary(invoice: any): BillingInvoiceAutomationResult["invoice
   };
 }
 
+function isAutomationMilestoneUniqueViolation(error: unknown): boolean {
+  const err = error as any;
+  if (err?.code !== "23505") return false;
+  const constraint = String(err?.constraint || err?.message || "");
+  return constraint.includes("invoices_automation_milestone_uidx");
+}
+
 async function insertBillingAuditEvent(
   tx: any,
   organizationId: string,
@@ -89,6 +96,24 @@ async function insertBillingAuditEvent(
 
 export class BillingInvoiceAutomationService {
   constructor(private readonly dbInstance = db) {}
+
+  private async findExistingAutomationInvoice(
+    organizationId: string,
+    orderId: string,
+    trigger: BillingInvoiceTriggerPolicy,
+  ) {
+    const [invoice] = await this.dbInstance
+      .select()
+      .from(invoices)
+      .where(and(
+        eq(invoices.organizationId, organizationId),
+        eq(invoices.orderId, orderId),
+        eq(invoices.invoiceCreationSource, "automation"),
+        eq(invoices.billingMilestone, trigger),
+      ))
+      .limit(1);
+    return invoice ?? null;
+  }
 
   async getBillingInvoiceTriggerPolicy(organizationId: string): Promise<BillingInvoiceTriggerPolicy> {
     const [org] = await this.dbInstance
@@ -165,7 +190,12 @@ export class BillingInvoiceAutomationService {
         const [existingInvoice] = await tx
           .select()
           .from(invoices)
-          .where(and(eq(invoices.organizationId, input.organizationId), eq(invoices.orderId, input.orderId)))
+          .where(and(
+            eq(invoices.organizationId, input.organizationId),
+            eq(invoices.orderId, input.orderId),
+            eq(invoices.invoiceCreationSource, "automation"),
+            eq(invoices.billingMilestone, input.trigger),
+          ))
           .limit(1);
 
         if (existingInvoice) {
@@ -174,7 +204,7 @@ export class BillingInvoiceAutomationService {
             orderId: input.orderId,
             invoice: existingInvoice,
             actionType: "INVOICE_AUTOMATION_SKIPPED_EXISTING",
-            description: "Invoice automation skipped because an invoice already exists for this order",
+            description: "Invoice automation skipped because this billing milestone already has an invoice",
             values: {
               trigger: input.trigger,
               policy,
@@ -187,7 +217,7 @@ export class BillingInvoiceAutomationService {
             policy,
             trigger: input.trigger,
             invoice: toInvoiceSummary(existingInvoice),
-            message: "Draft invoice already exists",
+            message: "Automated draft invoice already exists",
           };
         }
 
@@ -211,6 +241,8 @@ export class BillingInvoiceAutomationService {
         const invoice = await createInvoiceFromOrderInTransaction(tx, input.organizationId, input.orderId, createdByUserId, {
           terms: "due_on_receipt",
           customDueDate: null,
+          invoiceCreationSource: "automation",
+          billingMilestone: input.trigger === "manual_only" ? null : input.trigger,
         });
 
         await tx
@@ -261,6 +293,19 @@ export class BillingInvoiceAutomationService {
         };
       });
     } catch (error: any) {
+      if (isAutomationMilestoneUniqueViolation(error)) {
+        const policy = await this.getBillingInvoiceTriggerPolicy(input.organizationId).catch(() => "manual_only" as const);
+        const existingInvoice = await this.findExistingAutomationInvoice(input.organizationId, input.orderId, input.trigger);
+        if (existingInvoice) {
+          return {
+            status: "skipped_existing_invoice",
+            policy,
+            trigger: input.trigger,
+            invoice: toInvoiceSummary(existingInvoice),
+            message: "Automated draft invoice already exists",
+          };
+        }
+      }
       console.error("[BillingInvoiceAutomation] controlled failure:", {
         organizationId: input.organizationId,
         orderId: input.orderId,

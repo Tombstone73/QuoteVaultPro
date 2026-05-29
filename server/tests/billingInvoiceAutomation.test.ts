@@ -15,6 +15,7 @@ import {
 } from "../../shared/schema";
 import { billingInvoiceAutomationService } from "../services/billingInvoiceAutomation";
 import { computeOperationalSummary } from "../services/operationalSummary";
+import { createInvoiceFromOrder } from "../invoicesService";
 
 beforeAll(async () => {
   await runMigrations();
@@ -164,6 +165,8 @@ describe("billing invoice automation", () => {
     const invoiceRows = await db.select().from(invoices).where(eq(invoices.orderId, order.id));
     expect(invoiceRows).toHaveLength(1);
     expect(invoiceRows[0].status).toBe("draft");
+    expect(invoiceRows[0].invoiceCreationSource).toBe("automation");
+    expect(invoiceRows[0].billingMilestone).toBe("ready_for_pickup_or_ready_to_ship");
     expect(invoiceRows[0].lastSentAt).toBeNull();
     expect(invoiceRows[0].amountPaid).toBe("0.00");
     expect(invoiceRows[0].totalCents).toBe(12345);
@@ -206,5 +209,94 @@ describe("billing invoice automation", () => {
 
     const invoiceRows = await db.select().from(invoices).where(eq(invoices.orderId, order.id));
     expect(invoiceRows).toHaveLength(1);
+  });
+
+  test("manual invoice can coexist with automated invoice and has no billing milestone", async () => {
+    const { org, user, order } = await createFixture("ready_for_pickup_or_ready_to_ship");
+
+    const automated = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+      organizationId: org.id,
+      orderId: order.id,
+      trigger: "ready_for_pickup_or_ready_to_ship",
+      sourceEvent: "PICKUP_READY",
+      actorUserId: user.id,
+    });
+    expect(automated.status).toBe("created");
+
+    const manual = await createInvoiceFromOrder(org.id, order.id, user.id, {
+      terms: "due_on_receipt",
+      customDueDate: null,
+    });
+
+    const invoiceRows = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.orderId, order.id));
+
+    expect(invoiceRows).toHaveLength(2);
+
+    const manualRow = invoiceRows.find((invoice) => invoice.id === manual.id);
+    expect(manualRow?.invoiceCreationSource).toBe("manual");
+    expect(manualRow?.billingMilestone).toBeNull();
+  });
+
+  test("manual invoice created first does not block automated milestone invoice", async () => {
+    const { org, user, order } = await createFixture("ready_for_pickup_or_ready_to_ship");
+
+    const manual = await createInvoiceFromOrder(org.id, order.id, user.id, {
+      terms: "due_on_receipt",
+      customDueDate: null,
+    });
+    expect(manual.invoiceCreationSource).toBe("manual");
+
+    const automated = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+      organizationId: org.id,
+      orderId: order.id,
+      trigger: "ready_for_pickup_or_ready_to_ship",
+      sourceEvent: "PICKUP_READY",
+      actorUserId: user.id,
+    });
+
+    expect(automated.status).toBe("created");
+
+    const invoiceRows = await db.select().from(invoices).where(eq(invoices.orderId, order.id));
+    expect(invoiceRows).toHaveLength(2);
+    expect(invoiceRows.some((invoice) => invoice.invoiceCreationSource === "automation" && invoice.billingMilestone === "ready_for_pickup_or_ready_to_ship")).toBe(true);
+  });
+
+  test("database unique index prevents duplicate automated milestone invoices", async () => {
+    const { org, user, customer, order } = await createFixture("ready_for_pickup_or_ready_to_ship");
+
+    const first = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+      organizationId: org.id,
+      orderId: order.id,
+      trigger: "ready_for_pickup_or_ready_to_ship",
+      sourceEvent: "PICKUP_READY",
+      actorUserId: user.id,
+    });
+    expect(first.status).toBe("created");
+
+    await expect(db.insert(invoices).values({
+      organizationId: org.id,
+      invoiceNumber: Math.floor(Math.random() * 900000) + 100000,
+      orderId: order.id,
+      customerId: customer.id,
+      status: "draft",
+      terms: "due_on_receipt",
+      subtotal: "0.00",
+      tax: "0.00",
+      total: "0.00",
+      subtotalCents: 0,
+      taxCents: 0,
+      shippingCents: 0,
+      totalCents: 0,
+      amountPaid: "0.00",
+      balanceDue: "0.00",
+      createdByUserId: user.id,
+      invoiceCreationSource: "automation",
+      billingMilestone: "ready_for_pickup_or_ready_to_ship",
+    } as any)).rejects.toMatchObject({
+      code: "23505",
+    });
   });
 });

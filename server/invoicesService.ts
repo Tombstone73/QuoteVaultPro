@@ -10,6 +10,7 @@ import {
   toDocumentNumberConflictError,
 } from './services/documentNumberingService';
 import { resolveOrderLineItemInvoicePricing } from './lib/downstreamEffectivePricing';
+import type { BillingInvoiceMilestone, InvoiceCreationSource } from '../shared/billingInvoicePolicy';
 
 // Map payment terms to days offset
 const TERM_OFFSETS: Record<string, number> = {
@@ -285,7 +286,12 @@ export async function createInvoiceFromOrderInTransaction(
   organizationId: string,
   orderId: string,
   userId: string,
-  opts: { terms: string; customDueDate?: Date | null }
+  opts: {
+    terms: string;
+    customDueDate?: Date | null;
+    invoiceCreationSource?: InvoiceCreationSource;
+    billingMilestone?: BillingInvoiceMilestone | null;
+  }
 ) {
     await lockInvoiceOrderCreation(tx, organizationId, orderId);
 
@@ -293,13 +299,6 @@ export async function createInvoiceFromOrderInTransaction(
     const [order] = await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));
     if (!order) throw new Error('Order not found');
     const lineItems = await tx.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
-
-    // Prevent duplicate invoice unless multi allowed (basic check: one existing invoice per order in draft/sent)
-    const existing = await tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.orderId, orderId)));
-    if (existing.length > 0) {
-      // For now disallow another invoice; future: allow multiple with a flag
-      throw new Error('Invoice already exists for this order');
-    }
 
     const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "invoice", tx);
     const invoiceNumber = numberCore;
@@ -349,6 +348,8 @@ export async function createInvoiceFromOrderInTransaction(
       syncStatus: 'pending',
       qbSyncStatus: 'pending' as any,
       modifiedAfterBilling: false as any,
+      invoiceCreationSource: opts.invoiceCreationSource ?? 'manual',
+      billingMilestone: opts.billingMilestone ?? null,
     } as any; // cast due to extended schema types differences
 
     const [invoice] = await tx.insert(invoices).values(invoiceInsert as any).returning();
