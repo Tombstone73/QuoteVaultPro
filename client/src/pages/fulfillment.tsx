@@ -195,7 +195,10 @@ function FulfillmentDetailPanel({
   const canUnready = (normalizedStatus === "READY" || normalizedStatus === "READY_FOR_PICKUP") && detail?.permissions?.canRevertStatus === true;
   const unreadyLabel = normalizedStatus === "READY_FOR_PICKUP" ? "Move Back to Ready" : "Move Back to Draft";
   const checklistBlocking = detail ? !detail.checklistComplete : true;
-  const checklistBlockMessage = "Verify all fulfillment checklist items before marking ready.";
+  const showChecklistBlocker = checklistBlocking && normalizedStatus === "READY" && (canMarkPickupReady || canMarkShipped);
+  const checklistBlockMessage = isShip
+    ? "Verify all fulfillment checklist items before marking shipped."
+    : "Verify all fulfillment checklist items before marking ready for pickup.";
 
   const toggleChecklistItem = async (lineItemId: string, checked: boolean, notes?: string | null) => {
     await runAction(checked ? "Item verified" : "Item unverified", () =>
@@ -292,7 +295,7 @@ function FulfillmentDetailPanel({
                 </button>
               </div>
             ) : null}
-            {checklistBlocking ? (
+            {showChecklistBlocker ? (
               <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
                 <AlertTriangle className="mr-2 inline h-4 w-4" />
                 {checklistBlockMessage}

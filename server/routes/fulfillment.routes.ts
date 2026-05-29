@@ -151,7 +151,11 @@ export function registerFulfillmentRoutes(
         return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       }
       console.error('[fulfillment] order pickup ready error:', error);
-      return res.status(500).json({ success: false, message: 'Failed to mark pickup ready' });
+      return res.status(500).json(fulfillmentFailureResponse(
+        error,
+        'Failed to mark pickup ready',
+        'FULFILLMENT_PICKUP_READY_FAILED',
+      ));
     }
   });
 
@@ -219,7 +223,11 @@ export function registerFulfillmentRoutes(
         return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       }
       console.error('[fulfillment] checklist update error:', error);
-      return res.status(500).json({ success: false, message: 'Failed to update fulfillment checklist' });
+      return res.status(500).json(fulfillmentFailureResponse(
+        error,
+        'Failed to update fulfillment checklist',
+        'FULFILLMENT_CHECKLIST_UPDATE_FAILED',
+      ));
     }
   });
 
@@ -309,7 +317,11 @@ export function registerFulfillmentRoutes(
         return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       }
       console.error('[fulfillment] mark shipped error:', error);
-      return res.status(500).json({ success: false, message: 'Failed to mark shipment shipped' });
+      return res.status(500).json(fulfillmentFailureResponse(
+        error,
+        'Failed to mark shipment shipped',
+        'FULFILLMENT_MARK_SHIPPED_FAILED',
+      ));
     }
   });
 
