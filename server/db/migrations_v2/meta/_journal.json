@@ -484,6 +484,13 @@
       "when": 1781049600000,
       "tag": "0073_invoice_automation_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1781136000000,
+      "tag": "0074_fulfillment_events_order_entity",
+      "breakpoints": true
     }
   ]
 }
