@@ -1460,10 +1460,21 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
         eq(orders.organizationId, args.organizationId),
         eq(orderLineItems.id, args.lineItemId),
         or(
-          eq(orderAttachments.orderLineItemId, args.lineItemId),
-          isNull(orderAttachments.orderLineItemId),
+          // Normal order-entry uploads attach directly to the line item, but may
+          // still carry the generic role "other". Proof eligibility should then
+          // be decided by file type/readability, not by narrow artwork metadata.
+          // Proof artifacts are excluded here; they belong to the manual proof
+          // flow, not to generated-proof artwork source selection.
+          and(
+            eq(orderAttachments.orderLineItemId, args.lineItemId),
+            ne(orderAttachments.role, "proof"),
+            sql`coalesce(${orderAttachments.description}, '') not like ${`%${GENERATED_PROOF_DESCRIPTION_MARKER}%`}`,
+          ),
+          and(
+            isNull(orderAttachments.orderLineItemId),
+            inArray(orderAttachments.role, ["artwork", "reference"]),
+          ),
         ),
-        inArray(orderAttachments.role, ["artwork", "reference"]),
       ),
     )
     .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.updatedAt), desc(orderAttachments.createdAt));
@@ -1551,7 +1562,7 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
         eq(assetLinks.organizationId, args.organizationId),
         eq(assetLinks.parentType, "order_line_item"),
         eq(assetLinks.parentId, args.lineItemId),
-        inArray(assetLinks.role, ["primary", "attachment", "reference"]),
+        ne(assetLinks.role, "proof"),
       ),
     )
     .orderBy(sql`case when ${assetLinks.role} = 'primary' then 0 else 1 end`, desc(assetLinks.createdAt), desc(assets.updatedAt), desc(assets.createdAt));
@@ -1618,7 +1629,6 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
         eq(lineItemFiles.organizationId, args.organizationId),
         eq(lineItemFiles.lineItemId, args.lineItemId),
         eq(lineItemFiles.status, "active"),
-        inArray(lineItemFiles.role, ["original", "reference"]),
       ),
     )
     .orderBy(sql`case when ${lineItemFiles.role} = 'original' then 0 else 1 end`, desc(lineItemFiles.createdAt));
@@ -1671,6 +1681,54 @@ export async function listEligibleProofArtworkSources(tx: any, args: {
 }): Promise<EligibleProofArtworkSource[]> {
   const rows = await resolveEligibleProofArtworkSourceRows(tx, args);
   return rows.map(({ artworkSource: _artworkSource, ...publicSource }) => publicSource);
+}
+
+export async function buildEligibleProofArtworkDebugSummary(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  sources: EligibleProofArtworkSource[];
+}) {
+  const rejectedReasonCounts = args.sources.reduce<Record<string, number>>((acc, source) => {
+    if (source.eligible) return acc;
+    const reason = source.eligibilityReason || "unknown";
+    acc[reason] = (acc[reason] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  const [counts] = await tx
+    .select({
+      orderAttachmentLineItemCount: sql<number>`count(distinct ${orderAttachments.id}) filter (where ${orderAttachments.orderLineItemId} = ${args.lineItemId})`,
+      orderAttachmentOrderLevelCandidateCount: sql<number>`count(distinct ${orderAttachments.id}) filter (where ${orderAttachments.orderLineItemId} is null and ${orderAttachments.role} in ('artwork', 'reference'))`,
+      lineItemFileActiveCount: sql<number>`count(distinct ${lineItemFiles.id}) filter (where ${lineItemFiles.status} = 'active')`,
+      assetLinkLineItemCount: sql<number>`count(distinct ${assetLinks.id})`,
+      orderId: sql<string | null>`max(${orders.id})`,
+    })
+    .from(orderLineItems)
+    .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+    .leftJoin(orderAttachments, eq(orderAttachments.orderId, orders.id))
+    .leftJoin(lineItemFiles, eq(lineItemFiles.lineItemId, orderLineItems.id))
+    .leftJoin(
+      assetLinks,
+      and(
+        eq(assetLinks.organizationId, args.organizationId),
+        eq(assetLinks.parentType, "order_line_item"),
+        eq(assetLinks.parentId, orderLineItems.id),
+      ),
+    )
+    .where(and(eq(orders.organizationId, args.organizationId), eq(orderLineItems.id, args.lineItemId)));
+
+  return {
+    lineItemId: args.lineItemId,
+    orderId: counts?.orderId ?? null,
+    foundBySourceTable: {
+      orderAttachments: Number(counts?.orderAttachmentLineItemCount ?? 0),
+      orderLevelCandidateAttachments: Number(counts?.orderAttachmentOrderLevelCandidateCount ?? 0),
+      lineItemFiles: Number(counts?.lineItemFileActiveCount ?? 0),
+      assetLinks: Number(counts?.assetLinkLineItemCount ?? 0),
+    },
+    returnedSources: args.sources.length,
+    rejectedReasonCounts,
+  };
 }
 
 async function loadLatestArtworkProofSource(tx: any, args: {

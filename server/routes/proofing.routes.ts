@@ -32,6 +32,7 @@ import {
   createLineItemProofVersion,
   generateLineItemArtworkPreviewDerivative,
   INCOMPLETE_PROOF_MESSAGE,
+  buildEligibleProofArtworkDebugSummary,
   listEligibleProofArtworkSources,
   listProofingQueue,
   markLineItemProofNotRequired,
@@ -200,6 +201,14 @@ export function registerProofingRoutes(
         lineItemId: String(req.params.lineItemId),
       });
       const eligibleCount = sources.filter((source) => source.eligible).length;
+      const debug =
+        eligibleCount === 0 && process.env.NODE_ENV !== "production"
+          ? await buildEligibleProofArtworkDebugSummary(db, {
+              organizationId,
+              lineItemId: String(req.params.lineItemId),
+              sources,
+            })
+          : undefined;
 
       return res.json({
         success: true,
@@ -208,6 +217,7 @@ export function registerProofingRoutes(
           eligibleCount,
           disabledReason: eligibleCount > 0 ? null : "no eligible artwork found",
           disabledReasonCode: eligibleCount > 0 ? null : "no_eligible_artwork_found",
+          ...(debug ? { debug } : {}),
         },
       });
     } catch (error: any) {

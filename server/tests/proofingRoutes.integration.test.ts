@@ -36,7 +36,7 @@ jest.mock("../services/productionRoutingService", () => {
 import { db } from "../db";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { tenantContext, getRequestOrganizationId } from "../tenantContext";
-import { auditLogs, lineItemProofManualApprovalOverrides, lineItemProofVersions, orderAttachments, orderLineItems, productionJobs } from "../../shared/schema";
+import { auditLogs, lineItemFiles, lineItemProofManualApprovalOverrides, lineItemProofVersions, orderAttachments, orderLineItems, productionJobs } from "../../shared/schema";
 import { proofingQueueResponseSchema, proofingReadModelSchema, type ProofVersionHistoryEntry } from "../../shared/proofing";
 import { createProofAccessToken, validateProofToken } from "../services/proofAccessTokenService";
 import {
@@ -1065,6 +1065,7 @@ describe("proofing route integration", () => {
     await db.execute(sql`delete from line_item_proof_approvals where organization_id = ${orgId}`);
     await db.execute(sql`delete from line_item_proof_versions where organization_id = ${orgId}`);
     await db.execute(sql`delete from order_attachments where order_id = ${orderId}`);
+    await db.execute(sql`delete from line_item_files where organization_id = ${orgId}`);
     await db.execute(sql`delete from order_line_items where order_id = ${orderId}`);
     await db.execute(sql`delete from file_derivatives where file_record_id in (select id from file_records where organization_id = ${orgId})`);
     await db.execute(sql`delete from storage_placements where file_record_id in (select id from file_records where organization_id = ${orgId})`);
@@ -1288,6 +1289,170 @@ describe("proofing route integration", () => {
           eligible: true,
         }),
       ]),
+    );
+  });
+
+  test("eligible artwork resolver includes normal order-entry line item uploads with generic role", async () => {
+    const { lineItemId } = await createLineItemFixture("eligible_order_entry_uploads", {
+      addArtwork: false,
+      attachProofFiles: false,
+    });
+
+    const uploadIds = [
+      `upload_pdf_${Date.now()}`,
+      `upload_png_${Date.now()}`,
+      `upload_jpg_${Date.now()}`,
+      `upload_txt_${Date.now()}`,
+    ];
+
+    await db.execute(sql`
+      insert into order_attachments (
+        id,
+        order_id,
+        order_line_item_id,
+        uploaded_by_user_id,
+        uploaded_by_name,
+        file_name,
+        file_url,
+        role,
+        mime_type
+      )
+      values
+        (${uploadIds[0]}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${"normal-upload.pdf"}, ${"uploads/normal-upload.pdf"}, ${"other"}, ${"application/pdf"}),
+        (${uploadIds[1]}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${"normal-upload.png"}, ${"uploads/normal-upload.png"}, ${"other"}, ${"image/png"}),
+        (${uploadIds[2]}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${"normal-upload.jpg"}, ${"uploads/normal-upload.jpg"}, ${"other"}, ${"image/jpeg"}),
+        (${uploadIds[3]}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${"not-proofable.txt"}, ${"uploads/not-proofable.txt"}, ${"other"}, ${"text/plain"})
+    `);
+
+    const res = await request(app)
+      .get(`/api/proofing/line-item/${lineItemId}/eligible-artwork`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .expect(200);
+
+    expect(res.body?.data?.eligibleCount).toBe(3);
+    expect(res.body?.data?.sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: uploadIds[0], role: "other", eligible: true }),
+        expect.objectContaining({ id: uploadIds[1], role: "other", eligible: true }),
+        expect.objectContaining({ id: uploadIds[2], role: "other", eligible: true }),
+        expect.objectContaining({
+          id: uploadIds[3],
+          role: "other",
+          eligible: false,
+          eligibilityReason: "unsupported file type",
+        }),
+      ]),
+    );
+  });
+
+  test("eligible artwork resolver includes active line_item_files and excludes superseded files", async () => {
+    const { lineItemId } = await createLineItemFixture("eligible_line_item_files", {
+      addArtwork: false,
+      attachProofFiles: false,
+    });
+
+    const activeOriginalId = `line_file_original_${Date.now()}`;
+    const activeFinalId = `line_file_final_${Date.now()}`;
+    const supersededId = `line_file_superseded_${Date.now()}`;
+
+    await db.insert(lineItemFiles).values([
+      {
+        id: activeOriginalId,
+        organizationId: orgId,
+        orderId,
+        lineItemId,
+        role: "original",
+        status: "active",
+        storagePath: "uploads/original.pdf",
+        storageKey: "uploads/original.pdf",
+        originalFilename: "original.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 123,
+        createdByUserId: userId,
+      },
+      {
+        id: activeFinalId,
+        organizationId: orgId,
+        orderId,
+        lineItemId,
+        role: "final",
+        status: "active",
+        storagePath: "uploads/final.png",
+        storageKey: "uploads/final.png",
+        originalFilename: "final.png",
+        mimeType: "image/png",
+        sizeBytes: 456,
+        createdByUserId: userId,
+      },
+      {
+        id: supersededId,
+        organizationId: orgId,
+        orderId,
+        lineItemId,
+        role: "original",
+        status: "superseded",
+        storagePath: "uploads/old.pdf",
+        storageKey: "uploads/old.pdf",
+        originalFilename: "old.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 789,
+        createdByUserId: userId,
+      },
+    ] as any);
+
+    const sources = await listEligibleProofArtworkSources(db, {
+      organizationId: orgId,
+      lineItemId,
+    });
+
+    expect(sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: activeOriginalId, sourceType: "line_item_file", eligible: true }),
+        expect.objectContaining({ id: activeFinalId, sourceType: "line_item_file", eligible: true }),
+      ]),
+    );
+    expect(sources.some((source) => source.id === supersededId)).toBe(false);
+  });
+
+  test("generated proof draft can use selected generic uploaded artwork source", async () => {
+    const { lineItemId } = await createLineItemFixture("generic_upload_generated_draft", {
+      addArtwork: false,
+      attachProofFiles: false,
+    });
+    const genericArtworkId = `generic_artwork_${Date.now()}`;
+
+    await db.execute(sql`
+      insert into order_attachments (
+        id,
+        order_id,
+        order_line_item_id,
+        uploaded_by_user_id,
+        uploaded_by_name,
+        file_name,
+        file_url,
+        role,
+        mime_type
+      )
+      values (
+        ${genericArtworkId}, ${orderId}, ${lineItemId}, ${userId}, ${"Proof User"}, ${"generic-upload.pdf"}, ${"uploads/generic-upload.pdf"}, ${"other"}, ${"application/pdf"}
+      )
+    `);
+
+    const createRes = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/versions`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ mode: "generated", artworkSourceIds: [genericArtworkId], internalNotes: "generic upload draft" })
+      .expect(200);
+
+    expect(createRes.body?.data?.proofing?.currentProofInputSnapshot?.sourceArtwork).toEqual(
+      expect.objectContaining({
+        sourceId: genericArtworkId,
+        fileName: "generic-upload.pdf",
+      }),
     );
   });
 
