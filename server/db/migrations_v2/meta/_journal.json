@@ -477,6 +477,13 @@
       "when": 1780963200000,
       "tag": "0072_billing_invoice_trigger_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1781049600000,
+      "tag": "0073_invoice_automation_idempotency",
+      "breakpoints": true
     }
   ]
 }

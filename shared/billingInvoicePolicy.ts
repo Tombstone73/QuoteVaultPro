@@ -9,6 +9,8 @@ export const BILLING_INVOICE_TRIGGER_POLICIES = [
 ] as const;
 
 export type BillingInvoiceTriggerPolicy = typeof BILLING_INVOICE_TRIGGER_POLICIES[number];
+export type BillingInvoiceMilestone = Exclude<BillingInvoiceTriggerPolicy, "manual_only">;
+export type InvoiceCreationSource = "manual" | "automation";
 
 export const DEFAULT_BILLING_INVOICE_TRIGGER_POLICY: BillingInvoiceTriggerPolicy = "manual_only";
 

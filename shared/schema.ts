@@ -3757,6 +3757,8 @@ export const invoices = pgTable("invoices", {
   // Customer PO tracking (migration 0043)
   customerPoNumber: varchar("customer_po_number", { length: 100 }),  // Customer PO/reference number
   qbPoSource: varchar("qb_po_source", { length: 50 }),               // QB field PO was extracted from: 'custom_field_sales1' | 'custom_field' | 'private_note' | 'customer_memo' | 'line_description'
+  invoiceCreationSource: varchar("invoice_creation_source", { length: 32 }).notNull().default('manual'), // manual | automation
+  billingMilestone: varchar("billing_milestone", { length: 64 }), // automation trigger milestone; null for manual invoices
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -3766,6 +3768,9 @@ export const invoices = pgTable("invoices", {
   index("invoices_number_core_idx").on(table.numberCore),
   uniqueIndex("invoices_org_display_number_unique").on(table.organizationId, table.displayNumber).where(sql`${table.displayNumber} IS NOT NULL`),
   uniqueIndex("invoices_org_number_core_unique").on(table.organizationId, table.numberCore).where(sql`${table.numberCore} IS NOT NULL`),
+  uniqueIndex("invoices_automation_milestone_uidx")
+    .on(table.organizationId, table.orderId, table.billingMilestone)
+    .where(sql`${table.invoiceCreationSource} = 'automation' AND ${table.orderId} IS NOT NULL AND ${table.billingMilestone} IS NOT NULL`),
   index("invoices_customer_id_idx").on(table.customerId),
   index("invoices_order_id_idx").on(table.orderId),
   index("invoices_status_idx").on(table.status),
@@ -3774,6 +3779,8 @@ export const invoices = pgTable("invoices", {
   index("invoices_import_source_org_idx").on(table.organizationId, table.importSource),
   index("invoices_is_historical_org_idx").on(table.organizationId, table.isHistorical),
   index("invoices_customer_po_number_org_idx").on(table.organizationId, table.customerPoNumber),
+  index("invoices_creation_source_org_idx").on(table.organizationId, table.invoiceCreationSource),
+  index("invoices_billing_milestone_org_idx").on(table.organizationId, table.billingMilestone),
 ]);
 
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({
@@ -3836,6 +3843,15 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   qbLineItemsSnapshot: z.array(z.any()).optional().nullable(),
   customerPoNumber: z.string().max(100).optional().nullable(),
   qbPoSource: z.string().max(50).optional().nullable(),
+  invoiceCreationSource: z.enum(['manual','automation']).default('manual').optional(),
+  billingMilestone: z.enum([
+    'order_entry',
+    'quote_approval',
+    'proof_approval',
+    'production_complete',
+    'ready_for_pickup_or_ready_to_ship',
+    'picked_up_or_shipped',
+  ]).optional().nullable(),
 });
 
 export const updateInvoiceSchema = insertInvoiceSchema.partial().extend({
