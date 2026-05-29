@@ -126,6 +126,7 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
       and(
         eq(invoices.organizationId, organizationId),
         inArray(invoices.qbSyncStatus, invoiceStatuses as any),
+        sql`lower(${invoices.status}) <> 'draft'`,
         sql`${invoices.updatedAt} <= ${cutoff}`
       )
     )

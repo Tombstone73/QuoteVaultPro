@@ -155,6 +155,14 @@ export const organizations = pgTable("organizations", {
       fulfillment?: {
         pickupRetentionDaysAfterPickedUp?: number;
       };
+      billingInvoiceTriggerPolicy?:
+        | 'manual_only'
+        | 'order_entry'
+        | 'quote_approval'
+        | 'proof_approval'
+        | 'production_complete'
+        | 'ready_for_pickup_or_ready_to_ship'
+        | 'picked_up_or_shipped';
     };
     branding?: {
       logoUrl?: string;
@@ -4119,6 +4127,7 @@ export const fulfillmentEventTypeSchema = z.enum([
   'FULFILLMENT_AUTO_ARCHIVED',
   'FULFILLMENT_CHECKLIST_ITEM_UPDATED',
   'FULFILLMENT_CHECKLIST_VERIFIED',
+  'FULFILLMENT_UNREADY',
   'PICKUP_READY',
   'PICKUP_PICKED_UP',
   'PICKUP_VOIDED',

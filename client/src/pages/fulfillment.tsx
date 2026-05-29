@@ -13,7 +13,6 @@ import {
   Search,
   Settings,
   Truck,
-  X,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { ROUTES } from "@/config/routes";
@@ -34,6 +33,7 @@ import {
   useMarkOrderReadyForPickupMutation,
   useMarkPickupPickedUpMutation,
   useMarkShippedMutation,
+  useUnreadyFulfillmentOrderMutation,
   useUpdateFulfillmentChecklistItemMutation,
 } from "@/hooks/useFulfillment";
 import { formatDistanceToNowStrict } from "date-fns";
@@ -59,6 +59,7 @@ function parseItemsRemaining(value: string): number {
 
 function statusBadgeClass(status: string): string {
   const normalized = status.toUpperCase();
+  if (normalized === "DRAFT") return "bg-muted text-muted-foreground border border-border";
   if (normalized === "READY") return "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20";
   if (normalized === "SHIPPED") return "bg-blue-500/10 text-blue-500 border border-blue-500/20";
   if (normalized === "PARTIAL") return "bg-amber-500/10 text-amber-500 border border-amber-500/20";
@@ -127,36 +128,55 @@ function FulfillmentProductionContext({ row }: { row: FulfillmentQueueRow }) {
   );
 }
 
-function FulfillmentDetailDrawer({
+function FulfillmentDetailPanel({
   orderId,
-  onClose,
   onOpenOrder,
   onOpenShipment,
 }: {
   orderId: string | null;
-  onClose: () => void;
   onOpenOrder: (orderId: string) => void;
   onOpenShipment: (row: FulfillmentQueueRow) => void;
 }) {
   const { toast } = useToast();
   const [note, setNote] = useState("");
+  const [unreadyReason, setUnreadyReason] = useState("");
   const detailQuery = useFulfillmentOrderDetailQuery(orderId || undefined);
   const detail = detailQuery.data;
   const markReady = useMarkFulfillmentReadyMutation(orderId || "");
   const markReadyForPickup = useMarkOrderReadyForPickupMutation(orderId || "");
   const addNote = useAddFulfillmentNoteMutation(orderId || "");
+  const unready = useUnreadyFulfillmentOrderMutation(orderId || "");
   const updateChecklist = useUpdateFulfillmentChecklistItemMutation(orderId || "");
   const ticketId = detail?.pickupTicket?.id || detail?.pickupTicketId || "";
   const markPickedUp = useMarkPickupPickedUpMutation(ticketId, orderId || undefined);
   const shipmentId = detail?.shipmentId || detail?.shipments?.[0]?.id || "";
   const markShipped = useMarkShippedMutation(shipmentId);
 
-  if (!orderId) return null;
+  if (!orderId) {
+    return (
+      <aside className="rounded-xl border border-dashed border-border bg-card p-6 text-sm text-muted-foreground">
+        <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+          <ClipboardList className="h-5 w-5" />
+        </div>
+        <h3 className="text-base font-semibold text-foreground">Select a fulfillment row</h3>
+        <p className="mt-1">Choose an order from the queue to verify items, update pickup/shipping status, add notes, or open the order.</p>
+      </aside>
+    );
+  }
+
+  const invoiceAutomationToast = (result: unknown): string | undefined => {
+    const automation = (result as any)?.billingAutomation;
+    if (!automation) return undefined;
+    if (automation.status === "created") return "Draft invoice created.";
+    if (automation.status === "skipped_existing_invoice") return "Draft invoice already exists.";
+    if (automation.status === "failed_controlled_error") return `Invoice draft warning: ${automation.message}`;
+    return undefined;
+  };
 
   const runAction = async (label: string, action: () => Promise<unknown>) => {
     try {
-      await action();
-      toast({ title: label });
+      const result = await action();
+      toast({ title: label, description: invoiceAutomationToast(result) });
     } catch (error) {
       const parsed = toFulfillmentError(error);
       toast({ title: `${label} failed`, description: parsed.message, variant: "destructive" });
@@ -166,10 +186,12 @@ function FulfillmentDetailDrawer({
   const normalizedStatus = String(detail?.status || "").toUpperCase();
   const isPickup = detail?.fulfillmentType === "PICKUP";
   const isShip = detail?.fulfillmentType === "SHIP";
-  const canMarkPickupReady = isPickup && normalizedStatus !== "READY_FOR_PICKUP" && normalizedStatus !== "PICKED_UP";
+  const canMarkPickupReady = isPickup && normalizedStatus === "READY";
   const canMarkPickedUp = isPickup && normalizedStatus === "READY_FOR_PICKUP" && !!ticketId;
-  const canMarkReady = isShip && normalizedStatus !== "SHIPPED";
-  const canMarkShipped = isShip && !!shipmentId && normalizedStatus !== "SHIPPED";
+  const canMarkReady = (isShip || isPickup) && normalizedStatus === "DRAFT";
+  const canMarkShipped = isShip && !!shipmentId && normalizedStatus === "READY";
+  const canUnready = (normalizedStatus === "READY" || normalizedStatus === "READY_FOR_PICKUP") && detail?.permissions?.canRevertStatus === true;
+  const unreadyLabel = normalizedStatus === "READY_FOR_PICKUP" ? "Move Back to Ready" : "Move Back to Draft";
   const checklistBlocking = detail ? !detail.checklistComplete : true;
   const checklistBlockMessage = "Verify all fulfillment checklist items before marking ready.";
 
@@ -180,16 +202,13 @@ function FulfillmentDetailDrawer({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40" role="dialog" aria-modal="true">
-      <div className="absolute right-0 top-0 flex h-full w-full max-w-3xl flex-col border-l border-border bg-background shadow-2xl">
+    <aside className="flex max-h-[calc(100vh-9rem)] min-h-[520px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-sm">
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <div>
             <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Fulfillment Detail</div>
             <h2 className="text-lg font-semibold">{detail ? `#${detail.orderNumber}` : "Loading..."}</h2>
           </div>
-          <button type="button" className="rounded-lg p-2 text-muted-foreground hover:bg-accent" onClick={onClose}>
-            <X className="h-5 w-5" />
-          </button>
+          {detail ? <span className={statusBadgeClass(detail.status)}>{detail.status}</span> : null}
         </div>
 
         {detailQuery.isLoading ? (
@@ -244,6 +263,33 @@ function FulfillmentDetailDrawer({
                 Open Order
               </button>
             </div>
+            {(normalizedStatus === "READY" || normalizedStatus === "READY_FOR_PICKUP") && detail.permissions?.canRevertStatus !== true ? (
+              <div className="mb-4 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                Un-Ready requires permission: {detail.permissions?.revertPermission || "fulfillment.revert_status"}.
+              </div>
+            ) : null}
+            {canUnready ? (
+              <div className="mb-4 rounded-lg border border-border bg-muted/40 p-3">
+                <div className="mb-2 text-sm font-semibold">{unreadyLabel}</div>
+                <textarea
+                  className="min-h-16 w-full rounded-lg border border-input bg-background p-2 text-sm"
+                  value={unreadyReason}
+                  onChange={(event) => setUnreadyReason(event.target.value)}
+                  placeholder="Reason required"
+                />
+                <button
+                  type="button"
+                  className="mt-2 rounded-lg border border-border px-3 py-2 text-sm font-bold hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={!unreadyReason.trim() || unready.isPending}
+                  onClick={() => void runAction("Fulfillment status reverted", async () => {
+                    await unready.mutateAsync({ reason: unreadyReason.trim() });
+                    setUnreadyReason("");
+                  })}
+                >
+                  {unreadyLabel}
+                </button>
+              </div>
+            ) : null}
             {checklistBlocking ? (
               <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
                 <AlertTriangle className="mr-2 inline h-4 w-4" />
@@ -409,8 +455,7 @@ function FulfillmentDetailDrawer({
             </div>
           </div>
         )}
-      </div>
-    </div>
+    </aside>
   );
 }
 
@@ -704,7 +749,8 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
         </div>
       </header>
 
-      <main className="flex-1 overflow-auto p-6 pb-24">
+      <main className="grid flex-1 gap-4 overflow-auto p-6 pb-24 xl:grid-cols-[minmax(0,1fr)_minmax(380px,520px)]">
+        <div className="min-w-0">
         {pickupTicketId && (
           <div className="mb-4 rounded-xl border border-primary/30 bg-primary/10 p-3 text-sm">
             <p className="font-semibold">Pickup ticket selected</p>
@@ -712,7 +758,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
           </div>
         )}
 
-        <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+        <div className="overflow-auto rounded-xl border border-border bg-card shadow-sm">
           <table className="w-full border-collapse text-left">
             <thead>
               <tr className="border-b border-border bg-muted/30">
@@ -766,16 +812,22 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
               )}
 
               {rows.map((row) => {
-                const isSelected = selectedOrderIds.has(row.orderId);
+                const isChecked = selectedOrderIds.has(row.orderId);
+                const isDetailSelected = detailOrderId === row.orderId;
                 const readySince = row.readySince ? `${formatDistanceToNowStrict(new Date(row.readySince), { addSuffix: true })}` : "--";
 
                 return (
-                  <tr key={row.orderId} className={`transition-colors hover:bg-muted/50 ${isSelected ? "bg-primary/10" : ""}`}>
+                  <tr
+                    key={row.orderId}
+                    className={`cursor-pointer transition-colors hover:bg-muted/50 ${isDetailSelected ? "bg-primary/10 ring-1 ring-inset ring-primary/30" : isChecked ? "bg-muted/50" : ""}`}
+                    onClick={() => setDetailOrderId(row.orderId)}
+                  >
                     <td className="px-4 py-4">
                       <input
                         type="checkbox"
                         className="h-4 w-4 rounded border-input bg-transparent text-primary focus:ring-primary"
-                        checked={isSelected}
+                        checked={isChecked}
+                        onClick={(event) => event.stopPropagation()}
                         onChange={(event) => handleToggleRow(row.orderId, event.target.checked)}
                       />
                     </td>
@@ -784,7 +836,10 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                         <button
                           type="button"
                           className="w-fit text-sm font-bold text-primary underline-offset-2 hover:underline"
-                          onClick={() => setDetailOrderId(row.orderId)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setDetailOrderId(row.orderId);
+                          }}
                           disabled={busyOrderId === row.orderId}
                         >
                           #{row.orderNumber}
@@ -800,7 +855,10 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                       <button
                         type="button"
                         className="text-primary underline-offset-2 hover:underline"
-                        onClick={() => void handleOpenCustomer(row)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleOpenCustomer(row);
+                        }}
                       >
                         {row.customerName}
                       </button>
@@ -827,7 +885,10 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                       <button
                         type="button"
                         className="mt-2 rounded border border-border px-2 py-1 text-xs font-bold hover:bg-accent"
-                        onClick={() => setDetailOrderId(row.orderId)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setDetailOrderId(row.orderId);
+                        }}
                       >
                         Details
                       </button>
@@ -840,6 +901,15 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
         </div>
 
         <FulfillmentDebugPanel enabled={debugEnabled} lastResponse={lastResponse ?? queueQuery.data ?? null} lastError={lastError} />
+        </div>
+
+        <div className="min-w-0 xl:sticky xl:top-28 xl:self-start">
+          <FulfillmentDetailPanel
+            orderId={detailOrderId}
+            onOpenOrder={handleOpenOrder}
+            onOpenShipment={(row) => void handleOpen(row)}
+          />
+        </div>
       </main>
 
       {selectedOrderIds.size > 0 && (
@@ -880,13 +950,6 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
           </div>
         </div>
       )}
-
-      <FulfillmentDetailDrawer
-        orderId={detailOrderId}
-        onClose={() => setDetailOrderId(null)}
-        onOpenOrder={handleOpenOrder}
-        onOpenShipment={(row) => void handleOpen(row)}
-      />
     </div>
   );
 }

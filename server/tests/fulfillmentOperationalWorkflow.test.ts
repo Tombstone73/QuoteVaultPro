@@ -1,5 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
-import { isPickedUpArchivedForRetention, summarizeFulfillmentChecklist } from "../services/fulfillment/repository";
+import { isPickedUpArchivedForRetention, resolveFulfillmentUnreadyTransition, summarizeFulfillmentChecklist } from "../services/fulfillment/repository";
+import { canRevertFulfillmentStatus, FULFILLMENT_REVERT_STATUS_PERMISSION } from "../services/fulfillment/service";
 
 describe("fulfillment operational workflow helpers", () => {
   test("picked-up rows remain active before retention window", () => {
@@ -56,5 +57,43 @@ describe("fulfillment operational workflow helpers", () => {
       unchecked: 0,
       complete: false,
     });
+  });
+
+  test("un-ready transition helper only allows controlled backward fulfillment moves", () => {
+    expect(resolveFulfillmentUnreadyTransition("READY_FOR_PICKUP")).toEqual({
+      ok: true,
+      previousStatus: "READY_FOR_PICKUP",
+      newStatus: "READY",
+    });
+
+    expect(resolveFulfillmentUnreadyTransition("ready")).toEqual({
+      ok: true,
+      previousStatus: "READY",
+      newStatus: "DRAFT",
+    });
+
+    expect(resolveFulfillmentUnreadyTransition("picked_up")).toEqual({
+      ok: false,
+      code: "TERMINAL_STATUS_REVERT_BLOCKED",
+    });
+
+    expect(resolveFulfillmentUnreadyTransition("shipped")).toEqual({
+      ok: false,
+      code: "TERMINAL_STATUS_REVERT_BLOCKED",
+    });
+
+    expect(resolveFulfillmentUnreadyTransition("draft")).toEqual({
+      ok: false,
+      code: "INVALID_STATE",
+    });
+  });
+
+  test("fulfillment revert permission fallback preserves owner admin manager access", () => {
+    expect(FULFILLMENT_REVERT_STATUS_PERMISSION).toBe("fulfillment.revert_status");
+    expect(canRevertFulfillmentStatus("owner")).toBe(true);
+    expect(canRevertFulfillmentStatus("admin")).toBe(true);
+    expect(canRevertFulfillmentStatus("manager")).toBe(true);
+    expect(canRevertFulfillmentStatus("member")).toBe(false);
+    expect(canRevertFulfillmentStatus(null)).toBe(false);
   });
 });

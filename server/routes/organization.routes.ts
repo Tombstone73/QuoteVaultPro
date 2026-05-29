@@ -42,6 +42,7 @@ import {
 } from "@shared/inventoryPolicyPreferences";
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
 import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/materialsOverrideMode";
+import { resolveBillingInvoiceTriggerPolicyFromOrgPreferences } from "@shared/billingInvoicePolicy";
 import { resetTransactionalData, resetQuickBooksImportData } from "../services/orgResetService";
 import { resolveFileUploadNamingPolicyFromPreferences } from "../prepressFileService";
 
@@ -159,9 +160,11 @@ export function registerOrganizationRoutes(
 
       const materialsOverrideMode = resolveMaterialsOverrideModeFromOrgPreferences(preferences);
       const fileUploadNaming = resolveFileUploadNamingPolicyFromPreferences(preferences, organizationId);
+      const billingInvoiceTriggerPolicy = resolveBillingInvoiceTriggerPolicyFromOrgPreferences(preferences);
 
       res.json({
         ...(preferences as any),
+        billingInvoiceTriggerPolicy,
         fileUploadNaming,
         prepressDefaultEnabled: org.prepressDefaultEnabled,
         production: {

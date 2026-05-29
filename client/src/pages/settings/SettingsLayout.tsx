@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/titan";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { useOrgPreferences, type OrgPreferences } from "@/hooks/useOrgPreferences";
+import { BILLING_INVOICE_TRIGGER_POLICIES, type BillingInvoiceTriggerPolicy } from "@shared/billingInvoicePolicy";
 import { fetchMyOrgs } from "@/lib/api/me";
 import { getApiUrl } from "@/lib/apiConfig";
 import { useLowStockAlerts } from "@/hooks/useMaterials";
@@ -1809,6 +1810,23 @@ export function PreferencesSettings() {
     });
   };
 
+  const billingTriggerLabels: Record<BillingInvoiceTriggerPolicy, string> = {
+    manual_only: "Manual Only",
+    order_entry: "Order Entry",
+    quote_approval: "Quote Approval",
+    proof_approval: "Proof Approval",
+    production_complete: "Production Complete",
+    ready_for_pickup_or_ready_to_ship: "Ready for Pickup / Ready to Ship",
+    picked_up_or_shipped: "Picked Up / Shipped",
+  };
+
+  const handleBillingTriggerPolicyChange = async (value: BillingInvoiceTriggerPolicy) => {
+    await updatePreferences({
+      ...preferences,
+      billingInvoiceTriggerPolicy: value,
+    });
+  };
+
   const materialsOverrideInProductionEnabled = (preferences as any)?.production?.materialsOverrideMode !== "prepress_only";
   const productionDocumentNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
 
@@ -2013,6 +2031,43 @@ export function PreferencesSettings() {
                 </SelectContent>
               </Select>
             </div>
+          </div>
+        </div>
+
+        {/* Billing Section */}
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-titan-base font-medium text-titan-text-primary">Billing</h3>
+            <p className="text-titan-sm text-titan-text-muted mt-1">
+              Control when TitanOS creates draft invoices for staff review
+            </p>
+          </div>
+
+          <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+            <div className="flex-1 space-y-1">
+              <Label htmlFor="billing-invoice-trigger-policy" className="text-titan-sm font-medium text-titan-text-primary">
+                Invoice draft creation trigger
+              </Label>
+              <p className="text-titan-xs text-titan-text-muted">
+                Automatic invoices are created as drafts only. Staff still reviews and sends from Invoices.
+              </p>
+            </div>
+            <Select
+              value={preferences.billingInvoiceTriggerPolicy ?? "manual_only"}
+              onValueChange={(value) => handleBillingTriggerPolicyChange(value as BillingInvoiceTriggerPolicy)}
+              disabled={isUpdating}
+            >
+              <SelectTrigger id="billing-invoice-trigger-policy" className="w-[260px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {BILLING_INVOICE_TRIGGER_POLICIES.map((policy) => (
+                  <SelectItem key={policy} value={policy}>
+                    {billingTriggerLabels[policy]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
 

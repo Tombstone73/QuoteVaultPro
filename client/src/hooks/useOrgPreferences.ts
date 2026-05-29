@@ -7,6 +7,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "./use-toast";
 import type { QuickBooksSyncPolicy } from "@shared/quickBooksPreferences";
 import type { ProductionDocumentNumberDisplayMode } from "@shared/documentNumbering";
+import type { BillingInvoiceTriggerPolicy } from "@shared/billingInvoicePolicy";
 
 export interface OrgPreferences {
   prepressDefaultEnabled?: boolean;
@@ -40,6 +41,8 @@ export interface OrgPreferences {
   quickBooks?: {
     syncPolicy?: QuickBooksSyncPolicy;
   };
+
+  billingInvoiceTriggerPolicy?: BillingInvoiceTriggerPolicy;
 
   production?: {
     materialsOverrideMode?: "prepress_only" | "prepress_and_production";

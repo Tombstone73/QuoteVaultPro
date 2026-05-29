@@ -34,6 +34,23 @@ export interface FulfillmentQueueRow {
 }
 
 export interface FulfillmentDetail extends FulfillmentQueueRow {
+  permissions?: {
+    canRevertStatus: boolean;
+    revertPermission: string;
+  };
+  billingAutomation?: {
+    status: string;
+    policy: string;
+    trigger: string;
+    invoice?: {
+      id: string;
+      invoiceNumber: number;
+      status: string;
+      totalCents?: number | null;
+    } | null;
+    message: string;
+    code?: string;
+  } | null;
   customer: {
     name: string;
     email: string | null;
@@ -316,6 +333,17 @@ export function useAddFulfillmentNoteMutation(orderId: string) {
     mutationFn: (note: string) => apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}/note`, {
       method: "POST",
       body: JSON.stringify({ note }),
+    }),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
+  });
+}
+
+export function useUnreadyFulfillmentOrderMutation(orderId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { reason: string }) => apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}/unready`, {
+      method: "POST",
+      body: JSON.stringify(payload),
     }),
     onSuccess: () => invalidateFulfillment(queryClient, orderId),
   });

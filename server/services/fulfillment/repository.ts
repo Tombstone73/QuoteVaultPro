@@ -148,6 +148,20 @@ export function summarizeFulfillmentChecklist(items: Array<{ checked?: boolean |
   };
 }
 
+export function resolveFulfillmentUnreadyTransition(status: string | null | undefined): { ok: true; previousStatus: 'READY' | 'READY_FOR_PICKUP'; newStatus: 'DRAFT' | 'READY' } | { ok: false; code: 'INVALID_STATE' | 'TERMINAL_STATUS_REVERT_BLOCKED' } {
+  const normalized = cleanText(status).toUpperCase();
+  if (normalized === 'READY_FOR_PICKUP') {
+    return { ok: true, previousStatus: 'READY_FOR_PICKUP', newStatus: 'READY' };
+  }
+  if (normalized === 'READY') {
+    return { ok: true, previousStatus: 'READY', newStatus: 'DRAFT' };
+  }
+  if (normalized === 'PICKED_UP' || normalized === 'SHIPPED') {
+    return { ok: false, code: 'TERMINAL_STATUS_REVERT_BLOCKED' };
+  }
+  return { ok: false, code: 'INVALID_STATE' };
+}
+
 export class ShipmentRepo {
   constructor(private readonly dbInstance: DbExecutor = db) {}
 
@@ -554,6 +568,7 @@ export class ShipmentRepo {
       | 'FULFILLMENT_AUTO_ARCHIVED'
       | 'FULFILLMENT_CHECKLIST_ITEM_UPDATED'
       | 'FULFILLMENT_CHECKLIST_VERIFIED'
+      | 'FULFILLMENT_UNREADY'
       | 'PICKUP_READY'
       | 'PICKUP_PICKED_UP'
       | 'NOTIFICATION_SENT'
@@ -823,6 +838,18 @@ export class FulfillmentDashboardRepo {
     return 'PARTIAL';
   }
 
+  private deriveShipQueueStatus(orderFulfillmentStatus: string | null | undefined, ordered: number, shipped: number): 'DRAFT' | 'READY' | 'PARTIAL' | 'SHIPPED' {
+    const derived = this.deriveShipStatus(ordered, shipped);
+    if (derived !== 'READY') return derived;
+    return cleanText(orderFulfillmentStatus).toLowerCase() === 'packed' ? 'READY' : 'DRAFT';
+  }
+
+  private derivePickupQueueStatus(orderFulfillmentStatus: string | null | undefined, ticket?: { status?: string | null } | null): string {
+    const ticketStatus = cleanText(ticket?.status).toUpperCase();
+    if (ticketStatus === 'READY_FOR_PICKUP' || ticketStatus === 'PICKED_UP') return ticketStatus;
+    return cleanText(orderFulfillmentStatus).toLowerCase() === 'packed' ? 'READY' : 'DRAFT';
+  }
+
   private async getPickupRetentionDays(orgId: string): Promise<number> {
     const [org] = await this.dbInstance
       .select({ settings: organizations.settings })
@@ -892,6 +919,7 @@ export class FulfillmentDashboardRepo {
         canceledAt: orders.canceledAt,
         routingTarget: orders.routingTarget,
         productionCompletedAt: orders.productionCompletedAt,
+        fulfillmentStatus: orders.fulfillmentStatus,
         updatedAt: orders.updatedAt,
         shipToCity: orders.shipToCity,
         shipToState: orders.shipToState,
@@ -1077,7 +1105,7 @@ export class FulfillmentDashboardRepo {
 
       if (isPickup) {
         const ticket = ticketMap.get(order.id);
-        const status = ticket?.status || 'DRAFT';
+        const status = this.derivePickupQueueStatus(order.fulfillmentStatus, ticket);
         const isArchivedPickup = ticket ? this.isPickedUpTicketArchived(ticket, pickupRetentionDays, nowMs) : false;
         if (isArchivedPickup && ticket?.id) {
           await this.logPickupAutoArchiveOnce(orgId, ticket.id, pickupRetentionDays);
@@ -1107,7 +1135,7 @@ export class FulfillmentDashboardRepo {
         continue;
       }
 
-      const shipStatus = this.deriveShipStatus(orderedQty, shippedQty);
+      const shipStatus = this.deriveShipQueueStatus(order.fulfillmentStatus, orderedQty, shippedQty);
       const shippedAtMs = Date.parse(String(shippedAtMap.get(order.id) || ''));
       const isArchivedShip = shipStatus === 'SHIPPED' &&
         Number.isFinite(shippedAtMs) &&
@@ -1122,7 +1150,7 @@ export class FulfillmentDashboardRepo {
         ? (nowMs - readySinceMs) > (SHIP_READY_OVERDUE_HOURS * 60 * 60 * 1000)
         : false;
 
-      const shipStatusForFilter = shipStatus === 'SHIPPED' ? 'shipped' : 'ready';
+      const shipStatusForFilter = shipStatus.toLowerCase();
 
       if (filters.status !== 'all' && filters.status.toLowerCase() !== shipStatusForFilter) continue;
       if (filters.overdueOnly && !overdue) continue;
@@ -1342,6 +1370,110 @@ export class FulfillmentDashboardRepo {
     });
 
     return { ok: true as const };
+  }
+
+  async unreadyOrder(orgId: string, orderId: string, reason: string, actorUserId?: string | null) {
+    const trimmedReason = cleanText(reason);
+    if (!trimmedReason) {
+      return { ok: false as const, code: 'REASON_REQUIRED', message: 'Reason is required to revert fulfillment status' };
+    }
+
+    return this.dbInstance.transaction(async (tx) => {
+      const [order] = await tx
+        .select({
+          id: orders.id,
+          shippingMethod: orders.shippingMethod,
+          fulfillmentStatus: orders.fulfillmentStatus,
+          state: orders.state,
+          status: orders.status,
+          canceledAt: orders.canceledAt,
+        })
+        .from(orders)
+        .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)))
+        .limit(1);
+
+      if (!order) return { ok: false as const, code: 'NOT_FOUND', message: 'Fulfillment row not found' };
+      if (!isFulfillmentQueueEligibleOrder(order as any)) {
+        return { ok: false as const, code: 'INVALID_STATE', message: 'Order is not in active fulfillment' };
+      }
+
+      const [ticket] = await tx
+        .select()
+        .from(pickupTickets)
+        .where(and(eq(pickupTickets.organizationId, orgId), eq(pickupTickets.orderId, orderId)))
+        .limit(1);
+
+      const shippedRows = await tx
+        .select({ id: shipments.id })
+        .from(shipmentOrders)
+        .innerJoin(shipments, eq(shipments.id, shipmentOrders.shipmentId))
+        .where(and(
+          eq(shipmentOrders.organizationId, orgId),
+          eq(shipmentOrders.orderId, orderId),
+          eq(shipments.organizationId, orgId),
+          eq(shipments.status, 'SHIPPED'),
+        ))
+        .limit(1);
+
+      if (shippedRows.length > 0) {
+        return { ok: false as const, code: 'TERMINAL_STATUS_REVERT_BLOCKED', message: 'Shipped fulfillment cannot be reverted from this action' };
+      }
+      if (ticket?.status === 'PICKED_UP') {
+        return { ok: false as const, code: 'TERMINAL_STATUS_REVERT_BLOCKED', message: 'Picked-up fulfillment cannot be reverted from this action' };
+      }
+
+      const previousStatus = order.shippingMethod === 'pickup'
+        ? this.derivePickupQueueStatus(order.fulfillmentStatus, ticket)
+        : (cleanText(order.fulfillmentStatus).toLowerCase() === 'packed' ? 'READY' : 'DRAFT');
+
+      const transition = resolveFulfillmentUnreadyTransition(previousStatus);
+      if (!transition.ok) {
+        const message = transition.code === 'TERMINAL_STATUS_REVERT_BLOCKED'
+          ? 'Terminal fulfillment cannot be reverted from this action'
+          : 'Only ready or ready-for-pickup fulfillment can be reverted';
+        return { ok: false as const, code: transition.code, message };
+      }
+
+      const now = new Date();
+
+      if (transition.previousStatus === 'READY_FOR_PICKUP') {
+        if (ticket?.id) {
+          await tx
+            .update(pickupTickets)
+            .set({
+              status: 'DRAFT',
+              readyAt: null,
+              updatedAt: now,
+            })
+            .where(and(eq(pickupTickets.organizationId, orgId), eq(pickupTickets.id, ticket.id)));
+        }
+        await tx
+          .update(orders)
+          .set({ fulfillmentStatus: 'packed', updatedAt: now.toISOString() })
+          .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)));
+      } else {
+        await tx
+          .update(orders)
+          .set({ fulfillmentStatus: 'pending', updatedAt: now.toISOString() })
+          .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)));
+      }
+
+      await tx.insert(fulfillmentEvents).values({
+        organizationId: orgId,
+        actorUserId: actorUserId || null,
+        entityType: 'ORDER',
+        entityId: orderId,
+        eventType: 'FULFILLMENT_UNREADY',
+        payloadJson: {
+          previousStatus: transition.previousStatus,
+          newStatus: transition.newStatus,
+          reason: trimmedReason,
+          permission: 'fulfillment.revert_status',
+        },
+      });
+
+      return { ok: true as const, previousStatus: transition.previousStatus, newStatus: transition.newStatus };
+    });
   }
 
   async addOrderNote(orgId: string, orderId: string, note: string, actorUserId?: string | null) {
