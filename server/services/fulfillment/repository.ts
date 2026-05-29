@@ -22,10 +22,19 @@ import type { DerivedOrderFulfillmentStatus, FulfillmentDetailDto, QueueRowDto }
 import { TERMINAL_PRODUCTION_STATUSES } from '@shared/operationalState';
 import { buildPrepressOptionRows, extractFinishingBullets } from '../../routes/flatStockNesting.shared';
 import { fulfillmentQueueEligibleOrderCondition, isFulfillmentQueueEligibleOrder } from './eligibility';
+import {
+  createRequestLogOnce,
+  enrichAttachmentWithUrls,
+  resolveOriginalFileAccess,
+} from '../../lib/supabaseObjectHelpers';
+import { assetRepository } from '../assets/AssetRepository';
+import { enrichAssetsWithRoles } from '../assets/enrichAssetWithUrls';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
 const DEFAULT_PICKUP_RETENTION_DAYS_AFTER_PICKED_UP = 7;
 const PRINT_CONTEXT_EXCLUDED_STATIONS = new Set(['fulfillment', 'prepress', 'design']);
+
+type FulfillmentArtworkDto = FulfillmentDetailDto['lineItems'][number]['artwork'][number];
 
 type DbExecutor = typeof db;
 
@@ -66,6 +75,25 @@ function uniqueNonEmpty(values: unknown[]): string[] {
     out.push(text);
   }
   return out;
+}
+
+function pushArtwork(
+  map: Map<string, FulfillmentArtworkDto[]>,
+  lineItemId: string | null | undefined,
+  artwork: FulfillmentArtworkDto,
+  seen: Set<string>,
+) {
+  if (!lineItemId) return;
+  const dedupeKey = [
+    artwork.source,
+    artwork.id,
+    artwork.objectPath || artwork.originalUrl || artwork.fileUrl || artwork.fileName,
+  ].join(':');
+  if (seen.has(dedupeKey)) return;
+  seen.add(dedupeKey);
+  const bucket = map.get(lineItemId) ?? [];
+  bucket.push(artwork);
+  map.set(lineItemId, bucket);
 }
 
 function latestIso(values: unknown[]): string | null {
@@ -1549,18 +1577,7 @@ export class FulfillmentDashboardRepo {
 
     const attachmentRows = lineItemIds.length > 0
       ? await this.dbInstance
-        .select({
-          id: orderAttachments.id,
-          lineItemId: orderAttachments.orderLineItemId,
-          fileName: orderAttachments.fileName,
-          fileUrl: orderAttachments.fileUrl,
-          thumbnailUrl: orderAttachments.thumbnailUrl,
-          thumbKey: orderAttachments.thumbKey,
-          previewKey: orderAttachments.previewKey,
-          side: orderAttachments.side,
-          role: orderAttachments.role,
-          createdAt: orderAttachments.createdAt,
-        })
+        .select()
         .from(orderAttachments)
         .where(and(
           eq(orderAttachments.orderId, orderId),
@@ -1579,6 +1596,8 @@ export class FulfillmentDashboardRepo {
           storagePath: lineItemFiles.storagePath,
           role: lineItemFiles.role,
           tag: lineItemFiles.tag,
+          mimeType: lineItemFiles.mimeType,
+          fileRecordId: lineItemFiles.fileRecordId,
           createdAt: lineItemFiles.createdAt,
         })
         .from(lineItemFiles)
@@ -1590,6 +1609,10 @@ export class FulfillmentDashboardRepo {
         ))
         .orderBy(desc(lineItemFiles.createdAt))
       : [];
+
+    const linkedAssetsByLineItemId = lineItemIds.length > 0
+      ? await assetRepository.listAssetsForParents(orgId, 'order_line_item', lineItemIds)
+      : new Map();
 
     const productionSummary = await this.dbInstance
       .select({
@@ -1611,44 +1634,79 @@ export class FulfillmentDashboardRepo {
       productionByLineItemId.set(job.lineItemId, job);
     }
 
-    const artworkByLineItemId = new Map<string, Array<{
-      id: string;
-      fileName: string;
-      fileUrl: string | null;
-      thumbnailUrl: string | null;
-      thumbKey: string | null;
-      previewKey: string | null;
-      side: string | null;
-      role: string | null;
-    }>>();
-    for (const attachment of attachmentRows) {
-      if (!attachment.lineItemId) continue;
-      const bucket = artworkByLineItemId.get(attachment.lineItemId) ?? [];
-      bucket.push({
+    const artworkByLineItemId = new Map<string, FulfillmentArtworkDto[]>();
+    const artworkSeen = new Set<string>();
+    const logOnce = createRequestLogOnce();
+    const enrichedAttachmentRows = await Promise.all(
+      attachmentRows.map((attachment) => enrichAttachmentWithUrls(attachment, { logOnce })),
+    );
+    for (const attachment of enrichedAttachmentRows) {
+      pushArtwork(artworkByLineItemId, attachment.orderLineItemId, {
         id: attachment.id,
-        fileName: attachment.fileName,
-        fileUrl: attachment.fileUrl ?? null,
-        thumbnailUrl: attachment.thumbnailUrl ?? null,
+        fileName: attachment.originalFilename ?? attachment.fileName,
+        fileUrl: attachment.originalUrl ?? attachment.downloadUrl ?? null,
+        originalUrl: attachment.originalUrl ?? null,
+        downloadUrl: attachment.downloadUrl ?? null,
+        previewUrl: attachment.previewUrl ?? null,
+        thumbUrl: attachment.thumbUrl ?? null,
+        thumbnailUrl: attachment.thumbnailUrl ?? attachment.thumbUrl ?? null,
         thumbKey: attachment.thumbKey ?? null,
         previewKey: attachment.previewKey ?? null,
+        objectPath: attachment.objectPath ?? null,
+        mimeType: attachment.mimeType ?? null,
         side: attachment.side ?? null,
         role: attachment.role ?? null,
-      });
-      artworkByLineItemId.set(attachment.lineItemId, bucket);
+        source: 'order_attachment',
+      }, artworkSeen);
     }
     for (const file of fileRows) {
-      const bucket = artworkByLineItemId.get(file.lineItemId) ?? [];
-      bucket.push({
+      const originalAccess = await resolveOriginalFileAccess({
+        id: file.id,
+        fileRecordId: file.fileRecordId ?? null,
+        fileName: file.fileName,
+        originalFilename: file.fileName,
+        mimeType: file.mimeType,
+        fileUrl: file.storageKey || file.storagePath || null,
+      }, { logOnce });
+      pushArtwork(artworkByLineItemId, file.lineItemId, {
         id: file.id,
         fileName: file.fileName,
-        fileUrl: file.storageKey || file.storagePath || null,
+        fileUrl: originalAccess.originalUrl ?? originalAccess.downloadUrl ?? null,
+        originalUrl: originalAccess.originalUrl ?? null,
+        downloadUrl: originalAccess.downloadUrl ?? null,
+        previewUrl: null,
+        thumbUrl: null,
         thumbnailUrl: null,
         thumbKey: null,
         previewKey: null,
+        objectPath: originalAccess.objectPath ?? null,
+        mimeType: originalAccess.mimeType ?? file.mimeType ?? null,
         side: file.tag ?? null,
         role: file.role ?? null,
-      });
-      artworkByLineItemId.set(file.lineItemId, bucket);
+        source: 'line_item_file',
+      }, artworkSeen);
+    }
+    for (const [lineItemId, assets] of Array.from(linkedAssetsByLineItemId.entries())) {
+      const enrichedAssets = await enrichAssetsWithRoles(assets);
+      for (const asset of enrichedAssets) {
+        pushArtwork(artworkByLineItemId, lineItemId, {
+          id: asset.id,
+          fileName: asset.fileName ?? asset.id,
+          fileUrl: asset.originalUrl ?? asset.downloadUrl ?? null,
+          originalUrl: asset.originalUrl ?? null,
+          downloadUrl: asset.downloadUrl ?? null,
+          previewUrl: asset.previewUrl ?? null,
+          thumbUrl: asset.thumbUrl ?? null,
+          thumbnailUrl: asset.thumbnailUrl ?? asset.thumbUrl ?? null,
+          thumbKey: asset.thumbKey ?? null,
+          previewKey: asset.previewKey ?? null,
+          objectPath: asset.objectPath ?? null,
+          mimeType: asset.mimeType ?? null,
+          side: null,
+          role: asset.role ?? null,
+          source: 'asset',
+        }, artworkSeen);
+      }
     }
 
     const [pickupTicket] = await this.dbInstance

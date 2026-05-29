@@ -80,11 +80,18 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
       id: string;
       fileName: string;
       fileUrl: string | null;
+      originalUrl: string | null;
+      downloadUrl: string | null;
+      previewUrl: string | null;
+      thumbUrl: string | null;
       thumbnailUrl: string | null;
       thumbKey: string | null;
       previewKey: string | null;
+      objectPath: string | null;
+      mimeType: string | null;
       side: string | null;
       role: string | null;
+      source: "order_attachment" | "line_item_file" | "asset";
     }>;
     checklist: {
       id: string;
