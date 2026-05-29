@@ -1,7 +1,7 @@
 import { db } from './db';
-import { invoices, invoiceEmailLogs, invoiceLineItems, payments, orders, orderLineItems } from '../shared/schema';
-import { eq, and, inArray, sql } from 'drizzle-orm';
-import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment } from '../shared/schema';
+import { customerContacts, customers, invoices, invoiceEmailLogs, invoiceLineItems, payments, orders, orderLineItems } from '../shared/schema';
+import { asc, desc, eq, and, ilike, inArray, or, sql } from 'drizzle-orm';
+import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment, type Invoice } from '../shared/schema';
 import { computeInvoicePaymentRollup } from '../shared/rollups/invoicePaymentRollup';
 import { normalizeInvoiceAccountingDisplay } from '../shared/invoiceAccountingDisplay';
 import {
@@ -159,6 +159,174 @@ export async function getInvoiceEmailStatuses(
   }
 
   return result;
+}
+
+export type InvoiceListSortBy =
+  | 'invoiceNumber'
+  | 'customer'
+  | 'contact'
+  | 'orderNumber'
+  | 'poNumber'
+  | 'issueDate'
+  | 'dueDate'
+  | 'status'
+  | 'total'
+  | 'balance';
+
+export type InvoiceListSortDir = 'asc' | 'desc';
+
+export interface ListInvoicesForOrganizationOptions {
+  organizationId: string;
+  status?: string;
+  customerId?: string;
+  orderId?: string;
+  search?: string;
+  sortBy?: string;
+  sortDir?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export type EnrichedInvoiceListItem = Invoice & {
+  customerName: string | null;
+  companyName: string | null;
+  contactName: string | null;
+  contactEmail: string | null;
+  orderNumber: string | null;
+  orderName: string | null;
+  jobName: string | null;
+  purchaseOrderNumber: string | null;
+};
+
+function normalizeInvoiceListSortBy(sortBy: unknown): InvoiceListSortBy {
+  const raw = String(sortBy || '').trim();
+  switch (raw) {
+    case 'invoiceNumber':
+    case 'customer':
+    case 'contact':
+    case 'orderNumber':
+    case 'poNumber':
+    case 'issueDate':
+    case 'dueDate':
+    case 'status':
+    case 'total':
+    case 'balance':
+      return raw;
+    default:
+      return 'issueDate';
+  }
+}
+
+function normalizeInvoiceListSortDir(sortDir: unknown): InvoiceListSortDir {
+  return String(sortDir || '').trim().toLowerCase() === 'asc' ? 'asc' : 'desc';
+}
+
+function invoiceListSortExpression(sortBy: InvoiceListSortBy) {
+  switch (sortBy) {
+    case 'invoiceNumber':
+      return sql`coalesce(${invoices.displayNumber}, ${invoices.numberCore}::text, ${invoices.invoiceNumber}::text)`;
+    case 'customer':
+      return sql`lower(coalesce(${customers.companyName}, ''))`;
+    case 'contact':
+      return sql`lower(trim(coalesce(${customerContacts.firstName}, '') || ' ' || coalesce(${customerContacts.lastName}, '')))`;
+    case 'orderNumber':
+      return sql`coalesce(${orders.displayNumber}, ${orders.orderNumber}, ${invoices.sourceOrderNumber}::text, '')`;
+    case 'poNumber':
+      return sql`lower(coalesce(${orders.poNumber}, ${invoices.customerPoNumber}, ''))`;
+    case 'dueDate':
+      return invoices.dueDate;
+    case 'status':
+      return sql`lower(coalesce(${invoices.status}, ''))`;
+    case 'total':
+      return invoices.totalCents;
+    case 'balance':
+      return sql`coalesce(${invoices.balanceDue}, '0')::numeric`;
+    case 'issueDate':
+    default:
+      return invoices.issueDate;
+  }
+}
+
+export async function listInvoicesForOrganization(
+  opts: ListInvoicesForOrganizationOptions,
+): Promise<EnrichedInvoiceListItem[]> {
+  const limit = Math.min(Math.max(Number(opts.limit || 50), 1), 200);
+  const offset = Math.max(Number(opts.offset || 0), 0);
+  const sortBy = normalizeInvoiceListSortBy(opts.sortBy);
+  const sortDir = normalizeInvoiceListSortDir(opts.sortDir);
+
+  const whereClauses: any[] = [eq(invoices.organizationId, opts.organizationId)];
+  if (opts.status) whereClauses.push(eq(invoices.status, opts.status));
+  if (opts.customerId) whereClauses.push(eq(invoices.customerId, opts.customerId));
+  if (opts.orderId) whereClauses.push(eq(invoices.orderId, opts.orderId));
+
+  const search = String(opts.search || '').trim();
+  if (search) {
+    const pattern = `%${search}%`;
+    whereClauses.push(or(
+      ilike(invoices.displayNumber, pattern),
+      sql`${invoices.numberCore}::text ILIKE ${pattern}`,
+      sql`${invoices.invoiceNumber}::text ILIKE ${pattern}`,
+      ilike(invoices.qbDocNumber, pattern),
+      ilike(customers.companyName, pattern),
+      ilike(customers.email, pattern),
+      ilike(customerContacts.firstName, pattern),
+      ilike(customerContacts.lastName, pattern),
+      ilike(customerContacts.email, pattern),
+      sql`trim(coalesce(${customerContacts.firstName}, '') || ' ' || coalesce(${customerContacts.lastName}, '')) ILIKE ${pattern}`,
+      ilike(orders.displayNumber, pattern),
+      ilike(orders.orderNumber, pattern),
+      sql`${invoices.sourceOrderNumber}::text ILIKE ${pattern}`,
+      ilike(orders.poNumber, pattern),
+      ilike(invoices.customerPoNumber, pattern),
+      ilike(orders.label, pattern),
+    ));
+  }
+
+  const sortExpression = invoiceListSortExpression(sortBy);
+  const sortDirection = sortDir === 'asc' ? asc : desc;
+
+  const rows = await db
+    .select({
+      invoice: invoices,
+      customerName: customers.companyName,
+      companyName: customers.companyName,
+      contactName: sql<string | null>`nullif(trim(coalesce(${customerContacts.firstName}, '') || ' ' || coalesce(${customerContacts.lastName}, '')), '')`,
+      contactEmail: customerContacts.email,
+      orderNumber: sql<string | null>`coalesce(${orders.displayNumber}, ${orders.orderNumber}, ${invoices.sourceOrderNumber}::text)`,
+      orderName: orders.label,
+      jobName: orders.label,
+      purchaseOrderNumber: sql<string | null>`coalesce(${orders.poNumber}, ${invoices.customerPoNumber})`,
+    })
+    .from(invoices)
+    .leftJoin(customers, and(
+      eq(customers.id, invoices.customerId),
+      eq(customers.organizationId, opts.organizationId),
+    ))
+    .leftJoin(orders, and(
+      eq(orders.id, invoices.orderId),
+      eq(orders.organizationId, opts.organizationId),
+    ))
+    .leftJoin(customerContacts, and(
+      eq(customerContacts.id, orders.contactId),
+      eq(customerContacts.customerId, customers.id),
+    ))
+    .where(and(...whereClauses))
+    .orderBy(sortDirection(sortExpression), desc(invoices.issueDate), desc(invoices.createdAt))
+    .limit(limit)
+    .offset(offset);
+
+  return rows.map((row) => ({
+    ...row.invoice,
+    customerName: row.customerName ?? null,
+    companyName: row.companyName ?? null,
+    contactName: row.contactName ?? null,
+    contactEmail: row.contactEmail ?? null,
+    orderNumber: row.orderNumber ?? null,
+    orderName: row.orderName ?? null,
+    jobName: row.jobName ?? null,
+    purchaseOrderNumber: row.purchaseOrderNumber ?? null,
+  }));
 }
 
 export async function generateNextInvoiceNumber(organizationId: string, tx?: any): Promise<number> {

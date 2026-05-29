@@ -14,6 +14,14 @@ export type ReminderListStatus =
   | 'blocked';
 
 export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay {
+  customerName: string | null;
+  companyName: string | null;
+  contactName: string | null;
+  contactEmail: string | null;
+  orderNumber: string | null;
+  orderName: string | null;
+  jobName: string | null;
+  purchaseOrderNumber: string | null;
   // Email send tracking (original invoice send only — reminders excluded)
   lastSentAt: string | null;
   lastInvoiceEmailRecipient: string | null;
@@ -43,7 +51,14 @@ export interface InvoicePaymentWithCreatedBy extends Payment {
 }
 
 // List invoices
-export function useInvoices(filters?: { status?: string; customerId?: string; orderId?: string }) {
+export function useInvoices(filters?: {
+  status?: string;
+  customerId?: string;
+  orderId?: string;
+  search?: string;
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
+}) {
   return useQuery<InvoiceListItem[]>({
     queryKey: ['invoices', filters],
     queryFn: async () => {
@@ -51,6 +66,9 @@ export function useInvoices(filters?: { status?: string; customerId?: string; or
       if (filters?.status) params.append('status', filters.status);
       if (filters?.customerId) params.append('customerId', filters.customerId);
       if (filters?.orderId) params.append('orderId', filters.orderId);
+      if (filters?.search) params.append('search', filters.search);
+      if (filters?.sortBy) params.append('sortBy', filters.sortBy);
+      if (filters?.sortDir) params.append('sortDir', filters.sortDir);
       const res = await fetch(`/api/invoices?${params}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch invoices');
       const data = await res.json();
