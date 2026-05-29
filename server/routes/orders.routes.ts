@@ -904,6 +904,40 @@ export async function registerOrderRoutes(
         });
     };
 
+    const createOriginalLineItemFileFromOrderAttachment = async (args: {
+        organizationId: string;
+        orderId: string;
+        lineItemId: string;
+        attachment: any;
+        userId: string;
+    }) => {
+        const resolvedOriginal = args.attachment.fileRecordId
+            ? await canonicalFileReadResolver.resolveOriginal(String(args.attachment.fileRecordId))
+            : null;
+        const storagePath =
+            resolvedOriginal?.objectKey ||
+            resolvedOriginal?.localPathRef ||
+            (args.attachment.fileUrl as string | null) ||
+            null;
+
+        if (!storagePath) return null;
+
+        return createLineItemFileRecord({
+            organizationId: args.organizationId,
+            orderId: args.orderId,
+            lineItemId: args.lineItemId,
+            role: 'original',
+            storagePath,
+            storageKey: storagePath,
+            storageBucket: null,
+            originalFilename: (args.attachment.originalFilename as string | null) || (args.attachment.fileName as string),
+            mimeType: args.attachment.mimeType,
+            sizeBytes: args.attachment.sizeBytes ?? args.attachment.fileSize,
+            fileRecordId: args.attachment.fileRecordId ?? null,
+            uploadedByUserId: args.userId,
+        });
+    };
+
     app.get("/api/workflow/order", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
@@ -4737,6 +4771,18 @@ export async function registerOrderRoutes(
                 const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
                 if (orderLineItemId) {
                     try {
+                        await createOriginalLineItemFileFromOrderAttachment({
+                            organizationId,
+                            orderId,
+                            lineItemId: String(orderLineItemId),
+                            attachment,
+                            userId,
+                        });
+                    } catch (lineItemFileError) {
+                        console.error('[OrderFiles:POST] Failed to mirror upload-session file into line_item_files (non-fatal):', lineItemFileError);
+                    }
+
+                    try {
                         await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
                             organizationId,
                             lineItemId: String(orderLineItemId),
@@ -4905,31 +4951,16 @@ export async function registerOrderRoutes(
 
             if (resolvedLineItemId) {
                 uploadStep = 'create_line_item_file_record';
-                const resolvedOriginal = attachment.fileRecordId
-                    ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
-                    : null;
-                const storagePath =
-                    resolvedOriginal?.objectKey ||
-                    resolvedOriginal?.localPathRef ||
-                    (attachment.fileUrl as string | null) ||
-                    null;
-
-                if (storagePath) {
-                    await createLineItemFileRecord({
-                        organizationId,
-                        orderId,
-                        lineItemId: String(resolvedLineItemId),
-                        role: 'original',
-                        storagePath,
-                        storageKey: storagePath,
-                        storageBucket: null,
-                        originalFilename: (attachment.originalFilename as string | null) || (attachment.fileName as string),
-                        mimeType: attachment.mimeType,
-                        sizeBytes: attachment.sizeBytes ?? attachment.fileSize,
+                await createOriginalLineItemFileFromOrderAttachment({
+                    organizationId,
+                    orderId,
+                    lineItemId: String(resolvedLineItemId),
+                    attachment: {
+                        ...attachment,
                         fileRecordId: attachment.fileRecordId ?? canonicalUpload?.fileRecord.id ?? null,
-                        uploadedByUserId: userId,
-                    });
-                }
+                    },
+                    userId,
+                });
             }
 
             uploadStep = 'write_order_audit_log';
