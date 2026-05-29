@@ -2,9 +2,9 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Plus, FileText, DollarSign } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Plus, FileText, DollarSign } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoices, type InvoiceEmailStatus, type ReminderListStatus } from "@/hooks/useInvoices";
+import { useInvoices, type InvoiceEmailStatus } from "@/hooks/useInvoices";
 import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
 import {
@@ -26,7 +26,21 @@ import {
   StatusPill,
   getStatusVariant,
 } from "@/components/titan";
-import { documentNumberMatchesSearch, resolveDocumentDisplayNumber } from "@shared/documentNumbering";
+import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
+
+type InvoiceSortKey =
+  | "invoiceNumber"
+  | "customer"
+  | "contact"
+  | "orderNumber"
+  | "poNumber"
+  | "issueDate"
+  | "dueDate"
+  | "status"
+  | "total"
+  | "balance";
+
+const EMPTY_VALUE = "\u2014";
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
@@ -44,24 +58,19 @@ const emailStatusMeta: Record<InvoiceEmailStatus, { label: string; variant: "mut
   sent_outdated: { label: "Updated After Sent", variant: "warning" },
 };
 
-const reminderStatusMeta: Record<ReminderListStatus, { label: string; variant: "muted" | "info" | "warning" | "success" | "error" | "default" }> = {
-  due: { label: "Due", variant: "warning" },
-  sent: { label: "Sent", variant: "info" },
-  disabled: { label: "Disabled", variant: "muted" },
-  not_due: { label: "Not Due", variant: "muted" },
-  stopped: { label: "Stopped", variant: "muted" },
-  maxed_out: { label: "Max Reached", variant: "muted" },
-  blocked: { label: "No Due Date", variant: "muted" },
-};
-
 export default function InvoicesListPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [sortKey, setSortKey] = useState<InvoiceSortKey>("issueDate");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const { data: invoices, isLoading } = useInvoices({
     status: statusFilter !== "all" ? statusFilter : undefined,
+    search: search.trim() || undefined,
+    sortBy: sortKey,
+    sortDir,
   });
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
@@ -74,25 +83,47 @@ export default function InvoicesListPage() {
   };
 
   const formatDate = (dateString: string | Date | null) => {
-    if (!dateString) return "-";
+    if (!dateString) return EMPTY_VALUE;
     try {
       return format(new Date(dateString), "MMM d, yyyy");
     } catch {
-      return "-";
+      return EMPTY_VALUE;
     }
   };
 
-  const filteredInvoices = invoices?.filter((inv) => {
-    const matchesSearch = search === "" || 
-      documentNumberMatchesSearch({
-        query: search,
-        displayNumber: (inv as any).displayNumber,
-        numberCore: (inv as any).numberCore,
-        legacyNumber: inv.invoiceNumber,
-      }) ||
-      inv.id.toLowerCase().includes(search.toLowerCase());
-    return matchesSearch;
-  }) || [];
+  const filteredInvoices = invoices || [];
+
+  const handleSort = (key: InvoiceSortKey) => {
+    if (sortKey === key) {
+      setSortDir((current) => (current === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortKey(key);
+    setSortDir(key === "issueDate" || key === "dueDate" || key === "total" || key === "balance" ? "desc" : "asc");
+  };
+
+  const renderSortIcon = (key: InvoiceSortKey) => {
+    if (sortKey !== key) return <ArrowUpDown className="h-3.5 w-3.5 opacity-50" />;
+    return sortDir === "asc" ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />;
+  };
+
+  const renderSortableHead = (key: InvoiceSortKey, label: string, className = "") => (
+    <TitanTableHead className={className}>
+      <button
+        type="button"
+        className="flex w-full items-center gap-1 text-left font-medium"
+        onClick={() => handleSort(key)}
+      >
+        <span className="truncate">{label}</span>
+        {renderSortIcon(key)}
+      </button>
+    </TitanTableHead>
+  );
+
+  const textOrEmpty = (value: unknown) => {
+    const text = String(value ?? "").trim();
+    return text || EMPTY_VALUE;
+  };
 
   // Calculate stats
   const totalOutstanding = filteredInvoices
@@ -151,7 +182,7 @@ export default function InvoicesListPage() {
         <DataCard>
           <div className="flex gap-4">
             <TitanSearchInput
-              placeholder="Search invoices..."
+              placeholder="Search invoice, customer, contact, order, PO, or job..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               containerClassName="flex-1"
@@ -179,24 +210,28 @@ export default function InvoicesListPage() {
           <TitanTable>
             <TitanTableHeader>
               <TitanTableRow>
-                <TitanTableHead>Invoice #</TitanTableHead>
-                <TitanTableHead>Issue Date</TitanTableHead>
-                <TitanTableHead>Due Date</TitanTableHead>
-                <TitanTableHead>Status</TitanTableHead>
-                <TitanTableHead>Last Sent</TitanTableHead>
-                <TitanTableHead>Reminders</TitanTableHead>
-                <TitanTableHead className="text-right">Total</TitanTableHead>
-                <TitanTableHead className="text-right">Paid</TitanTableHead>
-                <TitanTableHead className="text-right">Balance</TitanTableHead>
-                <TitanTableHead>Actions</TitanTableHead>
+                {renderSortableHead("customer", "Customer", "min-w-[180px] max-w-[220px]")}
+                {renderSortableHead("contact", "Contact", "min-w-[150px] max-w-[190px]")}
+                <TitanTableHead className="min-w-[180px] max-w-[240px]">Job / Order Name</TitanTableHead>
+                {renderSortableHead("poNumber", "PO #", "min-w-[110px] max-w-[140px]")}
+                {renderSortableHead("orderNumber", "Order #", "min-w-[110px] max-w-[140px]")}
+                {renderSortableHead("invoiceNumber", "Invoice #", "min-w-[120px] max-w-[150px]")}
+                {renderSortableHead("issueDate", "Issue Date", "min-w-[120px]")}
+                {renderSortableHead("dueDate", "Due Date", "min-w-[120px]")}
+                {renderSortableHead("status", "Status", "min-w-[130px]")}
+                <TitanTableHead className="min-w-[140px]">Last Sent</TitanTableHead>
+                {renderSortableHead("total", "Total", "min-w-[110px] text-right")}
+                <TitanTableHead className="min-w-[100px] text-right">Paid</TitanTableHead>
+                {renderSortableHead("balance", "Balance", "min-w-[110px] text-right")}
+                <TitanTableHead className="sticky right-0 z-10 min-w-[90px] bg-background">Actions</TitanTableHead>
               </TitanTableRow>
             </TitanTableHeader>
             <TitanTableBody>
-              {isLoading && <TitanTableLoading colSpan={10} message="Loading invoices..." />}
+              {isLoading && <TitanTableLoading colSpan={14} message="Loading invoices..." />}
               
               {!isLoading && filteredInvoices.length === 0 && (
                 <TitanTableEmpty
-                  colSpan={10}
+                  colSpan={14}
                   icon={<FileText className="w-12 h-12" />}
                   message="No invoices found"
                   action={
@@ -218,14 +253,48 @@ export default function InvoicesListPage() {
                   clickable
                   onClick={() => navigate(`/invoices/${invoice.id}`)}
                 >
+                  <TitanTableCell className="max-w-[220px]">
+                    <div className="truncate font-medium" title={textOrEmpty(invoice.customerName || invoice.companyName)}>
+                      {textOrEmpty(invoice.customerName || invoice.companyName)}
+                    </div>
+                  </TitanTableCell>
+                  <TitanTableCell className="max-w-[190px]">
+                    <div className="truncate" title={textOrEmpty(invoice.contactName)}>
+                      {textOrEmpty(invoice.contactName)}
+                    </div>
+                    {invoice.contactEmail && (
+                      <div className="truncate text-xs text-muted-foreground" title={invoice.contactEmail}>
+                        {invoice.contactEmail}
+                      </div>
+                    )}
+                  </TitanTableCell>
+                  <TitanTableCell className="max-w-[240px]">
+                    <div className="truncate" title={textOrEmpty(invoice.jobName || invoice.orderName)}>
+                      {textOrEmpty(invoice.jobName || invoice.orderName)}
+                    </div>
+                  </TitanTableCell>
+                  <TitanTableCell className="max-w-[140px]">
+                    <div className="truncate" title={textOrEmpty(invoice.purchaseOrderNumber)}>
+                      {textOrEmpty(invoice.purchaseOrderNumber)}
+                    </div>
+                  </TitanTableCell>
+                  <TitanTableCell className="max-w-[140px]">
+                    <div className="truncate" title={textOrEmpty(invoice.orderNumber)}>
+                      {textOrEmpty(invoice.orderNumber)}
+                    </div>
+                  </TitanTableCell>
                   <TitanTableCell className="font-medium">
-                    <span className="text-titan-accent hover:underline">
+                    <Link
+                      to={`/invoices/${invoice.id}`}
+                      className="text-titan-accent hover:underline"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       {resolveDocumentDisplayNumber({
                         displayNumber: (invoice as any).displayNumber,
                         numberCore: (invoice as any).numberCore,
                         legacyNumber: invoice.invoiceNumber,
                       }) || invoice.invoiceNumber}
-                    </span>
+                    </Link>
                   </TitanTableCell>
                   <TitanTableCell>{formatDate(invoice.issueDate)}</TitanTableCell>
                   <TitanTableCell>{formatDate(invoice.dueDate)}</TitanTableCell>
@@ -236,17 +305,9 @@ export default function InvoicesListPage() {
                   </TitanTableCell>
                   <TitanTableCell>
                     <div className="space-y-1">
-                      <div>{invoice.lastSentAt ? formatDate(invoice.lastSentAt) : "—"}</div>
+                      <div>{invoice.lastSentAt ? formatDate(invoice.lastSentAt) : EMPTY_VALUE}</div>
                       <StatusPill variant={emailStatusMeta[invoice.emailStatus].variant}>
                         {emailStatusMeta[invoice.emailStatus].label}
-                      </StatusPill>
-                    </div>
-                  </TitanTableCell>
-                  <TitanTableCell>
-                    <div className="space-y-1">
-                      <div>{invoice.lastReminderSentAt ? formatDate(invoice.lastReminderSentAt) : "—"}</div>
-                      <StatusPill variant={reminderStatusMeta[invoice.reminderStatus].variant}>
-                        {reminderStatusMeta[invoice.reminderStatus].label}
                       </StatusPill>
                     </div>
                   </TitanTableCell>
@@ -255,7 +316,7 @@ export default function InvoicesListPage() {
                   <TitanTableCell className="text-right font-semibold">
                     {formatCurrency(invoice.displayRemaining || invoice.balanceDue || Number(invoice.total) - Number(invoice.amountPaid))}
                   </TitanTableCell>
-                  <TitanTableCell onClick={(e) => e.stopPropagation()}>
+                  <TitanTableCell className="sticky right-0 bg-background" onClick={(e) => e.stopPropagation()}>
                     <Button variant="outline" size="sm" asChild>
                       <Link to={`/invoices/${invoice.id}`}>View</Link>
                     </Button>

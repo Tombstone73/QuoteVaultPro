@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customers, invoiceLineItems, invoiceReminderLogs, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
-import { applyPayment, createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
+import { applyPayment, createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, refreshInvoiceStatus } from "../invoicesService";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
 import { updateInvoiceReminderSettingsSchema } from "../../shared/schema";
@@ -1234,21 +1234,23 @@ export async function registerMvpInvoicingRoutes(
       const status = req.query.status as string | undefined;
       const customerId = req.query.customerId as string | undefined;
       const orderId = req.query.orderId as string | undefined;
+      const search = req.query.search as string | undefined;
+      const sortBy = req.query.sortBy as string | undefined;
+      const sortDir = req.query.sortDir as string | undefined;
       const limit = Math.min(parseInt((req.query.limit as string) || "50", 10), 200);
       const offset = parseInt((req.query.offset as string) || "0", 10);
 
-      const whereClauses: any[] = [eq(invoices.organizationId, organizationId)];
-      if (status) whereClauses.push(eq(invoices.status, status));
-      if (customerId) whereClauses.push(eq(invoices.customerId, customerId));
-      if (orderId) whereClauses.push(eq(invoices.orderId, orderId));
-
-      const rows = await db
-        .select()
-        .from(invoices)
-        .where(and(...whereClauses))
-        .limit(limit)
-        .offset(offset)
-        .orderBy(desc(invoices.issueDate));
+      const rows = await listInvoicesForOrganization({
+        organizationId,
+        status,
+        customerId,
+        orderId,
+        search,
+        sortBy,
+        sortDir,
+        limit,
+        offset,
+      });
 
       const emailStatuses = await getInvoiceEmailStatuses(
         rows.map((row) => ({ id: row.id, updatedAt: row.updatedAt })),
