@@ -83,43 +83,7 @@ export class FulfillmentService {
       if (result.code === 'NOT_FOUND') throw new FulfillmentHttpError(404, result.message, result.code);
       throw new FulfillmentHttpError(400, result.message, result.code);
     }
-    let billingAutomation: BillingInvoiceAutomationResult | null = null;
-    const [order] = await this.dbInstance
-      .select({ shippingMethod: orders.shippingMethod })
-      .from(orders)
-      .where(and(eq(orders.id, orderId), eq(orders.organizationId, orgId)))
-      .limit(1);
-
-    if (order?.shippingMethod !== 'pickup') {
-      try {
-        billingAutomation = await this.billingAutomationService.ensureDraftInvoiceForOrderTrigger({
-          organizationId: orgId,
-          orderId,
-          trigger: 'ready_for_pickup_or_ready_to_ship',
-          sourceEvent: 'FULFILLMENT_READY_TO_SHIP',
-          actorUserId,
-        });
-      } catch (error: any) {
-        console.error('[fulfillment] ready billing automation warning:', {
-          organizationId: orgId,
-          orderId,
-          message: error?.message || String(error),
-          code: error?.code,
-          constraint: error?.constraint,
-        });
-        billingAutomation = {
-          status: 'failed_controlled_error',
-          policy: 'ready_for_pickup_or_ready_to_ship',
-          trigger: 'ready_for_pickup_or_ready_to_ship',
-          invoice: null,
-          code: 'INVOICE_AUTOMATION_FAILED',
-          message: error?.message || 'Invoice automation failed after fulfillment was marked ready',
-        };
-      }
-    }
-
-    const detail = await this.getOrderDetail(orgId, orderId, actorOrgRole);
-    return billingAutomation ? { ...detail, billingAutomation } : detail;
+    return this.getOrderDetail(orgId, orderId, actorOrgRole);
   }
 
   async markOrderReadyForPickup(orgId: string, orderId: string, payload: {
@@ -129,7 +93,7 @@ export class FulfillmentService {
     contactEmail?: string | null;
     contactPhone?: string | null;
   }, actorUserId?: string | null, actorUserRole?: string | null) {
-    await this.requireChecklistComplete(orgId, orderId);
+    await this.requireChecklistComplete(orgId, orderId, 'ready_for_pickup');
     const ticket = await this.createOrGetPickupTicket(orgId, orderId, actorUserId);
     const pickupReadyResult = await this.markPickupReady(orgId, ticket.id, payload, actorUserId, actorUserRole);
     const detail = await this.getOrderDetail(orgId, orderId, actorUserRole);
@@ -170,10 +134,13 @@ export class FulfillmentService {
     return this.getOrderDetail(orgId, orderId);
   }
 
-  private async requireChecklistComplete(orgId: string, orderId: string) {
+  private async requireChecklistComplete(orgId: string, orderId: string, target: 'ready_for_pickup' | 'shipped') {
     const result = await this.dashboardRepo.assertOrderChecklistComplete(orgId, orderId);
     if (!result.ok) {
-      throw new FulfillmentHttpError(409, result.message, result.code);
+      const message = target === 'shipped'
+        ? 'Verify all fulfillment checklist items before marking shipped.'
+        : 'Verify all fulfillment checklist items before marking ready for pickup.';
+      throw new FulfillmentHttpError(409, message, result.code);
     }
     return result.summary;
   }
@@ -337,7 +304,7 @@ export class FulfillmentService {
 
     const orderIds = Array.from(new Set((existing.orders || []).map((order: any) => String(order.orderId)).filter(Boolean)));
     for (const orderId of orderIds) {
-      await this.requireChecklistComplete(orgId, orderId);
+      await this.requireChecklistComplete(orgId, orderId, 'shipped');
     }
 
     const result = await this.shipmentRepo.markShipped(orgId, shipmentId, actorUserId);
@@ -450,7 +417,7 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(403, 'Only Owner/Admin may override production-complete for pickup-ready', 'PICKUP_READY_OVERRIDE_FORBIDDEN');
     }
 
-    await this.requireChecklistComplete(orgId, ticketWithOrder.orderId);
+    await this.requireChecklistComplete(orgId, ticketWithOrder.orderId, 'ready_for_pickup');
 
     const markResult = await this.pickupRepo.markReady(orgId, ticketId, {
       stagingLocation: payload.stagingLocation,

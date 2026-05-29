@@ -165,8 +165,7 @@ describe("fulfillment operational workflow helpers", () => {
     });
   });
 
-  test("mark ready returns detail when billing automation throws after fulfillment transition", async () => {
-    const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
+  test("mark ready returns detail without requiring checklist or invoking invoice automation", async () => {
     const fakeDashboardRepo = {
       markOrderReady: jest.fn(async () => ({ ok: true })),
       getFulfillmentDetail: jest.fn(async () => ({
@@ -175,41 +174,79 @@ describe("fulfillment operational workflow helpers", () => {
         permissions: { canRevertStatus: false, revertPermission: FULFILLMENT_REVERT_STATUS_PERMISSION },
       })),
     };
-    const fakeDb = {
-      select: () => selectChain([{ shippingMethod: "ship" }]),
+    const billingAutomationService = {
+      ensureDraftInvoiceForOrderTrigger: jest.fn(async () => {
+        throw new Error("invoice service unavailable");
+      }),
     };
     const service = new FulfillmentService({
       dashboardRepo: fakeDashboardRepo as any,
       shipmentRepo: {} as any,
       pickupRepo: {} as any,
-      dbInstance: fakeDb as any,
-      billingAutomationService: {
-        ensureDraftInvoiceForOrderTrigger: jest.fn(async () => {
-          throw new Error("invoice service unavailable");
-        }),
-      } as any,
+      dbInstance: {} as any,
+      billingAutomationService: billingAutomationService as any,
     });
 
-    try {
-      const result = await service.markOrderReady("org-1", "order-1", "user-1", "manager");
+    const result = await service.markOrderReady("org-1", "order-1", "user-1", "manager");
 
-      expect(fakeDashboardRepo.markOrderReady).toHaveBeenCalledWith("org-1", "order-1", "user-1");
-      expect(result.status).toBe("READY");
-      expect(result.billingAutomation).toMatchObject({
-        status: "failed_controlled_error",
-        code: "INVOICE_AUTOMATION_FAILED",
-        message: "invoice service unavailable",
-      });
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        "[fulfillment] ready billing automation warning:",
-        expect.objectContaining({
-          organizationId: "org-1",
-          orderId: "order-1",
-          message: "invoice service unavailable",
-        }),
-      );
-    } finally {
-      consoleErrorSpy.mockRestore();
-    }
+    expect(fakeDashboardRepo.markOrderReady).toHaveBeenCalledWith("org-1", "order-1", "user-1");
+    expect(result.status).toBe("READY");
+    expect(billingAutomationService.ensureDraftInvoiceForOrderTrigger).not.toHaveBeenCalled();
+    expect(result.billingAutomation).toBeUndefined();
+  });
+
+  test("ready for pickup requires completed checklist with specific error message", async () => {
+    const fakeDashboardRepo = {
+      assertOrderChecklistComplete: jest.fn(async () => ({
+        ok: false,
+        code: "FULFILLMENT_CHECKLIST_INCOMPLETE",
+        message: "old generic message",
+        summary: { total: 1, checked: 0, unchecked: 1, complete: false },
+      })),
+    };
+    const service = new FulfillmentService({
+      dashboardRepo: fakeDashboardRepo as any,
+      shipmentRepo: {} as any,
+      pickupRepo: {} as any,
+      dbInstance: {} as any,
+    });
+
+    await expect(service.markOrderReadyForPickup("org-1", "order-1", {}, "user-1", "manager")).rejects.toMatchObject({
+      status: 409,
+      code: "FULFILLMENT_CHECKLIST_INCOMPLETE",
+      message: "Verify all fulfillment checklist items before marking ready for pickup.",
+    });
+  });
+
+  test("mark shipped requires completed checklist with shipped-specific error message", async () => {
+    const fakeShipmentRepo = {
+      getShipmentById: jest.fn(async () => ({
+        id: "shipment-1",
+        status: "DRAFT",
+        orders: [{ orderId: "order-1", orderState: "production_complete", orderStatus: "in_production", orderCanceledAt: null }],
+      })),
+      markShipped: jest.fn(),
+    };
+    const fakeDashboardRepo = {
+      assertOrderChecklistComplete: jest.fn(async () => ({
+        ok: false,
+        code: "FULFILLMENT_CHECKLIST_INCOMPLETE",
+        message: "old generic message",
+        summary: { total: 1, checked: 0, unchecked: 1, complete: false },
+      })),
+    };
+    const service = new FulfillmentService({
+      dashboardRepo: fakeDashboardRepo as any,
+      shipmentRepo: fakeShipmentRepo as any,
+      pickupRepo: {} as any,
+      dbInstance: {} as any,
+    });
+
+    await expect(service.markShipmentShipped("org-1", "shipment-1", "user-1")).rejects.toMatchObject({
+      status: 409,
+      code: "FULFILLMENT_CHECKLIST_INCOMPLETE",
+      message: "Verify all fulfillment checklist items before marking shipped.",
+    });
+    expect(fakeShipmentRepo.markShipped).not.toHaveBeenCalled();
   });
 });

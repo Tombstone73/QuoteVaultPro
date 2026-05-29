@@ -177,6 +177,28 @@ export function summarizeFulfillmentChecklist(items: Array<{ checked?: boolean |
   };
 }
 
+async function resolveExistingActorUserId(dbRunner: any, actorUserId?: string | null): Promise<string | null> {
+  const cleanActorUserId = cleanText(actorUserId);
+  if (!cleanActorUserId) return null;
+  if (typeof dbRunner?.select !== 'function') return null;
+
+  try {
+    const [actor] = await dbRunner
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, cleanActorUserId))
+      .limit(1);
+
+    return actor?.id ?? null;
+  } catch (error) {
+    console.warn('[fulfillment] actor lookup failed; continuing with null actor', {
+      actorUserId: cleanActorUserId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 export function resolveFulfillmentUnreadyTransition(status: string | null | undefined): { ok: true; previousStatus: 'READY' | 'READY_FOR_PICKUP'; newStatus: 'DRAFT' | 'READY' } | { ok: false; code: 'INVALID_STATE' | 'TERMINAL_STATUS_REVERT_BLOCKED' } {
   const normalized = cleanText(status).toUpperCase();
   if (normalized === 'READY_FOR_PICKUP') {
@@ -240,6 +262,7 @@ export class ShipmentRepo {
     createdByUserId?: string | null;
   }) {
     const primaryOrderId = payload.primaryOrderId || payload.orderIds[0] || null;
+    const safeCreatedByUserId = await resolveExistingActorUserId(this.dbInstance, payload.createdByUserId);
 
     const [shipment] = await this.dbInstance
       .insert(shipments)
@@ -249,7 +272,7 @@ export class ShipmentRepo {
         scope: payload.scope,
         orderId: primaryOrderId,
         primaryOrderId,
-        createdByUserId: payload.createdByUserId || null,
+        createdByUserId: safeCreatedByUserId,
       })
       .returning();
 
@@ -444,9 +467,10 @@ export class ShipmentRepo {
         return { ok: false as const, code: 'CONFLICT', message: 'Shipment state changed during update' };
       }
 
+      const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
       await tx.insert(fulfillmentEvents).values({
         organizationId: orgId,
-        actorUserId: actorUserId || null,
+        actorUserId: safeActorUserId,
         entityType: 'SHIPMENT',
         entityId: shipmentId,
         eventType: 'SHIPMENT_SHIPPED',
@@ -483,9 +507,10 @@ export class ShipmentRepo {
         .where(and(eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT')))
         .returning();
 
+      const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
       await tx.insert(fulfillmentEvents).values({
         organizationId: orgId,
-        actorUserId: actorUserId || null,
+        actorUserId: safeActorUserId,
         entityType: 'SHIPMENT',
         entityId: shipmentId,
         eventType: 'SHIPMENT_VOIDED',
@@ -606,9 +631,10 @@ export class ShipmentRepo {
     tx?: any,
   ) {
     const runner = tx || this.dbInstance;
+    const safeActorUserId = await resolveExistingActorUserId(runner, actorUserId);
     await runner.insert(fulfillmentEvents).values({
       organizationId: orgId,
-      actorUserId,
+      actorUserId: safeActorUserId,
       entityType,
       entityId,
       eventType,
@@ -629,13 +655,14 @@ export class PickupRepo {
 
     if (existing) return existing;
 
+    const safeCreatedByUserId = await resolveExistingActorUserId(this.dbInstance, createdByUserId);
     const [created] = await this.dbInstance
       .insert(pickupTickets)
       .values({
         organizationId: orgId,
         orderId,
         status: 'DRAFT',
-        createdByUserId: createdByUserId || null,
+        createdByUserId: safeCreatedByUserId,
       })
       .returning();
 
@@ -690,9 +717,10 @@ export class PickupRepo {
 
       if (!updated) return { ok: false as const, code: 'CONFLICT', message: 'Pickup ticket state changed during update' };
 
+      const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
       await tx.insert(fulfillmentEvents).values({
         organizationId: orgId,
-        actorUserId: actorUserId || null,
+        actorUserId: safeActorUserId,
         entityType: 'PICKUP_TICKET',
         entityId: ticketId,
         eventType: 'PICKUP_READY',
@@ -788,9 +816,10 @@ export class PickupRepo {
         ))
         .returning();
 
+      const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
       await tx.insert(fulfillmentEvents).values({
         organizationId: orgId,
-        actorUserId: actorUserId || null,
+        actorUserId: safeActorUserId,
         entityType: 'PICKUP_TICKET',
         entityId: ticketId,
         eventType: 'PICKUP_PICKED_UP',
@@ -886,19 +915,6 @@ export class FulfillmentDashboardRepo {
       .where(eq(organizations.id, orgId))
       .limit(1);
     return getPickupRetentionDaysFromSettings(org?.settings);
-  }
-
-  private async resolveExistingActorUserId(actorUserId?: string | null): Promise<string | null> {
-    const cleanActorUserId = cleanText(actorUserId);
-    if (!cleanActorUserId) return null;
-
-    const [actor] = await this.dbInstance
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.id, cleanActorUserId))
-      .limit(1);
-
-    return actor?.id ?? null;
   }
 
   private isPickedUpTicketArchived(ticket: any, retentionDays: number, nowMs = Date.now()): boolean {
@@ -1303,9 +1319,10 @@ export class FulfillmentDashboardRepo {
 
   async logChecklistVerified(orgId: string, orderId: string, actorUserId?: string | null, payload?: Record<string, any>) {
     const summary = await this.getChecklistCompletion(orgId, orderId);
+    const safeActorUserId = await resolveExistingActorUserId(this.dbInstance, actorUserId);
     await this.dbInstance.insert(fulfillmentEvents).values({
       organizationId: orgId,
-      actorUserId: actorUserId || null,
+      actorUserId: safeActorUserId,
       entityType: 'ORDER',
       entityId: orderId,
       eventType: 'FULFILLMENT_CHECKLIST_VERIFIED',
@@ -1339,7 +1356,7 @@ export class FulfillmentDashboardRepo {
     await this.ensureChecklistItemsForOrder(orgId, orderId);
 
     const now = new Date();
-    const safeActorUserId = await this.resolveExistingActorUserId(actorUserId);
+    const safeActorUserId = await resolveExistingActorUserId(this.dbInstance, actorUserId);
     const [updated] = await this.dbInstance
       .update(fulfillmentChecklistItems)
       .set({
@@ -1396,8 +1413,8 @@ export class FulfillmentDashboardRepo {
       return { ok: false as const, code: 'INVALID_STATE', message: 'Order is not ready for fulfillment' };
     }
 
-    const safeActorUserId = await this.resolveExistingActorUserId(actorUserId);
     await this.dbInstance.transaction(async (tx) => {
+      const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
       await tx
         .update(orders)
         .set({ fulfillmentStatus: 'packed', updatedAt: new Date().toISOString() })
@@ -1502,9 +1519,10 @@ export class FulfillmentDashboardRepo {
           .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)));
       }
 
+      const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
       await tx.insert(fulfillmentEvents).values({
         organizationId: orgId,
-        actorUserId: actorUserId || null,
+        actorUserId: safeActorUserId,
         entityType: 'ORDER',
         entityId: orderId,
         eventType: 'FULFILLMENT_UNREADY',
@@ -1529,9 +1547,10 @@ export class FulfillmentDashboardRepo {
 
     if (!order) return { ok: false as const, code: 'NOT_FOUND', message: 'Fulfillment row not found' };
 
+    const safeActorUserId = await resolveExistingActorUserId(this.dbInstance, actorUserId);
     await this.dbInstance.insert(fulfillmentEvents).values({
       organizationId: orgId,
-      actorUserId: actorUserId || null,
+      actorUserId: safeActorUserId,
       entityType: 'ORDER',
       entityId: orderId,
       eventType: 'FULFILLMENT_NOTE',
