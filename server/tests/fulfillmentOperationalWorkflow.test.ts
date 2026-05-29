@@ -1,7 +1,17 @@
-import { describe, expect, test } from "@jest/globals";
-import { isPickedUpArchivedForRetention, resolveFulfillmentUnreadyTransition, summarizeFulfillmentChecklist } from "../services/fulfillment/repository";
-import { canRevertFulfillmentStatus, FULFILLMENT_REVERT_STATUS_PERMISSION } from "../services/fulfillment/service";
+import { describe, expect, jest, test } from "@jest/globals";
+import { FulfillmentDashboardRepo, isPickedUpArchivedForRetention, resolveFulfillmentUnreadyTransition, summarizeFulfillmentChecklist } from "../services/fulfillment/repository";
+import { canRevertFulfillmentStatus, FULFILLMENT_REVERT_STATUS_PERMISSION, FulfillmentService } from "../services/fulfillment/service";
 import { fulfillmentChecklistItemSchema } from "../services/fulfillment/schemas";
+
+function selectChain(rows: any[]) {
+  return {
+    from: () => ({
+      where: () => ({
+        limit: async () => rows,
+      }),
+    }),
+  };
+}
 
 describe("fulfillment operational workflow helpers", () => {
   test("picked-up rows remain active before retention window", () => {
@@ -108,5 +118,98 @@ describe("fulfillment operational workflow helpers", () => {
     expect(canRevertFulfillmentStatus("manager")).toBe(true);
     expect(canRevertFulfillmentStatus("member")).toBe(false);
     expect(canRevertFulfillmentStatus(null)).toBe(false);
+  });
+
+  test("mark ready writes fulfillment event with nullable actor when request actor is not a persisted user", async () => {
+    const insertedEvents: any[] = [];
+    const updatedOrders: any[] = [];
+    const fakeTx = {
+      update: () => ({
+        set: (values: any) => {
+          updatedOrders.push(values);
+          return { where: async () => undefined };
+        },
+      }),
+      insert: () => ({
+        values: async (values: any) => {
+          insertedEvents.push(values);
+        },
+      }),
+    };
+    const fakeDb = {
+      select: jest.fn()
+        .mockImplementationOnce(() => selectChain([{
+          id: "order-1",
+          state: "production_complete",
+          status: "in_production",
+          canceledAt: null,
+          routingTarget: "fulfillment",
+          shippingMethod: "ship",
+        }]))
+        .mockImplementationOnce(() => selectChain([])),
+      transaction: async (callback: any) => callback(fakeTx),
+    };
+    const repo = new FulfillmentDashboardRepo(fakeDb as any);
+
+    const result = await repo.markOrderReady("org-1", "order-1", "claims-user-not-in-users-table");
+
+    expect(result).toEqual({ ok: true });
+    expect(updatedOrders[0]).toMatchObject({ fulfillmentStatus: "packed" });
+    expect(insertedEvents[0]).toMatchObject({
+      organizationId: "org-1",
+      actorUserId: null,
+      entityType: "ORDER",
+      entityId: "order-1",
+      eventType: "FULFILLMENT_READY",
+      payloadJson: { fulfillmentStatus: "packed" },
+    });
+  });
+
+  test("mark ready returns detail when billing automation throws after fulfillment transition", async () => {
+    const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const fakeDashboardRepo = {
+      markOrderReady: jest.fn(async () => ({ ok: true })),
+      getFulfillmentDetail: jest.fn(async () => ({
+        orderId: "order-1",
+        status: "READY",
+        permissions: { canRevertStatus: false, revertPermission: FULFILLMENT_REVERT_STATUS_PERMISSION },
+      })),
+    };
+    const fakeDb = {
+      select: () => selectChain([{ shippingMethod: "ship" }]),
+    };
+    const service = new FulfillmentService({
+      dashboardRepo: fakeDashboardRepo as any,
+      shipmentRepo: {} as any,
+      pickupRepo: {} as any,
+      dbInstance: fakeDb as any,
+      billingAutomationService: {
+        ensureDraftInvoiceForOrderTrigger: jest.fn(async () => {
+          throw new Error("invoice service unavailable");
+        }),
+      } as any,
+    });
+
+    try {
+      const result = await service.markOrderReady("org-1", "order-1", "user-1", "manager");
+
+      expect(fakeDashboardRepo.markOrderReady).toHaveBeenCalledWith("org-1", "order-1", "user-1");
+      expect(result.status).toBe("READY");
+      expect(result.billingAutomation).toMatchObject({
+        status: "failed_controlled_error",
+        code: "INVOICE_AUTOMATION_FAILED",
+        message: "invoice service unavailable",
+      });
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "[fulfillment] ready billing automation warning:",
+        expect.objectContaining({
+          organizationId: "org-1",
+          orderId: "order-1",
+          message: "invoice service unavailable",
+        }),
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });
