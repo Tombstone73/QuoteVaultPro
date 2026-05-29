@@ -67,9 +67,14 @@ export const fulfillmentChecklistItemSchema = z.object({
   notes: z.string().trim().max(2000).optional().nullable(),
 });
 
+export const fulfillmentUnreadySchema = z.object({
+  reason: z.string().trim().min(1, "Reason is required").max(2000),
+});
+
 export type ListQueueQueryInput = z.infer<typeof listQueueQuerySchema>;
 export type CreateShipmentInput = z.infer<typeof createShipmentSchema>;
 export type PatchShipmentInput = z.infer<typeof patchShipmentSchema>;
 export type PickupReadyInput = z.infer<typeof pickupReadySchema>;
 export type FulfillmentNoteInput = z.infer<typeof fulfillmentNoteSchema>;
 export type FulfillmentChecklistItemInput = z.infer<typeof fulfillmentChecklistItemSchema>;
+export type FulfillmentUnreadyInput = z.infer<typeof fulfillmentUnreadySchema>;

@@ -162,7 +162,7 @@ export default function InvoicesListPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="draft">Draft</SelectItem>
+                <SelectItem value="draft">Needs Review / Drafts</SelectItem>
                 <SelectItem value="sent">Sent</SelectItem>
                 <SelectItem value="partially_paid">Partially Paid</SelectItem>
                 <SelectItem value="paid">Paid</SelectItem>

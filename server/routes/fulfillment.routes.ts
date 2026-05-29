@@ -35,6 +35,7 @@ import {
   createShipmentSchema as createFulfillmentShipmentSchema,
   fulfillmentChecklistItemSchema,
   fulfillmentNoteSchema,
+  fulfillmentUnreadySchema,
   listQueueQuerySchema,
   patchShipmentSchema as patchFulfillmentShipmentSchema,
   pickupReadySchema,
@@ -89,7 +90,8 @@ export function registerFulfillmentRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
-      const data = await fulfillmentServiceV2.getOrderDetail(organizationId, req.params.orderId);
+      const actorOrgRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
+      const data = await fulfillmentServiceV2.getOrderDetail(organizationId, req.params.orderId, actorOrgRole);
       return res.json({ success: true, data });
     } catch (error) {
       if (error instanceof FulfillmentHttpError) {
@@ -105,7 +107,8 @@ export function registerFulfillmentRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
       const actorUserId = getUserId(req.user) || null;
-      const data = await fulfillmentServiceV2.markOrderReady(organizationId, req.params.orderId, actorUserId);
+      const actorOrgRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
+      const data = await fulfillmentServiceV2.markOrderReady(organizationId, req.params.orderId, actorUserId, actorOrgRole);
       return res.json({ success: true, data, message: 'Fulfillment marked ready' });
     } catch (error) {
       if (error instanceof FulfillmentHttpError) {
@@ -121,7 +124,7 @@ export function registerFulfillmentRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
       const actorUserId = getUserId(req.user) || null;
-      const actorUserRole = (req.user as any)?.role || (req.user as any)?.orgRole || null;
+      const actorUserRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
       const parsed = pickupReadySchema.parse(req.body || {});
       const data = await fulfillmentServiceV2.markOrderReadyForPickup(organizationId, req.params.orderId, parsed, actorUserId, actorUserRole);
       return res.json({ success: true, data, message: 'Pickup marked ready' });
@@ -154,6 +157,27 @@ export function registerFulfillmentRoutes(
       }
       console.error('[fulfillment] note error:', error);
       return res.status(500).json({ success: false, message: 'Failed to add fulfillment note' });
+    }
+  });
+
+  app.post('/api/fulfillment/orders/:orderId/unready', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
+      const parsed = fulfillmentUnreadySchema.parse(req.body || {});
+      const actorUserId = getUserId(req.user) || null;
+      const actorOrgRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
+      const data = await fulfillmentServiceV2.unreadyOrder(organizationId, req.params.orderId, parsed.reason, actorUserId, actorOrgRole);
+      return res.json({ success: true, data, message: 'Fulfillment status reverted' });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, message: 'Reason is required to revert fulfillment status', code: 'VALIDATION_ERROR' });
+      }
+      if (error instanceof FulfillmentHttpError) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] un-ready error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to revert fulfillment status' });
     }
   });
 
@@ -309,7 +333,7 @@ export function registerFulfillmentRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) || null;
-      const actorUserRole = String(req.user?.role || '').trim().toLowerCase() || null;
+      const actorUserRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
       const parsed = pickupReadySchema.parse(req.body || {});
 
       const result = await fulfillmentServiceV2.markPickupReady(organizationId, req.params.ticketId, parsed, actorUserId, actorUserRole);

@@ -36,6 +36,23 @@ export interface QueueRowDto {
 }
 
 export interface FulfillmentDetailDto extends QueueRowDto {
+  permissions?: {
+    canRevertStatus: boolean;
+    revertPermission: string;
+  };
+  billingAutomation?: {
+    status: string;
+    policy: string;
+    trigger: string;
+    invoice?: {
+      id: string;
+      invoiceNumber: number;
+      status: string;
+      totalCents?: number | null;
+    } | null;
+    message: string;
+    code?: string;
+  } | null;
   customer: {
     name: string;
     email: string | null;

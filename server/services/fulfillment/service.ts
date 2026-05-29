@@ -6,6 +6,16 @@ import { FulfillmentDashboardRepo, PickupRepo, ShipmentRepo } from './repository
 import { FulfillmentHttpError } from './types';
 import { isCanceledOrder } from '@shared/operationalState';
 import { isFulfillmentQueueEligibleOrder } from './eligibility';
+import { billingInvoiceAutomationService, type BillingInvoiceAutomationResult } from '../billingInvoiceAutomation';
+
+export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
+
+export function canRevertFulfillmentStatus(actorOrgRole?: string | null): boolean {
+  const normalizedRole = String(actorOrgRole || '').trim().toLowerCase();
+  // TODO: Replace this role fallback with the org permission key
+  // `fulfillment.revert_status` once configurable RBAC is available.
+  return normalizedRole === 'owner' || normalizedRole === 'admin' || normalizedRole === 'manager';
+}
 
 export class FulfillmentService {
   private readonly shipmentRepo = new ShipmentRepo(db);
@@ -37,21 +47,45 @@ export class FulfillmentService {
     return this.dashboardRepo.listFulfillmentQueue(orgId, filters);
   }
 
-  async getOrderDetail(orgId: string, orderId: string) {
+  async getOrderDetail(orgId: string, orderId: string, actorOrgRole?: string | null) {
     const detail = await this.dashboardRepo.getFulfillmentDetail(orgId, orderId);
     if (!detail) {
       throw new FulfillmentHttpError(404, 'Fulfillment row not found', 'NOT_FOUND');
     }
-    return detail;
+    return {
+      ...detail,
+      permissions: {
+        canRevertStatus: canRevertFulfillmentStatus(actorOrgRole),
+        revertPermission: FULFILLMENT_REVERT_STATUS_PERMISSION,
+      },
+    };
   }
 
-  async markOrderReady(orgId: string, orderId: string, actorUserId?: string | null) {
+  async markOrderReady(orgId: string, orderId: string, actorUserId?: string | null, actorOrgRole?: string | null) {
     const result = await this.dashboardRepo.markOrderReady(orgId, orderId, actorUserId);
     if (!result.ok) {
       if (result.code === 'NOT_FOUND') throw new FulfillmentHttpError(404, result.message, result.code);
       throw new FulfillmentHttpError(400, result.message, result.code);
     }
-    return this.getOrderDetail(orgId, orderId);
+    let billingAutomation: BillingInvoiceAutomationResult | null = null;
+    const [order] = await db
+      .select({ shippingMethod: orders.shippingMethod })
+      .from(orders)
+      .where(and(eq(orders.id, orderId), eq(orders.organizationId, orgId)))
+      .limit(1);
+
+    if (order?.shippingMethod !== 'pickup') {
+      billingAutomation = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+        organizationId: orgId,
+        orderId,
+        trigger: 'ready_for_pickup_or_ready_to_ship',
+        sourceEvent: 'FULFILLMENT_READY_TO_SHIP',
+        actorUserId,
+      });
+    }
+
+    const detail = await this.getOrderDetail(orgId, orderId, actorOrgRole);
+    return billingAutomation ? { ...detail, billingAutomation } : detail;
   }
 
   async markOrderReadyForPickup(orgId: string, orderId: string, payload: {
@@ -63,8 +97,22 @@ export class FulfillmentService {
   }, actorUserId?: string | null, actorUserRole?: string | null) {
     await this.requireChecklistComplete(orgId, orderId);
     const ticket = await this.createOrGetPickupTicket(orgId, orderId, actorUserId);
-    await this.markPickupReady(orgId, ticket.id, payload, actorUserId, actorUserRole);
-    return this.getOrderDetail(orgId, orderId);
+    const pickupReadyResult = await this.markPickupReady(orgId, ticket.id, payload, actorUserId, actorUserRole);
+    const detail = await this.getOrderDetail(orgId, orderId, actorUserRole);
+    return { ...detail, billingAutomation: (pickupReadyResult as any).billingAutomation ?? null };
+  }
+
+  async unreadyOrder(orgId: string, orderId: string, reason: string, actorUserId?: string | null, actorOrgRole?: string | null) {
+    if (!canRevertFulfillmentStatus(actorOrgRole)) {
+      throw new FulfillmentHttpError(403, `Missing permission: ${FULFILLMENT_REVERT_STATUS_PERMISSION}`, 'FULFILLMENT_REVERT_FORBIDDEN');
+    }
+    const result = await this.dashboardRepo.unreadyOrder(orgId, orderId, reason, actorUserId);
+    if (!result.ok) {
+      if (result.code === 'NOT_FOUND') throw new FulfillmentHttpError(404, result.message, result.code);
+      if (result.code === 'TERMINAL_STATUS_REVERT_BLOCKED') throw new FulfillmentHttpError(409, result.message, result.code);
+      throw new FulfillmentHttpError(400, result.message, result.code);
+    }
+    return this.getOrderDetail(orgId, orderId, actorOrgRole);
   }
 
   async updateChecklistItem(orgId: string, orderId: string, lineItemId: string, payload: {
@@ -265,15 +313,18 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(400, result.message, result.code);
     }
 
-    // Billing boundary: automatic invoice drafts belong after fulfillment reaches
-    // this milestone, never in production completion. A future fulfillment-billing
-    // trigger must be setting-gated, idempotent by organizationId + orderId +
-    // billing milestone, skip cancelled/already-invoiced orders, and create drafts
-    // only unless an explicit auto-send setting exists.
+    const billingAutomationResults: BillingInvoiceAutomationResult[] = [];
     for (const orderId of orderIds) {
       await this.dashboardRepo.logChecklistVerified(orgId, orderId, actorUserId, { terminalAction: 'SHIPMENT_SHIPPED', shipmentId });
+      billingAutomationResults.push(await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+        organizationId: orgId,
+        orderId,
+        trigger: 'picked_up_or_shipped',
+        sourceEvent: 'SHIPMENT_SHIPPED',
+        actorUserId,
+      }));
     }
-    return result.shipment;
+    return { ...(result.shipment as any), billingAutomation: billingAutomationResults };
   }
 
   async voidShipment(orgId: string, shipmentId: string, actorUserId?: string | null) {
@@ -388,6 +439,14 @@ export class FulfillmentService {
       pickupTicketId: ticket.id,
     });
 
+    const billingAutomation = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+      organizationId: orgId,
+      orderId: ticketWithOrder.orderId,
+      trigger: 'ready_for_pickup_or_ready_to_ship',
+      sourceEvent: 'PICKUP_READY',
+      actorUserId,
+    });
+
     // Fail-soft notification attempt.
     if (!notification.toAddress) {
       const errorMessage = 'No pickup contact email found';
@@ -398,6 +457,7 @@ export class FulfillmentService {
       });
       return {
         ticket,
+        billingAutomation,
         notification: {
           id: notification.id,
           status: 'FAILED',
@@ -426,6 +486,7 @@ export class FulfillmentService {
 
       return {
         ticket,
+        billingAutomation,
         notification: {
           id: notification.id,
           status: 'SENT',
@@ -441,6 +502,7 @@ export class FulfillmentService {
 
       return {
         ticket,
+        billingAutomation,
         notification: {
           id: notification.id,
           status: 'FAILED',
@@ -453,6 +515,7 @@ export class FulfillmentService {
   async markPickupPickedUp(orgId: string, ticketId: string, actorUserId?: string | null) {
     const [ticketWithOrder] = await db
       .select({
+        orderId: pickupTickets.orderId,
         orderState: orders.state,
         orderStatus: orders.status,
         orderCanceledAt: orders.canceledAt,
@@ -478,9 +541,15 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(400, result.message, result.code);
     }
 
-    // Billing boundary: pickup invoicing should be triggered from fulfilled pickup,
-    // with the same idempotency and draft-only guardrails as shipped orders.
-    return result.ticket;
+    const billingAutomation = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+      organizationId: orgId,
+      orderId: ticketWithOrder.orderId,
+      trigger: 'picked_up_or_shipped',
+      sourceEvent: 'PICKUP_PICKED_UP',
+      actorUserId,
+    });
+
+    return { ...(result.ticket as any), billingAutomation };
   }
 }
 

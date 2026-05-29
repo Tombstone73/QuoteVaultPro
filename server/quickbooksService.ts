@@ -1929,9 +1929,12 @@ export async function processPushInvoices(jobId: string): Promise<void> {
       .select()
       .from(invoices)
       .where(
-        or(
-          isNull(invoices.externalAccountingId),
-          eq(invoices.syncStatus, 'pending')
+        and(
+          sql`lower(${invoices.status}) <> 'draft'`,
+          or(
+            isNull(invoices.externalAccountingId),
+            eq(invoices.syncStatus, 'pending')
+          )
         )
       );
 

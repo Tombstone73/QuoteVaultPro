@@ -359,16 +359,18 @@ export function computeInvoiceReminderEligibility(
     return { ...base, status: 'settings_disabled' };
   }
 
-  if (invoice.status === 'void') {
+  const normalizedInvoiceStatus = String(invoice.status || '').trim().toLowerCase();
+
+  if (normalizedInvoiceStatus === 'void') {
     return { ...base, status: 'void' };
   }
 
-  if (invoice.status !== 'billed') {
-    return { ...base, status: 'not_billed' };
+  if (normalizedInvoiceStatus === 'paid' || balanceDueCents <= 0) {
+    return { ...base, status: 'paid' };
   }
 
-  if (balanceDueCents <= 0) {
-    return { ...base, status: 'paid' };
+  if (normalizedInvoiceStatus !== 'billed') {
+    return { ...base, status: 'not_billed' };
   }
 
   if (!dueDate) {

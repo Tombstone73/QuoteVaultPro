@@ -276,13 +276,19 @@ function calculateDueDate(issueDate: Date, terms: string, customProvided?: Date 
   return d;
 }
 
-async function createInvoiceFromOrderImpl(
+async function lockInvoiceOrderCreation(tx: any, organizationId: string, orderId: string) {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${organizationId}:${orderId}`}))`);
+}
+
+export async function createInvoiceFromOrderInTransaction(
+  tx: any,
   organizationId: string,
   orderId: string,
   userId: string,
   opts: { terms: string; customDueDate?: Date | null }
 ) {
-  return db.transaction(async (tx) => {
+    await lockInvoiceOrderCreation(tx, organizationId, orderId);
+
     // Fetch order & its line items
     const [order] = await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));
     if (!order) throw new Error('Order not found');
@@ -300,11 +306,11 @@ async function createInvoiceFromOrderImpl(
     const issueDate = new Date();
     const dueDate = calculateDueDate(issueDate, opts.terms, opts.customDueDate || null);
 
-    const pricedLineItems = lineItems.map((li) => ({
+    const pricedLineItems = lineItems.map((li: any) => ({
       lineItem: li,
       pricing: resolveOrderLineItemInvoicePricing(li as any),
     }));
-    const subtotalCents = pricedLineItems.reduce((sum, item) => sum + item.pricing.effectiveTotalCents, 0);
+    const subtotalCents = pricedLineItems.reduce((sum: number, item: any) => sum + item.pricing.effectiveTotalCents, 0);
     const subtotal = subtotalCents / 100;
     const tax = Number(order.tax || '0');
     const shippingCents = Number((order as any).shippingCents ?? 0) || 0;
@@ -349,7 +355,7 @@ async function createInvoiceFromOrderImpl(
 
     // Snapshot line items
     if (pricedLineItems.length) {
-      const snapshotRows: InsertInvoiceLineItem[] = pricedLineItems.map(({ lineItem: li, pricing }, idx) => ({
+      const snapshotRows: InsertInvoiceLineItem[] = pricedLineItems.map(({ lineItem: li, pricing }: any, idx: number) => ({
         invoiceId: invoice.id,
         orderLineItemId: li.id,
         productId: li.productId,
@@ -377,6 +383,16 @@ async function createInvoiceFromOrderImpl(
     }
 
     return invoice;
+}
+
+async function createInvoiceFromOrderImpl(
+  organizationId: string,
+  orderId: string,
+  userId: string,
+  opts: { terms: string; customDueDate?: Date | null }
+) {
+  return db.transaction(async (tx) => {
+    return createInvoiceFromOrderInTransaction(tx, organizationId, orderId, userId, opts);
   }).catch((error) => {
     if (isDocumentNumberUniqueViolation(error)) throw toDocumentNumberConflictError(error);
     throw error;
