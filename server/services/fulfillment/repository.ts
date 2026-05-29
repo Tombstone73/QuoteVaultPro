@@ -17,6 +17,7 @@ import {
   shipmentItems,
   shipmentOrders,
   shipments,
+  users,
 } from '@shared/schema';
 import type { DerivedOrderFulfillmentStatus, FulfillmentDetailDto, QueueRowDto } from './types';
 import { TERMINAL_PRODUCTION_STATUSES } from '@shared/operationalState';
@@ -887,6 +888,19 @@ export class FulfillmentDashboardRepo {
     return getPickupRetentionDaysFromSettings(org?.settings);
   }
 
+  private async resolveExistingActorUserId(actorUserId?: string | null): Promise<string | null> {
+    const cleanActorUserId = cleanText(actorUserId);
+    if (!cleanActorUserId) return null;
+
+    const [actor] = await this.dbInstance
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, cleanActorUserId))
+      .limit(1);
+
+    return actor?.id ?? null;
+  }
+
   private isPickedUpTicketArchived(ticket: any, retentionDays: number, nowMs = Date.now()): boolean {
     return isPickedUpArchivedForRetention(ticket, retentionDays, nowMs);
   }
@@ -1325,11 +1339,12 @@ export class FulfillmentDashboardRepo {
     await this.ensureChecklistItemsForOrder(orgId, orderId);
 
     const now = new Date();
+    const safeActorUserId = await this.resolveExistingActorUserId(actorUserId);
     const [updated] = await this.dbInstance
       .update(fulfillmentChecklistItems)
       .set({
         checked: input.checked,
-        checkedByUserId: input.checked ? actorUserId || null : null,
+        checkedByUserId: input.checked ? safeActorUserId : null,
         checkedAt: input.checked ? now : null,
         notes: input.notes ?? null,
         updatedAt: now,
@@ -1347,7 +1362,7 @@ export class FulfillmentDashboardRepo {
 
     await this.dbInstance.insert(fulfillmentEvents).values({
       organizationId: orgId,
-      actorUserId: actorUserId || null,
+      actorUserId: safeActorUserId,
       entityType: 'ORDER',
       entityId: orderId,
       eventType: 'FULFILLMENT_CHECKLIST_ITEM_UPDATED',
