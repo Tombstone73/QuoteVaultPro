@@ -9,6 +9,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import { summarizeProductExportItem, type ProductExportV2Item } from "@shared/importExportSchemas";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,9 +38,19 @@ interface ImportPlan {
   preview: Array<{
     productIndex: number;
     productName: string;
+    category?: string;
+    status?: string;
+    hasPbv2?: boolean;
+    hasActiveTree?: boolean;
+    optionGroupCount?: number;
+    optionCount?: number;
+    choiceCount?: number;
+    ruleCount?: number;
+    pricingConfigPresent?: boolean;
     action: "create" | "update" | "skip";
     existingId?: string;
     reason?: string;
+    warnings?: string[];
   }>;
 }
 
@@ -69,10 +81,23 @@ interface ImportResult {
   }>;
 }
 
+interface CatalogProductOption {
+  id: string;
+  name: string;
+  category?: string | null;
+  isActive?: boolean;
+  pricingMode?: string;
+  pbv2ActiveTreeVersionId?: string | null;
+  optionTreeJson?: unknown;
+}
+
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
-async function exportProducts() {
-  const res = await fetch("/api/admin/products/export", { credentials: "include" });
+async function exportProducts(productIds: string[]) {
+  const query = productIds.length > 0
+    ? `?productIds=${encodeURIComponent(productIds.join(","))}`
+    : "";
+  const res = await fetch(`/api/admin/products/export${query}`, { credentials: "include" });
   if (!res.ok) throw new Error("Failed to export products");
   return await res.json();
 }
@@ -114,6 +139,31 @@ export default function ProductImportExport() {
   const [dryRunResult, setDryRunResult] = useState<ImportPlan | null>(null);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importMode, setImportMode] = useState<"upsertBySlug" | "requireExplicitConflictResolution">("upsertBySlug");
+  const [selectedExportProductIds, setSelectedExportProductIds] = useState<Set<string>>(new Set());
+  const [selectedImportProductIndexes, setSelectedImportProductIndexes] = useState<Set<number>>(new Set());
+
+  const productsQuery = useQuery<CatalogProductOption[]>({
+    queryKey: ["/api/products"],
+    queryFn: async () => {
+      const res = await fetch("/api/products", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load products");
+      return await res.json();
+    },
+  });
+
+  const importedProducts = Array.isArray(importPayload?.products)
+    ? (importPayload.products as ProductExportV2Item[])
+    : [];
+
+  const selectedImportCount = selectedImportProductIndexes.size;
+
+  const getSelectedImportPayload = () => {
+    if (!importPayload) return null;
+    return {
+      ...importPayload,
+      products: importedProducts.filter((_, index) => selectedImportProductIndexes.has(index)),
+    };
+  };
 
   // Export mutation
   const exportMutation = useMutation({
@@ -145,7 +195,7 @@ export default function ProductImportExport() {
 
   // Dry-run mutation
   const dryRunMutation = useMutation({
-    mutationFn: () => runDryRun(importPayload!, importMode),
+    mutationFn: () => runDryRun(getSelectedImportPayload()!, importMode),
     onSuccess: (plan) => {
       setDryRunResult(plan);
       if (plan.errors.length === 0) {
@@ -172,12 +222,13 @@ export default function ProductImportExport() {
 
   // Apply import mutation
   const applyMutation = useMutation({
-    mutationFn: () => applyImport(importPayload!, importMode),
+    mutationFn: () => applyImport(getSelectedImportPayload()!, importMode),
     onSuccess: (result) => {
       setImportResult(result);
       setDryRunResult(null);
       setImportFile(null);
       setImportPayload(null);
+      setSelectedImportProductIndexes(new Set());
 
       if (result.success) {
         toast({
@@ -208,8 +259,10 @@ export default function ProductImportExport() {
     try {
       const text = await file.text();
       const json = JSON.parse(text);
+      const productCount = Array.isArray(json?.products) ? json.products.length : 0;
       setImportFile(file);
       setImportPayload(json);
+      setSelectedImportProductIndexes(new Set(Array.from({ length: productCount }, (_, index) => index)));
       setDryRunResult(null);
       setImportResult(null);
     } catch (error: any) {
@@ -221,7 +274,10 @@ export default function ProductImportExport() {
     }
   };
 
-  const canApply = dryRunResult && dryRunResult.errors.length === 0;
+  const canApply = dryRunResult && dryRunResult.errors.length === 0 && selectedImportCount > 0;
+  const exportProductsList = productsQuery.data ?? [];
+  const allExportSelected = exportProductsList.length > 0 && selectedExportProductIds.size === exportProductsList.length;
+  const allImportSelected = importedProducts.length > 0 && selectedImportProductIndexes.size === importedProducts.length;
 
   return (
     <div className="space-y-6 p-6">
@@ -244,13 +300,114 @@ export default function ProductImportExport() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Button
-            onClick={() => exportMutation.mutate()}
-            disabled={exportMutation.isPending}
-          >
-            <FileJson className="h-4 w-4 mr-2" />
-            {exportMutation.isPending ? "Exporting..." : "Export All Products"}
-          </Button>
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm text-muted-foreground">
+                {selectedExportProductIds.size} selected
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setSelectedExportProductIds(new Set(exportProductsList.map((product) => product.id)))}
+                  disabled={productsQuery.isLoading || exportProductsList.length === 0}
+                >
+                  Select All
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setSelectedExportProductIds(new Set())}
+                  disabled={selectedExportProductIds.size === 0}
+                >
+                  Clear
+                </Button>
+              </div>
+            </div>
+
+            {productsQuery.isLoading ? (
+              <div className="space-y-2">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            ) : (
+              <div className="max-h-72 overflow-auto rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-10">
+                        <Checkbox
+                          checked={allExportSelected}
+                          onCheckedChange={(checked) => {
+                            setSelectedExportProductIds(
+                              checked ? new Set(exportProductsList.map((product) => product.id)) : new Set(),
+                            );
+                          }}
+                          aria-label="Select all export products"
+                        />
+                      </TableHead>
+                      <TableHead>Product</TableHead>
+                      <TableHead>Category</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>PBV2</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {exportProductsList.map((product) => (
+                      <TableRow key={product.id}>
+                        <TableCell>
+                          <Checkbox
+                            checked={selectedExportProductIds.has(product.id)}
+                            onCheckedChange={(checked) => {
+                              const next = new Set(selectedExportProductIds);
+                              if (checked) next.add(product.id);
+                              else next.delete(product.id);
+                              setSelectedExportProductIds(next);
+                            }}
+                            aria-label={`Select ${product.name} for export`}
+                          />
+                        </TableCell>
+                        <TableCell className="font-medium">{product.name}</TableCell>
+                        <TableCell>{product.category || "-"}</TableCell>
+                        <TableCell>
+                          <Badge variant={product.isActive === false ? "outline" : "secondary"}>
+                            {product.isActive === false ? "Inactive" : "Active"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>{product.pbv2ActiveTreeVersionId || product.optionTreeJson ? "Yes" : "No"}</TableCell>
+                      </TableRow>
+                    ))}
+                    {exportProductsList.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center text-sm text-muted-foreground">
+                          No products found.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                onClick={() => exportMutation.mutate(Array.from(selectedExportProductIds))}
+                disabled={exportMutation.isPending || selectedExportProductIds.size === 0}
+              >
+                <FileJson className="h-4 w-4 mr-2" />
+                {exportMutation.isPending ? "Exporting..." : "Export Selected"}
+              </Button>
+              <Button
+                onClick={() => exportMutation.mutate([])}
+                disabled={exportMutation.isPending}
+                variant="outline"
+              >
+                Export All
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -287,7 +444,10 @@ export default function ProductImportExport() {
               <label className="text-sm font-medium">Import Mode</label>
               <Select
                 value={importMode}
-                onValueChange={(v) => setImportMode(v as any)}
+                onValueChange={(v) => {
+                  setImportMode(v as any);
+                  setDryRunResult(null);
+                }}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue />
@@ -304,21 +464,116 @@ export default function ProductImportExport() {
             </div>
           )}
 
+          {importFile && importedProducts.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold">Products in Import File</h3>
+                  <p className="text-sm text-muted-foreground">
+                    {selectedImportCount} of {importedProducts.length} selected
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setSelectedImportProductIndexes(new Set(importedProducts.map((_, index) => index)));
+                      setDryRunResult(null);
+                    }}
+                  >
+                    Select All
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setSelectedImportProductIndexes(new Set());
+                      setDryRunResult(null);
+                    }}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+              <div className="max-h-80 overflow-auto rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-10">
+                        <Checkbox
+                          checked={allImportSelected}
+                          onCheckedChange={(checked) => {
+                            setSelectedImportProductIndexes(
+                              checked ? new Set(importedProducts.map((_, index) => index)) : new Set(),
+                            );
+                            setDryRunResult(null);
+                          }}
+                          aria-label="Select all import products"
+                        />
+                      </TableHead>
+                      <TableHead>Product</TableHead>
+                      <TableHead>Category</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>PBV2</TableHead>
+                      <TableHead>Groups</TableHead>
+                      <TableHead>Options</TableHead>
+                      <TableHead>Rules</TableHead>
+                      <TableHead>Pricing</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {importedProducts.map((product, index) => {
+                      const summary = summarizeProductExportItem(product);
+                      return (
+                        <TableRow key={`${product.name}-${index}`}>
+                          <TableCell>
+                            <Checkbox
+                              checked={selectedImportProductIndexes.has(index)}
+                              onCheckedChange={(checked) => {
+                                const next = new Set(selectedImportProductIndexes);
+                                if (checked) next.add(index);
+                                else next.delete(index);
+                                setSelectedImportProductIndexes(next);
+                                setDryRunResult(null);
+                              }}
+                              aria-label={`Select ${product.name} for import`}
+                            />
+                          </TableCell>
+                          <TableCell className="font-medium">{product.name}</TableCell>
+                          <TableCell>{product.category || "-"}</TableCell>
+                          <TableCell>{product.isActive === false ? "Inactive" : "Active"}</TableCell>
+                          <TableCell>{summary.hasPbv2 ? "Yes" : "No"}</TableCell>
+                          <TableCell>{summary.optionGroupCount}</TableCell>
+                          <TableCell>{summary.optionCount}</TableCell>
+                          <TableCell>{summary.ruleCount}</TableCell>
+                          <TableCell>{summary.pricingConfigPresent ? "Yes" : "No"}</TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          )}
+
           {/* Actions */}
           {importFile && importPayload && (
             <div className="flex items-center gap-2">
               <Button
                 onClick={() => dryRunMutation.mutate()}
-                disabled={dryRunMutation.isPending}
+                disabled={dryRunMutation.isPending || selectedImportCount === 0}
                 variant="outline"
               >
-                {dryRunMutation.isPending ? "Validating..." : "Dry Run (Validate)"}
+                {dryRunMutation.isPending ? "Validating..." : "Preview Selected"}
               </Button>
               <Button
                 onClick={() => applyMutation.mutate()}
                 disabled={!canApply || applyMutation.isPending}
               >
-                {applyMutation.isPending ? "Importing..." : "Apply Import"}
+                {applyMutation.isPending ? "Importing..." : "Import Selected"}
               </Button>
             </div>
           )}
@@ -393,7 +648,13 @@ export default function ProductImportExport() {
                     <TableHeader>
                       <TableRow>
                         <TableHead>Product Name</TableHead>
+                        <TableHead>Category</TableHead>
                         <TableHead>Action</TableHead>
+                        <TableHead>PBV2</TableHead>
+                        <TableHead>Groups</TableHead>
+                        <TableHead>Options</TableHead>
+                        <TableHead>Rules</TableHead>
+                        <TableHead>Pricing</TableHead>
                         <TableHead>Reason</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -401,6 +662,7 @@ export default function ProductImportExport() {
                       {dryRunResult.preview.slice(0, 50).map((item, idx) => (
                         <TableRow key={idx}>
                           <TableCell className="font-medium">{item.productName}</TableCell>
+                          <TableCell>{item.category || "-"}</TableCell>
                           <TableCell>
                             <Badge variant={
                               item.action === "create" ? "default" :
@@ -410,14 +672,19 @@ export default function ProductImportExport() {
                               {item.action}
                             </Badge>
                           </TableCell>
+                          <TableCell>{item.hasPbv2 ? "Yes" : "No"}</TableCell>
+                          <TableCell>{item.optionGroupCount ?? 0}</TableCell>
+                          <TableCell>{item.optionCount ?? 0}</TableCell>
+                          <TableCell>{item.ruleCount ?? 0}</TableCell>
+                          <TableCell>{item.pricingConfigPresent ? "Yes" : "No"}</TableCell>
                           <TableCell className="text-sm text-muted-foreground">
-                            {item.reason || "-"}
+                            {[item.reason, ...(item.warnings ?? [])].filter(Boolean).join(" ") || "-"}
                           </TableCell>
                         </TableRow>
                       ))}
                       {dryRunResult.preview.length > 50 && (
                         <TableRow>
-                          <TableCell colSpan={3} className="text-center text-sm text-muted-foreground">
+                          <TableCell colSpan={9} className="text-center text-sm text-muted-foreground">
                             ... and {dryRunResult.preview.length - 50} more
                           </TableCell>
                         </TableRow>
