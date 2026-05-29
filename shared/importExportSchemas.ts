@@ -163,9 +163,19 @@ export const importPlanSchema = z.object({
   preview: z.array(z.object({
     productIndex: z.number().int(),
     productName: z.string(),
+    category: z.string().optional(),
+    status: z.string().optional(),
+    hasPbv2: z.boolean().optional(),
+    hasActiveTree: z.boolean().optional(),
+    optionGroupCount: z.number().int().min(0).optional(),
+    optionCount: z.number().int().min(0).optional(),
+    choiceCount: z.number().int().min(0).optional(),
+    ruleCount: z.number().int().min(0).optional(),
+    pricingConfigPresent: z.boolean().optional(),
     action: z.enum(["create", "update", "skip"]),
     existingId: z.string().optional(),
     reason: z.string().optional(),
+    warnings: z.array(z.string()).optional(),
   })),
 });
 
@@ -212,3 +222,75 @@ export const importModeSchema = z.enum([
 ]);
 
 export type ImportMode = z.infer<typeof importModeSchema>;
+
+export interface ProductImportExportSummary {
+  hasPbv2: boolean;
+  hasActiveTree: boolean;
+  optionGroupCount: number;
+  optionCount: number;
+  choiceCount: number;
+  ruleCount: number;
+  pricingConfigPresent: boolean;
+}
+
+function getTreeNodes(treeJson: unknown): Array<Record<string, any>> {
+  if (!treeJson || typeof treeJson !== "object") return [];
+  const nodes = (treeJson as Record<string, any>).nodes;
+  if (Array.isArray(nodes)) return nodes.filter((node): node is Record<string, any> => !!node && typeof node === "object");
+  if (nodes && typeof nodes === "object") {
+    return Object.values(nodes).filter((node): node is Record<string, any> => !!node && typeof node === "object");
+  }
+  return [];
+}
+
+function countRules(treeJson: unknown): number {
+  if (!treeJson || typeof treeJson !== "object") return 0;
+  const tree = treeJson as Record<string, any>;
+  const ruleCollections = [
+    tree.rules,
+    tree.optionRules,
+    tree.visibilityRules,
+    tree.defaultRules,
+    tree.meta?.rules,
+    tree.meta?.optionRules,
+  ];
+  return ruleCollections.reduce((count, rules) => count + (Array.isArray(rules) ? rules.length : 0), 0);
+}
+
+function hasPricingConfig(product: Pick<ProductExportV2Item, "pricingFormula" | "pricingProfileConfig" | "pricingProfileKey">, treeJson: unknown): boolean {
+  if (product.pricingFormula || product.pricingProfileConfig || product.pricingProfileKey) return true;
+  if (!treeJson || typeof treeJson !== "object") return false;
+  const tree = treeJson as Record<string, any>;
+  return Boolean(
+    tree.pricingMatrix ||
+    tree.pricingConfig ||
+    tree.meta?.pricingMatrix ||
+    tree.meta?.pricingV2 ||
+    tree.meta?.pricingFormula ||
+    tree.meta?.pricingFormulaVariables,
+  );
+}
+
+export function summarizeProductExportItem(item: ProductExportV2Item): ProductImportExportSummary {
+  const activeTreeJson = item.pbv2?.activeTree?.treeJson ?? item.optionTreeJson;
+  const nodes = getTreeNodes(activeTreeJson);
+  const optionGroupCount = nodes.filter((node) => node.kind === "group" || node.type === "GROUP").length;
+  const optionCount = nodes.filter((node) =>
+    node.kind === "question" ||
+    node.type === "INPUT" ||
+    node.type === "OPTION" ||
+    node.type === "SELECT" ||
+    Boolean(node.input),
+  ).length;
+  const choiceCount = nodes.reduce((count, node) => count + (Array.isArray(node.choices) ? node.choices.length : 0), 0);
+
+  return {
+    hasPbv2: Boolean(item.pbv2?.activeTree || item.optionTreeJson),
+    hasActiveTree: Boolean(item.pbv2?.activeTree),
+    optionGroupCount,
+    optionCount,
+    choiceCount,
+    ruleCount: countRules(activeTreeJson),
+    pricingConfigPresent: hasPricingConfig(item, activeTreeJson),
+  };
+}

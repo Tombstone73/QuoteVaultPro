@@ -18,13 +18,15 @@ import type {
   ImportResult,
   ImportMode 
 } from "@shared/importExportSchemas";
+import { summarizeProductExportItem } from "@shared/importExportSchemas";
 import type { db as DbType } from "../db";
-import { products, pbv2TreeVersions, productTypes, materials } from "@shared/schema";
+import { products, pbv2TreeVersions, productTypes, materials, users } from "@shared/schema";
 import { sanitizeLegacyPriceBreaksForPbv2 } from "@shared/pbv2/legacyPriceBreaks";
 import { eq, and } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 type DbClient = typeof DbType;
+type TxClient = any;
 
 export interface ImportMapperContext {
   db: DbClient;
@@ -54,6 +56,7 @@ export function buildPbv2ImportProductValues(
   resolved: ResolvedReferences,
   extraValues: Record<string, unknown> = {},
 ): Record<string, unknown> {
+  const activeTreeJson = item.pbv2?.activeTree?.treeJson ?? item.optionTreeJson;
   const productValues = sanitizeLegacyPriceBreaksForPbv2({
     ...extraValues,
     name: item.name,
@@ -83,7 +86,7 @@ export function buildPbv2ImportProductValues(
     showStoreLink: item.showStoreLink,
     thumbnailUrls: item.thumbnailUrls,
     optionsJson: item.optionsJson,
-    optionTreeJson: item.optionTreeJson,
+    optionTreeJson: activeTreeJson,
     pbv2: item.pbv2,
   });
   const { pbv2: _pbv2, ...dbValues } = productValues;
@@ -191,6 +194,18 @@ export async function buildImportPlan(
           field: "pbv2.activeTree",
         });
       }
+    } else if (item.optionTreeJson) {
+      dryItem.warnings.push({
+        code: "PBV2_ACTIVE_TREE_RECOVERED_FROM_PRODUCT",
+        message: "PBV2 active tree version is missing; runtime optionTreeJson will be used for import.",
+        field: "optionTreeJson",
+      });
+    } else if (item.pbv2) {
+      dryItem.warnings.push({
+        code: "PBV2_ACTIVE_TREE_MISSING",
+        message: "No PBV2 active tree found. Imported product will not have builder/runtime options.",
+        field: "pbv2.activeTree",
+      });
     }
     
     if (item.pbv2?.draftTree?.treeJson) {
@@ -240,9 +255,13 @@ export async function buildImportPlan(
   const preview = dryRunItems.map(item => ({
     productIndex: item.productIndex,
     productName: item.productName,
+    category: request.products[item.productIndex]?.category,
+    status: request.products[item.productIndex]?.isActive === false ? "inactive" : "active",
+    ...summarizeProductExportItem(request.products[item.productIndex]),
     action: item.action,
     existingId: item.existingId,
     reason: item.reason,
+    warnings: item.warnings.map((warning) => warning.message),
   }));
   
   const counts = {
@@ -384,58 +403,16 @@ async function createProductWithPbv2(
   resolved: ResolvedReferences
 ): Promise<string> {
   const productId = randomUUID();
+  const treeUserId = await resolveExistingTreeUserId(ctx.db, ctx.userId);
   const insertValues = buildPbv2ImportProductValues(item, resolved, {
     id: productId,
     organizationId: ctx.organizationId,
   });
   
-  // Insert product
-  await ctx.db.insert(products).values(insertValues as any);
-  
-  // Create PBV2 trees if present
-  if (item.pbv2) {
-    let activeTreeId: string | undefined;
-    
-    if (item.pbv2.activeTree) {
-      activeTreeId = randomUUID();
-      await ctx.db.insert(pbv2TreeVersions).values({
-        id: activeTreeId,
-        organizationId: ctx.organizationId,
-        productId,
-        status: "ACTIVE",
-        schemaVersion: item.pbv2.activeTree.schemaVersion,
-        treeJson: item.pbv2.activeTree.treeJson,
-        publishedAt: item.pbv2.activeTree.publishedAt 
-          ? new Date(item.pbv2.activeTree.publishedAt) 
-          : new Date(),
-        createdByUserId: ctx.userId,
-        updatedByUserId: ctx.userId,
-      });
-    }
-    
-    if (item.pbv2.draftTree) {
-      const draftTreeId = randomUUID();
-      await ctx.db.insert(pbv2TreeVersions).values({
-        id: draftTreeId,
-        organizationId: ctx.organizationId,
-        productId,
-        status: "DRAFT",
-        schemaVersion: item.pbv2.draftTree.schemaVersion,
-        treeJson: item.pbv2.draftTree.treeJson,
-        publishedAt: null,
-        createdByUserId: ctx.userId,
-        updatedByUserId: ctx.userId,
-      });
-    }
-    
-    // Update product with active tree pointer
-    if (activeTreeId) {
-      await ctx.db
-        .update(products)
-        .set({ pbv2ActiveTreeVersionId: activeTreeId })
-        .where(eq(products.id, productId));
-    }
-  }
+  await ctx.db.transaction(async (tx) => {
+    await tx.insert(products).values(insertValues as any);
+    await replacePbv2TreesForProduct(tx as TxClient, ctx, productId, item, treeUserId);
+  });
   
   return productId;
 }
@@ -449,70 +426,146 @@ async function updateProductWithPbv2(
   item: ProductExportV2Item,
   resolved: ResolvedReferences
 ): Promise<string> {
+  const treeUserId = await resolveExistingTreeUserId(ctx.db, ctx.userId);
   const updateValues = buildPbv2ImportProductValues(item, resolved, {
     updatedAt: new Date(),
   });
   
-  // Update product record
-  await ctx.db
-    .update(products)
-    .set(updateValues as any)
-    .where(eq(products.id, productId));
-  
-  // Replace PBV2 trees (delete old, insert new)
-  if (item.pbv2) {
-    // Delete existing trees for this product
-    await ctx.db
-      .delete(pbv2TreeVersions)
-      .where(
-        and(
-          eq(pbv2TreeVersions.productId, productId),
-          eq(pbv2TreeVersions.organizationId, ctx.organizationId)
-        )
-      );
-    
-    let activeTreeId: string | undefined;
-    
-    if (item.pbv2.activeTree) {
-      activeTreeId = randomUUID();
-      await ctx.db.insert(pbv2TreeVersions).values({
-        id: activeTreeId,
-        organizationId: ctx.organizationId,
-        productId,
-        status: "ACTIVE",
-        schemaVersion: item.pbv2.activeTree.schemaVersion,
-        treeJson: item.pbv2.activeTree.treeJson,
-        publishedAt: item.pbv2.activeTree.publishedAt 
-          ? new Date(item.pbv2.activeTree.publishedAt) 
-          : new Date(),
-        createdByUserId: ctx.userId,
-        updatedByUserId: ctx.userId,
-      });
-    }
-    
-    if (item.pbv2.draftTree) {
-      const draftTreeId = randomUUID();
-      await ctx.db.insert(pbv2TreeVersions).values({
-        id: draftTreeId,
-        organizationId: ctx.organizationId,
-        productId,
-        status: "DRAFT",
-        schemaVersion: item.pbv2.draftTree.schemaVersion,
-        treeJson: item.pbv2.draftTree.treeJson,
-        publishedAt: null,
-        createdByUserId: ctx.userId,
-        updatedByUserId: ctx.userId,
-      });
-    }
-    
-    // Update product with active tree pointer
-    await ctx.db
+  await ctx.db.transaction(async (tx) => {
+    await tx
       .update(products)
-      .set({ pbv2ActiveTreeVersionId: activeTreeId || null })
-      .where(eq(products.id, productId));
-  }
+      .set(updateValues as any)
+      .where(and(eq(products.id, productId), eq(products.organizationId, ctx.organizationId)));
+    await replacePbv2TreesForProduct(tx as TxClient, ctx, productId, item, treeUserId);
+  });
   
   return productId;
+}
+
+function getActiveTreeForImport(item: ProductExportV2Item): { schemaVersion: number; treeJson: Record<string, any>; publishedAt?: string | null } | undefined {
+  if (item.pbv2?.activeTree?.treeJson) {
+    return {
+      schemaVersion: item.pbv2.activeTree.schemaVersion || 1,
+      treeJson: item.pbv2.activeTree.treeJson,
+      publishedAt: item.pbv2.activeTree.publishedAt,
+    };
+  }
+  if (item.optionTreeJson && typeof item.optionTreeJson === "object") {
+    return {
+      schemaVersion: 1,
+      treeJson: item.optionTreeJson as Record<string, any>,
+      publishedAt: null,
+    };
+  }
+  return undefined;
+}
+
+function getDraftTreeForImport(item: ProductExportV2Item, activeTree: { schemaVersion: number; treeJson: Record<string, any> } | undefined): { schemaVersion: number; treeJson: Record<string, any> } | undefined {
+  if (item.pbv2?.draftTree?.treeJson) {
+    return {
+      schemaVersion: item.pbv2.draftTree.schemaVersion || activeTree?.schemaVersion || 1,
+      treeJson: item.pbv2.draftTree.treeJson,
+    };
+  }
+  if (!activeTree) return undefined;
+  const draftTreeJson = cloneJson(activeTree.treeJson);
+  if (draftTreeJson && typeof draftTreeJson === "object" && !Array.isArray(draftTreeJson)) {
+    (draftTreeJson as Record<string, any>).status = "DRAFT";
+  }
+  return {
+    schemaVersion: activeTree.schemaVersion,
+    treeJson: draftTreeJson,
+  };
+}
+
+async function replacePbv2TreesForProduct(
+  dbClient: TxClient,
+  ctx: ImportMapperContext,
+  productId: string,
+  item: ProductExportV2Item,
+  treeUserId: string | null,
+): Promise<void> {
+  const activeTree = getActiveTreeForImport(item);
+  const draftTree = getDraftTreeForImport(item, activeTree);
+  const activeTreeJson = activeTree?.treeJson ?? null;
+
+  if (!activeTree && !draftTree) {
+    await dbClient
+      .update(products)
+      .set({ pbv2ActiveTreeVersionId: null, optionTreeJson: item.optionTreeJson ?? null } as any)
+      .where(and(eq(products.id, productId), eq(products.organizationId, ctx.organizationId)));
+    return;
+  }
+
+  await dbClient
+    .delete(pbv2TreeVersions)
+    .where(
+      and(
+        eq(pbv2TreeVersions.productId, productId),
+        eq(pbv2TreeVersions.organizationId, ctx.organizationId),
+      ),
+    );
+
+  let activeTreeId: string | undefined;
+
+  if (activeTree) {
+    activeTreeId = randomUUID();
+    await dbClient.insert(pbv2TreeVersions).values({
+      id: activeTreeId,
+      organizationId: ctx.organizationId,
+      productId,
+      status: "ACTIVE",
+      schemaVersion: activeTree.schemaVersion,
+      treeJson: activeTree.treeJson,
+      publishedAt: activeTree.publishedAt ? new Date(activeTree.publishedAt) : new Date(),
+      createdByUserId: treeUserId,
+      updatedByUserId: treeUserId,
+    } as any);
+  }
+
+  if (draftTree) {
+    await dbClient.insert(pbv2TreeVersions).values({
+      id: randomUUID(),
+      organizationId: ctx.organizationId,
+      productId,
+      status: "DRAFT",
+      schemaVersion: draftTree.schemaVersion,
+      treeJson: draftTree.treeJson,
+      publishedAt: null,
+      createdByUserId: treeUserId,
+      updatedByUserId: treeUserId,
+    } as any);
+  }
+
+  await dbClient
+    .update(products)
+    .set({
+      pbv2ActiveTreeVersionId: activeTreeId || null,
+      optionTreeJson: activeTreeJson,
+    } as any)
+    .where(and(eq(products.id, productId), eq(products.organizationId, ctx.organizationId)));
+}
+
+async function resolveExistingTreeUserId(dbClient: DbClient, userId: string): Promise<string | null> {
+  if (!userId) return null;
+  try {
+    const [user] = await dbClient
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return user?.id ?? null;
+  } catch (error) {
+    console.warn("[Product Import] Could not resolve PBV2 tree actor; importing tree without actor FK", {
+      userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 /**

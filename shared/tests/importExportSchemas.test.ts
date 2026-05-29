@@ -5,6 +5,7 @@ import {
   productImportV2RequestSchema,
   importPlanSchema,
   importResultSchema,
+  summarizeProductExportItem,
 } from '../importExportSchemas';
 
 describe('Product Import/Export Schemas (v2)', () => {
@@ -175,8 +176,18 @@ describe('Product Import/Export Schemas (v2)', () => {
           {
             productIndex: 0,
             productName: 'Product A',
+            category: 'Signs',
+            status: 'active',
+            hasPbv2: true,
+            hasActiveTree: true,
+            optionGroupCount: 1,
+            optionCount: 5,
+            choiceCount: 12,
+            ruleCount: 3,
+            pricingConfigPresent: true,
             action: 'create' as const,
             reason: 'New product',
+            warnings: ['Material SKU missing'],
           },
           {
             productIndex: 1,
@@ -195,6 +206,46 @@ describe('Product Import/Export Schemas (v2)', () => {
         expect(result.data.warnings).toHaveLength(1);
         expect(result.data.preview).toHaveLength(2);
       }
+    });
+  });
+
+  describe('summarizeProductExportItem', () => {
+    test('counts PBV2 option groups, options, rules, and pricing', () => {
+      const summary = summarizeProductExportItem({
+        name: 'Banner',
+        description: 'Banner',
+        pbv2: {
+          hasActiveTree: true,
+          activeTree: {
+            schemaVersion: 2,
+            publishedAt: null,
+            treeJson: {
+              rootNodeIds: ['group_1'],
+              nodes: [
+                { id: 'group_1', kind: 'group', type: 'GROUP', label: 'Banner Weight' },
+                {
+                  id: 'weight',
+                  kind: 'question',
+                  type: 'INPUT',
+                  input: { selectionKey: 'weight' },
+                  choices: [{ value: '13oz', label: '13oz' }],
+                },
+              ],
+              rules: [{ type: 'hide', target: 'printSide.double' }],
+              meta: { pricingV2: { base: { perSqftCents: 400 } } },
+            },
+          },
+          hasDraft: false,
+        },
+      } as any);
+
+      expect(summary.hasPbv2).toBe(true);
+      expect(summary.hasActiveTree).toBe(true);
+      expect(summary.optionGroupCount).toBe(1);
+      expect(summary.optionCount).toBe(1);
+      expect(summary.choiceCount).toBe(1);
+      expect(summary.ruleCount).toBe(1);
+      expect(summary.pricingConfigPresent).toBe(true);
     });
   });
   

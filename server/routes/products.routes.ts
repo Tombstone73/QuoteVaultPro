@@ -531,12 +531,29 @@ export function registerProductRoutes(
 
       const { exportProducts } = await import("../services/pbv2ExportMapper");
 
-      // Fetch all products for org
+      const requestedProductIds = String(req.query.productIds ?? "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean);
+
+      if (req.query.productIds !== undefined && requestedProductIds.length === 0) {
+        return res.status(400).json({ error: "At least one product must be selected for export" });
+      }
+
+      // Fetch selected products for org, or all products when no selection is supplied.
       const allProducts = await db
         .select()
         .from(products)
-        .where(eq(products.organizationId, organizationId))
+        .where(
+          requestedProductIds.length > 0
+            ? and(eq(products.organizationId, organizationId), inArray(products.id, requestedProductIds))
+            : eq(products.organizationId, organizationId)
+        )
         .orderBy(asc(products.name));
+
+      if (requestedProductIds.length > 0 && allProducts.length === 0) {
+        return res.status(404).json({ error: "No selected products were found for this organization" });
+      }
 
       // Fetch all PBV2 trees for these products
       const productIds = allProducts.map(p => p.id);

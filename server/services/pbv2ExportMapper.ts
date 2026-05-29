@@ -45,6 +45,8 @@ export async function exportProducts(
   
   for (const product of products) {
     const pbv2Data = pbv2Trees.get(product.id);
+    const activeTreeJson = pbv2Data?.active?.treeJson ?? product.optionTreeJson ?? undefined;
+    const draftTreeJson = pbv2Data?.draft?.treeJson ?? undefined;
     const isPbv2Product = isPbv2ProductPayloadLike({ ...product, pbv2: pbv2Data });
     
     // Resolve product type reference
@@ -102,20 +104,20 @@ export async function exportProducts(
       
       // Legacy options
       optionsJson: product.optionsJson || undefined,
-      optionTreeJson: product.optionTreeJson || undefined,
+      optionTreeJson: activeTreeJson || undefined,
       
       // PBV2 tree export
-      pbv2: pbv2Data ? {
-        hasActiveTree: !!pbv2Data.active,
-        activeTree: pbv2Data.active ? {
-          schemaVersion: pbv2Data.active.schemaVersion || 1,
-          treeJson: pbv2Data.active.treeJson || {},
-          publishedAt: pbv2Data.active.publishedAt?.toISOString() || null,
+      pbv2: activeTreeJson || draftTreeJson ? {
+        hasActiveTree: !!activeTreeJson,
+        activeTree: activeTreeJson ? {
+          schemaVersion: pbv2Data?.active?.schemaVersion || 1,
+          treeJson: activeTreeJson,
+          publishedAt: pbv2Data?.active?.publishedAt?.toISOString() || null,
         } : undefined,
-        hasDraft: !!pbv2Data.draft,
-        draftTree: pbv2Data.draft ? {
-          schemaVersion: pbv2Data.draft.schemaVersion || 1,
-          treeJson: pbv2Data.draft.treeJson || {},
+        hasDraft: !!draftTreeJson,
+        draftTree: draftTreeJson ? {
+          schemaVersion: pbv2Data?.draft?.schemaVersion || 1,
+          treeJson: draftTreeJson,
         } : undefined,
       } : undefined,
     };
