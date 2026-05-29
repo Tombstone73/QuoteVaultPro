@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 import { isPickedUpArchivedForRetention, resolveFulfillmentUnreadyTransition, summarizeFulfillmentChecklist } from "../services/fulfillment/repository";
 import { canRevertFulfillmentStatus, FULFILLMENT_REVERT_STATUS_PERMISSION } from "../services/fulfillment/service";
+import { fulfillmentChecklistItemSchema } from "../services/fulfillment/schemas";
 
 describe("fulfillment operational workflow helpers", () => {
   test("picked-up rows remain active before retention window", () => {
@@ -57,6 +58,18 @@ describe("fulfillment operational workflow helpers", () => {
       unchecked: 0,
       complete: false,
     });
+  });
+
+  test("checklist mutation schema accepts checked and legacy verified payloads", () => {
+    expect(fulfillmentChecklistItemSchema.parse({ checked: true })).toEqual({
+      checked: true,
+      notes: null,
+    });
+    expect(fulfillmentChecklistItemSchema.parse({ verified: false, notes: "missing package" })).toEqual({
+      checked: false,
+      notes: "missing package",
+    });
+    expect(() => fulfillmentChecklistItemSchema.parse({ notes: "missing checked flag" })).toThrow();
   });
 
   test("un-ready transition helper only allows controlled backward fulfillment moves", () => {

@@ -197,7 +197,8 @@ export function registerFulfillmentRoutes(
       return res.json({ success: true, data, message: 'Fulfillment checklist updated' });
     } catch (error: any) {
       if (error?.name === 'ZodError') {
-        return res.status(400).json({ success: false, message: 'Invalid fulfillment checklist payload', code: 'VALIDATION_ERROR' });
+        const message = error?.issues?.[0]?.message || 'Invalid fulfillment checklist payload';
+        return res.status(400).json({ success: false, message, code: 'VALIDATION_ERROR' });
       }
       if (error instanceof FulfillmentHttpError) {
         return res.status(error.status).json({ success: false, message: error.message, code: error.code });

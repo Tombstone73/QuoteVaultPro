@@ -63,9 +63,21 @@ export const fulfillmentNoteSchema = z.object({
 });
 
 export const fulfillmentChecklistItemSchema = z.object({
-  checked: z.boolean(),
+  checked: z.boolean().optional(),
+  verified: z.boolean().optional(),
   notes: z.string().trim().max(2000).optional().nullable(),
-});
+}).superRefine((value, ctx) => {
+  if (typeof value.checked !== 'boolean' && typeof value.verified !== 'boolean') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'checked is required',
+      path: ['checked'],
+    });
+  }
+}).transform((value) => ({
+  checked: value.checked ?? value.verified ?? false,
+  notes: value.notes ?? null,
+}));
 
 export const fulfillmentUnreadySchema = z.object({
   reason: z.string().trim().min(1, "Reason is required").max(2000),

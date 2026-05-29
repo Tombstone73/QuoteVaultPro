@@ -17,6 +17,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { ROUTES } from "@/config/routes";
 import { buildReferrer } from "@/lib/nav/smartBack";
+import { getThumbSrc } from "@/lib/getThumbSrc";
+import { getFulfillmentArtworkViewUrl } from "@/lib/fulfillmentArtwork";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { FulfillmentDebugPanel } from "@/components/fulfillment/FulfillmentDebugPanel";
 import {
@@ -348,6 +350,8 @@ function FulfillmentDetailPanel({
               <div className="divide-y divide-border">
                 {detail.lineItems.map((item) => {
                   const firstArtwork = item.artwork[0] ?? null;
+                  const thumbnailSrc = getThumbSrc(firstArtwork);
+                  const artworkViewUrl = getFulfillmentArtworkViewUrl(firstArtwork);
                   const productionIncomplete = item.production.status && !["done", "completed"].includes(String(item.production.status).toLowerCase());
                   return (
                     <div key={item.id} className="grid gap-3 py-3 md:grid-cols-[auto_72px_1fr]">
@@ -362,11 +366,11 @@ function FulfillmentDetailPanel({
                         />
                       </div>
                       <div className="h-16 w-16 overflow-hidden rounded-md border border-border bg-muted">
-                        {firstArtwork?.thumbnailUrl ? (
-                          <img src={firstArtwork.thumbnailUrl} alt="" className="h-full w-full object-cover" />
+                        {thumbnailSrc ? (
+                          <img src={thumbnailSrc} alt="" className="h-full w-full object-cover" />
                         ) : (
                           <div className="flex h-full w-full items-center justify-center px-2 text-center text-[10px] text-muted-foreground">
-                            No artwork preview
+                            {item.artwork.length > 0 ? "No preview available" : "No artwork"}
                           </div>
                         )}
                       </div>
@@ -390,7 +394,7 @@ function FulfillmentDetailPanel({
                           <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.optionSummary.join(" · ")}</div>
                         ) : null}
                         <div className="mt-1 text-xs text-muted-foreground">
-                          Artwork: {item.artwork.length > 0 ? item.artwork.map((art) => art.fileName).join(", ") : "No artwork preview."}
+                          Artwork: {item.artwork.length > 0 ? item.artwork.map((art) => art.fileName).join(", ") : "No artwork files found."}
                         </div>
                         <div className="mt-1 text-xs text-muted-foreground">
                           Production: {item.production.stationLabel || item.production.stationKey || "No station assigned"} {item.production.status || "unknown"}
@@ -400,8 +404,9 @@ function FulfillmentDetailPanel({
                           <button
                             type="button"
                             className="rounded-md border border-border px-2 py-1 text-xs font-semibold hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                            disabled={!firstArtwork?.fileUrl}
-                            onClick={() => firstArtwork?.fileUrl && window.open(firstArtwork.fileUrl, "_blank")}
+                            disabled={!artworkViewUrl}
+                            title={artworkViewUrl ? "View artwork" : "No artwork preview URL available."}
+                            onClick={() => artworkViewUrl && window.open(artworkViewUrl, "_blank", "noopener,noreferrer")}
                           >
                             View Art
                           </button>
