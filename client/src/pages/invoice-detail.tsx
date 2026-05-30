@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -26,7 +26,7 @@ import {
 import { ArrowLeft, Mail, DollarSign, Trash2, RefreshCw, CreditCard, HandCoins, AlertCircle, ExternalLink } from "lucide-react";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoice, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInvoiceReminderHistory, useSendInvoiceReminder } from "@/hooks/useInvoices";
+import { useInvoice, useBillInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInvoiceReminderHistory, useSendInvoiceReminder } from "@/hooks/useInvoices";
 import { useOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { Page } from "@/components/titan/Page";
@@ -138,6 +138,7 @@ function StatusTile({
 
 const statusColors: Record<string, string> = {
   draft: "bg-gray-500",
+  finalized: "bg-blue-600",
   billed: "bg-blue-600",
   sent: "bg-blue-500",
   partially_paid: "bg-yellow-500",
@@ -148,6 +149,7 @@ const statusColors: Record<string, string> = {
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
+  finalized: "Finalized",
   billed: "Billed",
   sent: "Sent",
   partially_paid: "Partially Paid",
@@ -159,6 +161,7 @@ const statusLabels: Record<string, string> = {
 export default function InvoiceDetailPage() {
   const params = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const invoiceId = (params as any)?.id as string | undefined;
   const { user } = useAuth();
   const { toast } = useToast();
@@ -166,7 +169,7 @@ export default function InvoiceDetailPage() {
 
   const { data, isLoading, refetch } = useInvoice(invoiceId);
   const billInvoice = useBillInvoice();
-  const retryQbSync = useRetryInvoiceQbSync();
+  const queueQbSync = useQueueInvoiceQbSync();
   const sendInvoice = useSendInvoice();
   const markSent = useMarkInvoiceSent();
   const refreshStatus = useRefreshInvoiceStatus();
@@ -279,9 +282,8 @@ export default function InvoiceDetailPage() {
 
   const canRecordPayment = !!invoice && isStaffUser && invoiceStatus !== 'void' && remainingCents > 0 && !paymentActionsLocked;
 
-  const canEditInvoice = !!invoice && isStaffUser && invoiceStatus !== 'paid' && invoiceStatus !== 'void' && !(isImportedFromQuickBooks && isHistoricalImport);
-  const isBilledUnpaid = !!invoice && invoiceStatus === 'billed' && balanceDue > 0;
-  const canEditFinancial = canEditInvoice && !isImportedFromQuickBooks && (invoiceStatus === 'draft' || isBilledUnpaid);
+  const canEditInvoice = !!invoice && isStaffUser && invoiceStatus === 'draft' && !(isImportedFromQuickBooks && isHistoricalImport);
+  const canEditFinancial = canEditInvoice && !isImportedFromQuickBooks;
 
   const [termsDraft, setTermsDraft] = useState<string>('due_on_receipt');
   const [dueDateDraft, setDueDateDraft] = useState<string>('');
@@ -377,6 +379,16 @@ export default function InvoiceDetailPage() {
     setRecordPaymentErrors({});
     setRecordPaymentOpen(true);
   };
+
+  useEffect(() => {
+    if (searchParams.get('recordPayment') !== '1') return;
+    if (!canRecordPayment) return;
+    openRecordPayment();
+    const next = new URLSearchParams(searchParams);
+    next.delete('recordPayment');
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, canRecordPayment]);
 
   const parseMoneyToCents = (value: string): number => {
     const n = Number(String(value || '').replace(/[^0-9.\-]/g, ''));
@@ -664,12 +676,16 @@ export default function InvoiceDetailPage() {
     ? 'Failed'
     : (isImportedFromQuickBooks
       ? 'Imported'
-      : (qbUpToDate
+      : (qbSyncStatusRaw === 'not_synced'
+        ? 'Not Synced'
+        : qbUpToDate
         ? 'Synced'
         : (qbSyncStatusRaw === 'pending'
-          ? 'Queued for QB'
-          : (qbSyncStatusRaw ? qbSyncStatusRaw.replaceAll('_', ' ') : 'Needs resync'))));
-  const showRetrySync = isAdminOrOwner && !isImportedFromQuickBooks && (qbFailed || !qbUpToDate);
+          ? 'Queued'
+          : qbSyncStatusRaw === 'needs_resync'
+            ? 'Not Synced'
+            : (qbSyncStatusRaw ? qbSyncStatusRaw.replaceAll('_', ' ') : 'Not Synced'))));
+  const showRetrySync = isAdminOrOwner && !isImportedFromQuickBooks && !['draft', 'void'].includes(invoiceStatus) && qbSyncStatusRaw !== 'pending';
 
   const qbWarningMessage = (() => {
     const qb = String((invoice as any)?.qbLastError || '').trim();
@@ -678,7 +694,7 @@ export default function InvoiceDetailPage() {
     if (sync) return sync;
     if (qbFailed) return 'QuickBooks sync failed';
     if (isImportedFromQuickBooks) return '';
-    if (!qbUpToDate && invoiceStatus !== 'draft') return 'QuickBooks out of date';
+    if ((qbSyncStatusRaw === 'not_synced' || qbSyncStatusRaw === 'needs_resync') && invoiceStatus !== 'draft') return 'Use Sync to QuickBooks when this invoice is ready for accounting.';
     return '';
   })();
 
@@ -825,7 +841,7 @@ export default function InvoiceDetailPage() {
     if (!invoiceId) return;
     try {
       await billInvoice.mutateAsync(invoiceId);
-      toast({ title: 'Success', description: 'Invoice finalized (sync attempted)' });
+      toast({ title: 'Success', description: 'Invoice finalized' });
       refetch();
     } catch (error: any) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
@@ -846,8 +862,8 @@ export default function InvoiceDetailPage() {
   const handleRetryQb = async () => {
     if (!invoiceId) return;
     try {
-      await retryQbSync.mutateAsync(invoiceId);
-      toast({ title: 'Success', description: 'QuickBooks sync retried' });
+      await queueQbSync.mutateAsync(invoiceId);
+      toast({ title: 'Success', description: 'Queued for QuickBooks sync' });
       refetch();
     } catch (error: any) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
@@ -1058,6 +1074,7 @@ export default function InvoiceDetailPage() {
                   <SelectContent>
                     <SelectItem value="cash">Cash</SelectItem>
                     <SelectItem value="check">Check</SelectItem>
+                    <SelectItem value="credit_card">Credit Card</SelectItem>
                     <SelectItem value="wire">Wire</SelectItem>
                     <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
                     <SelectItem value="ach">ACH</SelectItem>
@@ -1261,7 +1278,7 @@ export default function InvoiceDetailPage() {
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent>
-                            Finalizes the invoice and queues it for QuickBooks. Use “Process Pending Jobs / Sync now” to push.
+                            Finalizes the invoice for sending. QuickBooks sync is a separate action.
                           </TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
@@ -1392,7 +1409,7 @@ export default function InvoiceDetailPage() {
           />
           <StatusTile
             label="Accounting Status"
-            value={<Badge variant="secondary">{isImportedFromQuickBooks ? `QuickBooks ${accountingModeLabel}` : (qbUpToDate ? 'QB up to date' : 'QB out of date')}</Badge>}
+            value={<Badge variant="secondary">{isImportedFromQuickBooks ? `QuickBooks ${accountingModeLabel}` : qbSyncLabel}</Badge>}
           />
           <StatusTile
             label="QB Sync"
@@ -1421,9 +1438,9 @@ export default function InvoiceDetailPage() {
                   variant="outline"
                   className="h-7 px-3 rounded-full transition-colors hover:bg-primary hover:text-primary-foreground focus-visible:bg-primary focus-visible:text-primary-foreground"
                   onClick={handleRetryQb}
-                  disabled={retryQbSync.isPending}
+                  disabled={queueQbSync.isPending}
                 >
-                  {retryQbSync.isPending ? 'Retry…' : 'Retry'}
+                  {queueQbSync.isPending ? 'Queueing…' : 'Sync to QB'}
                 </Button>
               ) : null
             }

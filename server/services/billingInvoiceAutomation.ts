@@ -250,7 +250,7 @@ export class BillingInvoiceAutomationService {
           .set({
             status: "draft",
             syncStatus: "skipped",
-            qbSyncStatus: "needs_resync",
+            qbSyncStatus: "not_synced",
             updatedAt: new Date(),
           } as any)
           .where(and(eq(invoices.organizationId, input.organizationId), eq(invoices.id, invoice.id)));
@@ -264,7 +264,7 @@ export class BillingInvoiceAutomationService {
           ...invoice,
           status: "draft",
           syncStatus: "skipped",
-          qbSyncStatus: "needs_resync",
+          qbSyncStatus: "not_synced",
         };
 
         await insertBillingAuditEvent(tx, input.organizationId, {

@@ -491,6 +491,13 @@
       "when": 1781136000000,
       "tag": "0074_fulfillment_events_order_entity",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1781222400000,
+      "tag": "0075_invoice_qb_sync_default_not_synced",
+      "breakpoints": true
     }
   ]
 }

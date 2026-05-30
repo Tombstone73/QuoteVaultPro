@@ -71,6 +71,7 @@ export type QuickBooksLineItemsDisplay = {
 
 const STATUS_LABELS: Record<string, string> = {
   draft: 'Draft',
+  finalized: 'Finalized',
   sent: 'Sent',
   partially_paid: 'Partially Paid',
   paid: 'Paid',

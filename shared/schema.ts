@@ -3743,7 +3743,7 @@ export const invoices = pgTable("invoices", {
   syncedAt: timestamp("synced_at", { withTimezone: true }),
   // MVP QB sync fields (TitanOS system of record)
   qbInvoiceId: text("qb_invoice_id"),
-  qbSyncStatus: varchar("qb_sync_status", { length: 20 }).notNull().default('pending'), // pending | synced | failed
+  qbSyncStatus: varchar("qb_sync_status", { length: 20 }).notNull().default('not_synced'), // not_synced | pending | synced | failed | needs_resync
   qbLastError: text("qb_last_error"),
   modifiedAfterBilling: boolean("modified_after_billing").notNull().default(false),
   // QB import tracking (migration 0042)
@@ -3797,7 +3797,7 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   lastQbSyncedVersion: true,
 }).extend({
   invoiceNumber: z.number().int().positive(),
-  status: z.enum(['draft','billed','paid','void','sent','partially_paid','overdue']).default('draft'),
+  status: z.enum(['draft','finalized','billed','paid','void','sent','partially_paid','overdue']).default('draft'),
   terms: z.enum(['due_on_receipt','net_15','net_30','net_45','custom']).default('due_on_receipt'),
   customTerms: z.string().max(255).optional().nullable(),
   issueDate: z.preprocess((val) => val ? new Date(val as any) : new Date(), z.date()),
@@ -3826,7 +3826,7 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   syncStatus: z.enum(['pending','synced','error','skipped']).default('pending'),
   syncError: z.string().optional().nullable(),
   qbInvoiceId: z.string().optional().nullable(),
-  qbSyncStatus: z.enum(['pending','synced','failed','needs_resync']).default('pending'),
+  qbSyncStatus: z.enum(['not_synced','pending','synced','failed','needs_resync']).default('not_synced'),
   qbLastError: z.string().optional().nullable(),
   modifiedAfterBilling: z.boolean().default(false),
   importSource: z.string().max(30).optional().nullable(),
@@ -4063,7 +4063,7 @@ export const payments = pgTable("payments", {
 ]);
 
 // Manual payment methods (non-Stripe). NOTE: Terms are not a payment method.
-export const manualPaymentMethodSchema = z.enum(['cash', 'check', 'wire', 'bank_transfer', 'ach', 'other']);
+export const manualPaymentMethodSchema = z.enum(['cash', 'check', 'credit_card', 'wire', 'bank_transfer', 'ach', 'other']);
 export type ManualPaymentMethod = z.infer<typeof manualPaymentMethodSchema>;
 
 export const insertPaymentSchema = createInsertSchema(payments).omit({
