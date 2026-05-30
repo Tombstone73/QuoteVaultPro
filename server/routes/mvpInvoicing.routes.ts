@@ -1,5 +1,5 @@
 import type { Express } from "express";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customers, invoiceLineItems, invoiceReminderLogs, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { applyPayment, createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, refreshInvoiceStatus } from "../invoicesService";
@@ -1022,6 +1022,15 @@ export async function registerMvpInvoicingRoutes(
       const amountCents = Math.max(0, Math.round(Number(body.amountCents || 0)));
       if (amountCents <= 0) return res.status(400).json({ error: 'amountCents must be > 0' });
 
+      const normalizedBeforePayment = withNormalizedInvoiceDisplay(inv, rel.payments as any) as any;
+      const remainingCents = Math.max(0, Math.round(Number(normalizedBeforePayment.displayRemainingCents || 0)));
+      if (amountCents > remainingCents) {
+        return res.status(400).json({
+          error: 'Overpayment not allowed',
+          remainingCents,
+        });
+      }
+
       const currency = String(inv.currency || 'USD');
       const now = new Date();
 
@@ -1520,6 +1529,25 @@ export async function registerMvpInvoicingRoutes(
         organizationId,
       );
 
+      const invoiceIds = rows.map((row) => row.id);
+      const paymentRows = invoiceIds.length > 0
+        ? await db
+            .select()
+            .from(payments)
+            .where(and(
+              eq(payments.organizationId, organizationId),
+              inArray(payments.invoiceId, invoiceIds),
+            ))
+        : [];
+      const paymentsByInvoiceId = new Map<string, Array<Record<string, any>>>();
+      for (const payment of paymentRows as any[]) {
+        const invoiceId = String(payment.invoiceId || "");
+        if (!invoiceId) continue;
+        const bucket = paymentsByInvoiceId.get(invoiceId) ?? [];
+        bucket.push(payment);
+        paymentsByInvoiceId.set(invoiceId, bucket);
+      }
+
       // Batch-fetch reminder list info — shares settings fetch with reminder preview
       const orgSettings = await getInvoiceReminderSettingsForOrg(organizationId);
       const reminderInfoMap = await getInvoiceListReminderInfo(
@@ -1529,7 +1557,7 @@ export async function registerMvpInvoicingRoutes(
           status: row.status,
           dueDate: row.dueDate,
           totalCents: row.totalCents,
-          balanceDue: (row as any).balanceDue ?? null,
+          balanceDue: (withNormalizedInvoiceDisplay(row as any, paymentsByInvoiceId.get(row.id) ?? []) as any).displayRemaining.toFixed(2),
           customerName: (row as any).customerName ?? '',
           recipientEmail: null, // not needed for list status derivation
         })),
@@ -1539,20 +1567,23 @@ export async function registerMvpInvoicingRoutes(
 
       res.json({
         success: true,
-        data: rows.map((row) => withNormalizedInvoiceDisplay({
-          ...row,
-          ...(emailStatuses.get(row.id) || {
-            lastSentAt: null,
-            lastInvoiceEmailRecipient: null,
-            emailStatus: 'not_sent' as const,
-          }),
-          ...(reminderInfoMap.get(row.id) || {
-            reminderStatus: 'not_due' as const,
-            lastReminderSentAt: null,
-            lastReminderRecipient: null,
-            nextReminderDueAt: null,
-          }),
-        })),
+        data: rows.map((row) => withNormalizedInvoiceDisplay(
+          {
+            ...row,
+            ...(emailStatuses.get(row.id) || {
+              lastSentAt: null,
+              lastInvoiceEmailRecipient: null,
+              emailStatus: 'not_sent' as const,
+            }),
+            ...(reminderInfoMap.get(row.id) || {
+              reminderStatus: 'not_due' as const,
+              lastReminderSentAt: null,
+              lastReminderRecipient: null,
+              nextReminderDueAt: null,
+            }),
+          },
+          paymentsByInvoiceId.get(row.id) ?? [],
+        )),
       });
     } catch (error: any) {
       console.error("Error fetching invoices:", error);

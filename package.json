@@ -27,6 +27,7 @@
     "pdf:smoke:help": "tsx scripts/pdf-smoke.ts --help",
     "pdf:gen:local": "tsx scripts/pdf-gen-local.ts",
     "dev:portal-seed": "tsx scripts/dev/seedPortalValidation.ts",
+    "seed:invoice-smoke": "tsx scripts/dev/seedInvoiceSmoke.ts",
     "dev:portal-validate": "tsx scripts/dev/validatePortalValidation.ts",
     "dev:portal-stripe-validate": "tsx scripts/dev/validatePortalStripePayment.ts",
     "prepress:worker": "tsx scripts/prepress-worker.ts",

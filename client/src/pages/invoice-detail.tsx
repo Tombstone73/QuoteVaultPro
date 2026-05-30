@@ -244,7 +244,6 @@ export default function InvoiceDetailPage() {
       })
     : { amountPaidCents: 0, amountDueCents: 0, paymentStatus: 'unpaid' as const };
 
-  const paidCents = paymentRollup.amountPaidCents;
   const displayPaidCents = Number((invoice as any)?.displayPaidCents ?? paymentRollup.amountPaidCents ?? 0);
   const remainingCents = Number((invoice as any)?.displayRemainingCents ?? paymentRollup.amountDueCents ?? 0);
   const displayTotalCents = Number((invoice as any)?.displayTotalCents ?? (invoice as any)?.totalCents ?? 0);
@@ -254,6 +253,7 @@ export default function InvoiceDetailPage() {
     rollup: paymentRollup as any,
   });
   const paymentStatusLabel = String((invoice as any)?.displayStatus || fallbackPaymentStatusLabel);
+  const isFullyPaid = Boolean((invoice as any)?.isFullyPaid ?? (remainingCents <= 0 && displayPaidCents >= displayTotalCents && displayTotalCents > 0));
   const isImportedFromQuickBooks = !!invoice && Boolean((invoice as any)?.isImportedFromQuickBooks);
   const isHistoricalImport = !!invoice && Boolean((invoice as any)?.isHistorical);
   const importedQuickBooksPaymentSummary = (invoice as any)?.importedQuickBooksPaymentSummary;
@@ -1354,7 +1354,7 @@ export default function InvoiceDetailPage() {
                 <div className={remainingCents > 0 ? "mt-1 text-xl font-semibold text-red-600" : "mt-1 text-xl font-semibold text-green-600"}>
                   {formatCurrencyFromCents(remainingCents)}
                 </div>
-                {remainingCents === 0 && invoiceStatus !== 'void' ? (
+                {isFullyPaid && invoiceStatus !== 'void' ? (
                   <div className="mt-1 text-xs text-muted-foreground">Fully paid</div>
                 ) : null}
               </div>
@@ -1363,8 +1363,8 @@ export default function InvoiceDetailPage() {
                 <div className="text-xs font-medium text-muted-foreground">Status</div>
                 <div className="mt-2">
                   <Badge
-                    variant={remainingCents === 0 && invoiceStatus !== 'void' ? 'default' : 'secondary'}
-                    className={remainingCents === 0 && invoiceStatus !== 'void' ? 'bg-green-600 text-white hover:bg-green-600' : undefined}
+                    variant={isFullyPaid && invoiceStatus !== 'void' ? 'default' : 'secondary'}
+                    className={isFullyPaid && invoiceStatus !== 'void' ? 'bg-green-600 text-white hover:bg-green-600' : undefined}
                   >
                     {paymentStatusLabel}
                   </Badge>
@@ -2482,7 +2482,7 @@ export default function InvoiceDetailPage() {
                   </div>
                   <div className="flex items-center justify-between gap-4">
                     <span className="text-sm text-muted-foreground">Paid</span>
-                    <span className="text-sm font-medium">{formatCurrencyFromCents(paidCents)}</span>
+                    <span className="text-sm font-medium">{formatCurrencyFromCents(displayPaidCents)}</span>
                   </div>
                   <div className="flex items-center justify-between gap-4">
                     <span className="text-sm text-muted-foreground">Remaining</span>
