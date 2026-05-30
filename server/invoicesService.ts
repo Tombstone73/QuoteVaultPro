@@ -425,10 +425,8 @@ function computeInvoiceFinancialState(
 
   let status = String(invoice.status || '').trim().toLowerCase();
   if (rollup.amountDueCents <= 0) status = 'paid';
-  else {
-    if (status === 'billed') status = 'billed';
-    else if (rollup.amountPaidCents > 0) status = 'partially_paid';
-  }
+  else if (rollup.amountPaidCents > 0) status = 'partially_paid';
+  else if (status === 'billed' || status === 'finalized' || status === 'sent') status = status;
 
   return {
     amountPaidCents: rollup.amountPaidCents,
@@ -514,7 +512,7 @@ export async function createInvoiceFromOrderInTransaction(
       notesInternal: undefined,
       createdByUserId: userId,
       syncStatus: 'pending',
-      qbSyncStatus: 'pending' as any,
+      qbSyncStatus: 'not_synced' as any,
       modifiedAfterBilling: false as any,
       invoiceCreationSource: opts.invoiceCreationSource ?? 'manual',
       billingMilestone: opts.billingMilestone ?? null,

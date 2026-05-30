@@ -143,6 +143,269 @@ export async function registerMvpInvoicingRoutes(
 ) {
   const { isAuthenticated, tenantContext, isAdmin, requireOrgOwnerAdmin } = deps;
 
+  async function finalizeInvoiceForOperations(input: {
+    organizationId: string;
+    invoiceId: string;
+    userId?: string | null;
+    userName?: string | null;
+  }) {
+    const rel = await getInvoiceWithRelations(input.invoiceId);
+    if (!rel) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
+    const inv: any = rel.invoice;
+    if (inv.organizationId !== input.organizationId) {
+      throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
+    }
+
+    const status = String(inv.status || "").toLowerCase();
+    if (status === "void") throw Object.assign(new Error("Void invoices cannot be finalized"), { statusCode: 400 });
+    if (status !== "draft") return inv;
+
+    const issuedAt = new Date();
+    await db
+      .update(invoices)
+      .set({
+        status: "finalized",
+        issuedAt,
+        qbSyncStatus: "not_synced",
+        qbLastError: null,
+        updatedAt: new Date(),
+      } as any)
+      .where(and(eq(invoices.id, inv.id), eq(invoices.organizationId, input.organizationId)));
+
+    if (inv.orderId) {
+      await db
+        .update(orders)
+        .set({ billingStatus: "billed", updatedAt: sql`now()` as any } as any)
+        .where(and(eq(orders.id, inv.orderId), eq(orders.organizationId, input.organizationId)));
+    }
+
+    try {
+      await db.insert(auditLogs).values({
+        organizationId: input.organizationId,
+        userId: input.userId || null,
+        userName: input.userName || null,
+        actionType: "invoice_finalized",
+        entityType: "invoice",
+        entityId: inv.id,
+        entityName: String(inv.invoiceNumber),
+        description: "Invoice finalized",
+        createdAt: new Date(),
+      } as any);
+    } catch {}
+
+    const refreshed = await getInvoiceWithRelations(inv.id);
+    return refreshed?.invoice ?? { ...inv, status: "finalized", issuedAt };
+  }
+
+  async function sendInvoiceEmailForOperations(input: {
+    organizationId: string;
+    invoiceId: string;
+    userId?: string | null;
+    userName?: string | null;
+    toEmail?: string | null;
+  }) {
+    const emailConfig = await storage.getDefaultEmailSettings(input.organizationId);
+    if (!emailConfig) {
+      throw Object.assign(
+        new Error("Email is not configured. Please configure email settings in the admin panel before sending invoices."),
+        { statusCode: 400 },
+      );
+    }
+
+    let rel = await getInvoiceWithRelations(input.invoiceId);
+    if (!rel) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
+    let inv: any = rel.invoice;
+    if (inv.organizationId !== input.organizationId) {
+      throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
+    }
+
+    const startingStatus = String(inv.status || "").toLowerCase();
+    if (startingStatus === "void") throw Object.assign(new Error("Void invoices cannot be sent"), { statusCode: 400 });
+    if (startingStatus === "paid") throw Object.assign(new Error("Paid invoices do not need to be sent"), { statusCode: 400 });
+    if (startingStatus === "draft") {
+      await finalizeInvoiceForOperations(input);
+      rel = await getInvoiceWithRelations(input.invoiceId);
+      if (!rel) throw Object.assign(new Error("Invoice not found after finalize"), { statusCode: 404 });
+      inv = rel.invoice as any;
+    }
+
+    const [cust] = await db
+      .select()
+      .from(customers)
+      .where(and(eq(customers.id, inv.customerId), eq(customers.organizationId, input.organizationId)));
+    if (!cust) throw Object.assign(new Error("Customer not found"), { statusCode: 404 });
+
+    const recipientEmail = input.toEmail || cust.email;
+    if (!recipientEmail) {
+      throw Object.assign(new Error("No recipient email specified and customer has no email on file"), { statusCode: 400 });
+    }
+
+    const [orgCompany] = await db.select().from(companySettings).where(eq(companySettings.organizationId, input.organizationId));
+    const lineItems = await db
+      .select()
+      .from(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, inv.id))
+      .orderBy(invoiceLineItems.sortOrder, desc(invoiceLineItems.createdAt));
+
+    const jobId = String(inv.jobId || "").trim();
+    let job: any = null;
+    if (jobId) {
+      const jobRows = await db.select().from(jobs).where(and(eq(jobs.id, jobId), eq(jobs.organizationId, input.organizationId)));
+      job = jobRows[0] || null;
+    }
+
+    const paymentRows = await db
+      .select()
+      .from(payments)
+      .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, input.organizationId)))
+      .orderBy(desc(payments.createdAt));
+
+    const rollup = computeInvoicePaymentRollup({
+      invoiceTotalCents: Number((inv as any).totalCents || 0),
+      payments: paymentRows.map((p: any) => ({
+        id: p.id,
+        status: String(p.status || "succeeded"),
+        amountCents: Number(p.amountCents || 0),
+      })),
+    });
+    const statusLabel = getInvoicePaymentStatusLabel({ invoiceStatus: (inv as any).status, rollup });
+
+    const pdfBytes = await generateInvoicePdfBytes({
+      invoice: inv as any,
+      customer: (cust as any) || null,
+      companySettings: (orgCompany as any) || null,
+      paymentSummary: {
+        amountPaidCents: rollup.amountPaidCents,
+        amountDueCents: rollup.amountDueCents,
+        statusLabel,
+      },
+      lineItems: lineItems as any,
+      job,
+    });
+
+    const invoiceNumber = (inv as any).displayNumber || ((inv as any).invoiceNumber ? String((inv as any).invoiceNumber) : inv.id);
+    const filename = `invoice-${invoiceNumber}.pdf`;
+    const pdfBase64 = Buffer.from(pdfBytes).toString("base64");
+    const companyName = orgCompany?.companyName || "QuoteVaultPro";
+    const customerName = cust.companyName || cust.email || "Valued Customer";
+    const totalFormatted = (Number(inv.totalCents || 0) / 100).toFixed(2);
+    const dueDate = inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : "upon receipt";
+
+    const emailHtml = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Invoice #${invoiceNumber}</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background-color: #f8f9fa; padding: 30px; border-radius: 8px; margin-bottom: 30px;">
+    <h1 style="margin: 0 0 10px 0; color: #2563eb;">Invoice #${invoiceNumber}</h1>
+    <p style="margin: 0; color: #666;">
+      From: ${companyName}<br>
+      To: ${customerName}
+    </p>
+  </div>
+
+  <div style="padding: 20px 0;">
+    <p>Dear ${customerName},</p>
+    <p>Please find attached Invoice #${invoiceNumber} for the amount of <strong>$${totalFormatted}</strong>.</p>
+    <p>Payment is due ${dueDate}.</p>
+    <p>If you have any questions about this invoice, please don't hesitate to contact us.</p>
+  </div>
+
+  <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #dee2e6; color: #666; font-size: 14px;">
+    <p style="margin: 0;">Thank you for your business!</p>
+    <p style="margin: 5px 0 0 0;">${companyName}</p>
+  </div>
+</body>
+</html>
+    `.trim();
+
+    const now = new Date();
+    let messageId: string | null = null;
+    try {
+      messageId = await emailService.sendEmail(input.organizationId, {
+        to: recipientEmail,
+        subject: `Invoice #${invoiceNumber} from ${companyName}`,
+        html: emailHtml,
+        attachments: [
+          {
+            filename,
+            content: pdfBase64,
+            encoding: "base64",
+            contentType: "application/pdf",
+          },
+        ] as any,
+      });
+
+      await createInvoiceEmailLog({
+        organizationId: input.organizationId,
+        invoiceId: input.invoiceId,
+        recipientEmail,
+        status: "sent",
+        type: "invoice_send",
+        messageId,
+        sentAt: now,
+      });
+    } catch (sendError) {
+      try {
+        await createInvoiceEmailLog({
+          organizationId: input.organizationId,
+          invoiceId: input.invoiceId,
+          recipientEmail,
+          status: "failed",
+          type: "invoice_send",
+          messageId: null,
+          sentAt: now,
+        });
+      } catch (logError) {
+        console.error("[Invoice Send] Failed to write failed email log:", logError);
+      }
+      throw sendError;
+    }
+
+    const invoiceVersion = Number(inv.invoiceVersion || 1);
+    const currentStatus = String(inv.status || "").toLowerCase();
+    const nextStatus = ["paid", "partially_paid", "void"].includes(currentStatus) ? currentStatus : "sent";
+    await db
+      .update(invoices)
+      .set({
+        status: nextStatus,
+        lastSentAt: now,
+        lastSentVersion: invoiceVersion,
+        lastSentVia: "email",
+        updatedAt: now,
+      } as any)
+      .where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId)));
+
+    try {
+      await db.insert(auditLogs).values({
+        organizationId: input.organizationId,
+        userId: input.userId || null,
+        userName: input.userName || null,
+        actionType: "invoice.sent",
+        entityType: "invoice",
+        entityId: input.invoiceId,
+        entityName: String(inv.invoiceNumber),
+        description: `Invoice sent via email to ${recipientEmail}`,
+        newValues: { via: "email", invoiceVersion, recipientEmail, messageId } as any,
+        createdAt: now,
+      } as any);
+    } catch (auditError) {
+      console.error("Audit log failed:", auditError);
+    }
+
+    return {
+      invoiceId: input.invoiceId,
+      invoiceNumber,
+      recipientEmail,
+      messageId,
+      status: nextStatus,
+    };
+  }
+
   // ------------------------------------------------------------
   // Stripe: Create PaymentIntent for invoice (full payment only)
   // ------------------------------------------------------------
@@ -1390,7 +1653,7 @@ export async function registerMvpInvoicingRoutes(
   });
 
   // ------------------------------------------------------------
-  // Bill invoice (draft -> billed), fail-soft QB
+  // Finalize invoice (draft -> finalized). QuickBooks sync is explicit only.
   // ------------------------------------------------------------
   app.post("/api/invoices/:id/bill", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -1406,77 +1669,9 @@ export async function registerMvpInvoicingRoutes(
       if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
 
       const status = String(inv.status || "").toLowerCase();
-      if (status !== "draft") return res.status(400).json({ error: "Only draft invoices can be billed" });
+      if (status !== "draft") return res.status(400).json({ error: "Only draft invoices can be finalized" });
 
-      const issuedAt = new Date();
-      await db
-        .update(invoices)
-        .set({ status: "billed", issuedAt, qbSyncStatus: "pending", updatedAt: new Date() } as any)
-        .where(eq(invoices.id, inv.id));
-
-      if (inv.orderId) {
-        await db
-          .update(orders)
-          .set({ billingStatus: "billed", updatedAt: sql`now()` as any } as any)
-          .where(and(eq(orders.id, inv.orderId), eq(orders.organizationId, organizationId)));
-      }
-
-      try {
-        await db.insert(auditLogs).values({
-          organizationId,
-          userId: userId || null,
-          userName,
-          actionType: "invoice_billed",
-          entityType: "invoice",
-          entityId: inv.id,
-          entityName: String(inv.invoiceNumber),
-          description: "Invoice billed",
-          createdAt: new Date(),
-        } as any);
-      } catch {}
-
-      const qbSyncPolicy = await getQuickBooksSyncPolicyForOrganization(organizationId);
-
-      // Queue-only policy: never auto-push to QuickBooks on finalize/bill.
-      if (qbSyncPolicy !== "queue_only") {
-        try {
-          const qb = await syncSingleInvoiceToQuickBooksForOrganization(organizationId, inv.id);
-          await db
-            .update(invoices)
-            .set({
-              qbInvoiceId: qb.qbInvoiceId,
-              externalAccountingId: qb.qbInvoiceId,
-              qbSyncStatus: "synced",
-              qbLastError: null,
-              syncStatus: "synced",
-              syncError: null,
-              syncedAt: new Date(),
-              lastQbSyncedVersion: Number(inv.invoiceVersion || 1),
-              updatedAt: new Date(),
-            } as any)
-            .where(eq(invoices.id, inv.id));
-        } catch (e: any) {
-          await db
-            .update(invoices)
-            .set({ qbSyncStatus: "failed", qbLastError: String(e?.message || e), syncStatus: "error", syncError: String(e?.message || e), updatedAt: new Date() } as any)
-            .where(eq(invoices.id, inv.id));
-
-          try {
-            await db.insert(auditLogs).values({
-              organizationId,
-              userId: userId || null,
-              userName,
-              actionType: "invoice_qb_sync_failed",
-              entityType: "invoice",
-              entityId: inv.id,
-              entityName: String(inv.invoiceNumber),
-              description: "QuickBooks invoice sync failed",
-              newValues: { error: String(e?.message || e) } as any,
-              createdAt: new Date(),
-            } as any);
-          } catch {}
-        }
-      }
+      await finalizeInvoiceForOperations({ organizationId, invoiceId: inv.id, userId, userName });
 
       const refreshed = await getInvoiceWithRelations(inv.id);
       res.json({ success: true, data: refreshed });
@@ -1557,6 +1752,50 @@ export async function registerMvpInvoicingRoutes(
   // ------------------------------------------------------------
   // QuickBooks: explicit sync endpoints (tenant-scoped)
   // ------------------------------------------------------------
+  app.post("/api/invoices/:id/qb/queue", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email;
+
+      const rel = await getInvoiceWithRelations(req.params.id);
+      if (!rel) return res.status(404).json({ success: false, error: "Invoice not found" });
+      const inv: any = rel.invoice;
+      if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
+      const status = String(inv.status || "").toLowerCase();
+      if (status === "draft" || status === "void") {
+        return res.status(400).json({ success: false, error: "Only finalized or sent invoices can be queued for QuickBooks" });
+      }
+
+      await db
+        .update(invoices)
+        .set({ qbSyncStatus: "pending", qbLastError: null, updatedAt: new Date() } as any)
+        .where(and(eq(invoices.id, inv.id), eq(invoices.organizationId, organizationId)));
+
+      try {
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId: userId || null,
+          userName,
+          actionType: "invoice_qb_sync_queued",
+          entityType: "invoice",
+          entityId: inv.id,
+          entityName: String(inv.invoiceNumber),
+          description: "Invoice queued for QuickBooks sync",
+          createdAt: new Date(),
+        } as any);
+      } catch {}
+
+      const refreshed = await getInvoiceWithRelations(inv.id);
+      res.json({ success: true, data: refreshed });
+    } catch (error: any) {
+      console.error("Error queueing invoice for QB:", error);
+      res.status(500).json({ success: false, error: error.message || "Failed to queue invoice for QuickBooks" });
+    }
+  });
+
   app.post("/api/invoices/:id/qb/sync", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -1900,9 +2139,19 @@ export async function registerMvpInvoicingRoutes(
 
       const financialUpdates: any = {};
       const hasFinancialBody = req.body.subtotalCents !== undefined || req.body.taxCents !== undefined || req.body.shippingCents !== undefined;
+      const hasCustomerChange = typeof req.body.customerId === "string" && req.body.customerId && req.body.customerId !== existing.customerId;
+      const hasTermsChange = typeof req.body.terms === "string" && req.body.terms !== existing.terms;
 
       const existingDueMs = existing.dueDate ? new Date(existing.dueDate as any).getTime() : null;
       const nextDueMs = nextDueDate ? nextDueDate.getTime() : null;
+      const hasDueDateChange = nextDueDate !== undefined && existingDueMs !== nextDueMs;
+
+      if (existingStatus !== "draft" && (hasFinancialBody || hasCustomerChange || hasTermsChange || hasDueDateChange)) {
+        return res.status(400).json({
+          error: "Finalized and sent invoices are locked. Void this invoice or create a revised invoice in a future revision workflow.",
+          code: "INVOICE_LOCKED_FINALIZED",
+        });
+      }
 
       const nextSubtotalCents = req.body.subtotalCents !== undefined ? Number(req.body.subtotalCents) : Number(existing.subtotalCents || 0);
       const nextTaxCents = req.body.taxCents !== undefined ? Number(req.body.taxCents) : Number(existing.taxCents || 0);
@@ -1916,8 +2165,8 @@ export async function registerMvpInvoicingRoutes(
           Math.round(nextShippingCents) !== Number(existing.shippingCents || 0) ||
           computedNextTotalCents !== Number(existing.totalCents || 0)
         )) ||
-        (typeof req.body.customerId === "string" && req.body.customerId && req.body.customerId !== existing.customerId) ||
-        (nextDueDate !== undefined && existingDueMs !== nextDueMs);
+        hasCustomerChange ||
+        hasDueDateChange;
 
       const nextInvoiceVersion = financialOrCustomerVisibleChanged ? existingInvoiceVersion + 1 : existingInvoiceVersion;
       if (financialOrCustomerVisibleChanged) {
@@ -1943,13 +2192,8 @@ export async function registerMvpInvoicingRoutes(
         financialUpdates.total = (financialUpdates.totalCents / 100).toFixed(2);
         financialUpdates.balanceDue = String(Math.max(0, Number(financialUpdates.total) - Number(existing.amountPaid)));
 
-        if (!(existingStatus === "draft" || isBilledUnpaid)) {
+        if (existingStatus !== "draft") {
           return res.status(400).json({ error: "Invoice cannot be financially edited in its current status" });
-        }
-
-        if (isBilledUnpaid) {
-          financialUpdates.modifiedAfterBilling = true;
-          if (!financialUpdates.qbSyncStatus) financialUpdates.qbSyncStatus = "pending";
         }
 
         try {
@@ -1971,25 +2215,6 @@ export async function registerMvpInvoicingRoutes(
 
       await db.update(invoices).set({ ...updates, ...financialUpdates, updatedAt: new Date() } as any).where(eq(invoices.id, id));
 
-      // Queue-only policy: never auto-push to QuickBooks on post-billing edits.
-      if (hasFinancialBody && isBilledUnpaid) {
-        const qbSyncPolicy = await getQuickBooksSyncPolicyForOrganization(organizationId);
-        if (qbSyncPolicy !== "queue_only") {
-          try {
-            const qb = await syncSingleInvoiceToQuickBooksForOrganization(organizationId, id);
-            await db
-              .update(invoices)
-              .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), lastQbSyncedVersion: nextInvoiceVersion, updatedAt: new Date() } as any)
-              .where(eq(invoices.id, id));
-          } catch (e: any) {
-            await db
-              .update(invoices)
-              .set({ qbSyncStatus: "failed", qbLastError: String(e?.message || e), syncStatus: "error", syncError: String(e?.message || e), updatedAt: new Date() } as any)
-              .where(eq(invoices.id, id));
-          }
-        }
-      }
-
       const refreshed = await getInvoiceWithRelations(id);
       res.json({ success: true, data: refreshed?.invoice ?? null });
     } catch (error: any) {
@@ -2004,219 +2229,91 @@ export async function registerMvpInvoicingRoutes(
   app.post("/api/invoices/:id/send", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
 
       const userId = getUserId(req.user);
       const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email;
-
       const { id } = req.params;
       const { toEmail } = req.body || {};
 
       console.log(`[Invoice Send] Starting send for invoice ${id}, org ${organizationId}`);
-
-      // FAIL FAST: Check email configuration exists BEFORE expensive operations
-      const emailConfig = await storage.getDefaultEmailSettings(organizationId);
-      if (!emailConfig) {
-        console.error(`[Invoice Send] BLOCKED - No email settings configured for org ${organizationId}`);
-        return res.status(400).json({
-          success: false,
-          error: "Email is not configured. Please configure email settings in the admin panel before sending invoices."
-        });
-      }
-
-      console.log(`[Invoice Send] Email config found for org ${organizationId}, provider: ${emailConfig.provider}`);
-
-      // Load invoice with related data
-      const rel = await getInvoiceWithRelations(id);
-      if (!rel) return res.status(404).json({ error: "Invoice not found" });
-      const inv: any = rel.invoice;
-      if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
-
-      // Load customer for billing info and default email
-      const [cust] = await db.select().from(customers).where(and(eq(customers.id, inv.customerId), eq(customers.organizationId, organizationId)));
-      if (!cust) return res.status(404).json({ error: "Customer not found" });
-
-      // Determine recipient email
-      const recipientEmail = toEmail || cust.email;
-      if (!recipientEmail) {
-        return res.status(400).json({ error: "No recipient email specified and customer has no email on file" });
-      }
-
-      // Load company settings for FROM info
-      const [orgCompany] = await db.select().from(companySettings).where(eq(companySettings.organizationId, organizationId));
-
-      // Load line items
-      const lineItems = await db
-        .select()
-        .from(invoiceLineItems)
-        .where(eq(invoiceLineItems.invoiceId, inv.id))
-        .orderBy(invoiceLineItems.sortOrder, desc(invoiceLineItems.createdAt));
-
-      // Load job if exists
-      const jobId = String(inv.jobId || '').trim();
-      let job: any = null;
-      if (jobId) {
-        const jobRows = await db.select().from(jobs).where(and(eq(jobs.id, jobId), eq(jobs.organizationId, organizationId)));
-        job = jobRows[0] || null;
-      }
-
-      // Load payments for status calculation
-      const paymentRows = await db
-        .select()
-        .from(payments)
-        .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
-        .orderBy(desc(payments.createdAt));
-
-      const rollup = computeInvoicePaymentRollup({
-        invoiceTotalCents: Number((inv as any).totalCents || 0),
-        payments: paymentRows.map((p: any) => ({
-          id: p.id,
-          status: String(p.status || 'succeeded'),
-          amountCents: Number(p.amountCents || 0),
-        })),
+      const result = await sendInvoiceEmailForOperations({
+        organizationId,
+        invoiceId: id,
+        userId,
+        userName,
+        toEmail,
       });
 
-      const statusLabel = getInvoicePaymentStatusLabel({ invoiceStatus: (inv as any).status, rollup });
-
-      // Generate PDF
-      const pdfBytes = await generateInvoicePdfBytes({
-        invoice: inv as any,
-        customer: (cust as any) || null,
-        companySettings: (orgCompany as any) || null,
-        paymentSummary: {
-          amountPaidCents: rollup.amountPaidCents,
-          amountDueCents: rollup.amountDueCents,
-          statusLabel,
-        },
-        lineItems: lineItems as any,
-        job,
-      });
-
-      const invoiceNumber = (inv as any).displayNumber || ((inv as any).invoiceNumber ? String((inv as any).invoiceNumber) : inv.id);
-      const filename = `invoice-${invoiceNumber}.pdf`;
-      const pdfBase64 = Buffer.from(pdfBytes).toString('base64');
-
-      // Build email HTML
-      const companyName = orgCompany?.companyName || 'QuoteVaultPro';
-      const customerName = cust.companyName || cust.email || 'Valued Customer';
-      const totalFormatted = ((Number(inv.totalCents || 0) / 100).toFixed(2));
-      const dueDate = inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : 'upon receipt';
-
-      const emailHtml = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Invoice #${invoiceNumber}</title>
-</head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-  <div style="background-color: #f8f9fa; padding: 30px; border-radius: 8px; margin-bottom: 30px;">
-    <h1 style="margin: 0 0 10px 0; color: #2563eb;">Invoice #${invoiceNumber}</h1>
-    <p style="margin: 0; color: #666;">
-      From: ${companyName}<br>
-      To: ${customerName}
-    </p>
-  </div>
-
-  <div style="padding: 20px 0;">
-    <p>Dear ${customerName},</p>
-    <p>Please find attached Invoice #${invoiceNumber} for the amount of <strong>$${totalFormatted}</strong>.</p>
-    <p>Payment is due ${dueDate}.</p>
-    <p>If you have any questions about this invoice, please don't hesitate to contact us.</p>
-  </div>
-
-  <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #dee2e6; color: #666; font-size: 14px;">
-    <p style="margin: 0;">Thank you for your business!</p>
-    <p style="margin: 5px 0 0 0;">${companyName}</p>
-  </div>
-</body>
-</html>
-      `.trim();
-
-      // Send email via email service
-      console.log(`[Invoice Send] Sending email to ${recipientEmail} with PDF attachment...`);
-      const now = new Date();
-      let messageId: string | null = null;
-      try {
-        messageId = await emailService.sendEmail(organizationId, {
-          to: recipientEmail,
-          subject: `Invoice #${invoiceNumber} from ${companyName}`,
-          html: emailHtml,
-          attachments: [
-            {
-              filename,
-              content: pdfBase64,
-              encoding: 'base64',
-              contentType: 'application/pdf',
-            },
-          ] as any,
-        });
-
-        await createInvoiceEmailLog({
-          organizationId,
-          invoiceId: id,
-          recipientEmail,
-          status: 'sent',
-          type: 'invoice_send',
-          messageId,
-          sentAt: now,
-        });
-      } catch (sendError: any) {
-        try {
-          await createInvoiceEmailLog({
-            organizationId,
-            invoiceId: id,
-            recipientEmail,
-            status: 'failed',
-            type: 'invoice_send',
-            messageId: null,
-            sentAt: now,
-          });
-        } catch (logError) {
-          console.error('[Invoice Send] Failed to write failed email log:', logError);
-        }
-        throw sendError;
-      }
-
-      console.log(`[Invoice Send] ✅ Email sent successfully to ${recipientEmail}`);
-
-      const invoiceVersion = Number(inv.invoiceVersion || 1);
-
-      // Audit log
-      try {
-        await db.insert(auditLogs).values({
-          organizationId,
-          userId: userId || null,
-          userName,
-          actionType: "invoice.sent",
-          entityType: "invoice",
-          entityId: id,
-          entityName: String(inv.invoiceNumber),
-          description: `Invoice sent via email to ${recipientEmail}`,
-          newValues: { via: 'email', invoiceVersion, recipientEmail, messageId } as any,
-          createdAt: now,
-        } as any);
-      } catch (auditError) {
-        console.error('Audit log failed:', auditError);
-      }
-
-      res.json({ success: true });
+      console.log(`[Invoice Send] Email sent successfully to ${result.recipientEmail}`);
+      return res.json({ success: true, data: result });
     } catch (error: any) {
-      console.error(`[Invoice Send] ❌ FAILED:`, {
+      console.error("[Invoice Send] FAILED:", {
         error: error.message,
         stack: error.stack,
         code: error.code,
       });
 
-      // Return clear error message
       const errorMessage = error.message || "Failed to send invoice";
-      res.status(500).json({
+      return res.status(Number(error.statusCode || error.status || 500)).json({
         success: false,
         error: errorMessage.includes("Email settings not configured")
           ? "Email is not configured. Please configure email settings in the admin panel."
-          : errorMessage
+          : errorMessage,
       });
+    }
+  });
+
+  app.post("/api/invoices/batch-send", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email;
+      const invoiceIds: string[] = Array.isArray(req.body?.invoiceIds)
+        ? Array.from(new Set(req.body.invoiceIds.map((id: unknown) => String(id || "").trim()).filter(Boolean)))
+        : [];
+
+      if (invoiceIds.length === 0) {
+        return res.status(400).json({ success: false, error: "Select at least one invoice to send" });
+      }
+
+      const results: Array<{
+        invoiceId: string;
+        success: boolean;
+        message: string;
+        data?: unknown;
+      }> = [];
+
+      for (const invoiceId of invoiceIds) {
+        try {
+          const data = await sendInvoiceEmailForOperations({
+            organizationId,
+            invoiceId,
+            userId,
+            userName,
+          });
+          results.push({ invoiceId, success: true, message: "Sent", data });
+        } catch (error: any) {
+          results.push({
+            invoiceId,
+            success: false,
+            message: error?.message || "Failed to send invoice",
+          });
+        }
+      }
+
+      const sent = results.filter((row) => row.success).length;
+      const failed = results.length - sent;
+      return res.json({
+        success: failed === 0,
+        data: { sent, failed, results },
+        message: `${sent} sent${failed ? `, ${failed} failed` : ""}`,
+      });
+    } catch (error: any) {
+      console.error("[Invoice Batch Send] failed:", error);
+      res.status(500).json({ success: false, error: error.message || "Failed to batch send invoices" });
     }
   });
 
@@ -2244,6 +2341,19 @@ export async function registerMvpInvoicingRoutes(
 
       const now = new Date();
       const invoiceVersion = Number(inv.invoiceVersion || 1);
+      const currentStatus = String(inv.status || "").toLowerCase();
+      const nextStatus = ["paid", "partially_paid", "void"].includes(currentStatus) ? currentStatus : "sent";
+
+      await db
+        .update(invoices)
+        .set({
+          status: nextStatus,
+          lastSentAt: now,
+          lastSentVersion: invoiceVersion,
+          lastSentVia: via,
+          updatedAt: now,
+        } as any)
+        .where(and(eq(invoices.id, id), eq(invoices.organizationId, organizationId)));
 
       try {
         await db.insert(auditLogs).values({

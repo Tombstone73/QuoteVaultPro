@@ -140,6 +140,7 @@ export function useRecordManualInvoicePayment() {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
       queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
     },
   });
 }
@@ -294,6 +295,30 @@ export function useRetryInvoiceQbSync() {
   });
 }
 
+// Queue invoice for explicit QuickBooks sync. Finalize/send do not sync automatically.
+export function useQueueInvoiceQbSync() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`/api/invoices/${id}/qb/queue`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).error || (err as any).message || 'Failed to queue QuickBooks sync');
+      }
+      return res.json();
+    },
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', id] });
+      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+    },
+  });
+}
+
 // Apply payment via invoice-scoped endpoint
 export function useApplyInvoicePayment() {
   const queryClient = useQueryClient();
@@ -314,6 +339,7 @@ export function useApplyInvoicePayment() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
     },
   });
 }
@@ -356,6 +382,7 @@ export function useMarkInvoiceSent() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
+      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
     },
   });
 }
@@ -380,6 +407,37 @@ export function useSendInvoice() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
+      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+    },
+  });
+}
+
+export function useBatchSendInvoices() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ invoiceIds }: { invoiceIds: string[] }) => {
+      const res = await fetch('/api/invoices/batch-send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoiceIds }),
+        credentials: 'include',
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error((payload as any).error || (payload as any).message || 'Failed to send selected invoices');
+      }
+      return payload as {
+        success: boolean;
+        data: {
+          sent: number;
+          failed: number;
+          results: Array<{ invoiceId: string; success: boolean; message?: string }>;
+        };
+      };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
     },
   });
 }

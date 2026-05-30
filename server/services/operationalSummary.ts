@@ -13,6 +13,7 @@ import { db } from "../db";
 import {
   customers,
   inboundOrderRecords,
+  invoiceEmailLogs,
   invoices,
   orderLineItems,
   orders,
@@ -194,7 +195,20 @@ export async function computeOperationalSummary(organizationId: string): Promise
       .where(
         and(
           eq(invoices.organizationId, organizationId),
-          eq(invoices.status, "draft"),
+          eq(invoices.isHistorical, false),
+          notInArray(invoices.status as any, ["paid", "void"]),
+          or(
+            inArray(invoices.status as any, ["draft", "finalized", "billed"]),
+            sql`exists (
+              select 1
+              from ${invoiceEmailLogs}
+              where ${invoiceEmailLogs.organizationId} = ${organizationId}
+                and ${invoiceEmailLogs.invoiceId} = ${invoices.id}
+                and ${invoiceEmailLogs.type} = 'invoice_send'
+                and ${invoiceEmailLogs.status} = 'failed'
+                and (${invoices.lastSentAt} is null or ${invoiceEmailLogs.sentAt} > ${invoices.lastSentAt})
+            )`,
+          ),
         ),
       ),
 
@@ -204,7 +218,7 @@ export async function computeOperationalSummary(organizationId: string): Promise
       .where(
         and(
           eq(invoices.organizationId, organizationId),
-          inArray(invoices.status as any, ["billed", "sent", "partially_paid", "overdue"]),
+          inArray(invoices.status as any, ["finalized", "billed", "sent", "partially_paid", "overdue"]),
         ),
       ),
   ]);

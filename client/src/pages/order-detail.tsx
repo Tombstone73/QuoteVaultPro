@@ -3185,10 +3185,12 @@ export default function OrderDetail() {
                 )}
 
                 <div className="flex flex-wrap gap-2">
-                  <Button onClick={handleCreateInvoice} disabled={!canCreateInvoice || createOrderInvoice.isPending}>
-                    <FileText className="mr-2 h-4 w-4" />
-                    {createOrderInvoice.isPending ? 'Creating…' : 'Create Invoice'}
-                  </Button>
+                  {orderInvoices.length === 0 ? (
+                    <Button onClick={handleCreateInvoice} disabled={!canCreateInvoice || createOrderInvoice.isPending}>
+                      <FileText className="mr-2 h-4 w-4" />
+                      {createOrderInvoice.isPending ? 'Creating…' : 'Create Invoice'}
+                    </Button>
+                  ) : null}
 
                   {isAdminOrOwner && !billingOverrideActive && billingStatus !== 'billed' && (
                     <Button variant="outline" onClick={() => setBillingOverrideDialogOpen(true)}>
@@ -3296,23 +3298,41 @@ export default function OrderDetail() {
                         <TableRow>
                           <TableHead>Invoice</TableHead>
                           <TableHead>Status</TableHead>
+                          <TableHead className="text-right">Balance</TableHead>
                           <TableHead className="text-right">Total</TableHead>
+                          <TableHead className="text-right">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {orderInvoices.map((inv: any) => (
-                          <TableRow key={inv.id}>
-                            <TableCell className="font-medium">
-                              <Link to={`/invoices/${inv.id}`} className="hover:underline">
-                                #{inv.invoiceNumber}
-                              </Link>
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant="outline">{String(inv.status || '').toUpperCase()}</Badge>
-                            </TableCell>
-                            <TableCell className="text-right">{formatCurrency(inv.total)}</TableCell>
-                          </TableRow>
-                        ))}
+                        {orderInvoices.map((inv: any) => {
+                          const balance = Number(inv.displayRemaining ?? inv.balanceDue ?? Number(inv.total || 0) - Number(inv.amountPaid || 0));
+                          return (
+                            <TableRow key={inv.id}>
+                              <TableCell className="font-medium">
+                                <Link to={`/invoices/${inv.id}`} className="hover:underline">
+                                  #{inv.invoiceNumber}
+                                </Link>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="outline">{String(inv.displayStatus || inv.status || '').toUpperCase()}</Badge>
+                              </TableCell>
+                              <TableCell className="text-right">{formatCurrency(balance)}</TableCell>
+                              <TableCell className="text-right">{formatCurrency(inv.displayTotal ?? inv.total)}</TableCell>
+                              <TableCell className="text-right">
+                                <div className="flex justify-end gap-2">
+                                  {balance > 0 && String(inv.status || '').toLowerCase() !== 'void' ? (
+                                    <Button variant="outline" size="sm" asChild>
+                                      <Link to={`/invoices/${inv.id}?recordPayment=1`}>Add Payment</Link>
+                                    </Button>
+                                  ) : null}
+                                  <Button variant="outline" size="sm" asChild>
+                                    <Link to={`/invoices/${inv.id}`}>Open Invoice</Link>
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
                       </TableBody>
                     </Table>
                   )}
