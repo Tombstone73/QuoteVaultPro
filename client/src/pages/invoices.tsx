@@ -151,7 +151,7 @@ export default function InvoicesListPage() {
     return Math.max(0, Math.round(n * 100));
   };
 
-  const invoiceBalanceCents = (invoice: InvoiceListItem) => Math.max(0, Math.round(Number(invoice.displayRemaining || invoice.balanceDue || Number(invoice.total) - Number(invoice.amountPaid)) * 100));
+  const invoiceBalanceCents = (invoice: InvoiceListItem) => Math.max(0, Math.round(Number(invoice.displayRemaining ?? invoice.balanceDue ?? Number(invoice.total) - Number(invoice.amountPaid)) * 100));
 
   const toggleSelected = (invoiceId: string, checked: boolean) => {
     setSelectedInvoiceIds((current) => {
@@ -230,14 +230,14 @@ export default function InvoicesListPage() {
 
   // Calculate stats
   const totalOutstanding = filteredInvoices
-    .filter(inv => Number(inv.displayRemaining || 0) > 0)
-    .reduce((sum, inv) => sum + Number(inv.displayRemaining || 0), 0);
+    .filter(inv => Number(inv.displayRemaining ?? 0) > 0)
+    .reduce((sum, inv) => sum + Number(inv.displayRemaining ?? 0), 0);
   
   const overdueCount = filteredInvoices.filter(inv => (inv.displayStatus || '').toLowerCase() === 'overdue' || inv.status === 'overdue').length;
   
   const paidThisMonth = filteredInvoices
-    .filter(inv => Number(inv.displayRemaining || 0) === 0)
-    .reduce((sum, inv) => sum + Number(inv.displayTotal || inv.total), 0);
+    .filter(inv => Boolean(inv.isFullyPaid))
+    .reduce((sum, inv) => sum + Number(inv.displayTotal ?? inv.total), 0);
 
   return (
     <Page maxWidth="full">
@@ -436,10 +436,10 @@ export default function InvoicesListPage() {
                       </StatusPill>
                     </div>
                   </TitanTableCell>
-                  <TitanTableCell className="text-right">{formatCurrency(invoice.displayTotal || invoice.total)}</TitanTableCell>
-                  <TitanTableCell className="text-right">{formatCurrency(invoice.displayPaid || invoice.amountPaid)}</TitanTableCell>
+                  <TitanTableCell className="text-right">{formatCurrency(invoice.displayTotal ?? invoice.total)}</TitanTableCell>
+                  <TitanTableCell className="text-right">{formatCurrency(invoice.displayPaid ?? invoice.amountPaid)}</TitanTableCell>
                   <TitanTableCell className="text-right font-semibold">
-                    {formatCurrency(invoice.displayRemaining || invoice.balanceDue || Number(invoice.total) - Number(invoice.amountPaid))}
+                    {formatCurrency(invoice.displayRemaining ?? invoice.balanceDue ?? Number(invoice.total) - Number(invoice.amountPaid))}
                   </TitanTableCell>
                   <TitanTableCell className="sticky right-0 bg-background" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center gap-2">

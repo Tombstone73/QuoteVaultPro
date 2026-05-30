@@ -240,7 +240,11 @@ function invoiceListSortExpression(sortBy: InvoiceListSortBy) {
     case 'total':
       return invoices.totalCents;
     case 'balance':
-      return sql`coalesce(${invoices.balanceDue}, '0')::numeric`;
+      return sql`case
+        when lower(coalesce(${invoices.importSource}, '')) = 'quickbooks'
+          then coalesce(${invoices.balanceDue}, '0')::numeric * 100
+        else greatest(coalesce(${invoices.totalCents}, 0) - round(coalesce(${invoices.amountPaid}, '0')::numeric * 100), 0)
+      end`;
     case 'issueDate':
     default:
       return invoices.issueDate;
@@ -507,6 +511,8 @@ export async function createInvoiceFromOrderInTransaction(
       taxCents,
       shippingCents,
       totalCents,
+      amountPaid: '0.00' as any,
+      balanceDue: (totalCents / 100).toFixed(2) as any,
       currency: ((order as any)?.currency as any) || 'USD',
       notesPublic: undefined,
       notesInternal: undefined,

@@ -5,6 +5,56 @@ import {
 } from '../invoiceAccountingDisplay';
 
 describe('normalizeInvoiceAccountingDisplay', () => {
+  test('TitanOS billed invoice with no payments ignores stale zero balance due', () => {
+    const normalized = normalizeInvoiceAccountingDisplay({
+      importSource: null,
+      total: '44.00',
+      totalCents: 4400,
+      amountPaid: '0.00',
+      balanceDue: '0.00',
+      status: 'billed',
+      payments: [],
+    });
+
+    expect(normalized.displayPaid).toBe(0);
+    expect(normalized.displayRemaining).toBe(44);
+    expect(normalized.displayStatus).toBe('Billed');
+    expect(normalized.paymentStatusLabel).toBe('Unpaid');
+    expect(normalized.isFullyPaid).toBe(false);
+  });
+
+  test('TitanOS partial and full payments drive remaining balance and paid label', () => {
+    const partial = normalizeInvoiceAccountingDisplay({
+      importSource: null,
+      total: '100.00',
+      totalCents: 10000,
+      amountPaid: '0.00',
+      balanceDue: '0.00',
+      status: 'billed',
+      payments: [{ id: 'p1', status: 'succeeded', amountCents: 2500 }],
+    });
+
+    expect(partial.displayPaid).toBe(25);
+    expect(partial.displayRemaining).toBe(75);
+    expect(partial.displayStatus).toBe('Partially Paid');
+    expect(partial.isFullyPaid).toBe(false);
+
+    const paid = normalizeInvoiceAccountingDisplay({
+      importSource: null,
+      total: '100.00',
+      totalCents: 10000,
+      amountPaid: '0.00',
+      balanceDue: '0.00',
+      status: 'billed',
+      payments: [{ id: 'p2', status: 'succeeded', amountCents: 10000 }],
+    });
+
+    expect(paid.displayPaid).toBe(100);
+    expect(paid.displayRemaining).toBe(0);
+    expect(paid.displayStatus).toBe('Paid');
+    expect(paid.isFullyPaid).toBe(true);
+  });
+
   test('historical imported paid invoice derives paid from total minus zero balance', () => {
     const normalized = normalizeInvoiceAccountingDisplay({
       importSource: 'quickbooks',

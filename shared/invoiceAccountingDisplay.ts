@@ -35,6 +35,13 @@ export type ImportedQuickBooksPaymentSummary = {
 };
 
 export type InvoiceAccountingDisplay = {
+  totalCents: number;
+  paidCents: number;
+  creditCents: number;
+  remainingCents: number;
+  paymentStatusLabel: string;
+  invoiceWorkflowStatus: string;
+  isFullyPaid: boolean;
   displayTotal: number;
   displayPaid: number;
   displayRemaining: number;
@@ -98,6 +105,18 @@ function toSafeCents(value: unknown): number {
 
 function centsToMoney(value: number): number {
   return Math.max(0, value) / 100;
+}
+
+function centsToPaymentStatusLabel(params: {
+  rawStatus: string;
+  paidCents: number;
+  remainingCents: number;
+}): string {
+  if (params.rawStatus === 'void' || params.rawStatus === 'voided') return 'Voided';
+  if (params.rawStatus === 'draft') return 'Draft';
+  if (params.remainingCents <= 0 && params.paidCents > 0) return 'Paid';
+  if (params.paidCents > 0 && params.remainingCents > 0) return 'Partially Paid';
+  return 'Unpaid';
 }
 
 function titleCaseFallback(value: string): string {
@@ -187,6 +206,7 @@ export function normalizeInvoiceAccountingDisplay(
   const isImportedFromQuickBooks = String(invoice.importSource || '').trim().toLowerCase() === 'quickbooks';
   const isHistorical = Boolean(invoice.isHistorical);
   const importedQuickBooksPaymentSummary = summarizeImportedQuickBooksPayments(invoice.payments);
+  const hasPaymentRows = Array.isArray(invoice.payments);
 
   const displayTotalCents = invoice.totalCents != null
     ? Math.max(0, Math.round(Number(invoice.totalCents)))
@@ -198,21 +218,37 @@ export function normalizeInvoiceAccountingDisplay(
       ? moneyToCents(invoice.balanceDue)
       : Math.max(0, displayTotalCents - moneyToCents(invoice.amountPaid));
 
-  const rawRemainingCents = isImportedFromQuickBooks && !isHistorical && Array.isArray(invoice.payments)
-    ? Math.max(0, qbBalanceSnapshotCents - importedQuickBooksPaymentSummary.unreconciledCents)
-    : invoice.balanceDue != null
-      ? moneyToCents(invoice.balanceDue)
-      : qbBalanceSnapshotCents;
+  const localPaymentPaidCents = hasPaymentRows
+    ? (invoice.payments || []).reduce((sum, payment) => {
+        const paymentStatus = normalizePaymentStatus(payment?.status);
+        const amountCents = toSafeCents(payment?.amountCents);
+        if (paymentStatus === 'succeeded') return sum + amountCents;
+        if (paymentStatus === 'refunded') return sum - amountCents;
+        return sum;
+      }, 0)
+    : moneyToCents(invoice.amountPaid);
+
+  const rawRemainingCents = isImportedFromQuickBooks
+    ? (!isHistorical && hasPaymentRows
+        ? Math.max(0, qbBalanceSnapshotCents - importedQuickBooksPaymentSummary.unreconciledCents)
+        : qbBalanceSnapshotCents)
+    : Math.max(0, displayTotalCents - Math.max(0, localPaymentPaidCents));
 
   const displayRemainingCents = Math.max(0, Math.min(displayTotalCents, rawRemainingCents));
 
   const rawPaidCents = isImportedFromQuickBooks
     ? Math.max(0, displayTotalCents - displayRemainingCents)
-    : invoice.amountPaid != null
-      ? moneyToCents(invoice.amountPaid)
-      : Math.max(0, displayTotalCents - displayRemainingCents);
+    : Math.max(0, localPaymentPaidCents);
 
   const displayPaidCents = Math.max(0, Math.min(displayTotalCents, rawPaidCents));
+  const creditCents = 0;
+  const isFullyPaid = displayTotalCents > 0 && displayRemainingCents <= 0 && displayPaidCents + creditCents >= displayTotalCents;
+  const paymentStatusLabel = centsToPaymentStatusLabel({
+    rawStatus,
+    paidCents: displayPaidCents,
+    remainingCents: displayRemainingCents,
+  });
+  const invoiceWorkflowStatus = rawStatus || 'unpaid';
 
   let displayStatus: string;
   if (rawStatus === 'void' || rawStatus === 'voided') {
@@ -234,14 +270,23 @@ export function normalizeInvoiceAccountingDisplay(
       displayStatus = 'Partially Paid';
     }
   } else if (!rawStatus) {
-    if (displayRemainingCents <= 0) displayStatus = 'Paid';
+    if (isFullyPaid) displayStatus = 'Paid';
     else if (displayPaidCents > 0) displayStatus = 'Partially Paid';
     else displayStatus = 'Unpaid';
+  } else if (rawStatus === 'paid' || rawStatus === 'partially_paid') {
+    displayStatus = paymentStatusLabel;
   } else {
-    displayStatus = getPreservedStatusLabel(rawStatus);
+    displayStatus = displayPaidCents > 0 ? paymentStatusLabel : getPreservedStatusLabel(rawStatus);
   }
 
   return {
+    totalCents: displayTotalCents,
+    paidCents: displayPaidCents,
+    creditCents,
+    remainingCents: displayRemainingCents,
+    paymentStatusLabel,
+    invoiceWorkflowStatus,
+    isFullyPaid,
     displayTotal: centsToMoney(displayTotalCents),
     displayPaid: centsToMoney(displayPaidCents),
     displayRemaining: centsToMoney(displayRemainingCents),
@@ -256,6 +301,16 @@ export function normalizeInvoiceAccountingDisplay(
     productionWorkflowDisabled: isImportedFromQuickBooks,
     importedQuickBooksPaymentSummary,
   };
+}
+
+export function computeInvoiceAccountingDisplay(
+  invoice: InvoiceAccountingDisplayInput,
+  payments?: InvoiceAccountingPaymentInput[],
+): InvoiceAccountingDisplay {
+  return normalizeInvoiceAccountingDisplay({
+    ...invoice,
+    payments: payments ?? invoice.payments,
+  });
 }
 
 function readNestedNumber(source: Record<string, any> | null | undefined, keys: string[]): number | null {

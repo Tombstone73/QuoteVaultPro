@@ -198,7 +198,19 @@ export async function computeOperationalSummary(organizationId: string): Promise
           eq(invoices.isHistorical, false),
           notInArray(invoices.status as any, ["paid", "void"]),
           or(
-            inArray(invoices.status as any, ["draft", "finalized", "billed"]),
+            inArray(invoices.status as any, ["draft"]),
+            and(
+              inArray(invoices.status as any, ["finalized", "billed", "sent", "partially_paid", "overdue"]),
+              sql`not exists (
+                select 1
+                from ${invoiceEmailLogs}
+                where ${invoiceEmailLogs.organizationId} = ${organizationId}
+                  and ${invoiceEmailLogs.invoiceId} = ${invoices.id}
+                  and ${invoiceEmailLogs.type} = 'invoice_send'
+                  and ${invoiceEmailLogs.status} = 'sent'
+                  and ${invoiceEmailLogs.sentAt} >= ${invoices.updatedAt}
+              )`,
+            ),
             sql`exists (
               select 1
               from ${invoiceEmailLogs}
