@@ -142,6 +142,11 @@ function parseOptionalNonNegative(value: string, label: string) {
   return parsed;
 }
 
+function formatUnsavedChanges(count: number) {
+  if (count === 0) return "No unsaved changes";
+  if (count === 1) return "1 unsaved change";
+  return `${count} unsaved changes`;
+}
 
 function getVendorName(material: Material, vendorNamesById: Map<string, string>) {
   if (!material.preferredVendorId) return "Unassigned";
@@ -222,7 +227,7 @@ export default function MaterialsListPage() {
     [columns]
   );
 
-  const visibleColumns = normalizedColumns.filter((c) => c.visible);
+  const visibleColumns = normalizedColumns.filter((c) => c.visible && (!countMode || c.id !== "actions"));
   const vendorNamesById = useMemo(
     () => new Map(vendors.map((vendor) => [vendor.id, vendor.name])),
     [vendors]
@@ -599,16 +604,6 @@ export default function MaterialsListPage() {
       case "alerts":
         return <LowStockBadge stock={stock} min={min} />;
       case "actions":
-        if (countMode) {
-          return rowIsDirty ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">
-              <ClipboardCheck className="h-3.5 w-3.5" />
-              Dirty
-            </span>
-          ) : (
-            <span className="text-xs text-titan-text-muted">Clean</span>
-          );
-        }
         return (
           <div className="flex gap-1" onClick={e => e.stopPropagation()}>
             <TitanIconButton icon={Pencil} variant="ghost" onClick={() => setEditMaterial(m)} title="Edit material" />
@@ -629,40 +624,47 @@ export default function MaterialsListPage() {
         title="Materials"
         subtitle="Manage inventory and track stock levels"
         actions={
-          <div className="flex flex-wrap justify-end gap-2">
-            <Button variant="outline" onClick={() => setPrintSheetOpen(true)}>
-              <Printer className="w-4 h-4 mr-2" />
-              Print Inventory Sheet
-            </Button>
-            <ListViewSettings
-              columns={normalizedColumns}
-              onToggleVisibility={toggleVisibility}
-              onReorder={setColumnOrder}
-              onWidthChange={setColumnWidth}
-            />
+          <div className="flex flex-col items-end gap-1.5">
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button variant="outline" onClick={() => setPrintSheetOpen(true)}>
+                <Printer className="w-4 h-4 mr-2" />
+                Print Inventory Sheet
+              </Button>
+              <ListViewSettings
+                columns={normalizedColumns}
+                onToggleVisibility={toggleVisibility}
+                onReorder={setColumnOrder}
+                onWidthChange={setColumnWidth}
+              />
+              {countMode ? (
+                <>
+                  <Button variant="outline" onClick={cancelCountMode} disabled={isSavingInventory}>
+                    <X className="w-4 h-4 mr-2" />
+                    Cancel
+                  </Button>
+                  <Button onClick={saveInventoryChanges} disabled={isSavingInventory || dirtyRows.length === 0}>
+                    <Save className="w-4 h-4 mr-2" />
+                    {isSavingInventory ? "Saving..." : `Save${dirtyRows.length ? ` (${dirtyRows.length})` : ""}`}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button variant="outline" onClick={enterCountMode}>
+                    <ClipboardCheck className="w-4 h-4 mr-2" />
+                    Edit Inventory
+                  </Button>
+                  <Button onClick={() => setShowCreate(true)}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    New Material
+                  </Button>
+                </>
+              )}
+            </div>
             {countMode ? (
-              <>
-                <Button variant="outline" onClick={cancelCountMode} disabled={isSavingInventory}>
-                  <X className="w-4 h-4 mr-2" />
-                  Cancel
-                </Button>
-                <Button onClick={saveInventoryChanges} disabled={isSavingInventory || dirtyRows.length === 0}>
-                  <Save className="w-4 h-4 mr-2" />
-                  {isSavingInventory ? "Saving..." : `Save${dirtyRows.length ? ` (${dirtyRows.length})` : ""}`}
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button variant="outline" onClick={enterCountMode}>
-                  <ClipboardCheck className="w-4 h-4 mr-2" />
-                  Edit Inventory
-                </Button>
-                <Button onClick={() => setShowCreate(true)}>
-                  <Plus className="w-4 h-4 mr-2" />
-                  New Material
-                </Button>
-              </>
-            )}
+              <p className="max-w-xl text-right text-xs text-titan-text-muted">
+                Update counted quantities and pricing, then save changes. Quantity changes are recorded as inventory adjustments.
+              </p>
+            ) : null}
           </div>
         }
       />
@@ -697,7 +699,7 @@ export default function MaterialsListPage() {
             </Button>
             {countMode && (
               <div className="flex items-center rounded-md border border-amber-200 bg-amber-50 px-3 text-sm text-amber-900">
-                {dirtyRows.length} dirty row{dirtyRows.length === 1 ? "" : "s"}
+                {formatUnsavedChanges(dirtyRows.length)}
               </div>
             )}
           </div>
@@ -823,7 +825,7 @@ function InventoryCountPrintDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] max-w-6xl overflow-y-auto">
+      <DialogContent className="inventory-count-print-shell max-h-[90vh] max-w-6xl overflow-y-auto">
         <DialogHeader className="inventory-count-print-actions">
           <DialogTitle>Inventory Count Sheet</DialogTitle>
           <DialogDescription>
@@ -833,28 +835,84 @@ function InventoryCountPrintDialog({
         <style>
           {`
             @media print {
+              @page {
+                margin: 0.35in;
+              }
+              html,
+              body {
+                width: 100% !important;
+                height: auto !important;
+                min-height: 0 !important;
+                overflow: visible !important;
+                background: #fff !important;
+              }
+              #root,
+              .inventory-count-print-actions {
+                display: none !important;
+              }
               body * {
                 visibility: hidden !important;
               }
+              .inventory-count-print-shell,
+              .inventory-count-print-shell *,
               .inventory-count-print-root,
               .inventory-count-print-root * {
                 visibility: visible !important;
               }
-              .inventory-count-print-root {
-                position: fixed !important;
-                inset: 0 !important;
+              .inventory-count-print-shell {
+                position: static !important;
+                left: auto !important;
+                top: auto !important;
+                right: auto !important;
+                bottom: auto !important;
+                transform: none !important;
+                translate: none !important;
+                display: block !important;
                 width: 100% !important;
-                padding: 0.25in !important;
+                max-width: none !important;
+                height: auto !important;
+                max-height: none !important;
+                overflow: visible !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                border: 0 !important;
+                box-shadow: none !important;
+                background: #fff !important;
+                color: #000 !important;
+              }
+              .inventory-count-print-root {
+                position: static !important;
+                display: block !important;
+                width: 100% !important;
+                max-width: none !important;
+                height: auto !important;
+                max-height: none !important;
+                overflow: visible !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                transform: none !important;
                 background: #fff !important;
                 color: #000 !important;
                 font-size: 10pt !important;
               }
-              .inventory-count-print-actions {
-                display: none !important;
+              .inventory-count-print-heading {
+                display: block !important;
+                width: 100% !important;
               }
               .inventory-count-print-table {
                 width: 100% !important;
                 border-collapse: collapse !important;
+                page-break-inside: auto !important;
+              }
+              .inventory-count-print-table thead {
+                display: table-header-group !important;
+              }
+              .inventory-count-print-table tbody {
+                display: table-row-group !important;
+              }
+              .inventory-count-print-table tr {
+                page-break-inside: avoid !important;
+                page-break-after: auto !important;
               }
               .inventory-count-print-table th,
               .inventory-count-print-table td {
@@ -875,7 +933,7 @@ function InventoryCountPrintDialog({
           `}
         </style>
         <div className="inventory-count-print-root space-y-4 rounded-md bg-white text-black">
-          <div className="flex items-end justify-between gap-4 border-b border-black pb-3">
+          <div className="inventory-count-print-heading flex items-end justify-between gap-4 border-b border-black pb-3">
             <div>
               <h2 className="text-xl font-semibold text-black">Inventory Count Sheet</h2>
               <p className="text-sm text-black">Date: {printDate}</p>
@@ -917,8 +975,8 @@ function InventoryCountPrintDialog({
                       <td className="border border-black p-2 text-right">
                         {normalizeNumericText(material.stockQuantity)} {material.inventoryUnit || material.unitOfMeasure || ""}
                       </td>
-                      <td className="h-10 border border-black p-2">&nbsp;</td>
-                      <td className="h-10 border border-black p-2">&nbsp;</td>
+                      <td className="border border-black p-2 py-4">&nbsp;</td>
+                      <td className="border border-black p-2 py-4">&nbsp;</td>
                     </tr>
                   </Fragment>
                 );
