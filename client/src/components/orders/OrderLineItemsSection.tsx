@@ -79,6 +79,7 @@ import {
   buildProductReplacementDraft,
   buildSavedSnapshotAfterLineItemSave,
   hasOrderLineItemDraftChanges,
+  reconcileLineItemListSafely,
   normalizeVariantId,
   shouldApplyOrderLineItemPreviewResult,
   type OrderLineItemSavedSnapshot,
@@ -758,12 +759,24 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   const lineItemPreviewsQuery = useOrderLineItemPreviews(orderId);
   const lineItemPreviews = lineItemPreviewsQuery.data ?? {};
+
+  const previousLineItemsRef = useRef<OrderLineItem[]>([]);
+  const displayLineItems = useMemo(() => {
+    return reconcileLineItemListSafely(previousLineItemsRef.current as any[], lineItems as any[], {
+      patchKind: "hydration",
+      preserveLocalDrafts: false,
+    }) as OrderLineItem[];
+  }, [lineItems]);
+
+  useEffect(() => {
+    previousLineItemsRef.current = displayLineItems;
+  }, [displayLineItems]);
   const lineItemAssetsAssociationKnown = lineItemPreviewsQuery.isSuccess;
 
   // UI-only reordering: keep a stable ordered id list for the current session.
   const activeLineItems = useMemo(
-    () => lineItems.filter((li) => li.status !== "canceled"),
-    [lineItems]
+    () => displayLineItems.filter((li) => li.status !== "canceled"),
+    [displayLineItems]
   );
 
   const canEditLineItemRecord = useCallback(
@@ -965,7 +978,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   );
 
   useEffect(() => {
-    const liveIds = new Set(lineItems.map((item) => String(item.id)));
+    const liveIds = new Set(displayLineItems.map((item) => String(item.id)));
     for (const lineItemId of Object.keys(lineItemTopAnchorRefs.current)) {
       if (!liveIds.has(lineItemId)) {
         delete lineItemTopAnchorRefs.current[lineItemId];
@@ -984,7 +997,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       }
       return changed ? next : prev;
     });
-  }, [lineItems]);
+  }, [displayLineItems]);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -1068,8 +1081,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [notesDraftById, setNotesDraftById] = useState<Record<string, string>>({});
 
   const expandedItem = useMemo(
-    () => lineItems.find((li) => li.id === expandedId) ?? null,
-    [lineItems, expandedId]
+    () => displayLineItems.find((li) => li.id === expandedId) ?? null,
+    [displayLineItems, expandedId]
   );
   const [draftProductId, setDraftProductId] = useState("");
   const [draftProductVariantId, setDraftProductVariantId] = useState<string | null>(null);
@@ -1405,8 +1418,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   }, [expandedId]);
 
   const artworkModalLineItem = useMemo(
-    () => lineItems.find((li) => li.id === artworkModalLineItemId) ?? null,
-    [lineItems, artworkModalLineItemId]
+    () => displayLineItems.find((li) => li.id === artworkModalLineItemId) ?? null,
+    [displayLineItems, artworkModalLineItemId]
   );
 
   const artworkModalProductName = useMemo(() => {
@@ -2480,7 +2493,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       </CardHeader>
 
       <CardContent className="px-0 py-0 overflow-x-hidden">
-        {lineItems.length === 0 ? (
+        {displayLineItems.length === 0 ? (
           <div className="py-4 text-center text-sm text-muted-foreground">—</div>
         ) : (
           <DndContext

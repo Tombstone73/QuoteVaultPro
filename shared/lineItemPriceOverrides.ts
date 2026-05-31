@@ -138,16 +138,19 @@ export function hydrateLineItemEditPricingState(lineItem: unknown): LineItemEdit
         allowLegacyOverride ? overrideRecord.overridePriceCents : null,
       );
 
+  const snapshotTotalCents = getPbv2SnapshotTotalCents(record);
+
   const persistedEffectiveTotalCents =
     toCents(record.effectiveTotalCents) ??
     toCents(overrideRecord.effectiveTotalCents) ??
+    snapshotTotalCents ??
     toDollarsAsCents(record.totalPrice) ??
     0;
 
   const baseCalculatedTotalCents =
     toCents(record.baseCalculatedTotalCents) ??
     toCents(overrideRecord.baseCalculatedTotalCents) ??
-    getPbv2SnapshotTotalCents(record) ??
+    snapshotTotalCents ??
     (normalized.override ? persistedEffectiveTotalCents : persistedEffectiveTotalCents);
 
   const resolved = resolveLineItemEffectivePricing({

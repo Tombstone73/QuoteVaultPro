@@ -13,6 +13,11 @@ import type { LineItemOptionSelectionsV2 } from "@shared/optionTreeV2";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import { isPbv2Product } from "@/lib/pbv2Utils";
 import type { QuoteLineItemDraft, Address, OptionSelection } from "./types";
+import {
+    mergeLineItemPatchSafely,
+    reconcileLineItemListSafely,
+    resolveLineItemDisplayPriceCents,
+} from "@/components/orders/orderLineItemEditState";
 
 type QuoteEditorRouteParams = {
     id?: string;
@@ -33,6 +38,65 @@ export type QuoteDuplicateMode = "quote_only" | "quote_with_artwork";
  */
 function getStableLineItemKey(li: QuoteLineItemDraft): string {
     return li.tempId || li.id || "";
+}
+
+function mapQuoteApiLineItemToDraft(item: any, idx: number): QuoteLineItemDraft {
+    const parsedLinePrice = Number.parseFloat(item.linePrice);
+    const linePrice = Number.isFinite(parsedLinePrice)
+        ? parsedLinePrice
+        : resolveLineItemDisplayPriceCents(item) / 100;
+    const baseOverrideCents = Number((item as any).priceOverride?.baseCalculatedTotalCents);
+    return {
+        id: item.id,
+        productId: item.productId,
+        productName: item.productName,
+        variantId: item.variantId,
+        variantName: item.variantName,
+        productType: item.productType || 'wide_roll',
+        status: (item as any).status || 'active',
+        width: Number.parseFloat(item.width),
+        height: Number.parseFloat(item.height),
+        quantity: item.quantity,
+        specsJson: item.specsJson || {},
+        optionSelectionsJson: (item as any).optionSelectionsJson ?? null,
+        pbv2TreeVersionId: (item as any).pbv2TreeVersionId ?? null,
+        pbv2SnapshotJson: (item as any).pbv2SnapshotJson ?? null,
+        pricedAt: (item as any).pricedAt ?? null,
+        materialUsages: (item as any).materialUsages ?? [],
+        selectedOptions: item.selectedOptions || [],
+        linePrice,
+        priceOverride: (item as any).priceOverride ?? null,
+        overridePriceCents: typeof item.overridePriceCents === "number" ? item.overridePriceCents : null,
+        overrideAt: item.overrideAt || null,
+        overrideByUserId: item.overrideByUserId || null,
+        overrideReason: item.overrideReason || null,
+        // Preserve the backend base price when an override is active.
+        priceOverridden: false,
+        overriddenPrice: null,
+        formulaLinePrice: Number.isFinite(baseOverrideCents)
+            ? baseOverrideCents / 100
+            : linePrice,
+        priceBreakdown: item.priceBreakdown,
+        displayOrder: idx,
+        notes: (item.specsJson as any)?.notes || undefined,
+        productOptions: (item as any).productOptions || (item as any).product?.optionsJson || [],
+    };
+}
+
+function hasQuoteLineItemPricingPatch(updates: Partial<QuoteLineItemDraft>): boolean {
+    return [
+        "linePrice",
+        "formulaLinePrice",
+        "priceBreakdown",
+        "pbv2SnapshotJson",
+        "pricedAt",
+        "materialUsages",
+        "priceOverride",
+        "overridePriceCents",
+        "overrideAt",
+        "overrideByUserId",
+        "overrideReason",
+    ].some((field) => Object.prototype.hasOwnProperty.call(updates, field));
 }
 
 /**
@@ -681,41 +745,13 @@ export function useQuoteEditorState() {
         setQuoteTaxExempt((q as any).quoteTaxExempt ?? null);
         setQuoteTaxRateOverride((q as any).quoteTaxRateOverride != null ? Number((q as any).quoteTaxRateOverride) : null);
 
-        setLineItems((quote as any).lineItems?.map((item: any, idx: number) => ({
-            id: item.id,
-            productId: item.productId,
-            productName: item.productName,
-            variantId: item.variantId,
-            variantName: item.variantName,
-            productType: item.productType || 'wide_roll',
-            status: (item as any).status || 'active',
-            width: parseFloat(item.width),
-            height: parseFloat(item.height),
-            quantity: item.quantity,
-            specsJson: item.specsJson || {},
-            optionSelectionsJson: (item as any).optionSelectionsJson ?? null,
-            pbv2TreeVersionId: (item as any).pbv2TreeVersionId ?? null,
-            pbv2SnapshotJson: (item as any).pbv2SnapshotJson ?? null,
-            pricedAt: (item as any).pricedAt ?? null,
-            materialUsages: (item as any).materialUsages ?? [],
-            selectedOptions: item.selectedOptions || [],
-            linePrice: parseFloat(item.linePrice),
-            priceOverride: (item as any).priceOverride ?? null,
-            overridePriceCents: typeof item.overridePriceCents === "number" ? item.overridePriceCents : null,
-            overrideAt: item.overrideAt || null,
-            overrideByUserId: item.overrideByUserId || null,
-            overrideReason: item.overrideReason || null,
-            // Preserve the backend base price when an override is active.
-            priceOverridden: false,
-            overriddenPrice: null,
-            formulaLinePrice: Number.isFinite(Number((item as any).priceOverride?.baseCalculatedTotalCents))
-                ? Number((item as any).priceOverride.baseCalculatedTotalCents) / 100
-                : parseFloat(item.linePrice),
-            priceBreakdown: item.priceBreakdown,
-            displayOrder: idx,
-            notes: (item.specsJson as any)?.notes || undefined,
-            productOptions: (item as any).productOptions || (item as any).product?.optionsJson || [],
-        })) || []);
+        const hydratedLineItems = ((quote as any).lineItems || []).map(mapQuoteApiLineItemToDraft);
+        setLineItems((prev) =>
+            reconcileLineItemListSafely(prev, hydratedLineItems, {
+                patchKind: "hydration",
+                preserveLocalDrafts: true,
+            }) as QuoteLineItemDraft[]
+        );
 
         // Update discard snapshot when we load a quote (and only once per loaded quote data).
         savedSnapshotRef.current = {
@@ -757,40 +793,7 @@ export function useQuoteEditorState() {
                 }
             })(),
             discountAmount: Number.parseFloat((quote as any).discountAmount || "0") || 0,
-            lineItems: (quote as any).lineItems?.map((item: any, idx: number) => ({
-                id: item.id,
-                productId: item.productId,
-                productName: item.productName,
-                variantId: item.variantId,
-                variantName: item.variantName,
-                productType: item.productType || 'wide_roll',
-                status: (item as any).status || 'active',
-                width: parseFloat(item.width),
-                height: parseFloat(item.height),
-                quantity: item.quantity,
-                specsJson: item.specsJson || {},
-                optionSelectionsJson: (item as any).optionSelectionsJson ?? null,
-                pbv2TreeVersionId: (item as any).pbv2TreeVersionId ?? null,
-                pbv2SnapshotJson: (item as any).pbv2SnapshotJson ?? null,
-                pricedAt: (item as any).pricedAt ?? null,
-                materialUsages: (item as any).materialUsages ?? [],
-                selectedOptions: item.selectedOptions || [],
-                linePrice: parseFloat(item.linePrice),
-                priceOverride: (item as any).priceOverride ?? null,
-                overridePriceCents: typeof item.overridePriceCents === "number" ? item.overridePriceCents : null,
-                overrideAt: item.overrideAt || null,
-                overrideByUserId: item.overrideByUserId || null,
-                overrideReason: item.overrideReason || null,
-                priceOverridden: false,
-                overriddenPrice: null,
-                formulaLinePrice: Number.isFinite(Number((item as any).priceOverride?.baseCalculatedTotalCents))
-                    ? Number((item as any).priceOverride.baseCalculatedTotalCents) / 100
-                    : parseFloat(item.linePrice),
-                priceBreakdown: item.priceBreakdown,
-                displayOrder: idx,
-                notes: (item.specsJson as any)?.notes || undefined,
-                productOptions: (item as any).productOptions || (item as any).product?.optionsJson || [],
-            })) || [],
+            lineItems: hydratedLineItems.map((li: QuoteLineItemDraft) => ({ ...li })),
         };
     }, [quote, quoteId]); // ONLY depend on quote and quoteId - removed individual field dependencies
 
@@ -2221,7 +2224,9 @@ export function useQuoteEditorState() {
             prev.map((li) => {
                 const key = getStableLineItemKey(li);
                 if (key !== itemKey) return li;
-                return { ...li, ...updates };
+                return mergeLineItemPatchSafely(li, updates, {
+                    patchKind: hasQuoteLineItemPricingPatch(updates) ? "pricing" : "generic",
+                });
             })
         );
     }, []);
