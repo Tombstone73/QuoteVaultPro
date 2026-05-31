@@ -26,6 +26,7 @@ import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { buildPbv2DefaultSelections } from "@shared/pbv2OrderEntryRuntime";
+import { deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
 import {
   getLineItemPriceOverrideLabel,
@@ -996,7 +997,13 @@ export function LineItemsSection({
                     const baseCalculatedTotalCents = getQuoteLineItemBaseTotalCents(item);
                     const baseCalculatedTotal = baseCalculatedTotalCents / 100;
                     const overrideValueCents = getQuoteLineItemOverrideValueCents(item, selectedOverrideMode);
-                    const editorPriceValue = overrideValueCents != null ? overrideValueCents / 100 : item.linePrice;
+                    const visiblePrice = deriveVisibleLineItemPriceDisplay({
+                      lineItem: item as any,
+                      aggregateTotalCents: baseCalculatedTotalCents > 0 ? baseCalculatedTotalCents : null,
+                      attachmentState: item.pendingAttachments?.length ? "attachment_uploading" : item.id ? "attachment_attached_or_saved" : "temp",
+                      source: "QuoteLineItemsSection.visible",
+                    });
+                    const editorPriceValue = overrideValueCents != null ? overrideValueCents / 100 : visiblePrice.displayTotal;
                     const hasProductionNotes = !!(item.productionNotes && item.productionNotes.trim());
                     const requiresProofApproval = Boolean((product as any)?.requiresProofApproval ?? (item as any).requiresProofApproval);
 
@@ -1012,8 +1019,8 @@ export function LineItemsSection({
                             title={item.productName}
                             sizeLabel={`${item.width}" × ${item.height}"`}
                             qtyLabel={`Qty ${item.quantity}`}
-                            unitPriceLabel={`${formatMoney(item.linePrice / item.quantity)}/ea`}
-                            totalLabel={formatMoney(item.linePrice)}
+                            unitPriceLabel={`${formatMoney(visiblePrice.displayPerEach)}/ea`}
+                            totalLabel={formatMoney(visiblePrice.displayTotal)}
                             badges={{
                               draft: item.status === "draft" && !readOnly,
                               override: hasOverride,
@@ -1038,8 +1045,8 @@ export function LineItemsSection({
                             onQuantityIncrement={() => setQty((q) => (q || 1) + 1)}
                             onQuantityDecrement={() => setQty((q) => Math.max(1, (q || 1) - 1))}
                             dimsRequired={dimsRequired}
-                            price={item.linePrice}
-                            priceOverride={item.overridePriceCents != null ? item.overridePriceCents / 100 : null}
+                            price={visiblePrice.displayTotal}
+                            priceOverride={item.overridePriceCents != null ? visiblePrice.displayTotal : null}
                             priceOverrideLabel={overrideLabel}
                             editingPrice={editingPriceItemKey === itemKey}
                             priceEditText={
@@ -1181,7 +1188,7 @@ export function LineItemsSection({
                                     <div>
                                       <div className="text-sm font-medium">Price Override</div>
                                       <div className="text-xs text-muted-foreground">
-                                        Calculated {formatMoney(baseCalculatedTotal)} · Effective {formatMoney(item.linePrice)}
+                                        Calculated {formatMoney(baseCalculatedTotal)} · Effective {formatMoney(visiblePrice.displayTotal)}
                                       </div>
                                     </div>
                                     {hasOverride ? (
@@ -1198,7 +1205,7 @@ export function LineItemsSection({
                                         setPriceOverrideModeByKey((prev) => ({ ...prev, [itemKey]: nextMode }));
                                         const currentValueCents = getQuoteLineItemOverrideValueCents(item, nextMode);
                                         const currentValue =
-                                          currentValueCents != null ? currentValueCents / 100 : item.linePrice;
+                                          currentValueCents != null ? currentValueCents / 100 : visiblePrice.displayTotal;
                                         setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: currentValue.toFixed(2) }));
                                       }}
                                       className="h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"

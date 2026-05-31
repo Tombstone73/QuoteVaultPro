@@ -43,7 +43,7 @@ import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } 
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
-import { deriveLineItemPricingDisplay } from "@/components/orders/lineItemPricingDisplay";
+import { deriveLineItemPricingDisplay, deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { buildQuoteCalculatePayload } from "@/components/orders/quoteCalculatePayload";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import { useToast } from "@/hooks/use-toast";
@@ -2539,16 +2539,24 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const persistedPricing = hydrateLineItemEditPricingState(item);
                   const pendingPricing = pendingPriceOverrideById[String(item.id)];
                   const total = persistedPricing.persistedEffectiveTotalCents / 100;
-                  const displayPersistedTotal = pendingPricing ? pendingPricing.effectiveTotalCents / 100 : total;
-                  const parsedUnit = Number.parseFloat(item.unitPrice || "");
-                  const perEa = Number.isFinite(parsedUnit)
-                    ? parsedUnit
-                    : item.quantity > 0
-                      ? total / item.quantity
-                      : 0;
+                  const previousDisplayLineItem =
+                    previousLineItemsRef.current.find((previous) => String(previous.id) === String(item.id)) as any | undefined;
+                  const isActiveItem = isExpanded && expandedItem?.id === item.id;
+                  const visiblePersistedPrice = deriveVisibleLineItemPriceDisplay({
+                    lineItem: item as any,
+                    previousLineItem: previousDisplayLineItem ?? null,
+                    aggregateTotalCents: pendingPricing
+                      ? pendingPricing.effectiveTotalCents
+                      : isActiveItem && computedTotal !== null && Number.isFinite(computedTotal)
+                        ? Math.round(computedTotal * 100)
+                        : null,
+                    attachmentState: "attachment_attached_or_saved",
+                    source: "OrderLineItemsSection.visible",
+                  });
+                  const displayPersistedTotal = pendingPricing ? pendingPricing.effectiveTotalCents / 100 : visiblePersistedPrice.displayTotal;
                   const displayPersistedPerEa = pendingPricing
                     ? pendingPricing.effectiveUnitPriceCents / 100
-                    : perEa;
+                    : visiblePersistedPrice.displayPerEach;
 
                   const itemNotes = (itemSpecsJson as any)?.lineItemNotes as
                     | { sku?: string | null; descShort?: string | null; descLong?: string | null }
@@ -2571,7 +2579,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   // Live preview price for the currently-expanded item (not yet saved).
                   // Per-each is derived from the qty the preview total was priced for,
                   // never the live draft qty, so total and per-each stay consistent.
-                  const isActiveItem = isExpanded && expandedItem?.id === item.id;
                   const { displayTotal, displayPerEach: displayPerEa, isPreviewPrice } =
                     deriveLineItemPricingDisplay({
                       isActiveItem,
