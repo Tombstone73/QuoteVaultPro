@@ -23,6 +23,25 @@ describe("order line item edit pricing state", () => {
     expect(state.priceOverrideMode).toBeNull();
   });
 
+  it("hydrates display price from the pricing snapshot when stored totals are missing or defaulted", () => {
+    const state = hydrateLineItemEditPricingState({
+      id: "li-snapshot",
+      quantity: 2,
+      totalPrice: "0.00",
+      unitPrice: "0.00",
+      hasPriceOverride: false,
+      pbv2SnapshotJson: {
+        pricing: {
+          totalCents: 4200,
+        },
+      },
+    });
+
+    expect(state.persistedEffectiveTotalCents).toBe(4200);
+    expect(state.effectiveTotalCents).toBe(4200);
+    expect(state.effectiveUnitPriceCents).toBe(2100);
+  });
+
   it("applies a total override immediately as the live effective total", () => {
     const next = applyLineItemEditPriceOverride({
       baseCalculatedTotalCents: 1500,

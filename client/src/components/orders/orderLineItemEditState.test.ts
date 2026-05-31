@@ -3,6 +3,9 @@ import {
   buildProductReplacementDraft,
   buildSavedSnapshotAfterLineItemSave,
   hasOrderLineItemDraftChanges,
+  mergeLineItemPatchSafely,
+  reconcileLineItemListSafely,
+  resolveLineItemDisplayPriceCents,
   type OrderLineItemSavedSnapshot,
 } from "./orderLineItemEditState";
 
@@ -115,5 +118,126 @@ describe("order line item edit state", () => {
         savedDesignBriefJson: "{}",
       }),
     ).toBe(false);
+  });
+
+  it("preserves pricing/display fields when an attachment-only patch has no pricing fields", () => {
+    const existing = {
+      id: "li-1",
+      quantity: 2,
+      unitPrice: "50.00",
+      totalPrice: "100.00",
+      baseCalculatedTotalCents: 10000,
+      effectiveTotalCents: 10000,
+      hasPriceOverride: false,
+      pbv2SnapshotJson: { pricing: { totalCents: 10000 } },
+    };
+
+    const merged = mergeLineItemPatchSafely(existing as any, {
+      id: "li-1",
+      attachments: [{ id: "file-1" }],
+      updatedAt: "2026-05-31T22:00:00.000Z",
+    } as any, { patchKind: "attachment" });
+
+    expect(merged.attachments).toHaveLength(1);
+    expect(merged.totalPrice).toBe("100.00");
+    expect(merged.effectiveTotalCents).toBe(10000);
+    expect(resolveLineItemDisplayPriceCents(merged)).toBe(10000);
+  });
+
+  it("does not let product-list reconciliation reset an existing priced row to zero", () => {
+    const existingRows: any[] = [
+      {
+        id: "li-1",
+        quantity: 2,
+        totalPrice: "100.00",
+        effectiveTotalCents: 10000,
+        unitPrice: "50.00",
+      },
+    ];
+
+    const nextRows = reconcileLineItemListSafely(existingRows, [
+      { id: "li-1", quantity: 2, totalPrice: "0.00", unitPrice: "0.00" },
+      { id: "li-2", quantity: 1, totalPrice: "25.00", unitPrice: "25.00" },
+    ], { patchKind: "product_add", preserveLocalDrafts: false });
+
+    expect(nextRows).toHaveLength(2);
+    expect(nextRows[0].totalPrice).toBe("100.00");
+    expect(resolveLineItemDisplayPriceCents(nextRows[0])).toBe(10000);
+    expect(resolveLineItemDisplayPriceCents(nextRows[1])).toBe(2500);
+  });
+
+  it("allows an explicit pricing result of zero to replace a previous non-zero price", () => {
+    const merged = mergeLineItemPatchSafely(
+      { id: "li-1", quantity: 1, totalPrice: "100.00", effectiveTotalCents: 10000 },
+      { id: "li-1", quantity: 1, totalPrice: "0.00", effectiveTotalCents: 0 } as any,
+      { patchKind: "hydration" },
+    );
+
+    expect(merged.totalPrice).toBe("0.00");
+    expect(resolveLineItemDisplayPriceCents(merged)).toBe(0);
+  });
+
+  it("keeps visible totals compatible through attachment, product add, override revert, and attachment removal", () => {
+    let rows: any[] = [
+      {
+        id: "li-1",
+        quantity: 3,
+        unitPrice: "40.00",
+        totalPrice: "120.00",
+        baseCalculatedTotalCents: 12000,
+        effectiveTotalCents: 12000,
+        hasPriceOverride: false,
+      },
+    ];
+
+    const initialTotal = resolveLineItemDisplayPriceCents(rows[0]);
+    expect(initialTotal).toBe(12000);
+
+    rows = reconcileLineItemListSafely(rows, [
+      { id: "li-1", attachments: [{ id: "file-1" }], totalPrice: "0.00" } as any,
+    ], { patchKind: "attachment", preserveLocalDrafts: false });
+    expect(resolveLineItemDisplayPriceCents(rows[0])).toBe(initialTotal);
+
+    rows = reconcileLineItemListSafely(rows, [
+      { id: "li-1", totalPrice: "0.00" },
+      { id: "li-2", quantity: 1, unitPrice: "15.00", totalPrice: "15.00" },
+    ], { patchKind: "product_add", preserveLocalDrafts: false });
+    expect(resolveLineItemDisplayPriceCents(rows[0])).toBe(initialTotal);
+
+    rows = reconcileLineItemListSafely(rows, [
+      {
+        ...rows[0],
+        hasPriceOverride: true,
+        priceOverrideMode: "override_total_after_margin",
+        priceOverrideValueCents: 9900,
+        overridePriceCents: 9900,
+        effectiveTotalCents: 9900,
+        totalPrice: "99.00",
+      },
+      rows[1],
+    ], { patchKind: "pricing", preserveLocalDrafts: false });
+    expect(resolveLineItemDisplayPriceCents(rows[0])).toBe(9900);
+
+    rows = reconcileLineItemListSafely(rows, [
+      {
+        ...rows[0],
+        hasPriceOverride: false,
+        priceOverrideMode: null,
+        priceOverrideValueCents: null,
+        overridePriceCents: null,
+        effectiveTotalCents: 12000,
+        totalPrice: "120.00",
+      },
+      rows[1],
+    ], { patchKind: "pricing", preserveLocalDrafts: false });
+
+    rows = reconcileLineItemListSafely(rows, [
+      { id: "li-1", attachments: [], totalPrice: "0.00" } as any,
+      rows[1],
+    ], { patchKind: "attachment", preserveLocalDrafts: false });
+
+    const visibleTotals = rows.map((row) => resolveLineItemDisplayPriceCents(row));
+    expect(visibleTotals).toEqual([12000, 1500]);
+    expect(visibleTotals.reduce((sum, cents) => sum + cents, 0)).toBe(13500);
   });
 });
