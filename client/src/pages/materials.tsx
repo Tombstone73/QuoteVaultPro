@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { ChangeEvent, Fragment, useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { useMaterials, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
 import { useVendors } from "@/hooks/useVendors";
@@ -6,9 +7,11 @@ import { MaterialForm } from "@/components/MaterialForm";
 import { AdjustInventoryForm } from "@/components/AdjustInventoryForm";
 import { LowStockBadge } from "@/components/LowStockBadge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { ROUTES } from "@/config/routes";
-import { Copy, Pencil, Boxes, Plus, ChevronDown, ChevronUp } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { useToast } from "@/hooks/use-toast";
+import { Copy, Pencil, Boxes, Plus, ChevronDown, ChevronUp, ClipboardCheck, Printer, Save, X } from "lucide-react";
 import { useListViewSettings } from "@/hooks/useListViewSettings";
 import { ListViewSettings } from "@/components/list/ListViewSettings";
 import {
@@ -34,6 +37,7 @@ const defaultColumns = [
   { id: "sku", label: "SKU", visible: true },
   { id: "type", label: "Type", visible: true },
   { id: "stock", label: "Stock Quantity", visible: true },
+  { id: "reorder", label: "Reorder Point", visible: true },
   { id: "unit", label: "Catalog Unit", visible: true },
   { id: "cost", label: "Sell / Cost", visible: true },
   { id: "vendor", label: "Vendor", visible: true },
@@ -44,23 +48,100 @@ const defaultColumns = [
 const defaultColumnLabels = new Map(defaultColumns.map((column) => [column.id, column.label]));
 
 type SortDirection = "asc" | "desc";
-type SortableColumnId = "name" | "sku" | "type" | "stock" | "unit" | "cost" | "vendor" | "alerts";
+type SortableColumnId = "name" | "sku" | "type" | "stock" | "reorder" | "unit" | "cost" | "vendor" | "alerts";
 
 const sortableColumnIds = new Set<SortableColumnId>([
   "name",
   "sku",
   "type",
   "stock",
+  "reorder",
   "unit",
   "cost",
   "vendor",
   "alerts",
 ]);
 
+type InventoryCountDraft = {
+  stockQuantity: string;
+  minStockAlert: string;
+  costPerUnit: string;
+  vendorCostPerUnit: string;
+  costPerRoll: string;
+};
+
+type InventoryCountField = keyof InventoryCountDraft;
+
+type SaveResult = {
+  id: string;
+  name: string;
+  success: boolean;
+  message?: string;
+};
+
+const INVENTORY_COUNT_REASON = "Physical inventory count update";
+
 function getNumberValue(value?: string | null) {
   const parsed = Number.parseFloat(value ?? "0");
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
+function normalizeNumericText(value?: string | number | null) {
+  if (value === null || value === undefined) return "";
+  const text = String(value).trim();
+  if (!text) return "";
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed)) return text;
+  return String(parsed);
+}
+
+function draftFromMaterial(material: Material): InventoryCountDraft {
+  return {
+    stockQuantity: normalizeNumericText(material.stockQuantity),
+    minStockAlert: normalizeNumericText(material.minStockAlert),
+    costPerUnit: normalizeNumericText(material.costPerUnit),
+    vendorCostPerUnit: normalizeNumericText(material.vendorCostPerUnit),
+    costPerRoll: normalizeNumericText(material.costPerRoll),
+  };
+}
+
+function numericValuesEqual(left?: string | null, right?: string | null) {
+  const leftBlank = !String(left ?? "").trim();
+  const rightBlank = !String(right ?? "").trim();
+  if (leftBlank || rightBlank) return leftBlank && rightBlank;
+
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  if (!Number.isFinite(leftNumber) || !Number.isFinite(rightNumber)) {
+    return String(left ?? "").trim() === String(right ?? "").trim();
+  }
+
+  return Math.abs(leftNumber - rightNumber) < 0.0001;
+}
+
+function isDraftDirty(draft: InventoryCountDraft | undefined, original: InventoryCountDraft | undefined) {
+  if (!draft || !original) return false;
+  return (Object.keys(draft) as InventoryCountField[]).some((field) => !numericValuesEqual(draft[field], original[field]));
+}
+
+function parseRequiredNonNegative(value: string, label: string) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${label} must be a non-negative number`);
+  }
+  return parsed;
+}
+
+function parseOptionalNonNegative(value: string, label: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${label} must be blank or a non-negative number`);
+  }
+  return parsed;
+}
+
 
 function getVendorName(material: Material, vendorNamesById: Map<string, string>) {
   if (!material.preferredVendorId) return "Unassigned";
@@ -106,6 +187,8 @@ function compareText(a: string, b: string) {
 
 export default function MaterialsListPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [lowStockOnly, setLowStockOnly] = useState(false);
@@ -115,6 +198,12 @@ export default function MaterialsListPage() {
   const [editMaterial, setEditMaterial] = useState<Material | null>(null);
   const [adjustMaterialId, setAdjustMaterialId] = useState<string | null>(null);
   const [duplicateMaterial, setDuplicateMaterial] = useState<Material | null>(null);
+  const [countMode, setCountMode] = useState(false);
+  const [isSavingInventory, setIsSavingInventory] = useState(false);
+  const [printSheetOpen, setPrintSheetOpen] = useState(false);
+  const [countDrafts, setCountDrafts] = useState<Record<string, InventoryCountDraft>>({});
+  const [countOriginals, setCountOriginals] = useState<Record<string, InventoryCountDraft>>({});
+  const [countMaterialNames, setCountMaterialNames] = useState<Record<string, string>>({});
   const { data: materials, isLoading } = useMaterials({ search, type: typeFilter, lowStockOnly });
   const { data: vendors = [] } = useVendors();
   
@@ -138,6 +227,10 @@ export default function MaterialsListPage() {
     () => new Map(vendors.map((vendor) => [vendor.id, vendor.name])),
     [vendors]
   );
+  const materialsById = useMemo(
+    () => new Map((materials ?? []).map((material) => [material.id, material])),
+    [materials]
+  );
 
   const sortedMaterials = useMemo(() => {
     const list = materials ?? [];
@@ -158,6 +251,8 @@ export default function MaterialsListPage() {
           return compareText(left.type ?? "", right.type ?? "") * directionMultiplier;
         case "stock":
           return (getNumberValue(left.stockQuantity) - getNumberValue(right.stockQuantity)) * directionMultiplier;
+        case "reorder":
+          return (getNumberValue(left.minStockAlert) - getNumberValue(right.minStockAlert)) * directionMultiplier;
         case "unit":
           return compareText(left.unitOfMeasure ?? "", right.unitOfMeasure ?? "") * directionMultiplier;
         case "cost":
@@ -177,6 +272,190 @@ export default function MaterialsListPage() {
       }
     });
   }, [materials, sortDirection, sortKey, vendorNamesById]);
+
+  useEffect(() => {
+    if (!countMode) {
+      const nextDrafts = Object.fromEntries((materials ?? []).map((material) => [material.id, draftFromMaterial(material)]));
+      const nextNames = Object.fromEntries((materials ?? []).map((material) => [material.id, material.name]));
+      setCountDrafts(nextDrafts);
+      setCountOriginals(nextDrafts);
+      setCountMaterialNames(nextNames);
+      return;
+    }
+
+    setCountMaterialNames((current) => ({
+      ...current,
+      ...Object.fromEntries((materials ?? []).map((material) => [material.id, material.name])),
+    }));
+
+    setCountDrafts((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const material of materials ?? []) {
+        if (!next[material.id]) {
+          next[material.id] = draftFromMaterial(material);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+    setCountOriginals((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const material of materials ?? []) {
+        if (!next[material.id]) {
+          next[material.id] = draftFromMaterial(material);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [countMode, materials]);
+
+  const dirtyRowIds = useMemo(
+    () => Object.keys(countDrafts).filter((materialId) => isDraftDirty(countDrafts[materialId], countOriginals[materialId])),
+    [countDrafts, countOriginals]
+  );
+
+  const dirtyRows = useMemo(
+    () => dirtyRowIds.map((id) => ({
+      id,
+      name: materialsById.get(id)?.name ?? countMaterialNames[id] ?? id,
+      draft: countDrafts[id],
+      original: countOriginals[id],
+    })).filter((row): row is { id: string; name: string; draft: InventoryCountDraft; original: InventoryCountDraft } => Boolean(row.draft && row.original)),
+    [countDrafts, countMaterialNames, countOriginals, dirtyRowIds, materialsById]
+  );
+
+  const enterCountMode = () => {
+    const nextDrafts = Object.fromEntries((materials ?? []).map((material) => [material.id, draftFromMaterial(material)]));
+    const nextNames = Object.fromEntries((materials ?? []).map((material) => [material.id, material.name]));
+    setCountDrafts(nextDrafts);
+    setCountOriginals(nextDrafts);
+    setCountMaterialNames(nextNames);
+    setCountMode(true);
+  };
+
+  const cancelCountMode = () => {
+    setCountDrafts(countOriginals);
+    setCountMode(false);
+  };
+
+  const updateDraftField = (material: Material, field: InventoryCountField, value: string) => {
+    setCountDrafts((current) => ({
+      ...current,
+      [material.id]: {
+        ...(current[material.id] ?? draftFromMaterial(material)),
+        [field]: value,
+      },
+    }));
+    setCountOriginals((current) => current[material.id] ? current : { ...current, [material.id]: draftFromMaterial(material) });
+  };
+
+  const handleDraftInputChange = (material: Material, field: InventoryCountField) => (event: ChangeEvent<HTMLInputElement>) => {
+    updateDraftField(material, field, event.target.value);
+  };
+
+  const saveInventoryRow = async (materialId: string, draft: InventoryCountDraft, original: InventoryCountDraft) => {
+    const patch: Record<string, number | null> = {};
+
+    if (!numericValuesEqual(draft.minStockAlert, original.minStockAlert)) {
+      patch.minStockAlert = parseRequiredNonNegative(draft.minStockAlert, "Reorder point");
+    }
+    if (!numericValuesEqual(draft.costPerUnit, original.costPerUnit)) {
+      patch.costPerUnit = parseRequiredNonNegative(draft.costPerUnit, "Sell price");
+    }
+    if (!numericValuesEqual(draft.vendorCostPerUnit, original.vendorCostPerUnit)) {
+      patch.vendorCostPerUnit = parseOptionalNonNegative(draft.vendorCostPerUnit, "Vendor cost");
+    }
+    if (!numericValuesEqual(draft.costPerRoll, original.costPerRoll)) {
+      patch.costPerRoll = parseOptionalNonNegative(draft.costPerRoll, "Vendor roll cost");
+    }
+
+    if (!numericValuesEqual(draft.stockQuantity, original.stockQuantity)) {
+      const quantity = parseRequiredNonNegative(draft.stockQuantity, "Quantity on hand");
+      const adjustmentResponse = await fetch(`/api/materials/${materialId}/adjust`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          adjustmentMode: "set_quantity",
+          quantity,
+          reason: "other",
+          otherReason: INVENTORY_COUNT_REASON,
+        }),
+      });
+
+      if (!adjustmentResponse.ok) {
+        const error = await adjustmentResponse.json().catch(() => ({}));
+        throw new Error(error.error || "Failed to adjust quantity");
+      }
+    }
+
+    if (Object.keys(patch).length > 0) {
+      const materialResponse = await fetch(`/api/materials/${materialId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(patch),
+      });
+
+      if (!materialResponse.ok) {
+        const error = await materialResponse.json().catch(() => ({}));
+        throw new Error(error.error || "Failed to update material values");
+      }
+    }
+  };
+
+  const saveInventoryChanges = async () => {
+    if (dirtyRows.length === 0) {
+      toast({ title: "No inventory changes to save" });
+      return;
+    }
+
+    setIsSavingInventory(true);
+    const results: SaveResult[] = [];
+
+    for (const row of dirtyRows) {
+      try {
+        await saveInventoryRow(row.id, row.draft, row.original);
+        results.push({ id: row.id, name: row.name, success: true });
+      } catch (error: any) {
+        results.push({ id: row.id, name: row.name, success: false, message: error?.message || "Save failed" });
+      }
+    }
+
+    const failures = results.filter((result) => !result.success);
+    const successes = results.filter((result) => result.success);
+
+    await queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
+    await queryClient.invalidateQueries({ queryKey: ["/api/materials/low-stock"] });
+    await queryClient.invalidateQueries({ queryKey: ["/api/material-reorder-requests"] });
+
+    if (failures.length > 0) {
+      const failedNames = failures
+        .map((failure) => `${failure.name}${failure.message ? `: ${failure.message}` : ""}`)
+        .slice(0, 5)
+        .join("; ");
+      setCountOriginals((current) => {
+        const next = { ...current };
+        for (const result of successes) {
+          if (countDrafts[result.id]) next[result.id] = countDrafts[result.id];
+        }
+        return next;
+      });
+      toast({
+        title: `${successes.length} saved, ${failures.length} failed`,
+        description: `Failed rows: ${failedNames}${failures.length > 5 ? ", ..." : ""}`,
+        variant: "destructive",
+      });
+    } else {
+      setCountMode(false);
+      toast({ title: "Inventory values saved", description: `${successes.length} row${successes.length === 1 ? "" : "s"} updated.` });
+    }
+
+    setIsSavingInventory(false);
+  };
 
   const handleSort = (columnId: SortableColumnId) => {
     if (sortKey === columnId) {
@@ -201,6 +480,27 @@ export default function MaterialsListPage() {
   const renderCell = (m: Material, columnId: string) => {
     const stock = parseFloat(m.stockQuantity || "0");
     const min = parseFloat(m.minStockAlert || "0");
+    const draft = countDrafts[m.id] ?? draftFromMaterial(m);
+    const original = countOriginals[m.id] ?? draftFromMaterial(m);
+    const rowIsDirty = isDraftDirty(draft, original);
+
+    const compactNumberInput = (
+      field: InventoryCountField,
+      label: string,
+      options?: { step?: string; disabled?: boolean }
+    ) => (
+      <Input
+        aria-label={`${label} for ${m.name}`}
+        type="number"
+        min="0"
+        step={options?.step ?? "0.01"}
+        value={draft[field]}
+        disabled={options?.disabled || isSavingInventory}
+        onClick={(event) => event.stopPropagation()}
+        onChange={handleDraftInputChange(m, field)}
+        className={`h-8 min-w-[7rem] px-2 text-sm ${rowIsDirty ? "border-amber-400 bg-amber-50/50" : ""}`}
+      />
+    );
 
     // Calculate roll derived values for display
     const rollDerived = m.type === "roll" && m.width && m.rollLengthFt && m.costPerRoll
@@ -222,6 +522,14 @@ export default function MaterialsListPage() {
       case "type":
         return <span className="capitalize text-titan-text-secondary">{m.type}</span>;
       case "stock":
+        if (countMode) {
+          return (
+            <div className="space-y-1" onClick={(event) => event.stopPropagation()}>
+              {compactNumberInput("stockQuantity", "Quantity on hand")}
+              <div className="text-[11px] text-titan-text-muted">{m.inventoryUnit || m.unitOfMeasure || "unit"}</div>
+            </div>
+          );
+        }
         if (m.type === "roll" && rollDerived) {
           const totalUsableSqft = stock * rollDerived.usableSqftPerRoll;
           return (
@@ -231,9 +539,39 @@ export default function MaterialsListPage() {
           );
         }
         return <span className="text-titan-text-primary">{stock}</span>;
+      case "reorder":
+        if (countMode) {
+          return (
+            <div className="space-y-1" onClick={(event) => event.stopPropagation()}>
+              {compactNumberInput("minStockAlert", "Reorder point")}
+              <div className="text-[11px] text-titan-text-muted">{m.inventoryUnit || m.unitOfMeasure || "unit"}</div>
+            </div>
+          );
+        }
+        return <span className="text-titan-text-primary">{getNumberValue(m.minStockAlert)}</span>;
       case "unit":
         return <span className="text-titan-text-secondary">{m.unitOfMeasure}</span>;
       case "cost":
+        if (countMode) {
+          return (
+            <div className="grid min-w-[15rem] gap-1.5" onClick={(event) => event.stopPropagation()}>
+              <label className="grid grid-cols-[4.25rem_minmax(7rem,1fr)] items-center gap-2 text-[11px] text-titan-text-muted">
+                <span>Sell</span>
+                {compactNumberInput("costPerUnit", "Sell price", { step: "0.0001" })}
+              </label>
+              <label className="grid grid-cols-[4.25rem_minmax(7rem,1fr)] items-center gap-2 text-[11px] text-titan-text-muted">
+                <span>Vendor</span>
+                {compactNumberInput("vendorCostPerUnit", "Vendor cost", { step: "0.0001" })}
+              </label>
+              {m.type === "roll" || m.costPerRoll ? (
+                <label className="grid grid-cols-[4.25rem_minmax(7rem,1fr)] items-center gap-2 text-[11px] text-titan-text-muted">
+                  <span>Roll</span>
+                  {compactNumberInput("costPerRoll", "Vendor roll cost", { step: "0.0001" })}
+                </label>
+              ) : null}
+            </div>
+          );
+        }
         if (m.type === "roll" && rollDerived) {
           return (
             <div
@@ -261,6 +599,16 @@ export default function MaterialsListPage() {
       case "alerts":
         return <LowStockBadge stock={stock} min={min} />;
       case "actions":
+        if (countMode) {
+          return rowIsDirty ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">
+              <ClipboardCheck className="h-3.5 w-3.5" />
+              Dirty
+            </span>
+          ) : (
+            <span className="text-xs text-titan-text-muted">Clean</span>
+          );
+        }
         return (
           <div className="flex gap-1" onClick={e => e.stopPropagation()}>
             <TitanIconButton icon={Pencil} variant="ghost" onClick={() => setEditMaterial(m)} title="Edit material" />
@@ -281,17 +629,40 @@ export default function MaterialsListPage() {
         title="Materials"
         subtitle="Manage inventory and track stock levels"
         actions={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="outline" onClick={() => setPrintSheetOpen(true)}>
+              <Printer className="w-4 h-4 mr-2" />
+              Print Inventory Sheet
+            </Button>
             <ListViewSettings
               columns={normalizedColumns}
               onToggleVisibility={toggleVisibility}
               onReorder={setColumnOrder}
               onWidthChange={setColumnWidth}
             />
-            <Button onClick={() => setShowCreate(true)}>
-              <Plus className="w-4 h-4 mr-2" />
-              New Material
-            </Button>
+            {countMode ? (
+              <>
+                <Button variant="outline" onClick={cancelCountMode} disabled={isSavingInventory}>
+                  <X className="w-4 h-4 mr-2" />
+                  Cancel
+                </Button>
+                <Button onClick={saveInventoryChanges} disabled={isSavingInventory || dirtyRows.length === 0}>
+                  <Save className="w-4 h-4 mr-2" />
+                  {isSavingInventory ? "Saving..." : `Save${dirtyRows.length ? ` (${dirtyRows.length})` : ""}`}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button variant="outline" onClick={enterCountMode}>
+                  <ClipboardCheck className="w-4 h-4 mr-2" />
+                  Edit Inventory
+                </Button>
+                <Button onClick={() => setShowCreate(true)}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  New Material
+                </Button>
+              </>
+            )}
           </div>
         }
       />
@@ -324,6 +695,11 @@ export default function MaterialsListPage() {
             >
               {lowStockOnly ? "Showing Low Stock" : "Show Low Stock"}
             </Button>
+            {countMode && (
+              <div className="flex items-center rounded-md border border-amber-200 bg-amber-50 px-3 text-sm text-amber-900">
+                {dirtyRows.length} dirty row{dirtyRows.length === 1 ? "" : "s"}
+              </div>
+            )}
           </div>
         </DataCard>
 
@@ -370,8 +746,11 @@ export default function MaterialsListPage() {
               {!isLoading && sortedMaterials.map(m => (
                 <TitanTableRow
                   key={m.id}
-                  clickable
-                  onClick={() => navigate(`/materials/${m.id}`)}
+                  clickable={!countMode}
+                  className={countMode && isDraftDirty(countDrafts[m.id], countOriginals[m.id]) ? "bg-amber-50/40" : undefined}
+                  onClick={() => {
+                    if (!countMode) navigate(`/materials/${m.id}`);
+                  }}
                 >
                   {visibleColumns.map((col) => (
                     <TitanTableCell
@@ -411,6 +790,150 @@ export default function MaterialsListPage() {
           isDuplicate={true}
         />
       )}
+      <InventoryCountPrintDialog
+        open={printSheetOpen}
+        onOpenChange={setPrintSheetOpen}
+        materials={sortedMaterials}
+        vendorNamesById={vendorNamesById}
+      />
     </Page>
+  );
+}
+
+function InventoryCountPrintDialog({
+  open,
+  onOpenChange,
+  materials,
+  vendorNamesById,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  materials: Material[];
+  vendorNamesById: Map<string, string>;
+}) {
+  const groupedMaterials = useMemo(() => {
+    return [...materials].sort((left, right) => {
+      const categoryCompare = compareText(left.category || "Uncategorized", right.category || "Uncategorized");
+      if (categoryCompare !== 0) return categoryCompare;
+      return compareText(left.name || "", right.name || "");
+    });
+  }, [materials]);
+
+  const printDate = useMemo(() => new Date().toLocaleDateString(), [open]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] max-w-6xl overflow-y-auto">
+        <DialogHeader className="inventory-count-print-actions">
+          <DialogTitle>Inventory Count Sheet</DialogTitle>
+          <DialogDescription>
+            Prints the currently filtered materials list, grouped by category.
+          </DialogDescription>
+        </DialogHeader>
+        <style>
+          {`
+            @media print {
+              body * {
+                visibility: hidden !important;
+              }
+              .inventory-count-print-root,
+              .inventory-count-print-root * {
+                visibility: visible !important;
+              }
+              .inventory-count-print-root {
+                position: fixed !important;
+                inset: 0 !important;
+                width: 100% !important;
+                padding: 0.25in !important;
+                background: #fff !important;
+                color: #000 !important;
+                font-size: 10pt !important;
+              }
+              .inventory-count-print-actions {
+                display: none !important;
+              }
+              .inventory-count-print-table {
+                width: 100% !important;
+                border-collapse: collapse !important;
+              }
+              .inventory-count-print-table th,
+              .inventory-count-print-table td {
+                border: 1px solid #000 !important;
+                padding: 6px !important;
+                color: #000 !important;
+              }
+              .inventory-count-print-table th {
+                background: #fff !important;
+                font-weight: 700 !important;
+              }
+              .inventory-count-print-category {
+                page-break-after: avoid !important;
+                background: #f5f5f5 !important;
+                font-weight: 700 !important;
+              }
+            }
+          `}
+        </style>
+        <div className="inventory-count-print-root space-y-4 rounded-md bg-white text-black">
+          <div className="flex items-end justify-between gap-4 border-b border-black pb-3">
+            <div>
+              <h2 className="text-xl font-semibold text-black">Inventory Count Sheet</h2>
+              <p className="text-sm text-black">Date: {printDate}</p>
+            </div>
+            <div className="text-right text-sm text-black">
+              <div>Materials: {groupedMaterials.length}</div>
+              <div>Counted by: ____________________</div>
+            </div>
+          </div>
+          <table className="inventory-count-print-table w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                <th className="border border-black p-2 text-left">Material</th>
+                <th className="border border-black p-2 text-left">Category</th>
+                <th className="border border-black p-2 text-left">Vendor</th>
+                <th className="border border-black p-2 text-left">SKU / Item</th>
+                <th className="border border-black p-2 text-right">System Qty</th>
+                <th className="border border-black p-2 text-left">Counted Qty</th>
+                <th className="border border-black p-2 text-left">Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {groupedMaterials.map((material, index) => {
+                const previous = groupedMaterials[index - 1];
+                const category = material.category || "Uncategorized";
+                const showCategory = !previous || (previous.category || "Uncategorized") !== category;
+                return (
+                  <Fragment key={material.id}>
+                    {showCategory ? (
+                      <tr className="inventory-count-print-category">
+                        <td className="border border-black p-2" colSpan={7}>{category}</td>
+                      </tr>
+                    ) : null}
+                    <tr>
+                      <td className="border border-black p-2">{material.name}</td>
+                      <td className="border border-black p-2">{category}</td>
+                      <td className="border border-black p-2">{getVendorName(material, vendorNamesById)}</td>
+                      <td className="border border-black p-2">{material.vendorSku || material.sku || ""}</td>
+                      <td className="border border-black p-2 text-right">
+                        {normalizeNumericText(material.stockQuantity)} {material.inventoryUnit || material.unitOfMeasure || ""}
+                      </td>
+                      <td className="h-10 border border-black p-2">&nbsp;</td>
+                      <td className="h-10 border border-black p-2">&nbsp;</td>
+                    </tr>
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <DialogFooter className="inventory-count-print-actions">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+          <Button onClick={() => window.print()}>
+            <Printer className="h-4 w-4 mr-2" />
+            Print
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
