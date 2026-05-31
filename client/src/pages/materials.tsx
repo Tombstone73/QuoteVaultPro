@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Copy, Pencil, Boxes, Plus, ChevronDown, ChevronUp, ClipboardCheck, Printer, Save, X } from "lucide-react";
+import { Copy, Pencil, Boxes, Plus, ChevronDown, ChevronUp, ClipboardCheck, Eye, Printer, Save, X } from "lucide-react";
 import { useListViewSettings } from "@/hooks/useListViewSettings";
 import { ListViewSettings } from "@/components/list/ListViewSettings";
 import {
@@ -148,9 +148,26 @@ function formatUnsavedChanges(count: number) {
   return `${count} unsaved changes`;
 }
 
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function getVendorName(material: Material, vendorNamesById: Map<string, string>) {
   if (!material.preferredVendorId) return "Unassigned";
   return vendorNamesById.get(material.preferredVendorId) ?? "Unassigned";
+}
+
+function getInventoryCountPrintMaterials(materials: Material[]) {
+  return [...materials].sort((left, right) => {
+    const categoryCompare = compareText(left.category || "Uncategorized", right.category || "Uncategorized");
+    if (categoryCompare !== 0) return categoryCompare;
+    return compareText(left.name || "", right.name || "");
+  });
 }
 
 function getMaterialUnitCost(material: Material) {
@@ -462,6 +479,14 @@ export default function MaterialsListPage() {
     setIsSavingInventory(false);
   };
 
+  const printCurrentInventorySheet = () => {
+    printInventoryCountSheet(
+      getInventoryCountPrintMaterials(sortedMaterials),
+      vendorNamesById,
+      new Date().toLocaleDateString()
+    );
+  };
+
   const handleSort = (columnId: SortableColumnId) => {
     if (sortKey === columnId) {
       setSortDirection((currentDirection) => (currentDirection === "asc" ? "desc" : "asc"));
@@ -626,9 +651,13 @@ export default function MaterialsListPage() {
         actions={
           <div className="flex flex-col items-end gap-1.5">
             <div className="flex flex-wrap justify-end gap-2">
-              <Button variant="outline" onClick={() => setPrintSheetOpen(true)}>
+              <Button variant="outline" onClick={printCurrentInventorySheet}>
                 <Printer className="w-4 h-4 mr-2" />
                 Print Inventory Sheet
+              </Button>
+              <Button variant="outline" onClick={() => setPrintSheetOpen(true)}>
+                <Eye className="w-4 h-4 mr-2" />
+                Preview Sheet
               </Button>
               <ListViewSettings
                 columns={normalizedColumns}
@@ -814,124 +843,23 @@ function InventoryCountPrintDialog({
   vendorNamesById: Map<string, string>;
 }) {
   const groupedMaterials = useMemo(() => {
-    return [...materials].sort((left, right) => {
-      const categoryCompare = compareText(left.category || "Uncategorized", right.category || "Uncategorized");
-      if (categoryCompare !== 0) return categoryCompare;
-      return compareText(left.name || "", right.name || "");
-    });
+    return getInventoryCountPrintMaterials(materials);
   }, [materials]);
 
   const printDate = useMemo(() => new Date().toLocaleDateString(), [open]);
+  const handlePrint = () => {
+    printInventoryCountSheet(groupedMaterials, vendorNamesById, printDate);
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="inventory-count-print-shell max-h-[90vh] max-w-6xl overflow-y-auto">
+      <DialogContent className="max-h-[90vh] max-w-6xl overflow-y-auto">
         <DialogHeader className="inventory-count-print-actions">
           <DialogTitle>Inventory Count Sheet</DialogTitle>
           <DialogDescription>
             Prints the currently filtered materials list, grouped by category.
           </DialogDescription>
         </DialogHeader>
-        <style>
-          {`
-            @media print {
-              @page {
-                margin: 0.35in;
-              }
-              html,
-              body {
-                width: 100% !important;
-                height: auto !important;
-                min-height: 0 !important;
-                overflow: visible !important;
-                background: #fff !important;
-              }
-              #root,
-              .inventory-count-print-actions {
-                display: none !important;
-              }
-              body * {
-                visibility: hidden !important;
-              }
-              .inventory-count-print-shell,
-              .inventory-count-print-shell *,
-              .inventory-count-print-root,
-              .inventory-count-print-root * {
-                visibility: visible !important;
-              }
-              .inventory-count-print-shell {
-                position: static !important;
-                left: auto !important;
-                top: auto !important;
-                right: auto !important;
-                bottom: auto !important;
-                transform: none !important;
-                translate: none !important;
-                display: block !important;
-                width: 100% !important;
-                max-width: none !important;
-                height: auto !important;
-                max-height: none !important;
-                overflow: visible !important;
-                margin: 0 !important;
-                padding: 0 !important;
-                border: 0 !important;
-                box-shadow: none !important;
-                background: #fff !important;
-                color: #000 !important;
-              }
-              .inventory-count-print-root {
-                position: static !important;
-                display: block !important;
-                width: 100% !important;
-                max-width: none !important;
-                height: auto !important;
-                max-height: none !important;
-                overflow: visible !important;
-                margin: 0 !important;
-                padding: 0 !important;
-                transform: none !important;
-                background: #fff !important;
-                color: #000 !important;
-                font-size: 10pt !important;
-              }
-              .inventory-count-print-heading {
-                display: block !important;
-                width: 100% !important;
-              }
-              .inventory-count-print-table {
-                width: 100% !important;
-                border-collapse: collapse !important;
-                page-break-inside: auto !important;
-              }
-              .inventory-count-print-table thead {
-                display: table-header-group !important;
-              }
-              .inventory-count-print-table tbody {
-                display: table-row-group !important;
-              }
-              .inventory-count-print-table tr {
-                page-break-inside: avoid !important;
-                page-break-after: auto !important;
-              }
-              .inventory-count-print-table th,
-              .inventory-count-print-table td {
-                border: 1px solid #000 !important;
-                padding: 6px !important;
-                color: #000 !important;
-              }
-              .inventory-count-print-table th {
-                background: #fff !important;
-                font-weight: 700 !important;
-              }
-              .inventory-count-print-category {
-                page-break-after: avoid !important;
-                background: #f5f5f5 !important;
-                font-weight: 700 !important;
-              }
-            }
-          `}
-        </style>
         <div className="inventory-count-print-root space-y-4 rounded-md bg-white text-black">
           <div className="inventory-count-print-heading flex items-end justify-between gap-4 border-b border-black pb-3">
             <div>
@@ -986,7 +914,7 @@ function InventoryCountPrintDialog({
         </div>
         <DialogFooter className="inventory-count-print-actions">
           <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
-          <Button onClick={() => window.print()}>
+          <Button onClick={handlePrint}>
             <Printer className="h-4 w-4 mr-2" />
             Print
           </Button>
@@ -994,4 +922,175 @@ function InventoryCountPrintDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function buildInventoryCountPrintHtml(
+  materials: Material[],
+  vendorNamesById: Map<string, string>,
+  printDate: string
+) {
+  const rowsHtml = materials.map((material) => {
+    const category = material.category || "Uncategorized";
+    const vendor = getVendorName(material, vendorNamesById);
+    const skuOrItem = material.vendorSku || material.sku || "";
+    const systemQty = `${normalizeNumericText(material.stockQuantity)} ${material.inventoryUnit || material.unitOfMeasure || ""}`.trim();
+
+    return `
+      <tr>
+        <td>${escapeHtml(material.name)}</td>
+        <td>${escapeHtml(category)}</td>
+        <td>${escapeHtml(vendor)}</td>
+        <td>${escapeHtml(skuOrItem)}</td>
+        <td class="numeric">${escapeHtml(systemQty)}</td>
+        <td class="blank">&nbsp;</td>
+        <td class="blank">&nbsp;</td>
+      </tr>
+    `;
+  }).join("");
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Inventory Count Sheet</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #fff;
+        color: #000;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 10.5pt;
+        line-height: 1.25;
+      }
+      body {
+        margin: 0.35in;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 18pt;
+        line-height: 1.1;
+      }
+      .meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 14px;
+        border-bottom: 1px solid #000;
+        padding-bottom: 10px;
+      }
+      .meta p {
+        margin: 3px 0;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        page-break-inside: auto;
+      }
+      thead {
+        display: table-header-group;
+      }
+      tbody {
+        display: table-row-group;
+      }
+      tr {
+        page-break-inside: avoid;
+        page-break-after: auto;
+      }
+      th,
+      td {
+        border: 1px solid #000;
+        padding: 6px;
+        vertical-align: top;
+      }
+      th {
+        font-weight: 700;
+        text-align: left;
+      }
+      .numeric {
+        text-align: right;
+        white-space: nowrap;
+      }
+      .blank {
+        min-height: 24px;
+        height: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="meta">
+        <div>
+          <h1>Inventory Count Sheet</h1>
+          <p>Date: ${escapeHtml(printDate)}</p>
+        </div>
+        <div>
+          <p>Materials: ${escapeHtml(materials.length)}</p>
+          <p>Counted by: ____________________</p>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Material</th>
+            <th>Category</th>
+            <th>Vendor</th>
+            <th>SKU / Item</th>
+            <th>System Qty</th>
+            <th>Counted Qty</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rowsHtml}
+        </tbody>
+      </table>
+    </main>
+  </body>
+</html>`;
+}
+
+function printInventoryCountSheet(
+  materials: Material[],
+  vendorNamesById: Map<string, string>,
+  printDate: string
+) {
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("aria-hidden", "true");
+  iframe.style.position = "fixed";
+  iframe.style.right = "0";
+  iframe.style.bottom = "0";
+  iframe.style.width = "0";
+  iframe.style.height = "0";
+  iframe.style.border = "0";
+
+  const cleanup = () => {
+    window.setTimeout(() => {
+      iframe.remove();
+    }, 1000);
+  };
+
+  document.body.appendChild(iframe);
+  const printDocument = iframe.contentDocument || iframe.contentWindow?.document;
+  if (!printDocument) {
+    cleanup();
+    return;
+  }
+
+  printDocument.open();
+  printDocument.write(buildInventoryCountPrintHtml(materials, vendorNamesById, printDate));
+  printDocument.close();
+
+  window.setTimeout(() => {
+    const printWindow = iframe.contentWindow;
+    if (!printWindow) {
+      cleanup();
+      return;
+    }
+
+    printWindow.focus();
+    printWindow.print();
+    cleanup();
+  }, 100);
 }
