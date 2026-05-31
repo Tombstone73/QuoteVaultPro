@@ -13,6 +13,7 @@ import { useBatchSendInvoices, useInvoices, useRecordManualInvoicePayment, type 
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
+import { getNextInvoiceSortState, type InvoiceSortDir, type InvoiceSortKey } from "@/lib/invoiceListSort";
 import {
   Page,
   PageHeader,
@@ -33,18 +34,6 @@ import {
   getStatusVariant,
 } from "@/components/titan";
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
-
-type InvoiceSortKey =
-  | "invoiceNumber"
-  | "customer"
-  | "contact"
-  | "orderNumber"
-  | "poNumber"
-  | "issueDate"
-  | "dueDate"
-  | "status"
-  | "total"
-  | "balance";
 
 const EMPTY_VALUE = "\u2014";
 
@@ -72,7 +61,7 @@ export default function InvoicesListPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [sortKey, setSortKey] = useState<InvoiceSortKey>("issueDate");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [sortDir, setSortDir] = useState<InvoiceSortDir>("desc");
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(() => new Set());
   const [paymentInvoice, setPaymentInvoice] = useState<InvoiceListItem | null>(null);
   const [paymentAmount, setPaymentAmount] = useState("");
@@ -114,12 +103,9 @@ export default function InvoicesListPage() {
   const allVisibleSendableSelected = sendableInvoices.length > 0 && sendableInvoices.every((invoice) => selectedInvoiceIds.has(invoice.id));
 
   const handleSort = (key: InvoiceSortKey) => {
-    if (sortKey === key) {
-      setSortDir((current) => (current === "asc" ? "desc" : "asc"));
-      return;
-    }
-    setSortKey(key);
-    setSortDir(key === "issueDate" || key === "dueDate" || key === "total" || key === "balance" ? "desc" : "asc");
+    const next = getNextInvoiceSortState({ sortKey, sortDir }, key);
+    setSortKey(next.sortKey);
+    setSortDir(next.sortDir);
   };
 
   const renderSortIcon = (key: InvoiceSortKey) => {
@@ -128,10 +114,14 @@ export default function InvoicesListPage() {
   };
 
   const renderSortableHead = (key: InvoiceSortKey, label: string, className = "") => (
-    <TitanTableHead className={className}>
+    <TitanTableHead
+      className={className}
+      aria-sort={sortKey === key ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
+    >
       <button
         type="button"
         className="flex w-full items-center gap-1 text-left font-medium"
+        aria-label={`Sort by ${label} ${sortKey === key && sortDir === "asc" ? "descending" : "ascending"}`}
         onClick={() => handleSort(key)}
       >
         <span className="truncate">{label}</span>
@@ -330,7 +320,7 @@ export default function InvoicesListPage() {
                 {renderSortableHead("customer", "Customer", "min-w-[180px] max-w-[220px]")}
                 {renderSortableHead("contact", "Contact", "min-w-[150px] max-w-[190px]")}
                 <TitanTableHead className="min-w-[180px] max-w-[240px]">Job / Order Name</TitanTableHead>
-                {renderSortableHead("poNumber", "PO #", "min-w-[110px] max-w-[140px]")}
+                {renderSortableHead("purchaseOrderNumber", "PO #", "min-w-[110px] max-w-[140px]")}
                 {renderSortableHead("orderNumber", "Order #", "min-w-[110px] max-w-[140px]")}
                 {renderSortableHead("invoiceNumber", "Invoice #", "min-w-[120px] max-w-[150px]")}
                 {renderSortableHead("issueDate", "Issue Date", "min-w-[120px]")}

@@ -18,6 +18,7 @@ import {
   invoiceReminderSettings,
   invoices,
   orders,
+  payments,
   organizations,
   users,
 } from '../../shared/schema';
@@ -125,6 +126,10 @@ async function createTestInvoice(opts: {
   customerPoNumber?: string | null;
   invoiceCreationSource?: 'manual' | 'automation';
   billingMilestone?: string | null;
+  totalCents?: number;
+  amountPaid?: string;
+  displayNumber?: string | null;
+  numberCore?: number | null;
 }) {
   const {
     orgId, customerId, userId,
@@ -137,6 +142,10 @@ async function createTestInvoice(opts: {
     customerPoNumber = null,
     invoiceCreationSource = 'manual',
     billingMilestone = null,
+    totalCents = 10000,
+    amountPaid = '0',
+    displayNumber = null,
+    numberCore = null,
   } = opts;
 
   const dueDate = new Date(Date.now() - daysOverdue * 24 * 60 * 60 * 1000);
@@ -146,18 +155,20 @@ async function createTestInvoice(opts: {
     customerId,
     orderId,
     invoiceNumber: invoiceNumber ?? Math.floor(Math.random() * 90000) + 10000,
+    displayNumber,
+    numberCore,
     status,
     terms: 'net_30',
     dueDate,
-    totalCents: 10000,
+    totalCents,
     balanceDue,
-    subtotalCents: 10000,
+    subtotalCents: totalCents,
     taxCents: 0,
     shippingCents: 0,
-    total: balanceDue,
-    subtotal: balanceDue,
+    total: (totalCents / 100).toFixed(2),
+    subtotal: (totalCents / 100).toFixed(2),
     tax: '0',
-    amountPaid: '0',
+    amountPaid,
     createdByUserId: userId,
     customerPoNumber,
     invoiceCreationSource,
@@ -218,6 +229,8 @@ afterEach(async () => {
     .where(inArray(invoiceReminderLogs.organizationId, cleanupOrgIds));
   await db.delete(invoiceEmailLogs)
     .where(inArray(invoiceEmailLogs.organizationId, cleanupOrgIds));
+  await db.delete(payments)
+    .where(inArray(payments.organizationId, cleanupOrgIds));
   await db.delete(invoiceReminderSettings)
     .where(inArray(invoiceReminderSettings.organizationId, cleanupOrgIds));
   await db.delete(invoices)
@@ -394,6 +407,122 @@ describe('listInvoicesForOrganization — review queue enrichment/search/sort', 
         orderName: 'Ready for Pickup Billing Job',
       }),
     ]);
+  });
+
+  test('invoice smoke fixture-shaped rows are enriched with contact, order name, PO, and order number', async () => {
+    const org = await createTestOrg('smoke-fixture-enrichment');
+    cleanupOrgIds.push(org.id);
+    const user = await createTestUser(org.id, 'sfe');
+    const customer = await createTestCustomer(org.id);
+    await db.update(customers).set({ companyName: 'Portal Test Customer' }).where(eq(customers.id, customer.id));
+    const contact = await createTestContact(customer.id, 'smoke');
+    await db.update(customerContacts).set({
+      firstName: 'Test Billing',
+      lastName: 'Contact',
+      email: 'invoice-smoke@example.test',
+    }).where(eq(customerContacts.id, contact.id));
+    const order = await createTestOrder({
+      orgId: org.id,
+      customerId: customer.id,
+      userId: user.id,
+      contactId: contact.id,
+      orderNumber: 'ORD-INVOICE-SMOKE-DRAFT-A',
+      poNumber: 'TEST-PO-INVOICE-SMOKE',
+      label: 'Invoice Smoke Test Order - Draft A',
+    });
+    const invoice = await createTestInvoice({
+      orgId: org.id,
+      customerId: customer.id,
+      userId: user.id,
+      orderId: order.id,
+      status: 'draft',
+      invoiceNumber: 910102,
+      displayNumber: 'INV-910102',
+      numberCore: 910102,
+    });
+
+    const rows = await listInvoicesForOrganization({ organizationId: org.id, search: 'INV-910102' });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: invoice.id,
+        customerName: 'Portal Test Customer',
+        contactName: 'Test Billing Contact',
+        contactEmail: 'invoice-smoke@example.test',
+        orderNumber: 'ORD-INVOICE-SMOKE-DRAFT-A',
+        purchaseOrderNumber: 'TEST-PO-INVOICE-SMOKE',
+        jobName: 'Invoice Smoke Test Order - Draft A',
+        orderName: 'Invoice Smoke Test Order - Draft A',
+      }),
+    ]);
+  });
+
+  test('sorting by invoice number uses numeric sequence for INV-prefixed display numbers', async () => {
+    const org = await createTestOrg('sort-invoice-number');
+    cleanupOrgIds.push(org.id);
+    const user = await createTestUser(org.id, 'sin');
+    const customer = await createTestCustomer(org.id);
+
+    const inv99 = await createTestInvoice({
+      orgId: org.id,
+      customerId: customer.id,
+      userId: user.id,
+      invoiceNumber: 99,
+      numberCore: 99,
+      displayNumber: 'INV-99',
+    });
+    const inv100 = await createTestInvoice({
+      orgId: org.id,
+      customerId: customer.id,
+      userId: user.id,
+      invoiceNumber: 100,
+      numberCore: 100,
+      displayNumber: 'INV-100',
+    });
+
+    const rows = await listInvoicesForOrganization({ organizationId: org.id, sortBy: 'invoiceNumber', sortDir: 'asc' });
+
+    expect(rows.map((row) => row.id)).toEqual([inv99.id, inv100.id]);
+  });
+
+  test('sorting by balance uses payment-row computed remaining balance', async () => {
+    const org = await createTestOrg('sort-balance-payments');
+    cleanupOrgIds.push(org.id);
+    const user = await createTestUser(org.id, 'sbp');
+    const customer = await createTestCustomer(org.id);
+
+    const unpaid = await createTestInvoice({
+      orgId: org.id,
+      customerId: customer.id,
+      userId: user.id,
+      invoiceNumber: 74001,
+      totalCents: 10000,
+      amountPaid: '0.00',
+      balanceDue: '100.00',
+    });
+    const mostlyPaid = await createTestInvoice({
+      orgId: org.id,
+      customerId: customer.id,
+      userId: user.id,
+      invoiceNumber: 74002,
+      totalCents: 10000,
+      amountPaid: '0.00',
+      balanceDue: '100.00',
+    });
+    await db.insert(payments).values({
+      organizationId: org.id,
+      invoiceId: mostlyPaid.id,
+      amount: '75.00',
+      amountCents: 7500,
+      status: 'succeeded',
+      method: 'check',
+      provider: 'manual',
+      createdByUserId: user.id,
+    } as any);
+
+    const rows = await listInvoicesForOrganization({ organizationId: org.id, sortBy: 'balance', sortDir: 'asc' });
+
+    expect(rows.map((row) => row.id)).toEqual([mostlyPaid.id, unpaid.id]);
   });
 });
 

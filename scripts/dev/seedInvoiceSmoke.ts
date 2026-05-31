@@ -1,23 +1,60 @@
 import "dotenv/config";
 import { pathToFileURL } from "node:url";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 
 import { db, pool } from "../../server/db";
 import {
   customerContacts,
   customers,
+  invoiceEmailLogs,
   invoiceLineItems,
   invoices,
   orders,
+  payments,
   organizations,
   products,
   users,
 } from "../../shared/schema";
 
-const TEST_CUSTOMER_NAME = "TEST CUSTOMER - DO NOT SEND";
-const TEST_CONTACT_FIRST_NAME = "Invoice";
-const TEST_CONTACT_LAST_NAME = "Smoke Test";
+export const INVOICE_SMOKE_CUSTOMER_NAME = "Portal Test Customer";
+export const INVOICE_SMOKE_CONTACT_FIRST_NAME = "Test Billing";
+export const INVOICE_SMOKE_CONTACT_LAST_NAME = "Contact";
+export const INVOICE_SMOKE_PO_NUMBER = "TEST-PO-INVOICE-SMOKE";
+export const INVOICE_SMOKE_ORDER_NAME = "Invoice Smoke Test Order";
+export const INVOICE_SMOKE_ORDER_NUMBER_PREFIX = "ORD-INVOICE-SMOKE";
+const TEST_CUSTOMER_NAME = INVOICE_SMOKE_CUSTOMER_NAME;
+const TEST_CONTACT_FIRST_NAME = INVOICE_SMOKE_CONTACT_FIRST_NAME;
+const TEST_CONTACT_LAST_NAME = INVOICE_SMOKE_CONTACT_LAST_NAME;
 const TEST_PRODUCT_NAME = "TEST PRODUCT - Invoice Smoke Fixture";
+const FIXTURE_NOTE_TAG = "invoice-smoke-fixture-v2";
+
+export type InvoiceSmokeFixtureSlot = {
+  key: string;
+  status: "draft" | "finalized";
+  label: string;
+  totalCents: number;
+};
+
+export const INVOICE_SMOKE_FIXTURE_SLOTS: InvoiceSmokeFixtureSlot[] = [
+  {
+    key: "draft-a",
+    status: "draft",
+    label: `${INVOICE_SMOKE_ORDER_NAME} - Draft A`,
+    totalCents: 10000,
+  },
+  {
+    key: "draft-b",
+    status: "draft",
+    label: `${INVOICE_SMOKE_ORDER_NAME} - Draft B`,
+    totalCents: 11000,
+  },
+  {
+    key: "finalized-a",
+    status: "finalized",
+    label: `${INVOICE_SMOKE_ORDER_NAME} - Finalized A`,
+    totalCents: 12500,
+  },
+];
 
 type SeedConfig = {
   organizationId: string;
@@ -109,6 +146,18 @@ async function ensureCustomer(config: SeedConfig) {
       .returning()
   )[0];
 
+  if (existing && existing.email !== config.safeEmail) {
+    await db
+      .update(customers)
+      .set({
+        email: config.safeEmail,
+        notes: "Invoice smoke-test fixture. Safe internal email only.",
+        updatedAt: new Date(),
+      } as any)
+      .where(eq(customers.id, existing.id));
+    (customer as any).email = config.safeEmail;
+  }
+
   const [contact] = await db
     .select()
     .from(customerContacts)
@@ -130,6 +179,18 @@ async function ensureCustomer(config: SeedConfig) {
       } as any)
       .returning()
   )[0];
+
+  await db
+    .update(customerContacts)
+    .set({
+      firstName: TEST_CONTACT_FIRST_NAME,
+      lastName: TEST_CONTACT_LAST_NAME,
+      email: config.safeEmail,
+      isPrimary: true,
+      internalNotes: "Invoice smoke-test fixture contact. Do not replace with a customer email.",
+      flags: ["invoice-smoke-test", "do-not-send-real-customer"],
+    } as any)
+    .where(eq(customerContacts.id, safeContact.id));
 
   return { customer, contact: safeContact };
 }
@@ -163,71 +224,132 @@ async function ensureProduct(config: SeedConfig) {
   )[0];
 }
 
-async function createSmokeInvoice(input: {
+function smokeOrderNumber(slotKey: string): string {
+  return `${INVOICE_SMOKE_ORDER_NUMBER_PREFIX}-${slotKey.toUpperCase()}`;
+}
+
+async function ensureSmokeOrder(input: {
   config: SeedConfig;
   customerId: string;
   contactId: string;
-  productId: string;
-  status: "draft" | "finalized";
-  label: string;
-  totalCents: number;
+  slot: InvoiceSmokeFixtureSlot;
 }) {
-  const runId = Date.now();
-  const orderNumber = `SMOKE-${runId}-${input.status.toUpperCase()}`;
+  const orderNumber = smokeOrderNumber(input.slot.key);
+  const [existing] = await db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.organizationId, input.config.organizationId), eq(orders.orderNumber, orderNumber)))
+    .limit(1);
+
+  const values = {
+    organizationId: input.config.organizationId,
+    orderNumber,
+    displayNumber: orderNumber,
+    poNumber: INVOICE_SMOKE_PO_NUMBER,
+    label: input.slot.label,
+    customerId: input.customerId,
+    contactId: input.contactId,
+    status: "new",
+    state: "open",
+    billingStatus: "ready",
+    subtotal: money(input.slot.totalCents),
+    tax: "0.00",
+    taxAmount: "0.00",
+    taxableSubtotal: "0.00",
+    total: money(input.slot.totalCents),
+    discount: "0.00",
+    createdByUserId: input.config.userId,
+  } as any;
+
+  if (existing) {
+    const [order] = await db
+      .update(orders)
+      .set({ ...values, updatedAt: sql`now()` as any } as any)
+      .where(eq(orders.id, existing.id))
+      .returning();
+    return order;
+  }
+
   const [order] = await db
     .insert(orders)
-    .values({
-      organizationId: input.config.organizationId,
-      orderNumber,
-      displayNumber: orderNumber,
-      poNumber: `PO-SMOKE-${runId}`,
-      label: input.label,
-      customerId: input.customerId,
-      contactId: input.contactId,
-      status: "new",
-      state: "open",
-      billingStatus: "ready",
-      subtotal: money(input.totalCents),
-      tax: "0.00",
-      taxAmount: "0.00",
-      taxableSubtotal: "0.00",
-      total: money(input.totalCents),
-      discount: "0.00",
-      createdByUserId: input.config.userId,
-    } as any)
+    .values(values)
     .returning();
+  return order;
+}
 
-  const invoiceNumber = await nextInvoiceNumber(input.config.organizationId);
-  const issuedAt = input.status === "finalized" ? new Date() : null;
-  const [invoice] = await db
-    .insert(invoices)
-    .values({
+async function ensureSmokeInvoice(input: {
+  config: SeedConfig;
+  customerId: string;
+  productId: string;
+  orderId: string;
+  slot: InvoiceSmokeFixtureSlot;
+}) {
+  const [existing] = await db
+    .select()
+    .from(invoices)
+    .where(and(
+      eq(invoices.organizationId, input.config.organizationId),
+      eq(invoices.orderId, input.orderId),
+      eq(invoices.invoiceCreationSource, "manual"),
+      eq(invoices.billingMilestone, input.slot.key),
+    ))
+    .orderBy(desc(invoices.createdAt))
+    .limit(1);
+
+  const issuedAt = input.slot.status === "finalized" ? new Date() : null;
+  const invoiceValues = {
       organizationId: input.config.organizationId,
-      invoiceNumber,
-      displayNumber: `INV-${invoiceNumber}`,
-      numberCore: invoiceNumber,
-      orderId: order.id,
+      orderId: input.orderId,
       customerId: input.customerId,
-      status: input.status,
+      status: input.slot.status,
       terms: "due_on_receipt",
       issuedAt,
-      dueDate: new Date(),
-      subtotal: money(input.totalCents),
+      dueDate: input.slot.status === "finalized" ? new Date() : null,
+      subtotal: money(input.slot.totalCents),
       tax: "0.00",
-      total: money(input.totalCents),
-      subtotalCents: input.totalCents,
+      total: money(input.slot.totalCents),
+      subtotalCents: input.slot.totalCents,
       taxCents: 0,
       shippingCents: 0,
-      totalCents: input.totalCents,
+      totalCents: input.slot.totalCents,
       amountPaid: "0.00",
-      balanceDue: money(input.totalCents),
-      notesInternal: "Invoice smoke-test fixture. Safe to finalize/send/pay during validation.",
+      balanceDue: money(input.slot.totalCents),
+      notesInternal: `${FIXTURE_NOTE_TAG}. Safe to repair/recreate. Slot: ${input.slot.key}.`,
       notesPublic: "Test invoice fixture. No real customer billing.",
       createdByUserId: input.config.userId,
       syncStatus: "skipped",
       qbSyncStatus: "not_synced",
-    } as any)
-    .returning();
+      qbLastError: null,
+      lastSentAt: null,
+      lastSentVersion: null,
+      lastSentVia: null,
+      invoiceCreationSource: "manual",
+      billingMilestone: input.slot.key,
+      updatedAt: new Date(),
+    } as any;
+
+  let invoice: any = existing;
+  if (existing) {
+    await db.delete(payments).where(and(eq(payments.organizationId, input.config.organizationId), eq(payments.invoiceId, existing.id)));
+    await db.delete(invoiceEmailLogs).where(and(eq(invoiceEmailLogs.organizationId, input.config.organizationId), eq(invoiceEmailLogs.invoiceId, existing.id)));
+    [invoice] = await db
+      .update(invoices)
+      .set(invoiceValues)
+      .where(eq(invoices.id, existing.id))
+      .returning();
+    await db.delete(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, existing.id));
+  } else {
+    const invoiceNumber = await nextInvoiceNumber(input.config.organizationId);
+    [invoice] = await db
+      .insert(invoices)
+      .values({
+        ...invoiceValues,
+        invoiceNumber,
+        displayNumber: `INV-${invoiceNumber}`,
+        numberCore: invoiceNumber,
+      } as any)
+      .returning();
+  }
 
   await db.insert(invoiceLineItems).values({
     invoiceId: invoice.id,
@@ -235,16 +357,16 @@ async function createSmokeInvoice(input: {
     productType: "test",
     name: TEST_PRODUCT_NAME,
     sku: "SMOKE-TEST",
-    description: input.label,
+    description: input.slot.label,
     quantity: 1,
-    unitPrice: money(input.totalCents),
-    totalPrice: money(input.totalCents),
-    unitPriceCents: input.totalCents,
-    lineTotalCents: input.totalCents,
+    unitPrice: money(input.slot.totalCents),
+    totalPrice: money(input.slot.totalCents),
+    unitPriceCents: input.slot.totalCents,
+    lineTotalCents: input.slot.totalCents,
     sortOrder: 0,
   } as any);
 
-  return { order, invoice };
+  return invoice;
 }
 
 async function main() {
@@ -268,36 +390,34 @@ async function main() {
   const { customer, contact } = await ensureCustomer(config);
   const product = await ensureProduct(config);
 
-  const draft = await createSmokeInvoice({
-    config,
-    customerId: customer.id,
-    contactId: contact.id,
-    productId: product.id,
-    status: "draft",
-    label: "Invoice Smoke Draft - safe finalize/send/pay",
-    totalCents: 10000,
-  });
-
-  const finalized = await createSmokeInvoice({
-    config,
-    customerId: customer.id,
-    contactId: contact.id,
-    productId: product.id,
-    status: "finalized",
-    label: "Invoice Smoke Finalized - safe batch send",
-    totalCents: 12500,
-  });
-
-  const rows = [draft, finalized].map(({ invoice, order }) => ({
-    invoiceId: invoice.id,
-    invoiceNumber: invoice.displayNumber || `INV-${invoice.invoiceNumber}`,
-    status: invoice.status,
-    orderNumber: order.displayNumber || order.orderNumber,
-    poNumber: order.poNumber,
-  }));
+  const rows = [];
+  for (const slot of INVOICE_SMOKE_FIXTURE_SLOTS) {
+    const order = await ensureSmokeOrder({
+      config,
+      customerId: customer.id,
+      contactId: contact.id,
+      slot,
+    });
+    const invoice = await ensureSmokeInvoice({
+      config,
+      customerId: customer.id,
+      productId: product.id,
+      orderId: order.id,
+      slot,
+    });
+    rows.push({
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.displayNumber || `INV-${invoice.invoiceNumber}`,
+      status: invoice.status,
+      orderNumber: order.displayNumber || order.orderNumber,
+      jobName: order.label,
+      poNumber: order.poNumber,
+    });
+  }
 
   console.log(JSON.stringify({
     customer: TEST_CUSTOMER_NAME,
+    contact: `${TEST_CONTACT_FIRST_NAME} ${TEST_CONTACT_LAST_NAME}`,
     contactEmail: config.safeEmail,
     invoices: rows,
   }, null, 2));

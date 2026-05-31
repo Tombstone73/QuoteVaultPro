@@ -166,7 +166,7 @@ export type InvoiceListSortBy =
   | 'customer'
   | 'contact'
   | 'orderNumber'
-  | 'poNumber'
+  | 'purchaseOrderNumber'
   | 'issueDate'
   | 'dueDate'
   | 'status'
@@ -206,12 +206,13 @@ function normalizeInvoiceListSortBy(sortBy: unknown): InvoiceListSortBy {
     case 'contact':
     case 'orderNumber':
     case 'poNumber':
+    case 'purchaseOrderNumber':
     case 'issueDate':
     case 'dueDate':
     case 'status':
     case 'total':
     case 'balance':
-      return raw;
+      return raw === 'poNumber' ? 'purchaseOrderNumber' : raw;
     default:
       return 'issueDate';
   }
@@ -221,33 +222,51 @@ function normalizeInvoiceListSortDir(sortDir: unknown): InvoiceListSortDir {
   return String(sortDir || '').trim().toLowerCase() === 'asc' ? 'asc' : 'desc';
 }
 
-function invoiceListSortExpression(sortBy: InvoiceListSortBy) {
+function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: string) {
   switch (sortBy) {
     case 'invoiceNumber':
-      return sql`coalesce(${invoices.displayNumber}, ${invoices.numberCore}::text, ${invoices.invoiceNumber}::text)`;
+      return sql`coalesce(
+        ${invoices.numberCore},
+        ${invoices.invoiceNumber},
+        nullif(regexp_replace(coalesce(${invoices.displayNumber}, ${invoices.qbDocNumber}, ''), '\\D', '', 'g'), '')::int,
+        0
+      )`;
     case 'customer':
       return sql`lower(coalesce(${customers.companyName}, ''))`;
     case 'contact':
       return sql`lower(trim(coalesce(${customerContacts.firstName}, '') || ' ' || coalesce(${customerContacts.lastName}, '')))`;
     case 'orderNumber':
       return sql`coalesce(${orders.displayNumber}, ${orders.orderNumber}, ${invoices.sourceOrderNumber}::text, '')`;
-    case 'poNumber':
+    case 'purchaseOrderNumber':
       return sql`lower(coalesce(${orders.poNumber}, ${invoices.customerPoNumber}, ''))`;
     case 'dueDate':
-      return invoices.dueDate;
+      return sql`coalesce(${invoices.dueDate}, '9999-12-31'::timestamptz)`;
     case 'status':
       return sql`lower(coalesce(${invoices.status}, ''))`;
     case 'total':
-      return invoices.totalCents;
+      return sql`coalesce(${invoices.totalCents}, 0)`;
     case 'balance':
       return sql`case
         when lower(coalesce(${invoices.importSource}, '')) = 'quickbooks'
           then coalesce(${invoices.balanceDue}, '0')::numeric * 100
-        else greatest(coalesce(${invoices.totalCents}, 0) - round(coalesce(${invoices.amountPaid}, '0')::numeric * 100), 0)
+        else greatest(
+          coalesce(${invoices.totalCents}, 0) -
+          coalesce((
+            select sum(case
+              when ${payments.status} = 'succeeded' then ${payments.amountCents}
+              when ${payments.status} = 'refunded' then -${payments.amountCents}
+              else 0
+            end)
+            from ${payments}
+            where ${payments.invoiceId} = ${invoices.id}
+              and ${payments.organizationId} = ${organizationId}
+          ), round(coalesce(${invoices.amountPaid}, '0')::numeric * 100), 0),
+          0
+        )
       end`;
     case 'issueDate':
     default:
-      return invoices.issueDate;
+      return sql`coalesce(${invoices.issueDate}, '9999-12-31'::timestamptz)`;
   }
 }
 
@@ -287,7 +306,7 @@ export async function listInvoicesForOrganization(
     ));
   }
 
-  const sortExpression = invoiceListSortExpression(sortBy);
+  const sortExpression = invoiceListSortExpression(sortBy, opts.organizationId);
   const sortDirection = sortDir === 'asc' ? asc : desc;
 
   const rows = await db

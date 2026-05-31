@@ -37,6 +37,7 @@ import { TimelinePanel } from "@/components/TimelinePanel";
 import StripePayDialog from "@/components/payments/StripePayDialog";
 import { QBTransientDisconnectBanner } from "@/components/integrations/QBTransientDisconnectBanner";
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
+import { getInvoiceEditLockMessage } from "@/lib/invoiceEditLockCopy";
 
 type StripeIntegrationStatusEnvelope = {
   success: boolean;
@@ -284,6 +285,9 @@ export default function InvoiceDetailPage() {
 
   const canEditInvoice = !!invoice && isStaffUser && invoiceStatus === 'draft' && !(isImportedFromQuickBooks && isHistoricalImport);
   const canEditFinancial = canEditInvoice && !isImportedFromQuickBooks;
+  const detailsLockMessage = getInvoiceEditLockMessage(invoiceStatus, "details");
+  const financialLockMessage = getInvoiceEditLockMessage(invoiceStatus, "financial");
+  const notesLockMessage = getInvoiceEditLockMessage(invoiceStatus, "notes");
 
   const [termsDraft, setTermsDraft] = useState<string>('due_on_receipt');
   const [dueDateDraft, setDueDateDraft] = useState<string>('');
@@ -1888,7 +1892,7 @@ export default function InvoiceDetailPage() {
 
                 {!canEditInvoice && (
                   <div className="text-xs text-muted-foreground">
-                    Notes are locked for paid/void invoices.
+                    {notesLockMessage}
                   </div>
                 )}
               </CardContent>
@@ -2420,7 +2424,7 @@ export default function InvoiceDetailPage() {
 
                 {!canEditInvoice && (
                   <div className="text-xs text-muted-foreground">
-                    Invoice details are locked for paid/void invoices.
+                    {detailsLockMessage}
                   </div>
                 )}
               </CardContent>
@@ -2492,7 +2496,7 @@ export default function InvoiceDetailPage() {
 
                 {!canEditFinancial && (
                   <div className="text-xs text-muted-foreground">
-                    Financial edits are allowed only for Draft invoices and Billed invoices with balance due.
+                    {financialLockMessage}
                   </div>
                 )}
               </CardContent>
