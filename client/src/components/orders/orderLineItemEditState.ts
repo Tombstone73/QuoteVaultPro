@@ -151,6 +151,10 @@ function getNestedPricingCents(lineItem: Record<string, any>, path: string[]): n
 
 function getBackendStoredTotalCents(lineItem: Record<string, any>): number | null {
   return (
+    rawCents(lineItem.lineTotalCents) ??
+    rawCents(lineItem.totalCents) ??
+    rawCents(getRecord(lineItem.priceBreakdown).lineTotalCents) ??
+    rawCents(getRecord(lineItem.priceBreakdown).totalCents) ??
     dollarsToCents(lineItem.totalPrice) ??
     dollarsToCents(lineItem.linePrice) ??
     dollarsToCents(getRecord(lineItem.priceBreakdown).total) ??
@@ -168,6 +172,10 @@ function hasExplicitZeroPrice(lineItem: Record<string, any>): boolean {
   if (hasOwnDefined(lineItem, "baseCalculatedTotalCents") && rawCents(lineItem.baseCalculatedTotalCents) === 0) return true;
   if (getNestedPricingCents(lineItem, ["pbv2SnapshotJson", "pricing", "effectiveTotalCents"]) === 0) return true;
   if (getNestedPricingCents(lineItem, ["pbv2SnapshotJson", "pricing", "totalCents"]) === 0) return true;
+  if (hasOwnDefined(lineItem, "lineTotalCents") && rawCents(lineItem.lineTotalCents) === 0) return true;
+  if (hasOwnDefined(lineItem, "totalCents") && rawCents(lineItem.totalCents) === 0) return true;
+  if (hasOwnDefined(getRecord(lineItem.priceBreakdown), "lineTotalCents") && rawCents(getRecord(lineItem.priceBreakdown).lineTotalCents) === 0) return true;
+  if (hasOwnDefined(getRecord(lineItem.priceBreakdown), "totalCents") && rawCents(getRecord(lineItem.priceBreakdown).totalCents) === 0) return true;
   if (hasOwnDefined(getRecord(lineItem.priceBreakdown), "total") && dollarsToCents(getRecord(lineItem.priceBreakdown).total) === 0) return true;
   return false;
 }
@@ -196,7 +204,11 @@ export function resolveLineItemDisplayPriceCents(
 
   const currentCalculated =
     rawCents(record.currentCalculatedTotalCents) ??
-    rawCents(record.calculatedTotalCents);
+    rawCents(record.calculatedTotalCents) ??
+    rawCents(record.lineTotalCents) ??
+    rawCents(record.totalCents) ??
+    rawCents(getRecord(record.priceBreakdown).lineTotalCents) ??
+    rawCents(getRecord(record.priceBreakdown).totalCents);
   if (currentCalculated !== null) return currentCalculated;
 
   const persistedSnapshot =

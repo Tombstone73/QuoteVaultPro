@@ -1,5 +1,9 @@
 import { describe, expect, it } from "@jest/globals";
-import { deriveLineItemPricingDisplay, type LineItemPricingDisplayInput } from "./lineItemPricingDisplay";
+import {
+  deriveLineItemPricingDisplay,
+  deriveVisibleLineItemPriceDisplay,
+  type LineItemPricingDisplayInput,
+} from "./lineItemPricingDisplay";
 
 const baseInput: LineItemPricingDisplayInput = {
   isActiveItem: true,
@@ -139,5 +143,73 @@ describe("deriveLineItemPricingDisplay", () => {
     });
     expect(result.displayTotal).toBe(200);
     expect(result.displayPerEach).toBe(100); // persisted per-each, never 200/0
+  });
+});
+
+describe("deriveVisibleLineItemPriceDisplay", () => {
+  it("keeps temp quote row price from pricing evidence when attachment response zeroes linePrice", () => {
+    const display = deriveVisibleLineItemPriceDisplay({
+      source: "test.quote",
+      attachmentState: "attachment_attached",
+      lineItem: {
+        tempId: "temp-1",
+        id: "li-1",
+        productId: "prod-1",
+        productName: "Banner",
+        quantity: 3,
+        linePrice: 0,
+        priceBreakdown: {
+          lineTotalCents: 12000,
+        },
+      },
+    });
+
+    expect(display.displayTotal).toBe(120);
+    expect(display.displayPerEach).toBe(40);
+  });
+
+  it("keeps order row price from previous local display while attachment refetch is partial", () => {
+    const display = deriveVisibleLineItemPriceDisplay({
+      source: "test.order",
+      attachmentState: "attachment_attached",
+      previousLineItem: {
+        id: "oli-1",
+        productId: "prod-1",
+        description: "Banner",
+        quantity: 2,
+        totalPrice: "80.00",
+        unitPrice: "40.00",
+      },
+      lineItem: {
+        id: "oli-1",
+        productId: "prod-1",
+        description: "Banner",
+        quantity: 2,
+        totalPrice: "0.00",
+        unitPrice: "0.00",
+      },
+    });
+
+    expect(display.displayTotal).toBe(80);
+    expect(display.displayPerEach).toBe(40);
+  });
+
+  it("uses aggregate effective line total for visible price when row fields are zero-prone", () => {
+    const display = deriveVisibleLineItemPriceDisplay({
+      source: "test.aggregate",
+      attachmentState: "attachment_attached",
+      aggregateTotalCents: 13500,
+      lineItem: {
+        id: "oli-2",
+        productId: "prod-2",
+        description: "Panel",
+        quantity: 3,
+        totalPrice: "0.00",
+        unitPrice: "0.00",
+      },
+    });
+
+    expect(display.displayTotalCents).toBe(13500);
+    expect(display.displayPerEachCents).toBe(4500);
   });
 });
