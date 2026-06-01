@@ -49,7 +49,7 @@ type LineItemsSectionProps = {
   onExpandedKeyChange: (next: string | null) => void;
   onCreateDraftLineItem: (productId: string) => Promise<QuoteLineItemDraft | null>;
   onUpdateLineItem: (itemKey: string, updates: Partial<QuoteLineItemDraft>) => void;
-  onSaveLineItem?: (itemKey: string) => Promise<boolean>;
+  onSaveLineItem?: (itemKey: string, overrides?: Partial<QuoteLineItemDraft>) => Promise<boolean>;
   onDuplicateLineItem: (itemKey: string) => void;
   onRemoveLineItem: (itemKey: string) => void;
   onReorderLineItems?: (orderedKeys: string[]) => Promise<{ ok: boolean }>;
@@ -754,8 +754,7 @@ export function LineItemsSection({
           })
         : null;
     const effectiveLinePrice = overridePatch ? overridePatch.pricing.effectiveTotalCents / 100 : formulaPrice;
-
-    onUpdateLineItem(itemKey, {
+    const pricingPatch: Partial<QuoteLineItemDraft> = {
       formulaLinePrice: formulaPrice,
       linePrice: effectiveLinePrice,
       priceOverride: overridePatch?.priceOverride ?? null,
@@ -763,10 +762,12 @@ export function LineItemsSection({
       overrideAt: nextOverrideCents == null ? null : new Date().toISOString(),
       overrideByUserId: null,
       overrideReason: null,
-    });
+    };
+
+    onUpdateLineItem(itemKey, pricingPatch);
 
     if (onSaveLineItem) {
-      await onSaveLineItem(itemKey);
+      await onSaveLineItem(itemKey, pricingPatch);
     }
 
     if (quoteId) {

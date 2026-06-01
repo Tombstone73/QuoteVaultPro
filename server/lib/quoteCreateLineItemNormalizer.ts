@@ -138,6 +138,22 @@ function hasExplicitPriceOverrideMetadata(value: any): boolean {
   return hasMode && hasValue;
 }
 
+function buildExplicitPriceOverrideMetadata(value: any): any | null {
+  if (!hasExplicitPriceOverrideMetadata(value)) return null;
+  const override = value?.priceOverride;
+  const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
+  const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? value?.priceOverrideMode;
+  const valueCents = overrideRecord?.valueCents ?? overrideRecord?.priceOverrideValueCents ?? value?.priceOverrideValueCents;
+  const valuePercent = overrideRecord?.valuePercent ?? overrideRecord?.priceOverrideValuePercent ?? value?.priceOverrideValuePercent ?? null;
+
+  return {
+    ...(overrideRecord ?? {}),
+    mode,
+    valueCents,
+    valuePercent,
+  };
+}
+
 export function normalizeQuoteCreateLineItem(
   item: any,
   index: number,
@@ -175,6 +191,7 @@ export function normalizeQuoteCreateLineItem(
   const materialUsages = sanitizeJsonForPostgres(item.materialUsages ?? item.priceBreakdown?.materialUsages ?? [], `lineItems[${index}].materialUsages`, jsonChanges).value;
   const pbv2SnapshotJson = sanitizeJsonForPostgres(item.pbv2SnapshotJson ?? {}, `lineItems[${index}].pbv2SnapshotJson`, jsonChanges).value;
   const hasExplicitOverride = hasExplicitPriceOverrideMetadata(item);
+  const priceOverride = buildExplicitPriceOverrideMetadata(item);
 
   return {
     lineItem: {
@@ -191,7 +208,7 @@ export function normalizeQuoteCreateLineItem(
       selectedOptions,
       linePrice,
       priceBreakdown,
-      priceOverride: hasExplicitOverride ? (item.priceOverride ?? null) : null,
+      priceOverride: hasExplicitOverride ? priceOverride : null,
       materialUsages,
       displayOrder: item.displayOrder || 0,
       description: item.description || null,

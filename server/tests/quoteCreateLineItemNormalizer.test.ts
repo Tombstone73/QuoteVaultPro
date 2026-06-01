@@ -97,8 +97,25 @@ describe("quote create line item normalization", () => {
     expect(lineItem.priceOverride).toEqual({
       mode: "override_total_after_margin",
       valueCents: 0,
+      valuePercent: null,
     });
     expect(lineItem.overridePriceCents).toBe(0);
+  });
+
+  test("materializes top-level explicit override metadata into persisted priceOverride JSON", () => {
+    const { lineItem } = normalizeQuoteCreateLineItem({
+      ...baseLineItem,
+      priceOverrideMode: "override_unit_after_margin",
+      priceOverrideValueCents: 1000,
+      overridePriceCents: 3000,
+    }, 0, { taxAmount: 0, isTaxableSnapshot: true });
+
+    expect(lineItem.priceOverride).toEqual({
+      mode: "override_unit_after_margin",
+      valueCents: 1000,
+      valuePercent: null,
+    });
+    expect(lineItem.overridePriceCents).toBe(3000);
   });
 
   test("sanitizes non-JSON-safe snapshot values instead of persisting them", () => {

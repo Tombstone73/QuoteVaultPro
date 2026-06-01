@@ -18,6 +18,7 @@ import {
     reconcileLineItemListSafely,
     resolveLineItemDisplayPriceCents,
 } from "@/components/orders/orderLineItemEditState";
+import { buildQuoteLineItemSavePayload, hasExplicitLineItemPriceOverride } from "./quoteLineItemSavePayload";
 
 type QuoteEditorRouteParams = {
     id?: string;
@@ -38,21 +39,6 @@ export type QuoteDuplicateMode = "quote_only" | "quote_with_artwork";
  */
 function getStableLineItemKey(li: QuoteLineItemDraft): string {
     return li.tempId || li.id || "";
-}
-
-function hasExplicitLineItemPriceOverride(item: any): boolean {
-    const override = item?.priceOverride;
-    const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
-    const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? item?.priceOverrideMode;
-    const hasMode = typeof mode === "string" && mode.trim().length > 0;
-    const hasValue =
-        overrideRecord?.valueCents !== undefined ||
-        overrideRecord?.priceOverrideValueCents !== undefined ||
-        overrideRecord?.value !== undefined ||
-        item?.priceOverrideValueCents !== undefined ||
-        item?.priceOverrideValuePercent !== undefined;
-
-    return hasMode && hasValue;
 }
 
 function mapQuoteApiLineItemToDraft(item: any, idx: number): QuoteLineItemDraft {
@@ -2250,45 +2236,14 @@ export function useQuoteEditorState() {
     }, []);
 
     // Save a single line item to the server
-    const saveLineItem = useCallback(async (itemKey: string): Promise<boolean> => {
+    const saveLineItem = useCallback(async (itemKey: string, overrides: Partial<QuoteLineItemDraft> = {}): Promise<boolean> => {
         if (!quoteId || !itemKey) return false;
 
         const item = lineItems.find((li) => getStableLineItemKey(li) === itemKey);
         if (!item || !item.productId) return false;
-        const hasExplicitOverride = hasExplicitLineItemPriceOverride(item);
 
         try {
-            const payload: any = {
-                productId: item.productId,
-                productName: item.productName,
-                variantId: item.variantId ?? null,
-                variantName: item.variantName ?? null,
-                productType: item.productType || "wide_roll",
-                width: item.width,
-                height: item.height,
-                quantity: item.quantity,
-                specsJson: item.specsJson || {},
-                optionSelectionsJson: (item as any).optionSelectionsJson ?? null,
-                pbv2TreeVersionId: item.pbv2TreeVersionId ?? null,
-                pbv2SnapshotJson: item.pbv2SnapshotJson ?? undefined,
-                pricedAt: item.pricedAt ?? undefined,
-                materialUsages: item.materialUsages ?? [],
-                selectedOptions: item.selectedOptions || [],
-                linePrice: item.linePrice ?? 0,
-                priceOverride: hasExplicitOverride ? (item.priceOverride ?? null) : null,
-                overridePriceCents: hasExplicitOverride ? (item.overridePriceCents ?? null) : null,
-                overrideAt: item.overrideAt ?? null,
-                overrideByUserId: item.overrideByUserId ?? null,
-                overrideReason: item.overrideReason ?? null,
-                priceBreakdown: item.priceBreakdown || {
-                    basePrice: item.linePrice ?? 0,
-                    optionsPrice: 0,
-                    total: item.linePrice ?? 0,
-                    formula: "",
-                },
-                displayOrder: item.displayOrder ?? 0,
-                status: item.status === "canceled" ? "canceled" : "active",
-            };
+            const payload = buildQuoteLineItemSavePayload(item, overrides);
 
             if (item.id) {
                 // Update existing line item
