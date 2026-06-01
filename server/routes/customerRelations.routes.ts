@@ -62,6 +62,10 @@ function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
 }
 
+function jsonError(res: any, status: number, message: string) {
+  return res.status(status).json({ success: false, message });
+}
+
 export function registerCustomerRelationsRoutes(
   app: Express,
   middleware: {
@@ -76,13 +80,17 @@ export function registerCustomerRelationsRoutes(
   // CUSTOMER CONTACTS
   // ============================================================
 
-  app.get("/api/customers/:customerId/contacts", isAuthenticated, async (req, res) => {
+  app.get("/api/customers/:customerId/contacts", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
+      const customer = await storage.getCustomerById(organizationId, req.params.customerId);
+      if (!customer) return jsonError(res, 404, "Customer not found");
       const contacts = await storage.getCustomerContacts(req.params.customerId);
       res.json(contacts);
     } catch (error) {
       console.error("Error fetching customer contacts:", error);
-      res.status(500).json({ message: "Failed to fetch customer contacts" });
+      jsonError(res, 500, "Failed to fetch customer contacts");
     }
   });
 
@@ -90,12 +98,14 @@ export function registerCustomerRelationsRoutes(
   app.get("/api/contacts", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
       const search = req.query.search as string | undefined;
       const page = req.query.page ? parseInt(req.query.page as string) : 1;
       const pageSize = Math.min(200, req.query.pageSize ? parseInt(req.query.pageSize as string) : 50);
+      const sortBy = req.query.sortBy as string | undefined;
+      const sortDir = req.query.sortDir as string | undefined;
 
-      const result = await storage.getContactsPaged(organizationId, { search, page, pageSize });
+      const result = await storage.getContactsPaged(organizationId, { search, page, pageSize, sortBy, sortDir });
       res.json({
         contacts: result.items,
         total: result.total,
@@ -107,16 +117,18 @@ export function registerCustomerRelationsRoutes(
       });
     } catch (error) {
       console.error("Error fetching contacts:", error);
-      res.status(500).json({ message: "Failed to fetch contacts" });
+      jsonError(res, 500, "Failed to fetch contacts");
     }
   });
 
   // Contact detail with relations
-  app.get("/api/contacts/:id", isAuthenticated, async (req, res) => {
+  app.get("/api/contacts/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const contactWithCustomer = await storage.getContactWithRelations(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
+      const contactWithCustomer = await storage.getContactWithRelations(req.params.id, organizationId);
       if (!contactWithCustomer) {
-        return res.status(404).json({ message: "Contact not found" });
+        return jsonError(res, 404, "Contact not found");
       }
 
       const { customer, ...contact } = contactWithCustomer;
@@ -145,51 +157,62 @@ export function registerCustomerRelationsRoutes(
       });
     } catch (error) {
       console.error("Error fetching contact detail:", error);
-      res.status(500).json({ message: "Failed to fetch contact detail" });
+      jsonError(res, 500, "Failed to fetch contact detail");
     }
   });
 
-  app.post("/api/customers/:customerId/contacts", isAuthenticated, async (req, res) => {
+  app.post("/api/customers/:customerId/contacts", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
       const contactData = insertCustomerContactSchema.parse({
         ...req.body,
         customerId: req.params.customerId,
       });
-      const contact = await storage.createCustomerContact(contactData);
+      const { customerId, ...contactFields } = contactData;
+      const contact = await storage.createCustomerContactForOrganization(organizationId, customerId, contactFields);
       res.json(contact);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: fromZodError(error).message });
+        return jsonError(res, 400, fromZodError(error).message);
+      }
+      if (error instanceof Error && error.message === "Customer not found") {
+        return jsonError(res, 404, error.message);
       }
       console.error("Error creating customer contact:", error);
-      res.status(500).json({ message: "Failed to create customer contact" });
+      jsonError(res, 500, "Failed to create customer contact");
     }
   });
 
-  app.patch("/api/customer-contacts/:id", isAuthenticated, async (req, res) => {
+  app.patch("/api/customer-contacts/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
       const contactData = updateCustomerContactSchema.parse(req.body);
-      const contact = await storage.updateCustomerContact(req.params.id, contactData);
+      const contact = await storage.updateCustomerContactForOrganization(organizationId, req.params.id, contactData);
       res.json(contact);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: fromZodError(error).message });
+        return jsonError(res, 400, fromZodError(error).message);
+      }
+      if (error instanceof Error && (error.message === "Customer contact not found" || error.message === "Customer not found")) {
+        return jsonError(res, 404, error.message);
       }
       console.error("Error updating customer contact:", error);
-      res.status(500).json({ message: "Failed to update customer contact" });
+      jsonError(res, 500, "Failed to update customer contact");
     }
   });
 
   app.delete("/api/customer-contacts/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
       const contactId = req.params.id;
 
       // Get contact details before deletion for audit log
-      const contact = await storage.getCustomerContactById(contactId);
+      const contact = await storage.getContactWithRelations(contactId, organizationId);
       if (!contact) {
-        return res.status(404).json({ message: "Contact not found" });
+        return jsonError(res, 404, "Contact not found");
       }
 
       // Delete the contact
@@ -215,7 +238,7 @@ export function registerCustomerRelationsRoutes(
       res.json({ message: "Customer contact deleted successfully" });
     } catch (error) {
       console.error("Error deleting customer contact:", error);
-      res.status(500).json({ message: "Failed to delete customer contact" });
+      jsonError(res, 500, "Failed to delete customer contact");
     }
   });
 

@@ -10,6 +10,13 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import {
+  buildContactListQueryKey,
+  buildContactListSearchParams,
+  normalizeContactListResponse,
+  type ContactListSortBy,
+  type ContactListSortDir,
+} from "@/lib/contactListQuery";
 
 export interface Contact {
   id: string;
@@ -79,6 +86,7 @@ export interface ContactDetailResponse {
 }
 
 export interface UpdateContactInput {
+  customerId?: string;
   firstName?: string;
   lastName?: string;
   title?: string;
@@ -96,14 +104,25 @@ export interface UpdateContactInput {
   flags?: string[] | null;
 }
 
-export function useContacts(filters?: { search?: string; page?: number; pageSize?: number }) {
+export interface CreateContactInput extends UpdateContactInput {
+  customerId: string;
+  firstName: string;
+  lastName: string;
+}
+
+export function useContacts(filters?: { search?: string; page?: number; pageSize?: number; sortBy?: ContactListSortBy; sortDir?: ContactListSortDir }) {
+  const queryState = {
+    search: filters?.search ?? "",
+    page: filters?.page ?? 1,
+    pageSize: filters?.pageSize ?? 20,
+    sortBy: filters?.sortBy ?? "lastName",
+    sortDir: filters?.sortDir ?? "asc",
+  };
+
   return useQuery<ContactsResponse>({
-    queryKey: ["contacts", filters],
+    queryKey: buildContactListQueryKey(queryState),
     queryFn: async () => {
-      const params = new URLSearchParams();
-      if (filters?.search) params.append("search", filters.search);
-      if (filters?.page) params.append("page", filters.page.toString());
-      if (filters?.pageSize) params.append("pageSize", filters.pageSize.toString());
+      const params = buildContactListSearchParams(queryState);
 
       const response = await fetch(`/api/contacts?${params.toString()}`, {
         credentials: "include",
@@ -113,7 +132,7 @@ export function useContacts(filters?: { search?: string; page?: number; pageSize
         throw new Error("Failed to fetch contacts");
       }
 
-      return response.json();
+      return normalizeContactListResponse<ContactWithStats>(await response.json());
     },
   });
 }
@@ -163,6 +182,45 @@ export function useUpdateContact() {
       toast({
         title: "Success",
         description: "Contact updated successfully",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+}
+
+export function useCreateContact() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (data: CreateContactInput) => {
+      const { customerId, ...contactData } = data;
+      const response = await fetch(`/api/customers/${customerId}/contacts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(contactData),
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Failed to create contact");
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
+      toast({
+        title: "Success",
+        description: "Contact created successfully",
       });
     },
     onError: (error: Error) => {

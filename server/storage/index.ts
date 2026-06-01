@@ -215,7 +215,9 @@ export const deleteCustomer = customersRepo.deleteCustomer.bind(customersRepo);
 export const getCustomerContacts = customersRepo.getCustomerContacts.bind(customersRepo);
 export const getCustomerContactById = customersRepo.getCustomerContactById.bind(customersRepo);
 export const createCustomerContact = customersRepo.createCustomerContact.bind(customersRepo);
+export const createCustomerContactForOrganization = customersRepo.createCustomerContactForOrganization.bind(customersRepo);
 export const updateCustomerContact = customersRepo.updateCustomerContact.bind(customersRepo);
+export const updateCustomerContactForOrganization = customersRepo.updateCustomerContactForOrganization.bind(customersRepo);
 export const deleteCustomerContact = customersRepo.deleteCustomerContact.bind(customersRepo);
 
 export const getCustomerNotes = customersRepo.getCustomerNotes.bind(customersRepo);
@@ -440,7 +442,9 @@ export const storage = {
     getCustomerContacts,
     getCustomerContactById,
     createCustomerContact,
+    createCustomerContactForOrganization,
     updateCustomerContact,
+    updateCustomerContactForOrganization,
     deleteCustomerContact,
     getCustomerNotes,
     createCustomerNote,

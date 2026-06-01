@@ -35,6 +35,20 @@ type CustomerSortBy =
     | "lastUpdated";
 
 type CustomerSortDir = "asc" | "desc";
+type ContactSortBy =
+    | "name"
+    | "lastName"
+    | "firstName"
+    | "email"
+    | "phone"
+    | "company"
+    | "companyName"
+    | "createdAt"
+    | "updatedAt"
+    | "orders"
+    | "quotes"
+    | "lastActivity"
+    | "lastActivityAt";
 
 const customerSortExpressions: Record<CustomerSortBy, any> = {
     name: sql`lower(coalesce(${customers.companyName}, ''))`,
@@ -74,6 +88,51 @@ function buildCustomerOrderBy(sortBy?: string, sortDir?: string) {
     return [
         direction(customerSortExpressions[normalized.sortBy]),
         asc(customers.id),
+    ];
+}
+
+const contactSortExpressions: Record<ContactSortBy, any> = {
+    name: sql`lower(coalesce(${customerContacts.lastName}, '') || ' ' || coalesce(${customerContacts.firstName}, ''))`,
+    lastName: sql`lower(coalesce(${customerContacts.lastName}, ''))`,
+    firstName: sql`lower(coalesce(${customerContacts.firstName}, ''))`,
+    email: sql`lower(coalesce(${customerContacts.email}, ''))`,
+    phone: sql`lower(coalesce(${customerContacts.phone}, ''))`,
+    company: sql`lower(coalesce(${customers.companyName}, ''))`,
+    companyName: sql`lower(coalesce(${customers.companyName}, ''))`,
+    createdAt: customerContacts.createdAt,
+    updatedAt: customerContacts.updatedAt,
+    orders: sql`(select count(*) from orders o where o.contact_id = ${customerContacts.id})`,
+    quotes: sql`(select count(*) from quotes q where q.contact_id = ${customerContacts.id})`,
+    lastActivity: sql`greatest(
+        coalesce((select max(o.created_at) from orders o where o.contact_id = ${customerContacts.id}), 'epoch'::timestamp),
+        coalesce((select max(q.created_at) from quotes q where q.contact_id = ${customerContacts.id}), 'epoch'::timestamp)
+    )`,
+    lastActivityAt: sql`greatest(
+        coalesce((select max(o.created_at) from orders o where o.contact_id = ${customerContacts.id}), 'epoch'::timestamp),
+        coalesce((select max(q.created_at) from quotes q where q.contact_id = ${customerContacts.id}), 'epoch'::timestamp)
+    )`,
+};
+
+function normalizeContactSort(sortBy?: string, sortDir?: string): {
+    sortBy: ContactSortBy;
+    sortDir: CustomerSortDir;
+} {
+    const allowedSortBy = Object.keys(contactSortExpressions) as ContactSortBy[];
+    const normalizedSortBy = allowedSortBy.includes(sortBy as ContactSortBy)
+        ? (sortBy as ContactSortBy)
+        : "lastName";
+    const normalizedSortDir = sortDir === "desc" ? "desc" : "asc";
+    return { sortBy: normalizedSortBy, sortDir: normalizedSortDir };
+}
+
+function buildContactOrderBy(sortBy?: string, sortDir?: string) {
+    const normalized = normalizeContactSort(sortBy, sortDir);
+    const direction = normalized.sortDir === "desc" ? desc : asc;
+    return [
+        direction(contactSortExpressions[normalized.sortBy]),
+        asc(sql`lower(coalesce(${customerContacts.lastName}, ''))`),
+        asc(sql`lower(coalesce(${customerContacts.firstName}, ''))`),
+        asc(customerContacts.id),
     ];
 }
 
@@ -403,6 +462,38 @@ export class CustomersRepository {
         return contact;
     }
 
+    async createCustomerContactForOrganization(
+        organizationId: string,
+        customerId: string,
+        contactData: Omit<InsertCustomerContact, "customerId">,
+    ): Promise<CustomerContact> {
+        return await this.dbInstance.transaction(async (tx: any) => {
+            const [customer] = await tx
+                .select({ id: customers.id })
+                .from(customers)
+                .where(and(eq(customers.id, customerId), eq(customers.organizationId, organizationId)))
+                .limit(1);
+
+            if (!customer) {
+                throw new Error("Customer not found");
+            }
+
+            const [contact] = await tx
+                .insert(customerContacts)
+                .values({
+                    ...contactData,
+                    customerId,
+                })
+                .returning();
+
+            if (!contact) {
+                throw new Error("Failed to create customer contact");
+            }
+
+            return contact;
+        });
+    }
+
     async updateCustomerContact(id: string, contactData: Partial<InsertCustomerContact>): Promise<CustomerContact> {
         const updateData: any = {
             ...contactData,
@@ -420,6 +511,62 @@ export class CustomersRepository {
         }
 
         return contact;
+    }
+
+    async updateCustomerContactForOrganization(
+        organizationId: string,
+        id: string,
+        contactData: Partial<InsertCustomerContact>,
+    ): Promise<CustomerContact> {
+        return await this.dbInstance.transaction(async (tx: any) => {
+            const [current] = await tx
+                .select({ contact: customerContacts, customer: customers })
+                .from(customerContacts)
+                .innerJoin(customers, eq(customerContacts.customerId, customers.id))
+                .where(and(eq(customerContacts.id, id), eq(customers.organizationId, organizationId)))
+                .limit(1);
+
+            if (!current?.contact) {
+                throw new Error("Customer contact not found");
+            }
+
+            const nextCustomerId = contactData.customerId ?? current.contact.customerId;
+            if (!nextCustomerId) {
+                throw new Error("Customer is required");
+            }
+
+            if (nextCustomerId !== current.contact.customerId) {
+                const [targetCustomer] = await tx
+                    .select({ id: customers.id })
+                    .from(customers)
+                    .where(and(eq(customers.id, nextCustomerId), eq(customers.organizationId, organizationId)))
+                    .limit(1);
+
+                if (!targetCustomer) {
+                    throw new Error("Customer not found");
+                }
+            }
+
+            // Multi-company contact links are not modeled in the current schema.
+            // Keep the existing single primary company flow by moving customer_id atomically.
+            const updateData: any = {
+                ...contactData,
+                customerId: nextCustomerId,
+                updatedAt: new Date(),
+            };
+
+            const [contact] = await tx
+                .update(customerContacts)
+                .set(updateData)
+                .where(eq(customerContacts.id, id))
+                .returning();
+
+            if (!contact) {
+                throw new Error("Customer contact not found");
+            }
+
+            return contact;
+        });
     }
 
     async deleteCustomerContact(id: string): Promise<void> {
@@ -537,94 +684,32 @@ export class CustomersRepository {
     }
 
     // Contacts (required by routes) - tenant-scoped
-    async getAllContacts(organizationId: string, params: { search?: string; page?: number; pageSize?: number }): Promise<Array<CustomerContact & { companyName: string; ordersCount: number; quotesCount: number; lastActivityAt: string | null }>> {
-        const { search, page = 1, pageSize = 50 } = params;
-
-        // Get all customers for this organization
-        const orgCustomers = await this.dbInstance.select().from(customers).where(eq(customers.organizationId, organizationId));
-        const customerMap = new Map(orgCustomers.map(c => [c.id, c]));
-        const customerIds = orgCustomers.map(c => c.id);
-
-        if (customerIds.length === 0) return [];
-
-        let contactsQuery = this.dbInstance.select().from(customerContacts).where(inArray(customerContacts.customerId, customerIds)) as any;
-
-        if (search) {
-            const pattern = `%${search}%`;
-            contactsQuery = contactsQuery.where(and(
-                inArray(customerContacts.customerId, customerIds),
-                or(
-                    ilike(customerContacts.firstName, pattern),
-                    ilike(customerContacts.lastName, pattern),
-                    ilike(customerContacts.email, pattern)
-                )
-            ));
-        }
-
-        contactsQuery = contactsQuery.orderBy(desc(customerContacts.createdAt)).limit(pageSize).offset((page - 1) * pageSize);
-        const contacts = await contactsQuery;
-
-        // Enrich with company name and stats
-        const enriched = await Promise.all(contacts.map(async (contact: CustomerContact) => {
-            const customer = customerMap.get(contact.customerId);
-            const companyName = customer?.companyName || 'Unknown';
-
-            // Get orders count
-            const contactOrders = await this.dbInstance.select({ count: sql<number>`count(*)` })
-                .from(orders)
-                .where(eq(orders.contactId, contact.id));
-            const ordersCount = Number(contactOrders[0]?.count || 0);
-
-            // Get quotes count
-            const contactQuotes = await this.dbInstance.select({ count: sql<number>`count(*)` })
-                .from(quotes)
-                .where(eq(quotes.contactId, contact.id));
-            const quotesCount = Number(contactQuotes[0]?.count || 0);
-
-            // Get last activity (most recent order or quote)
-            const recentOrders = await this.dbInstance.select({ createdAt: orders.createdAt })
-                .from(orders)
-                .where(eq(orders.contactId, contact.id))
-                .orderBy(desc(orders.createdAt))
-                .limit(1);
-
-            const recentQuotes = await this.dbInstance.select({ createdAt: quotes.createdAt })
-                .from(quotes)
-                .where(eq(quotes.contactId, contact.id))
-                .orderBy(desc(quotes.createdAt))
-                .limit(1);
-
-            let lastActivityAt: string | null = null;
-            const lastOrderDate = recentOrders[0]?.createdAt;
-            const lastQuoteDate = recentQuotes[0]?.createdAt;
-
-            if (lastOrderDate && lastQuoteDate) {
-                const orderDateObj = new Date(lastOrderDate);
-                const quoteDateObj = new Date(lastQuoteDate);
-                lastActivityAt = (orderDateObj > quoteDateObj ? lastOrderDate : lastQuoteDate.toISOString());
-            } else if (lastOrderDate) {
-                lastActivityAt = lastOrderDate;
-            } else if (lastQuoteDate) {
-                lastActivityAt = lastQuoteDate.toISOString();
-            }
-
-            return {
-                ...contact,
-                companyName,
-                ordersCount,
-                quotesCount,
-                lastActivityAt,
-            };
-        }));
-
-        return enriched;
+    async getAllContacts(organizationId: string, params: { search?: string; page?: number; pageSize?: number; sortBy?: string; sortDir?: string }): Promise<Array<CustomerContact & { companyName: string; ordersCount: number; quotesCount: number; lastActivityAt: string | null }>> {
+        const result = await this.getContactsPaged(organizationId, {
+            search: params.search,
+            page: params.page,
+            pageSize: params.pageSize,
+            sortBy: params.sortBy,
+            sortDir: params.sortDir,
+        });
+        return result.items;
     }
 
-    async getContactWithRelations(id: string): Promise<(CustomerContact & { customer?: Customer }) | undefined> {
-        const [contact] = await this.dbInstance.select().from(customerContacts).where(eq(customerContacts.id, id));
-        if (!contact) return undefined;
-        const [customer] = contact.customerId ? await this.dbInstance.select().from(customers).where(eq(customers.id, contact.customerId)) : [undefined];
-        return { ...contact, customer };
+    async getContactWithRelations(id: string, organizationId?: string): Promise<(CustomerContact & { customer?: Customer }) | undefined> {
+        const rows = await this.dbInstance
+            .select({ contact: customerContacts, customer: customers })
+            .from(customerContacts)
+            .innerJoin(customers, eq(customerContacts.customerId, customers.id))
+            .where(
+                organizationId
+                    ? and(eq(customerContacts.id, id), eq(customers.organizationId, organizationId))
+                    : eq(customerContacts.id, id),
+            )
+            .limit(1);
+
+        const row = rows[0];
+        if (!row?.contact) return undefined;
+        return { ...row.contact, customer: row.customer };
     }
 
     // --------------------------------------------------------
@@ -756,7 +841,7 @@ export class CustomersRepository {
     // --------------------------------------------------------
     async getContactsPaged(
         organizationId: string,
-        opts: { search?: string; page?: number; pageSize?: number },
+        opts: { search?: string; page?: number; pageSize?: number; sortBy?: string; sortDir?: string },
     ): Promise<{
         items: Array<CustomerContact & { companyName: string; ordersCount: number; quotesCount: number; lastActivityAt: string | null }>;
         total: number;
@@ -769,27 +854,16 @@ export class CustomersRepository {
         const page = Math.max(1, opts.page ?? 1);
         const pageSize = Math.min(200, Math.max(1, opts.pageSize ?? 50));
 
-        // All customers in this org (map by id for enrichment later)
-        const orgCustomers = await this.dbInstance
-            .select()
-            .from(customers)
-            .where(eq(customers.organizationId, organizationId));
-
-        const customerMap = new Map(orgCustomers.map(c => [c.id, c]));
-        const customerIds = orgCustomers.map(c => c.id);
-
-        if (customerIds.length === 0) {
-            return { items: [], total: 0, page: 1, pageSize, totalPages: 1, hasNextPage: false, hasPreviousPage: false };
-        }
-
-        const baseCondition = inArray(customerContacts.customerId, customerIds);
-        const whereClause = opts.search
+        const searchTerm = opts.search?.trim();
+        const baseCondition = eq(customers.organizationId, organizationId);
+        const whereClause = searchTerm
             ? and(
                 baseCondition,
                 or(
-                    ilike(customerContacts.firstName, `%${opts.search}%`),
-                    ilike(customerContacts.lastName, `%${opts.search}%`),
-                    ilike(customerContacts.email, `%${opts.search}%`),
+                    ilike(customerContacts.firstName, `%${searchTerm}%`),
+                    ilike(customerContacts.lastName, `%${searchTerm}%`),
+                    ilike(customerContacts.email, `%${searchTerm}%`),
+                    ilike(customers.companyName, `%${searchTerm}%`),
                 ),
             )
             : baseCondition;
@@ -798,6 +872,7 @@ export class CustomersRepository {
         const [countRow] = await this.dbInstance
             .select({ count: sql<number>`count(*)` })
             .from(customerContacts)
+            .innerJoin(customers, eq(customerContacts.customerId, customers.id))
             .where(whereClause);
         const total = Number(countRow?.count ?? 0);
 
@@ -805,16 +880,17 @@ export class CustomersRepository {
         const safePageClamped = Math.min(page, totalPages);
 
         const contactRows = await this.dbInstance
-            .select()
+            .select({ contact: customerContacts, customer: customers })
             .from(customerContacts)
+            .innerJoin(customers, eq(customerContacts.customerId, customers.id))
             .where(whereClause)
-            .orderBy(desc(customerContacts.createdAt))
+            .orderBy(...buildContactOrderBy(opts.sortBy, opts.sortDir))
             .limit(pageSize)
             .offset((safePageClamped - 1) * pageSize);
 
-        const enriched = await Promise.all(contactRows.map(async (contact: CustomerContact) => {
-            const customer = customerMap.get(contact.customerId ?? '');
-            const companyName = customer?.companyName ?? 'Unknown';
+        const enriched = await Promise.all(contactRows.map(async (row: { contact: CustomerContact; customer: Customer }) => {
+            const contact = row.contact;
+            const companyName = row.customer?.companyName ?? 'Unknown';
 
             const [ordersRow] = await this.dbInstance.select({ count: sql<number>`count(*)` }).from(orders).where(eq(orders.contactId, contact.id));
             const ordersCount = Number(ordersRow?.count ?? 0);
