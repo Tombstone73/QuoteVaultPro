@@ -4,6 +4,7 @@ import { Simulate } from "react-dom/test-utils";
 import { createRoot, type Root } from "react-dom/client";
 import { describe, expect, jest, test, beforeEach, afterEach } from "@jest/globals";
 import ContactsPage from "./contacts";
+import CustomersPage from "./customers";
 import CustomerList from "@/components/CustomerList";
 import { useContacts, useCreateContact, useDeleteContact, useUpdateContact } from "@/hooks/useContacts";
 import { useQuery } from "@tanstack/react-query";
@@ -53,6 +54,13 @@ jest.mock("@/components/list/ListViewSettings", () => ({
 
 jest.mock("@/components/BackNavControls", () => () => <button type="button">Back</button>);
 jest.mock("@/components/ContactFlagPill", () => ({ ContactFlagPill: () => null }));
+jest.mock("@/components/customer-form", () => ({
+  __esModule: true,
+  default: () => null,
+}));
+jest.mock("@/features/customers", () => ({
+  EnhancedCustomerView: () => <div>Customer detail</div>,
+}));
 
 jest.mock("@/components/titan", () => ({
   Page: ({ children }: any) => <div>{children}</div>,
@@ -341,7 +349,9 @@ function getCustomerPageSizeSelect() {
 }
 
 function expectCustomerPaginationControls() {
-  expect(container.querySelector('[data-testid="customer-list-scroll-region"]')).toBeTruthy();
+  const listBody = container.querySelector('[data-testid="customer-list-body"]') as HTMLElement | null;
+  expect(listBody).toBeTruthy();
+  expect(listBody?.className).not.toContain("overflow-y-auto");
   expect(container.querySelector('[data-testid="customer-pagination-footer"]')).toBeTruthy();
   expect(container.textContent).toContain("Showing 1-20 of 35 customers");
   expect(container.textContent).toContain("20 / page");
@@ -366,6 +376,7 @@ test("Customers split mode defaults to 20 per page and shows reachable paginatio
   const firstQueryArg = useQueryMock.mock.calls[0]?.[0] as any;
   expect(firstQueryArg.queryKey[1].pageSize).toBe(20);
   expectCustomerPaginationControls();
+  expect(container.querySelectorAll('[data-testid="customer-list-body"] button')).toHaveLength(20);
 
   const nextButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Next"));
   act(() => {
@@ -376,7 +387,7 @@ test("Customers split mode defaults to 20 per page and shows reachable paginatio
   expect(lastQueryArg.queryKey[1].page).toBe(2);
 });
 
-test("Customers enhanced mode shows scroll region, pagination footer, and page-size selector", () => {
+test("Customers enhanced mode grows with content and keeps pagination controls reachable", () => {
   mockCustomerListQuery();
   act(() => {
     root.render(
@@ -393,6 +404,7 @@ test("Customers enhanced mode shows scroll region, pagination footer, and page-s
   const firstQueryArg = useQueryMock.mock.calls[0]?.[0] as any;
   expect(firstQueryArg.queryKey[1]).toMatchObject({ viewMode: "enhanced", pageSize: 20 });
   expectCustomerPaginationControls();
+  expect(container.querySelectorAll("tbody tr")).toHaveLength(20);
 
   const pageSizeSelect = getCustomerPageSizeSelect();
   expect(pageSizeSelect).toBeTruthy();
@@ -406,4 +418,32 @@ test("Customers enhanced mode shows scroll region, pagination footer, and page-s
 
   const lastQueryArg = useQueryMock.mock.calls[useQueryMock.mock.calls.length - 1]?.[0] as any;
   expect(lastQueryArg.queryKey[1].pageSize).toBe(50);
+});
+
+test("Customers enhanced page does not add a nested vertical scroll card when Contacts does not", () => {
+  useContactsMock.mockClear();
+  act(() => {
+    root.render(<ContactsPage />);
+  });
+
+  const contactsCard = container.querySelector("table")?.closest("section") as HTMLElement | null;
+  expect(contactsCard?.className).not.toContain("overflow-y-auto");
+
+  useQueryMock.mockClear();
+  mockCustomerListQuery();
+  window.localStorage.setItem("titanos.customers.viewMode", "enhanced");
+  act(() => {
+    root.render(<CustomersPage />);
+  });
+
+  const listBody = container.querySelector('[data-testid="customer-list-body"]') as HTMLElement | null;
+  const customerCard = listBody?.closest("section") as HTMLElement | null;
+
+  expect(listBody).toBeTruthy();
+  expect(listBody?.className).not.toContain("overflow-y-auto");
+  expect(customerCard?.className).not.toContain("overflow-y-auto");
+  expect(customerCard?.className).not.toContain("overflow-hidden");
+  expect(customerCard?.className).not.toContain("h-[calc");
+  expect(container.querySelectorAll("tbody tr")).toHaveLength(20);
+  expect(container.querySelector('[data-testid="customer-pagination-footer"]')).toBeTruthy();
 });

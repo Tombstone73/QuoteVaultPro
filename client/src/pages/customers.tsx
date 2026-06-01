@@ -184,8 +184,8 @@ export default function Customers({ embedded = false }: CustomersProps) {
   // Embedded mode (used within other pages)
   if (embedded) {
     return (
-      <div className="h-[calc(100vh-180px)]">
-        <div className="h-full flex overflow-hidden">
+      <div>
+        <div className="flex items-start">
           <div className="w-[400px] border-r border-titan-border-subtle flex-shrink-0">
             <CustomerList
               selectedCustomerId={selectedCustomerId || undefined}
@@ -195,7 +195,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
               viewMode="split"
             />
           </div>
-          <div className="flex-1 overflow-hidden">
+          <div className="flex-1">
             {selectedCustomerId ? (
               <EnhancedCustomerView 
                 customerId={selectedCustomerId} 
@@ -264,9 +264,9 @@ export default function Customers({ embedded = false }: CustomersProps) {
         {/* Customer List/Detail View */}
         {viewMode === "split" ? (
           // SPLIT MODE: Two-column layout
-          <div className="grid grid-cols-[360px,1fr] gap-3 h-[calc(100vh-280px)] min-h-[520px] overflow-hidden">
+          <div className="grid grid-cols-[360px,1fr] gap-3 items-start">
             {/* Left Panel: Customer List */}
-            <DataCard noPadding className="overflow-hidden bg-titan-bg-card border-titan-border-subtle">
+            <DataCard noPadding className="bg-titan-bg-card border-titan-border-subtle">
               <CustomerList
                 selectedCustomerId={selectedCustomerId || undefined}
                 onSelectCustomer={handleSelectCustomer}
@@ -277,7 +277,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
             </DataCard>
             
             {/* Right Panel: Customer Detail */}
-            <DataCard noPadding className="overflow-y-auto bg-titan-bg-card border-titan-border-subtle">
+            <DataCard noPadding className="bg-titan-bg-card border-titan-border-subtle">
               {selectedCustomerId ? (
                 <EnhancedCustomerView 
                   customerId={selectedCustomerId} 
@@ -291,7 +291,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
           </div>
         ) : (
           // ENHANCED MODE: List only, clicking navigates to full page
-          <DataCard noPadding className="overflow-hidden bg-titan-bg-card border-titan-border-subtle h-[calc(100vh-280px)] min-h-[520px]">
+          <DataCard noPadding className="bg-titan-bg-card border-titan-border-subtle">
             <CustomerList
               selectedCustomerId={undefined}
               onSelectCustomer={handleSelectCustomer}

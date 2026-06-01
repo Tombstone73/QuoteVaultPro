@@ -441,11 +441,11 @@ export default function CustomerList({
   );
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col">
       {!collapse && filterControls}
 
       {!collapse && (
-        <div data-testid="customer-list-scroll-region" className="flex-1 min-h-0 overflow-y-auto">
+        <div data-testid="customer-list-body">
           {isLoading ? loadingState : customers.length === 0 ? emptyState : viewMode === "enhanced" ? enhancedTable : splitList}
         </div>
       )}
