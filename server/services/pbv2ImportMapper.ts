@@ -16,7 +16,8 @@ import type {
   ProductExportV2Item, 
   ImportPlan, 
   ImportResult,
-  ImportMode 
+  ImportMode,
+  ProductImportExportSummary,
 } from "@shared/importExportSchemas";
 import { summarizeProductExportItem } from "@shared/importExportSchemas";
 import type { db as DbType } from "../db";
@@ -129,6 +130,7 @@ export async function buildImportPlan(
   
   for (let i = 0; i < request.products.length; i++) {
     const item = request.products[i];
+    const itemSummary = summarizeProductExportItem(item);
     const dryItem: DryRunItem = {
       productIndex: i,
       productName: item.name,
@@ -205,6 +207,14 @@ export async function buildImportPlan(
         code: "PBV2_ACTIVE_TREE_MISSING",
         message: "No PBV2 active tree found. Imported product will not have builder/runtime options.",
         field: "pbv2.activeTree",
+      });
+    }
+
+    if ((item.optionCount ?? 0) > 0 && itemSummary.optionCount === 0) {
+      dryItem.errors.push({
+        code: "PBV2_OPTIONS_MISSING_FROM_TREE",
+        message: `Export declares ${item.optionCount} PBV2 options, but the importable tree contains zero options.`,
+        field: "pbv2.activeTree.treeJson",
       });
     }
     
@@ -359,20 +369,22 @@ export async function applyImport(
       
       if (existing && ctx.mode === "upsertBySlug") {
         // Update existing product
-        const productId = await updateProductWithPbv2(ctx, existing.id, item, resolved);
+        const imported = await updateProductWithPbv2(ctx, existing.id, item, resolved);
         result.updated.push({
           productIndex: i,
           productName: item.name,
-          productId,
+          productId: imported.productId,
+          ...imported.summary,
         });
         result.counts.updated++;
       } else if (!existing) {
         // Create new product
-        const productId = await createProductWithPbv2(ctx, item, resolved);
+        const imported = await createProductWithPbv2(ctx, item, resolved);
         result.created.push({
           productIndex: i,
           productName: item.name,
-          productId,
+          productId: imported.productId,
+          ...imported.summary,
         });
         result.counts.created++;
       } else {
@@ -401,20 +413,21 @@ async function createProductWithPbv2(
   ctx: ImportMapperContext,
   item: ProductExportV2Item,
   resolved: ResolvedReferences
-): Promise<string> {
+): Promise<{ productId: string; summary: ProductImportExportSummary }> {
   const productId = randomUUID();
   const treeUserId = await resolveExistingTreeUserId(ctx.db, ctx.userId);
   const insertValues = buildPbv2ImportProductValues(item, resolved, {
     id: productId,
     organizationId: ctx.organizationId,
   });
+  let importedSummary = summarizeProductExportItem(item);
   
   await ctx.db.transaction(async (tx) => {
     await tx.insert(products).values(insertValues as any);
-    await replacePbv2TreesForProduct(tx as TxClient, ctx, productId, item, treeUserId);
+    importedSummary = await replacePbv2TreesForProduct(tx as TxClient, ctx, productId, item, treeUserId);
   });
   
-  return productId;
+  return { productId, summary: importedSummary };
 }
 
 /**
@@ -425,21 +438,22 @@ async function updateProductWithPbv2(
   productId: string,
   item: ProductExportV2Item,
   resolved: ResolvedReferences
-): Promise<string> {
+): Promise<{ productId: string; summary: ProductImportExportSummary }> {
   const treeUserId = await resolveExistingTreeUserId(ctx.db, ctx.userId);
   const updateValues = buildPbv2ImportProductValues(item, resolved, {
     updatedAt: new Date(),
   });
+  let importedSummary = summarizeProductExportItem(item);
   
   await ctx.db.transaction(async (tx) => {
     await tx
       .update(products)
       .set(updateValues as any)
       .where(and(eq(products.id, productId), eq(products.organizationId, ctx.organizationId)));
-    await replacePbv2TreesForProduct(tx as TxClient, ctx, productId, item, treeUserId);
+    importedSummary = await replacePbv2TreesForProduct(tx as TxClient, ctx, productId, item, treeUserId);
   });
   
-  return productId;
+  return { productId, summary: importedSummary };
 }
 
 function getActiveTreeForImport(item: ProductExportV2Item): { schemaVersion: number; treeJson: Record<string, any>; publishedAt?: string | null } | undefined {
@@ -484,17 +498,45 @@ async function replacePbv2TreesForProduct(
   productId: string,
   item: ProductExportV2Item,
   treeUserId: string | null,
-): Promise<void> {
+): Promise<ProductImportExportSummary> {
   const activeTree = getActiveTreeForImport(item);
   const draftTree = getDraftTreeForImport(item, activeTree);
   const activeTreeJson = activeTree?.treeJson ?? null;
+  const sourceSummary = summarizeProductExportItem(item);
+  const importedSummary = summarizeProductExportItem({
+    ...item,
+    optionTreeJson: activeTreeJson ?? item.optionTreeJson,
+    pbv2: activeTree
+      ? {
+          hasActiveTree: true,
+          activeTree: {
+            schemaVersion: activeTree.schemaVersion,
+            treeJson: activeTree.treeJson,
+            publishedAt: activeTree.publishedAt ?? null,
+          },
+          hasDraft: Boolean(draftTree),
+          draftTree: draftTree
+            ? {
+                schemaVersion: draftTree.schemaVersion,
+                treeJson: draftTree.treeJson,
+              }
+            : undefined,
+        }
+      : item.pbv2,
+  });
+
+  if (sourceSummary.optionCount > 0 && importedSummary.optionCount === 0) {
+    throw new Error(
+      `PBV2 import for "${item.name}" would create a zero-option product from a source with ${sourceSummary.optionCount} options. Import aborted.`,
+    );
+  }
 
   if (!activeTree && !draftTree) {
     await dbClient
       .update(products)
       .set({ pbv2ActiveTreeVersionId: null, optionTreeJson: item.optionTreeJson ?? null } as any)
       .where(and(eq(products.id, productId), eq(products.organizationId, ctx.organizationId)));
-    return;
+    return importedSummary;
   }
 
   await dbClient
@@ -544,6 +586,8 @@ async function replacePbv2TreesForProduct(
       optionTreeJson: activeTreeJson,
     } as any)
     .where(and(eq(products.id, productId), eq(products.organizationId, ctx.organizationId)));
+
+  return importedSummary;
 }
 
 async function resolveExistingTreeUserId(dbClient: DbClient, userId: string): Promise<string | null> {

@@ -47,6 +47,8 @@ interface ImportPlan {
     choiceCount?: number;
     ruleCount?: number;
     pricingConfigPresent?: boolean;
+    matrixCount?: number;
+    tierCount?: number;
     action: "create" | "update" | "skip";
     existingId?: string;
     reason?: string;
@@ -67,11 +69,25 @@ interface ImportResult {
     productIndex: number;
     productName: string;
     productId: string;
+    optionGroupCount?: number;
+    optionCount?: number;
+    choiceCount?: number;
+    ruleCount?: number;
+    pricingConfigPresent?: boolean;
+    matrixCount?: number;
+    tierCount?: number;
   }>;
   updated: Array<{
     productIndex: number;
     productName: string;
     productId: string;
+    optionGroupCount?: number;
+    optionCount?: number;
+    choiceCount?: number;
+    ruleCount?: number;
+    pricingConfigPresent?: boolean;
+    matrixCount?: number;
+    tierCount?: number;
   }>;
   failed: Array<{
     productIndex: number;
@@ -521,6 +537,8 @@ export default function ProductImportExport() {
                       <TableHead>Groups</TableHead>
                       <TableHead>Options</TableHead>
                       <TableHead>Rules</TableHead>
+                      <TableHead>Matrices</TableHead>
+                      <TableHead>Tiers</TableHead>
                       <TableHead>Pricing</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -549,6 +567,8 @@ export default function ProductImportExport() {
                           <TableCell>{summary.optionGroupCount}</TableCell>
                           <TableCell>{summary.optionCount}</TableCell>
                           <TableCell>{summary.ruleCount}</TableCell>
+                          <TableCell>{summary.matrixCount}</TableCell>
+                          <TableCell>{summary.tierCount}</TableCell>
                           <TableCell>{summary.pricingConfigPresent ? "Yes" : "No"}</TableCell>
                         </TableRow>
                       );
@@ -654,6 +674,8 @@ export default function ProductImportExport() {
                         <TableHead>Groups</TableHead>
                         <TableHead>Options</TableHead>
                         <TableHead>Rules</TableHead>
+                        <TableHead>Matrices</TableHead>
+                        <TableHead>Tiers</TableHead>
                         <TableHead>Pricing</TableHead>
                         <TableHead>Reason</TableHead>
                       </TableRow>
@@ -676,6 +698,8 @@ export default function ProductImportExport() {
                           <TableCell>{item.optionGroupCount ?? 0}</TableCell>
                           <TableCell>{item.optionCount ?? 0}</TableCell>
                           <TableCell>{item.ruleCount ?? 0}</TableCell>
+                          <TableCell>{item.matrixCount ?? 0}</TableCell>
+                          <TableCell>{item.tierCount ?? 0}</TableCell>
                           <TableCell>{item.pricingConfigPresent ? "Yes" : "No"}</TableCell>
                           <TableCell className="text-sm text-muted-foreground">
                             {[item.reason, ...(item.warnings ?? [])].filter(Boolean).join(" ") || "-"}
@@ -684,7 +708,7 @@ export default function ProductImportExport() {
                       ))}
                       {dryRunResult.preview.length > 50 && (
                         <TableRow>
-                          <TableCell colSpan={9} className="text-center text-sm text-muted-foreground">
+                          <TableCell colSpan={11} className="text-center text-sm text-muted-foreground">
                             ... and {dryRunResult.preview.length - 50} more
                           </TableCell>
                         </TableRow>
@@ -733,6 +757,43 @@ export default function ProductImportExport() {
                   </div>
                 </AlertDescription>
               </Alert>
+
+              {importResult.created.length + importResult.updated.length > 0 && (
+                <div>
+                  <h3 className="font-semibold mb-2">Imported PBV2 Counts</h3>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Product</TableHead>
+                        <TableHead>Result</TableHead>
+                        <TableHead>Groups</TableHead>
+                        <TableHead>Options</TableHead>
+                        <TableHead>Rules</TableHead>
+                        <TableHead>Matrices</TableHead>
+                        <TableHead>Tiers</TableHead>
+                        <TableHead>Pricing</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {[
+                        ...importResult.created.map((item) => ({ ...item, result: "Created" })),
+                        ...importResult.updated.map((item) => ({ ...item, result: "Updated" })),
+                      ].map((item) => (
+                        <TableRow key={`${item.result}-${item.productId}`}>
+                          <TableCell className="font-medium">{item.productName}</TableCell>
+                          <TableCell>{item.result}</TableCell>
+                          <TableCell>{item.optionGroupCount ?? 0}</TableCell>
+                          <TableCell>{item.optionCount ?? 0}</TableCell>
+                          <TableCell>{item.ruleCount ?? 0}</TableCell>
+                          <TableCell>{item.matrixCount ?? 0}</TableCell>
+                          <TableCell>{item.tierCount ?? 0}</TableCell>
+                          <TableCell>{item.pricingConfigPresent ? "Yes" : "No"}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
 
               {/* Failed items */}
               {importResult.failed.length > 0 && (
