@@ -22,6 +22,7 @@ import {
     users,
     customerVisibleProducts,
     materials,
+    materialProductLinks,
     orderMaterialUsage,
     inventoryReservations,
     productionJobs,
@@ -124,7 +125,21 @@ import { generatePackingSlipHtmlForOrder } from "../services/packingSlipService"
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
-    return user?.claims?.sub || user?.id;
+  return user?.claims?.sub || user?.id;
+}
+
+function normalizeLinkedProductIds(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return Array.from(new Set(value.map((id) => String(id || "").trim()).filter(Boolean)));
+}
+
+function buildMaterialLinkWarning(ignoredProductIds: string[]) {
+    if (ignoredProductIds.length === 0) return null;
+    return {
+        code: "MATERIAL_PRODUCT_LINKS_IGNORED",
+        message: "Some linked products were inactive, invalid, or unavailable in this organization.",
+        productIds: ignoredProductIds,
+    };
 }
 
 // Helper to get organizationId from request (matches server/routes.ts behavior)
@@ -3539,6 +3554,31 @@ export async function registerOrderRoutes(
             const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 20;
 
             let list = await storage.getAllMaterials(organizationId);
+            const materialIds = list.map((material: any) => String(material.id)).filter(Boolean);
+            const linkRows = materialIds.length > 0
+                ? await db
+                    .select({
+                        materialId: materialProductLinks.materialId,
+                        productId: materialProductLinks.productId,
+                    })
+                    .from(materialProductLinks)
+                    .where(and(
+                        eq(materialProductLinks.organizationId, organizationId),
+                        inArray(materialProductLinks.materialId, materialIds),
+                        isNull(materialProductLinks.removedAt)
+                    ))
+                : [];
+            const linkedProductIdsByMaterialId = new Map<string, string[]>();
+            for (const row of linkRows) {
+                const materialId = String(row.materialId);
+                const current = linkedProductIdsByMaterialId.get(materialId) || [];
+                current.push(String(row.productId));
+                linkedProductIdsByMaterialId.set(materialId, current);
+            }
+            list = list.map((material: any) => ({
+                ...material,
+                linkedProductIds: linkedProductIdsByMaterialId.get(String(material.id)) || [],
+            }));
 
             if (!includeInactive) {
                 list = list.filter((m: any) => m?.isActive !== false);
@@ -3567,6 +3607,7 @@ export async function registerOrderRoutes(
                         vendorCostUnit: m.vendorCostUnit ?? m.unitOfMeasure,
                         consumptionUnit: m.consumptionUnit ?? m.sellPriceUnit ?? m.unitOfMeasure,
                         isActive: m.isActive,
+                        linkedProductIds: m.linkedProductIds || [],
                     }));
                 return res.json({ success: true, data: { materials: materialsList } });
             }
@@ -3837,7 +3878,8 @@ export async function registerOrderRoutes(
             if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const material = await storage.getMaterialById(organizationId, req.params.id);
             if (!material) return res.status(404).json({ error: 'Material not found' });
-            res.json({ success: true, data: material });
+            const linkedProducts = await storage.listProductsForMaterial(organizationId, req.params.id, { activeOnly: true });
+            res.json({ success: true, data: { ...material, linkedProductIds: linkedProducts.map((product: any) => product.id) } });
         } catch (err) {
             console.error('Error fetching material', err);
             res.status(500).json({ error: 'Failed to fetch material' });
@@ -3849,8 +3891,9 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const parsed = insertMaterialSchema.parse(req.body);
-            const { organizationId: _orgId, ...materialData } =
-                parsed as typeof parsed & { organizationId?: string };
+            const { organizationId: _orgId, linkedProductIds: rawLinkedProductIds = [], ...materialData } =
+                parsed as typeof parsed & { organizationId?: string; linkedProductIds?: string[] };
+            const linkedProductIds = normalizeLinkedProductIds(rawLinkedProductIds);
 
             const normalizedName = String(materialData.name || '').trim().toLowerCase();
             if (normalizedName) {
@@ -3876,7 +3919,33 @@ export async function registerOrderRoutes(
             }
 
             const created = await storage.createMaterial(organizationId, materialData);
-            res.json({ success: true, data: created, created: true, duplicate: false });
+            const warnings: any[] = [];
+            let finalLinkedProductIds: string[] = [];
+            if (linkedProductIds.length > 0) {
+                try {
+                    const linkResult = await storage.replaceProductsForMaterial(organizationId, created.id, linkedProductIds);
+                    finalLinkedProductIds = linkResult.linkedProductIds;
+                    const warning = buildMaterialLinkWarning(linkResult.ignoredProductIds);
+                    if (warning) warnings.push(warning);
+                } catch (linkError) {
+                    console.error('[Materials] Failed to link products after material create', {
+                        materialId: created.id,
+                        linkedProductIds,
+                        error: linkError,
+                    });
+                    warnings.push({
+                        code: "MATERIAL_PRODUCT_LINKS_FAILED",
+                        message: "Material was saved, but linked products could not be updated. You can retry from the material editor.",
+                    });
+                }
+            }
+            res.json({
+                success: true,
+                data: { ...created, linkedProductIds: finalLinkedProductIds },
+                created: true,
+                duplicate: false,
+                warnings,
+            });
         } catch (err) {
             if ((err as any)?.code === '23505') {
                 try {
@@ -3922,8 +3991,10 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const parsed = updateMaterialSchema.parse(req.body);
-            const { organizationId: _orgId, ...materialData } =
-                parsed as typeof parsed & { organizationId?: string };
+            const { organizationId: _orgId, linkedProductIds: rawLinkedProductIds, ...materialData } =
+                parsed as typeof parsed & { organizationId?: string; linkedProductIds?: string[] };
+            const shouldReplaceLinkedProducts = Array.isArray(rawLinkedProductIds);
+            const linkedProductIds = normalizeLinkedProductIds(rawLinkedProductIds);
 
             if (typeof (materialData as any).name === 'string') {
                 const normalizedName = String((materialData as any).name || '').trim().toLowerCase();
@@ -3950,7 +4021,30 @@ export async function registerOrderRoutes(
             }
 
             const updated = await storage.updateMaterial(organizationId, req.params.id, materialData);
-            res.json({ success: true, data: updated });
+            const warnings: any[] = [];
+            let finalLinkedProductIds: string[] | undefined;
+            if (shouldReplaceLinkedProducts) {
+                try {
+                    const linkResult = await storage.replaceProductsForMaterial(organizationId, req.params.id, linkedProductIds);
+                    finalLinkedProductIds = linkResult.linkedProductIds;
+                    const warning = buildMaterialLinkWarning(linkResult.ignoredProductIds);
+                    if (warning) warnings.push(warning);
+                } catch (linkError) {
+                    console.error('[Materials] Failed to link products after material update', {
+                        materialId: req.params.id,
+                        linkedProductIds,
+                        error: linkError,
+                    });
+                    warnings.push({
+                        code: "MATERIAL_PRODUCT_LINKS_FAILED",
+                        message: "Material was saved, but linked products could not be updated. You can retry from the material editor.",
+                    });
+                }
+            } else {
+                const linkedProducts = await storage.listProductsForMaterial(organizationId, req.params.id, { activeOnly: true });
+                finalLinkedProductIds = linkedProducts.map((product: any) => product.id);
+            }
+            res.json({ success: true, data: { ...updated, linkedProductIds: finalLinkedProductIds || [] }, warnings });
         } catch (err) {
             if ((err as any)?.code === '23505') {
                 return res.status(409).json({

@@ -1,6 +1,8 @@
 import { db } from "../db";
 import {
     materials,
+    materialProductLinks,
+    products,
     inventoryAdjustments,
     materialReorderRequests,
     orderMaterialUsage,
@@ -8,6 +10,7 @@ import {
     users,
     vendors,
     type Material,
+    type Product,
     type InsertMaterial,
     type InventoryAdjustment,
     type MaterialReorderRequest,
@@ -16,7 +19,8 @@ import {
     type InsertOrderMaterialUsage,
 } from "@shared/schema";
 import type { InventoryMovementType, MaterialReorderRequestStatus } from "@shared/materialInventory";
-import { eq, and, desc, sql, or } from "drizzle-orm";
+import { normalizeLinkedProductIds, planMaterialProductLinkReplacement } from "@shared/materialProductLinks";
+import { eq, and, desc, sql, or, inArray, isNull, notInArray } from "drizzle-orm";
 import {
     assertNoOpenReorderRequest,
     buildInventoryMovementSnapshot,
@@ -187,14 +191,16 @@ export class InventoryRepository {
     }
 
     async createMaterial(organizationId: string, material: Omit<InsertMaterial, 'organizationId'>): Promise<Material> {
-        const materialWithUnitFallbacks = withMaterialUnitFallbacks(material);
+        const { linkedProductIds: _linkedProductIds, ...materialFields } = material as any;
+        const materialWithUnitFallbacks = withMaterialUnitFallbacks(materialFields);
         const materialWithWeight = normalizeMaterialWeightFields(materialWithUnitFallbacks as any);
         const [created] = await this.dbInstance.insert(materials).values({ ...materialWithWeight, organizationId } as any).returning();
         return created;
     }
 
     async updateMaterial(organizationId: string, id: string, materialData: Partial<InsertMaterial>): Promise<Material> {
-        const materialWithWeight = normalizeMaterialWeightFields(materialData as any, { preserveWhenAbsent: true });
+        const { linkedProductIds: _linkedProductIds, ...materialFields } = materialData as any;
+        const materialWithWeight = normalizeMaterialWeightFields(materialFields as any, { preserveWhenAbsent: true });
         const [updated] = await this.dbInstance.update(materials)
             .set({ ...materialWithWeight, updatedAt: new Date() } as any)
             .where(and(eq(materials.id, id), eq(materials.organizationId, organizationId)))
@@ -205,6 +211,132 @@ export class InventoryRepository {
 
     async deleteMaterial(organizationId: string, id: string): Promise<void> {
         await this.dbInstance.delete(materials).where(and(eq(materials.id, id), eq(materials.organizationId, organizationId)));
+    }
+
+    async listProductsForMaterial(
+        organizationId: string,
+        materialId: string,
+        options?: { activeOnly?: boolean }
+    ): Promise<Product[]> {
+        const where = [
+            eq(materialProductLinks.organizationId, organizationId),
+            eq(materialProductLinks.materialId, materialId),
+            isNull(materialProductLinks.removedAt),
+            eq(products.organizationId, organizationId),
+        ];
+        if (options?.activeOnly) where.push(eq(products.isActive, true));
+
+        const rows = await this.dbInstance
+            .select({ product: products })
+            .from(materialProductLinks)
+            .innerJoin(products, eq(products.id, materialProductLinks.productId))
+            .where(and(...where))
+            .orderBy(products.name);
+
+        return rows.map((row: any) => row.product);
+    }
+
+    async replaceProductsForMaterial(
+        organizationId: string,
+        materialId: string,
+        productIds: string[]
+    ): Promise<{ linkedProductIds: string[]; ignoredProductIds: string[] }> {
+        const material = await this.getMaterialById(organizationId, materialId);
+        if (!material) throw new Error("Material not found");
+
+        const requestedProductIds = normalizeLinkedProductIds(productIds);
+
+        const validProducts = requestedProductIds.length > 0
+            ? await this.dbInstance
+                .select({ id: products.id, isActive: products.isActive })
+                .from(products)
+                .where(and(
+                    eq(products.organizationId, organizationId),
+                    inArray(products.id, requestedProductIds)
+                ))
+            : [];
+
+        const existingLinks = await this.dbInstance
+            .select({
+                productId: materialProductLinks.productId,
+                removedAt: materialProductLinks.removedAt,
+            })
+            .from(materialProductLinks)
+            .where(and(
+                eq(materialProductLinks.organizationId, organizationId),
+                eq(materialProductLinks.materialId, materialId)
+            ));
+
+        const plan = planMaterialProductLinkReplacement(requestedProductIds, validProducts, existingLinks);
+        const validProductIds = plan.linkedProductIds;
+
+        await this.dbInstance.transaction(async (tx) => {
+            const now = new Date();
+
+            if (validProductIds.length > 0) {
+                await tx.insert(materialProductLinks)
+                    .values(validProductIds.map((productId) => ({
+                        organizationId,
+                        materialId,
+                        productId,
+                        updatedAt: now,
+                        removedAt: null,
+                    })))
+                    .onConflictDoUpdate({
+                        target: [
+                            materialProductLinks.organizationId,
+                            materialProductLinks.materialId,
+                            materialProductLinks.productId,
+                        ],
+                        set: {
+                            removedAt: null,
+                            updatedAt: now,
+                        },
+                    });
+
+                await tx.update(materialProductLinks)
+                    .set({ removedAt: now, updatedAt: now })
+                    .where(and(
+                        eq(materialProductLinks.organizationId, organizationId),
+                        eq(materialProductLinks.materialId, materialId),
+                        isNull(materialProductLinks.removedAt),
+                        notInArray(materialProductLinks.productId, validProductIds)
+                    ));
+            } else {
+                await tx.update(materialProductLinks)
+                    .set({ removedAt: now, updatedAt: now })
+                    .where(and(
+                        eq(materialProductLinks.organizationId, organizationId),
+                        eq(materialProductLinks.materialId, materialId),
+                        isNull(materialProductLinks.removedAt)
+                    ));
+            }
+        });
+
+        return { linkedProductIds: validProductIds, ignoredProductIds: plan.ignoredProductIds };
+    }
+
+    async listMaterialsForProduct(
+        organizationId: string,
+        productId: string,
+        options?: { activeOnly?: boolean }
+    ): Promise<Material[]> {
+        const where = [
+            eq(materialProductLinks.organizationId, organizationId),
+            eq(materialProductLinks.productId, productId),
+            isNull(materialProductLinks.removedAt),
+            eq(materials.organizationId, organizationId),
+        ];
+        if (options?.activeOnly) where.push(eq(materials.isActive, true));
+
+        const rows = await this.dbInstance
+            .select({ material: materials })
+            .from(materialProductLinks)
+            .innerJoin(materials, eq(materials.id, materialProductLinks.materialId))
+            .where(and(...where))
+            .orderBy(materials.name);
+
+        return rows.map((row: any) => row.material);
     }
 
     async getMaterialLowStockAlerts(organizationId: string): Promise<Material[]> {

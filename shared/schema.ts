@@ -1792,6 +1792,7 @@ export const productsRelations = relations(products, ({ one, many }) => ({
   lineItems: many(quoteLineItems),
   options: many(productOptions),
   variants: many(productVariants),
+  materialLinks: many(materialProductLinks),
   productType: one(productTypes, {
     fields: [products.productTypeId],
     references: [productTypes.id],
@@ -4965,6 +4966,20 @@ export const materials = pgTable("materials", {
   index("materials_preferred_vendor_id_idx").on(table.preferredVendorId),
 ]);
 
+export const materialProductLinks = pgTable("material_product_links", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  materialId: varchar("material_id").notNull().references(() => materials.id, { onDelete: 'cascade' }),
+  productId: varchar("product_id").notNull().references(() => products.id, { onDelete: 'cascade' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  removedAt: timestamp("removed_at"),
+}, (table) => [
+  index("material_product_links_org_material_idx").on(table.organizationId, table.materialId),
+  index("material_product_links_org_product_idx").on(table.organizationId, table.productId),
+  uniqueIndex("material_product_links_org_material_product_uidx").on(table.organizationId, table.materialId, table.productId),
+]);
+
 const materialUnitSchema = z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]);
 const materialWeightUnitSchema = z.enum(MATERIAL_WEIGHT_UNITS);
 const materialWeightBasisSchema = z.enum(MATERIAL_WEIGHT_BASES);
@@ -5063,6 +5078,7 @@ const materialBaseSchema = createInsertSchema(materials).omit({
     (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
     z.coerce.number().nonnegative().default(0).optional().nullable()
   ),
+  linkedProductIds: z.array(z.string().trim().min(1)).optional(),
 });
 
 export const insertMaterialSchema = materialBaseSchema.superRefine((data, ctx) => {
@@ -5121,6 +5137,7 @@ export const updateMaterialSchema = materialBaseSchema.partial().superRefine((da
 export type InsertMaterial = z.infer<typeof insertMaterialSchema>;
 export type UpdateMaterial = z.infer<typeof updateMaterialSchema>;
 export type Material = typeof materials.$inferSelect;
+export type MaterialProductLink = typeof materialProductLinks.$inferSelect;
 
 // ============================================================
 // ROLL MATERIAL DERIVED VALUES HELPER
@@ -5646,6 +5663,22 @@ export const materialsRelations = relations(materials, ({ many }) => ({
   adjustments: many(inventoryAdjustments),
   orderUsages: many(orderMaterialUsage),
   reorderRequests: many(materialReorderRequests),
+  productLinks: many(materialProductLinks),
+}));
+
+export const materialProductLinksRelations = relations(materialProductLinks, ({ one }) => ({
+  organization: one(organizations, {
+    fields: [materialProductLinks.organizationId],
+    references: [organizations.id],
+  }),
+  material: one(materials, {
+    fields: [materialProductLinks.materialId],
+    references: [materials.id],
+  }),
+  product: one(products, {
+    fields: [materialProductLinks.productId],
+    references: [products.id],
+  }),
 }));
 
 export const inventoryAdjustmentsRelations = relations(inventoryAdjustments, ({ one }) => ({

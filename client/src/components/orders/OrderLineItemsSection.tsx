@@ -45,6 +45,7 @@ import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel"
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { deriveLineItemPricingDisplay, deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { buildQuoteCalculatePayload } from "@/components/orders/quoteCalculatePayload";
+import { filterAndPrioritizeProductsForMaterial } from "@/components/orders/productSuggestionPriority";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
@@ -1411,6 +1412,13 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   // Inline add product search
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const knownMaterialIdForSuggestions = useMemo(() => {
+    const fromLineItem = (expandedItem as any)?.productPrimaryMaterialId;
+    if (typeof fromLineItem === "string" && fromLineItem.trim()) return fromLineItem.trim();
+    const fromProduct = (expandedProduct as any)?.primaryMaterialId;
+    if (typeof fromProduct === "string" && fromProduct.trim()) return fromProduct.trim();
+    return null;
+  }, [expandedItem, expandedProduct]);
 
   const [artworkModalLineItemId, setArtworkModalLineItemId] = useState<string | null>(null);
 
@@ -1432,19 +1440,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   }, [artworkModalLineItem]);
 
   const filteredProducts = useMemo(() => {
-    const active = products.filter((p) => (p as any).isActive !== false);
-    if (!searchQuery.trim()) return active;
-    const q = searchQuery.trim().toLowerCase();
-    return active.filter((p) => {
-      const sku = ((p as any).sku as string | undefined) || "";
-      const category = ((p as any).category as string | undefined) || "";
-      return (
-        p.name.toLowerCase().includes(q) ||
-        sku.toLowerCase().includes(q) ||
-        category.toLowerCase().includes(q)
-      );
-    });
-  }, [products, searchQuery]);
+    return filterAndPrioritizeProductsForMaterial(products as any[], searchQuery, knownMaterialIdForSuggestions) as Product[];
+  }, [knownMaterialIdForSuggestions, products, searchQuery]);
 
   const pbv2DefaultsHydratedRef = useRef<Set<string>>(new Set());
   const [initialDraftDebugByLineItemId, setInitialDraftDebugByLineItemId] = useState<Record<string, InitialOrderLineItemDraftDebug>>({});

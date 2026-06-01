@@ -19,11 +19,12 @@ import {
   pricingFormulas,
   productTypes,
   materials,
+  materialProductLinks,
   organizations,
   auditLogs,
   insertProductDesignConfigSchema,
 } from "@shared/schema";
-import { eq, desc, and, asc, inArray, sql } from "drizzle-orm";
+import { eq, desc, and, asc, inArray, isNull, sql } from "drizzle-orm";
 import { getRequestOrganizationId } from "../tenantContext";
 import {
   insertProductSchema,
@@ -323,8 +324,28 @@ export function registerProductRoutes(
             .where(and(eq(productTypes.organizationId, organizationId), inArray(productTypes.id, productTypeIds)))
         : [];
 
+      const materialLinkRows = productIds.length
+        ? await db
+            .select({
+              productId: materialProductLinks.productId,
+              materialId: materialProductLinks.materialId,
+            })
+            .from(materialProductLinks)
+            .where(and(
+              eq(materialProductLinks.organizationId, organizationId),
+              inArray(materialProductLinks.productId, productIds),
+              isNull(materialProductLinks.removedAt)
+            ))
+        : [];
+
       const designByProductId = new Map(designConfigs.map((config) => [config.productId, config] as const));
       const typeById = new Map(typeRows.map((type) => [type.id, type] as const));
+      const linkedMaterialIdsByProductId = new Map<string, string[]>();
+      for (const row of materialLinkRows) {
+        const current = linkedMaterialIdsByProductId.get(row.productId) || [];
+        current.push(row.materialId);
+        linkedMaterialIdsByProductId.set(row.productId, current);
+      }
       const enrichedProducts = products.map((product) => {
         const designConfig = designByProductId.get(product.id);
         const typeConfig = product.productTypeId ? typeById.get(product.productTypeId) : null;
@@ -337,6 +358,7 @@ export function registerProductRoutes(
           productDesignBriefRequired: designConfig?.designBriefRequired ?? false,
           productTypeRequiresPrepressOverride: typeConfig?.requiresPrepressOverride ?? null,
           productTypeSendToProductionDefault: typeConfig?.sendToProductionDefault ?? false,
+          linkedMaterialIds: linkedMaterialIdsByProductId.get(product.id) || [],
         };
       });
       res.json(
