@@ -1,7 +1,10 @@
 import { describe, expect, it } from "@jest/globals";
 
 import type { QuoteLineItemDraft } from "../types";
-import { resolveQuoteLineItemOverrideUiState } from "./quoteLineItemPriceOverrideUiState";
+import {
+  mergeQuoteLineItemPriceOverrideIntoSpecsJson,
+  resolveQuoteLineItemOverrideUiState,
+} from "./quoteLineItemPriceOverrideUiState";
 
 function pricedLineItem(overrides: Partial<QuoteLineItemDraft> = {}): QuoteLineItemDraft {
   return {
@@ -101,5 +104,36 @@ describe("quote line item price override hydration", () => {
     expect(state.persistedOverrideMode).toBe("override_total_after_margin");
     expect(state.selectValue).toBe("override_total_after_margin");
     expect(state.overrideValueCents).toBe(4000);
+  });
+
+  it("clears stale specsJson override metadata for immediate revert UI state", () => {
+    const revertedSpecsJson = mergeQuoteLineItemPriceOverrideIntoSpecsJson(
+      {
+        notes: "keep this",
+        priceOverride: {
+          mode: "override_total_after_margin",
+          valueCents: 4000,
+          baseCalculatedTotalCents: 888,
+          effectiveTotalCents: 4000,
+        },
+        priceOverrideWarnings: ["old warning"],
+      },
+      null,
+    );
+    const state = resolveQuoteLineItemOverrideUiState(
+      pricedLineItem({
+        specsJson: revertedSpecsJson,
+        priceOverride: null,
+        overridePriceCents: null,
+        linePrice: 8.88,
+        formulaLinePrice: 8.88,
+      }),
+    );
+
+    expect(revertedSpecsJson).toEqual({ notes: "keep this" });
+    expect(state.hasOverride).toBe(false);
+    expect(state.persistedOverrideMode).toBeNull();
+    expect(state.selectValue).toBe("__none");
+    expect(state.overrideValueCents).toBeNull();
   });
 });
