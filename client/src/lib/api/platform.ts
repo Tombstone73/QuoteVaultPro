@@ -33,9 +33,12 @@ export interface CreateOrgResult {
 export interface InvitePreviewResult {
   success: boolean;
   status: "valid" | "invalid" | "expired" | "used" | "error";
+  kind?: "org" | "portal";
   email?: string;
   orgName?: string;
   orgId?: string;
+  customerName?: string;
+  displayName?: string | null;
   emailAlreadyRegistered?: boolean;
   expiresAt?: string;
   message?: string;
@@ -43,6 +46,8 @@ export interface InvitePreviewResult {
 
 export interface AcceptInviteResult {
   success: boolean;
+  kind?: "org" | "portal";
+  redirectTo?: string;
   data?: {
     orgId: string;
     userId: string;
@@ -103,6 +108,15 @@ export async function previewInvite(token: string): Promise<{ httpStatus: number
   return { httpStatus: res.status, body };
 }
 
+export async function previewPortalInvite(token: string): Promise<{ httpStatus: number; body: InvitePreviewResult }> {
+  const res = await fetch(
+    getApiUrl(`/api/customer-portal/invites/preview?token=${encodeURIComponent(token)}`),
+    { credentials: "include" }
+  );
+  const body: InvitePreviewResult = await res.json();
+  return { httpStatus: res.status, body };
+}
+
 /**
  * Accept an invite. Pass password only for new users (emailAlreadyRegistered=false).
  * On success, a session cookie is set and the user is logged in.
@@ -112,6 +126,15 @@ export async function acceptInvite(
   password?: string
 ): Promise<{ httpStatus: number; body: AcceptInviteResult }> {
   const res = await postJson("/api/invites/accept", { token, password });
+  const body: AcceptInviteResult = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export async function acceptPortalInvite(
+  token: string,
+  password: string
+): Promise<{ httpStatus: number; body: AcceptInviteResult }> {
+  const res = await postJson("/api/customer-portal/invites/accept", { token, password });
   const body: AcceptInviteResult = await res.json();
   return { httpStatus: res.status, body };
 }

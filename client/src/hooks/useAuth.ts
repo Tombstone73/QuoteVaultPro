@@ -69,11 +69,14 @@ export function useAuth() {
 
   // User is authenticated if session says so and we have user data
   const isAuthenticated = sessionData?.authenticated === true && !!sessionData.user && !error;
+  const isPortalCustomer =
+    sessionData?.user?.accountType === "PORTAL_CUSTOMER" || sessionData?.user?.role === "customer";
 
   return {
     user: sessionData?.user,
     isLoading,
     isAuthenticated,
+    isPortalCustomer,
     isAdmin: sessionData?.user?.isAdmin ?? false,
     isPlatformAdmin: sessionData?.user?.isPlatformAdmin ?? false,
     isPlatformDeveloper: sessionData?.user?.isPlatformDeveloper ?? false,

@@ -756,6 +756,237 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
   );
 }
 
+type PortalStatus = "DISABLED" | "PENDING_INVITE" | "ACTIVE" | "SUSPENDED";
+
+interface PortalAccessRecord {
+  id: string;
+  contactId: string | null;
+  userId: string | null;
+  status: PortalStatus;
+  email: string;
+  displayName: string | null;
+  inviteSentAt: string | null;
+  createdAt: string;
+  lastLoginAt: string | null;
+}
+
+function portalStatusLabel(status: PortalStatus): string {
+  if (status === "PENDING_INVITE") return "Pending Invite";
+  if (status === "ACTIVE") return "Active";
+  if (status === "SUSPENDED") return "Suspended";
+  return "Disabled";
+}
+
+function portalStatusClass(status: PortalStatus): string {
+  if (status === "ACTIVE") return "bg-emerald-500/15 text-emerald-700";
+  if (status === "PENDING_INVITE") return "bg-amber-500/15 text-amber-700";
+  if (status === "SUSPENDED") return "bg-red-500/15 text-red-700";
+  return "bg-titan-bg-table-row text-titan-text-muted";
+}
+
+function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const isEmbedded = layoutMode === "embedded";
+  const contacts = customer.contacts || [];
+  const queryKey = [`/api/customers/${customer.id}/portal-access`];
+
+  const { data: portalAccessData, isLoading } = useQuery<{ success: boolean; data: PortalAccessRecord[] }>({
+    queryKey,
+    queryFn: async () => {
+      const response = await fetch(`/api/customers/${customer.id}/portal-access`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to load portal access");
+      return response.json();
+    },
+    enabled: !isEmbedded,
+  });
+
+  const records = portalAccessData?.data || [];
+  const accessByContact = new Map(records.filter((record) => record.contactId).map((record) => [record.contactId, record]));
+
+  const portalMutation = useMutation({
+    mutationFn: async ({ path, label }: { path: string; label: string }) => {
+      const response = await fetch(path, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.message || `${label} failed`);
+      }
+      return response.json();
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey });
+      queryClient.invalidateQueries({ queryKey: [`/api/customers/${customer.id}`] });
+      toast({ title: "Portal access updated", description: variables.label });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Portal access error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const runAction = (path: string, label: string) => portalMutation.mutate({ path, label });
+
+  if (isEmbedded) return null;
+
+  return (
+    <div className="bg-titan-bg-card border border-titan-border-subtle rounded-titan-xl p-4">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <UserCheck className="w-5 h-5 text-titan-text-secondary" />
+          <h3 className="text-titan-base font-semibold text-titan-text-primary">Portal Access</h3>
+          <span className="text-titan-xs text-titan-text-muted">({records.length})</span>
+        </div>
+        {isLoading && <Loader2 className="w-4 h-4 animate-spin text-titan-text-muted" />}
+      </div>
+
+      {contacts.length === 0 ? (
+        <div className="py-6 text-center text-titan-text-muted text-titan-sm">
+          Add a contact with an email address before creating portal access.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {contacts.map((contact) => {
+            const access = accessByContact.get(contact.id);
+            const status = access?.status || "DISABLED";
+            const actionDisabled = portalMutation.isPending || !contact.email;
+
+            return (
+              <div
+                key={contact.id}
+                className="grid gap-3 rounded-titan-lg bg-titan-bg-card-elevated p-3 md:grid-cols-[1.4fr_1fr_1fr_auto] md:items-center"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-titan-sm font-medium text-titan-text-primary">
+                      {contact.firstName} {contact.lastName}
+                    </span>
+                    <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium", portalStatusClass(status))}>
+                      {portalStatusLabel(status)}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-titan-xs text-titan-text-muted">{contact.email || "Email required"}</div>
+                </div>
+
+                <div className="text-titan-xs text-titan-text-muted">
+                  <div>Created: {formatDate(access?.createdAt)}</div>
+                  <div>Invite: {formatDate(access?.inviteSentAt)}</div>
+                </div>
+
+                <div className="text-titan-xs text-titan-text-muted">
+                  <div>Last Login</div>
+                  <div className="text-titan-text-secondary">{formatDate(access?.lastLoginAt)}</div>
+                </div>
+
+                <div className="flex flex-wrap justify-start gap-2 md:justify-end">
+                  {(!access || access.status === "DISABLED") && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 text-titan-xs"
+                      disabled={actionDisabled}
+                      onClick={() =>
+                        runAction(
+                          `/api/customers/${customer.id}/contacts/${contact.id}/portal-access`,
+                          "Portal invite created and sent",
+                        )
+                      }
+                    >
+                      <Mail className="mr-1 h-3.5 w-3.5" />
+                      Create Access
+                    </Button>
+                  )}
+
+                  {access?.status === "PENDING_INVITE" && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-titan-xs"
+                        disabled={portalMutation.isPending}
+                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/resend-invite`, "Portal invite resent")}
+                      >
+                        <Mail className="mr-1 h-3.5 w-3.5" />
+                        Resend
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-titan-xs"
+                        disabled={portalMutation.isPending}
+                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/cancel-invite`, "Portal invite cancelled")}
+                      >
+                        Disable
+                      </Button>
+                    </>
+                  )}
+
+                  {access?.status === "ACTIVE" && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-titan-xs"
+                        disabled={portalMutation.isPending}
+                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/reset-password`, "Password reset sent")}
+                      >
+                        Reset Password
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-titan-xs"
+                        disabled={portalMutation.isPending}
+                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/suspend`, "Portal access suspended")}
+                      >
+                        Suspend
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-titan-xs"
+                        disabled={portalMutation.isPending}
+                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/disable`, "Portal access disabled")}
+                      >
+                        Disable
+                      </Button>
+                    </>
+                  )}
+
+                  {access?.status === "SUSPENDED" && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-titan-xs"
+                        disabled={portalMutation.isPending}
+                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/activate`, "Portal access activated")}
+                      >
+                        Activate
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-titan-xs"
+                        disabled={portalMutation.isPending}
+                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/reset-password`, "Password reset sent")}
+                      >
+                        Reset Password
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StatCard({ stat, compact }: { stat: StatCardConfig; compact?: boolean }) {
   const IconComponent = stat.icon;
   const isPositive = stat.trendType === "up";
@@ -2134,6 +2365,9 @@ export default function EnhancedCustomerView({
 
       {/* Contacts Panel - Only in full mode */}
       <ContactsPanel customer={customer} layoutMode={layoutMode} />
+
+      {/* Portal Access Panel - Only in full mode */}
+      <PortalAccessPanel customer={customer} layoutMode={layoutMode} />
 
       {/* Activity Section */}
       <div className="mt-4">

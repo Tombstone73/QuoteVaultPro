@@ -132,6 +132,15 @@ export const organizationStatusEnum = pgEnum('organization_status', ['active', '
 // Quote status enum
 export const quoteStatusEnum = pgEnum('quote_status', ['draft', 'pending_approval', 'pending', 'active', 'canceled']);
 
+export const userAccountTypeEnum = pgEnum('user_account_type', ['INTERNAL_USER', 'PORTAL_CUSTOMER']);
+
+export const customerPortalAccessStatusEnum = pgEnum('customer_portal_access_status', [
+  'DISABLED',
+  'PENDING_INVITE',
+  'ACTIVE',
+  'SUSPENDED',
+]);
+
 // Organizations table - top-level tenant container
 export const organizations = pgTable("organizations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -286,6 +295,7 @@ export const users = pgTable("users", {
   firstName: varchar("first_name"),
   lastName: varchar("last_name"),
   profileImageUrl: varchar("profile_image_url"),
+  accountType: userAccountTypeEnum("account_type").notNull().default('INTERNAL_USER'),
   passwordHash: text("password_hash"), // DEPRECATED: Use auth_identities.password_hash instead. Will be removed in v1.1.
   isAdmin: boolean("is_admin").default(false).notNull(),
   isPlatformAdmin: boolean("is_platform_admin").default(false).notNull(),
@@ -2403,6 +2413,76 @@ export const updateCustomerContactSchema = insertCustomerContactSchema.partial()
 export type InsertCustomerContact = z.infer<typeof insertCustomerContactSchema>;
 export type UpdateCustomerContact = z.infer<typeof updateCustomerContactSchema>;
 export type CustomerContact = typeof customerContacts.$inferSelect;
+
+export const customerPortalAccess = pgTable("customer_portal_access", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: "cascade" }),
+  contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: "set null" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
+  status: customerPortalAccessStatusEnum("status").notNull().default("DISABLED"),
+  email: varchar("email", { length: 255 }).notNull(),
+  displayName: varchar("display_name", { length: 255 }),
+  inviteSentAt: timestamp("invite_sent_at", { withTimezone: true }),
+  inviteAcceptedAt: timestamp("invite_accepted_at", { withTimezone: true }),
+  passwordSetAt: timestamp("password_set_at", { withTimezone: true }),
+  suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+  disabledAt: timestamp("disabled_at", { withTimezone: true }),
+  lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("customer_portal_access_org_idx").on(table.organizationId),
+  index("customer_portal_access_customer_idx").on(table.customerId),
+  index("customer_portal_access_contact_idx").on(table.contactId),
+  index("customer_portal_access_status_idx").on(table.status),
+  uniqueIndex("customer_portal_access_org_contact_uidx")
+    .on(table.organizationId, table.contactId)
+    .where(sql`contact_id IS NOT NULL`),
+  uniqueIndex("customer_portal_access_user_uidx")
+    .on(table.userId)
+    .where(sql`user_id IS NOT NULL`),
+]);
+
+export const customerPortalInviteTokens = pgTable("customer_portal_invite_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  accessId: varchar("access_id").notNull().references(() => customerPortalAccess.id, { onDelete: "cascade" }),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("customer_portal_invite_tokens_hash_uidx").on(table.tokenHash),
+  index("customer_portal_invite_tokens_access_idx").on(table.accessId),
+  index("customer_portal_invite_tokens_org_idx").on(table.organizationId),
+  index("customer_portal_invite_tokens_expires_idx").on(table.expiresAt),
+  uniqueIndex("customer_portal_invite_tokens_active_access_uidx")
+    .on(table.accessId)
+    .where(sql`used_at IS NULL AND revoked_at IS NULL`),
+]);
+
+export const insertCustomerPortalAccessSchema = createInsertSchema(customerPortalAccess).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertCustomerPortalInviteTokenSchema = createInsertSchema(customerPortalInviteTokens).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type CustomerPortalAccessStatus = typeof customerPortalAccessStatusEnum.enumValues[number];
+export type InsertCustomerPortalAccess = z.infer<typeof insertCustomerPortalAccessSchema>;
+export type CustomerPortalAccess = typeof customerPortalAccess.$inferSelect;
+export type InsertCustomerPortalInviteToken = z.infer<typeof insertCustomerPortalInviteTokenSchema>;
+export type CustomerPortalInviteToken = typeof customerPortalInviteTokens.$inferSelect;
 
 // Customer Notes table
 export const customerNotes = pgTable("customer_notes", {

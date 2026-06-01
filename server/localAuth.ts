@@ -11,8 +11,13 @@ import { db } from "./db";
 import { pgTable, varchar, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { sql, eq, and, gt, isNull } from "drizzle-orm";
 import crypto from "crypto";
-import { authIdentities, users } from "@shared/schema";
+import { auditLogs, authIdentities, customerPortalAccess, users } from "@shared/schema";
 import { getPublicWebOrigin, getSessionCookieConfig } from "./lib/appRuntimeConfig";
+import {
+  getPortalAccessForLogin,
+  isPortalCustomerIdentity,
+  recordPortalLogin,
+} from "./services/customerPortalAccessService";
 
 // Helper: Check if user must change password (invited state)
 async function getMustChangePassword(userId: string): Promise<boolean> {
@@ -104,6 +109,8 @@ export async function setupAuth(app: Express) {
       '/api/auth/forgot-password',
       '/api/invites/preview',
       '/api/invites/accept',
+      '/api/customer-portal/invites/preview',
+      '/api/customer-portal/invites/accept',
     ];
 
     if (allowlistedPaths.includes(req.path)) {
@@ -188,9 +195,16 @@ export async function setupAuth(app: Express) {
               if (nodeEnv !== 'production' || process.env.DEBUG_AUTH === 'true') {
                 console.log(`[LocalAuth] User authenticated: ${email}`);
               }
-            } else if (isProduction) {
-              // Production: Require password to be set
+            } else if (isProduction || isPortalCustomerIdentity(user)) {
+              // Production and portal customers require a permanent password identity.
               return done(null, false, { message: "Invalid credentials" });
+            }
+
+            if (isPortalCustomerIdentity(user)) {
+              const access = await getPortalAccessForLogin(user.id);
+              if (!access || access.status !== 'ACTIVE') {
+                return done(null, false, { message: "Invalid credentials" });
+              }
             }
             // Development: Allow login even without password set for test users
           }
@@ -269,6 +283,12 @@ export async function setupAuth(app: Express) {
         .set({ lastLoginAt: new Date() })
         .where(eq(users.id, loginUserId))
         .catch((err: unknown) => console.error('[Login] Failed to update lastLoginAt:', err));
+
+      if (isPortalCustomerIdentity(req.user)) {
+        await recordPortalLogin({ userId: loginUserId, req }).catch((err: unknown) =>
+          console.error('[Login] Failed to record portal login:', err),
+        );
+      }
     }
 
     res.json({ success: true, user: req.user });
@@ -367,8 +387,10 @@ export async function setupAuth(app: Express) {
 
           // Get user's organization for email settings
           const userMemberships = await getUserOrganizations(user.id);
+          const portalAccess = isPortalCustomerIdentity(user) ? await getPortalAccessForLogin(user.id) : null;
           const defaultOrgId = userMemberships.find(m => m.isDefault)?.organizationId || 
-                               userMemberships[0]?.organizationId;
+                               userMemberships[0]?.organizationId ||
+                               portalAccess?.organizationId;
 
           if (!defaultOrgId) {
             // Token was created above but cannot be delivered — user has no org membership
@@ -506,6 +528,39 @@ export async function setupAuth(app: Express) {
             updatedAt: sql`now()`,
           },
         });
+
+      const [resetUser] = await db
+        .select({ id: users.id, accountType: users.accountType, role: users.role })
+        .from(users)
+        .where(eq(users.id, resetRecord.userId))
+        .limit(1);
+
+      if (isPortalCustomerIdentity(resetUser)) {
+        const [access] = await db
+          .update(customerPortalAccess)
+          .set({ passwordSetAt: new Date(), updatedAt: new Date() })
+          .where(eq(customerPortalAccess.userId, resetRecord.userId))
+          .returning();
+
+        if (access) {
+          await db.insert(auditLogs).values({
+            organizationId: access.organizationId,
+            userId: resetRecord.userId,
+            actionType: "PORTAL_PASSWORD_SET",
+            entityType: "customer_portal_access",
+            entityId: access.id,
+            description: `Portal password set for ${access.email}`,
+            newValues: {
+              customerId: access.customerId,
+              contactId: access.contactId,
+              targetUserId: resetRecord.userId,
+              source: "password_reset",
+            },
+            ipAddress: req.ip,
+            userAgent: req.get("user-agent"),
+          });
+        }
+      }
 
       // Mark token as used
       await db

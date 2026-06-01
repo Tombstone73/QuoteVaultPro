@@ -19,14 +19,14 @@ export default function Login() {
   const { toast } = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user, isPortalCustomer } = useAuth();
 
   // Redirect if already authenticated
   useEffect(() => {
     if (!authLoading && isAuthenticated) {
-      navigate("/dashboard", { replace: true });
+      navigate(isPortalCustomer ? "/portal" : "/dashboard", { replace: true });
     }
-  }, [isAuthenticated, authLoading, navigate]);
+  }, [isAuthenticated, authLoading, navigate, isPortalCustomer]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -56,7 +56,7 @@ export default function Login() {
 
         // Debug logging (non-production only)
         if (process.env.NODE_ENV !== "production") {
-          console.log("[Login] Success, invalidating auth query and redirecting to /dashboard");
+          console.log("[Login] Success, invalidating auth query and redirecting");
         }
         
         // Invalidate auth query to trigger refetch with new session
@@ -69,7 +69,9 @@ export default function Login() {
         
         // Use window.location.assign for absolute certainty of navigation
         // This bypasses React Router and guarantees we enter the app
-        window.location.assign("/dashboard");
+        const loginUser = data.user || user;
+        const portalLogin = loginUser?.accountType === "PORTAL_CUSTOMER" || loginUser?.role === "customer";
+        window.location.assign(portalLogin ? "/portal" : "/dashboard");
       } else {
         throw new Error("Login failed");
       }

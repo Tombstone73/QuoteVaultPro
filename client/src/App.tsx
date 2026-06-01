@@ -97,7 +97,7 @@ import Landing from "@/pages/landing";
 import ByosPage from "@/pages/byos";
 
 function Router() {
-  const { user, isAuthenticated, isLoading, mustChangePassword } = useAuth();
+  const { user, isAuthenticated, isLoading, mustChangePassword, isPortalCustomer } = useAuth();
 
   // While loading auth status, show nothing (or a loading spinner)
   if (isLoading) {
@@ -153,6 +153,35 @@ function Router() {
         <Route path="/terms" element={<TermsPage />} />
         <Route path="/support" element={<SupportPage />} />
         <Route path="*" element={<Navigate to="/set-password" replace />} />
+      </Routes>
+    );
+  }
+
+  if (isPortalCustomer) {
+    return (
+      <Routes>
+        <Route path="/portal/proof/:token" element={<PortalProofPage />} />
+        <Route path="/portal" element={<PortalLayout />}>
+          <Route index element={<PortalDashboardPage />} />
+          <Route path="dashboard" element={<Navigate to="/portal" replace />} />
+          <Route path="invoices" element={<PortalInvoicesPage />} />
+          <Route path="invoices/:id" element={<PortalInvoiceDetailPage />} />
+          <Route path="orders" element={<MyOrders />} />
+          <Route path="my-orders" element={<Navigate to="/portal/orders" replace />} />
+          <Route path="orders/:id" element={<PortalOrderDetailPage />} />
+          <Route path="proofs" element={<PortalProofsPage />} />
+          <Route path="proofs/:id" element={<PortalProofDetailPage />} />
+          <Route path="quotes" element={<MyQuotes />} />
+          <Route path="my-quotes" element={<Navigate to="/portal/quotes" replace />} />
+          <Route path="quotes/:id" element={<PortalQuoteDetailPage />} />
+          <Route path="documents" element={<PortalDocumentsPage />} />
+          <Route path="quotes/:id/checkout" element={<Navigate to="/portal/quotes" replace />} />
+        </Route>
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/support" element={<SupportPage />} />
+        <Route path="/login" element={<Navigate to="/portal" replace />} />
+        <Route path="*" element={<Navigate to="/portal" replace />} />
       </Routes>
     );
   }

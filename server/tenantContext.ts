@@ -12,8 +12,9 @@
 
 import { RequestHandler, Request } from 'express';
 import { db } from './db';
-import { userOrganizations, organizations, customers, users } from '../shared/schema';
+import { userOrganizations, organizations, users } from '../shared/schema';
 import { eq, and } from 'drizzle-orm';
+import { getActivePortalContext, isPortalCustomerIdentity } from './services/customerPortalAccessService';
 
 // Default organization ID - matches the seed in migration 0020
 export const DEFAULT_ORGANIZATION_ID = 'org_titan_001';
@@ -26,6 +27,9 @@ declare global {
       organizationId?: string;
       organizationSlug?: string;
       orgRole?: string; // User's role in the current organization
+      portalCustomerId?: string;
+      portalCustomer?: unknown;
+      portalAccess?: unknown;
     }
   }
 }
@@ -51,7 +55,7 @@ export function getRequestOrganizationIdOrDefault(req: Request): string {
 
 /**
  * Resolves the user's default organization and attaches it to the request.
- * For portal users (customers), derives org from linked customer record.
+ * Portal users are intentionally blocked here and must use portalContext.
  */
 export const tenantContext: RequestHandler = async (req, res, next) => {
   try {
@@ -59,6 +63,14 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
     
     if (!user?.id) {
       return res.status(401).json({ message: "Unauthorized - No user in session" });
+    }
+
+    if (isPortalCustomerIdentity(user)) {
+      return res.status(403).json({
+        success: false,
+        code: "PORTAL_CUSTOMER_INTERNAL_ACCESS_DENIED",
+        message: "Customer portal users cannot access internal TitanOS APIs.",
+      });
     }
 
     // Check if org is specified in header (for org switching)
@@ -211,20 +223,6 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
         code: 'ORG_SELECTION_REQUIRED',
         message: 'Please select an organization to continue.',
       });
-    }
-
-    // If user is a portal user (customer), derive org from customer record
-    const customerOrg = await db
-      .select({
-        organizationId: customers.organizationId,
-      })
-      .from(customers)
-      .where(eq(customers.userId, user.id))
-      .limit(1);
-
-    if (customerOrg.length > 0) {
-      req.organizationId = customerOrg[0].organizationId;
-      return next();
     }
 
     // 5. Auto-provision: dev/test safety net — creates membership in default org
@@ -424,35 +422,22 @@ export const portalContext: RequestHandler = async (req, res, next) => {
       return res.status(401).json({ message: "Unauthorized - No user in session" });
     }
 
-    // Look up customer by userId first (direct linkage)
-    let customerRecord = await db
-      .select()
-      .from(customers)
-      .where(eq(customers.userId, user.id))
-      .limit(1);
+    const portalContextRecord = await getActivePortalContext(user.id);
 
-    // Fallback: try by email if no direct linkage
-    if (customerRecord.length === 0 && user.email) {
-      customerRecord = await db
-        .select()
-        .from(customers)
-        .where(eq(customers.email, user.email))
-        .limit(1);
-    }
-
-    if (customerRecord.length === 0) {
+    if (!portalContextRecord) {
       return res.status(403).json({ 
-        message: "No customer account found. Please contact support.",
-        code: "NO_CUSTOMER_ACCOUNT"
+        message: "No active customer portal access found. Please contact support.",
+        code: "NO_ACTIVE_PORTAL_ACCESS"
       });
     }
 
-    const customer = customerRecord[0];
+    const customer = portalContextRecord.customer;
 
     // Attach both organizationId and customerId to request
     req.organizationId = customer.organizationId;
-    (req as any).portalCustomerId = customer.id;
-    (req as any).portalCustomer = customer;
+    req.portalCustomerId = customer.id;
+    req.portalCustomer = customer;
+    req.portalAccess = portalContextRecord.access;
 
     return next();
   } catch (error) {
