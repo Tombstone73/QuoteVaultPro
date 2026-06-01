@@ -74,7 +74,9 @@ import {
 } from "../lib/quoteCreateLineItemNormalizer";
 import {
   buildQuoteLineItemPriceOverridePersistencePatch,
+  coerceLineItemOverrideAt,
   haveLineItemPricingDriversChanged,
+  LineItemPriceOverrideValidationError,
 } from "../lib/lineItemPricingPersistence";
 
 function getUserId(user: any): string | undefined {
@@ -2136,6 +2138,22 @@ export function registerQuoteRoutes(
         (lineItem as any).priceOverrideMode === null ||
         (lineItem as any).overridePriceCents === null;
       const hasExplicitPriceOverride = hasExplicitPriceOverrideMetadata(lineItem);
+      const hasMalformedPriceOverride =
+        hasQuoteLineItemOverridePatch(lineItem) &&
+        !clearsPriceOverride &&
+        !hasExplicitPriceOverride &&
+        ((lineItem as any).priceOverride !== undefined ||
+          (lineItem as any).priceOverrideMode !== undefined ||
+          (lineItem as any).priceOverrideValueCents !== undefined ||
+          (lineItem as any).priceOverrideValuePercent !== undefined);
+
+      if (hasMalformedPriceOverride) {
+        return res.status(422).json({
+          message: "Invalid price override payload",
+          code: "INVALID_PRICE_OVERRIDE",
+        });
+      }
+
       if (clearsPriceOverride) {
         const overridePatch = buildQuoteLineItemPriceOverridePersistencePatch({
           existingLineItem: {
@@ -2185,15 +2203,22 @@ export function registerQuoteRoutes(
           total: overridePatch.linePrice,
         };
         updateData.overridePriceCents = overridePatch.overridePriceCents;
-        updateData.overrideAt = (lineItem as any).overrideAt !== undefined ? (lineItem as any).overrideAt : new Date();
+        const incomingOverrideAt = coerceLineItemOverrideAt((lineItem as any).overrideAt);
+        updateData.overrideAt = incomingOverrideAt === undefined ? new Date() : incomingOverrideAt;
         updateData.overrideByUserId = (lineItem as any).overrideByUserId !== undefined ? (lineItem as any).overrideByUserId : userId ?? null;
       }
       if ((lineItem as any).overrideReason !== undefined) updateData.overrideReason = (lineItem as any).overrideReason;
-      if ((lineItem as any).overrideAt !== undefined) updateData.overrideAt = (lineItem as any).overrideAt;
+      if ((lineItem as any).overrideAt !== undefined && !clearsPriceOverride && !hasExplicitPriceOverride) {
+        updateData.overrideAt = coerceLineItemOverrideAt((lineItem as any).overrideAt);
+      }
       if ((lineItem as any).overrideByUserId !== undefined) updateData.overrideByUserId = (lineItem as any).overrideByUserId;
       // Canonical routing intent (migration 0015)
       if (lineItem.requiresDesign !== undefined) updateData.requiresDesign = lineItem.requiresDesign === true;
       if (lineItem.requiresPrepress !== undefined) updateData.requiresPrepress = typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : null;
+
+      if (Object.keys(updateData).length === 0) {
+        return res.status(400).json({ message: "No supported line item fields to update" });
+      }
 
       const updatedLineItem = await storage.updateLineItem(lineItemId, updateData);
       await refreshQuoteAggregateTotals(organizationId, id);
@@ -2212,6 +2237,12 @@ export function registerQuoteRoutes(
           code: "PBV2_FORMULA_ERROR",
           details: (error as any).details ?? [],
           debug: (error as any).debug,
+        });
+      }
+      if (error instanceof LineItemPriceOverrideValidationError) {
+        return res.status(error.statusCode).json({
+          message: error.message,
+          code: "INVALID_PRICE_OVERRIDE",
         });
       }
       res.status(500).json({ message: "Failed to update line item" });

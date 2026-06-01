@@ -26,6 +26,7 @@ import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { sanitizeJsonForPostgres } from "../lib/quoteCreateLineItemNormalizer";
 import {
     buildQuoteLineItemPriceOverridePersistencePatch,
+    coerceLineItemOverrideAt,
     enrichLineItemWithEffectivePricing,
 } from "../lib/lineItemPricingPersistence";
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
@@ -1128,7 +1129,7 @@ export class QuotesRepository {
         if (lineItem.priceBreakdown !== undefined && !clearsPriceOverride && !hasExplicitPriceOverride) updateData.priceBreakdown = lineItem.priceBreakdown;
         if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
         if ((lineItem as any).overrideReason !== undefined) updateData.overrideReason = (lineItem as any).overrideReason;
-        if ((lineItem as any).overrideAt !== undefined) updateData.overrideAt = (lineItem as any).overrideAt;
+        if ((lineItem as any).overrideAt !== undefined) updateData.overrideAt = coerceLineItemOverrideAt((lineItem as any).overrideAt);
         if ((lineItem as any).overrideByUserId !== undefined) updateData.overrideByUserId = (lineItem as any).overrideByUserId;
         // Canonical routing intent (migration 0015)
         if ((lineItem as any).requiresDesign !== undefined) updateData.requiresDesign = (lineItem as any).requiresDesign === true;
