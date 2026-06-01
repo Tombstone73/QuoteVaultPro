@@ -2,6 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 
 import {
   buildQuoteLineItemPriceOverridePersistencePatch,
+  enrichLineItemWithEffectivePricing,
   getPersistedBaseCalculatedTotalCents,
   haveLineItemPricingDriversChanged,
   mergePricingIntoSpecsJson,
@@ -538,5 +539,34 @@ describe("line item price override effective pricing", () => {
     expect(patch.overridePriceCents).toBeNull();
     expect(patch.formulaLinePrice).toBeNull();
     expect((patch.specsJson as any)?.priceOverride).toBeUndefined();
+  });
+
+  test("quote read enrichment surfaces specsJson priceOverride without legacy priceOverride column", () => {
+    const enriched = enrichLineItemWithEffectivePricing({
+      id: "quote-li-1",
+      quantity: 3,
+      linePrice: "40.00",
+      priceOverride: null,
+      overridePriceCents: 4000,
+      specsJson: {
+        priceOverride: {
+          mode: "override_total_after_margin",
+          valueCents: 4000,
+          baseCalculatedTotalCents: 888,
+          effectiveTotalCents: 4000,
+        },
+      },
+      pbv2SnapshotJson: { pricing: { totalCents: 888 } },
+    });
+
+    expect(enriched.priceOverride).toEqual(expect.objectContaining({
+      mode: "override_total_after_margin",
+      valueCents: 4000,
+      baseCalculatedTotalCents: 888,
+      effectiveTotalCents: 4000,
+    }));
+    expect(enriched.priceOverrideMode).toBe("override_total_after_margin");
+    expect(enriched.overridePriceCents).toBe(4000);
+    expect(enriched.linePrice).toBe(40);
   });
 });

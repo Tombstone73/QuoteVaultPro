@@ -1,7 +1,7 @@
 import type { QuoteLineItemDraft } from "./types";
 
 export function hasExplicitLineItemPriceOverride(item: any): boolean {
-  const override = item?.priceOverride;
+  const override = item?.priceOverride ?? item?.specsJson?.priceOverride;
   const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
   const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? item?.priceOverrideMode;
   const hasMode = typeof mode === "string" && mode.trim().length > 0;
@@ -22,7 +22,9 @@ function clearsLineItemPriceOverride(item: any): boolean {
 export function buildQuoteLineItemSavePayload(item: QuoteLineItemDraft, overrides: Partial<QuoteLineItemDraft> = {}) {
   const mergedItem = { ...item, ...overrides } as QuoteLineItemDraft;
   const hasExplicitOverride = !clearsLineItemPriceOverride(overrides) && hasExplicitLineItemPriceOverride(mergedItem);
-  const priceOverride = hasExplicitOverride ? ((mergedItem as any).priceOverride ?? null) : null;
+  const priceOverride = hasExplicitOverride
+    ? ((mergedItem as any).priceOverride ?? (mergedItem as any).specsJson?.priceOverride ?? null)
+    : null;
 
   return {
     productId: mergedItem.productId,

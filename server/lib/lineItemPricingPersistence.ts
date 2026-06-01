@@ -39,6 +39,12 @@ function toFiniteCents(value: unknown): number | null {
   return Number.isFinite(n) ? Math.round(n) : null;
 }
 
+function toDollarFieldCents(value: unknown): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const n = typeof value === "number" ? value : Number(String(value));
+  return Number.isFinite(n) ? Math.round(n * 100) : null;
+}
+
 function getNestedRecord(record: Record<string, unknown>, key: string): Record<string, unknown> {
   const value = record[key];
   return isPlainRecord(value) ? value : {};
@@ -60,7 +66,10 @@ function getSelectedOptionsForFingerprint(lineItem: Record<string, unknown>): un
 }
 
 export function getPersistedBaseCalculatedTotalCents(lineItem: Record<string, any>): number {
-  const effectiveTotalCents = Math.round((Number(lineItem.totalPrice) || 0) * 100);
+  const effectiveTotalCents =
+    toDollarFieldCents(lineItem.linePrice) ??
+    toDollarFieldCents(lineItem.totalPrice) ??
+    0;
   const specsJson = isPlainRecord(lineItem.specsJson) ? lineItem.specsJson : {};
   const specsOverride = isPlainRecord(specsJson.priceOverride) ? specsJson.priceOverride : {};
   const snapshotPricing = isPlainRecord(lineItem.pbv2SnapshotJson?.pricing) ? lineItem.pbv2SnapshotJson.pricing : {};
@@ -266,7 +275,6 @@ export function buildQuoteLineItemPriceOverridePersistencePatch(input: {
 
 export function enrichLineItemWithEffectivePricing<T extends Record<string, any>>(lineItem: T): T & LineItemEffectivePricing {
   const quantity = Number(lineItem.quantity) > 0 ? Number(lineItem.quantity) : 1;
-  const effectiveTotalCents = Math.round((Number(lineItem.totalPrice) || 0) * 100);
   const baseCalculatedTotalCents = getPersistedBaseCalculatedTotalCents(lineItem);
 
   const pricing = resolvePersistedLineItemPricing({
@@ -275,11 +283,29 @@ export function enrichLineItemWithEffectivePricing<T extends Record<string, any>
     specsJson: lineItem.specsJson,
     legacyOverridePriceCents: lineItem.overridePriceCents,
   });
+  const effectiveTotalCents = pricing.effectiveTotalCents;
+  const effectiveUnitPriceCents = pricing.effectiveUnitPriceCents;
+  const normalizedPriceOverride = pricing.hasPriceOverride
+    ? {
+        schemaVersion: 1,
+        mode: pricing.priceOverrideMode,
+        valueCents: pricing.priceOverrideValueCents,
+        valuePercent: pricing.priceOverrideValuePercent,
+        baseCalculatedUnitPriceCents: pricing.baseCalculatedUnitPriceCents,
+        baseCalculatedTotalCents: pricing.baseCalculatedTotalCents,
+        effectiveUnitPriceCents,
+        effectiveTotalCents,
+      }
+    : null;
 
   return {
     ...lineItem,
     ...pricing,
+    ...(lineItem.linePrice !== undefined ? { linePrice: effectiveTotalCents / 100 } : {}),
+    ...(lineItem.totalPrice !== undefined ? { totalPrice: effectiveTotalCents / 100 } : {}),
+    priceOverride: normalizedPriceOverride,
+    overridePriceCents: pricing.hasPriceOverride ? effectiveTotalCents : null,
     effectiveTotalCents,
-    effectiveUnitPriceCents: Math.round(effectiveTotalCents / quantity),
+    effectiveUnitPriceCents,
   };
 }

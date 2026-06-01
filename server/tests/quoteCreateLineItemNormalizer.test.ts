@@ -94,7 +94,8 @@ describe("quote create line item normalization", () => {
       overridePriceCents: 0,
     }, 0, { taxAmount: 0, isTaxableSnapshot: true });
 
-    expect(lineItem.priceOverride).toEqual({
+    expect(lineItem.priceOverride).toBeNull();
+    expect((lineItem.specsJson as any)?.priceOverride).toEqual({
       mode: "override_total_after_margin",
       valueCents: 0,
       valuePercent: null,
@@ -102,7 +103,7 @@ describe("quote create line item normalization", () => {
     expect(lineItem.overridePriceCents).toBe(0);
   });
 
-  test("materializes top-level explicit override metadata into persisted priceOverride JSON", () => {
+  test("materializes top-level explicit override metadata into specsJson priceOverride", () => {
     const { lineItem } = normalizeQuoteCreateLineItem({
       ...baseLineItem,
       priceOverrideMode: "override_unit_after_margin",
@@ -110,7 +111,8 @@ describe("quote create line item normalization", () => {
       overridePriceCents: 3000,
     }, 0, { taxAmount: 0, isTaxableSnapshot: true });
 
-    expect(lineItem.priceOverride).toEqual({
+    expect(lineItem.priceOverride).toBeNull();
+    expect((lineItem.specsJson as any)?.priceOverride).toEqual({
       mode: "override_unit_after_margin",
       valueCents: 1000,
       valuePercent: null,

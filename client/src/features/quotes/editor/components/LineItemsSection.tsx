@@ -66,7 +66,10 @@ function getProduct(products: Product[], productId: string) {
 }
 
 function getQuoteLineItemBaseTotalCents(item: QuoteLineItemDraft): number {
-  const overrideBase = Number((item.priceOverride as any)?.baseCalculatedTotalCents);
+  const overrideBase = Number(
+    (item.priceOverride as any)?.baseCalculatedTotalCents ??
+      (item.specsJson as any)?.priceOverride?.baseCalculatedTotalCents,
+  );
   if (Number.isFinite(overrideBase)) return Math.round(overrideBase);
   const snapshotBase = Number((item.pbv2SnapshotJson as any)?.pricing?.totalCents);
   if (Number.isFinite(snapshotBase)) return Math.round(snapshotBase);
