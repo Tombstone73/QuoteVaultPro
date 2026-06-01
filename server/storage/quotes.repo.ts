@@ -32,6 +32,27 @@ import {
     toDocumentNumberConflictError,
 } from "../services/documentNumberingService";
 
+function hasExplicitPriceOverrideMetadata(value: any): boolean {
+    const override = value?.priceOverride;
+    const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
+    const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? value?.priceOverrideMode;
+    const hasMode = typeof mode === "string" && mode.trim().length > 0;
+    const hasValue =
+        overrideRecord?.valueCents !== undefined ||
+        overrideRecord?.priceOverrideValueCents !== undefined ||
+        overrideRecord?.value !== undefined ||
+        value?.priceOverrideValueCents !== undefined ||
+        value?.priceOverrideValuePercent !== undefined;
+
+    return hasMode && hasValue;
+}
+
+function getExplicitOverridePriceCents(value: any): number | null {
+    if (!hasExplicitPriceOverrideMetadata(value)) return null;
+    const cents = Number(value?.overridePriceCents);
+    return Number.isFinite(cents) ? Math.round(cents) : null;
+}
+
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
 
@@ -617,7 +638,7 @@ export class QuotesRepository {
                 calculatedCost: number;
             }>,
             linePrice: item.linePrice.toString(),
-            priceOverride: (item as any).priceOverride ?? null,
+            priceOverride: hasExplicitPriceOverrideMetadata(item) ? ((item as any).priceOverride ?? null) : null,
             priceBreakdown: sanitizeJsonForPostgres({
                 ...item.priceBreakdown,
                 variantInfo: item.priceBreakdown.variantInfo as string | undefined,
@@ -631,7 +652,7 @@ export class QuotesRepository {
             pbv2TreeVersionId: (item as any).pbv2TreeVersionId || null,
             pbv2SnapshotJson: sanitizeJsonForPostgres((item as any).pbv2SnapshotJson || {}).value as any,
             pricedAt: (item as any).pricedAt || new Date(),
-            overridePriceCents: Number.isFinite(Number((item as any).overridePriceCents)) ? Math.round(Number((item as any).overridePriceCents)) : null,
+            overridePriceCents: getExplicitOverridePriceCents(item),
             overrideReason: (item as any).overrideReason ?? null,
             // Canonical routing intent (migration 0015)
             requiresDesign: materializeLineItemDesignSnapshot({
@@ -958,7 +979,7 @@ export class QuotesRepository {
                 calculatedCost: number;
             }>,
             linePrice: lineItem.linePrice.toString(),
-            priceOverride: (lineItem as any).priceOverride ?? null,
+            priceOverride: hasExplicitPriceOverrideMetadata(lineItem) ? ((lineItem as any).priceOverride ?? null) : null,
             priceBreakdown: {
                 ...lineItem.priceBreakdown,
                 variantInfo: lineItem.priceBreakdown.variantInfo as string | undefined,
@@ -968,7 +989,7 @@ export class QuotesRepository {
             pbv2TreeVersionId: (lineItem as any).pbv2TreeVersionId || null,
             pbv2SnapshotJson: (lineItem as any).pbv2SnapshotJson || {},
             pricedAt: (lineItem as any).pricedAt || new Date(),
-            overridePriceCents: Number.isFinite(Number((lineItem as any).overridePriceCents)) ? Math.round(Number((lineItem as any).overridePriceCents)) : null,
+            overridePriceCents: getExplicitOverridePriceCents(lineItem),
             overrideReason: (lineItem as any).overrideReason ?? null,
             // Canonical routing intent (migration 0015)
             requiresDesign: designSnapshot.effectiveRequiresDesign,
@@ -1018,13 +1039,20 @@ export class QuotesRepository {
         if ((lineItem as any).optionSelectionsJson !== undefined) updateData.optionSelectionsJson = (lineItem as any).optionSelectionsJson;
         if (lineItem.selectedOptions !== undefined) updateData.selectedOptions = lineItem.selectedOptions;
         if (lineItem.linePrice !== undefined) updateData.linePrice = lineItem.linePrice.toString();
-        if ((lineItem as any).priceOverride !== undefined) updateData.priceOverride = (lineItem as any).priceOverride;
+        const clearsPriceOverride =
+            (lineItem as any).priceOverride === null ||
+            (lineItem as any).priceOverrideMode === null ||
+            (lineItem as any).overridePriceCents === null;
+        const hasExplicitPriceOverride = hasExplicitPriceOverrideMetadata(lineItem);
+        if (clearsPriceOverride) {
+            updateData.priceOverride = null;
+            updateData.overridePriceCents = null;
+        } else if (hasExplicitPriceOverride) {
+            if ((lineItem as any).priceOverride !== undefined) updateData.priceOverride = (lineItem as any).priceOverride;
+            if ((lineItem as any).overridePriceCents !== undefined) updateData.overridePriceCents = getExplicitOverridePriceCents(lineItem);
+        }
         if (lineItem.priceBreakdown !== undefined) updateData.priceBreakdown = lineItem.priceBreakdown;
         if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
-        if ((lineItem as any).overridePriceCents !== undefined) {
-            const cents = Number((lineItem as any).overridePriceCents);
-            updateData.overridePriceCents = Number.isFinite(cents) ? Math.round(cents) : null;
-        }
         if ((lineItem as any).overrideReason !== undefined) updateData.overrideReason = (lineItem as any).overrideReason;
         if ((lineItem as any).overrideAt !== undefined) updateData.overrideAt = (lineItem as any).overrideAt;
         if ((lineItem as any).overrideByUserId !== undefined) updateData.overrideByUserId = (lineItem as any).overrideByUserId;
@@ -1104,11 +1132,11 @@ export class QuotesRepository {
             optionSelectionsJson: (lineItem as any).optionSelectionsJson ?? null,
             selectedOptions: lineItem.selectedOptions ?? [],
             linePrice: lineItem.linePrice.toString(),
-            priceOverride: (lineItem as any).priceOverride ?? null,
+            priceOverride: hasExplicitPriceOverrideMetadata(lineItem) ? ((lineItem as any).priceOverride ?? null) : null,
             priceBreakdown: lineItem.priceBreakdown as any,
             materialUsages: (lineItem as any).materialUsages ?? [],
             displayOrder: lineItem.displayOrder ?? 0,
-            overridePriceCents: Number.isFinite(Number((lineItem as any).overridePriceCents)) ? Math.round(Number((lineItem as any).overridePriceCents)) : null,
+            overridePriceCents: getExplicitOverridePriceCents(lineItem),
             overrideReason: (lineItem as any).overrideReason ?? null,
             requiresDesign: designSnapshot.effectiveRequiresDesign,
         } as any;

@@ -206,6 +206,8 @@ function formatMoney(n: number): string {
 }
 
 function getLineItemPriceOverrideMeta(lineItem: any): any | null {
+  const direct = lineItem?.priceOverride;
+  if (direct && typeof direct === "object") return direct;
   const specs = lineItem?.specsJson;
   const meta = specs && typeof specs === "object" ? (specs as any).priceOverride : null;
   return meta && typeof meta === "object" ? meta : null;
@@ -216,9 +218,9 @@ function getLineItemPriceOverrideMode(lineItem: any): LineItemPriceOverrideMode 
   if (isLineItemPriceOverrideMode(lineItem?.priceOverrideMode)) return lineItem.priceOverrideMode;
   const meta = getLineItemPriceOverrideMeta(lineItem);
   if (isLineItemPriceOverrideMode(meta?.mode)) return meta.mode;
-  if (lineItem?.hasPriceOverride === true && typeof lineItem?.overridePriceCents === "number" && Number.isFinite(lineItem.overridePriceCents)) {
-    return "override_total_after_margin";
-  }
+  if (isLineItemPriceOverrideMode(meta?.priceOverrideMode)) return meta.priceOverrideMode;
+  if (meta?.mode === "total") return "override_total_after_margin";
+  if (meta?.mode === "unit") return "override_unit_after_margin";
   return null;
 }
 
@@ -239,12 +241,14 @@ function getLineItemOverrideInputValue(lineItem: any, mode: LineItemPriceOverrid
   const meta = getLineItemPriceOverrideMeta(lineItem);
   const metaValueCents = Number(meta?.valueCents);
   if (Number.isFinite(metaValueCents)) return metaValueCents / 100;
+  const metaPriceOverrideValueCents = Number(meta?.priceOverrideValueCents);
+  if (Number.isFinite(metaPriceOverrideValueCents)) return metaPriceOverrideValueCents / 100;
+  const legacyDollarValue = Number(meta?.value);
+  if (Number.isFinite(legacyDollarValue)) return legacyDollarValue;
   if (mode === "override_unit_after_margin" || mode === "override_unit_before_margin") {
     const qty = Number(lineItem?.quantity) > 0 ? Number(lineItem.quantity) : 1;
     return fallbackTotal / qty;
   }
-  const overrideCents = lineItem?.hasPriceOverride === false ? NaN : Number(lineItem?.overridePriceCents);
-  if (Number.isFinite(overrideCents)) return overrideCents / 100;
   return fallbackTotal;
 }
 

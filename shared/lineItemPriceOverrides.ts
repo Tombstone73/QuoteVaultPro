@@ -98,13 +98,14 @@ function getLineItemPriceOverrideRecord(lineItem: unknown): Record<string, unkno
   const record = getObjectRecord(lineItem);
   const specs = getObjectRecord(record.specsJson);
   const specsOverride = getObjectRecord(specs.priceOverride);
+  const directOverride = getObjectRecord(record.priceOverride);
   const topLevelOverride = {
     priceOverrideMode: record.priceOverrideMode,
     priceOverrideValueCents: record.priceOverrideValueCents,
     priceOverrideValuePercent: record.priceOverrideValuePercent,
     overridePriceCents: record.overridePriceCents,
   };
-  return { ...specsOverride, ...topLevelOverride };
+  return { ...specsOverride, ...directOverride, ...topLevelOverride };
 }
 
 function getPbv2SnapshotTotalCents(lineItem: unknown): number | null {
@@ -219,17 +220,6 @@ export function normalizeLineItemPriceOverride(
       nested.mode,
   );
   const legacyCents = toCents(legacyOverridePriceCents ?? record.overridePriceCents ?? nested.overridePriceCents);
-
-  if (!mode && legacyCents !== null) {
-    return {
-      override: {
-        mode: "override_total_after_margin",
-        valueCents: legacyCents,
-        valuePercent: null,
-      },
-      warnings,
-    };
-  }
 
   if (!mode) return { override: null, warnings };
 

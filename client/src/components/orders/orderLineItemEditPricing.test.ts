@@ -3,7 +3,7 @@ import {
   applyLineItemEditPriceOverride,
   hydrateLineItemEditPricingState,
 } from "@shared/lineItemPriceOverrides";
-import { shouldApplyOrderLineItemPreviewResult } from "./orderLineItemEditState";
+import { resolveLineItemDisplayPriceCents, shouldApplyOrderLineItemPreviewResult } from "./orderLineItemEditState";
 
 describe("order line item edit pricing state", () => {
   it("hydrates a saved $15 item as $15 without letting stale legacy cents win", () => {
@@ -40,6 +40,51 @@ describe("order line item edit pricing state", () => {
     expect(state.persistedEffectiveTotalCents).toBe(4200);
     expect(state.effectiveTotalCents).toBe(4200);
     expect(state.effectiveUnitPriceCents).toBe(2100);
+  });
+
+  it("does not hydrate default overridePriceCents zero as an active override", () => {
+    const lineItem = {
+      id: "li-default-zero",
+      quantity: 3,
+      linePrice: "8.88",
+      overridePriceCents: 0,
+      priceOverride: null,
+      pbv2SnapshotJson: {
+        pricing: {
+          totalCents: 888,
+        },
+      },
+    };
+
+    const state = hydrateLineItemEditPricingState(lineItem);
+
+    expect(state.hasPriceOverride).toBe(false);
+    expect(state.priceOverrideMode).toBeNull();
+    expect(state.effectiveTotalCents).toBe(888);
+    expect(resolveLineItemDisplayPriceCents(lineItem)).toBe(888);
+  });
+
+  it("supports an intentional zero total override only with explicit metadata", () => {
+    const state = hydrateLineItemEditPricingState({
+      id: "li-explicit-zero",
+      quantity: 3,
+      linePrice: "8.88",
+      overridePriceCents: 0,
+      priceOverride: {
+        mode: "override_total_after_margin",
+        valueCents: 0,
+      },
+      pbv2SnapshotJson: {
+        pricing: {
+          totalCents: 888,
+        },
+      },
+    });
+
+    expect(state.hasPriceOverride).toBe(true);
+    expect(state.priceOverrideMode).toBe("override_total_after_margin");
+    expect(state.priceOverrideValueCents).toBe(0);
+    expect(state.effectiveTotalCents).toBe(0);
   });
 
   it("applies a total override immediately as the live effective total", () => {

@@ -40,12 +40,28 @@ function getStableLineItemKey(li: QuoteLineItemDraft): string {
     return li.tempId || li.id || "";
 }
 
+function hasExplicitLineItemPriceOverride(item: any): boolean {
+    const override = item?.priceOverride;
+    const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
+    const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? item?.priceOverrideMode;
+    const hasMode = typeof mode === "string" && mode.trim().length > 0;
+    const hasValue =
+        overrideRecord?.valueCents !== undefined ||
+        overrideRecord?.priceOverrideValueCents !== undefined ||
+        overrideRecord?.value !== undefined ||
+        item?.priceOverrideValueCents !== undefined ||
+        item?.priceOverrideValuePercent !== undefined;
+
+    return hasMode && hasValue;
+}
+
 function mapQuoteApiLineItemToDraft(item: any, idx: number): QuoteLineItemDraft {
     const parsedLinePrice = Number.parseFloat(item.linePrice);
     const linePrice = Number.isFinite(parsedLinePrice)
         ? parsedLinePrice
         : resolveLineItemDisplayPriceCents(item) / 100;
     const baseOverrideCents = Number((item as any).priceOverride?.baseCalculatedTotalCents);
+    const hasExplicitOverride = hasExplicitLineItemPriceOverride(item);
     return {
         id: item.id,
         productId: item.productId,
@@ -65,8 +81,10 @@ function mapQuoteApiLineItemToDraft(item: any, idx: number): QuoteLineItemDraft 
         materialUsages: (item as any).materialUsages ?? [],
         selectedOptions: item.selectedOptions || [],
         linePrice,
-        priceOverride: (item as any).priceOverride ?? null,
-        overridePriceCents: typeof item.overridePriceCents === "number" ? item.overridePriceCents : null,
+        priceOverride: hasExplicitOverride ? ((item as any).priceOverride ?? null) : null,
+        overridePriceCents: hasExplicitOverride && Number.isFinite(Number(item.overridePriceCents))
+            ? Math.round(Number(item.overridePriceCents))
+            : null,
         overrideAt: item.overrideAt || null,
         overrideByUserId: item.overrideByUserId || null,
         overrideReason: item.overrideReason || null,
@@ -2237,6 +2255,7 @@ export function useQuoteEditorState() {
 
         const item = lineItems.find((li) => getStableLineItemKey(li) === itemKey);
         if (!item || !item.productId) return false;
+        const hasExplicitOverride = hasExplicitLineItemPriceOverride(item);
 
         try {
             const payload: any = {
@@ -2256,8 +2275,8 @@ export function useQuoteEditorState() {
                 materialUsages: item.materialUsages ?? [],
                 selectedOptions: item.selectedOptions || [],
                 linePrice: item.linePrice ?? 0,
-                priceOverride: item.priceOverride ?? null,
-                overridePriceCents: item.overridePriceCents ?? null,
+                priceOverride: hasExplicitOverride ? (item.priceOverride ?? null) : null,
+                overridePriceCents: hasExplicitOverride ? (item.overridePriceCents ?? null) : null,
                 overrideAt: item.overrideAt ?? null,
                 overrideByUserId: item.overrideByUserId ?? null,
                 overrideReason: item.overrideReason ?? null,

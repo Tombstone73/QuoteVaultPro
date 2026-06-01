@@ -72,9 +72,25 @@ import {
   normalizeQuoteCreateLineItem,
   QuoteCreateLineItemValidationError,
 } from "../lib/quoteCreateLineItemNormalizer";
+import { haveLineItemPricingDriversChanged } from "../lib/lineItemPricingPersistence";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
+}
+
+function hasExplicitPriceOverrideMetadata(value: any): boolean {
+  const override = value?.priceOverride;
+  const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
+  const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? value?.priceOverrideMode;
+  const hasMode = typeof mode === "string" && mode.trim().length > 0;
+  const hasValue =
+    overrideRecord?.valueCents !== undefined ||
+    overrideRecord?.priceOverrideValueCents !== undefined ||
+    overrideRecord?.value !== undefined ||
+    value?.priceOverrideValueCents !== undefined ||
+    value?.priceOverrideValuePercent !== undefined;
+
+  return hasMode && hasValue;
 }
 
 async function refreshQuoteAggregateTotals(organizationId: string, quoteId: string) {
@@ -2008,23 +2024,31 @@ export function registerQuoteRoutes(
       const updateData: any = {};
       const allowedStatus = ["draft", "active", "canceled"];
 
-      // Check if pricing-relevant fields changed (require repricing)
-      const pricingFieldsChanged =
+      const currentLineItem = quote.lineItems?.find((li: any) => li.id === lineItemId);
+      if (!currentLineItem) {
+        return res.status(404).json({ message: "Line item not found" });
+      }
+
+      // Check if pricing-relevant fields actually changed (require repricing).
+      // Editor hydration/save payloads include pricing fields even when unchanged;
+      // presence alone must not force a reprice with incomplete option state.
+      const pricingFieldPresent =
         lineItem.productId !== undefined ||
         lineItem.width !== undefined ||
         lineItem.height !== undefined ||
         lineItem.quantity !== undefined ||
         lineItem.optionSelectionsJson !== undefined;
+      const pricingFieldsChanged = pricingFieldPresent
+        ? haveLineItemPricingDriversChanged({
+            existingLineItem: currentLineItem,
+            incomingUpdate: lineItem,
+            pbv2ExplicitSelections: lineItem.optionSelectionsJson?.selected,
+          })
+        : false;
 
       if (pricingFieldsChanged) {
         // Server-authoritative repricing when pricing inputs change
         const { priceLineItem } = await import("../services/pricing/PricingService");
-
-        // Get current line item to fill in missing fields
-        const currentLineItem = quote.lineItems?.find((li: any) => li.id === lineItemId);
-        if (!currentLineItem) {
-          return res.status(404).json({ message: "Line item not found" });
-        }
 
         const pricingResult = await priceLineItem({
           organizationId,
@@ -2079,8 +2103,18 @@ export function registerQuoteRoutes(
       // Line item enhancements (migrations 0039, 0040)
       if (lineItem.description !== undefined) updateData.description = lineItem.description;
       if (lineItem.productionNotes !== undefined) updateData.productionNotes = lineItem.productionNotes;
-      if ((lineItem as any).overridePriceCents !== undefined) updateData.overridePriceCents = (lineItem as any).overridePriceCents;
-      if ((lineItem as any).priceOverride !== undefined) updateData.priceOverride = (lineItem as any).priceOverride;
+      const clearsPriceOverride =
+        (lineItem as any).priceOverride === null ||
+        (lineItem as any).priceOverrideMode === null ||
+        (lineItem as any).overridePriceCents === null;
+      const hasExplicitPriceOverride = hasExplicitPriceOverrideMetadata(lineItem);
+      if (clearsPriceOverride) {
+        updateData.priceOverride = null;
+        updateData.overridePriceCents = null;
+      } else if (hasExplicitPriceOverride) {
+        if ((lineItem as any).overridePriceCents !== undefined) updateData.overridePriceCents = (lineItem as any).overridePriceCents;
+        if ((lineItem as any).priceOverride !== undefined) updateData.priceOverride = (lineItem as any).priceOverride;
+      }
       if ((lineItem as any).overrideReason !== undefined) updateData.overrideReason = (lineItem as any).overrideReason;
       if ((lineItem as any).overrideAt !== undefined) updateData.overrideAt = (lineItem as any).overrideAt;
       if ((lineItem as any).overrideByUserId !== undefined) updateData.overrideByUserId = (lineItem as any).overrideByUserId;

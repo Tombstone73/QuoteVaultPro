@@ -123,6 +123,21 @@ function toValidDateOrNow(raw: unknown): Date {
   return new Date();
 }
 
+function hasExplicitPriceOverrideMetadata(value: any): boolean {
+  const override = value?.priceOverride;
+  const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
+  const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? value?.priceOverrideMode;
+  const hasMode = typeof mode === "string" && mode.trim().length > 0;
+  const hasValue =
+    overrideRecord?.valueCents !== undefined ||
+    overrideRecord?.priceOverrideValueCents !== undefined ||
+    overrideRecord?.value !== undefined ||
+    value?.priceOverrideValueCents !== undefined ||
+    value?.priceOverrideValuePercent !== undefined;
+
+  return hasMode && hasValue;
+}
+
 export function normalizeQuoteCreateLineItem(
   item: any,
   index: number,
@@ -159,6 +174,7 @@ export function normalizeQuoteCreateLineItem(
   }, `lineItems[${index}].priceBreakdown`, jsonChanges).value;
   const materialUsages = sanitizeJsonForPostgres(item.materialUsages ?? item.priceBreakdown?.materialUsages ?? [], `lineItems[${index}].materialUsages`, jsonChanges).value;
   const pbv2SnapshotJson = sanitizeJsonForPostgres(item.pbv2SnapshotJson ?? {}, `lineItems[${index}].pbv2SnapshotJson`, jsonChanges).value;
+  const hasExplicitOverride = hasExplicitPriceOverrideMetadata(item);
 
   return {
     lineItem: {
@@ -175,12 +191,12 @@ export function normalizeQuoteCreateLineItem(
       selectedOptions,
       linePrice,
       priceBreakdown,
-      priceOverride: item.priceOverride ?? null,
+      priceOverride: hasExplicitOverride ? (item.priceOverride ?? null) : null,
       materialUsages,
       displayOrder: item.displayOrder || 0,
       description: item.description || null,
       productionNotes: item.productionNotes || null,
-      overridePriceCents: Number.isFinite(Number(item.overridePriceCents)) ? Math.round(Number(item.overridePriceCents)) : null,
+      overridePriceCents: hasExplicitOverride && Number.isFinite(Number(item.overridePriceCents)) ? Math.round(Number(item.overridePriceCents)) : null,
       overrideReason: item.overrideReason ?? null,
       requiresDesign: item.requiresDesign === true,
       requiresPrepress: typeof item.requiresPrepress === "boolean" ? item.requiresPrepress : null,

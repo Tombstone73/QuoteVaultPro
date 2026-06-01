@@ -123,6 +123,41 @@ describe("line item price override effective pricing", () => {
     expect(pricing.effectiveTotalCents).toBe(1500);
   });
 
+  test("default legacy overridePriceCents zero does not activate an override", () => {
+    const pricing = resolvePersistedLineItemPricing({
+      baseCalculatedTotalCents: 888,
+      quantity: 3,
+      body: {
+        priceOverride: null,
+        overridePriceCents: 0,
+      },
+      legacyOverridePriceCents: 0,
+    });
+
+    expect(pricing.hasPriceOverride).toBe(false);
+    expect(pricing.priceOverrideMode).toBeNull();
+    expect(pricing.effectiveTotalCents).toBe(888);
+  });
+
+  test("explicit zero override metadata is preserved", () => {
+    const pricing = resolvePersistedLineItemPricing({
+      baseCalculatedTotalCents: 888,
+      quantity: 3,
+      body: {
+        priceOverride: {
+          mode: "override_total_after_margin",
+          valueCents: 0,
+        },
+        overridePriceCents: 0,
+      },
+    });
+
+    expect(pricing.hasPriceOverride).toBe(true);
+    expect(pricing.priceOverrideMode).toBe("override_total_after_margin");
+    expect(pricing.priceOverrideValueCents).toBe(0);
+    expect(pricing.effectiveTotalCents).toBe(0);
+  });
+
   test("order subtotal uses effective totals", () => {
     const calculated = resolvePersistedLineItemPricing({
       baseCalculatedTotalCents: 1500,
