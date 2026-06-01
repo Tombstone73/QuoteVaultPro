@@ -30,10 +30,14 @@ import { deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemP
 import { LineItemCard } from "@/components/line-items/LineItemCard";
 import {
   getLineItemPriceOverrideLabel,
-  isLineItemPriceOverrideMode,
   resolveLineItemEffectivePricing,
   type LineItemPriceOverrideMode,
 } from "@shared/lineItemPriceOverrides";
+import {
+  getQuoteLineItemOverrideValueCents,
+  getQuoteLineItemPriceOverrideMode,
+  resolveQuoteLineItemOverrideUiState,
+} from "./quoteLineItemPriceOverrideUiState";
 
 type LineItemsSectionProps = {
   quoteId: string | null;
@@ -59,26 +63,6 @@ function getItemKey(item: QuoteLineItemDraft): string {
 
 function getProduct(products: Product[], productId: string) {
   return products.find((p) => p.id === productId) ?? null;
-}
-
-function getQuoteLineItemPriceOverrideMode(item: QuoteLineItemDraft): LineItemPriceOverrideMode | null {
-  const mode = (item.priceOverride as any)?.mode ?? (item.priceOverride as any)?.priceOverrideMode;
-  if (isLineItemPriceOverrideMode(mode)) return mode;
-  if (typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents)) {
-    return "override_total_after_margin";
-  }
-  return null;
-}
-
-function getQuoteLineItemOverrideValueCents(item: QuoteLineItemDraft, mode: LineItemPriceOverrideMode | null): number | null {
-  const valueCents = Number((item.priceOverride as any)?.valueCents ?? (item.priceOverride as any)?.priceOverrideValueCents);
-  if (Number.isFinite(valueCents)) return Math.round(valueCents);
-  if (typeof item.overridePriceCents !== "number" || !Number.isFinite(item.overridePriceCents)) return null;
-  if (mode === "override_unit_after_margin" || mode === "override_unit_before_margin") {
-    const quantity = Number(item.quantity) > 0 ? Number(item.quantity) : 1;
-    return Math.round(item.overridePriceCents / quantity);
-  }
-  return Math.round(item.overridePriceCents);
 }
 
 function getQuoteLineItemBaseTotalCents(item: QuoteLineItemDraft): number {
@@ -989,14 +973,15 @@ export function LineItemsSection({
                     
                     // Meta indicators (best effort with existing fields)
                     const hasNote = !!(item.notes || (item.specsJson as any)?.notes);
-                    const hasOverride = typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents);
-                    const persistedOverrideMode = getQuoteLineItemPriceOverrideMode(item);
-                    const selectedOverrideMode =
-                      priceOverrideModeByKey[itemKey] ?? persistedOverrideMode ?? "override_total_after_margin";
+                    const overrideUiState = resolveQuoteLineItemOverrideUiState(item, priceOverrideModeByKey[itemKey] ?? null);
+                    const persistedOverrideMode = overrideUiState.persistedOverrideMode;
+                    const hasOverride = overrideUiState.hasOverride;
+                    const selectedOverrideMode = overrideUiState.selectedOverrideMode;
+                    const activeOrDraftOverrideMode = selectedOverrideMode ?? "override_total_after_margin";
                     const overrideLabel = getLineItemPriceOverrideLabel(persistedOverrideMode ?? selectedOverrideMode);
                     const baseCalculatedTotalCents = getQuoteLineItemBaseTotalCents(item);
                     const baseCalculatedTotal = baseCalculatedTotalCents / 100;
-                    const overrideValueCents = getQuoteLineItemOverrideValueCents(item, selectedOverrideMode);
+                    const overrideValueCents = overrideUiState.overrideValueCents;
                     const visiblePrice = deriveVisibleLineItemPriceDisplay({
                       lineItem: item as any,
                       aggregateTotalCents: baseCalculatedTotalCents > 0 ? baseCalculatedTotalCents : null,
@@ -1046,7 +1031,7 @@ export function LineItemsSection({
                             onQuantityDecrement={() => setQty((q) => Math.max(1, (q || 1) - 1))}
                             dimsRequired={dimsRequired}
                             price={visiblePrice.displayTotal}
-                            priceOverride={item.overridePriceCents != null ? visiblePrice.displayTotal : null}
+                            priceOverride={hasOverride ? visiblePrice.displayTotal : null}
                             priceOverrideLabel={overrideLabel}
                             editingPrice={editingPriceItemKey === itemKey}
                             priceEditText={
@@ -1083,11 +1068,11 @@ export function LineItemsSection({
 
                                     const newCents = Math.round(parsed * 100);
                                     const previousOverrideCents =
-                                      typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents)
+                                      hasOverride && typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents)
                                         ? item.overridePriceCents
                                         : null;
                                     const formulaCents = baseCalculatedTotalCents;
-                                    const mode = selectedOverrideMode;
+                                    const mode = activeOrDraftOverrideMode;
                                     const quantity = Number(item.quantity) > 0 ? Number(item.quantity) : 1;
                                     const nextValueCents = newCents;
                                     const nextEffectiveCents =
@@ -1143,11 +1128,11 @@ export function LineItemsSection({
                               }
                             }}
                             onUndoOverride={
-                              readOnly || item.overridePriceCents == null
+                              readOnly || !hasOverride
                                 ? undefined
                                 : async () => {
                                     const previousOverrideCents =
-                                      typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents)
+                                      hasOverride && typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents)
                                         ? item.overridePriceCents
                                         : null;
                                     await refreshQuotePricingAfterOverrideChange({
@@ -1199,9 +1184,20 @@ export function LineItemsSection({
                                   </div>
                                   <div className="grid gap-2 sm:grid-cols-[minmax(180px,260px)_1fr]">
                                     <select
-                                      value={selectedOverrideMode}
+                                      value={overrideUiState.selectValue}
                                       onChange={(event) => {
-                                        const nextMode = event.target.value as LineItemPriceOverrideMode;
+                                        const selectedValue = event.target.value;
+                                        if (selectedValue === "__none") {
+                                          setPriceOverrideModeByKey((prev) => {
+                                            const next = { ...prev };
+                                            delete next[itemKey];
+                                            return next;
+                                          });
+                                          setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: visiblePrice.displayTotal.toFixed(2) }));
+                                          return;
+                                        }
+
+                                        const nextMode = selectedValue as LineItemPriceOverrideMode;
                                         setPriceOverrideModeByKey((prev) => ({ ...prev, [itemKey]: nextMode }));
                                         const currentValueCents = getQuoteLineItemOverrideValueCents(item, nextMode);
                                         const currentValue =
@@ -1211,6 +1207,7 @@ export function LineItemsSection({
                                       className="h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                                       disabled={readOnly}
                                     >
+                                      <option value="__none">No override</option>
                                       <option value="override_total_after_margin">Total override</option>
                                       <option value="override_unit_after_margin">Unit override</option>
                                       <option value="override_total_before_margin">Total before margin</option>

@@ -186,13 +186,21 @@ export function resolveLineItemDisplayPriceCents(
 ): number {
   const record = getRecord(lineItem);
   const overrideRecord = getRecord(record.priceOverride);
-  const hasOverride = record.hasPriceOverride !== false && (
-    record.hasPriceOverride === true ||
-    hasOwnDefined(record, "overridePriceCents") ||
+  const hasOverrideMode =
     hasOwnDefined(record, "priceOverrideMode") ||
     hasOwnDefined(overrideRecord, "mode") ||
-    hasOwnDefined(overrideRecord, "priceOverrideMode")
-  );
+    hasOwnDefined(overrideRecord, "priceOverrideMode");
+  const hasOverrideValue =
+    hasOwnDefined(record, "priceOverrideValueCents") ||
+    hasOwnDefined(record, "priceOverrideValuePercent") ||
+    hasOwnDefined(overrideRecord, "valueCents") ||
+    hasOwnDefined(overrideRecord, "priceOverrideValueCents") ||
+    hasOwnDefined(overrideRecord, "valuePercent") ||
+    hasOwnDefined(overrideRecord, "priceOverrideValuePercent") ||
+    hasOwnDefined(overrideRecord, "value");
+  const hasOverride =
+    record.hasPriceOverride !== false &&
+    (record.hasPriceOverride === true || (hasOverrideMode && hasOverrideValue));
 
   if (hasOverride) {
     const overrideTotal =

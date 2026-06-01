@@ -73,6 +73,34 @@ describe("quote create line item normalization", () => {
     ).toThrow(QuoteCreateLineItemValidationError);
   });
 
+  test("does not persist default overridePriceCents zero without explicit override metadata", () => {
+    const { lineItem } = normalizeQuoteCreateLineItem({
+      ...baseLineItem,
+      priceOverride: null,
+      overridePriceCents: 0,
+    }, 0, { taxAmount: 0, isTaxableSnapshot: true });
+
+    expect(lineItem.priceOverride).toBeNull();
+    expect(lineItem.overridePriceCents).toBeNull();
+  });
+
+  test("preserves intentional zero override when explicit mode and value metadata exist", () => {
+    const { lineItem } = normalizeQuoteCreateLineItem({
+      ...baseLineItem,
+      priceOverride: {
+        mode: "override_total_after_margin",
+        valueCents: 0,
+      },
+      overridePriceCents: 0,
+    }, 0, { taxAmount: 0, isTaxableSnapshot: true });
+
+    expect(lineItem.priceOverride).toEqual({
+      mode: "override_total_after_margin",
+      valueCents: 0,
+    });
+    expect(lineItem.overridePriceCents).toBe(0);
+  });
+
   test("sanitizes non-JSON-safe snapshot values instead of persisting them", () => {
     const { value, changes } = sanitizeJsonForPostgres({
       valid: 1,
