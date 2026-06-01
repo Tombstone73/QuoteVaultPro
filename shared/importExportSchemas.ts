@@ -91,6 +91,16 @@ export const productExportV2ItemSchema = z.object({
       treeJson: z.record(z.any()),
     }).optional(),
   }).optional(),
+
+  // PBV2 transfer diagnostics. These are informational counts used by the
+  // preview/import guardrails; the tree JSON remains the source of truth.
+  optionGroupCount: z.number().int().min(0).optional(),
+  optionCount: z.number().int().min(0).optional(),
+  choiceCount: z.number().int().min(0).optional(),
+  ruleCount: z.number().int().min(0).optional(),
+  pricingConfigPresent: z.boolean().optional(),
+  matrixCount: z.number().int().min(0).optional(),
+  tierCount: z.number().int().min(0).optional(),
   
   // Variants (if needed in future - not implemented in v1)
   // variants: z.array(productVariantExportSchema).optional(),
@@ -172,6 +182,8 @@ export const importPlanSchema = z.object({
     choiceCount: z.number().int().min(0).optional(),
     ruleCount: z.number().int().min(0).optional(),
     pricingConfigPresent: z.boolean().optional(),
+    matrixCount: z.number().int().min(0).optional(),
+    tierCount: z.number().int().min(0).optional(),
     action: z.enum(["create", "update", "skip"]),
     existingId: z.string().optional(),
     reason: z.string().optional(),
@@ -197,11 +209,25 @@ export const importResultSchema = z.object({
     productIndex: z.number().int(),
     productName: z.string(),
     productId: z.string(),
+    optionGroupCount: z.number().int().min(0).optional(),
+    optionCount: z.number().int().min(0).optional(),
+    choiceCount: z.number().int().min(0).optional(),
+    ruleCount: z.number().int().min(0).optional(),
+    pricingConfigPresent: z.boolean().optional(),
+    matrixCount: z.number().int().min(0).optional(),
+    tierCount: z.number().int().min(0).optional(),
   })),
   updated: z.array(z.object({
     productIndex: z.number().int(),
     productName: z.string(),
     productId: z.string(),
+    optionGroupCount: z.number().int().min(0).optional(),
+    optionCount: z.number().int().min(0).optional(),
+    choiceCount: z.number().int().min(0).optional(),
+    ruleCount: z.number().int().min(0).optional(),
+    pricingConfigPresent: z.boolean().optional(),
+    matrixCount: z.number().int().min(0).optional(),
+    tierCount: z.number().int().min(0).optional(),
   })),
   failed: z.array(z.object({
     productIndex: z.number().int(),
@@ -231,6 +257,8 @@ export interface ProductImportExportSummary {
   choiceCount: number;
   ruleCount: number;
   pricingConfigPresent: boolean;
+  matrixCount: number;
+  tierCount: number;
 }
 
 function getTreeNodes(treeJson: unknown): Array<Record<string, any>> {
@@ -257,13 +285,59 @@ function countRules(treeJson: unknown): number {
   return ruleCollections.reduce((count, rules) => count + (Array.isArray(rules) ? rules.length : 0), 0);
 }
 
+function countMatrices(value: unknown, key = ""): number {
+  if (!value || typeof value !== "object") return 0;
+  const normalizedKey = key.toLowerCase();
+  if (normalizedKey.includes("matrix")) {
+    return Array.isArray(value) ? value.length : 1;
+  }
+  if (Array.isArray(value)) {
+    return value.reduce((count, child) => count + countMatrices(child), 0);
+  }
+  return Object.entries(value as Record<string, unknown>).reduce(
+    (count, [childKey, child]) => count + countMatrices(child, childKey),
+    0,
+  );
+}
+
+function countTiers(value: unknown, key = ""): number {
+  if (!value || typeof value !== "object") return 0;
+  const normalizedKey = key.toLowerCase();
+  if (Array.isArray(value)) {
+    if (normalizedKey.includes("tier")) return value.length;
+    return value.reduce((count, child) => count + countTiers(child), 0);
+  }
+  return Object.entries(value as Record<string, unknown>).reduce(
+    (count, [childKey, child]) => count + countTiers(child, childKey),
+    0,
+  );
+}
+
+function hasChoicePricing(nodes: Array<Record<string, any>>): boolean {
+  return nodes.some((node) =>
+    Array.isArray(node.choices) &&
+    node.choices.some((choice: any) =>
+      choice && typeof choice === "object" && (
+        choice.pricingImpact ||
+        choice.priceImpact ||
+        choice.priceDelta ||
+        choice.priceDeltaCents ||
+        choice.pricingOverride
+      ),
+    ),
+  );
+}
+
 function hasPricingConfig(product: Pick<ProductExportV2Item, "pricingFormula" | "pricingProfileConfig" | "pricingProfileKey">, treeJson: unknown): boolean {
-  if (product.pricingFormula || product.pricingProfileConfig || product.pricingProfileKey) return true;
+  const nodes = getTreeNodes(treeJson);
+  if (product.pricingFormula || product.pricingProfileConfig || product.pricingProfileKey || hasChoicePricing(nodes)) return true;
   if (!treeJson || typeof treeJson !== "object") return false;
   const tree = treeJson as Record<string, any>;
   return Boolean(
     tree.pricingMatrix ||
     tree.pricingConfig ||
+    countMatrices(treeJson) > 0 ||
+    countTiers(treeJson) > 0 ||
     tree.meta?.pricingMatrix ||
     tree.meta?.pricingV2 ||
     tree.meta?.pricingFormula ||
@@ -283,6 +357,10 @@ export function summarizeProductExportItem(item: ProductExportV2Item): ProductIm
     Boolean(node.input),
   ).length;
   const choiceCount = nodes.reduce((count, node) => count + (Array.isArray(node.choices) ? node.choices.length : 0), 0);
+  const matrixCount = countMatrices(activeTreeJson);
+  const tierCount = countTiers(activeTreeJson) +
+    (Array.isArray(item.priceBreaks?.tiers) ? item.priceBreaks.tiers.length : 0) +
+    (Array.isArray(item.nestingVolumePricing?.tiers) ? item.nestingVolumePricing.tiers.length : 0);
 
   return {
     hasPbv2: Boolean(item.pbv2?.activeTree || item.optionTreeJson),
@@ -292,5 +370,7 @@ export function summarizeProductExportItem(item: ProductExportV2Item): ProductIm
     choiceCount,
     ruleCount: countRules(activeTreeJson),
     pricingConfigPresent: hasPricingConfig(item, activeTreeJson),
+    matrixCount,
+    tierCount,
   };
 }

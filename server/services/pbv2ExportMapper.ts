@@ -11,7 +11,7 @@
  * - Include reference mappings for resolution on import
  */
 
-import type { ProductExportV2, ProductExportV2Item } from "@shared/importExportSchemas";
+import { summarizeProductExportItem, type ProductExportV2, type ProductExportV2Item } from "@shared/importExportSchemas";
 import type { db as DbType } from "../db";
 import { isPbv2ProductPayloadLike } from "@shared/pbv2/legacyPriceBreaks";
 
@@ -47,7 +47,7 @@ export async function exportProducts(
     const pbv2Data = pbv2Trees.get(product.id);
     const activeTreeJson = pbv2Data?.active?.treeJson ?? product.optionTreeJson ?? undefined;
     const draftTreeJson = pbv2Data?.draft?.treeJson ?? undefined;
-    const isPbv2Product = isPbv2ProductPayloadLike({ ...product, pbv2: pbv2Data });
+    const isPbv2Product = Boolean(activeTreeJson || draftTreeJson || isPbv2ProductPayloadLike({ ...product, pbv2: pbv2Data }));
     
     // Resolve product type reference
     const productTypeName = product.productTypeId 
@@ -121,6 +121,15 @@ export async function exportProducts(
         } : undefined,
       } : undefined,
     };
+
+    const summary = summarizeProductExportItem(exportItem);
+    Object.assign(exportItem, summary);
+
+    if (isPbv2Product && treeHasNodes(activeTreeJson) && summary.optionCount === 0) {
+      throw new Error(
+        `PBV2 export for "${product.name}" produced zero options from a populated runtime tree. Export aborted to avoid creating a shell product.`,
+      );
+    }
     
     exportedProducts.push(exportItem);
   }
@@ -159,4 +168,11 @@ function generateSlugFromName(name: string): string {
     .replace(/\s+/g, '-') // Spaces to hyphens
     .replace(/-+/g, '-') // Collapse multiple hyphens
     .replace(/^-|-$/g, ''); // Trim hyphens
+}
+
+function treeHasNodes(treeJson: unknown): boolean {
+  if (!treeJson || typeof treeJson !== "object") return false;
+  const nodes = (treeJson as Record<string, any>).nodes;
+  if (Array.isArray(nodes)) return nodes.length > 0;
+  return Boolean(nodes && typeof nodes === "object" && Object.keys(nodes).length > 0);
 }

@@ -185,6 +185,8 @@ describe('Product Import/Export Schemas (v2)', () => {
             choiceCount: 12,
             ruleCount: 3,
             pricingConfigPresent: true,
+            matrixCount: 1,
+            tierCount: 2,
             action: 'create' as const,
             reason: 'New product',
             warnings: ['Material SKU missing'],
@@ -232,7 +234,13 @@ describe('Product Import/Export Schemas (v2)', () => {
                 },
               ],
               rules: [{ type: 'hide', target: 'printSide.double' }],
-              meta: { pricingV2: { base: { perSqftCents: 400 } } },
+              meta: {
+                pricingMatrix: { rows: [{ selectionKey: 'weight', value: '13oz', addPerSqftCents: 100 }] },
+                pricingV2: {
+                  base: { perSqftCents: 400 },
+                  qtyTiers: [{ minQty: 1, perSqftCents: 400 }],
+                },
+              },
             },
           },
           hasDraft: false,
@@ -246,6 +254,8 @@ describe('Product Import/Export Schemas (v2)', () => {
       expect(summary.choiceCount).toBe(1);
       expect(summary.ruleCount).toBe(1);
       expect(summary.pricingConfigPresent).toBe(true);
+      expect(summary.matrixCount).toBe(1);
+      expect(summary.tierCount).toBe(1);
     });
   });
   
@@ -261,7 +271,7 @@ describe('Product Import/Export Schemas (v2)', () => {
           failed: 0,
         },
         created: [
-          { productIndex: 0, productName: 'Product A', productId: 'prod_1' },
+          { productIndex: 0, productName: 'Product A', productId: 'prod_1', optionCount: 5, matrixCount: 1, tierCount: 2 },
           { productIndex: 1, productName: 'Product B', productId: 'prod_2' },
           { productIndex: 2, productName: 'Product C', productId: 'prod_3' },
         ],
