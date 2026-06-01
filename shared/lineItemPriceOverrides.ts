@@ -145,6 +145,7 @@ export function hydrateLineItemEditPricingState(lineItem: unknown): LineItemEdit
     toCents(record.effectiveTotalCents) ??
     toCents(overrideRecord.effectiveTotalCents) ??
     snapshotTotalCents ??
+    toDollarsAsCents(record.linePrice) ??
     toDollarsAsCents(record.totalPrice) ??
     0;
 

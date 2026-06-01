@@ -124,7 +124,7 @@ function toValidDateOrNow(raw: unknown): Date {
 }
 
 function hasExplicitPriceOverrideMetadata(value: any): boolean {
-  const override = value?.priceOverride;
+  const override = value?.priceOverride ?? value?.specsJson?.priceOverride;
   const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
   const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? value?.priceOverrideMode;
   const hasMode = typeof mode === "string" && mode.trim().length > 0;
@@ -140,7 +140,7 @@ function hasExplicitPriceOverrideMetadata(value: any): boolean {
 
 function buildExplicitPriceOverrideMetadata(value: any): any | null {
   if (!hasExplicitPriceOverrideMetadata(value)) return null;
-  const override = value?.priceOverride;
+  const override = value?.priceOverride ?? value?.specsJson?.priceOverride;
   const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
   const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? value?.priceOverrideMode;
   const valueCents = overrideRecord?.valueCents ?? overrideRecord?.priceOverrideValueCents ?? value?.priceOverrideValueCents;
@@ -151,6 +151,15 @@ function buildExplicitPriceOverrideMetadata(value: any): any | null {
     mode,
     valueCents,
     valuePercent,
+  };
+}
+
+function mergePriceOverrideIntoSpecsJson(specsJson: unknown, priceOverride: any | null): Record<string, unknown> | null {
+  const base = isPlainObject(specsJson) ? { ...specsJson } : {};
+  if (!priceOverride) return Object.keys(base).length ? base : null;
+  return {
+    ...base,
+    priceOverride,
   };
 }
 
@@ -179,7 +188,7 @@ export function normalizeQuoteCreateLineItem(
   }
 
   const jsonChanges: JsonSanitizeChange[] = [];
-  const specsJson = sanitizeJsonForPostgres(item.specsJson || null, `lineItems[${index}].specsJson`, jsonChanges).value;
+  const rawSpecsJson = sanitizeJsonForPostgres(item.specsJson || null, `lineItems[${index}].specsJson`, jsonChanges).value;
   const selectedOptions = sanitizeJsonForPostgres(item.selectedOptions || [], `lineItems[${index}].selectedOptions`, jsonChanges).value;
   const optionSelectionsJson = sanitizeJsonForPostgres(item.optionSelectionsJson ?? null, `lineItems[${index}].optionSelectionsJson`, jsonChanges).value;
   const priceBreakdown = sanitizeJsonForPostgres(item.priceBreakdown || {
@@ -192,6 +201,7 @@ export function normalizeQuoteCreateLineItem(
   const pbv2SnapshotJson = sanitizeJsonForPostgres(item.pbv2SnapshotJson ?? {}, `lineItems[${index}].pbv2SnapshotJson`, jsonChanges).value;
   const hasExplicitOverride = hasExplicitPriceOverrideMetadata(item);
   const priceOverride = buildExplicitPriceOverrideMetadata(item);
+  const specsJson = mergePriceOverrideIntoSpecsJson(rawSpecsJson, hasExplicitOverride ? priceOverride : null);
 
   return {
     lineItem: {
@@ -208,7 +218,7 @@ export function normalizeQuoteCreateLineItem(
       selectedOptions,
       linePrice,
       priceBreakdown,
-      priceOverride: hasExplicitOverride ? priceOverride : null,
+      priceOverride: null,
       materialUsages,
       displayOrder: item.displayOrder || 0,
       description: item.description || null,

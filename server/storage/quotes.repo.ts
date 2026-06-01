@@ -24,7 +24,10 @@ import { and, eq, isNull, like, gte, lte, desc, asc, sql, inArray } from "drizzl
 import { DB_TO_WORKFLOW, getEffectiveWorkflowState, type QuoteWorkflowState as WorkflowState } from "@shared/quoteWorkflow";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { sanitizeJsonForPostgres } from "../lib/quoteCreateLineItemNormalizer";
-import { buildQuoteLineItemPriceOverridePersistencePatch } from "../lib/lineItemPricingPersistence";
+import {
+    buildQuoteLineItemPriceOverridePersistencePatch,
+    enrichLineItemWithEffectivePricing,
+} from "../lib/lineItemPricingPersistence";
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "./productDesignConfig.repo";
 import {
@@ -34,7 +37,7 @@ import {
 } from "../services/documentNumberingService";
 
 function hasExplicitPriceOverrideMetadata(value: any): boolean {
-    const override = value?.priceOverride;
+    const override = value?.priceOverride ?? value?.specsJson?.priceOverride;
     const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
     const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? value?.priceOverrideMode;
     const hasMode = typeof mode === "string" && mode.trim().length > 0;
@@ -56,7 +59,7 @@ function getExplicitOverridePriceCents(value: any): number | null {
 
 function buildExplicitPriceOverrideMetadata(value: any): any | null {
     if (!hasExplicitPriceOverrideMetadata(value)) return null;
-    const override = value?.priceOverride;
+    const override = value?.priceOverride ?? value?.specsJson?.priceOverride;
     const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
     const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? value?.priceOverrideMode;
     const valueCents = overrideRecord?.valueCents ?? overrideRecord?.priceOverrideValueCents ?? value?.priceOverrideValueCents;
@@ -67,6 +70,20 @@ function buildExplicitPriceOverrideMetadata(value: any): any | null {
         mode,
         valueCents,
         valuePercent,
+    };
+}
+
+function mergeExplicitPriceOverrideIntoSpecsJson(specsJson: unknown, value: any): Record<string, unknown> | null {
+    const base = specsJson && typeof specsJson === "object" && !Array.isArray(specsJson)
+        ? { ...(specsJson as Record<string, unknown>) }
+        : {};
+    const priceOverride = buildExplicitPriceOverrideMetadata(value);
+    if (!priceOverride) {
+        return Object.keys(base).length ? base : null;
+    }
+    return {
+        ...base,
+        priceOverride,
     };
 }
 
@@ -645,7 +662,9 @@ export class QuotesRepository {
             width: item.width.toString(),
             height: item.height.toString(),
             quantity: item.quantity,
-            specsJson: sanitizeJsonForPostgres((item as any).specsJson || null).value as any,
+            specsJson: sanitizeJsonForPostgres(
+                mergeExplicitPriceOverrideIntoSpecsJson((item as any).specsJson || null, item),
+            ).value as any,
             optionSelectionsJson: sanitizeJsonForPostgres((item as any).optionSelectionsJson ?? null).value as any,
             selectedOptions: sanitizeJsonForPostgres(item.selectedOptions || []).value as Array<{
                 optionId: string;
@@ -655,7 +674,7 @@ export class QuotesRepository {
                 calculatedCost: number;
             }>,
             linePrice: item.linePrice.toString(),
-            priceOverride: buildExplicitPriceOverrideMetadata(item),
+            priceOverride: null,
             priceBreakdown: sanitizeJsonForPostgres({
                 ...item.priceBreakdown,
                 variantInfo: item.priceBreakdown.variantInfo as string | undefined,
@@ -775,7 +794,7 @@ export class QuotesRepository {
                     [variant] = await this.dbInstance.select().from(productVariants).where(eq(productVariants.id, lineItem.variantId));
                 }
                 return {
-                    ...lineItem,
+                    ...enrichLineItemWithEffectivePricing(lineItem as any),
                     product,
                     variant,
                 };
@@ -837,7 +856,7 @@ export class QuotesRepository {
                     [variant] = await this.dbInstance.select().from(productVariants).where(eq(productVariants.id, lineItem.variantId));
                 }
                 return {
-                    ...lineItem,
+                    ...enrichLineItemWithEffectivePricing(lineItem as any),
                     product,
                     variant,
                 };
@@ -986,7 +1005,7 @@ export class QuotesRepository {
             width: lineItem.width.toString(),
             height: lineItem.height.toString(),
             quantity: lineItem.quantity,
-            specsJson: (lineItem as any).specsJson || null,
+            specsJson: mergeExplicitPriceOverrideIntoSpecsJson((lineItem as any).specsJson || null, lineItem),
             optionSelectionsJson: (lineItem as any).optionSelectionsJson ?? null,
             selectedOptions: lineItem.selectedOptions as Array<{
                 optionId: string;
@@ -996,7 +1015,7 @@ export class QuotesRepository {
                 calculatedCost: number;
             }>,
             linePrice: lineItem.linePrice.toString(),
-            priceOverride: buildExplicitPriceOverrideMetadata(lineItem),
+            priceOverride: null,
             priceBreakdown: {
                 ...lineItem.priceBreakdown,
                 variantInfo: lineItem.priceBreakdown.variantInfo as string | undefined,
@@ -1016,7 +1035,7 @@ export class QuotesRepository {
         };
 
         const [created] = await this.dbInstance.insert(quoteLineItems).values(lineItemData).returning();
-        return created;
+        return enrichLineItemWithEffectivePricing(created as any);
     }
 
     async updateLineItem(id: string, lineItem: Partial<InsertQuoteLineItem>): Promise<QuoteLineItem> {
@@ -1151,7 +1170,7 @@ export class QuotesRepository {
             throw new Error(`Line item ${id} not found`);
         }
 
-        return updated;
+        return enrichLineItemWithEffectivePricing(updated as any);
     }
 
     async createTemporaryLineItem(
@@ -1183,11 +1202,11 @@ export class QuotesRepository {
             width: lineItem.width.toString(),
             height: lineItem.height.toString(),
             quantity: lineItem.quantity,
-            specsJson: (lineItem as any).specsJson ?? null,
+            specsJson: mergeExplicitPriceOverrideIntoSpecsJson((lineItem as any).specsJson ?? null, lineItem),
             optionSelectionsJson: (lineItem as any).optionSelectionsJson ?? null,
             selectedOptions: lineItem.selectedOptions ?? [],
             linePrice: lineItem.linePrice.toString(),
-            priceOverride: buildExplicitPriceOverrideMetadata(lineItem),
+            priceOverride: null,
             priceBreakdown: lineItem.priceBreakdown as any,
             materialUsages: (lineItem as any).materialUsages ?? [],
             displayOrder: lineItem.displayOrder ?? 0,
@@ -1201,7 +1220,7 @@ export class QuotesRepository {
             .values(lineItemData)
             .returning();
 
-        return created;
+        return enrichLineItemWithEffectivePricing(created as any);
     }
 
     async finalizeTemporaryLineItemsForUser(

@@ -80,4 +80,26 @@ describe("quote line item price override hydration", () => {
     expect(state.selectValue).toBe("override_unit_after_margin");
     expect(state.overrideValueCents).toBe(296);
   });
+
+  it("hydrates an explicit override stored only in specsJson", () => {
+    const state = resolveQuoteLineItemOverrideUiState(
+      pricedLineItem({
+        priceOverride: null,
+        specsJson: {
+          priceOverride: {
+            mode: "override_total_after_margin",
+            valueCents: 4000,
+            baseCalculatedTotalCents: 888,
+            effectiveTotalCents: 4000,
+          },
+        },
+        overridePriceCents: 4000,
+      }),
+    );
+
+    expect(state.hasOverride).toBe(true);
+    expect(state.persistedOverrideMode).toBe("override_total_after_margin");
+    expect(state.selectValue).toBe("override_total_after_margin");
+    expect(state.overrideValueCents).toBe(4000);
+  });
 });

@@ -41,12 +41,17 @@ function getStableLineItemKey(li: QuoteLineItemDraft): string {
     return li.tempId || li.id || "";
 }
 
+function getHydratedPriceOverride(item: any): any | null {
+    return item?.priceOverride ?? item?.specsJson?.priceOverride ?? null;
+}
+
 function mapQuoteApiLineItemToDraft(item: any, idx: number): QuoteLineItemDraft {
     const parsedLinePrice = Number.parseFloat(item.linePrice);
     const linePrice = Number.isFinite(parsedLinePrice)
         ? parsedLinePrice
         : resolveLineItemDisplayPriceCents(item) / 100;
-    const baseOverrideCents = Number((item as any).priceOverride?.baseCalculatedTotalCents);
+    const priceOverride = getHydratedPriceOverride(item);
+    const baseOverrideCents = Number(priceOverride?.baseCalculatedTotalCents);
     const hasExplicitOverride = hasExplicitLineItemPriceOverride(item);
     return {
         id: item.id,
@@ -67,7 +72,7 @@ function mapQuoteApiLineItemToDraft(item: any, idx: number): QuoteLineItemDraft 
         materialUsages: (item as any).materialUsages ?? [],
         selectedOptions: item.selectedOptions || [],
         linePrice,
-        priceOverride: hasExplicitOverride ? ((item as any).priceOverride ?? null) : null,
+        priceOverride: hasExplicitOverride ? priceOverride : null,
         overridePriceCents: hasExplicitOverride && Number.isFinite(Number(item.overridePriceCents))
             ? Math.round(Number(item.overridePriceCents))
             : null,

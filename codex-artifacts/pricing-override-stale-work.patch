@@ -1,0 +1,705 @@
+﻿diff --git a/client/src/features/quotes/editor/components/LineItemsSection.tsx b/client/src/features/quotes/editor/components/LineItemsSection.tsx
+index 2dbab5f..9c53aa4 100644
+--- a/client/src/features/quotes/editor/components/LineItemsSection.tsx
++++ b/client/src/features/quotes/editor/components/LineItemsSection.tsx
+@@ -29,6 +29,7 @@ import { buildPbv2DefaultSelections } from "@shared/pbv2OrderEntryRuntime";
+ import { LineItemCard } from "@/components/line-items/LineItemCard";
+ import {
+   getLineItemPriceOverrideLabel,
++  hydrateLineItemEditPricingState,
+   isLineItemPriceOverrideMode,
+   resolveLineItemEffectivePricing,
+   type LineItemPriceOverrideMode,
+@@ -44,7 +45,7 @@ type LineItemsSectionProps = {
+   onExpandedKeyChange: (next: string | null) => void;
+   onCreateDraftLineItem: (productId: string) => Promise<QuoteLineItemDraft | null>;
+   onUpdateLineItem: (itemKey: string, updates: Partial<QuoteLineItemDraft>) => void;
+-  onSaveLineItem?: (itemKey: string) => Promise<boolean>;
++  onSaveLineItem?: (itemKey: string, pendingUpdates?: Partial<QuoteLineItemDraft>) => Promise<boolean>;
+   onDuplicateLineItem: (itemKey: string) => void;
+   onRemoveLineItem: (itemKey: string) => void;
+   onReorderLineItems?: (orderedKeys: string[]) => Promise<{ ok: boolean }>;
+@@ -61,28 +62,27 @@ function getProduct(products: Product[], productId: string) {
+ }
+ 
+ function getQuoteLineItemPriceOverrideMode(item: QuoteLineItemDraft): LineItemPriceOverrideMode | null {
+-  const mode = (item.priceOverride as any)?.mode ?? (item.priceOverride as any)?.priceOverrideMode;
+-  if (isLineItemPriceOverrideMode(mode)) return mode;
+-  if (typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents)) {
+-    return "override_total_after_margin";
+-  }
+-  return null;
++  const state = hydrateLineItemEditPricingState(item);
++  return state.hasPriceOverride && isLineItemPriceOverrideMode(state.priceOverrideMode)
++    ? state.priceOverrideMode
++    : null;
+ }
+ 
+ function getQuoteLineItemOverrideValueCents(item: QuoteLineItemDraft, mode: LineItemPriceOverrideMode | null): number | null {
+-  const valueCents = Number((item.priceOverride as any)?.valueCents ?? (item.priceOverride as any)?.priceOverrideValueCents);
+-  if (Number.isFinite(valueCents)) return Math.round(valueCents);
+-  if (typeof item.overridePriceCents !== "number" || !Number.isFinite(item.overridePriceCents)) return null;
++  const state = hydrateLineItemEditPricingState(item);
++  const valueCents = state.priceOverrideValueCents;
++  if (typeof valueCents === "number" && Number.isFinite(valueCents)) return Math.round(valueCents);
++  if (!state.hasPriceOverride) return null;
+   if (mode === "override_unit_after_margin" || mode === "override_unit_before_margin") {
+     const quantity = Number(item.quantity) > 0 ? Number(item.quantity) : 1;
+-    return Math.round(item.overridePriceCents / quantity);
++    return Math.round(state.effectiveTotalCents / quantity);
+   }
+-  return Math.round(item.overridePriceCents);
++  return Math.round(state.effectiveTotalCents);
+ }
+ 
+ function getQuoteLineItemBaseTotalCents(item: QuoteLineItemDraft): number {
+-  const overrideBase = Number((item.priceOverride as any)?.baseCalculatedTotalCents);
+-  if (Number.isFinite(overrideBase)) return Math.round(overrideBase);
++  const state = hydrateLineItemEditPricingState(item);
++  if (Number.isFinite(state.baseCalculatedTotalCents)) return Math.round(state.baseCalculatedTotalCents);
+   const snapshotBase = Number((item.pbv2SnapshotJson as any)?.pricing?.totalCents);
+   if (Number.isFinite(snapshotBase)) return Math.round(snapshotBase);
+   return Math.round(Number(item.formulaLinePrice ?? item.linePrice ?? 0) * 100);
+@@ -770,7 +770,7 @@ export function LineItemsSection({
+         : null;
+     const effectiveLinePrice = overridePatch ? overridePatch.pricing.effectiveTotalCents / 100 : formulaPrice;
+ 
+-    onUpdateLineItem(itemKey, {
++    const overrideUpdates: Partial<QuoteLineItemDraft> = {
+       formulaLinePrice: formulaPrice,
+       linePrice: effectiveLinePrice,
+       priceOverride: overridePatch?.priceOverride ?? null,
+@@ -778,10 +778,12 @@ export function LineItemsSection({
+       overrideAt: nextOverrideCents == null ? null : new Date().toISOString(),
+       overrideByUserId: null,
+       overrideReason: null,
+-    });
++    };
++
++    onUpdateLineItem(itemKey, overrideUpdates);
+ 
+     if (onSaveLineItem) {
+-      await onSaveLineItem(itemKey);
++      await onSaveLineItem(itemKey, overrideUpdates);
+     }
+ 
+     if (quoteId) {
+diff --git a/client/src/features/quotes/editor/useQuoteEditorState.ts b/client/src/features/quotes/editor/useQuoteEditorState.ts
+index 8a618f1..9b2c9c9 100644
+--- a/client/src/features/quotes/editor/useQuoteEditorState.ts
++++ b/client/src/features/quotes/editor/useQuoteEditorState.ts
+@@ -35,6 +35,14 @@ function getStableLineItemKey(li: QuoteLineItemDraft): string {
+     return li.tempId || li.id || "";
+ }
+ 
++function getHydratedPriceOverride(item: any): any | null {
++    return item?.priceOverride ?? item?.specsJson?.priceOverride ?? null;
++}
++
++function hasOwn(record: Record<string, unknown>, key: string): boolean {
++    return Object.prototype.hasOwnProperty.call(record, key);
++}
++
+ /**
+  * Main hook for Quote Editor state management and business logic.
+  * Centralizes all data fetching, state, and handlers for the quote editor.
+@@ -700,7 +708,7 @@ export function useQuoteEditorState() {
+             materialUsages: (item as any).materialUsages ?? [],
+             selectedOptions: item.selectedOptions || [],
+             linePrice: parseFloat(item.linePrice),
+-            priceOverride: (item as any).priceOverride ?? null,
++            priceOverride: getHydratedPriceOverride(item),
+             overridePriceCents: typeof item.overridePriceCents === "number" ? item.overridePriceCents : null,
+             overrideAt: item.overrideAt || null,
+             overrideByUserId: item.overrideByUserId || null,
+@@ -708,8 +716,8 @@ export function useQuoteEditorState() {
+             // Preserve the backend base price when an override is active.
+             priceOverridden: false,
+             overriddenPrice: null,
+-            formulaLinePrice: Number.isFinite(Number((item as any).priceOverride?.baseCalculatedTotalCents))
+-                ? Number((item as any).priceOverride.baseCalculatedTotalCents) / 100
++            formulaLinePrice: Number.isFinite(Number(getHydratedPriceOverride(item)?.baseCalculatedTotalCents))
++                ? Number(getHydratedPriceOverride(item)?.baseCalculatedTotalCents) / 100
+                 : parseFloat(item.linePrice),
+             priceBreakdown: item.priceBreakdown,
+             displayOrder: idx,
+@@ -776,15 +784,15 @@ export function useQuoteEditorState() {
+                 materialUsages: (item as any).materialUsages ?? [],
+                 selectedOptions: item.selectedOptions || [],
+                 linePrice: parseFloat(item.linePrice),
+-                priceOverride: (item as any).priceOverride ?? null,
++                priceOverride: getHydratedPriceOverride(item),
+                 overridePriceCents: typeof item.overridePriceCents === "number" ? item.overridePriceCents : null,
+                 overrideAt: item.overrideAt || null,
+                 overrideByUserId: item.overrideByUserId || null,
+                 overrideReason: item.overrideReason || null,
+                 priceOverridden: false,
+                 overriddenPrice: null,
+-                formulaLinePrice: Number.isFinite(Number((item as any).priceOverride?.baseCalculatedTotalCents))
+-                    ? Number((item as any).priceOverride.baseCalculatedTotalCents) / 100
++                formulaLinePrice: Number.isFinite(Number(getHydratedPriceOverride(item)?.baseCalculatedTotalCents))
++                    ? Number(getHydratedPriceOverride(item)?.baseCalculatedTotalCents) / 100
+                     : parseFloat(item.linePrice),
+                 priceBreakdown: item.priceBreakdown,
+                 displayOrder: idx,
+@@ -2227,11 +2235,22 @@ export function useQuoteEditorState() {
+     }, []);
+ 
+     // Save a single line item to the server
+-    const saveLineItem = useCallback(async (itemKey: string): Promise<boolean> => {
++    const saveLineItem = useCallback(async (itemKey: string, pendingUpdates: Partial<QuoteLineItemDraft> = {}): Promise<boolean> => {
+         if (!quoteId || !itemKey) return false;
+ 
+-        const item = lineItems.find((li) => getStableLineItemKey(li) === itemKey);
+-        if (!item || !item.productId) return false;
++        const existingItem = lineItems.find((li) => getStableLineItemKey(li) === itemKey);
++        if (!existingItem || !existingItem.productId) return false;
++        const item = {
++            ...existingItem,
++            ...pendingUpdates,
++            specsJson: pendingUpdates.specsJson !== undefined ? pendingUpdates.specsJson : existingItem.specsJson,
++        };
++        const hasExplicitOverridePatch =
++            hasOwn(pendingUpdates as Record<string, unknown>, "priceOverride") ||
++            hasOwn(pendingUpdates as Record<string, unknown>, "overridePriceCents") ||
++            hasOwn(pendingUpdates as Record<string, unknown>, "overrideAt") ||
++            hasOwn(pendingUpdates as Record<string, unknown>, "overrideReason");
++        const hydratedOverride = getHydratedPriceOverride(item);
+ 
+         try {
+             const payload: any = {
+@@ -2251,11 +2270,6 @@ export function useQuoteEditorState() {
+                 materialUsages: item.materialUsages ?? [],
+                 selectedOptions: item.selectedOptions || [],
+                 linePrice: item.linePrice ?? 0,
+-                priceOverride: item.priceOverride ?? null,
+-                overridePriceCents: item.overridePriceCents ?? null,
+-                overrideAt: item.overrideAt ?? null,
+-                overrideByUserId: item.overrideByUserId ?? null,
+-                overrideReason: item.overrideReason ?? null,
+                 priceBreakdown: item.priceBreakdown || {
+                     basePrice: item.linePrice ?? 0,
+                     optionsPrice: 0,
+@@ -2265,15 +2279,31 @@ export function useQuoteEditorState() {
+                 displayOrder: item.displayOrder ?? 0,
+                 status: item.status === "canceled" ? "canceled" : "active",
+             };
++            if (hasExplicitOverridePatch || hydratedOverride || item.overridePriceCents != null) {
++                payload.priceOverride = hydratedOverride;
++                payload.overridePriceCents = item.overridePriceCents ?? null;
++                payload.overrideAt = item.overrideAt ?? null;
++                payload.overrideByUserId = item.overrideByUserId ?? null;
++                payload.overrideReason = item.overrideReason ?? null;
++            }
+ 
+             if (item.id) {
+                 // Update existing line item
+-                await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${item.id}`, payload);
++                const response = await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${item.id}`, payload);
++                const updated = await response.json().catch(() => null);
+                 // Update local state to mark as saved
+                 setLineItems((prev) =>
+                     prev.map((li) => {
+                         if (getStableLineItemKey(li) === itemKey) {
+-                            return { ...li, status: "active" as const };
++                            return {
++                                ...li,
++                                ...(updated || {}),
++                                linePrice: Number.isFinite(Number(updated?.linePrice)) ? Number(updated.linePrice) : (item.linePrice ?? li.linePrice),
++                                formulaLinePrice: Number.isFinite(Number(updated?.formulaLinePrice)) ? Number(updated.formulaLinePrice) : item.formulaLinePrice,
++                                priceOverride: getHydratedPriceOverride(updated) ?? hydratedOverride,
++                                overridePriceCents: typeof updated?.overridePriceCents === "number" ? updated.overridePriceCents : (item.overridePriceCents ?? null),
++                                status: "active" as const,
++                            };
+                         }
+                         return li;
+                     })
+diff --git a/server/lib/lineItemPricingPersistence.ts b/server/lib/lineItemPricingPersistence.ts
+index 6350dfc..d062dd4 100644
+--- a/server/lib/lineItemPricingPersistence.ts
++++ b/server/lib/lineItemPricingPersistence.ts
+@@ -39,6 +39,12 @@ function toFiniteCents(value: unknown): number | null {
+   return Number.isFinite(n) ? Math.round(n) : null;
+ }
+ 
++function toDollarFieldCents(value: unknown): number | null {
++  if (value === undefined || value === null || value === "") return null;
++  const n = typeof value === "number" ? value : Number(String(value));
++  return Number.isFinite(n) ? Math.round(n * 100) : null;
++}
++
+ function getNestedRecord(record: Record<string, unknown>, key: string): Record<string, unknown> {
+   const value = record[key];
+   return isPlainRecord(value) ? value : {};
+@@ -60,7 +66,10 @@ function getSelectedOptionsForFingerprint(lineItem: Record<string, unknown>): un
+ }
+ 
+ export function getPersistedBaseCalculatedTotalCents(lineItem: Record<string, any>): number {
+-  const effectiveTotalCents = Math.round((Number(lineItem.totalPrice) || 0) * 100);
++  const effectiveTotalCents =
++    toDollarFieldCents(lineItem.linePrice) ??
++    toDollarFieldCents(lineItem.totalPrice) ??
++    0;
+   const specsJson = isPlainRecord(lineItem.specsJson) ? lineItem.specsJson : {};
+   const specsOverride = isPlainRecord(specsJson.priceOverride) ? specsJson.priceOverride : {};
+   const snapshotPricing = isPlainRecord(lineItem.pbv2SnapshotJson?.pricing) ? lineItem.pbv2SnapshotJson.pricing : {};
+@@ -201,7 +210,6 @@ export function mergePricingIntoSpecsJson(input: {
+ 
+ export function enrichLineItemWithEffectivePricing<T extends Record<string, any>>(lineItem: T): T & LineItemEffectivePricing {
+   const quantity = Number(lineItem.quantity) > 0 ? Number(lineItem.quantity) : 1;
+-  const effectiveTotalCents = Math.round((Number(lineItem.totalPrice) || 0) * 100);
+   const baseCalculatedTotalCents = getPersistedBaseCalculatedTotalCents(lineItem);
+ 
+   const pricing = resolvePersistedLineItemPricing({
+@@ -210,11 +218,29 @@ export function enrichLineItemWithEffectivePricing<T extends Record<string, any>
+     specsJson: lineItem.specsJson,
+     legacyOverridePriceCents: lineItem.overridePriceCents,
+   });
++  const effectiveTotalCents = pricing.effectiveTotalCents;
++  const effectiveUnitPriceCents = pricing.effectiveUnitPriceCents;
++  const normalizedPriceOverride = pricing.hasPriceOverride
++    ? {
++        schemaVersion: 1,
++        mode: pricing.priceOverrideMode,
++        valueCents: pricing.priceOverrideValueCents,
++        valuePercent: pricing.priceOverrideValuePercent,
++        baseCalculatedUnitPriceCents: pricing.baseCalculatedUnitPriceCents,
++        baseCalculatedTotalCents: pricing.baseCalculatedTotalCents,
++        effectiveUnitPriceCents,
++        effectiveTotalCents,
++      }
++    : null;
+ 
+   return {
+     ...lineItem,
+     ...pricing,
++    ...(lineItem.linePrice !== undefined ? { linePrice: effectiveTotalCents / 100 } : {}),
++    ...(lineItem.totalPrice !== undefined ? { totalPrice: effectiveTotalCents / 100 } : {}),
++    priceOverride: normalizedPriceOverride,
++    overridePriceCents: pricing.hasPriceOverride ? effectiveTotalCents : null,
+     effectiveTotalCents,
+-    effectiveUnitPriceCents: Math.round(effectiveTotalCents / quantity),
++    effectiveUnitPriceCents,
+   };
+ }
+diff --git a/server/routes/quotes.routes.ts b/server/routes/quotes.routes.ts
+index a637c63..8558273 100644
+--- a/server/routes/quotes.routes.ts
++++ b/server/routes/quotes.routes.ts
+@@ -72,11 +72,25 @@ import {
+   normalizeQuoteCreateLineItem,
+   QuoteCreateLineItemValidationError,
+ } from "../lib/quoteCreateLineItemNormalizer";
++import {
++  enrichLineItemWithEffectivePricing,
++  getPersistedBaseCalculatedTotalCents,
++  mergePricingIntoSpecsJson,
++  resolvePersistedLineItemPricing,
++} from "../lib/lineItemPricingPersistence";
+ 
+ function getUserId(user: any): string | undefined {
+   return user?.claims?.sub || user?.id;
+ }
+ 
++function isPlainRecord(value: unknown): value is Record<string, unknown> {
++  return !!value && typeof value === "object" && !Array.isArray(value);
++}
++
++function hasOwn(record: Record<string, unknown>, key: string): boolean {
++  return Object.prototype.hasOwnProperty.call(record, key);
++}
++
+ async function refreshQuoteAggregateTotals(organizationId: string, quoteId: string) {
+   const [quoteRow] = await db
+     .select({
+@@ -2007,6 +2021,11 @@ export function registerQuoteRoutes(
+ 
+       const updateData: any = {};
+       const allowedStatus = ["draft", "active", "canceled"];
++      const currentLineItem = quote.lineItems?.find((li: any) => li.id === lineItemId);
++      if (!currentLineItem) {
++        return res.status(404).json({ message: "Line item not found" });
++      }
++      let repricedTotalCents: number | null = null;
+ 
+       // Check if pricing-relevant fields changed (require repricing)
+       const pricingFieldsChanged =
+@@ -2020,12 +2039,6 @@ export function registerQuoteRoutes(
+         // Server-authoritative repricing when pricing inputs change
+         const { priceLineItem } = await import("../services/pricing/PricingService");
+ 
+-        // Get current line item to fill in missing fields
+-        const currentLineItem = quote.lineItems?.find((li: any) => li.id === lineItemId);
+-        if (!currentLineItem) {
+-          return res.status(404).json({ message: "Line item not found" });
+-        }
+-
+         const pricingResult = await priceLineItem({
+           organizationId,
+           productId: lineItem.productId ?? currentLineItem.productId,
+@@ -2040,6 +2053,7 @@ export function registerQuoteRoutes(
+         console.log(`[PBV2_PRICE_PERSIST] quoteId=${id} lineItemId=${lineItemId} treeVersionId=${pricingResult.pbv2TreeVersionId} totalCents=${pricingResult.lineTotalCents} pricedAt=${new Date().toISOString()}`);
+ 
+         // Set server-authoritative PBV2 fields
++        repricedTotalCents = pricingResult.lineTotalCents;
+         updateData.pbv2TreeVersionId = pricingResult.pbv2TreeVersionId;
+         updateData.pbv2SnapshotJson = pricingResult.pbv2SnapshotJson;
+         updateData.selectedOptions = pricingResult.pbv2SnapshotJson.selectedOptions || [];
+@@ -2054,10 +2068,6 @@ export function registerQuoteRoutes(
+           pricingMethod: pricingResult.breakdown.pricingMethod,
+         };
+         updateData.formulaLinePrice = null;
+-        updateData.priceOverride = null;
+-        updateData.overridePriceCents = null;
+-        updateData.overrideAt = null;
+-        updateData.overrideByUserId = null;
+       }
+ 
+       // Apply other field updates
+@@ -2070,6 +2080,7 @@ export function registerQuoteRoutes(
+       if (lineItem.width !== undefined) updateData.width = parseFloat(lineItem.width);
+       if (lineItem.height !== undefined) updateData.height = parseFloat(lineItem.height);
+       if (lineItem.quantity !== undefined) updateData.quantity = parseInt(lineItem.quantity);
++      if (lineItem.specsJson !== undefined) updateData.specsJson = lineItem.specsJson ?? null;
+       if (lineItem.optionSelectionsJson !== undefined) updateData.optionSelectionsJson = lineItem.optionSelectionsJson;
+       if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
+       if (lineItem.isTemporary !== undefined) updateData.isTemporary = lineItem.isTemporary;
+@@ -2079,18 +2090,76 @@ export function registerQuoteRoutes(
+       // Line item enhancements (migrations 0039, 0040)
+       if (lineItem.description !== undefined) updateData.description = lineItem.description;
+       if (lineItem.productionNotes !== undefined) updateData.productionNotes = lineItem.productionNotes;
+-      if ((lineItem as any).overridePriceCents !== undefined) updateData.overridePriceCents = (lineItem as any).overridePriceCents;
+-      if ((lineItem as any).priceOverride !== undefined) updateData.priceOverride = (lineItem as any).priceOverride;
+       if ((lineItem as any).overrideReason !== undefined) updateData.overrideReason = (lineItem as any).overrideReason;
+-      if ((lineItem as any).overrideAt !== undefined) updateData.overrideAt = (lineItem as any).overrideAt;
+-      if ((lineItem as any).overrideByUserId !== undefined) updateData.overrideByUserId = (lineItem as any).overrideByUserId;
+       // Canonical routing intent (migration 0015)
+       if (lineItem.requiresDesign !== undefined) updateData.requiresDesign = lineItem.requiresDesign === true;
+       if (lineItem.requiresPrepress !== undefined) updateData.requiresPrepress = typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : null;
+ 
++      const overrideFieldsChanged =
++        hasOwn(lineItem, "priceOverride") ||
++        hasOwn(lineItem, "priceOverrideMode") ||
++        hasOwn(lineItem, "priceOverrideValueCents") ||
++        hasOwn(lineItem, "priceOverrideValuePercent") ||
++        hasOwn(lineItem, "overridePriceCents");
++
++      const incomingSpecsJson = updateData.specsJson !== undefined ? updateData.specsJson : currentLineItem.specsJson;
++      const currentSpecsJson = isPlainRecord(currentLineItem.specsJson) ? currentLineItem.specsJson : {};
++      const incomingSpecsRecord = isPlainRecord(incomingSpecsJson) ? incomingSpecsJson : {};
++      const incomingHasPriceOverride = isPlainRecord(incomingSpecsRecord.priceOverride);
++      const currentHasPriceOverride = isPlainRecord(currentSpecsJson.priceOverride);
++
++      if (!overrideFieldsChanged && currentHasPriceOverride && !incomingHasPriceOverride && updateData.specsJson !== undefined) {
++        updateData.specsJson = {
++          ...incomingSpecsRecord,
++          priceOverride: currentSpecsJson.priceOverride,
++          ...(currentSpecsJson.priceOverrideWarnings ? { priceOverrideWarnings: currentSpecsJson.priceOverrideWarnings } : {}),
++        };
++      }
++
++      if (pricingFieldsChanged || overrideFieldsChanged) {
++        const specsJsonForPricing = updateData.specsJson !== undefined ? updateData.specsJson : currentLineItem.specsJson;
++        const mergedLineItemForBase = {
++          ...currentLineItem,
++          ...updateData,
++          linePrice: repricedTotalCents !== null ? repricedTotalCents / 100 : (updateData.linePrice ?? currentLineItem.linePrice),
++        };
++        const baseCalculatedTotalCents =
++          repricedTotalCents ??
++          getPersistedBaseCalculatedTotalCents(mergedLineItemForBase);
++        const quantity = updateData.quantity ?? currentLineItem.quantity ?? 1;
++        const effectivePricing = resolvePersistedLineItemPricing({
++          baseCalculatedTotalCents,
++          quantity,
++          body: overrideFieldsChanged ? lineItem : undefined,
++          specsJson: specsJsonForPricing,
++          legacyOverridePriceCents: currentLineItem.overridePriceCents,
++        });
++        const specsJsonWithPricing = mergePricingIntoSpecsJson({
++          specsJson: specsJsonForPricing,
++          pricing: effectivePricing,
++          appliedAt: typeof (lineItem as any).overrideAt === "string" ? (lineItem as any).overrideAt : undefined,
++        });
++
++        updateData.specsJson = specsJsonWithPricing;
++        updateData.formulaLinePrice = effectivePricing.baseCalculatedTotalCents / 100;
++        updateData.linePrice = effectivePricing.effectiveTotalCents / 100;
++        updateData.priceOverride = null;
++        updateData.overridePriceCents = effectivePricing.hasPriceOverride ? effectivePricing.effectiveTotalCents : null;
++        updateData.overrideAt = effectivePricing.hasPriceOverride
++          ? ((lineItem as any).overrideAt ? new Date((lineItem as any).overrideAt) : new Date())
++          : null;
++        updateData.overrideByUserId = effectivePricing.hasPriceOverride ? ((lineItem as any).overrideByUserId ?? userId ?? null) : null;
++        updateData.overrideReason = effectivePricing.hasPriceOverride ? ((lineItem as any).overrideReason ?? null) : null;
++        updateData.priceBreakdown = {
++          ...(updateData.priceBreakdown ?? currentLineItem.priceBreakdown ?? {}),
++          basePrice: effectivePricing.baseCalculatedTotalCents / 100,
++          total: effectivePricing.effectiveTotalCents / 100,
++        };
++      }
++
+       const updatedLineItem = await storage.updateLineItem(lineItemId, updateData);
+       await refreshQuoteAggregateTotals(organizationId, id);
+-      res.json(updatedLineItem);
++      res.json(enrichLineItemWithEffectivePricing(updatedLineItem as any));
+     } catch (error) {
+       console.error("Error updating line item:", error);
+       if ((error as any)?.code === "PBV2_FORMULA_ERROR") {
+diff --git a/server/storage/quotes.repo.ts b/server/storage/quotes.repo.ts
+index 15ed5b5..4ecbb83 100644
+--- a/server/storage/quotes.repo.ts
++++ b/server/storage/quotes.repo.ts
+@@ -31,6 +31,7 @@ import {
+     isDocumentNumberUniqueViolation,
+     toDocumentNumberConflictError,
+ } from "../services/documentNumberingService";
++import { enrichLineItemWithEffectivePricing } from "../lib/lineItemPricingPersistence";
+ 
+ export class QuotesRepository {
+     constructor(private readonly dbInstance = db) { }
+@@ -737,7 +738,7 @@ export class QuotesRepository {
+                     [variant] = await this.dbInstance.select().from(productVariants).where(eq(productVariants.id, lineItem.variantId));
+                 }
+                 return {
+-                    ...lineItem,
++                    ...enrichLineItemWithEffectivePricing(lineItem as any),
+                     product,
+                     variant,
+                 };
+@@ -799,7 +800,7 @@ export class QuotesRepository {
+                     [variant] = await this.dbInstance.select().from(productVariants).where(eq(productVariants.id, lineItem.variantId));
+                 }
+                 return {
+-                    ...lineItem,
++                    ...enrichLineItemWithEffectivePricing(lineItem as any),
+                     product,
+                     variant,
+                 };
+@@ -958,7 +959,8 @@ export class QuotesRepository {
+                 calculatedCost: number;
+             }>,
+             linePrice: lineItem.linePrice.toString(),
+-            priceOverride: (lineItem as any).priceOverride ?? null,
++            formulaLinePrice: (lineItem as any).formulaLinePrice != null ? String((lineItem as any).formulaLinePrice) : null,
++            priceOverride: null,
+             priceBreakdown: {
+                 ...lineItem.priceBreakdown,
+                 variantInfo: lineItem.priceBreakdown.variantInfo as string | undefined,
+@@ -978,7 +980,7 @@ export class QuotesRepository {
+         };
+ 
+         const [created] = await this.dbInstance.insert(quoteLineItems).values(lineItemData).returning();
+-        return created;
++        return enrichLineItemWithEffectivePricing(created as any);
+     }
+ 
+     async updateLineItem(id: string, lineItem: Partial<InsertQuoteLineItem>): Promise<QuoteLineItem> {
+@@ -1018,7 +1020,11 @@ export class QuotesRepository {
+         if ((lineItem as any).optionSelectionsJson !== undefined) updateData.optionSelectionsJson = (lineItem as any).optionSelectionsJson;
+         if (lineItem.selectedOptions !== undefined) updateData.selectedOptions = lineItem.selectedOptions;
+         if (lineItem.linePrice !== undefined) updateData.linePrice = lineItem.linePrice.toString();
+-        if ((lineItem as any).priceOverride !== undefined) updateData.priceOverride = (lineItem as any).priceOverride;
++        if ((lineItem as any).formulaLinePrice !== undefined) {
++            updateData.formulaLinePrice = (lineItem as any).formulaLinePrice == null ? null : String((lineItem as any).formulaLinePrice);
++        }
++        if ((lineItem as any).specsJson !== undefined) updateData.specsJson = (lineItem as any).specsJson ?? null;
++        if ((lineItem as any).priceOverride !== undefined) updateData.priceOverride = null;
+         if (lineItem.priceBreakdown !== undefined) updateData.priceBreakdown = lineItem.priceBreakdown;
+         if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
+         if ((lineItem as any).overridePriceCents !== undefined) {
+@@ -1068,7 +1074,7 @@ export class QuotesRepository {
+             throw new Error(`Line item ${id} not found`);
+         }
+ 
+-        return updated;
++        return enrichLineItemWithEffectivePricing(updated as any);
+     }
+ 
+     async createTemporaryLineItem(
+diff --git a/server/tests/lineItemPriceOverrides.test.ts b/server/tests/lineItemPriceOverrides.test.ts
+index c1b5da5..efb5ab4 100644
+--- a/server/tests/lineItemPriceOverrides.test.ts
++++ b/server/tests/lineItemPriceOverrides.test.ts
+@@ -1,11 +1,13 @@
+ import { describe, expect, test } from "@jest/globals";
+ 
+ import {
++  enrichLineItemWithEffectivePricing,
+   getPersistedBaseCalculatedTotalCents,
+   haveLineItemPricingDriversChanged,
+   mergePricingIntoSpecsJson,
+   resolvePersistedLineItemPricing,
+ } from "../lib/lineItemPricingPersistence";
++import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
+ 
+ describe("line item price override effective pricing", () => {
+   test("creating with total override saves overridden total", () => {
+@@ -391,4 +393,146 @@ describe("line item price override effective pricing", () => {
+     expect((specsJson as any)?.priceOverride?.baseCalculatedTotalCents).toBe(1500);
+     expect((specsJson as any)?.priceOverride?.effectiveTotalCents).toBe(1980);
+   });
++
++  test("quote reload response hydrates total override metadata from specsJson", () => {
++    const pricing = resolvePersistedLineItemPricing({
++      baseCalculatedTotalCents: 888,
++      quantity: 3,
++      body: {
++        priceOverrideMode: "override_total_after_margin",
++        priceOverrideValueCents: 4000,
++        overridePriceCents: 4000,
++      },
++    });
++    const specsJson = mergePricingIntoSpecsJson({ specsJson: { notes: "keep" }, pricing });
++
++    const hydrated = enrichLineItemWithEffectivePricing({
++      id: "line-1",
++      quantity: 3,
++      linePrice: "40.00",
++      formulaLinePrice: "8.88",
++      priceOverride: null,
++      overridePriceCents: 4000,
++      specsJson,
++    });
++
++    expect((hydrated.specsJson as any).priceOverride.mode).toBe("override_total_after_margin");
++    expect(hydrated.priceOverrideMode).toBe("override_total_after_margin");
++    expect(hydrated.priceOverrideValueCents).toBe(4000);
++    expect(hydrated.overridePriceCents).toBe(4000);
++    expect(hydrated.linePrice).toBe(40);
++  });
++
++  test("quote reload response hydrates unit override metadata from specsJson", () => {
++    const pricing = resolvePersistedLineItemPricing({
++      baseCalculatedTotalCents: 888,
++      quantity: 3,
++      body: {
++        priceOverrideMode: "override_unit_after_margin",
++        priceOverrideValueCents: 1000,
++        overridePriceCents: 3000,
++      },
++    });
++    const specsJson = mergePricingIntoSpecsJson({ specsJson: {}, pricing });
++
++    const hydrated = enrichLineItemWithEffectivePricing({
++      id: "line-1",
++      quantity: 3,
++      linePrice: "30.00",
++      priceOverride: null,
++      overridePriceCents: 3000,
++      specsJson,
++    });
++
++    expect(hydrated.priceOverrideMode).toBe("override_unit_after_margin");
++    expect(hydrated.priceOverrideValueCents).toBe(1000);
++    expect(hydrated.effectiveUnitPriceCents).toBe(1000);
++    expect(hydrated.effectiveTotalCents).toBe(3000);
++  });
++
++  test("explicit zero total override survives but legacy zero without metadata is no override", () => {
++    const zeroOverride = resolvePersistedLineItemPricing({
++      baseCalculatedTotalCents: 888,
++      quantity: 3,
++      body: {
++        priceOverrideMode: "override_total_after_margin",
++        priceOverrideValueCents: 0,
++        overridePriceCents: 0,
++      },
++    });
++    const specsJson = mergePricingIntoSpecsJson({ specsJson: {}, pricing: zeroOverride });
++    const hydrated = enrichLineItemWithEffectivePricing({
++      quantity: 3,
++      linePrice: "0.00",
++      priceOverride: null,
++      overridePriceCents: 0,
++      specsJson,
++    });
++
++    expect(hydrated.hasPriceOverride).toBe(true);
++    expect(hydrated.priceOverrideValueCents).toBe(0);
++    expect(hydrated.effectiveTotalCents).toBe(0);
++
++    const fakeZero = hydrateLineItemEditPricingState({
++      quantity: 3,
++      linePrice: "8.88",
++      priceOverride: null,
++      overridePriceCents: 0,
++      specsJson: {},
++    });
++
++    expect(fakeZero.hasPriceOverride).toBe(false);
++    expect(fakeZero.priceOverrideMode).toBeNull();
++    expect(fakeZero.effectiveTotalCents).toBe(888);
++  });
++
++  test("reverting override clears specs metadata and returns calculated price", () => {
++    const original = resolvePersistedLineItemPricing({
++      baseCalculatedTotalCents: 888,
++      quantity: 3,
++      body: {
++        priceOverrideMode: "override_total_after_margin",
++        priceOverrideValueCents: 4000,
++      },
++    });
++    const specsJson = mergePricingIntoSpecsJson({ specsJson: { notes: "keep" }, pricing: original });
++    const reverted = resolvePersistedLineItemPricing({
++      baseCalculatedTotalCents: 888,
++      quantity: 3,
++      body: {
++        priceOverride: null,
++        overridePriceCents: null,
++      },
++      specsJson,
++      legacyOverridePriceCents: 4000,
++    });
++    const clearedSpecs = mergePricingIntoSpecsJson({ specsJson, pricing: reverted });
++
++    expect(reverted.hasPriceOverride).toBe(false);
++    expect(reverted.effectiveTotalCents).toBe(888);
++    expect((clearedSpecs as any).priceOverride).toBeUndefined();
++    expect((clearedSpecs as any).notes).toBe("keep");
++  });
++
++  test("frontend hydration accepts specsJson priceOverride when legacy priceOverride is null", () => {
++    const state = hydrateLineItemEditPricingState({
++      quantity: 3,
++      linePrice: "40.00",
++      priceOverride: null,
++      overridePriceCents: 4000,
++      specsJson: {
++        priceOverride: {
++          mode: "override_total_after_margin",
++          valueCents: 4000,
++          baseCalculatedTotalCents: 888,
++          effectiveTotalCents: 4000,
++        },
++      },
++    });
++
++    expect(state.hasPriceOverride).toBe(true);
++    expect(state.priceOverrideMode).toBe("override_total_after_margin");
++    expect(state.priceOverrideValueCents).toBe(4000);
++    expect(state.effectiveTotalCents).toBe(4000);
++  });
+ });
+diff --git a/shared/lineItemPriceOverrides.ts b/shared/lineItemPriceOverrides.ts
+index 66a4c14..7e42aad 100644
+--- a/shared/lineItemPriceOverrides.ts
++++ b/shared/lineItemPriceOverrides.ts
+@@ -141,6 +141,7 @@ export function hydrateLineItemEditPricingState(lineItem: unknown): LineItemEdit
+   const persistedEffectiveTotalCents =
+     toCents(record.effectiveTotalCents) ??
+     toCents(overrideRecord.effectiveTotalCents) ??
++    toDollarsAsCents(record.linePrice) ??
+     toDollarsAsCents(record.totalPrice) ??
+     0;
+ 
+@@ -217,7 +218,7 @@ export function normalizeLineItemPriceOverride(
+   );
+   const legacyCents = toCents(legacyOverridePriceCents ?? record.overridePriceCents ?? nested.overridePriceCents);
+ 
+-  if (!mode && legacyCents !== null) {
++  if (!mode && legacyCents !== null && legacyCents > 0) {
+     return {
+       override: {
+         mode: "override_total_after_margin",

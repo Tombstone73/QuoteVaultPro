@@ -92,4 +92,29 @@ describe("quote line item save payload price override metadata", () => {
     expect(payload.priceOverrideValueCents).toBeNull();
     expect(payload.overridePriceCents).toBeNull();
   });
+
+  it("preserves explicit override metadata that hydrated from specsJson", () => {
+    const payload = buildQuoteLineItemSavePayload(pricedLineItem({
+      priceOverride: null,
+      specsJson: {
+        priceOverride: {
+          mode: "override_total_after_margin",
+          valueCents: 4000,
+          baseCalculatedTotalCents: 888,
+          effectiveTotalCents: 4000,
+        },
+      },
+      overridePriceCents: 4000,
+    }));
+
+    expect(payload.priceOverride).toEqual({
+      mode: "override_total_after_margin",
+      valueCents: 4000,
+      baseCalculatedTotalCents: 888,
+      effectiveTotalCents: 4000,
+    });
+    expect(payload.priceOverrideMode).toBe("override_total_after_margin");
+    expect(payload.priceOverrideValueCents).toBe(4000);
+    expect(payload.overridePriceCents).toBe(4000);
+  });
 });
