@@ -264,9 +264,9 @@ export default function Customers({ embedded = false }: CustomersProps) {
         {/* Customer List/Detail View */}
         {viewMode === "split" ? (
           // SPLIT MODE: Two-column layout
-          <div className="grid grid-cols-[360px,1fr] gap-3 h-[calc(100vh-280px)]">
+          <div className="grid grid-cols-[360px,1fr] gap-3 h-[calc(100vh-280px)] min-h-[520px] overflow-hidden">
             {/* Left Panel: Customer List */}
-            <DataCard noPadding className="overflow-hidden flex flex-col bg-titan-bg-card border-titan-border-subtle">
+            <DataCard noPadding className="overflow-hidden bg-titan-bg-card border-titan-border-subtle">
               <CustomerList
                 selectedCustomerId={selectedCustomerId || undefined}
                 onSelectCustomer={handleSelectCustomer}
@@ -291,7 +291,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
           </div>
         ) : (
           // ENHANCED MODE: List only, clicking navigates to full page
-          <DataCard noPadding className="overflow-hidden bg-titan-bg-card border-titan-border-subtle h-[calc(100vh-280px)]">
+          <DataCard noPadding className="overflow-hidden bg-titan-bg-card border-titan-border-subtle h-[calc(100vh-280px)] min-h-[520px]">
             <CustomerList
               selectedCustomerId={undefined}
               onSelectCustomer={handleSelectCustomer}

@@ -17,7 +17,7 @@ export function DataCard({ title, description, headerActions, children, classNam
   return (
     <div 
       className={cn(
-        "rounded-titan-xl border border-titan-border-subtle bg-titan-bg-card shadow-titan-card",
+        "rounded-titan-xl border border-titan-border-subtle bg-titan-bg-card shadow-titan-card flex flex-col min-h-0",
         className
       )}
       onClick={onClick}
@@ -37,7 +37,7 @@ export function DataCard({ title, description, headerActions, children, classNam
           )}
         </div>
       )}
-      <div className={noPadding ? "" : "p-5"}>{children}</div>
+      <div className={noPadding ? "flex-1 min-h-0" : "p-5"}>{children}</div>
     </div>
   );
 }

@@ -24,7 +24,8 @@ jest.mock("@/hooks/useSmartBack", () => ({
 jest.mock("@/hooks/useListViewSettings", () => ({
   useListViewSettings: () => ({
     columns: [
-      { id: "name", label: "Name", visible: true },
+      { id: "firstName", label: "First Name", visible: true },
+      { id: "lastName", label: "Last Name", visible: true },
       { id: "company", label: "Company", visible: true },
       { id: "email", label: "Email", visible: true },
       { id: "actions", label: "Actions", visible: true },
@@ -234,6 +235,29 @@ test("Contacts pagination controls request the next backend page", () => {
   expect(useContactsMock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, pageSize: 50 }));
 });
 
+test("Contacts exposes first-name and last-name backend sort controls", () => {
+  act(() => {
+    root.render(<ContactsPage />);
+  });
+
+  const firstNameHeader = Array.from(container.querySelectorAll("th")).find((header) => header.textContent?.includes("First Name"));
+  const lastNameHeader = Array.from(container.querySelectorAll("th")).find((header) => header.textContent?.includes("Last Name"));
+  expect(firstNameHeader).toBeTruthy();
+  expect(lastNameHeader).toBeTruthy();
+
+  act(() => {
+    firstNameHeader?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+
+  expect(useContactsMock).toHaveBeenLastCalledWith(expect.objectContaining({ sortBy: "firstName", sortDir: "asc" }));
+
+  act(() => {
+    lastNameHeader?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+
+  expect(useContactsMock).toHaveBeenLastCalledWith(expect.objectContaining({ sortBy: "lastName", sortDir: "asc" }));
+});
+
 test("Contacts Add Contact flow renders and submits a company-linked payload", async () => {
   const createMutation = { mutateAsync: jest.fn(async () => ({ id: "new-contact" })) };
   useCreateContactMock.mockReturnValue(createMutation as any);
@@ -280,7 +304,7 @@ test("Contacts Add Contact flow renders and submits a company-linked payload", a
   }));
 });
 
-test("Customers split mode defaults to 20 per page and can request page 2", () => {
+function mockCustomerListQuery() {
   useQueryMock.mockReturnValue({
     data: {
       customers: Array.from({ length: 20 }, (_, index) => ({
@@ -308,7 +332,25 @@ test("Customers split mode defaults to 20 per page and can request page 2", () =
     isLoading: false,
     isFetching: false,
   } as any);
+}
 
+function getCustomerPageSizeSelect() {
+  return Array.from(container.querySelectorAll("select")).find((select) =>
+    Array.from(select.options).some((option) => option.textContent?.includes("50 / page")),
+  ) as HTMLSelectElement | undefined;
+}
+
+function expectCustomerPaginationControls() {
+  expect(container.querySelector('[data-testid="customer-list-scroll-region"]')).toBeTruthy();
+  expect(container.querySelector('[data-testid="customer-pagination-footer"]')).toBeTruthy();
+  expect(container.textContent).toContain("Showing 1-20 of 35 customers");
+  expect(container.textContent).toContain("20 / page");
+  expect(container.textContent).toContain("50 / page");
+  expect(container.textContent).toContain("100 / page");
+}
+
+test("Customers split mode defaults to 20 per page and shows reachable pagination controls", () => {
+  mockCustomerListQuery();
   act(() => {
     root.render(
       <CustomerList
@@ -323,10 +365,7 @@ test("Customers split mode defaults to 20 per page and can request page 2", () =
 
   const firstQueryArg = useQueryMock.mock.calls[0]?.[0] as any;
   expect(firstQueryArg.queryKey[1].pageSize).toBe(20);
-  expect(container.textContent).toContain("Showing 1-20 of 35 customers");
-
-  const scrollContainer = container.querySelector(".overflow-y-auto");
-  expect(scrollContainer).toBeTruthy();
+  expectCustomerPaginationControls();
 
   const nextButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Next"));
   act(() => {
@@ -335,4 +374,36 @@ test("Customers split mode defaults to 20 per page and can request page 2", () =
 
   const lastQueryArg = useQueryMock.mock.calls[useQueryMock.mock.calls.length - 1]?.[0] as any;
   expect(lastQueryArg.queryKey[1].page).toBe(2);
+});
+
+test("Customers enhanced mode shows scroll region, pagination footer, and page-size selector", () => {
+  mockCustomerListQuery();
+  act(() => {
+    root.render(
+      <CustomerList
+        selectedCustomerId={undefined}
+        onSelectCustomer={jest.fn()}
+        onNewCustomer={jest.fn()}
+        search=""
+        viewMode="enhanced"
+      />,
+    );
+  });
+
+  const firstQueryArg = useQueryMock.mock.calls[0]?.[0] as any;
+  expect(firstQueryArg.queryKey[1]).toMatchObject({ viewMode: "enhanced", pageSize: 20 });
+  expectCustomerPaginationControls();
+
+  const pageSizeSelect = getCustomerPageSizeSelect();
+  expect(pageSizeSelect).toBeTruthy();
+
+  act(() => {
+    if (pageSizeSelect) {
+      pageSizeSelect.value = "50";
+      pageSizeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  });
+
+  const lastQueryArg = useQueryMock.mock.calls[useQueryMock.mock.calls.length - 1]?.[0] as any;
+  expect(lastQueryArg.queryKey[1].pageSize).toBe(50);
 });

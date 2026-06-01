@@ -41,6 +41,20 @@ describe("contactListQuery helpers", () => {
     expect(params.get("pageSize")).toBe("50");
   });
 
+  test("search params support explicit first-name and last-name sorts", () => {
+    const firstNameParams = buildContactListSearchParams({
+      ...baseState,
+      sortBy: "firstName",
+    });
+    const lastNameParams = buildContactListSearchParams({
+      ...baseState,
+      sortBy: "lastName",
+    });
+
+    expect(firstNameParams.get("sortBy")).toBe("firstName");
+    expect(lastNameParams.get("sortBy")).toBe("lastName");
+  });
+
   test("normalizes missing or malformed contact payloads without crashing", () => {
     const normalized = normalizeContactListResponse(null);
 
