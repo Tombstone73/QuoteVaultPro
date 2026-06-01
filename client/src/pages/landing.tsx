@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowRight,
   Bot,
@@ -24,6 +24,7 @@ import { MarketingFooter } from "@/components/marketing/MarketingFooter";
 import { MarketingHeader, marketingRequestAccessHref } from "@/components/marketing/MarketingHeader";
 import { MarketingMeta } from "@/components/marketing/MarketingMeta";
 import { HERO_LOGO_SRC, SHIELD_LOGO_SRC, SPLASH_STATIC_SRC } from "@/lib/branding";
+import { hasSplashVideoBeenSeen, markSplashVideoSeen } from "@/lib/splashVideoPreference";
 import { cn } from "@/lib/utils";
 
 const CONTENT_REVEAL_DELAY_MS = 450;
@@ -32,6 +33,10 @@ const prefersReducedMotionQuery = "(prefers-reduced-motion: reduce)";
 
 function getPrefersReducedMotion() {
   return typeof window !== "undefined" && window.matchMedia(prefersReducedMotionQuery).matches;
+}
+
+function shouldHideSplashVideoOnLoad() {
+  return getPrefersReducedMotion() || hasSplashVideoBeenSeen();
 }
 
 const problems = [
@@ -123,10 +128,11 @@ const differentiators = [
 ];
 
 export default function Landing() {
+  const navigate = useNavigate();
   const splashVideoRef = useRef<HTMLVideoElement>(null);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(getPrefersReducedMotion);
-  const [videoEnded, setVideoEnded] = useState(() => getPrefersReducedMotion());
-  const [contentVisible, setContentVisible] = useState(() => getPrefersReducedMotion());
+  const [videoEnded, setVideoEnded] = useState(shouldHideSplashVideoOnLoad);
+  const [contentVisible, setContentVisible] = useState(shouldHideSplashVideoOnLoad);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia(prefersReducedMotionQuery);
@@ -155,6 +161,23 @@ export default function Landing() {
     return () => window.clearTimeout(timer);
   }, [prefersReducedMotion, videoEnded]);
 
+  const completeIntro = () => {
+    markSplashVideoSeen();
+    setVideoEnded(true);
+  };
+
+  const skipIntro = () => {
+    markSplashVideoSeen();
+    splashVideoRef.current?.pause();
+    setVideoEnded(true);
+    setContentVisible(true);
+  };
+
+  const loginFromIntro = () => {
+    skipIntro();
+    navigate("/login");
+  };
+
   const replayIntro = () => {
     const video = splashVideoRef.current;
     if (prefersReducedMotion || !video) {
@@ -171,6 +194,9 @@ export default function Landing() {
     });
   };
 
+  const shouldRenderSplashVideo = !prefersReducedMotion && (!videoEnded || !contentVisible);
+  const showSplashOverlay = !prefersReducedMotion && !videoEnded;
+
   return (
     <div className="min-h-screen bg-[#05080d] text-white">
       <MarketingMeta />
@@ -184,15 +210,39 @@ export default function Landing() {
             aria-hidden="true"
             className="absolute inset-0 h-full w-full object-cover object-center"
           />
-          {!prefersReducedMotion && (
+          {shouldRenderSplashVideo && (
             <PrintersHeroSplashVideo
               ref={splashVideoRef}
               fadeOut={videoEnded}
-              onEnded={() => setVideoEnded(true)}
+              onEnded={completeIntro}
               onError={() => setVideoEnded(true)}
               className="absolute inset-0 h-full w-full object-cover object-center"
             />
           )}
+          {showSplashOverlay ? (
+            <div className="absolute inset-x-4 top-4 z-30 mx-auto flex max-w-7xl items-center justify-between gap-3 rounded-lg border border-white/15 bg-black/45 px-3 py-2 text-white shadow-lg backdrop-blur md:inset-x-6 lg:inset-x-8">
+              <div className="min-w-0 text-sm font-medium text-white/90">Intro video</div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={skipIntro}
+                  className="h-8 border-white/20 bg-white/5 px-3 text-xs text-white hover:bg-white/10"
+                >
+                  Skip intro
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={loginFromIntro}
+                  className="h-8 border-0 bg-[#ffd400] px-3 text-xs text-[#05080d] hover:bg-[#ffe45c]"
+                >
+                  Login
+                </Button>
+              </div>
+            </div>
+          ) : null}
           {contentVisible ? (
             <div className="pointer-events-none absolute inset-0 transition-opacity duration-1000 ease-out">
               <div className="absolute inset-x-0 bottom-0 h-[58%] bg-gradient-to-t from-[#05080d]/88 via-[#05080d]/28 to-transparent" />
