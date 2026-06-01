@@ -35,7 +35,8 @@ import {
   type CustomerListViewMode,
 } from "@/lib/customerListQuery";
 
-const PAGE_SIZE = 50;
+const DEFAULT_PAGE_SIZE = 20;
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
 type Customer = {
   id: string;
@@ -140,10 +141,11 @@ export default function CustomerList({
   const [sortBy, setSortBy] = useState<CustomerListSortBy>("name");
   const [sortDir, setSortDir] = useState<CustomerListSortDir>("asc");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
 
   useEffect(() => {
     setPage(1);
-  }, [search, statusFilter, typeFilter, sortBy, sortDir]);
+  }, [search, statusFilter, typeFilter, sortBy, sortDir, pageSize]);
 
   const queryState = {
     viewMode,
@@ -153,7 +155,7 @@ export default function CustomerList({
     sortBy,
     sortDir,
     page,
-    pageSize: PAGE_SIZE,
+    pageSize,
   };
 
   const { data, isLoading, isFetching } = useQuery<CustomerListResult<Customer>>({
@@ -187,16 +189,20 @@ export default function CustomerList({
     setSortDir(nextSortDir);
   };
 
+  const handlePageSizeChange = (value: string) => {
+    setPageSize(Number(value));
+  };
+
   const renderPaginationFooter = () => {
-    if (collapse || !pagination || pagination.totalPages <= 1) return null;
+    if (collapse || !pagination) return null;
 
     return (
-      <div className="border-t border-border/40 px-3 py-2 flex items-center justify-between">
+      <div className="border-t border-border/40 px-3 py-2 flex items-center justify-between gap-2">
         <Button
           size="sm"
           variant="ghost"
           className="h-7 px-2 text-xs"
-          disabled={!pagination.hasPreviousPage || isFetching}
+          disabled={pagination.totalPages <= 1 || !pagination.hasPreviousPage || isFetching}
           onClick={() => setPage((p) => Math.max(1, p - 1))}
         >
           <ChevronLeft className="w-3.5 h-3.5 mr-1" />
@@ -205,11 +211,23 @@ export default function CustomerList({
         <span className="text-[11px] text-muted-foreground">
           {isFetching && !isLoading ? "Updating..." : `${pagination.page} / ${pagination.totalPages}`}
         </span>
+        <Select value={String(pageSize)} onValueChange={handlePageSizeChange}>
+          <SelectTrigger className="h-7 w-[76px] text-xs">
+            <SelectValue aria-label="Customers per page" />
+          </SelectTrigger>
+          <SelectContent>
+            {PAGE_SIZE_OPTIONS.map((option) => (
+              <SelectItem key={option} value={String(option)}>
+                {option} / page
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Button
           size="sm"
           variant="ghost"
           className="h-7 px-2 text-xs"
-          disabled={!pagination.hasNextPage || isFetching}
+          disabled={pagination.totalPages <= 1 || !pagination.hasNextPage || isFetching}
           onClick={() => setPage((p) => p + 1)}
         >
           Next

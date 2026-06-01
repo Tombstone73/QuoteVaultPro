@@ -18,7 +18,13 @@ import request from "supertest";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { tenantContext, getRequestOrganizationId } from "../tenantContext";
-import { getCustomersPaged, getContactsPaged } from "../storage";
+import {
+  createCustomerContactForOrganization,
+  getCustomersPaged,
+  getContactsPaged,
+  updateCustomerContactForOrganization,
+} from "../storage";
+import { insertCustomerContactSchema, updateCustomerContactSchema } from "@shared/schema";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -36,6 +42,10 @@ function custId(n: number) {
 /** Build a deterministic contact ID */
 function ctctId(n: number) {
   return `ctct_pg_${suffix}_${String(n).padStart(3, "0")}`;
+}
+
+function sortedCtctId(label: string) {
+  return `ctct_sort_${suffix}_${label}`;
 }
 
 function sortedCustId(label: string) {
@@ -139,7 +149,13 @@ function createTestApp() {
       const page = req.query.page ? parseInt(req.query.page as string) : 1;
       const pageSize = Math.min(200, req.query.pageSize ? parseInt(req.query.pageSize as string) : 50);
 
-      const result = await getContactsPaged(organizationId, { search, page, pageSize });
+      const result = await getContactsPaged(organizationId, {
+        search,
+        page,
+        pageSize,
+        sortBy: req.query.sortBy as string | undefined,
+        sortDir: req.query.sortDir as string | undefined,
+      });
       return res.json({
         contacts: result.items,
         total: result.total,
@@ -151,6 +167,35 @@ function createTestApp() {
       });
     } catch (e: any) {
       return res.status(500).json({ message: e?.message });
+    }
+  });
+
+  app.post("/api/customers/:customerId/contacts", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing org" });
+      const parsed = insertCustomerContactSchema.parse({ ...req.body, customerId: req.params.customerId });
+      const { customerId, ...contactData } = parsed;
+      const contact = await createCustomerContactForOrganization(organizationId, customerId, contactData);
+      return res.json(contact);
+    } catch (e: any) {
+      if (e?.name === "ZodError") return res.status(400).json({ success: false, message: e.message });
+      if (e?.message === "Customer not found") return res.status(404).json({ success: false, message: e.message });
+      return res.status(500).json({ success: false, message: e?.message });
+    }
+  });
+
+  app.patch("/api/customer-contacts/:id", isAuthenticated, tenantContext, async (req: any, res: Response) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing org" });
+      const parsed = updateCustomerContactSchema.parse(req.body);
+      const contact = await updateCustomerContactForOrganization(organizationId, req.params.id, parsed);
+      return res.json(contact);
+    } catch (e: any) {
+      if (e?.name === "ZodError") return res.status(400).json({ success: false, message: e.message });
+      if (e?.message === "Customer not found" || e?.message === "Customer contact not found") return res.status(404).json({ success: false, message: e.message });
+      return res.status(500).json({ success: false, message: e?.message });
     }
   });
 
@@ -232,6 +277,27 @@ beforeAll(async () => {
     values (${ctctId(200)}, ${custId(101)}, ${"Beta"}, ${"Contact"}, ${`beta@example.com`}, ${true})
     on conflict (id) do nothing
   `);
+
+  const sortedContacts = [
+    { id: sortedCtctId("zulu"), customerId: custId(1), firstName: "SortContact", lastName: "Zulu" },
+    { id: sortedCtctId("alpha"), customerId: custId(2), firstName: "SortContact", lastName: "Alpha" },
+    { id: sortedCtctId("charlie"), customerId: custId(3), firstName: "SortContact", lastName: "Charlie" },
+    { id: sortedCtctId("bravo"), customerId: custId(4), firstName: "SortContact", lastName: "Bravo" },
+  ];
+
+  for (const contact of sortedContacts) {
+    await db.execute(sql`
+      insert into customer_contacts (id, customer_id, first_name, last_name, email, is_primary)
+      values (${contact.id}, ${contact.customerId}, ${contact.firstName}, ${contact.lastName}, ${`${contact.lastName.toLowerCase()}.${suffix}@example.com`}, ${false})
+      on conflict (id) do nothing
+    `);
+  }
+
+  await db.execute(sql`
+    insert into customer_contacts (id, customer_id, first_name, last_name, email, is_primary)
+    values (${ctctId(300)}, ${custId(1)}, ${"Move"}, ${"Company"}, ${`move.company.${suffix}@example.com`}, ${false})
+    on conflict (id) do nothing
+  `);
 });
 
 afterAll(async () => {
@@ -244,7 +310,15 @@ afterAll(async () => {
     sortedCustId("charlie"),
     sortedCustId("bravo"),
   ];
-  const allCtctIds = [...Array.from({length: 7}, (_, i) => ctctId(i + 1)), ctctId(200)];
+  const allCtctIds = [
+    ...Array.from({length: 7}, (_, i) => ctctId(i + 1)),
+    ctctId(200),
+    ctctId(300),
+    sortedCtctId("zulu"),
+    sortedCtctId("alpha"),
+    sortedCtctId("charlie"),
+    sortedCtctId("bravo"),
+  ];
 
   for (const id of allCtctIds) {
     await db.execute(sql`delete from customer_contacts where id = ${id}`);
@@ -553,6 +627,83 @@ describe("GET /api/contacts — paginated envelope with correct total", () => {
     expect(res.body.hasNextPage).toBe(false);
     expect(res.body.hasPreviousPage).toBe(false);
     expect(res.body.totalPages).toBeGreaterThanOrEqual(1);
+  });
+
+  test("sortBy=lastName asc is applied before pagination across pages", async () => {
+    const resP1 = await request(app)
+      .get(`/api/contacts?page=1&pageSize=2&search=SortContact&sortBy=lastName&sortDir=asc`)
+      .set(authHeaders)
+      .expect(200);
+    const resP2 = await request(app)
+      .get(`/api/contacts?page=2&pageSize=2&search=SortContact&sortBy=lastName&sortDir=asc`)
+      .set(authHeaders)
+      .expect(200);
+
+    expect(resP1.body.contacts.map((c: any) => c.lastName)).toEqual(["Alpha", "Bravo"]);
+    expect(resP2.body.contacts.map((c: any) => c.lastName)).toEqual(["Charlie", "Zulu"]);
+  });
+
+  test("invalid contact sortBy falls back safely to default last-name sort", async () => {
+    const res = await request(app)
+      .get(`/api/contacts?page=1&pageSize=4&search=SortContact&sortBy=last_name;drop table customer_contacts&sortDir=asc`)
+      .set(authHeaders)
+      .expect(200);
+
+    expect(res.body.contacts.map((c: any) => c.lastName)).toEqual(["Alpha", "Bravo", "Charlie", "Zulu"]);
+  });
+});
+
+describe("contact create and company changes", () => {
+  test("creates a contact attached to an existing company in the tenant", async () => {
+    const res = await request(app)
+      .post(`/api/customers/${custId(3)}/contacts`)
+      .set(authHeaders)
+      .send({
+        firstName: "Created",
+        lastName: "Contact",
+        email: `created.contact.${suffix}@example.com`,
+        isPrimary: false,
+      })
+      .expect(200);
+
+    expect(res.body.customerId).toBe(custId(3));
+    expect(res.body.firstName).toBe("Created");
+
+    await db.execute(sql`delete from customer_contacts where id = ${res.body.id}`);
+  });
+
+  test("does not create an orphaned contact for a missing company", async () => {
+    const res = await request(app)
+      .post(`/api/customers/missing_customer_${suffix}/contacts`)
+      .set(authHeaders)
+      .send({
+        firstName: "Orphan",
+        lastName: "Blocked",
+      })
+      .expect(404);
+
+    expect(res.body).toMatchObject({ success: false, message: "Customer not found" });
+  });
+
+  test("changes a contact primary company only to another company in the same tenant", async () => {
+    const res = await request(app)
+      .patch(`/api/customer-contacts/${ctctId(300)}`)
+      .set(authHeaders)
+      .send({ customerId: custId(2) })
+      .expect(200);
+
+    expect(res.body.id).toBe(ctctId(300));
+    expect(res.body.customerId).toBe(custId(2));
+  });
+
+  test("blocks changing a contact to a company in another tenant", async () => {
+    const res = await request(app)
+      .patch(`/api/customer-contacts/${ctctId(300)}`)
+      .set(authHeaders)
+      .send({ customerId: custId(101) })
+      .expect(404);
+
+    expect(res.body).toMatchObject({ success: false, message: "Customer not found" });
   });
 });
 

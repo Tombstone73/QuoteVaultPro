@@ -6,20 +6,24 @@
  * This centralizes contact management with search by name, email, or company.
  */
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { ROUTES } from "@/config/routes";
-import { useContacts, useDeleteContact, useUpdateContact, type ContactWithStats } from "@/hooks/useContacts";
+import { useContacts, useCreateContact, useDeleteContact, useUpdateContact, type ContactWithStats } from "@/hooks/useContacts";
 import { useAuth } from "@/hooks/useAuth";
 import { useListViewSettings } from "@/hooks/useListViewSettings";
 import { formatPhoneForDisplay, phoneToTelHref, cn } from "@/lib/utils";
+import { normalizeCustomerListResponse } from "@/lib/customerListQuery";
+import type { ContactListSortBy, ContactListSortDir } from "@/lib/contactListQuery";
 import { ListViewSettings } from "@/components/list/ListViewSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Search, Mail, Phone, Building2, MoreHorizontal, Pencil, Trash2, Eye, ArrowUp, ArrowDown, ArrowUpDown, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, Mail, Phone, Building2, MoreHorizontal, Pencil, Trash2, Eye, ArrowUp, ArrowDown, ArrowUpDown, ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import { ContactFlagPill } from "@/components/ContactFlagPill";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -69,20 +73,22 @@ export default function ContactsPage() {
   const { onSmartBack } = useSmartBack();
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [creatingContact, setCreatingContact] = useState(false);
   const [editingContact, setEditingContact] = useState<ContactWithStats | null>(null);
   const [deletingContact, setDeletingContact] = useState<ContactWithStats | null>(null);
-  const [sortKey, setSortKey] = useState<string | null>(null);
-  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [sortKey, setSortKey] = useState<ContactListSortBy>("lastName");
+  const [sortDirection, setSortDirection] = useState<ContactListSortDir>("asc");
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 50;
 
-  // Reset to page 1 when the search term changes
+  // Reset to page 1 when the backend query shape changes
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch]);
+  }, [debouncedSearch, sortKey, sortDirection]);
 
   const deleteContactMutation = useDeleteContact();
   const updateContactMutation = useUpdateContact();
+  const createContactMutation = useCreateContact();
   
   const {
     columns,
@@ -106,54 +112,9 @@ export default function ContactsPage() {
     search: debouncedSearch || undefined,
     page,
     pageSize: PAGE_SIZE,
+    sortBy: sortKey,
+    sortDir: sortDirection,
   });
-
-  const sortedContacts = useMemo(() => {
-    const contacts = data?.contacts ?? [];
-    return [...contacts].sort((a, b) => {
-      // Default: primary contacts first, then name ascending
-      if (sortKey === null) {
-        if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
-        const nameA = `${a.firstName ?? ""} ${a.lastName ?? ""}`.toLowerCase().trim();
-        const nameB = `${b.firstName ?? ""} ${b.lastName ?? ""}`.toLowerCase().trim();
-        return nameA < nameB ? -1 : nameA > nameB ? 1 : 0;
-      }
-      const dir = sortDirection === "asc" ? 1 : -1;
-      switch (sortKey) {
-        case "name": {
-          const nameA = `${a.firstName ?? ""} ${a.lastName ?? ""}`.toLowerCase().trim();
-          const nameB = `${b.firstName ?? ""} ${b.lastName ?? ""}`.toLowerCase().trim();
-          return (nameA < nameB ? -1 : nameA > nameB ? 1 : 0) * dir;
-        }
-        case "company": {
-          const compA = (a.companyName ?? "").toLowerCase();
-          const compB = (b.companyName ?? "").toLowerCase();
-          return (compA < compB ? -1 : compA > compB ? 1 : 0) * dir;
-        }
-        case "email": {
-          const emailA = (a.email ?? "").toLowerCase();
-          const emailB = (b.email ?? "").toLowerCase();
-          return (emailA < emailB ? -1 : emailA > emailB ? 1 : 0) * dir;
-        }
-        case "phone": {
-          const phoneA = (a.phone ?? "").toLowerCase();
-          const phoneB = (b.phone ?? "").toLowerCase();
-          return (phoneA < phoneB ? -1 : phoneA > phoneB ? 1 : 0) * dir;
-        }
-        case "orders":
-          return ((a.ordersCount ?? 0) - (b.ordersCount ?? 0)) * dir;
-        case "quotes":
-          return ((a.quotesCount ?? 0) - (b.quotesCount ?? 0)) * dir;
-        case "lastActivity": {
-          const dateA = a.lastActivityAt ? new Date(a.lastActivityAt).getTime() : 0;
-          const dateB = b.lastActivityAt ? new Date(b.lastActivityAt).getTime() : 0;
-          return (dateA - dateB) * dir;
-        }
-        default:
-          return 0;
-      }
-    });
-  }, [data?.contacts, sortKey, sortDirection]);
 
   // Role check - only internal users can access
   if (user?.role === "customer") {
@@ -197,11 +158,33 @@ export default function ContactsPage() {
     navigate(`/contacts/${contactId}`);
   };
 
+  const contactSortKeyForColumn = (key: string): ContactListSortBy => {
+    switch (key) {
+      case "name":
+        return "lastName";
+      case "company":
+        return "company";
+      case "email":
+        return "email";
+      case "phone":
+        return "phone";
+      case "orders":
+        return "orders";
+      case "quotes":
+        return "quotes";
+      case "lastActivity":
+        return "lastActivity";
+      default:
+        return "lastName";
+    }
+  };
+
   const handleSort = (key: string) => {
-    if (sortKey === key) {
+    const nextSortKey = contactSortKeyForColumn(key);
+    if (sortKey === nextSortKey) {
       setSortDirection(prev => prev === "asc" ? "desc" : "asc");
     } else {
-      setSortKey(key);
+      setSortKey(nextSortKey);
       setSortDirection("asc");
     }
   };
@@ -378,6 +361,14 @@ export default function ContactsPage() {
             onReorder={setColumnOrder}
             onWidthChange={setColumnWidth}
           />
+          <Button
+            size="sm"
+            onClick={() => setCreatingContact(true)}
+            className="bg-titan-accent hover:bg-titan-accent-hover text-white rounded-titan-md"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Add Contact
+          </Button>
         </div>
 
         {/* Contacts Table */}
@@ -405,7 +396,7 @@ export default function ContactsPage() {
                   <TableRow className="bg-titan-bg-card-elevated border-b border-titan-border-subtle">
                     {visibleColumns.map((col) => {
                       const isSortable = col.id !== "actions";
-                      const isActive = sortKey === col.id;
+                      const isActive = isSortable && sortKey === contactSortKeyForColumn(col.id);
                       const isCentered = col.id === "orders" || col.id === "quotes";
                       const isRight = col.id === "actions";
                       return (
@@ -435,7 +426,7 @@ export default function ContactsPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {sortedContacts.map((contact) => (
+                  {data.contacts.map((contact) => (
                     <TableRow
                       key={contact.id}
                       className="cursor-pointer hover:bg-titan-bg-card-elevated/50 border-b border-titan-border-subtle"
@@ -491,6 +482,18 @@ export default function ContactsPage() {
         )}
       </ContentLayout>
 
+      {/* Add Contact Dialog */}
+      {creatingContact && (
+        <EditContactDialog
+          open={creatingContact}
+          onOpenChange={(open) => !open && setCreatingContact(false)}
+          onSave={async (data) => {
+            await createContactMutation.mutateAsync(data);
+            setCreatingContact(false);
+          }}
+        />
+      )}
+
       {/* Edit Contact Dialog */}
       {editingContact && (
         <EditContactDialog
@@ -534,32 +537,49 @@ export default function ContactsPage() {
 
 // Edit Contact Dialog Component
 interface EditContactDialogProps {
-  contact: ContactWithStats;
+  contact?: ContactWithStats;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSave: (data: any) => Promise<void>;
 }
 
 function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactDialogProps) {
+  type CustomerOption = { id: string; companyName: string };
+  const { data: customerOptions = [], isLoading: customersLoading } = useQuery<CustomerOption[]>({
+    queryKey: ["/api/customers", "contact-dialog-options"],
+    queryFn: async () => {
+      const response = await fetch("/api/customers?page=1&pageSize=100&sortBy=name&sortDir=asc", {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Failed to load customers");
+      const normalized = normalizeCustomerListResponse<CustomerOption>(await response.json());
+      return normalized.customers;
+    },
+    enabled: open,
+  });
+
   const [formData, setFormData] = useState({
-    firstName: contact.firstName,
-    lastName: contact.lastName,
-    title: contact.title || "",
-    email: contact.email || "",
-    phone: contact.phone || "",
-    mobile: contact.mobile || "",
-    isPrimary: contact.isPrimary,
-    street1: contact.street1 || "",
-    street2: contact.street2 || "",
-    city: contact.city || "",
-    state: contact.state || "",
-    postalCode: contact.postalCode || "",
-    country: contact.country || "",
+    customerId: contact?.customerId || "",
+    firstName: contact?.firstName || "",
+    lastName: contact?.lastName || "",
+    title: contact?.title || "",
+    email: contact?.email || "",
+    phone: contact?.phone || "",
+    mobile: contact?.mobile || "",
+    isPrimary: contact?.isPrimary ?? false,
+    street1: contact?.street1 || "",
+    street2: contact?.street2 || "",
+    city: contact?.city || "",
+    state: contact?.state || "",
+    postalCode: contact?.postalCode || "",
+    country: contact?.country || "",
   });
   const [isSaving, setIsSaving] = useState(false);
+  const isEditing = Boolean(contact);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!formData.customerId) return;
     setIsSaving(true);
     try {
       await onSave(formData);
@@ -572,12 +592,34 @@ function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactD
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Edit Contact</DialogTitle>
+          <DialogTitle>{isEditing ? "Edit Contact" : "Add Contact"}</DialogTitle>
           <DialogDescription>
-            Update contact information for {contact.firstName} {contact.lastName}
+            {isEditing
+              ? `Update contact information for ${contact?.firstName} ${contact?.lastName}`
+              : "Create a contact and attach it to a customer."}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="space-y-2">
+            <Label htmlFor="customerId">Company *</Label>
+            <Select
+              value={formData.customerId}
+              onValueChange={(customerId) => setFormData({ ...formData, customerId })}
+              disabled={customersLoading}
+            >
+              <SelectTrigger id="customerId">
+                <SelectValue placeholder={customersLoading ? "Loading companies..." : "Select company"} />
+              </SelectTrigger>
+              <SelectContent>
+                {customerOptions.map((customer) => (
+                  <SelectItem key={customer.id} value={customer.id}>
+                    {customer.companyName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
           {/* Personal Information */}
           <div className="space-y-4">
             <h4 className="font-medium">Personal Information</h4>
@@ -713,8 +755,8 @@ function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactD
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>
               Cancel
             </Button>
-            <Button type="submit" disabled={isSaving}>
-              {isSaving ? "Saving..." : "Save Changes"}
+            <Button type="submit" disabled={isSaving || !formData.customerId}>
+              {isSaving ? "Saving..." : isEditing ? "Save Changes" : "Create Contact"}
             </Button>
           </DialogFooter>
         </form>
