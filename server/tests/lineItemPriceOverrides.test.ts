@@ -512,6 +512,40 @@ describe("line item price override effective pricing", () => {
     }));
   });
 
+  test("quote line item PATCH preserves prepared specsJson override metadata", () => {
+    const patch = buildQuoteLineItemPriceOverridePersistencePatch({
+      existingLineItem: {
+        quantity: 3,
+        linePrice: "8.88",
+        pbv2SnapshotJson: { pricing: { totalCents: 888 } },
+        specsJson: {},
+        priceBreakdown: { basePrice: 8.88, optionsPrice: 0, total: 8.88 },
+      },
+      incomingUpdate: {
+        specsJson: {
+          priceOverride: {
+            schemaVersion: 1,
+            mode: "override_total_after_margin",
+            valueCents: 4000,
+            baseCalculatedTotalCents: 888,
+            effectiveTotalCents: 4000,
+          },
+        },
+        linePrice: 40,
+        formulaLinePrice: 8.88,
+        overridePriceCents: 4000,
+      },
+    });
+
+    expect(patch.linePrice).toBe(40);
+    expect(patch.overridePriceCents).toBe(4000);
+    expect((patch.specsJson as any).priceOverride).toEqual(expect.objectContaining({
+      mode: "override_total_after_margin",
+      valueCents: 4000,
+      effectiveTotalCents: 4000,
+    }));
+  });
+
   test("quote line item PATCH revert clears metadata and restores calculated line total", () => {
     const patch = buildQuoteLineItemPriceOverridePersistencePatch({
       existingLineItem: {
