@@ -36,6 +36,7 @@ import {
 import {
   getQuoteLineItemOverrideValueCents,
   getQuoteLineItemPriceOverrideMode,
+  mergeQuoteLineItemPriceOverrideIntoSpecsJson,
   resolveQuoteLineItemOverrideUiState,
 } from "./quoteLineItemPriceOverrideUiState";
 
@@ -595,6 +596,13 @@ export function LineItemsSection({
       : (expandedItem.linePrice || 0);
     if (overrideMode) {
       setPriceOverrideModeByKey((prev) => ({ ...prev, [itemKey]: overrideMode }));
+    } else {
+      setPriceOverrideModeByKey((prev) => {
+        if (!prev[itemKey]) return prev;
+        const next = { ...prev };
+        delete next[itemKey];
+        return next;
+      });
     }
     setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: displayPrice.toFixed(2) }));
     setEditingPriceItemKey(null);
@@ -757,7 +765,9 @@ export function LineItemsSection({
           })
         : null;
     const effectiveLinePrice = overridePatch ? overridePatch.pricing.effectiveTotalCents / 100 : formulaPrice;
+    const nextSpecsJson = mergeQuoteLineItemPriceOverrideIntoSpecsJson(item.specsJson, overridePatch?.priceOverride ?? null);
     const pricingPatch: Partial<QuoteLineItemDraft> = {
+      specsJson: nextSpecsJson,
       formulaLinePrice: formulaPrice,
       linePrice: effectiveLinePrice,
       priceOverride: overridePatch?.priceOverride ?? null,

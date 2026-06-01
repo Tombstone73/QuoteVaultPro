@@ -6,6 +6,25 @@ import {
 
 import type { QuoteLineItemDraft } from "../types";
 
+export function mergeQuoteLineItemPriceOverrideIntoSpecsJson(
+  specsJson: QuoteLineItemDraft["specsJson"] | null | undefined,
+  priceOverride: unknown,
+): QuoteLineItemDraft["specsJson"] {
+  const base = specsJson && typeof specsJson === "object" && !Array.isArray(specsJson)
+    ? { ...(specsJson as Record<string, unknown>) }
+    : {};
+
+  if (priceOverride && typeof priceOverride === "object" && !Array.isArray(priceOverride)) {
+    return {
+      ...base,
+      priceOverride,
+    };
+  }
+
+  const { priceOverride: _removedPriceOverride, priceOverrideWarnings: _removedWarnings, ...rest } = base;
+  return rest;
+}
+
 export function getQuoteLineItemPriceOverrideMode(item: QuoteLineItemDraft): LineItemPriceOverrideMode | null {
   const specsOverride = (item.specsJson as any)?.priceOverride;
   const mode =
