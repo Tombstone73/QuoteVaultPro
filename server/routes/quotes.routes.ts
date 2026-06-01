@@ -72,7 +72,10 @@ import {
   normalizeQuoteCreateLineItem,
   QuoteCreateLineItemValidationError,
 } from "../lib/quoteCreateLineItemNormalizer";
-import { haveLineItemPricingDriversChanged } from "../lib/lineItemPricingPersistence";
+import {
+  buildQuoteLineItemPriceOverridePersistencePatch,
+  haveLineItemPricingDriversChanged,
+} from "../lib/lineItemPricingPersistence";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -93,20 +96,14 @@ function hasExplicitPriceOverrideMetadata(value: any): boolean {
   return hasMode && hasValue;
 }
 
-function buildExplicitPriceOverrideMetadata(value: any): any | null {
-  if (!hasExplicitPriceOverrideMetadata(value)) return null;
-  const override = value?.priceOverride;
-  const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
-  const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? value?.priceOverrideMode;
-  const valueCents = overrideRecord?.valueCents ?? overrideRecord?.priceOverrideValueCents ?? value?.priceOverrideValueCents;
-  const valuePercent = overrideRecord?.valuePercent ?? overrideRecord?.priceOverrideValuePercent ?? value?.priceOverrideValuePercent ?? null;
-
-  return {
-    ...(overrideRecord ?? {}),
-    mode,
-    valueCents,
-    valuePercent,
-  };
+function hasQuoteLineItemOverridePatch(value: any): boolean {
+  return (
+    value?.priceOverride !== undefined ||
+    value?.priceOverrideMode !== undefined ||
+    value?.priceOverrideValueCents !== undefined ||
+    value?.priceOverrideValuePercent !== undefined ||
+    value?.overridePriceCents !== undefined
+  );
 }
 
 async function refreshQuoteAggregateTotals(organizationId: string, quoteId: string) {
@@ -2020,10 +2017,21 @@ export function registerQuoteRoutes(
   });
 
   app.patch("/api/quotes/:id/line-items/:lineItemId", isAuthenticated, tenantContext, async (req: any, res) => {
+    const patchDiagnostics: Record<string, unknown> = {
+      quoteId: req.params?.id,
+      lineItemId: req.params?.lineItemId,
+      hasPriceOverride: hasQuoteLineItemOverridePatch(req.body),
+      priceOverrideMode: req.body?.priceOverrideMode ?? req.body?.priceOverride?.mode ?? null,
+      priceOverrideValueCents: req.body?.priceOverrideValueCents ?? req.body?.priceOverride?.valueCents ?? null,
+      overridePriceCents: req.body?.overridePriceCents ?? null,
+      pricingDriversChanged: null,
+    };
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      patchDiagnostics.organizationId = organizationId;
       const userId = getUserId(req.user);
+      patchDiagnostics.userId = userId ?? null;
       const userRole = req.user.role || 'customer';
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id, lineItemId } = req.params;
@@ -2061,7 +2069,10 @@ export function registerQuoteRoutes(
             pbv2ExplicitSelections: lineItem.optionSelectionsJson?.selected,
           })
         : false;
+      patchDiagnostics.pricingDriversChanged = pricingFieldsChanged;
+      patchDiagnostics.pricingFieldPresent = pricingFieldPresent;
 
+      let repricedBaseTotalCents: number | null = null;
       if (pricingFieldsChanged) {
         // Server-authoritative repricing when pricing inputs change
         const { priceLineItem } = await import("../services/pricing/PricingService");
@@ -2085,6 +2096,7 @@ export function registerQuoteRoutes(
         updateData.selectedOptions = pricingResult.pbv2SnapshotJson.selectedOptions || [];
         updateData.pricedAt = new Date();
         updateData.linePrice = pricingResult.lineTotalCents / 100;
+        repricedBaseTotalCents = pricingResult.lineTotalCents;
         updateData.priceBreakdown = {
           basePrice: pricingResult.breakdown.baseCents / 100,
           optionsPrice: pricingResult.breakdown.optionsCents / 100,
@@ -2125,11 +2137,56 @@ export function registerQuoteRoutes(
         (lineItem as any).overridePriceCents === null;
       const hasExplicitPriceOverride = hasExplicitPriceOverrideMetadata(lineItem);
       if (clearsPriceOverride) {
-        updateData.priceOverride = null;
+        const overridePatch = buildQuoteLineItemPriceOverridePersistencePatch({
+          existingLineItem: {
+            ...currentLineItem,
+            ...(pricingFieldsChanged
+              ? {
+                  linePrice: repricedBaseTotalCents !== null ? repricedBaseTotalCents / 100 : currentLineItem.linePrice,
+                  priceBreakdown: updateData.priceBreakdown ?? currentLineItem.priceBreakdown,
+                  pbv2SnapshotJson: updateData.pbv2SnapshotJson ?? currentLineItem.pbv2SnapshotJson,
+                }
+              : {}),
+          },
+          incomingUpdate: lineItem,
+          baseCalculatedTotalCents: repricedBaseTotalCents,
+        });
+        updateData.specsJson = overridePatch.specsJson;
+        updateData.linePrice = overridePatch.linePrice;
+        updateData.formulaLinePrice = overridePatch.formulaLinePrice;
+        updateData.priceBreakdown = {
+          ...(updateData.priceBreakdown ?? overridePatch.priceBreakdown),
+          total: overridePatch.linePrice,
+        };
         updateData.overridePriceCents = null;
+        updateData.overrideAt = null;
+        updateData.overrideByUserId = null;
       } else if (hasExplicitPriceOverride) {
-        if ((lineItem as any).overridePriceCents !== undefined) updateData.overridePriceCents = (lineItem as any).overridePriceCents;
-        updateData.priceOverride = buildExplicitPriceOverrideMetadata(lineItem);
+        delete updateData.priceOverride;
+        const overridePatch = buildQuoteLineItemPriceOverridePersistencePatch({
+          existingLineItem: {
+            ...currentLineItem,
+            ...(pricingFieldsChanged
+              ? {
+                  linePrice: repricedBaseTotalCents !== null ? repricedBaseTotalCents / 100 : currentLineItem.linePrice,
+                  priceBreakdown: updateData.priceBreakdown ?? currentLineItem.priceBreakdown,
+                  pbv2SnapshotJson: updateData.pbv2SnapshotJson ?? currentLineItem.pbv2SnapshotJson,
+                }
+              : {}),
+          },
+          incomingUpdate: lineItem,
+          baseCalculatedTotalCents: repricedBaseTotalCents,
+        });
+        updateData.specsJson = overridePatch.specsJson;
+        updateData.linePrice = overridePatch.linePrice;
+        updateData.formulaLinePrice = overridePatch.formulaLinePrice;
+        updateData.priceBreakdown = {
+          ...(updateData.priceBreakdown ?? overridePatch.priceBreakdown),
+          total: overridePatch.linePrice,
+        };
+        updateData.overridePriceCents = overridePatch.overridePriceCents;
+        updateData.overrideAt = (lineItem as any).overrideAt !== undefined ? (lineItem as any).overrideAt : new Date();
+        updateData.overrideByUserId = (lineItem as any).overrideByUserId !== undefined ? (lineItem as any).overrideByUserId : userId ?? null;
       }
       if ((lineItem as any).overrideReason !== undefined) updateData.overrideReason = (lineItem as any).overrideReason;
       if ((lineItem as any).overrideAt !== undefined) updateData.overrideAt = (lineItem as any).overrideAt;
@@ -2142,7 +2199,13 @@ export function registerQuoteRoutes(
       await refreshQuoteAggregateTotals(organizationId, id);
       res.json(updatedLineItem);
     } catch (error) {
-      console.error("Error updating line item:", error);
+      console.error("[QUOTE_LINE_ITEM_PATCH_ERROR]", {
+        ...patchDiagnostics,
+        errorName: (error as any)?.name,
+        errorCode: (error as any)?.code,
+        errorMessage: (error as Error)?.message,
+        errorStack: (error as Error)?.stack,
+      });
       if ((error as any)?.code === "PBV2_FORMULA_ERROR") {
         return res.status(422).json({
           message: (error as any).message,

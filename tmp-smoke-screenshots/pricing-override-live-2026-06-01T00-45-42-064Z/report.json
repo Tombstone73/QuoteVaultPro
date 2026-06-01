@@ -1,0 +1,391 @@
+{
+  "runStamp": "2026-06-01T00-45-42-064Z",
+  "baseUrl": "https://dev.printershero.com",
+  "quoteId": "79bb5418-734d-4175-b05b-06834a7b7be7",
+  "quoteNumber": "910319",
+  "sections": {
+    "beforeAttachment": {
+      "state": {
+        "url": "https://dev.printershero.com/quotes/new",
+        "mainText": "Back\nNew Quote\nDraft\nEdit Mode\n55 Twin Lane\nSporting_goods@intuit.com\n(650) 555-0987\nKirby Freeman ★\nJob Label\nDue date\nFlags\n1 item\nAVERY Test 1\nDraft\n1\" × 1\"\n·\nQty 3\n$8.88\n$2.96/ea\nWidth\n×\nHeight\nQty\nTotal\n$8.88\n—\nPrice Override\nCalculated $8.88 · Effective $8.88\nNo override\nTotal override\nUnit override\nTotal before margin\nUnit before margin\nDiscount\nAdd value\nBase unit $2.96 · Qty 3\nGthings\nSelect\nArtwork\nArtwork\nUpload Artwork\nDescription (optional)\nProduction Notes (internal)\nStaff only\nRouting Intent\nStaff only\nRequires Design\nRequires Prepress\nProof Approval\nSave Item\nDuplicate Item\nRemove Item\nUnsaved\nAdd Product\nSubtotal\n$8.88\nDiscount\nTax (0.00%)\nOverride\n$0.00\nGrand Total\n$8.88\nSave Changes\nSave & Back\nEmail Quote\nDiscard\nPreview\nFulfillment\nPickup\nPickup notes\nInternal Notes\nAdd internal production notes before converting (optional)\nTimeline\nShow",
+        "lineButtonText": "AVERY Test 1\nDraft\n1\" × 1\"\n·\nQty 3\n$8.88\n$2.96/ea",
+        "rowTotalText": "$8.88",
+        "rowTotal": 8.88,
+        "unitText": "$2.96/ea",
+        "unit": 2.96,
+        "subtotalText": "$8.88",
+        "subtotal": 8.88,
+        "grandText": "$8.88",
+        "grand": 8.88,
+        "overrideLabel": "No override",
+        "hasTotalOverrideText": true,
+        "fakeOverrideBadge": true
+      },
+      "pass": true
+    },
+    "afterAttachment": {
+      "state": {
+        "url": "https://dev.printershero.com/quotes/new",
+        "mainText": "Back\nQuote #910319\nDraft\nEdit Mode\nDuplicate\n55 Twin Lane\nSporting_goods@intuit.com\n(650) 555-0987\nKirby Freeman ★\nJob Label\nDue date\nFlags\n1 item\nAVERY Test 1\n1\" × 1\"\n·\nQty 3\n$8.88\n$2.96/ea\nWidth\n×\nHeight\nQty\nTotal\n$8.88\n—\nPrice Override\nCalculated $8.88 · Effective $8.88\nNo override\nTotal override\nUnit override\nTotal before margin\nUnit before margin\nDiscount\nAdd value\nBase unit $2.96 · Qty 3\nGthings\nSelect\nArtwork\nArtwork\n1\nDescription (optional)\nProduction Notes (internal)\nStaff only\nRouting Intent\nStaff only\nRequires Design\nRequires Prepress\nProof Approval\nDuplicate Item\nRemove Item\nAdd Product\nSubtotal\n$8.88\nDiscount\nTax (0.00%)\nOverride\n$0.00\nGrand Total\n$8.88\nSave Changes\nSave & Back\nEmail Quote\nDiscard\nPreview\nFulfillment\nPickup\nPickup notes\nAttachments\nAdd POs, instructions, artwork files, etc.\nUpload\nNo attachments\nInternal Notes\nAdd internal production notes before converting (optional)\nTimeline\nShow",
+        "lineButtonText": "AVERY Test 1\n1\" × 1\"\n·\nQty 3\n$8.88\n$2.96/ea",
+        "rowTotalText": "$8.88",
+        "rowTotal": 8.88,
+        "unitText": "$2.96/ea",
+        "unit": 2.96,
+        "subtotalText": "$8.88",
+        "subtotal": 8.88,
+        "grandText": "$8.88",
+        "grand": 8.88,
+        "overrideLabel": "No override",
+        "hasTotalOverrideText": true,
+        "fakeOverrideBadge": true
+      },
+      "pass": true
+    },
+    "saveReloadNoOverride": {
+      "state": {
+        "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7",
+        "mainText": "Back\nQuote #910319\nDraft\nEdit Mode\nDuplicate\n55 Twin Lane\nSporting_goods@intuit.com\n(650) 555-0987\nKirby Freeman\nSporting_goods@intuit.com\n(650) 555-0987\nJob Label\nPricing smoke 2026-06-01T00-45-42-064Z\nDue date\n—\nFlags\n—\n1 item\nAVERY Test 1\n1\" × 1\"\n·\nQty 3\nchoice_1\n$8.88\n$2.96/ea\nWidth\n×\nHeight\nQty\nTotal\n$8.88\n—\nPrice Override\nCalculated $8.88 · Effective $8.88\nNo override\nTotal override\nUnit override\nTotal before margin\nUnit before margin\nDiscount\nAdd value\nBase unit $2.96 · Qty 3\nGthings\nSelect\nArtwork\nArtwork\n1\nUpload Artwork\nimage_1763343234372.png\nDescription (optional)\nProduction Notes (internal)\nStaff only\nRouting Intent\nStaff only\nRequires Design\nRequires Prepress\nProof Approval\nSubtotal\n$8.88\nDiscount\n—\nTax (0.00%)\n$0.00\nGrand Total\n$8.88\nEmail Quote\nPreview\nConvert to Order\nFulfillment\nPickup\nPickup notes\nAttachments\nAdd POs, instructions, artwork files, etc.\nUpload\nNo attachments\nInternal Notes\nTimeline\nShow",
+        "lineButtonText": "AVERY Test 1\n1\" × 1\"\n·\nQty 3\nchoice_1\n$8.88\n$2.96/ea",
+        "rowTotalText": "$8.88",
+        "rowTotal": 8.88,
+        "unitText": "$2.96/ea",
+        "unit": 2.96,
+        "subtotalText": "$8.88",
+        "subtotal": 8.88,
+        "grandText": "$8.88",
+        "grand": 8.88,
+        "overrideLabel": "No override",
+        "hasTotalOverrideText": true,
+        "fakeOverrideBadge": true
+      },
+      "api": {
+        "quoteId": "79bb5418-734d-4175-b05b-06834a7b7be7",
+        "quoteNumber": 910319,
+        "lineItemId": "5b463630-5af4-44ca-a3f2-4e64d8d10057",
+        "productName": "AVERY Test 1",
+        "quantity": 3,
+        "linePrice": "8.88",
+        "priceOverrideMode": null,
+        "priceOverrideValueCents": null,
+        "overridePriceCents": null,
+        "priceOverride": null
+      },
+      "pass": true
+    },
+    "unlockEdit": {
+      "state": {
+        "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7",
+        "mainText": "Back\nQuote #910319\nDraft\nEdit Mode\nDuplicate\n55 Twin Lane\nSporting_goods@intuit.com\n(650) 555-0987\nKirby Freeman ★\nJob Label\nDue date\nFlags\n1 item\nAVERY Test 1\n1\" × 1\"\n·\nQty 3\nchoice_1\n$8.88\n$2.96/ea\nWidth\n×\nHeight\nQty\nTotal\n$8.88\n—\nPrice Override\nCalculated $8.88 · Effective $8.88\nNo override\nTotal override\nUnit override\nTotal before margin\nUnit before margin\nDiscount\nAdd value\nBase unit $2.96 · Qty 3\nGthings\nSelect\nArtwork\nArtwork\n1\nUpload Artwork\nimage_1763343234372.png\nDescription (optional)\nProduction Notes (internal)\nStaff only\nRouting Intent\nStaff only\nRequires Design\nRequires Prepress\nProof Approval\nDuplicate Item\nRemove Item\nAdd Product\nSubtotal\n$8.88\nDiscount\nTax (0.00%)\nOverride\n$0.00\nGrand Total\n$8.88\nSave Changes\nSave & Back\nEmail Quote\nDiscard\nPreview\nFulfillment\nPickup\nPickup notes\nAttachments\nAdd POs, instructions, artwork files, etc.\nUpload\nNo attachments\nInternal Notes\nAdd internal production notes before converting (optional)\nTimeline\nShow",
+        "lineButtonText": "AVERY Test 1\n1\" × 1\"\n·\nQty 3\nchoice_1\n$8.88\n$2.96/ea",
+        "rowTotalText": "$8.88",
+        "rowTotal": 8.88,
+        "unitText": "$2.96/ea",
+        "unit": 2.96,
+        "subtotalText": "$8.88",
+        "subtotal": 8.88,
+        "grandText": "$8.88",
+        "grand": 8.88,
+        "overrideLabel": "No override",
+        "hasTotalOverrideText": true,
+        "fakeOverrideBadge": true
+      },
+      "pass": true
+    },
+    "totalOverride": {
+      "state": {
+        "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7",
+        "mainText": "Back\nQuote #910319\nDraft\nEdit Mode\nDuplicate\n55 Twin Lane\nSporting_goods@intuit.com\n(650) 555-0987\nKirby Freeman\nSporting_goods@intuit.com\n(650) 555-0987\nJob Label\nPricing smoke 2026-06-01T00-45-42-064Z\nDue date\n—\nFlags\n—\n1 item\nAVERY Test 1\n1\" × 1\"\n·\nQty 3\nchoice_1\n$8.88\n$2.96/ea\nWidth\n×\nHeight\nQty\nTotal\n$8.88\n—\nPrice Override\nCalculated $8.88 · Effective $8.88\nNo override\nTotal override\nUnit override\nTotal before margin\nUnit before margin\nDiscount\nAdd value\nBase unit $2.96 · Qty 3\nGthings\nSelect\nArtwork\nArtwork\n1\nUpload Artwork\nimage_1763343234372.png\nDescription (optional)\nProduction Notes (internal)\nStaff only\nRouting Intent\nStaff only\nRequires Design\nRequires Prepress\nProof Approval\nSubtotal\n$8.88\nDiscount\n—\nTax (0.00%)\n$0.00\nGrand Total\n$8.88\nEmail Quote\nPreview\nConvert to Order\nFulfillment\nPickup\nPickup notes\nAttachments\nAdd POs, instructions, artwork files, etc.\nUpload\nNo attachments\nInternal Notes\nTimeline\nShow",
+        "lineButtonText": "AVERY Test 1\n1\" × 1\"\n·\nQty 3\nchoice_1\n$8.88\n$2.96/ea",
+        "rowTotalText": "$8.88",
+        "rowTotal": 8.88,
+        "unitText": "$2.96/ea",
+        "unit": 2.96,
+        "subtotalText": "$8.88",
+        "subtotal": 8.88,
+        "grandText": "$8.88",
+        "grand": 8.88,
+        "overrideLabel": "No override",
+        "hasTotalOverrideText": true,
+        "fakeOverrideBadge": true
+      },
+      "api": {
+        "quoteId": "79bb5418-734d-4175-b05b-06834a7b7be7",
+        "quoteNumber": 910319,
+        "lineItemId": "5b463630-5af4-44ca-a3f2-4e64d8d10057",
+        "productName": "AVERY Test 1",
+        "quantity": 3,
+        "linePrice": "8.88",
+        "priceOverrideMode": null,
+        "priceOverrideValueCents": null,
+        "overridePriceCents": null,
+        "priceOverride": null
+      },
+      "pass": false
+    },
+    "unitOverride": {
+      "state": {
+        "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7",
+        "mainText": "Back\nQuote #910319\nDraft\nEdit Mode\nDuplicate\n55 Twin Lane\nSporting_goods@intuit.com\n(650) 555-0987\nKirby Freeman\nSporting_goods@intuit.com\n(650) 555-0987\nJob Label\nPricing smoke 2026-06-01T00-45-42-064Z\nDue date\n—\nFlags\n—\n1 item\nAVERY Test 1\n1\" × 1\"\n·\nQty 3\nchoice_1\n$8.88\n$2.96/ea\nWidth\n×\nHeight\nQty\nTotal\n$8.88\n—\nPrice Override\nCalculated $8.88 · Effective $8.88\nNo override\nTotal override\nUnit override\nTotal before margin\nUnit before margin\nDiscount\nAdd value\nBase unit $2.96 · Qty 3\nGthings\nSelect\nArtwork\nArtwork\n1\nUpload Artwork\nimage_1763343234372.png\nDescription (optional)\nProduction Notes (internal)\nStaff only\nRouting Intent\nStaff only\nRequires Design\nRequires Prepress\nProof Approval\nSubtotal\n$8.88\nDiscount\n—\nTax (0.00%)\n$0.00\nGrand Total\n$8.88\nEmail Quote\nPreview\nConvert to Order\nFulfillment\nPickup\nPickup notes\nAttachments\nAdd POs, instructions, artwork files, etc.\nUpload\nNo attachments\nInternal Notes\nTimeline\nShow",
+        "lineButtonText": "AVERY Test 1\n1\" × 1\"\n·\nQty 3\nchoice_1\n$8.88\n$2.96/ea",
+        "rowTotalText": "$8.88",
+        "rowTotal": 8.88,
+        "unitText": "$2.96/ea",
+        "unit": 2.96,
+        "subtotalText": "$8.88",
+        "subtotal": 8.88,
+        "grandText": "$8.88",
+        "grand": 8.88,
+        "overrideLabel": "No override",
+        "hasTotalOverrideText": true,
+        "fakeOverrideBadge": true
+      },
+      "api": {
+        "quoteId": "79bb5418-734d-4175-b05b-06834a7b7be7",
+        "quoteNumber": 910319,
+        "lineItemId": "5b463630-5af4-44ca-a3f2-4e64d8d10057",
+        "productName": "AVERY Test 1",
+        "quantity": 3,
+        "linePrice": "8.88",
+        "priceOverrideMode": null,
+        "priceOverrideValueCents": null,
+        "overridePriceCents": null,
+        "priceOverride": null
+      },
+      "pass": false
+    },
+    "zeroOverride": {
+      "state": {
+        "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7",
+        "mainText": "Back\nQuote #910319\nDraft\nEdit Mode\nDuplicate\n55 Twin Lane\nSporting_goods@intuit.com\n(650) 555-0987\nKirby Freeman\nSporting_goods@intuit.com\n(650) 555-0987\nJob Label\nPricing smoke 2026-06-01T00-45-42-064Z\nDue date\n—\nFlags\n—\n1 item\nAVERY Test 1\n1\" × 1\"\n·\nQty 3\nchoice_1\n$8.88\n$2.96/ea\nWidth\n×\nHeight\nQty\nTotal\n$8.88\n—\nPrice Override\nCalculated $8.88 · Effective $8.88\nNo override\nTotal override\nUnit override\nTotal before margin\nUnit before margin\nDiscount\nAdd value\nBase unit $2.96 · Qty 3\nGthings\nSelect\nArtwork\nArtwork\n1\nUpload Artwork\nimage_1763343234372.png\nDescription (optional)\nProduction Notes (internal)\nStaff only\nRouting Intent\nStaff only\nRequires Design\nRequires Prepress\nProof Approval\nSubtotal\n$8.88\nDiscount\n—\nTax (0.00%)\n$0.00\nGrand Total\n$8.88\nEmail Quote\nPreview\nConvert to Order\nFulfillment\nPickup\nPickup notes\nAttachments\nAdd POs, instructions, artwork files, etc.\nUpload\nNo attachments\nInternal Notes\nTimeline\nShow",
+        "lineButtonText": "AVERY Test 1\n1\" × 1\"\n·\nQty 3\nchoice_1\n$8.88\n$2.96/ea",
+        "rowTotalText": "$8.88",
+        "rowTotal": 8.88,
+        "unitText": "$2.96/ea",
+        "unit": 2.96,
+        "subtotalText": "$8.88",
+        "subtotal": 8.88,
+        "grandText": "$8.88",
+        "grand": 8.88,
+        "overrideLabel": "No override",
+        "hasTotalOverrideText": true,
+        "fakeOverrideBadge": true
+      },
+      "api": {
+        "quoteId": "79bb5418-734d-4175-b05b-06834a7b7be7",
+        "quoteNumber": 910319,
+        "lineItemId": "5b463630-5af4-44ca-a3f2-4e64d8d10057",
+        "productName": "AVERY Test 1",
+        "quantity": 3,
+        "linePrice": "8.88",
+        "priceOverrideMode": null,
+        "priceOverrideValueCents": null,
+        "overridePriceCents": null,
+        "priceOverride": null
+      },
+      "pass": false
+    },
+    "revertNoOverride": {
+      "state": {
+        "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7",
+        "mainText": "Back\nQuote #910319\nDraft\nEdit Mode\nDuplicate\n55 Twin Lane\nSporting_goods@intuit.com\n(650) 555-0987\nKirby Freeman\nSporting_goods@intuit.com\n(650) 555-0987\nJob Label\nPricing smoke 2026-06-01T00-45-42-064Z\nDue date\n—\nFlags\n—\n1 item\nAVERY Test 1\n1\" × 1\"\n·\nQty 3\nchoice_1\n$8.88\n$2.96/ea\nWidth\n×\nHeight\nQty\nTotal\n$8.88\n—\nPrice Override\nCalculated $8.88 · Effective $8.88\nNo override\nTotal override\nUnit override\nTotal before margin\nUnit before margin\nDiscount\nAdd value\nBase unit $2.96 · Qty 3\nGthings\nSelect\nArtwork\nArtwork\n1\nUpload Artwork\nimage_1763343234372.png\nDescription (optional)\nProduction Notes (internal)\nStaff only\nRouting Intent\nStaff only\nRequires Design\nRequires Prepress\nProof Approval\nSubtotal\n$8.88\nDiscount\n—\nTax (0.00%)\n$0.00\nGrand Total\n$8.88\nEmail Quote\nPreview\nConvert to Order\nFulfillment\nPickup\nPickup notes\nAttachments\nAdd POs, instructions, artwork files, etc.\nUpload\nNo attachments\nInternal Notes\nTimeline\nShow",
+        "lineButtonText": "AVERY Test 1\n1\" × 1\"\n·\nQty 3\nchoice_1\n$8.88\n$2.96/ea",
+        "rowTotalText": "$8.88",
+        "rowTotal": 8.88,
+        "unitText": "$2.96/ea",
+        "unit": 2.96,
+        "subtotalText": "$8.88",
+        "subtotal": 8.88,
+        "grandText": "$8.88",
+        "grand": 8.88,
+        "overrideLabel": "No override",
+        "hasTotalOverrideText": true,
+        "fakeOverrideBadge": true
+      },
+      "api": {
+        "quoteId": "79bb5418-734d-4175-b05b-06834a7b7be7",
+        "quoteNumber": 910319,
+        "lineItemId": "5b463630-5af4-44ca-a3f2-4e64d8d10057",
+        "productName": "AVERY Test 1",
+        "quantity": 3,
+        "linePrice": "8.88",
+        "priceOverrideMode": null,
+        "priceOverrideValueCents": null,
+        "overridePriceCents": null,
+        "priceOverride": null
+      },
+      "pass": true
+    }
+  },
+  "screenshots": {
+    "before-attachment": "C:\\Users\\dale9\\Downloads\\QuoteVaultPro\\tmp-smoke-screenshots\\pricing-override-live-2026-06-01T00-45-42-064Z\\before-attachment.png",
+    "after-attachment": "C:\\Users\\dale9\\Downloads\\QuoteVaultPro\\tmp-smoke-screenshots\\pricing-override-live-2026-06-01T00-45-42-064Z\\after-attachment.png",
+    "after-save-reload-no-override": "C:\\Users\\dale9\\Downloads\\QuoteVaultPro\\tmp-smoke-screenshots\\pricing-override-live-2026-06-01T00-45-42-064Z\\after-save-reload-no-override.png",
+    "after-total-override-reload": "C:\\Users\\dale9\\Downloads\\QuoteVaultPro\\tmp-smoke-screenshots\\pricing-override-live-2026-06-01T00-45-42-064Z\\after-total-override-reload.png",
+    "after-unit-override-reload": "C:\\Users\\dale9\\Downloads\\QuoteVaultPro\\tmp-smoke-screenshots\\pricing-override-live-2026-06-01T00-45-42-064Z\\after-unit-override-reload.png",
+    "after-zero-override-reload": "C:\\Users\\dale9\\Downloads\\QuoteVaultPro\\tmp-smoke-screenshots\\pricing-override-live-2026-06-01T00-45-42-064Z\\after-zero-override-reload.png",
+    "after-revert-reload": "C:\\Users\\dale9\\Downloads\\QuoteVaultPro\\tmp-smoke-screenshots\\pricing-override-live-2026-06-01T00-45-42-064Z\\after-revert-reload.png"
+  },
+  "consoleErrors": [
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 ()",
+      "url": "https://dev.printershero.com/login"
+    },
+    {
+      "type": "warning",
+      "text": "[TitanOS] Running DEV environment build",
+      "url": "https://dev.printershero.com/dashboard"
+    },
+    {
+      "type": "warning",
+      "text": "[TitanOS] Running DEV environment build",
+      "url": "https://dev.printershero.com/quotes/new"
+    },
+    {
+      "type": "warning",
+      "text": "[TitanOS] Running DEV environment build",
+      "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7"
+    },
+    {
+      "type": "warning",
+      "text": "[TitanOS] Running DEV environment build",
+      "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 ()",
+      "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7"
+    },
+    {
+      "type": "warning",
+      "text": "[TitanOS] Running DEV environment build",
+      "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 ()",
+      "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7"
+    },
+    {
+      "type": "warning",
+      "text": "[TitanOS] Running DEV environment build",
+      "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 500 ()",
+      "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7"
+    },
+    {
+      "type": "warning",
+      "text": "[TitanOS] Running DEV environment build",
+      "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7"
+    },
+    {
+      "type": "warning",
+      "text": "[TitanOS] Running DEV environment build",
+      "url": "https://dev.printershero.com/quotes/79bb5418-734d-4175-b05b-06834a7b7be7"
+    }
+  ],
+  "networkErrors": [
+    {
+      "method": "GET",
+      "url": "https://dev.printershero.com/branding/favicon.svg?v=ph-20260523",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "method": "GET",
+      "url": "https://dev.printershero.com/api/auth/session",
+      "failure": "net::ERR_ABORTED"
+    }
+  ],
+  "responses": [
+    {
+      "method": "GET",
+      "url": "https://dev.printershero.com/api/auth/session",
+      "status": 401,
+      "text": "{\"authenticated\":false}"
+    },
+    {
+      "method": "PATCH",
+      "url": "https://dev.printershero.com/api/quotes/79bb5418-734d-4175-b05b-06834a7b7be7/line-items/5b463630-5af4-44ca-a3f2-4e64d8d10057",
+      "status": 500,
+      "text": "{\"message\":\"Failed to update line item\"}"
+    },
+    {
+      "method": "PATCH",
+      "url": "https://dev.printershero.com/api/quotes/79bb5418-734d-4175-b05b-06834a7b7be7/line-items/5b463630-5af4-44ca-a3f2-4e64d8d10057",
+      "status": 500,
+      "text": "{\"message\":\"Failed to update line item\"}"
+    },
+    {
+      "method": "PATCH",
+      "url": "https://dev.printershero.com/api/quotes/79bb5418-734d-4175-b05b-06834a7b7be7/line-items/5b463630-5af4-44ca-a3f2-4e64d8d10057",
+      "status": 500,
+      "text": "{\"message\":\"Failed to update line item\"}"
+    }
+  ],
+  "apiSnapshots": {
+    "after-save-reload-no-override": {
+      "quoteId": "79bb5418-734d-4175-b05b-06834a7b7be7",
+      "quoteNumber": 910319,
+      "lineItemId": "5b463630-5af4-44ca-a3f2-4e64d8d10057",
+      "productName": "AVERY Test 1",
+      "quantity": 3,
+      "linePrice": "8.88",
+      "priceOverrideMode": null,
+      "priceOverrideValueCents": null,
+      "overridePriceCents": null,
+      "priceOverride": null
+    },
+    "after-total-override-reload": {
+      "quoteId": "79bb5418-734d-4175-b05b-06834a7b7be7",
+      "quoteNumber": 910319,
+      "lineItemId": "5b463630-5af4-44ca-a3f2-4e64d8d10057",
+      "productName": "AVERY Test 1",
+      "quantity": 3,
+      "linePrice": "8.88",
+      "priceOverrideMode": null,
+      "priceOverrideValueCents": null,
+      "overridePriceCents": null,
+      "priceOverride": null
+    },
+    "after-unit-override-reload": {
+      "quoteId": "79bb5418-734d-4175-b05b-06834a7b7be7",
+      "quoteNumber": 910319,
+      "lineItemId": "5b463630-5af4-44ca-a3f2-4e64d8d10057",
+      "productName": "AVERY Test 1",
+      "quantity": 3,
+      "linePrice": "8.88",
+      "priceOverrideMode": null,
+      "priceOverrideValueCents": null,
+      "overridePriceCents": null,
+      "priceOverride": null
+    },
+    "after-zero-override-reload": {
+      "quoteId": "79bb5418-734d-4175-b05b-06834a7b7be7",
+      "quoteNumber": 910319,
+      "lineItemId": "5b463630-5af4-44ca-a3f2-4e64d8d10057",
+      "productName": "AVERY Test 1",
+      "quantity": 3,
+      "linePrice": "8.88",
+      "priceOverrideMode": null,
+      "priceOverrideValueCents": null,
+      "overridePriceCents": null,
+      "priceOverride": null
+    },
+    "after-revert-reload": {
+      "quoteId": "79bb5418-734d-4175-b05b-06834a7b7be7",
+      "quoteNumber": 910319,
+      "lineItemId": "5b463630-5af4-44ca-a3f2-4e64d8d10057",
+      "productName": "AVERY Test 1",
+      "quantity": 3,
+      "linePrice": "8.88",
+      "priceOverrideMode": null,
+      "priceOverrideValueCents": null,
+      "overridePriceCents": null,
+      "priceOverride": null
+    }
+  }
+}
