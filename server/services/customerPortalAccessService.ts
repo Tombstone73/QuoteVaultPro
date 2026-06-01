@@ -155,6 +155,56 @@ async function sendPortalInviteEmail(access: typeof customerPortalAccess.$inferS
   });
 }
 
+async function handlePortalInviteSendFailure(input: {
+  access: typeof customerPortalAccess.$inferSelect;
+  actorUserId?: string | null;
+  req?: Request;
+  error: unknown;
+}) {
+  const now = new Date();
+  await db
+    .update(customerPortalInviteTokens)
+    .set({ revokedAt: now })
+    .where(
+      and(
+        eq(customerPortalInviteTokens.accessId, input.access.id),
+        isNull(customerPortalInviteTokens.usedAt),
+        isNull(customerPortalInviteTokens.revokedAt),
+      ),
+    );
+
+  await db
+    .update(customerPortalAccess)
+    .set({
+      status: "DISABLED",
+      disabledAt: now,
+      updatedAt: now,
+      updatedByUserId: input.actorUserId ?? null,
+    })
+    .where(eq(customerPortalAccess.id, input.access.id));
+
+  await writePortalAudit({
+    organizationId: input.access.organizationId,
+    actorUserId: input.actorUserId,
+    actionType: "PORTAL_INVITE_SEND_FAILED",
+    description: `Portal invite delivery failed for ${input.access.email}`,
+    accessId: input.access.id,
+    customerId: input.access.customerId,
+    contactId: input.access.contactId,
+    targetUserId: input.access.userId,
+    req: input.req,
+    metadata: {
+      errorMessage: input.error instanceof Error ? input.error.message : String(input.error),
+    },
+  });
+
+  throw Object.assign(new Error("Portal invite email could not be sent. Portal access was not activated."), {
+    status: 502,
+    code: "PORTAL_INVITE_EMAIL_FAILED",
+    cause: input.error,
+  });
+}
+
 export async function listCustomerPortalAccess(organizationId: string, customerId: string) {
   return db
     .select()
@@ -253,7 +303,17 @@ export async function createCustomerPortalAccess(input: {
     actorUserId: input.actorUserId,
   });
 
-  await sendPortalInviteEmail(access, rawToken);
+  try {
+    await sendPortalInviteEmail(access, rawToken);
+  } catch (error) {
+    await handlePortalInviteSendFailure({
+      access,
+      actorUserId: input.actorUserId,
+      req: input.req,
+      error,
+    });
+  }
+
   await writePortalAudit({
     organizationId: input.organizationId,
     actorUserId: input.actorUserId,
@@ -320,7 +380,17 @@ export async function resendCustomerPortalInvite(input: {
     .where(eq(customerPortalAccess.id, access.id))
     .returning();
 
-  await sendPortalInviteEmail(updated, rawToken);
+  try {
+    await sendPortalInviteEmail(updated, rawToken);
+  } catch (error) {
+    await handlePortalInviteSendFailure({
+      access: updated,
+      actorUserId: input.actorUserId,
+      req: input.req,
+      error,
+    });
+  }
+
   await writePortalAudit({
     organizationId: access.organizationId,
     actorUserId: input.actorUserId,
