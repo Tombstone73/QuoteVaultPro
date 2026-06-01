@@ -45,6 +45,13 @@ export type PortalSessionDto = {
   customerName: string;
   portalContactName: string | null;
   portalEmail: string | null;
+  staffPreview: {
+    active: boolean;
+    actorUserId: string;
+    startedAt: string;
+    expiresAt: string;
+    returnTo: string;
+  } | null;
   permissions: {
     canViewInvoices: boolean;
     canPayInvoices: boolean;
@@ -802,6 +809,7 @@ async function findPortalContactName(scope: PortalScope, email: string | null): 
 
 export async function getPortalSession(req: Request): Promise<PortalSessionDto> {
   const scope = getPortalScope(req);
+  const staffPreview = (req as any).staffPortalPreview ?? null;
   const portalEmail = String((req as any).user?.email || scope.customer.email || "").trim() || null;
   const userName = `${(req as any).user?.firstName || ""} ${(req as any).user?.lastName || ""}`.trim();
   const contactName = await findPortalContactName(scope, portalEmail);
@@ -812,6 +820,15 @@ export async function getPortalSession(req: Request): Promise<PortalSessionDto> 
     customerName: scope.customer.companyName,
     portalContactName: contactName || userName || null,
     portalEmail,
+    staffPreview: staffPreview
+      ? {
+          active: true,
+          actorUserId: staffPreview.actorUserId,
+          startedAt: staffPreview.startedAt,
+          expiresAt: staffPreview.expiresAt,
+          returnTo: staffPreview.returnTo,
+        }
+      : null,
     permissions: {
       canViewInvoices: true,
       canPayInvoices: true,

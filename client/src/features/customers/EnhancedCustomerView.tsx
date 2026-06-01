@@ -85,6 +85,7 @@ import { ROUTES } from "@/config/routes";
 import { cn } from "@/lib/utils";
 import BackNavControls from "@/components/BackNavControls";
 import { ContactFlagPill } from "@/components/ContactFlagPill";
+import { apiRequest } from "@/lib/queryClient";
 
 // ============================================================
 // TYPE DEFINITIONS
@@ -268,6 +269,26 @@ function CustomerHeader({
     await updateLocalCompanyFolderPathMutation.mutateAsync(normalizedDraftPath);
   };
 
+  const previewCustomerPortalMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/portal/preview/start", {
+        customerId: customer.id,
+        returnTo: `${window.location.pathname}${window.location.search}`,
+      });
+      return response.json() as Promise<{ success: boolean; data?: { redirectTo?: string } }>;
+    },
+    onSuccess: (payload) => {
+      window.location.href = payload.data?.redirectTo || "/portal?preview=1";
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Preview unavailable",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   return (
     <div className={cn(
       "bg-titan-bg-card border border-titan-border-subtle shadow-titan-card",
@@ -343,6 +364,23 @@ function CustomerHeader({
             onLocalStorage={!isEmbedded ? () => setShowLocalStorageDialog(true) : undefined}
             onSwitchTab={onSwitchTab}
           />
+          {!isEmbedded && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => previewCustomerPortalMutation.mutate()}
+              disabled={previewCustomerPortalMutation.isPending}
+              className="h-8"
+            >
+              {previewCustomerPortalMutation.isPending ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Eye className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Preview Customer Portal
+            </Button>
+          )}
         </div>
       </div>
       

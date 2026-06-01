@@ -15,6 +15,10 @@ import { db } from './db';
 import { userOrganizations, organizations, users } from '../shared/schema';
 import { eq, and } from 'drizzle-orm';
 import { getActivePortalContext, isPortalCustomerIdentity } from './services/customerPortalAccessService';
+import {
+  type StaffPortalPreviewSession,
+  resolveActiveStaffPortalPreview,
+} from './services/staffPortalPreviewService';
 
 // Default organization ID - matches the seed in migration 0020
 export const DEFAULT_ORGANIZATION_ID = 'org_titan_001';
@@ -30,6 +34,7 @@ declare global {
       portalCustomerId?: string;
       portalCustomer?: unknown;
       portalAccess?: unknown;
+      staffPortalPreview?: StaffPortalPreviewSession;
     }
   }
 }
@@ -420,6 +425,37 @@ export const portalContext: RequestHandler = async (req, res, next) => {
     
     if (!user?.id) {
       return res.status(401).json({ message: "Unauthorized - No user in session" });
+    }
+
+    if (!isPortalCustomerIdentity(user)) {
+      try {
+        const previewContext = await resolveActiveStaffPortalPreview(req);
+
+        if (!previewContext) {
+          return res.status(403).json({
+            success: false,
+            code: "STAFF_PORTAL_PREVIEW_REQUIRED",
+            message: "Staff portal preview is not active.",
+          });
+        }
+
+        req.organizationId = previewContext.customer.organizationId;
+        req.portalCustomerId = previewContext.customer.id;
+        req.portalCustomer = previewContext.customer;
+        req.portalAccess = null;
+        req.staffPortalPreview = previewContext.preview;
+
+        return next();
+      } catch (previewError) {
+        const status = typeof (previewError as any)?.status === "number" ? (previewError as any).status : 500;
+        const code = typeof (previewError as any)?.code === "string" ? (previewError as any).code : undefined;
+        const message = previewError instanceof Error ? previewError.message : "Staff portal preview failed";
+        return res.status(status).json({
+          success: false,
+          code,
+          message: status >= 500 ? "Failed to resolve staff portal preview context" : message,
+        });
+      }
     }
 
     const portalContextRecord = await getActivePortalContext(user.id);

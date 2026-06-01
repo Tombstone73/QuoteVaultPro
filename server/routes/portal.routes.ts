@@ -35,6 +35,7 @@ import {
 } from "../services/portal.service";
 import { isSupabaseConfigured, SupabaseStorageService } from "../supabaseStorage";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
+import { isStaffPortalPreviewReadMethod } from "../services/staffPortalPreviewService";
 
 type PortalHandler<T> = (req: Request) => Promise<T>;
 
@@ -259,6 +260,18 @@ function denyOutOfPhasePortalSurface(_req: Request, res: Response) {
   return res.status(404).json({ success: false, message: "Not found" });
 }
 
+function denyStaffPreviewMutations(req: Request, res: Response, next: () => void) {
+  if ((req as any).staffPortalPreview && !isStaffPortalPreviewReadMethod(req.method)) {
+    return res.status(403).json({
+      success: false,
+      code: "STAFF_PORTAL_PREVIEW_READ_ONLY",
+      message: "Staff portal preview is read-only.",
+    });
+  }
+
+  return next();
+}
+
 export function registerPortalRoutes(
   app: Express,
   middleware: {
@@ -267,7 +280,7 @@ export function registerPortalRoutes(
   },
 ): void {
   const { isAuthenticated, portalContext } = middleware;
-  const portalMiddlewares = [isAuthenticated, portalContext];
+  const portalMiddlewares = [isAuthenticated, portalContext, denyStaffPreviewMutations];
 
   app.get("/api/portal/me", ...portalMiddlewares, portalGet(getPortalSession));
   app.get("/api/portal/dashboard", ...portalMiddlewares, portalGet(getPortalDashboard));

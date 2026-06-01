@@ -46,6 +46,8 @@ describe("customer portal access policy", () => {
     expect(isAllowedPortalCustomerApiPath("/api/portal/orders")).toBe(true);
     expect(isAllowedPortalCustomerApiPath("/api/auth/session")).toBe(true);
 
+    expect(isAllowedPortalCustomerApiPath("/api/portal/preview/start")).toBe(false);
+    expect(isAllowedPortalCustomerApiPath("/api/portal/preview/session")).toBe(false);
     expect(isAllowedPortalCustomerApiPath("/api/orders")).toBe(false);
     expect(isAllowedPortalCustomerApiPath("/api/customers")).toBe(false);
     expect(isAllowedPortalCustomerApiPath("/api/settings/company")).toBe(false);

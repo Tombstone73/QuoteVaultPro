@@ -45,6 +45,10 @@ export function isPortalCustomerIdentity(user: unknown): boolean {
 }
 
 export function isAllowedPortalCustomerApiPath(path: string): boolean {
+  if (path === "/api/portal/preview" || path.startsWith("/api/portal/preview/")) {
+    return false;
+  }
+
   return (
     path === "/api/auth/session" ||
     path === "/api/auth/logout" ||

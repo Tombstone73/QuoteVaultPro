@@ -241,6 +241,7 @@ import { registerOperationalSummaryRoutes } from './routes/operationalSummary.ro
 import { registerPbv2OptionGroupTemplateRoutes } from './routes/pbv2OptionGroupTemplates.routes';
 import { registerPortalRoutes } from './routes/portal.routes';
 import { registerPortalFollowUpRoutes } from './routes/portalFollowUps.routes';
+import { registerStaffPortalPreviewRoutes } from './routes/staffPortalPreview.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -288,6 +289,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Public invite routes (no auth required — new-user accept-invite flow)
   registerInviteRoutes(app);
   registerCustomerPortalInvitePublicRoutes(app);
+
+  // Staff-only temporary portal preview context. Does not create portal access/users.
+  registerStaffPortalPreviewRoutes(app, { isAuthenticated, tenantContext });
 
   // Customer portal safety boundary routes (portal-scoped DTOs only).
   registerPortalRoutes(app, { isAuthenticated, portalContext });

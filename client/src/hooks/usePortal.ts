@@ -13,6 +13,13 @@ export type PortalSessionDto = {
   customerName: string;
   portalContactName: string | null;
   portalEmail: string | null;
+  staffPreview: {
+    active: boolean;
+    actorUserId: string;
+    startedAt: string;
+    expiresAt: string;
+    returnTo: string;
+  } | null;
   permissions: {
     canViewInvoices: boolean;
     canPayInvoices: boolean;
