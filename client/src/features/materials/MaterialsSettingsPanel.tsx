@@ -113,6 +113,27 @@ function renderVendorSummary(vendor: VendorSummary | null) {
   );
 }
 
+function renderMaterialVendorSummary(material: Material, vendors: VendorSummary[]) {
+  const vendor = getVendorRecord(material.preferredVendorId, vendors);
+  if (vendor) return renderVendorSummary(vendor);
+
+  const secondary = [
+    material.vendorSku ? `SKU ${material.vendorSku}` : null,
+    material.vendorProductUrl ? "Ordering URL saved" : null,
+  ].filter(Boolean).join(" | ");
+
+  if (material.preferredVendorName || secondary) {
+    return (
+      <div className="space-y-1">
+        <div className="font-medium text-titan-text-primary">{material.preferredVendorName || "Vendor info"}</div>
+        {secondary ? <div className="text-xs text-titan-text-muted">{secondary}</div> : null}
+      </div>
+    );
+  }
+
+  return <span>Unassigned</span>;
+}
+
 function formatRequestedBy(request: MaterialReorderRequest) {
   return request.requestedByName || "-";
 }
@@ -378,7 +399,7 @@ export function MaterialsSettingsPanel() {
                     <Badge variant="outline" className={statusMeta.className}>{statusMeta.label}</Badge>
                     {openRequestCount > 1 ? <div className="mt-1 text-xs text-titan-text-muted">{openRequestCount} open requests</div> : null}
                   </TitanTableCell>
-                  <TitanTableCell>{renderVendorSummary(getVendorRecord(material.preferredVendorId, vendors))}</TitanTableCell>
+                  <TitanTableCell>{renderMaterialVendorSummary(material, vendors)}</TitanTableCell>
                   <TitanTableCell>
                     <div className="flex flex-wrap gap-1" onClick={(event) => event.stopPropagation()}>
                       <TitanIconButton icon={Pencil} variant="ghost" onClick={() => setEditMaterial(material)} title="Edit material" />

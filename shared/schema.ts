@@ -24,6 +24,7 @@ import {
   materialReorderRequestStatusValues,
 } from "./materialInventory";
 import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "./materialWeight";
+import { normalizeMaterialVendorProductUrl } from "./materialVendorPurchasing";
 
 // ============================================================
 // DOWNLOAD INTENT (Future-proofing for preflight/print variants)
@@ -4947,8 +4948,13 @@ export const materials = pgTable("materials", {
   isActive: boolean("is_active").notNull().default(true), // whether material is active/available
   vendorId: varchar("vendor_id"), // legacy placeholder
   preferredVendorId: varchar("preferred_vendor_id").references(() => vendors.id, { onDelete: 'set null' }),
+  preferredVendorName: varchar("preferred_vendor_name", { length: 255 }),
   vendorSku: varchar("vendor_sku", { length: 150 }),
   vendorCostPerUnit: decimal("vendor_cost_per_unit", { precision: 10, scale: 4 }),
+  vendorProductUrl: text("vendor_product_url"),
+  vendorNotes: text("vendor_notes"),
+  vendorLastPriceCents: integer("vendor_last_price_cents"),
+  vendorLastPriceUpdatedAt: timestamp("vendor_last_price_updated_at"),
   specsJson: jsonb("specs_json").$type<Record<string, any>>(), // router/ink/material metadata
   // Roll-specific fields (only used when type === 'roll')
   rollLengthFt: decimal("roll_length_ft", { precision: 10, scale: 2 }), // total roll length in feet
@@ -4995,6 +5001,40 @@ const optionalMaterialWeightBasisSchema = z.preprocess(
   (v) => (v === "" || v == null ? undefined : v),
   materialWeightBasisSchema.optional().nullable()
 );
+const optionalTrimmedMaterialTextSchema = (maxLength?: number) =>
+  z.preprocess(
+    (v) => {
+      if (typeof v !== "string") return v == null ? undefined : v;
+      const trimmed = v.trim();
+      return trimmed ? trimmed : null;
+    },
+    (maxLength ? z.string().max(maxLength) : z.string()).optional().nullable()
+  );
+const optionalMaterialVendorUrlSchema = z.any().transform((value, ctx) => {
+  if (value === undefined) return undefined;
+  const result = normalizeMaterialVendorProductUrl(value);
+  if (!result.ok) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: result.message,
+    });
+    return z.NEVER;
+  }
+  return result.value;
+});
+const optionalMaterialDateSchema = z.any().transform((value, ctx) => {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (!Number.isFinite(date.getTime())) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Enter a valid date.",
+    });
+    return z.NEVER;
+  }
+  return date;
+});
 
 const materialBaseSchema = createInsertSchema(materials).omit({
   id: true,
@@ -5034,6 +5074,15 @@ const materialBaseSchema = createInsertSchema(materials).omit({
     (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
     z.coerce.number().nonnegative().optional().nullable()
   ),
+  preferredVendorName: optionalTrimmedMaterialTextSchema(255),
+  vendorSku: optionalTrimmedMaterialTextSchema(150),
+  vendorProductUrl: optionalMaterialVendorUrlSchema,
+  vendorNotes: optionalTrimmedMaterialTextSchema(),
+  vendorLastPriceCents: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? null : v),
+    z.coerce.number().int().nonnegative().optional().nullable()
+  ),
+  vendorLastPriceUpdatedAt: optionalMaterialDateSchema,
   vendorCostPerUnit: z.preprocess(
     (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
     z.coerce.number().nonnegative().optional().nullable()

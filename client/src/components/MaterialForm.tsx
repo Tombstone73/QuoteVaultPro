@@ -11,10 +11,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { useQuery } from "@tanstack/react-query";
-import { X } from "lucide-react";
+import { ExternalLink, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "@shared/materialWeight";
+import { centsToDollars, dollarsToCents, normalizeMaterialVendorProductUrl } from "@shared/materialVendorPurchasing";
 
 type LinkableProduct = {
   id: string;
@@ -35,6 +36,27 @@ const optionalNumber = (schema: z.ZodNumber) =>
     (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
     schema.optional()
   );
+const optionalVendorUrl = z.string().optional().superRefine((value, ctx) => {
+  const result = normalizeMaterialVendorProductUrl(value);
+  if (!result.ok) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: result.message,
+    });
+  }
+});
+
+function nullableTrimmed(value: string | null | undefined) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed ? trimmed : null;
+}
+
+function formatDateInput(value?: string | Date | null) {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}
 
 const LEGACY_UNIT_HELPER_TEXT =
   "Legacy/default unit for this material. Existing pricing, inventory, CSV, and some usage behavior may still fall back to this.";
@@ -109,9 +131,14 @@ const materialSchema = z
   thicknessUnit: z.enum(["in", "mm", "mil", "gauge"]).optional().nullable(),
   color: z.string().optional(),
   specsJson: z.string().optional(), // JSON string editable
-  preferredVendorId: z.string().optional().or(z.literal("")).transform(v=> v? v: undefined),
+  preferredVendorId: z.string().optional().nullable().or(z.literal("")).transform(v=> v? v: null),
+  preferredVendorName: z.string().optional(),
   vendorSku: z.string().optional(),
   vendorCostPerUnit: optionalNumber(z.coerce.number().nonnegative()),
+  vendorProductUrl: optionalVendorUrl,
+  vendorNotes: z.string().optional(),
+  vendorLastPrice: optionalNumber(z.coerce.number().nonnegative()),
+  vendorLastPriceUpdatedAt: z.string().optional(),
   // Roll-specific fields
   rollLengthFt: optionalNumber(z.coerce.number().positive()),
   costPerRoll: optionalNumber(z.coerce.number().positive()),
@@ -198,8 +225,13 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       color: material.color || "",
       specsJson: material.specsJson ? JSON.stringify(material.specsJson, null, 2) : "",
       preferredVendorId: material.preferredVendorId || "",
+      preferredVendorName: material.preferredVendorName || "",
       vendorSku: material.vendorSku || "",
       vendorCostPerUnit: material.vendorCostPerUnit ? parseFloat(material.vendorCostPerUnit) : undefined,
+      vendorProductUrl: material.vendorProductUrl || "",
+      vendorNotes: material.vendorNotes || "",
+      vendorLastPrice: centsToDollars(material.vendorLastPriceCents),
+      vendorLastPriceUpdatedAt: formatDateInput(material.vendorLastPriceUpdatedAt),
       // Roll-specific fields
       rollLengthFt: material.rollLengthFt ? parseFloat(material.rollLengthFt) : undefined,
       costPerRoll: material.costPerRoll ? parseFloat(material.costPerRoll) : undefined,
@@ -237,8 +269,13 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       color: "",
       specsJson: "",
       preferredVendorId: "",
+      preferredVendorName: "",
       vendorSku: "",
       vendorCostPerUnit: undefined,
+      vendorProductUrl: "",
+      vendorNotes: "",
+      vendorLastPrice: undefined,
+      vendorLastPriceUpdatedAt: "",
       // Roll-specific fields
       rollLengthFt: undefined,
       costPerRoll: undefined,
@@ -300,9 +337,14 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       thickness: values.thickness !== undefined ? values.thickness.toString() : undefined,
       thicknessUnit: values.thicknessUnit || undefined,
       specsJson: values.specsJson ? safeParseJSON(values.specsJson) : undefined,
-      preferredVendorId: values.preferredVendorId || undefined,
-      vendorSku: values.vendorSku || undefined,
+      preferredVendorId: values.preferredVendorId || null,
+      preferredVendorName: nullableTrimmed(values.preferredVendorName),
+      vendorSku: nullableTrimmed(values.vendorSku),
       vendorCostPerUnit: values.vendorCostPerUnit !== undefined ? values.vendorCostPerUnit.toString() : undefined,
+      vendorProductUrl: nullableTrimmed(values.vendorProductUrl),
+      vendorNotes: nullableTrimmed(values.vendorNotes),
+      vendorLastPriceCents: dollarsToCents(values.vendorLastPrice),
+      vendorLastPriceUpdatedAt: values.vendorLastPriceUpdatedAt || null,
       // Roll-specific fields
       rollLengthFt: values.rollLengthFt !== undefined ? values.rollLengthFt.toString() : undefined,
       costPerRoll: values.costPerRoll !== undefined ? values.costPerRoll.toString() : undefined,
@@ -401,6 +443,11 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
   const edgeWaste = form.watch("edgeWasteInPerSide") || 0;
   const leadWaste = form.watch("leadWasteFt") || 0;
   const tailWaste = form.watch("tailWasteFt") || 0;
+  const vendorProductUrl = form.watch("vendorProductUrl");
+  const normalizedVendorProductUrl = useMemo(() => {
+    const result = normalizeMaterialVendorProductUrl(vendorProductUrl);
+    return result.ok ? result.value : null;
+  }, [vendorProductUrl]);
 
   const rollDerived = useMemo(() => {
     if (!isRoll || !rollWidth || !rollLength || !rollCost) return null;
@@ -804,9 +851,9 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
             {/* RIGHT COLUMN: MATERIAL & VENDOR COST */}
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">Material & Vendor Cost</CardTitle>
+                <CardTitle className="text-base">Vendor / Ordering Info</CardTitle>
                 <p className="text-xs text-muted-foreground">
-                  Internal cost numbers from your supplier. Used for margin and cost-plus pricing.
+                  Supplier ordering details saved with this material after the form is submitted.
                 </p>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -890,6 +937,46 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                 <div className="pt-2 border-t">
                   <VendorSelectSection form={form} />
                 </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-sm font-medium">Ordering URL</label>
+                    <Input placeholder="https://vendor.example.com/material" {...form.register("vendorProductUrl")} />
+                    {form.formState.errors.vendorProductUrl?.message ? (
+                      <p className="text-xs text-destructive mt-1">{form.formState.errors.vendorProductUrl.message}</p>
+                    ) : null}
+                    {normalizedVendorProductUrl ? (
+                      <a
+                        href={normalizedVendorProductUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1 inline-flex items-center gap-1 text-xs text-primary underline"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        Open Vendor Page
+                      </a>
+                    ) : null}
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Last Known Vendor Price</label>
+                    <Input type="number" min="0" step="0.01" placeholder="0.00" {...form.register("vendorLastPrice", { valueAsNumber: true })} />
+                    <p className="text-xs text-muted-foreground mt-1">Stored as cents for stable accounting later.</p>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Price Last Updated</label>
+                    <Input type="date" {...form.register("vendorLastPriceUpdatedAt")} />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Vendor SKU</label>
+                    <Input {...form.register("vendorSku")} />
+                    <p className="text-xs text-muted-foreground mt-1">Vendor's product code for this material.</p>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium">Vendor Notes</label>
+                  <Textarea rows={3} placeholder="Ordering notes, pack size, account terms, substitutions" {...form.register("vendorNotes")} />
+                </div>
               </CardContent>
             </Card>
           </div>
@@ -920,6 +1007,11 @@ function VendorSelectSection({ form }: { form: UseFormReturn<MaterialFormValues>
     <div className="space-y-2">
       <div>
         <label className="text-sm font-medium">Preferred Vendor</label>
+        <Input className="mb-2" placeholder="Vendor or supplier name" {...form.register("preferredVendorName")} />
+        <p className="text-xs text-muted-foreground mb-2">Use a plain vendor name here; linking to an existing vendor record is optional.</p>
+      </div>
+      <div>
+        <label className="text-sm font-medium">Vendor Record</label>
         <Select value={form.watch("preferredVendorId") || ""} onValueChange={v => form.setValue("preferredVendorId", v === "__none__" ? "" : v)}>
           <SelectTrigger><SelectValue placeholder={isLoading?"Loading vendors...":"Select vendor"} /></SelectTrigger>
           <SelectContent>
@@ -927,11 +1019,6 @@ function VendorSelectSection({ form }: { form: UseFormReturn<MaterialFormValues>
             {vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}
           </SelectContent>
         </Select>
-      </div>
-      <div>
-        <label className="text-sm font-medium">Vendor SKU</label>
-        <Input {...form.register("vendorSku")}/>
-        <p className="text-xs text-muted-foreground mt-1">Vendor's product code for this material.</p>
       </div>
     </div>
   );

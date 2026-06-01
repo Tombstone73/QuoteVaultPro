@@ -158,6 +158,7 @@ function escapeHtml(value: unknown) {
 }
 
 function getVendorName(material: Material, vendorNamesById: Map<string, string>) {
+  if (material.preferredVendorName?.trim()) return material.preferredVendorName.trim();
   if (!material.preferredVendorId) return "Unassigned";
   return vendorNamesById.get(material.preferredVendorId) ?? "Unassigned";
 }
@@ -625,7 +626,12 @@ export default function MaterialsListPage() {
           </div>
         );
       case "vendor":
-        return <span className="text-titan-text-secondary">{getVendorName(m, vendorNamesById)}</span>;
+        return (
+          <div className="space-y-0.5">
+            <div className="text-titan-text-secondary">{getVendorName(m, vendorNamesById)}</div>
+            {m.vendorProductUrl ? <div className="text-xs text-titan-text-muted">Ordering URL saved</div> : null}
+          </div>
+        );
       case "alerts":
         return <LowStockBadge stock={stock} min={min} />;
       case "actions":

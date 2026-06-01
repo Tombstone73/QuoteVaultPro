@@ -34,8 +34,13 @@ export interface Material {
   isActive: boolean;
   vendorId?: string | null; // legacy placeholder
   preferredVendorId?: string | null;
+  preferredVendorName?: string | null;
   vendorSku?: string | null;
   vendorCostPerUnit?: string | null;
+  vendorProductUrl?: string | null;
+  vendorNotes?: string | null;
+  vendorLastPriceCents?: number | null;
+  vendorLastPriceUpdatedAt?: string | null;
   specsJson?: Record<string, any> | null;
   // Roll-specific fields
   rollLengthFt?: string | null;
