@@ -199,6 +199,71 @@ export function mergePricingIntoSpecsJson(input: {
   };
 }
 
+function toDollars(cents: number): number {
+  return Math.round(cents) / 100;
+}
+
+function getLinePriceBaseTotalCents(lineItem: Record<string, any>): number | null {
+  const linePrice = Number(lineItem.linePrice);
+  return Number.isFinite(linePrice) ? Math.round(linePrice * 100) : null;
+}
+
+function mergePriceBreakdownTotal(priceBreakdown: unknown, totalDollars: number, baseTotalCents: number): Record<string, unknown> {
+  const base = isPlainRecord(priceBreakdown) ? { ...priceBreakdown } : {};
+  return {
+    ...base,
+    basePrice: typeof base.basePrice === "number" ? base.basePrice : toDollars(baseTotalCents),
+    total: totalDollars,
+  };
+}
+
+export function buildQuoteLineItemPriceOverridePersistencePatch(input: {
+  existingLineItem: Record<string, any>;
+  incomingUpdate: Record<string, any>;
+  baseCalculatedTotalCents?: number | null;
+  appliedAt?: string;
+}): {
+  linePrice: number;
+  formulaLinePrice: number | null;
+  overridePriceCents: number | null;
+  specsJson: Record<string, unknown> | null;
+  priceBreakdown: Record<string, unknown>;
+  pricing: LineItemEffectivePricing;
+} {
+  const persistedBaseCalculatedTotalCents = getPersistedBaseCalculatedTotalCents(input.existingLineItem);
+  const linePriceBaseTotalCents = getLinePriceBaseTotalCents(input.existingLineItem);
+  const baseCalculatedTotalCents =
+    input.baseCalculatedTotalCents ??
+    (persistedBaseCalculatedTotalCents > 0 ? persistedBaseCalculatedTotalCents : linePriceBaseTotalCents ?? persistedBaseCalculatedTotalCents) ??
+    0;
+  const quantity = input.incomingUpdate.quantity ?? input.existingLineItem.quantity;
+  const pricing = resolvePersistedLineItemPricing({
+    baseCalculatedTotalCents,
+    quantity,
+    body: input.incomingUpdate,
+    specsJson: input.existingLineItem.specsJson,
+    legacyOverridePriceCents: input.existingLineItem.overridePriceCents,
+  });
+  const effectiveTotalDollars = toDollars(pricing.effectiveTotalCents);
+
+  return {
+    linePrice: effectiveTotalDollars,
+    formulaLinePrice: pricing.hasPriceOverride ? toDollars(pricing.baseCalculatedTotalCents) : null,
+    overridePriceCents: pricing.hasPriceOverride ? pricing.effectiveTotalCents : null,
+    specsJson: mergePricingIntoSpecsJson({
+      specsJson: input.existingLineItem.specsJson,
+      pricing,
+      appliedAt: input.appliedAt,
+    }),
+    priceBreakdown: mergePriceBreakdownTotal(
+      input.existingLineItem.priceBreakdown,
+      effectiveTotalDollars,
+      pricing.baseCalculatedTotalCents,
+    ),
+    pricing,
+  };
+}
+
 export function enrichLineItemWithEffectivePricing<T extends Record<string, any>>(lineItem: T): T & LineItemEffectivePricing {
   const quantity = Number(lineItem.quantity) > 0 ? Number(lineItem.quantity) : 1;
   const effectiveTotalCents = Math.round((Number(lineItem.totalPrice) || 0) * 100);

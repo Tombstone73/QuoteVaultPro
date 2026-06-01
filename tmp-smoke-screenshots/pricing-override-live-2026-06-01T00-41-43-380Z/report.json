@@ -1,0 +1,83 @@
+{
+  "runStamp": "2026-06-01T00-41-43-380Z",
+  "baseUrl": "https://dev.printershero.com",
+  "quoteId": null,
+  "quoteNumber": null,
+  "sections": {
+    "beforeAttachment": {
+      "state": {
+        "url": "https://dev.printershero.com/quotes/new",
+        "mainText": "Back\nNew Quote\nDraft\nEdit Mode\n55 Twin Lane\nSporting_goods@intuit.com\n(650) 555-0987\nKirby Freeman ★\nJob Label\nDue date\nFlags\n1 item\nAVERY Test 1\nDraft\n1\" × 1\"\n·\nQty 3\n$8.88\n$2.96/ea\nWidth\n×\nHeight\nQty\nTotal\n$8.88\n—\nPrice Override\nCalculated $8.88 · Effective $8.88\nNo override\nTotal override\nUnit override\nTotal before margin\nUnit before margin\nDiscount\nAdd value\nBase unit $2.96 · Qty 3\nGthings\nSelect\nArtwork\nArtwork\nUpload Artwork\nDescription (optional)\nProduction Notes (internal)\nStaff only\nRouting Intent\nStaff only\nRequires Design\nRequires Prepress\nProof Approval\nSave Item\nDuplicate Item\nRemove Item\nUnsaved\nAdd Product\nSubtotal\n$8.88\nDiscount\nTax (0.00%)\nOverride\n$0.00\nGrand Total\n$8.88\nSave Changes\nSave & Back\nEmail Quote\nDiscard\nPreview\nFulfillment\nPickup\nPickup notes\nInternal Notes\nAdd internal production notes before converting (optional)\nTimeline\nShow",
+        "lineButtonText": "AVERY Test 1\nDraft\n1\" × 1\"\n·\nQty 3\n$8.88\n$2.96/ea",
+        "rowTotalText": "$8.88",
+        "rowTotal": 8.88,
+        "unitText": "$2.96/ea",
+        "unit": 2.96,
+        "subtotalText": "$8.88",
+        "subtotal": 8.88,
+        "grandText": "$8.88",
+        "grand": 8.88,
+        "overrideLabel": "No override",
+        "hasTotalOverrideText": true,
+        "fakeOverrideBadge": true
+      },
+      "pass": true
+    },
+    "afterAttachment": {
+      "state": {
+        "url": "https://dev.printershero.com/quotes/new",
+        "mainText": "Back\nQuote #910317\nDraft\nEdit Mode\nDuplicate\n55 Twin Lane\nSporting_goods@intuit.com\n(650) 555-0987\nKirby Freeman ★\nJob Label\nDue date\nFlags\n1 item\nAVERY Test 1\n1\" × 1\"\n·\nQty 3\n$8.88\n$2.96/ea\nWidth\n×\nHeight\nQty\nTotal\n$8.88\n—\nPrice Override\nCalculated $8.88 · Effective $8.88\nNo override\nTotal override\nUnit override\nTotal before margin\nUnit before margin\nDiscount\nAdd value\nBase unit $2.96 · Qty 3\nGthings\nSelect\nArtwork\nArtwork\n1\nDescription (optional)\nProduction Notes (internal)\nStaff only\nRouting Intent\nStaff only\nRequires Design\nRequires Prepress\nProof Approval\nDuplicate Item\nRemove Item\nAdd Product\nSubtotal\n$8.88\nDiscount\nTax (0.00%)\nOverride\n$0.00\nGrand Total\n$8.88\nSave Changes\nSave & Back\nEmail Quote\nDiscard\nPreview\nFulfillment\nPickup\nPickup notes\nAttachments\nAdd POs, instructions, artwork files, etc.\nUpload\nNo attachments\nInternal Notes\nAdd internal production notes before converting (optional)\nTimeline\nShow",
+        "lineButtonText": "AVERY Test 1\n1\" × 1\"\n·\nQty 3\n$8.88\n$2.96/ea",
+        "rowTotalText": "$8.88",
+        "rowTotal": 8.88,
+        "unitText": "$2.96/ea",
+        "unit": 2.96,
+        "subtotalText": "$8.88",
+        "subtotal": 8.88,
+        "grandText": "$8.88",
+        "grand": 8.88,
+        "overrideLabel": "No override",
+        "hasTotalOverrideText": true,
+        "fakeOverrideBadge": true
+      },
+      "pass": true
+    }
+  },
+  "screenshots": {
+    "before-attachment": "C:\\Users\\dale9\\Downloads\\QuoteVaultPro\\tmp-smoke-screenshots\\pricing-override-live-2026-06-01T00-41-43-380Z\\before-attachment.png",
+    "after-attachment": "C:\\Users\\dale9\\Downloads\\QuoteVaultPro\\tmp-smoke-screenshots\\pricing-override-live-2026-06-01T00-41-43-380Z\\after-attachment.png"
+  },
+  "consoleErrors": [
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 ()",
+      "url": "https://dev.printershero.com/login"
+    },
+    {
+      "type": "warning",
+      "text": "[TitanOS] Running DEV environment build",
+      "url": "https://dev.printershero.com/dashboard"
+    },
+    {
+      "type": "warning",
+      "text": "[TitanOS] Running DEV environment build",
+      "url": "https://dev.printershero.com/quotes/new"
+    }
+  ],
+  "networkErrors": [
+    {
+      "method": "GET",
+      "url": "https://dev.printershero.com/api/auth/session",
+      "failure": "net::ERR_ABORTED"
+    }
+  ],
+  "responses": [
+    {
+      "method": "GET",
+      "url": "https://dev.printershero.com/api/auth/session",
+      "status": 401,
+      "text": "{\"authenticated\":false}"
+    }
+  ],
+  "apiSnapshots": {}
+}

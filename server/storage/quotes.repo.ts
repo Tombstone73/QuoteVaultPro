@@ -24,6 +24,7 @@ import { and, eq, isNull, like, gte, lte, desc, asc, sql, inArray } from "drizzl
 import { DB_TO_WORKFLOW, getEffectiveWorkflowState, type QuoteWorkflowState as WorkflowState } from "@shared/quoteWorkflow";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { sanitizeJsonForPostgres } from "../lib/quoteCreateLineItemNormalizer";
+import { buildQuoteLineItemPriceOverridePersistencePatch } from "../lib/lineItemPricingPersistence";
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "./productDesignConfig.repo";
 import {
@@ -1025,6 +1026,12 @@ export class QuotesRepository {
                 productId: quoteLineItems.productId,
                 requiresDesign: quoteLineItems.requiresDesign,
                 quoteId: quoteLineItems.quoteId,
+                quantity: quoteLineItems.quantity,
+                linePrice: quoteLineItems.linePrice,
+                specsJson: quoteLineItems.specsJson,
+                pbv2SnapshotJson: quoteLineItems.pbv2SnapshotJson,
+                priceBreakdown: quoteLineItems.priceBreakdown,
+                overridePriceCents: quoteLineItems.overridePriceCents,
             })
             .from(quoteLineItems)
             .where(eq(quoteLineItems.id, id))
@@ -1052,22 +1059,54 @@ export class QuotesRepository {
         if (lineItem.width !== undefined) updateData.width = lineItem.width.toString();
         if (lineItem.height !== undefined) updateData.height = lineItem.height.toString();
         if (lineItem.quantity !== undefined) updateData.quantity = lineItem.quantity;
+        if ((lineItem as any).specsJson !== undefined) updateData.specsJson = (lineItem as any).specsJson;
+        if ((lineItem as any).pbv2TreeVersionId !== undefined) updateData.pbv2TreeVersionId = (lineItem as any).pbv2TreeVersionId;
+        if ((lineItem as any).pbv2SnapshotJson !== undefined) updateData.pbv2SnapshotJson = (lineItem as any).pbv2SnapshotJson;
+        if ((lineItem as any).pricedAt !== undefined) updateData.pricedAt = (lineItem as any).pricedAt;
         if ((lineItem as any).optionSelectionsJson !== undefined) updateData.optionSelectionsJson = (lineItem as any).optionSelectionsJson;
         if (lineItem.selectedOptions !== undefined) updateData.selectedOptions = lineItem.selectedOptions;
         if (lineItem.linePrice !== undefined) updateData.linePrice = lineItem.linePrice.toString();
+        if ((lineItem as any).formulaLinePrice !== undefined) {
+            updateData.formulaLinePrice = (lineItem as any).formulaLinePrice === null
+                ? null
+                : (lineItem as any).formulaLinePrice.toString();
+        }
+        if ((lineItem as any).overridePriceCents !== undefined) updateData.overridePriceCents = (lineItem as any).overridePriceCents;
         const clearsPriceOverride =
             (lineItem as any).priceOverride === null ||
             (lineItem as any).priceOverrideMode === null ||
             (lineItem as any).overridePriceCents === null;
         const hasExplicitPriceOverride = hasExplicitPriceOverrideMetadata(lineItem);
+        const hasPreparedPricingPatch =
+            (lineItem as any).specsJson !== undefined ||
+            lineItem.linePrice !== undefined ||
+            lineItem.priceBreakdown !== undefined ||
+            (lineItem as any).formulaLinePrice !== undefined;
         if (clearsPriceOverride) {
+            if (!hasPreparedPricingPatch) {
+                const overridePatch = buildQuoteLineItemPriceOverridePersistencePatch({
+                    existingLineItem: currentLineItem as any,
+                    incomingUpdate: lineItem as any,
+                });
+                updateData.specsJson = overridePatch.specsJson;
+                updateData.linePrice = overridePatch.linePrice.toFixed(2);
+                updateData.formulaLinePrice = null;
+                updateData.priceBreakdown = overridePatch.priceBreakdown;
+            }
             updateData.priceOverride = null;
             updateData.overridePriceCents = null;
         } else if (hasExplicitPriceOverride) {
-            updateData.priceOverride = buildExplicitPriceOverrideMetadata(lineItem);
-            if ((lineItem as any).overridePriceCents !== undefined) updateData.overridePriceCents = getExplicitOverridePriceCents(lineItem);
+            const overridePatch = buildQuoteLineItemPriceOverridePersistencePatch({
+                existingLineItem: currentLineItem as any,
+                incomingUpdate: lineItem as any,
+            });
+            updateData.specsJson = overridePatch.specsJson;
+            updateData.linePrice = overridePatch.linePrice.toFixed(2);
+            updateData.formulaLinePrice = overridePatch.formulaLinePrice?.toFixed(2) ?? null;
+            updateData.priceBreakdown = overridePatch.priceBreakdown;
+            updateData.overridePriceCents = overridePatch.overridePriceCents;
         }
-        if (lineItem.priceBreakdown !== undefined) updateData.priceBreakdown = lineItem.priceBreakdown;
+        if (lineItem.priceBreakdown !== undefined && !clearsPriceOverride && !hasExplicitPriceOverride) updateData.priceBreakdown = lineItem.priceBreakdown;
         if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
         if ((lineItem as any).overrideReason !== undefined) updateData.overrideReason = (lineItem as any).overrideReason;
         if ((lineItem as any).overrideAt !== undefined) updateData.overrideAt = (lineItem as any).overrideAt;

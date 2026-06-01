@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 
 import {
+  buildQuoteLineItemPriceOverridePersistencePatch,
   getPersistedBaseCalculatedTotalCents,
   haveLineItemPricingDriversChanged,
   mergePricingIntoSpecsJson,
@@ -425,5 +426,117 @@ describe("line item price override effective pricing", () => {
 
     expect((specsJson as any)?.priceOverride?.baseCalculatedTotalCents).toBe(1500);
     expect((specsJson as any)?.priceOverride?.effectiveTotalCents).toBe(1980);
+  });
+
+  test("quote line item PATCH total override persists metadata without writing legacy priceOverride column", () => {
+    const patch = buildQuoteLineItemPriceOverridePersistencePatch({
+      existingLineItem: {
+        quantity: 3,
+        linePrice: "8.88",
+        pbv2SnapshotJson: { pricing: { totalCents: 888 } },
+        specsJson: {},
+        priceBreakdown: { basePrice: 8.88, optionsPrice: 0, total: 8.88 },
+      },
+      incomingUpdate: {
+        priceOverrideMode: "override_total_after_margin",
+        priceOverrideValueCents: 4000,
+        overridePriceCents: 4000,
+      },
+      appliedAt: "2026-06-01T00:00:00.000Z",
+    });
+
+    expect(patch.linePrice).toBe(40);
+    expect(patch.overridePriceCents).toBe(4000);
+    expect(patch.formulaLinePrice).toBe(8.88);
+    expect(patch.priceBreakdown.total).toBe(40);
+    expect((patch.specsJson as any).priceOverride).toEqual(expect.objectContaining({
+      mode: "override_total_after_margin",
+      valueCents: 4000,
+      baseCalculatedTotalCents: 888,
+      effectiveTotalCents: 4000,
+    }));
+    expect(patch).not.toHaveProperty("priceOverride");
+  });
+
+  test("quote line item PATCH unit override multiplies by quantity", () => {
+    const patch = buildQuoteLineItemPriceOverridePersistencePatch({
+      existingLineItem: {
+        quantity: 3,
+        linePrice: "8.88",
+        pbv2SnapshotJson: { pricing: { totalCents: 888 } },
+        specsJson: {},
+        priceBreakdown: { basePrice: 8.88, optionsPrice: 0, total: 8.88 },
+      },
+      incomingUpdate: {
+        priceOverrideMode: "override_unit_after_margin",
+        priceOverrideValueCents: 1000,
+        overridePriceCents: 3000,
+      },
+    });
+
+    expect(patch.linePrice).toBe(30);
+    expect(patch.overridePriceCents).toBe(3000);
+    expect((patch.specsJson as any).priceOverride).toEqual(expect.objectContaining({
+      mode: "override_unit_after_margin",
+      valueCents: 1000,
+      effectiveUnitPriceCents: 1000,
+      effectiveTotalCents: 3000,
+    }));
+  });
+
+  test("quote line item PATCH supports explicit zero total override", () => {
+    const patch = buildQuoteLineItemPriceOverridePersistencePatch({
+      existingLineItem: {
+        quantity: 3,
+        linePrice: "8.88",
+        pbv2SnapshotJson: { pricing: { totalCents: 888 } },
+        specsJson: {},
+        priceBreakdown: { basePrice: 8.88, optionsPrice: 0, total: 8.88 },
+      },
+      incomingUpdate: {
+        priceOverrideMode: "override_total_after_margin",
+        priceOverrideValueCents: 0,
+        overridePriceCents: 0,
+      },
+    });
+
+    expect(patch.linePrice).toBe(0);
+    expect(patch.overridePriceCents).toBe(0);
+    expect((patch.specsJson as any).priceOverride).toEqual(expect.objectContaining({
+      mode: "override_total_after_margin",
+      valueCents: 0,
+      effectiveTotalCents: 0,
+    }));
+  });
+
+  test("quote line item PATCH revert clears metadata and restores calculated line total", () => {
+    const patch = buildQuoteLineItemPriceOverridePersistencePatch({
+      existingLineItem: {
+        quantity: 3,
+        linePrice: "40.00",
+        pbv2SnapshotJson: { pricing: { totalCents: 888 } },
+        specsJson: {
+          priceOverride: {
+            mode: "override_total_after_margin",
+            valueCents: 4000,
+            baseCalculatedTotalCents: 888,
+            effectiveTotalCents: 4000,
+          },
+        },
+        overridePriceCents: 4000,
+        priceBreakdown: { basePrice: 8.88, optionsPrice: 0, total: 40 },
+      },
+      incomingUpdate: {
+        priceOverride: null,
+        priceOverrideMode: null,
+        priceOverrideValueCents: null,
+        overridePriceCents: null,
+      },
+    });
+
+    expect(patch.linePrice).toBe(8.88);
+    expect(patch.overridePriceCents).toBeNull();
+    expect(patch.formulaLinePrice).toBeNull();
+    expect((patch.specsJson as any)?.priceOverride).toBeUndefined();
   });
 });
