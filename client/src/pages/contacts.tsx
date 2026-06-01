@@ -9,7 +9,6 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ROUTES } from "@/config/routes";
 import { useContacts, useCreateContact, useDeleteContact, useUpdateContact, type ContactWithStats } from "@/hooks/useContacts";
 import { useAuth } from "@/hooks/useAuth";
 import { useListViewSettings } from "@/hooks/useListViewSettings";
@@ -28,8 +27,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -57,7 +54,8 @@ import { useSmartBack } from "@/hooks/useSmartBack";
 import BackNavControls from "@/components/BackNavControls";
 
 const defaultColumns = [
-  { id: "name", label: "Name", visible: true },
+  { id: "firstName", label: "First Name", visible: true },
+  { id: "lastName", label: "Last Name", visible: true },
   { id: "company", label: "Company", visible: true },
   { id: "email", label: "Email", visible: true },
   { id: "phone", label: "Phone", visible: true },
@@ -162,6 +160,10 @@ export default function ContactsPage() {
     switch (key) {
       case "name":
         return "lastName";
+      case "firstName":
+        return "firstName";
+      case "lastName":
+        return "lastName";
       case "company":
         return "company";
       case "email":
@@ -191,6 +193,27 @@ export default function ContactsPage() {
 
   const renderCell = (contact: ContactWithStats, columnId: string) => {
     switch (columnId) {
+      case "firstName":
+        return (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="font-medium text-titan-text-primary">{contact.firstName}</span>
+            {contact.isPrimary && (
+              <StatusPill variant="info">Primary</StatusPill>
+            )}
+            {contact.flags?.map((flag) => (
+              <ContactFlagPill key={flag} flag={flag} />
+            ))}
+          </div>
+        );
+      case "lastName":
+        return (
+          <div className="flex flex-col gap-0.5">
+            <span className="font-medium text-titan-text-primary">{contact.lastName}</span>
+            {contact.title && (
+              <span className="text-xs text-titan-text-muted">{contact.title}</span>
+            )}
+          </div>
+        );
       case "name":
         return (
           <div className="flex flex-col gap-0.5">

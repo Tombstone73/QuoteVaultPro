@@ -197,7 +197,7 @@ export default function CustomerList({
     if (collapse || !pagination) return null;
 
     return (
-      <div className="border-t border-border/40 px-3 py-2 flex items-center justify-between gap-2">
+      <div data-testid="customer-pagination-footer" className="border-t border-border/40 px-3 py-2 flex items-center justify-between gap-2 flex-shrink-0">
         <Button
           size="sm"
           variant="ghost"
@@ -445,7 +445,7 @@ export default function CustomerList({
       {!collapse && filterControls}
 
       {!collapse && (
-        <div className="flex-1 min-h-0 overflow-y-auto">
+        <div data-testid="customer-list-scroll-region" className="flex-1 min-h-0 overflow-y-auto">
           {isLoading ? loadingState : customers.length === 0 ? emptyState : viewMode === "enhanced" ? enhancedTable : splitList}
         </div>
       )}
