@@ -93,6 +93,22 @@ function hasExplicitPriceOverrideMetadata(value: any): boolean {
   return hasMode && hasValue;
 }
 
+function buildExplicitPriceOverrideMetadata(value: any): any | null {
+  if (!hasExplicitPriceOverrideMetadata(value)) return null;
+  const override = value?.priceOverride;
+  const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
+  const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? value?.priceOverrideMode;
+  const valueCents = overrideRecord?.valueCents ?? overrideRecord?.priceOverrideValueCents ?? value?.priceOverrideValueCents;
+  const valuePercent = overrideRecord?.valuePercent ?? overrideRecord?.priceOverrideValuePercent ?? value?.priceOverrideValuePercent ?? null;
+
+  return {
+    ...(overrideRecord ?? {}),
+    mode,
+    valueCents,
+    valuePercent,
+  };
+}
+
 async function refreshQuoteAggregateTotals(organizationId: string, quoteId: string) {
   const [quoteRow] = await db
     .select({
@@ -2113,7 +2129,7 @@ export function registerQuoteRoutes(
         updateData.overridePriceCents = null;
       } else if (hasExplicitPriceOverride) {
         if ((lineItem as any).overridePriceCents !== undefined) updateData.overridePriceCents = (lineItem as any).overridePriceCents;
-        if ((lineItem as any).priceOverride !== undefined) updateData.priceOverride = (lineItem as any).priceOverride;
+        updateData.priceOverride = buildExplicitPriceOverrideMetadata(lineItem);
       }
       if ((lineItem as any).overrideReason !== undefined) updateData.overrideReason = (lineItem as any).overrideReason;
       if ((lineItem as any).overrideAt !== undefined) updateData.overrideAt = (lineItem as any).overrideAt;

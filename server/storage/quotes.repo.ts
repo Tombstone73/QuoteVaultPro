@@ -53,6 +53,22 @@ function getExplicitOverridePriceCents(value: any): number | null {
     return Number.isFinite(cents) ? Math.round(cents) : null;
 }
 
+function buildExplicitPriceOverrideMetadata(value: any): any | null {
+    if (!hasExplicitPriceOverrideMetadata(value)) return null;
+    const override = value?.priceOverride;
+    const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
+    const mode = overrideRecord?.mode ?? overrideRecord?.priceOverrideMode ?? value?.priceOverrideMode;
+    const valueCents = overrideRecord?.valueCents ?? overrideRecord?.priceOverrideValueCents ?? value?.priceOverrideValueCents;
+    const valuePercent = overrideRecord?.valuePercent ?? overrideRecord?.priceOverrideValuePercent ?? value?.priceOverrideValuePercent ?? null;
+
+    return {
+        ...(overrideRecord ?? {}),
+        mode,
+        valueCents,
+        valuePercent,
+    };
+}
+
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
 
@@ -638,7 +654,7 @@ export class QuotesRepository {
                 calculatedCost: number;
             }>,
             linePrice: item.linePrice.toString(),
-            priceOverride: hasExplicitPriceOverrideMetadata(item) ? ((item as any).priceOverride ?? null) : null,
+            priceOverride: buildExplicitPriceOverrideMetadata(item),
             priceBreakdown: sanitizeJsonForPostgres({
                 ...item.priceBreakdown,
                 variantInfo: item.priceBreakdown.variantInfo as string | undefined,
@@ -979,7 +995,7 @@ export class QuotesRepository {
                 calculatedCost: number;
             }>,
             linePrice: lineItem.linePrice.toString(),
-            priceOverride: hasExplicitPriceOverrideMetadata(lineItem) ? ((lineItem as any).priceOverride ?? null) : null,
+            priceOverride: buildExplicitPriceOverrideMetadata(lineItem),
             priceBreakdown: {
                 ...lineItem.priceBreakdown,
                 variantInfo: lineItem.priceBreakdown.variantInfo as string | undefined,
@@ -1048,7 +1064,7 @@ export class QuotesRepository {
             updateData.priceOverride = null;
             updateData.overridePriceCents = null;
         } else if (hasExplicitPriceOverride) {
-            if ((lineItem as any).priceOverride !== undefined) updateData.priceOverride = (lineItem as any).priceOverride;
+            updateData.priceOverride = buildExplicitPriceOverrideMetadata(lineItem);
             if ((lineItem as any).overridePriceCents !== undefined) updateData.overridePriceCents = getExplicitOverridePriceCents(lineItem);
         }
         if (lineItem.priceBreakdown !== undefined) updateData.priceBreakdown = lineItem.priceBreakdown;
@@ -1132,7 +1148,7 @@ export class QuotesRepository {
             optionSelectionsJson: (lineItem as any).optionSelectionsJson ?? null,
             selectedOptions: lineItem.selectedOptions ?? [],
             linePrice: lineItem.linePrice.toString(),
-            priceOverride: hasExplicitPriceOverrideMetadata(lineItem) ? ((lineItem as any).priceOverride ?? null) : null,
+            priceOverride: buildExplicitPriceOverrideMetadata(lineItem),
             priceBreakdown: lineItem.priceBreakdown as any,
             materialUsages: (lineItem as any).materialUsages ?? [],
             displayOrder: lineItem.displayOrder ?? 0,
