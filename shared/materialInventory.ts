@@ -28,8 +28,12 @@ export type MaterialInventoryShape = {
   rollLengthFt?: string | number | null;
   costPerRoll?: string | number | null;
   preferredVendorId?: string | null;
+  preferredVendorName?: string | null;
   vendorSku?: string | null;
   vendorCostPerUnit?: string | number | null;
+  vendorProductUrl?: string | null;
+  vendorNotes?: string | null;
+  vendorLastPriceCents?: string | number | null;
 };
 
 export type MaterialConfigurationStatus = {
@@ -97,9 +101,14 @@ export function deriveMaterialConfigurationStatus(material: MaterialInventorySha
     missing.add("min_stock_alert");
   }
 
-  const hasVendorDetail = Boolean(asTrimmed(material.vendorSku)) || (asNumber(material.vendorCostPerUnit) ?? null) != null;
-  if (hasVendorDetail && !asTrimmed(material.preferredVendorId)) {
-    missing.add("preferred_vendor_id");
+  const hasVendorDetail =
+    Boolean(asTrimmed(material.vendorSku)) ||
+    Boolean(asTrimmed(material.vendorProductUrl)) ||
+    Boolean(asTrimmed(material.vendorNotes)) ||
+    (asNumber(material.vendorCostPerUnit) ?? null) != null ||
+    (asNumber(material.vendorLastPriceCents) ?? null) != null;
+  if (hasVendorDetail && !asTrimmed(material.preferredVendorId) && !asTrimmed(material.preferredVendorName)) {
+    missing.add("preferred_vendor");
   }
 
   return {

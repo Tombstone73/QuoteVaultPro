@@ -512,6 +512,13 @@
       "when": 1781395200000,
       "tag": "0077_material_product_links",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1781481600000,
+      "tag": "0078_material_vendor_purchasing_fields",
+      "breakpoints": true
     }
   ]
 }

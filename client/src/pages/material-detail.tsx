@@ -7,7 +7,7 @@ import { LowStockBadge } from "@/components/LowStockBadge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/hooks/useAuth";
-import { Copy } from "lucide-react";
+import { Copy, ExternalLink } from "lucide-react";
 
 // Thickness unit labels for display
 const THICKNESS_UNITS: Record<string, string> = {
@@ -39,6 +39,11 @@ function formatMaterialWeight(material: any) {
   return `${displayValue} ${material.weightUnit} / ${String(material.weightBasis).replace("_", " ")}`;
 }
 
+function formatVendorPrice(cents?: number | null) {
+  if (cents == null) return null;
+  return (cents / 100).toLocaleString(undefined, { style: "currency", currency: "USD" });
+}
+
 interface Props { params: { id: string }; }
 export default function MaterialDetailPage({ params }: Props) {
   const { user } = useAuth();
@@ -58,6 +63,8 @@ export default function MaterialDetailPage({ params }: Props) {
   const min = parseFloat(material.minStockAlert || "0");
   const isPrivileged = user?.role === 'owner' || user?.role === 'admin';
   const units = effectiveMaterialUnits(material);
+  const vendorDisplayName = material.preferredVendorName || (material.preferredVendorId ? "Vendor record selected" : null);
+  const vendorPrice = formatVendorPrice(material.vendorLastPriceCents);
   const showRollUnitWarning =
     material.type === "roll" &&
     ["sqft", "linear_ft", "ft"].includes(String(units.inventoryUnit)) &&
@@ -138,6 +145,29 @@ export default function MaterialDetailPage({ params }: Props) {
                 <span>{a.quantityChange}</span>
               </div>
             )) || <div>No adjustments.</div>}
+          </div>
+        </Card>
+        <Card className="p-4 space-y-2">
+          <h2 className="font-medium">Vendor / Ordering Info</h2>
+          <div className="text-sm space-y-1">
+            <div><strong>Preferred Vendor:</strong> {vendorDisplayName || "Not set"}</div>
+            {material.vendorSku ? <div><strong>Vendor SKU:</strong> {material.vendorSku}</div> : null}
+            {vendorPrice ? <div><strong>Last Known Price:</strong> {vendorPrice}</div> : null}
+            {material.vendorLastPriceUpdatedAt ? (
+              <div><strong>Price Updated:</strong> {new Date(material.vendorLastPriceUpdatedAt).toLocaleDateString()}</div>
+            ) : null}
+            {material.vendorProductUrl ? (
+              <a
+                href={material.vendorProductUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-primary underline"
+              >
+                <ExternalLink className="h-3 w-3" />
+                Open Vendor Page
+              </a>
+            ) : null}
+            {material.vendorNotes ? <div className="text-muted-foreground">{material.vendorNotes}</div> : null}
           </div>
         </Card>
       </div>
