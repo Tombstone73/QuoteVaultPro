@@ -2,9 +2,11 @@ import { describe, expect, test } from "@jest/globals";
 
 import {
   buildQuoteLineItemPriceOverridePersistencePatch,
+  coerceLineItemOverrideAt,
   enrichLineItemWithEffectivePricing,
   getPersistedBaseCalculatedTotalCents,
   haveLineItemPricingDriversChanged,
+  LineItemPriceOverrideValidationError,
   mergePricingIntoSpecsJson,
   resolvePersistedLineItemPricing,
 } from "../lib/lineItemPricingPersistence";
@@ -568,5 +570,17 @@ describe("line item price override effective pricing", () => {
     expect(enriched.priceOverrideMode).toBe("override_total_after_margin");
     expect(enriched.overridePriceCents).toBe(4000);
     expect(enriched.linePrice).toBe(40);
+  });
+
+  test("quote line item PATCH accepts frontend overrideAt ISO strings as Date values", () => {
+    const overrideAt = coerceLineItemOverrideAt("2026-06-01T00:53:35.340Z");
+
+    expect(overrideAt).toBeInstanceOf(Date);
+    expect(overrideAt?.toISOString()).toBe("2026-06-01T00:53:35.340Z");
+  });
+
+  test("quote line item PATCH rejects invalid overrideAt instead of letting Drizzle throw a 500", () => {
+    expect(() => coerceLineItemOverrideAt("not-a-date")).toThrow(LineItemPriceOverrideValidationError);
+    expect(() => coerceLineItemOverrideAt({ bad: "shape" })).toThrow("overrideAt must be a valid date");
   });
 });

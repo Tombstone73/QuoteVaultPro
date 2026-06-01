@@ -4,6 +4,15 @@ import {
   type LineItemEffectivePricing,
 } from "@shared/lineItemPriceOverrides";
 
+export class LineItemPriceOverrideValidationError extends Error {
+  readonly statusCode = 422;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "LineItemPriceOverrideValidationError";
+  }
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -210,6 +219,22 @@ export function mergePricingIntoSpecsJson(input: {
 
 function toDollars(cents: number): number {
   return Math.round(cents) / 100;
+}
+
+export function coerceLineItemOverrideAt(value: unknown, fieldName = "overrideAt"): Date | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  if (value instanceof Date) {
+    if (Number.isFinite(value.getTime())) return value;
+    throw new LineItemPriceOverrideValidationError(`${fieldName} must be a valid date`);
+  }
+
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value);
+    if (Number.isFinite(parsed.getTime())) return parsed;
+  }
+
+  throw new LineItemPriceOverrideValidationError(`${fieldName} must be a valid date`);
 }
 
 function getLinePriceBaseTotalCents(lineItem: Record<string, any>): number | null {
