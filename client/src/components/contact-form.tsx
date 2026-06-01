@@ -19,7 +19,6 @@ const contactSchema = z.object({
   isPrimary: z.boolean().default(false),
   isBilling: z.boolean().default(false),
   isShipping: z.boolean().default(false),
-  canAccessPortal: z.boolean().default(false),
 });
 
 type ContactFormData = z.infer<typeof contactSchema>;
@@ -54,7 +53,6 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
       isPrimary: contact.isPrimary || false,
       isBilling: contact.isBilling || false,
       isShipping: contact.isShipping || false,
-      canAccessPortal: contact.canAccessPortal || false,
     } : {
       firstName: "",
       lastName: "",
@@ -64,7 +62,6 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
       isPrimary: false,
       isBilling: false,
       isShipping: false,
-      canAccessPortal: false,
     },
   });
 
@@ -127,7 +124,6 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
   const isPrimary = watch("isPrimary");
   const isBilling = watch("isBilling");
   const isShipping = watch("isShipping");
-  const canAccessPortal = watch("canAccessPortal");
 
   // Reset form when contact changes or dialog opens
   useEffect(() => {
@@ -142,7 +138,6 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
           isPrimary: contact.isPrimary || false,
           isBilling: contact.isBilling || false,
           isShipping: contact.isShipping || false,
-          canAccessPortal: contact.canAccessPortal || false,
         });
       } else {
         reset({
@@ -154,7 +149,6 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
           isPrimary: false,
           isBilling: false,
           isShipping: false,
-          canAccessPortal: false,
         });
       }
     }
@@ -271,16 +265,6 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
                 </Label>
               </div>
 
-              <div className="flex items-center space-x-2">
-                <Checkbox
-                  id="canAccessPortal"
-                  checked={canAccessPortal}
-                  onCheckedChange={(checked) => setValue("canAccessPortal", checked as boolean)}
-                />
-                <Label htmlFor="canAccessPortal" className="font-normal cursor-pointer">
-                  Portal Access - Can log in to customer portal
-                </Label>
-              </div>
             </div>
           </div>
 

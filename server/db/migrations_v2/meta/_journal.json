@@ -498,6 +498,13 @@
       "when": 1781222400000,
       "tag": "0075_invoice_qb_sync_default_not_synced",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1781308800000,
+      "tag": "0076_customer_portal_access_foundation",
+      "breakpoints": true
     }
   ]
 }

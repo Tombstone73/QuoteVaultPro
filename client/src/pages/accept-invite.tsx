@@ -26,7 +26,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { previewInvite, acceptInvite, type InvitePreviewResult } from "@/lib/api/platform";
+import {
+  acceptInvite,
+  acceptPortalInvite,
+  previewInvite,
+  previewPortalInvite,
+  type InvitePreviewResult,
+} from "@/lib/api/platform";
 
 // ─── Password form schema ─────────────────────────────────────────────────────
 
@@ -50,7 +56,7 @@ type PageState =
   | { phase: "new-user"; preview: InvitePreviewResult }
   | { phase: "existing-user"; preview: InvitePreviewResult }
   | { phase: "submitting" }
-  | { phase: "success"; orgId: string; email: string };
+  | { phase: "success"; email: string; redirectTo: string };
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -81,6 +87,7 @@ function StatusCard({
 export default function AcceptInvitePage() {
   const [searchParams] = useSearchParams();
   const token = searchParams.get("token") ?? "";
+  const requestedKind = searchParams.get("kind");
   const { toast } = useToast();
 
   const [state, setState] = useState<PageState>({ phase: "loading" });
@@ -98,8 +105,25 @@ export default function AcceptInvitePage() {
       return;
     }
 
-    previewInvite(token)
-      .then(({ httpStatus, body }) => {
+    const preview = async () => {
+      if (requestedKind === "portal") {
+        return previewPortalInvite(token);
+      }
+
+      const orgPreview = await previewInvite(token);
+      if (orgPreview.body.success && orgPreview.body.status === "valid") {
+        return orgPreview;
+      }
+
+      const portalPreview = await previewPortalInvite(token);
+      if (portalPreview.body.success && portalPreview.body.status === "valid") {
+        return portalPreview;
+      }
+      return orgPreview;
+    };
+
+    preview()
+      .then(({ body }) => {
         if (!body.success || body.status !== "valid") {
           setState({
             phase: "invalid",
@@ -108,7 +132,7 @@ export default function AcceptInvitePage() {
           return;
         }
 
-        if (body.emailAlreadyRegistered) {
+        if (body.kind !== "portal" && body.emailAlreadyRegistered) {
           setState({ phase: "existing-user", preview: body });
         } else {
           setState({ phase: "new-user", preview: body });
@@ -117,19 +141,26 @@ export default function AcceptInvitePage() {
       .catch(() => {
         setState({ phase: "invalid", message: "Could not validate invite. Please try again." });
       });
-  }, [token]);
+  }, [token, requestedKind]);
 
   // Accept handler — used for both existing users (no password) and new users (with password)
   const doAccept = async (password?: string) => {
+    const currentPreview =
+      state.phase === "new-user" || state.phase === "existing-user" ? state.preview : null;
+
     setState({ phase: "submitting" });
     try {
-      const { httpStatus, body } = await acceptInvite(token, password);
+      const isPortalInvite = currentPreview?.kind === "portal";
+      const { httpStatus, body } = isPortalInvite
+        ? await acceptPortalInvite(token, password || "")
+        : await acceptInvite(token, password);
 
-      if (body.success && body.data) {
-        setState({ phase: "success", orgId: body.data.orgId, email: body.data.email });
+      if (body.success) {
+        const redirectTo = body.redirectTo || (isPortalInvite ? "/portal" : "/dashboard");
+        setState({ phase: "success", email: body.data?.email || currentPreview?.email || "", redirectTo });
         // Give the browser a moment to set the session cookie before redirecting
         setTimeout(() => {
-          window.location.href = "/dashboard";
+          window.location.href = redirectTo;
         }, 1500);
         return;
       }
@@ -155,10 +186,10 @@ export default function AcceptInvitePage() {
         prev.phase === "submitting" ? { phase: "loading" } : prev
       );
       // Re-preview to restore correct state
-      previewInvite(token).then(({ body: previewBody }) => {
+      (requestedKind === "portal" ? previewPortalInvite(token) : previewInvite(token)).then(({ body: previewBody }) => {
         if (previewBody.success && previewBody.status === "valid") {
           setState(
-            previewBody.emailAlreadyRegistered
+            previewBody.kind !== "portal" && previewBody.emailAlreadyRegistered
               ? { phase: "existing-user", preview: previewBody }
               : { phase: "new-user", preview: previewBody }
           );
@@ -201,21 +232,22 @@ export default function AcceptInvitePage() {
     return (
       <StatusCard
         title="Welcome!"
-        description={`Your account (${state.email}) has been added to the organization. Redirecting…`}
+        description={`Your account (${state.email}) is ready. Redirecting...`}
       />
     );
   }
 
   const preview = state.preview;
+  const inviteName = preview.kind === "portal" ? preview.customerName || "your customer portal" : preview.orgName;
 
   if (state.phase === "existing-user") {
     return (
       <StatusCard
-        title={`Join ${preview.orgName}`}
-        description={`You have been invited to join ${preview.orgName} as ${preview.email}. Since you already have an account, click below to accept.`}
+        title={`Join ${inviteName}`}
+        description={`You have been invited to join ${inviteName} as ${preview.email}. Since you already have an account, click below to accept.`}
       >
         <Button className="w-full" onClick={() => doAccept()}>
-          Accept &amp; Join {preview.orgName}
+          Accept &amp; Join {inviteName}
         </Button>
         <p className="text-xs text-muted-foreground text-center mt-3">
           Not you?{" "}
@@ -230,8 +262,12 @@ export default function AcceptInvitePage() {
   // phase: new-user
   return (
     <StatusCard
-      title={`Join ${preview.orgName}`}
-      description={`You've been invited to join ${preview.orgName}. Create a password to set up your account for ${preview.email}.`}
+      title={preview.kind === "portal" ? "Create Customer Portal Access" : `Join ${inviteName}`}
+      description={
+        preview.kind === "portal"
+          ? `Create a password to access portal data for ${inviteName} as ${preview.email}.`
+          : `You've been invited to join ${inviteName}. Create a password to set up your account for ${preview.email}.`
+      }
     >
       <form onSubmit={handleSubmit(onPasswordSubmit)} className="space-y-4">
         <div className="space-y-1">

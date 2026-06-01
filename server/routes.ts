@@ -19,6 +19,10 @@ import { registerOrderRoutes } from "./routes/orders.routes";
 import { registerPrepressRoutes } from "./prepress/routes";
 import { registerPlatformRoutes } from "./routes/platform";
 import { registerInviteRoutes } from "./routes/invites";
+import {
+  registerCustomerPortalAccessAdminRoutes,
+  registerCustomerPortalInvitePublicRoutes,
+} from "./routes/customerPortalAccess.routes";
 import { registerMeRoutes } from "./routes/me";
 import { registerBugReportRoutes } from "./routes/bugReports";
 import { registerProofingRoutes } from "./routes/proofing.routes";
@@ -34,6 +38,10 @@ import { deleteStoredObjectKeys } from "./services/storage/deleteStoredObjectKey
 import { stationResolver } from "./services/stations/stationResolver";
 import { routeLineItemToProduction } from "./services/productionRoutingService";
 import { fileDerivativeRepository } from "./storage/fileDerivative.repo";
+import {
+  isAllowedPortalCustomerApiPath,
+  isPortalCustomerIdentity,
+} from "./services/customerPortalAccessService";
 
 // Auth provider selection logic
 // Priority: AUTH_PROVIDER env var > detection logic
@@ -279,6 +287,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Public invite routes (no auth required — new-user accept-invite flow)
   registerInviteRoutes(app);
+  registerCustomerPortalInvitePublicRoutes(app);
+
+  // Customer portal safety boundary routes (portal-scoped DTOs only).
+  registerPortalRoutes(app, { isAuthenticated, portalContext });
+
+  app.use("/api", (req, res, next) => {
+    if (!req.isAuthenticated?.() || !isPortalCustomerIdentity(req.user)) {
+      return next();
+    }
+
+    if (isAllowedPortalCustomerApiPath(req.path === "/" ? "/api" : `/api${req.path}`)) {
+      return next();
+    }
+
+    return res.status(403).json({
+      success: false,
+      code: "PORTAL_CUSTOMER_INTERNAL_API_DENIED",
+      message: "Customer portal users cannot access internal TitanOS APIs.",
+    });
+  });
 
   // Platform-admin routes (step-up auth; org creation + bootstrap)
   registerPlatformRoutes(app);
@@ -286,8 +314,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Me routes (authenticated, not org-scoped — org list + active-org selection)
   registerMeRoutes(app);
 
-  // Customer portal safety boundary routes (portal-scoped DTOs only).
-  registerPortalRoutes(app, { isAuthenticated, portalContext });
+  registerCustomerPortalAccessAdminRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
 
   // Attachment routes extracted to ./routes/attachments.routes.ts (do NOT re-add here)
   await registerAttachmentRoutes(app, { isAuthenticated, tenantContext, isAdmin });
@@ -371,9 +398,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerMaterialsImportExportRoutes(app, { isAuthenticated, tenantContext, isAdmin });
 
   const assertInternalUser = (req: any, res: any) => {
-    const role = req.user?.role || "";
-    if (role === "customer") {
-      res.status(403).json({ error: "Access denied" });
+    if (isPortalCustomerIdentity(req.user)) {
+      res.status(403).json({
+        success: false,
+        code: "PORTAL_CUSTOMER_INTERNAL_ACCESS_DENIED",
+        message: "Customer portal users cannot access internal TitanOS functionality.",
+      });
       return false;
     }
     return true;
