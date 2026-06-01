@@ -64,6 +64,9 @@ export const getMaterialBySku = inventoryRepo.getMaterialBySku.bind(inventoryRep
 export const createMaterial = inventoryRepo.createMaterial.bind(inventoryRepo);
 export const updateMaterial = inventoryRepo.updateMaterial.bind(inventoryRepo);
 export const deleteMaterial = inventoryRepo.deleteMaterial.bind(inventoryRepo);
+export const listProductsForMaterial = inventoryRepo.listProductsForMaterial.bind(inventoryRepo);
+export const replaceProductsForMaterial = inventoryRepo.replaceProductsForMaterial.bind(inventoryRepo);
+export const listMaterialsForProduct = inventoryRepo.listMaterialsForProduct.bind(inventoryRepo);
 export const getMaterialLowStockAlerts = inventoryRepo.getMaterialLowStockAlerts.bind(inventoryRepo);
 
 export const adjustInventory = inventoryRepo.adjustInventory.bind(inventoryRepo);
@@ -323,6 +326,9 @@ export const storage = {
     createMaterial,
     updateMaterial,
     deleteMaterial,
+    listProductsForMaterial,
+    replaceProductsForMaterial,
+    listMaterialsForProduct,
     getMaterialLowStockAlerts,
     adjustInventory,
     getInventoryAdjustments,

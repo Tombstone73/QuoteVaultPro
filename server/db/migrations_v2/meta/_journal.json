@@ -505,6 +505,13 @@
       "when": 1781308800000,
       "tag": "0076_customer_portal_access_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1781395200000,
+      "tag": "0077_material_product_links",
+      "breakpoints": true
     }
   ]
 }

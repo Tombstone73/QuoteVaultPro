@@ -43,6 +43,7 @@ export interface Material {
   edgeWasteInPerSide?: string | null;
   leadWasteFt?: string | null;
   tailWasteFt?: string | null;
+  linkedProductIds?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -183,6 +184,7 @@ export interface MaterialSearchItem {
   weightBasis?: "each" | "sqft" | "sheet" | "linear_ft" | "roll" | null;
   weightOzPerBasis?: string | null;
   isActive: boolean;
+  linkedProductIds?: string[];
 }
 
 export function useMaterialsSearch(searchText: string, options?: { limit?: number; includeInactive?: boolean }) {

@@ -8,9 +8,20 @@ import { Textarea } from "@/components/ui/textarea";
 import { useCreateMaterial, useUpdateMaterial, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { useEffect, useMemo } from "react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
+import { useQuery } from "@tanstack/react-query";
+import { X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "@shared/materialWeight";
+
+type LinkableProduct = {
+  id: string;
+  name: string;
+  category?: string | null;
+  isActive?: boolean | null;
+};
 
 type MaterialWithTierPricing = Material & {
   wholesaleBaseRate?: string | null;
@@ -107,6 +118,7 @@ const materialSchema = z
   edgeWasteInPerSide: optionalNumber(z.coerce.number().nonnegative()),
   leadWasteFt: optionalNumber(z.coerce.number().nonnegative()),
   tailWasteFt: optionalNumber(z.coerce.number().nonnegative()),
+  linkedProductIds: z.array(z.string()).default([]),
 })
   .superRefine((data, ctx) => {
     if (data.type !== "roll") return;
@@ -194,6 +206,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       edgeWasteInPerSide: material.edgeWasteInPerSide ? parseFloat(material.edgeWasteInPerSide) : undefined,
       leadWasteFt: material.leadWasteFt ? parseFloat(material.leadWasteFt) : undefined,
       tailWasteFt: material.tailWasteFt ? parseFloat(material.tailWasteFt) : undefined,
+      linkedProductIds: material.linkedProductIds || [],
     } : {
       name: "",
       sku: "",
@@ -232,7 +245,29 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       edgeWasteInPerSide: undefined,
       leadWasteFt: undefined,
       tailWasteFt: undefined,
+      linkedProductIds: [],
     }
+  });
+
+  const [productSearch, setProductSearch] = useState("");
+  const { data: linkableProducts = [] } = useQuery<LinkableProduct[]>({
+    queryKey: ["/api/products?activeOnly=true", "material-link-picker"],
+    queryFn: async () => {
+      const response = await fetch("/api/products?activeOnly=true", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to load products");
+      const json = await response.json();
+      const list = Array.isArray(json?.data) ? json.data : Array.isArray(json) ? json : [];
+      return list
+        .filter((product: any) => product?.isActive !== false)
+        .map((product: any) => ({
+          id: String(product.id || ""),
+          name: String(product.name || ""),
+          category: product.category ?? null,
+          isActive: product.isActive,
+        }))
+        .filter((product: LinkableProduct) => product.id && product.name);
+    },
+    enabled: open,
   });
 
   useEffect(()=> {
@@ -274,14 +309,25 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       edgeWasteInPerSide: values.edgeWasteInPerSide !== undefined ? values.edgeWasteInPerSide.toString() : undefined,
       leadWasteFt: values.leadWasteFt !== undefined ? values.leadWasteFt.toString() : undefined,
       tailWasteFt: values.tailWasteFt !== undefined ? values.tailWasteFt.toString() : undefined,
+      linkedProductIds: values.linkedProductIds || [],
     };
     try {
+      let result: any;
       if (isCreateMode) {
-        await createMutation.mutateAsync(payload);
+        result = await createMutation.mutateAsync(payload);
         toast({ title: isDuplicate ? "Material duplicated" : "Material created" });
       } else {
-        await updateMutation.mutateAsync(payload);
+        result = await updateMutation.mutateAsync(payload);
         toast({ title: "Material updated" });
+      }
+      const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+      const linkWarning = warnings.find((warning: any) => String(warning?.code || "").startsWith("MATERIAL_PRODUCT_LINKS_"));
+      if (linkWarning?.message) {
+        toast({
+          title: "Linked products need attention",
+          description: linkWarning.message,
+          variant: "destructive",
+        });
       }
       onOpenChange(false);
     } catch (e:any) {
@@ -306,6 +352,35 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
     Number.isFinite(stockQuantityNumber) &&
     stockQuantityNumber > 0;
   const showSheetSqftWarning = materialType === "sheet" && (inventoryUnit || unitOfMeasure) === "sqft";
+  const linkedProductIds = form.watch("linkedProductIds") || [];
+  const linkedProductIdSet = useMemo(() => new Set(linkedProductIds), [linkedProductIds]);
+  const selectedLinkedProducts = useMemo(
+    () => linkableProducts.filter((product) => linkedProductIdSet.has(product.id)),
+    [linkableProducts, linkedProductIdSet]
+  );
+  const filteredLinkableProducts = useMemo(() => {
+    const q = productSearch.trim().toLowerCase();
+    const base = q
+      ? linkableProducts.filter((product) => {
+          const category = product.category || "";
+          return product.name.toLowerCase().includes(q) || category.toLowerCase().includes(q);
+        })
+      : linkableProducts;
+    return [...base].sort((left, right) => {
+      const leftSelected = linkedProductIdSet.has(left.id);
+      const rightSelected = linkedProductIdSet.has(right.id);
+      if (leftSelected !== rightSelected) return leftSelected ? -1 : 1;
+      return left.name.localeCompare(right.name);
+    });
+  }, [linkableProducts, linkedProductIdSet, productSearch]);
+
+  const setLinkedProduct = (productId: string, checked: boolean) => {
+    const current = form.getValues("linkedProductIds") || [];
+    const next = checked
+      ? Array.from(new Set([...current, productId]))
+      : current.filter((id) => id !== productId);
+    form.setValue("linkedProductIds", next, { shouldDirty: true });
+  };
 
   // When switching away from Roll, clear roll-only values so they cannot block saving.
   useEffect(() => {
@@ -455,6 +530,60 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                   <SelectItem value="inactive">Inactive</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="col-span-2 rounded-md border p-3 space-y-3">
+              <div>
+                <h3 className="text-sm font-semibold">Linked Products</h3>
+                <p className="text-xs text-muted-foreground">
+                  Active products commonly used with this material.
+                </p>
+              </div>
+              {selectedLinkedProducts.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {selectedLinkedProducts.map((product) => (
+                    <Badge key={product.id} variant="secondary" className="gap-1 pr-1">
+                      <span className="max-w-[220px] truncate">{product.name}</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-5 w-5"
+                        onClick={() => setLinkedProduct(product.id, false)}
+                        aria-label={`Remove ${product.name}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    </Badge>
+                  ))}
+                </div>
+              ) : null}
+              <Input
+                value={productSearch}
+                onChange={(event) => setProductSearch(event.target.value)}
+                placeholder="Search active products"
+              />
+              <div className="max-h-44 overflow-y-auto rounded-md border">
+                {filteredLinkableProducts.length > 0 ? (
+                  filteredLinkableProducts.map((product) => (
+                    <label
+                      key={product.id}
+                      className="flex cursor-pointer items-center gap-3 border-b px-3 py-2 text-sm last:border-b-0 hover:bg-muted/60"
+                    >
+                      <Checkbox
+                        checked={linkedProductIdSet.has(product.id)}
+                        onCheckedChange={(checked) => setLinkedProduct(product.id, checked === true)}
+                      />
+                      <span className="min-w-0 flex-1 truncate">{product.name}</span>
+                      {product.category ? (
+                        <span className="text-xs text-muted-foreground">{product.category}</span>
+                      ) : null}
+                    </label>
+                  ))
+                ) : (
+                  <div className="px-3 py-6 text-center text-sm text-muted-foreground">No active products found.</div>
+                )}
+              </div>
             </div>
 
             {(showRollUnitWarning || showSheetSqftWarning) ? (
