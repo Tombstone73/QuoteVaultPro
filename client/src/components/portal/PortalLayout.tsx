@@ -1,7 +1,10 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { FileCheck, Files, FileText, Home, ReceiptText, ShoppingBag } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { FileCheck, Files, FileText, Home, LogOut, ReceiptText, ShoppingBag } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { usePortalSession } from "@/hooks/usePortal";
+import { apiRequest } from "@/lib/queryClient";
 
 const navItems = [
   { to: "/portal", label: "Dashboard", icon: Home, end: true },
@@ -14,6 +17,19 @@ const navItems = [
 
 export function PortalLayout() {
   const { data: session } = usePortalSession();
+  const queryClient = useQueryClient();
+  const staffPreview = session?.staffPreview?.active ? session.staffPreview : null;
+
+  const exitPreviewMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/portal/preview/end");
+      return response.json() as Promise<{ success: boolean; data?: { returnTo?: string } }>;
+    },
+    onSuccess: (payload) => {
+      queryClient.removeQueries({ queryKey: ["portal", "me"] });
+      window.location.href = payload.data?.returnTo || staffPreview?.returnTo || "/customers";
+    },
+  });
 
   return (
     <div className="min-h-screen bg-background">
@@ -47,6 +63,24 @@ export function PortalLayout() {
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
+          {staffPreview && (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-300 bg-amber-100 px-4 py-2 text-sm text-amber-950">
+              <div className="font-medium">
+                Staff previewing customer portal for {session?.customerName || "this customer"}
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8 border-amber-400 bg-white/80 text-amber-950 hover:bg-white"
+                onClick={() => exitPreviewMutation.mutate()}
+                disabled={exitPreviewMutation.isPending}
+              >
+                <LogOut className="mr-1.5 h-4 w-4" />
+                Exit Preview
+              </Button>
+            </div>
+          )}
           <header className="flex gap-2 overflow-x-auto border-b bg-card px-4 py-3 md:hidden">
             {navItems.map((item) => (
               <NavLink
