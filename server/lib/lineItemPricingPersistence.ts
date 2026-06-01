@@ -142,12 +142,15 @@ export function getPersistedPriceOverrideSource(input: {
   legacyOverridePriceCents?: unknown;
 }) {
   const body = isPlainRecord(input.body) ? input.body : {};
+  const bodySpecsJson = isPlainRecord(body.specsJson) ? body.specsJson : {};
   const specsJson = isPlainRecord(input.specsJson) ? input.specsJson : {};
   const clearsOverride =
     body.priceOverride === null ||
     body.priceOverrideMode === null ||
     body.overridePriceCents === null;
-  const specsOverride = !clearsOverride && isPlainRecord(specsJson.priceOverride) ? specsJson.priceOverride : {};
+  const incomingSpecsOverride = isPlainRecord(bodySpecsJson.priceOverride) ? bodySpecsJson.priceOverride : null;
+  const persistedSpecsOverride = isPlainRecord(specsJson.priceOverride) ? specsJson.priceOverride : null;
+  const specsOverride = !clearsOverride ? incomingSpecsOverride ?? persistedSpecsOverride ?? {} : {};
 
   if (clearsOverride) {
     return {
