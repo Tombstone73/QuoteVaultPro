@@ -456,8 +456,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[90vh] w-[calc(100vw-2rem)] max-w-[1200px] flex-col overflow-hidden p-0 sm:max-w-[90vw]">
+        <DialogHeader className="shrink-0 border-b px-6 py-5 pr-12">
           <DialogTitle>{isDuplicate ? "Duplicate Material" : material ? "Edit Material" : "Create Material"}</DialogTitle>
           <DialogDescription>
             {isDuplicate 
@@ -465,333 +465,465 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
               : "Manage full material metadata, supplier data, and inventory thresholds."}
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-sm font-medium">Name <span className="text-destructive">*</span></label>
-              <Input {...form.register("name")}/>
-            </div>
-            <div>
-              <label className="text-sm font-medium">SKU <span className="text-destructive">*</span></label>
-              <Input {...form.register("sku")}/>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Category / Group</label>
-              <Input {...form.register("category")} placeholder="e.g. Rigid, Vinyl, Ink" />
-            </div>
-            <div>
-              <label className="text-sm font-medium">Type <span className="text-destructive">*</span></label>
-              <Select onValueChange={v=> form.setValue("type", v as any)} value={form.watch("type")}> 
-                <SelectTrigger><SelectValue/></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="sheet">Sheet</SelectItem>
-                  <SelectItem value="roll">Roll</SelectItem>
-                  <SelectItem value="ink">Ink</SelectItem>
-                  <SelectItem value="consumable">Consumable</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Catalog Unit <span className="text-destructive">*</span></label>
-              <Select onValueChange={v=> form.setValue("unitOfMeasure", v as any)} value={form.watch("unitOfMeasure")}> 
-                <SelectTrigger><SelectValue/></SelectTrigger>
-                <SelectContent>
-                  {MATERIAL_UNIT_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground mt-1">
-                {LEGACY_UNIT_HELPER_TEXT}
-              </p>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Inventory Unit</label>
-              <Select onValueChange={v=> form.setValue("inventoryUnit", v as any)} value={form.watch("inventoryUnit") || form.watch("unitOfMeasure")}>
-                <SelectTrigger><SelectValue/></SelectTrigger>
-                <SelectContent>
-                  {MATERIAL_UNIT_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground mt-1">How stock quantity and reorder points are tracked. Conversion is not automatic yet.</p>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Sell Price Unit</label>
-              <Select onValueChange={v=> form.setValue("sellPriceUnit", v as any)} value={form.watch("sellPriceUnit") || form.watch("unitOfMeasure")}>
-                <SelectTrigger><SelectValue/></SelectTrigger>
-                <SelectContent>
-                  {MATERIAL_UNIT_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground mt-1">How customer-facing material pricing is calculated.</p>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Wholesale Price Unit</label>
-              <Select onValueChange={v=> form.setValue("wholesalePriceUnit", v as any)} value={form.watch("wholesalePriceUnit") || form.watch("sellPriceUnit") || form.watch("unitOfMeasure")}>
-                <SelectTrigger><SelectValue/></SelectTrigger>
-                <SelectContent>
-                  {MATERIAL_UNIT_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground mt-1">How wholesale/trade material pricing is calculated.</p>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Vendor Cost Unit</label>
-              <Select onValueChange={v=> form.setValue("vendorCostUnit", v as any)} value={form.watch("vendorCostUnit") || form.watch("unitOfMeasure")}>
-                <SelectTrigger><SelectValue/></SelectTrigger>
-                <SelectContent>
-                  {MATERIAL_UNIT_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground mt-1">How the supplier charges for this material.</p>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Consumption Unit</label>
-              <Select onValueChange={v=> form.setValue("consumptionUnit", v as any)} value={form.watch("consumptionUnit") || form.watch("sellPriceUnit") || form.watch("unitOfMeasure")}>
-                <SelectTrigger><SelectValue/></SelectTrigger>
-                <SelectContent>
-                  {MATERIAL_UNIT_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground mt-1">How production usage or reservations should consume this material. This does not enable automatic conversion yet.</p>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Status</label>
-              <Select
-                onValueChange={(value) => form.setValue("isActive", value === "active")}
-                value={form.watch("isActive") ? "active" : "inactive"}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="inactive">Inactive</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="col-span-2 rounded-md border p-3 space-y-3">
-              <div>
-                <h3 className="text-sm font-semibold">Linked Products</h3>
-                <p className="text-xs text-muted-foreground">
-                  Active products commonly used with this material.
-                </p>
-              </div>
-              {selectedLinkedProducts.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {selectedLinkedProducts.map((product) => (
-                    <Badge key={product.id} variant="secondary" className="gap-1 pr-1">
-                      <span className="max-w-[220px] truncate">{product.name}</span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-5 w-5"
-                        onClick={() => setLinkedProduct(product.id, false)}
-                        aria-label={`Remove ${product.name}`}
+        <form onSubmit={form.handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+            <div className="space-y-5">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Basic Material Info</CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Identity, classification, units, status, and product relationships.
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <div className="lg:col-span-2">
+                      <label className="text-sm font-medium">Name <span className="text-destructive">*</span></label>
+                      <Input {...form.register("name")}/>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">SKU <span className="text-destructive">*</span></label>
+                      <Input {...form.register("sku")}/>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Category / Group</label>
+                      <Input {...form.register("category")} placeholder="e.g. Rigid, Vinyl, Ink" />
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Type <span className="text-destructive">*</span></label>
+                      <Select onValueChange={v=> form.setValue("type", v as any)} value={form.watch("type")}> 
+                        <SelectTrigger><SelectValue/></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="sheet">Sheet</SelectItem>
+                          <SelectItem value="roll">Roll</SelectItem>
+                          <SelectItem value="ink">Ink</SelectItem>
+                          <SelectItem value="consumable">Consumable</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Status</label>
+                      <Select
+                        onValueChange={(value) => form.setValue("isActive", value === "active")}
+                        value={form.watch("isActive") ? "active" : "inactive"}
                       >
-                        <X className="h-3 w-3" />
-                      </Button>
-                    </Badge>
-                  ))}
-                </div>
-              ) : null}
-              <Input
-                value={productSearch}
-                onChange={(event) => setProductSearch(event.target.value)}
-                placeholder="Search active products"
-              />
-              <div className="max-h-44 overflow-y-auto rounded-md border">
-                {filteredLinkableProducts.length > 0 ? (
-                  filteredLinkableProducts.map((product) => (
-                    <label
-                      key={product.id}
-                      className="flex cursor-pointer items-center gap-3 border-b px-3 py-2 text-sm last:border-b-0 hover:bg-muted/60"
-                    >
-                      <Checkbox
-                        checked={linkedProductIdSet.has(product.id)}
-                        onCheckedChange={(checked) => setLinkedProduct(product.id, checked === true)}
-                      />
-                      <span className="min-w-0 flex-1 truncate">{product.name}</span>
-                      {product.category ? (
-                        <span className="text-xs text-muted-foreground">{product.category}</span>
-                      ) : null}
-                    </label>
-                  ))
-                ) : (
-                  <div className="px-3 py-6 text-center text-sm text-muted-foreground">No active products found.</div>
-                )}
-              </div>
-            </div>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="active">Active</SelectItem>
+                          <SelectItem value="inactive">Inactive</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
 
-            {(showRollUnitWarning || showSheetSqftWarning) ? (
-              <div className="col-span-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-                {showRollUnitWarning ? ROLL_UNIT_WARNING : SHEET_SQFT_WARNING}
-              </div>
-            ) : null}
-
-            <div className="col-span-2 rounded-md border p-3 space-y-3">
-              <div>
-                <h3 className="text-sm font-semibold">Weight</h3>
-                <p className="text-xs text-muted-foreground">
-                  Used for shipping/weight estimates when products resolve this material. Optional for now.
-                </p>
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="text-sm font-medium">Weight value</label>
-                  <Input
-                    type="number"
-                    min="0"
-                    step="any"
-                    placeholder="Optional"
-                    {...form.register("weightValue", { valueAsNumber: true })}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">Weight unit</label>
-                  <Select
-                    onValueChange={(v) => form.setValue("weightUnit", v === "__none__" ? undefined : v as any)}
-                    value={form.watch("weightUnit") || "__none__"}
-                  >
-                    <SelectTrigger><SelectValue placeholder="Unit" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none__">None</SelectItem>
-                      {MATERIAL_WEIGHT_UNIT_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-sm font-medium">Weight basis</label>
-                  <Select
-                    onValueChange={(v) => form.setValue("weightBasis", v === "__none__" ? undefined : v as any)}
-                    value={form.watch("weightBasis") || "__none__"}
-                  >
-                    <SelectTrigger><SelectValue placeholder="Basis" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none__">None</SelectItem>
-                      {MATERIAL_WEIGHT_BASIS_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            </div>
-
-          {/* TWO-COLUMN RESPONSIVE LAYOUT: SELL PRICING + VENDOR COST */}
-          <div className="col-span-2 grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)]">
-            {/* LEFT COLUMN: MATERIAL SELL PRICING */}
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Material Sell Pricing</CardTitle>
-                <p className="text-xs text-muted-foreground">
-                  This is what Titan charges customers for this material. Used in quotes and orders.
-                </p>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div>
-                  <label className="text-sm font-medium">Base Sell Price</label>
-                  <Input 
-                    type="number" 
-                    step="0.0001" 
-                    placeholder="Default price when no tier-specific price set" 
-                    {...form.register("costPerUnit", {valueAsNumber:true})}
-                  />
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Recorded per Sell Price Unit. Existing quote pricing math is unchanged in this phase.
-                  </p>
-                </div>
-
-                {/* Wholesale Pricing Section */}
-                <div className="pt-3 border-t">
-                  <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                    <span className="text-blue-600">Wholesale Pricing</span>
-                    <span className="text-xs font-normal text-muted-foreground">(Trade/Reseller Rates)</span>
-                  </h4>
-                  <p className="text-xs text-muted-foreground mb-3">
-                    Special rates for trade customers and resellers. Leave empty to use base price. Recorded per Wholesale Price Unit; pricing math is unchanged in this phase.
-                  </p>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                     <div>
-                      <label className="text-sm font-medium">Wholesale Base Sell Price</label>
+                      <label className="text-sm font-medium">Catalog Unit <span className="text-destructive">*</span></label>
+                      <Select onValueChange={v=> form.setValue("unitOfMeasure", v as any)} value={form.watch("unitOfMeasure")}> 
+                        <SelectTrigger><SelectValue/></SelectTrigger>
+                        <SelectContent>
+                          {MATERIAL_UNIT_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {LEGACY_UNIT_HELPER_TEXT}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Inventory Unit</label>
+                      <Select onValueChange={v=> form.setValue("inventoryUnit", v as any)} value={form.watch("inventoryUnit") || form.watch("unitOfMeasure")}>
+                        <SelectTrigger><SelectValue/></SelectTrigger>
+                        <SelectContent>
+                          {MATERIAL_UNIT_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-1">How stock quantity and reorder points are tracked. Conversion is not automatic yet.</p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Sell Price Unit</label>
+                      <Select onValueChange={v=> form.setValue("sellPriceUnit", v as any)} value={form.watch("sellPriceUnit") || form.watch("unitOfMeasure")}>
+                        <SelectTrigger><SelectValue/></SelectTrigger>
+                        <SelectContent>
+                          {MATERIAL_UNIT_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-1">How customer-facing material pricing is calculated.</p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Wholesale Price Unit</label>
+                      <Select onValueChange={v=> form.setValue("wholesalePriceUnit", v as any)} value={form.watch("wholesalePriceUnit") || form.watch("sellPriceUnit") || form.watch("unitOfMeasure")}>
+                        <SelectTrigger><SelectValue/></SelectTrigger>
+                        <SelectContent>
+                          {MATERIAL_UNIT_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-1">How wholesale/trade material pricing is calculated.</p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Vendor Cost Unit</label>
+                      <Select onValueChange={v=> form.setValue("vendorCostUnit", v as any)} value={form.watch("vendorCostUnit") || form.watch("unitOfMeasure")}>
+                        <SelectTrigger><SelectValue/></SelectTrigger>
+                        <SelectContent>
+                          {MATERIAL_UNIT_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-1">How the supplier charges for this material.</p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Consumption Unit</label>
+                      <Select onValueChange={v=> form.setValue("consumptionUnit", v as any)} value={form.watch("consumptionUnit") || form.watch("sellPriceUnit") || form.watch("unitOfMeasure")}>
+                        <SelectTrigger><SelectValue/></SelectTrigger>
+                        <SelectContent>
+                          {MATERIAL_UNIT_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-1">How production usage or reservations should consume this material. This does not enable automatic conversion yet.</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border p-3 space-y-3">
+                    <div>
+                      <h3 className="text-sm font-semibold">Linked Products</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Active products commonly used with this material.
+                      </p>
+                    </div>
+                    {selectedLinkedProducts.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {selectedLinkedProducts.map((product) => (
+                          <Badge key={product.id} variant="secondary" className="gap-1 pr-1">
+                            <span className="max-w-[220px] truncate">{product.name}</span>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5"
+                              onClick={() => setLinkedProduct(product.id, false)}
+                              aria-label={`Remove ${product.name}`}
+                            >
+                              <X className="h-3 w-3" />
+                            </Button>
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : null}
+                    <Input
+                      value={productSearch}
+                      onChange={(event) => setProductSearch(event.target.value)}
+                      placeholder="Search active products"
+                    />
+                    <div className="max-h-44 overflow-y-auto rounded-md border">
+                      {filteredLinkableProducts.length > 0 ? (
+                        filteredLinkableProducts.map((product) => (
+                          <label
+                            key={product.id}
+                            className="flex cursor-pointer items-center gap-3 border-b px-3 py-2 text-sm last:border-b-0 hover:bg-muted/60"
+                          >
+                            <Checkbox
+                              checked={linkedProductIdSet.has(product.id)}
+                              onCheckedChange={(checked) => setLinkedProduct(product.id, checked === true)}
+                            />
+                            <span className="min-w-0 flex-1 truncate">{product.name}</span>
+                            {product.category ? (
+                              <span className="text-xs text-muted-foreground">{product.category}</span>
+                            ) : null}
+                          </label>
+                        ))
+                      ) : (
+                        <div className="px-3 py-6 text-center text-sm text-muted-foreground">No active products found.</div>
+                      )}
+                    </div>
+                  </div>
+
+                  {(showRollUnitWarning || showSheetSqftWarning) ? (
+                    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                      {showRollUnitWarning ? ROLL_UNIT_WARNING : SHEET_SQFT_WARNING}
+                    </div>
+                  ) : null}
+
+                  <div className="rounded-md border p-3 space-y-3">
+                    <div>
+                      <h3 className="text-sm font-semibold">Weight</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Used for shipping/weight estimates when products resolve this material. Optional for now.
+                      </p>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div>
+                        <label className="text-sm font-medium">Weight value</label>
+                        <Input
+                          type="number"
+                          min="0"
+                          step="any"
+                          placeholder="Optional"
+                          {...form.register("weightValue", { valueAsNumber: true })}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium">Weight unit</label>
+                        <Select
+                          onValueChange={(v) => form.setValue("weightUnit", v === "__none__" ? undefined : v as any)}
+                          value={form.watch("weightUnit") || "__none__"}
+                        >
+                          <SelectTrigger><SelectValue placeholder="Unit" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">None</SelectItem>
+                            {MATERIAL_WEIGHT_UNIT_OPTIONS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium">Weight basis</label>
+                        <Select
+                          onValueChange={(v) => form.setValue("weightBasis", v === "__none__" ? undefined : v as any)}
+                          value={form.watch("weightBasis") || "__none__"}
+                        >
+                          <SelectTrigger><SelectValue placeholder="Basis" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">None</SelectItem>
+                            {MATERIAL_WEIGHT_BASIS_OPTIONS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Pricing / Costing</CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Sell pricing, tier rates, and supplier unit cost values.
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  <div className="grid gap-4 lg:grid-cols-3">
+                    <div>
+                      <label className="text-sm font-medium">Base Sell Price</label>
                       <Input 
                         type="number" 
                         step="0.0001" 
-                        placeholder="Optional"
-                        {...form.register("wholesaleBaseRate", {valueAsNumber:true})}
+                        placeholder="Default price when no tier-specific price set" 
+                        {...form.register("costPerUnit", {valueAsNumber:true})}
                       />
                       <p className="text-xs text-muted-foreground mt-1">
-                        Price for wholesale customers per Wholesale Price Unit.
+                        Recorded per Sell Price Unit. Existing quote pricing math is unchanged in this phase.
                       </p>
                     </div>
-                    <div>
-                      <label className="text-sm font-medium">Wholesale Min Charge</label>
-                      <Input 
-                        type="number" 
-                        step="0.01" 
-                        placeholder="Optional"
-                        {...form.register("wholesaleMinCharge", {valueAsNumber:true})}
-                      />
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Minimum charge for wholesale jobs; not a unit conversion.
-                      </p>
+                    {!isRoll ? (
+                      <div>
+                        <label className="text-sm font-medium">Vendor Cost per Unit</label>
+                        <Input type="number" step="0.0001" placeholder="What vendor charges you" {...form.register("vendorCostPerUnit", {valueAsNumber:true})}/>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          What your vendor charges you per Vendor Cost Unit unless otherwise stated.
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="grid gap-5 lg:grid-cols-2">
+                    <div className="space-y-3 rounded-md border p-3">
+                      <div>
+                        <h4 className="text-sm font-semibold">
+                          <span className="text-blue-600">Wholesale Pricing</span>
+                          <span className="ml-2 text-xs font-normal text-muted-foreground">(Trade/Reseller Rates)</span>
+                        </h4>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Special rates for trade customers and resellers. Leave empty to use base price. Recorded per Wholesale Price Unit; pricing math is unchanged in this phase.
+                        </p>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div>
+                          <label className="text-sm font-medium">Wholesale Base Sell Price</label>
+                          <Input 
+                            type="number" 
+                            step="0.0001" 
+                            placeholder="Optional"
+                            {...form.register("wholesaleBaseRate", {valueAsNumber:true})}
+                          />
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Price for wholesale customers per Wholesale Price Unit.
+                          </p>
+                        </div>
+                        <div>
+                          <label className="text-sm font-medium">Wholesale Min Charge</label>
+                          <Input 
+                            type="number" 
+                            step="0.01" 
+                            placeholder="Optional"
+                            {...form.register("wholesaleMinCharge", {valueAsNumber:true})}
+                          />
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Minimum charge for wholesale jobs; not a unit conversion.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 rounded-md border p-3">
+                      <div>
+                        <h4 className="text-sm font-semibold">
+                          <span className="text-green-600">Retail Pricing</span>
+                          <span className="ml-2 text-xs font-normal text-muted-foreground">(End-User Rates)</span>
+                        </h4>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Rates for retail/consumer customers. Leave empty to use base price. Recorded per Sell Price Unit; pricing math is unchanged in this phase.
+                        </p>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div>
+                          <label className="text-sm font-medium">Retail Base Sell Price</label>
+                          <Input 
+                            type="number" 
+                            step="0.0001" 
+                            placeholder="Optional"
+                            {...form.register("retailBaseRate", {valueAsNumber:true})}
+                          />
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Price for retail customers per Sell Price Unit.
+                          </p>
+                        </div>
+                        <div>
+                          <label className="text-sm font-medium">Retail Min Charge</label>
+                          <Input 
+                            type="number" 
+                            step="0.01" 
+                            placeholder="Optional"
+                            {...form.register("retailMinCharge", {valueAsNumber:true})}
+                          />
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Minimum charge for retail jobs; not a unit conversion.
+                          </p>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                </div>
+                </CardContent>
+              </Card>
 
-                {/* Retail Pricing Section */}
-                <div className="pt-3 border-t">
-                  <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                    <span className="text-green-600">Retail Pricing</span>
-                    <span className="text-xs font-normal text-muted-foreground">(End-User Rates)</span>
-                  </h4>
-                  <p className="text-xs text-muted-foreground mb-3">
-                    Rates for retail/consumer customers. Leave empty to use base price. Recorded per Sell Price Unit; pricing math is unchanged in this phase.
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Inventory</CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    On-hand quantity, reorder threshold, and basic visual descriptor.
                   </p>
-                  <div className="grid grid-cols-2 gap-3">
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                     <div>
-                      <label className="text-sm font-medium">Retail Base Sell Price</label>
-                      <Input 
-                        type="number" 
-                        step="0.0001" 
-                        placeholder="Optional"
-                        {...form.register("retailBaseRate", {valueAsNumber:true})}
-                      />
+                      <label className="text-sm font-medium">Stock Quantity</label>
+                      <Input type="number" step="0.01" {...form.register("stockQuantity", {valueAsNumber:true})}/>
                       <p className="text-xs text-muted-foreground mt-1">
-                        Price for retail customers per Sell Price Unit.
+                        Current on-hand quantity in the Inventory Unit. For rolls, confirm whether this represents rolls, sqft, or linear feet before relying on depletion.
                       </p>
                     </div>
                     <div>
-                      <label className="text-sm font-medium">Retail Min Charge</label>
-                      <Input 
-                        type="number" 
-                        step="0.01" 
-                        placeholder="Optional"
-                        {...form.register("retailMinCharge", {valueAsNumber:true})}
-                      />
+                      <label className="text-sm font-medium">Minimum Stock Alert</label>
+                      <Input type="number" step="0.01" {...form.register("minStockAlert", {valueAsNumber:true})}/>
                       <p className="text-xs text-muted-foreground mt-1">
-                        Minimum charge for retail jobs; not a unit conversion.
+                        Reorder threshold in the Inventory Unit.
                       </p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Color</label>
+                      <Input {...form.register("color")}/>
                     </div>
                   </div>
-                </div>
+                </CardContent>
+              </Card>
 
-                {/* Sheet-specific dimensions */}
-                {!isRoll && (
-                  <>
-                    <div className="grid grid-cols-2 gap-3">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Roll / Sheet Metrics</CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Physical dimensions and roll-specific waste factors.
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {isRoll ? (
+                    <>
+                      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                        <div>
+                          <label className="text-sm font-medium">Roll Width (in) <span className="text-destructive">*</span></label>
+                          <Input type="number" step="0.01" placeholder="e.g. 54" {...form.register("width", {valueAsNumber:true})}/>
+                        </div>
+                        <div>
+                          <label className="text-sm font-medium">Roll Length (ft) <span className="text-destructive">*</span></label>
+                          <Input type="number" step="0.01" placeholder="e.g. 150" {...form.register("rollLengthFt", {valueAsNumber:true})}/>
+                        </div>
+                        <div>
+                          <label className="text-sm font-medium">Vendor Roll Cost ($) <span className="text-destructive">*</span></label>
+                          <Input type="number" step="0.01" placeholder="e.g. 250.00" {...form.register("costPerRoll", {valueAsNumber:true})}/>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            What your vendor charges for a full roll of this material. This is separate from the Inventory Unit and does not change inventory depletion behavior.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="rounded-md border p-3">
+                        <h5 className="text-xs font-semibold mb-3 text-muted-foreground">Waste Factors</h5>
+                        <div className="grid gap-3 md:grid-cols-3">
+                          <div>
+                            <label className="text-xs font-medium">Edge Waste per Side (in)</label>
+                            <Input type="number" step="0.01" placeholder="e.g. 2" {...form.register("edgeWasteInPerSide", {valueAsNumber:true})}/>
+                            <p className="text-xs text-muted-foreground">Unusable edge on left & right.</p>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium">Lead Waste (ft)</label>
+                            <Input type="number" step="0.01" placeholder="0" {...form.register("leadWasteFt", {valueAsNumber:true})}/>
+                            <p className="text-xs text-muted-foreground">Unusable material at roll start.</p>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium">Tail Waste (ft)</label>
+                            <Input type="number" step="0.01" placeholder="0" {...form.register("tailWasteFt", {valueAsNumber:true})}/>
+                            <p className="text-xs text-muted-foreground">Unusable material at roll end.</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {rollDerived && (
+                        <div className="rounded-md bg-muted/30 p-3">
+                          <h5 className="text-xs font-semibold mb-2">Derived Cost Metrics (read-only)</h5>
+                          <div className="grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-4">
+                            <div>
+                              <span className="text-muted-foreground">Sq Ft per Roll</span>
+                              <div className="font-medium">{rollDerived.grossSqftPerRoll.toLocaleString()} sqft</div>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Usable Sq Ft per Roll</span>
+                              <div className="font-medium">{rollDerived.usableSqftPerRoll.toLocaleString()} sqft</div>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground font-semibold">Vendor Cost per Sq Ft</span>
+                              <div className="font-bold text-orange-600">${rollDerived.costPerSqft.toFixed(4)}</div>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground font-semibold">Effective Cost (w/ waste)</span>
+                              <div className="font-bold text-orange-600">${rollDerived.costPerSqft.toFixed(4)}</div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                       <div>
                         <label className="text-sm font-medium">Width (in)</label>
                         <Input type="number" step="0.01" {...form.register("width", {valueAsNumber:true})}/>
@@ -800,8 +932,6 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                         <label className="text-sm font-medium">Height (in)</label>
                         <Input type="number" step="0.01" {...form.register("height", {valueAsNumber:true})}/>
                       </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="text-sm font-medium">Thickness</label>
                         <Input type="number" step="0.0001" {...form.register("thickness", {valueAsNumber:true})}/>
@@ -820,172 +950,77 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                         </Select>
                       </div>
                     </div>
-                  </>
-                )}
+                  )}
+                </CardContent>
+              </Card>
 
-                <div className="pt-2 border-t">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-sm font-medium">Stock Quantity</label>
-                      <Input type="number" step="0.01" {...form.register("stockQuantity", {valueAsNumber:true})}/>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Current on-hand quantity in the Inventory Unit. For rolls, confirm whether this represents rolls, sqft, or linear feet before relying on depletion.
-                      </p>
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium">Minimum Stock Alert</label>
-                      <Input type="number" step="0.01" {...form.register("minStockAlert", {valueAsNumber:true})}/>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Reorder threshold in the Inventory Unit.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-3">
-                    <label className="text-sm font-medium">Color</label>
-                    <Input {...form.register("color")}/>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* RIGHT COLUMN: MATERIAL & VENDOR COST */}
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Vendor / Ordering Info</CardTitle>
-                <p className="text-xs text-muted-foreground">
-                  Supplier ordering details saved with this material after the form is submitted.
-                </p>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {isRoll ? (
-                  <>
-                    {/* Roll-specific vendor cost fields */}
-                    <div>
-                      <label className="text-sm font-medium">Roll Width (in) <span className="text-destructive">*</span></label>
-                      <Input type="number" step="0.01" placeholder="e.g. 54" {...form.register("width", {valueAsNumber:true})}/>
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium">Roll Length (ft) <span className="text-destructive">*</span></label>
-                      <Input type="number" step="0.01" placeholder="e.g. 150" {...form.register("rollLengthFt", {valueAsNumber:true})}/>
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium">Vendor Roll Cost ($) <span className="text-destructive">*</span></label>
-                      <Input type="number" step="0.01" placeholder="e.g. 250.00" {...form.register("costPerRoll", {valueAsNumber:true})}/>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        What your vendor charges for a full roll of this material. This is separate from the Inventory Unit and does not change inventory depletion behavior.
-                      </p>
-                    </div>
-                    <div className="pt-2 border-t">
-                      <h5 className="text-xs font-semibold mb-2 text-muted-foreground">Waste Factors</h5>
-                      <div className="space-y-2">
-                        <div>
-                          <label className="text-xs font-medium">Edge Waste per Side (in)</label>
-                          <Input type="number" step="0.01" placeholder="e.g. 2" {...form.register("edgeWasteInPerSide", {valueAsNumber:true})}/>
-                          <p className="text-xs text-muted-foreground">Unusable edge on left & right.</p>
-                        </div>
-                        <div>
-                          <label className="text-xs font-medium">Lead Waste (ft)</label>
-                          <Input type="number" step="0.01" placeholder="0" {...form.register("leadWasteFt", {valueAsNumber:true})}/>
-                          <p className="text-xs text-muted-foreground">Unusable material at roll start.</p>
-                        </div>
-                        <div>
-                          <label className="text-xs font-medium">Tail Waste (ft)</label>
-                          <Input type="number" step="0.01" placeholder="0" {...form.register("tailWasteFt", {valueAsNumber:true})}/>
-                          <p className="text-xs text-muted-foreground">Unusable material at roll end.</p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Derived cost calculations (read-only display) */}
-                    {rollDerived && (
-                      <div className="pt-3 border-t bg-muted/30 rounded-md p-3">
-                        <h5 className="text-xs font-semibold mb-2">Derived Cost Metrics (read-only)</h5>
-                        <div className="space-y-1 text-xs">
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">Sq Ft per Roll:</span>
-                            <span className="font-medium">{rollDerived.grossSqftPerRoll.toLocaleString()} sqft</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">Usable Sq Ft per Roll:</span>
-                            <span className="font-medium">{rollDerived.usableSqftPerRoll.toLocaleString()} sqft</span>
-                          </div>
-                          <div className="flex justify-between pt-1 border-t">
-                            <span className="text-muted-foreground font-semibold">Vendor Cost per Sq Ft:</span>
-                            <span className="font-bold text-orange-600">${rollDerived.costPerSqft.toFixed(4)}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground font-semibold">Effective Cost (w/ waste):</span>
-                            <span className="font-bold text-orange-600">${rollDerived.costPerSqft.toFixed(4)}</span>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    {/* Non-roll vendor cost */}
-                    <div>
-                      <label className="text-sm font-medium">Vendor Cost per Unit</label>
-                      <Input type="number" step="0.0001" placeholder="What vendor charges you" {...form.register("vendorCostPerUnit", {valueAsNumber:true})}/>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        What your vendor charges you per Vendor Cost Unit unless otherwise stated.
-                      </p>
-                    </div>
-                  </>
-                )}
-
-                <div className="pt-2 border-t">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Vendor / Ordering Info</CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Supplier ordering details saved with this material after the form is submitted.
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-4">
                   <VendorSelectSection form={form} />
-                </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-sm font-medium">Ordering URL</label>
-                    <Input placeholder="https://vendor.example.com/material" {...form.register("vendorProductUrl")} />
-                    {form.formState.errors.vendorProductUrl?.message ? (
-                      <p className="text-xs text-destructive mt-1">{form.formState.errors.vendorProductUrl.message}</p>
-                    ) : null}
-                    {normalizedVendorProductUrl ? (
-                      <a
-                        href={normalizedVendorProductUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="mt-1 inline-flex items-center gap-1 text-xs text-primary underline"
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                        Open Vendor Page
-                      </a>
-                    ) : null}
+                  <div className="grid gap-4 lg:grid-cols-3">
+                    <div className="lg:col-span-2">
+                      <label className="text-sm font-medium">Ordering URL</label>
+                      <Input placeholder="https://vendor.example.com/material" {...form.register("vendorProductUrl")} />
+                      {form.formState.errors.vendorProductUrl?.message ? (
+                        <p className="text-xs text-destructive mt-1">{form.formState.errors.vendorProductUrl.message}</p>
+                      ) : null}
+                      {normalizedVendorProductUrl ? (
+                        <a
+                          href={normalizedVendorProductUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-1 inline-flex items-center gap-1 text-xs text-primary underline"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          Open Vendor Page
+                        </a>
+                      ) : null}
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Vendor SKU</label>
+                      <Input {...form.register("vendorSku")} />
+                      <p className="text-xs text-muted-foreground mt-1">Vendor's product code for this material.</p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Last Known Vendor Price</label>
+                      <Input type="number" min="0" step="0.01" placeholder="0.00" {...form.register("vendorLastPrice", { valueAsNumber: true })} />
+                      <p className="text-xs text-muted-foreground mt-1">Stored as cents for stable accounting later.</p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Price Last Updated</label>
+                      <Input type="date" {...form.register("vendorLastPriceUpdatedAt")} />
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-sm font-medium">Last Known Vendor Price</label>
-                    <Input type="number" min="0" step="0.01" placeholder="0.00" {...form.register("vendorLastPrice", { valueAsNumber: true })} />
-                    <p className="text-xs text-muted-foreground mt-1">Stored as cents for stable accounting later.</p>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">Price Last Updated</label>
-                    <Input type="date" {...form.register("vendorLastPriceUpdatedAt")} />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">Vendor SKU</label>
-                    <Input {...form.register("vendorSku")} />
-                    <p className="text-xs text-muted-foreground mt-1">Vendor's product code for this material.</p>
-                  </div>
-                </div>
 
-                <div>
-                  <label className="text-sm font-medium">Vendor Notes</label>
-                  <Textarea rows={3} placeholder="Ordering notes, pack size, account terms, substitutions" {...form.register("vendorNotes")} />
-                </div>
-              </CardContent>
-            </Card>
+                  <div>
+                    <label className="text-sm font-medium">Vendor Notes</label>
+                    <Textarea rows={4} placeholder="Ordering notes, pack size, account terms, substitutions" {...form.register("vendorNotes")} />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Specs JSON</CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Optional structured specs stored with the material record.
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  <Textarea rows={6} {...form.register("specsJson")}/>
+                </CardContent>
+              </Card>
+            </div>
           </div>
-          </div>
-          <div>
-            <label className="text-sm font-medium">Specs JSON</label>
-            <Textarea rows={4} {...form.register("specsJson")}/>
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
+
+          <div className="flex shrink-0 justify-end gap-2 border-t bg-background px-6 py-4">
             <Button type="button" variant="outline" onClick={()=> onOpenChange(false)}>Cancel</Button>
             <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending}>
               {isDuplicate ? "Duplicate" : material ? "Save" : "Create"}
