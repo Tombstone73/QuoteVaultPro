@@ -9,6 +9,7 @@ import {
   createPortalStripePaymentIntent,
   declinePortalQuote,
   getPortalDashboard,
+  getPortalCustomerQuoteDebug,
   getPortalInvoiceFileDownload,
   getPortalInvoicePdf,
   getPortalInvoice,
@@ -295,15 +296,47 @@ export function registerPortalRoutes(
   middleware: {
     isAuthenticated: any;
     portalContext: any;
+    tenantContext: any;
   },
 ): void {
-  const { isAuthenticated, portalContext } = middleware;
+  const { isAuthenticated, portalContext, tenantContext } = middleware;
   const portalMiddlewares = [isAuthenticated, portalContext, denyStaffPreviewMutations];
+
+  function requireNonProductionStaff(req: Request, res: Response, next: () => void) {
+    if (process.env.NODE_ENV === "production") {
+      return res.status(404).json({ success: false, message: "Not found" });
+    }
+
+    const user = (req as any).user;
+    const role = String(user?.role || "").toLowerCase();
+    if (user?.accountType === "PORTAL_CUSTOMER" || role === "customer") {
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    }
+    if (!["owner", "admin", "manager", "employee"].includes(role)) {
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    }
+    return next();
+  }
 
   app.get("/api/portal/me", ...portalMiddlewares, portalGet(getPortalSession));
   app.get("/api/portal/dashboard", ...portalMiddlewares, portalGet(getPortalDashboard));
   app.get("/api/portal/profile", ...portalMiddlewares, portalGet(getPortalProfile));
   app.patch("/api/portal/profile", ...portalMiddlewares, portalPatch(updatePortalProfile));
+  app.get("/api/portal/debug/customer-quotes", isAuthenticated, tenantContext, requireNonProductionStaff, async (req: Request, res: Response) => {
+    try {
+      const customerId = String(req.query.customerId || "").trim();
+      if (!customerId) {
+        return res.status(400).json({ success: false, message: "customerId is required" });
+      }
+      const data = await getPortalCustomerQuoteDebug(req.organizationId!, customerId);
+      return res.json({ success: true, data });
+    } catch (error) {
+      console.error("[Portal Debug] customer quote diagnostic failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return sendPortalError(res, error);
+    }
+  });
 
   app.get("/api/portal/invoices", ...portalMiddlewares, portalGet(listPortalInvoices));
   app.get("/api/portal/invoices/:id/pdf", ...portalMiddlewares, portalInvoicePdf());

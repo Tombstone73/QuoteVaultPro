@@ -344,6 +344,21 @@ export type QuotePortalActionResultDto = {
   message: string;
 };
 
+export type PortalQuoteDebugDto = {
+  organizationId: string;
+  customerId: string;
+  beforeCustomerFilterCount: number | null;
+  afterCustomerTenantScopeCount: number;
+  afterVisibilityFilterCount: number;
+  dtoCount: number;
+  scopedStatusCounts: Record<string, number>;
+  scopedWorkflowStatusCounts: Record<string, number>;
+  visibleStatusCounts: Record<string, number>;
+  visibleWorkflowStatusCounts: Record<string, number>;
+  scopedRows: Array<{ id: string; status: string; workflowStatus: string; contactId: string | null }>;
+  visibleRows: Array<{ id: string; status: string; workflowStatus: string; contactId: string | null }>;
+};
+
 type PortalScope = {
   userId: string;
   organizationId: string;
@@ -3269,6 +3284,73 @@ function logPortalQuoteHydrationDiagnostics(args: {
   });
 }
 
+type PortalQuoteTraceRow = {
+  id: string;
+  status?: unknown;
+  workflowStatus?: unknown;
+};
+
+function portalQuoteTraceEnabled(req: Request): boolean {
+  const queryValue = String((req as any).query?.tracePortalQuotes || "").toLowerCase();
+  return queryValue === "1" || queryValue === "true" || process.env.PORTAL_QUOTE_HYDRATION_TRACE === "1";
+}
+
+function summarizePortalQuoteTraceRows(rows: PortalQuoteTraceRow[]) {
+  return rows.map((row) => ({
+    id: row.id,
+    status: normalizeStatus(row.status) || "unknown",
+    workflowStatus: normalizeStatus(row.workflowStatus) || "none",
+  }));
+}
+
+async function countOrgQuoteRowsBeforeCustomerFilter(organizationId: string): Promise<number | null> {
+  try {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(quotes)
+      .where(eq(quotes.organizationId, organizationId));
+    return Number(row?.count ?? 0);
+  } catch (error) {
+    console.warn("PORTAL_QUOTE_HYDRATION_TRACE org quote prefilter count failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function logPortalQuoteHydrationTrace(args: {
+  req: Request;
+  scope: PortalScope;
+  scopedRows: PortalQuoteTraceRow[];
+  visibleRows: PortalQuoteTraceRow[];
+  dtoCount: number;
+}) {
+  if (!portalQuoteTraceEnabled(args.req)) return;
+
+  const beforeCustomerFilterCount = await countOrgQuoteRowsBeforeCustomerFilter(args.scope.organizationId);
+  const scopedRows = summarizePortalQuoteTraceRows(args.scopedRows);
+  const visibleRows = summarizePortalQuoteTraceRows(args.visibleRows);
+
+  console.info("PORTAL_QUOTE_HYDRATION_TRACE", {
+    requestPath: args.req.originalUrl || args.req.path,
+    authenticatedPortalUserId: args.scope.userId,
+    resolvedOrganizationId: args.scope.organizationId,
+    resolvedPortalCustomerId: args.scope.customerId,
+    resolvedPortalContactId: args.scope.contactId,
+    beforeCustomerFilterCount,
+    afterCustomerTenantScopeCount: args.scopedRows.length,
+    afterVisibilityFilterCount: args.visibleRows.length,
+    scopedStatusCounts: countQuoteStatuses(args.scopedRows),
+    scopedWorkflowStatusCounts: countQuoteWorkflowStatuses(args.scopedRows),
+    visibleStatusCounts: countQuoteStatuses(args.visibleRows),
+    visibleWorkflowStatusCounts: countQuoteWorkflowStatuses(args.visibleRows),
+    scopedRows,
+    visibleRows,
+    dtoMappingRan: true,
+    dtoCount: args.dtoCount,
+  });
+}
+
 export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto[]> {
   const scope = getPortalScope(req);
   const rows = await db
@@ -3315,9 +3397,80 @@ export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto
       .map(({ quote, workflowState }) => ({ status: quote.status, workflowStatus: workflowState?.status })),
   });
 
-  return visibleRows.map(({ quote, workflowState }) =>
+  const dtoRows = visibleRows.map(({ quote, workflowState }) =>
     mapQuoteList(mapQuoteDetail(quote, lineItemsByQuoteId.get(quote.id) ?? [], workflowStatesByQuoteId.get(quote.id) ?? null)),
   );
+  await logPortalQuoteHydrationTrace({
+    req,
+    scope,
+    scopedRows: rowsWithWorkflow.map(({ quote, workflowState }) => ({ id: quote.id, status: quote.status, workflowStatus: workflowState?.status })),
+    visibleRows: visibleRows.map(({ quote, workflowState }) => ({ id: quote.id, status: quote.status, workflowStatus: workflowState?.status })),
+    dtoCount: dtoRows.length,
+  });
+  return dtoRows;
+}
+
+export async function getPortalCustomerQuoteDebug(organizationId: string, customerId: string): Promise<PortalQuoteDebugDto> {
+  const beforeCustomerFilterCount = await countOrgQuoteRowsBeforeCustomerFilter(organizationId);
+  const rows = await db
+    .select({
+      id: quotes.id,
+      organizationId: quotes.organizationId,
+      customerId: quotes.customerId,
+      contactId: quotes.contactId,
+      quoteNumber: quotes.quoteNumber,
+      displayNumber: quotes.displayNumber,
+      numberCore: quotes.numberCore,
+      createdAt: quotes.createdAt,
+      validUntil: quotes.validUntil,
+      status: quotes.status,
+      subtotal: quotes.subtotal,
+      taxAmount: quotes.taxAmount,
+      totalPrice: quotes.totalPrice,
+      convertedToOrderId: quotes.convertedToOrderId,
+    })
+    .from(quotes)
+    .where(and(eq(quotes.organizationId, organizationId), eq(quotes.customerId, customerId)))
+    .orderBy(desc(quotes.createdAt));
+
+  const workflowStatesByQuoteId = await loadQuoteWorkflowStates(rows.map((row) => row.id));
+  const rowsWithWorkflow = rows.map((quote) => ({
+    quote,
+    workflowState: workflowStatesByQuoteId.get(quote.id) ?? null,
+  }));
+  const visibleRows = rowsWithWorkflow.filter(({ quote, workflowState }) =>
+    isPortalQuoteInCustomerScope(quote, { organizationId, customerId }) &&
+    isPortalQuoteVisibleToCustomer({
+      status: quote.status,
+      convertedToOrderId: quote.convertedToOrderId,
+      workflowStatus: workflowState?.status,
+    }),
+  );
+
+  return {
+    organizationId,
+    customerId,
+    beforeCustomerFilterCount,
+    afterCustomerTenantScopeCount: rows.length,
+    afterVisibilityFilterCount: visibleRows.length,
+    dtoCount: visibleRows.length,
+    scopedStatusCounts: countQuoteStatuses(rowsWithWorkflow.map(({ quote, workflowState }) => ({ status: quote.status, workflowStatus: workflowState?.status }))),
+    scopedWorkflowStatusCounts: countQuoteWorkflowStatuses(rowsWithWorkflow.map(({ workflowState }) => ({ workflowStatus: workflowState?.status }))),
+    visibleStatusCounts: countQuoteStatuses(visibleRows.map(({ quote, workflowState }) => ({ status: quote.status, workflowStatus: workflowState?.status }))),
+    visibleWorkflowStatusCounts: countQuoteWorkflowStatuses(visibleRows.map(({ workflowState }) => ({ workflowStatus: workflowState?.status }))),
+    scopedRows: rowsWithWorkflow.map(({ quote, workflowState }) => ({
+      id: quote.id,
+      status: normalizeStatus(quote.status) || "unknown",
+      workflowStatus: normalizeStatus(workflowState?.status) || "none",
+      contactId: quote.contactId ?? null,
+    })),
+    visibleRows: visibleRows.map(({ quote, workflowState }) => ({
+      id: quote.id,
+      status: normalizeStatus(quote.status) || "unknown",
+      workflowStatus: normalizeStatus(workflowState?.status) || "none",
+      contactId: quote.contactId ?? null,
+    })),
+  };
 }
 
 export async function getPortalQuote(req: Request, quoteId: string): Promise<QuotePortalDetailDto | null> {

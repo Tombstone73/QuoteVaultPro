@@ -294,7 +294,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerStaffPortalPreviewRoutes(app, { isAuthenticated, tenantContext });
 
   // Customer portal safety boundary routes (portal-scoped DTOs only).
-  registerPortalRoutes(app, { isAuthenticated, portalContext });
+  registerPortalRoutes(app, { isAuthenticated, portalContext, tenantContext });
 
   app.use("/api", (req, res, next) => {
     if (!req.isAuthenticated?.() || !isPortalCustomerIdentity(req.user)) {

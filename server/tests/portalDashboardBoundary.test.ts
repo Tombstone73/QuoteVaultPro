@@ -20,6 +20,19 @@ describe("portal dashboard boundary", () => {
     expect(service).toContain("listPortalQuotes(req)");
   });
 
+  test("portal dashboard and quotes page converge on the traced quote service", () => {
+    const routes = read("server/routes/portal.routes.ts");
+    const service = read("server/services/portal.service.ts");
+    const hooks = read("client/src/hooks/usePortal.ts");
+
+    expect(hooks).toContain('portalFetch<PortalDashboardDto>("/api/portal/dashboard")');
+    expect(hooks).toContain('portalFetch<PortalQuoteListDto[]>("/api/portal/quotes")');
+    expect(routes).toContain('app.get("/api/portal/dashboard", ...portalMiddlewares, portalGet(getPortalDashboard))');
+    expect(routes).toContain('app.get("/api/portal/quotes", ...portalMiddlewares, portalGet(listPortalQuotes))');
+    expect(service).toContain("PORTAL_QUOTE_HYDRATION_TRACE");
+    expect(service).toContain("export async function listPortalQuotes");
+  });
+
   test("dashboard source avoids raw internal data surfaces", () => {
     const service = read("server/services/portal.service.ts");
     const start = service.indexOf("export async function getPortalDashboard");
