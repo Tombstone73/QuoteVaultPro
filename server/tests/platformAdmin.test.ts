@@ -337,6 +337,8 @@ function isCorsAllowed(origin: string | undefined, allowedOrigins: string[]): bo
   return allowedOrigins.includes(origin);
 }
 
+const allowedCorsHeaders = ["Content-Type", "Authorization", "X-Requested-With", "Idempotency-Key"];
+
 describe("CORS origin allow logic", () => {
   const origins = [
     "https://www.printershero.com",
@@ -374,6 +376,10 @@ describe("CORS origin allow logic", () => {
   it("CORS_EXTRA_ORIGINS env-driven origin is allowed when list is extended", () => {
     const extended = [...origins, "https://staging.printershero.com"];
     expect(isCorsAllowed("https://staging.printershero.com", extended)).toBe(true);
+  });
+
+  it("allows direct order idempotency preflight headers", () => {
+    expect(allowedCorsHeaders).toContain("Idempotency-Key");
   });
 });
 

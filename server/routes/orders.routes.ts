@@ -1604,7 +1604,9 @@ export async function registerOrderRoutes(
     app.get("/api/orders/:orderId/traveler", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
-            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            if (!organizationId) {
+                return res.status(500).json({ success: false, message: "Missing organization context", code: "MISSING_ORGANIZATION_CONTEXT" });
+            }
             const orderId = String(req.params.orderId || "");
             if (!orderId.trim()) return res.status(400).json({ message: "orderId required" });
 
@@ -1808,14 +1810,14 @@ export async function registerOrderRoutes(
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
             const userId = getUserId(req.user);
             if (!userId) {
-                return res.status(401).json({ message: "User not authenticated" });
+                return res.status(401).json({ success: false, message: "User not authenticated", code: "UNAUTHENTICATED" });
             }
 
             // Validate the order data (excluding line items for now)
             const { lineItems, idempotencyKey: _bodyIdempotencyKey, ...orderFields } = req.body;
 
             if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
-                return res.status(400).json({ message: "At least one line item is required" });
+                return res.status(400).json({ success: false, message: "At least one line item is required", code: "ORDER_LINE_ITEMS_REQUIRED" });
             }
 
             const quoteLinkageFields = ["quoteId", "sourceQuoteId", "sourceQuoteNumber"].filter((field) => {
@@ -1828,10 +1830,18 @@ export async function registerOrderRoutes(
             });
             if (quoteLinkageFields.length > 0 || linkedLineItemIndex >= 0) {
                 return res.status(400).json({
+                    success: false,
                     message: "Direct order creation cannot include quote linkage. Use the quote conversion endpoint for quote-derived orders.",
                     code: "DIRECT_ORDER_QUOTE_LINKAGE_NOT_ALLOWED",
                 });
             }
+
+            console.info("[POST /api/orders] Direct order create request reached route", {
+                organizationId,
+                userId,
+                lineItemCount: lineItems.length,
+                hasIdempotencyKey: Boolean(req.header("Idempotency-Key") || req.body?.idempotencyKey),
+            });
 
             const createOrderForRequest = async () => {
             // Load organization for tax settings
@@ -2046,20 +2056,34 @@ export async function registerOrderRoutes(
                 createOrderForRequest,
             );
 
-            res.json(result.value);
+            res.json({
+                success: true,
+                data: { order: result.value },
+                message: "Order created successfully",
+                ...result.value,
+            });
         } catch (error) {
             if (error instanceof z.ZodError) {
                 console.error("Zod validation error:", error.errors);
-                return res.status(400).json({ message: fromZodError(error).message });
+                return res.status(400).json({ success: false, message: fromZodError(error).message, code: "ORDER_VALIDATION_ERROR" });
             }
             if ((error as any)?.code === "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD") {
-                return res.status(409).json({ message: (error as Error).message, code: (error as any).code });
+                return res.status(409).json({ success: false, message: (error as Error).message, code: (error as any).code });
             }
             if ((error as any)?.statusCode) {
-                return res.status((error as any).statusCode).json({ message: (error as Error).message });
+                return res.status((error as any).statusCode).json({
+                    success: false,
+                    message: (error as Error).message,
+                    code: (error as any)?.code || "ORDER_CREATE_ERROR",
+                });
             }
             console.error("Error creating order:", error);
-            res.status(500).json({ message: "Failed to create order", error: (error as Error).message });
+            res.status(500).json({
+                success: false,
+                message: "Failed to create order",
+                error: (error as Error).message,
+                code: "ORDER_CREATE_FAILED",
+            });
         }
     });
 

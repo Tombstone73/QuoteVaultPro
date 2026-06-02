@@ -25,7 +25,7 @@ import { useUserPreferences } from "@/hooks/useUserPreferences";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiFetch, apiRequest, queryClient } from "@/lib/queryClient";
 import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
 import {
     beginCreateOrderSubmit,
@@ -219,23 +219,32 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
     const createDirectOrderMutation = useMutation({
         mutationFn: async (payload: Record<string, any>) => {
-            const response = await fetch("/api/orders", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    ...(payload?.idempotencyKey ? { "Idempotency-Key": payload.idempotencyKey } : {}),
-                },
-                body: JSON.stringify(payload),
-                credentials: "include",
-            });
+            let response: Response;
+            try {
+                response = await apiFetch("/api/orders", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        ...(payload?.idempotencyKey ? { "Idempotency-Key": payload.idempotencyKey } : {}),
+                    },
+                    body: JSON.stringify(payload),
+                });
+            } catch (error) {
+                throw new Error(
+                    error instanceof Error
+                        ? `Network/CORS error creating order: ${error.message}`
+                        : "Network/CORS error creating order.",
+                );
+            }
             const data = await response.json().catch(() => null);
             if (!response.ok) {
-                throw new Error(data?.message || "Failed to create order");
+                throw new Error(data?.message || data?.error || `Failed to create order (${response.status})`);
             }
-            if (!data?.id) {
+            const order = data?.data?.order ?? data;
+            if (!order?.id) {
                 throw new Error("Order creation did not return an id");
             }
-            return data;
+            return order;
         },
         onSuccess: (order) => {
             queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
