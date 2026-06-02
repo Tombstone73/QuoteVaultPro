@@ -27,6 +27,12 @@ import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
+import {
+    beginCreateOrderSubmit,
+    createInitialOrderSubmitGuardState,
+    markCreateOrderSubmitFailed,
+    markCreateOrderSubmitSucceeded,
+} from "@/lib/createOrderSubmitGuard";
 import { useQuoteEditorState } from "./useQuoteEditorState";
 import type { QuoteDuplicateMode } from "./useQuoteEditorState";
 import { QuoteHeader } from "./components/QuoteHeader";
@@ -59,6 +65,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const { toast } = useToast();
     const state = useQuoteEditorState();
     const [draftShipToData, setDraftShipToData] = useState<Record<string, string | null>>({});
+    const [createOrderSubmitting, setCreateOrderSubmitting] = useState(false);
+    const createOrderSubmitGuardRef = useRef(createInitialOrderSubmitGuardState());
 
     const backPath = createTarget === "order" ? ROUTES.orders.list : ROUTES.quotes.list;
 
@@ -755,8 +763,16 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      * Creates/updates the underlying quote, then converts it into an order.
      */
     const handleCreateOrder = async () => {
+        const idempotencyKey = beginCreateOrderSubmit(createOrderSubmitGuardRef.current);
+        if (!idempotencyKey) return;
+        setCreateOrderSubmitting(true);
+
         try {
-            if (!(await ensureAuthenticatedForSave())) return;
+            if (!(await ensureAuthenticatedForSave())) {
+                markCreateOrderSubmitFailed(createOrderSubmitGuardRef.current);
+                setCreateOrderSubmitting(false);
+                return;
+            }
 
             customerSelectRef.current?.commitPendingFlags?.();
 
@@ -769,8 +785,12 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 promisedDate: state.orderPromisedDate || undefined,
                 priority: state.orderPriority || "normal",
                 notesInternal: state.orderInternalNotes.trim() || undefined,
+                idempotencyKey,
             });
+            markCreateOrderSubmitSucceeded(createOrderSubmitGuardRef.current);
         } catch (err) {
+            markCreateOrderSubmitFailed(createOrderSubmitGuardRef.current);
+            setCreateOrderSubmitting(false);
             if (isSessionExpiredError(err)) {
                 handleSessionExpired("quote-editor-create-order");
                 return;
@@ -1133,7 +1153,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             selectedContactId={state.selectedContactId}
                             pricingStale={state.pricingStale}
                             canSaveQuote={state.canSaveQuote}
-                            isSaving={createTarget === "order" ? (state.isSaving || !!state.convertToOrderHook?.isPending) : state.isSaving}
+                            isSaving={createTarget === "order" ? (createOrderSubmitting || state.isSaving || !!state.convertToOrderHook?.isPending) : state.isSaving}
                             hasUnsavedChanges={state.hasUnsavedChanges}
                             readOnly={readOnly}
                             onSave={createTarget === "order" ? handleCreateOrder : handleSave}

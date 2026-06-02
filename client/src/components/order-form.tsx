@@ -15,6 +15,12 @@ import { useToast } from "@/hooks/use-toast";
 import { Trash2, Plus, Calculator, Loader2 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
+import {
+  beginCreateOrderSubmit,
+  createInitialOrderSubmitGuardState,
+  markCreateOrderSubmitFailed,
+  markCreateOrderSubmitSucceeded,
+} from "@/lib/createOrderSubmitGuard";
 import type { ProductOptionItem } from "@shared/schema";
 
 /**
@@ -85,6 +91,8 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
   // Item being added/edited
   const [showItemDialog, setShowItemDialog] = useState(false);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [createOrderSubmitting, setCreateOrderSubmitting] = useState(false);
+  const createOrderSubmitGuardRef = useRef(createInitialOrderSubmitGuardState());
   const [selectedProductId, setSelectedProductId] = useState("");
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
   const [width, setWidth] = useState("");
@@ -370,7 +378,10 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
     mutationFn: async (data: any) => {
       const response = await fetch("/api/orders", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(data?.idempotencyKey ? { "Idempotency-Key": data.idempotencyKey } : {}),
+        },
         body: JSON.stringify(data),
         credentials: "include",
       });
@@ -401,8 +412,13 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const idempotencyKey = beginCreateOrderSubmit(createOrderSubmitGuardRef.current);
+    if (!idempotencyKey) return;
+    setCreateOrderSubmitting(true);
 
     if (!selectedCustomerId) {
+      markCreateOrderSubmitFailed(createOrderSubmitGuardRef.current);
+      setCreateOrderSubmitting(false);
       toast({
         title: "Validation Error",
         description: "Please select a customer",
@@ -412,6 +428,8 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
     }
 
     if (lineItems.length === 0) {
+      markCreateOrderSubmitFailed(createOrderSubmitGuardRef.current);
+      setCreateOrderSubmitting(false);
       toast({
         title: "Validation Error",
         description: "Please add at least one line item",
@@ -434,6 +452,7 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
       discount: Number(discount),
       notesInternal: notesInternal || null,
       poNumber: poNumber || null,
+      idempotencyKey,
       lineItems: lineItems.map(item => ({
         productId: item.productId,
         productVariantId: item.productVariantId,
@@ -450,7 +469,13 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
       })),
     };
 
-    createOrderMutation.mutate(orderData);
+    try {
+      await createOrderMutation.mutateAsync(orderData);
+      markCreateOrderSubmitSucceeded(createOrderSubmitGuardRef.current);
+    } catch {
+      markCreateOrderSubmitFailed(createOrderSubmitGuardRef.current);
+      setCreateOrderSubmitting(false);
+    }
   };
 
   const formatCurrency = (amount: number) => {
@@ -717,8 +742,8 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={createOrderMutation.isPending || lineItems.length === 0}>
-                {createOrderMutation.isPending ? "Creating..." : "Create Order"}
+              <Button type="submit" disabled={createOrderSubmitting || createOrderMutation.isPending || lineItems.length === 0}>
+                {createOrderSubmitting || createOrderMutation.isPending ? "Creating..." : "Create Order"}
               </Button>
             </div>
           </form>

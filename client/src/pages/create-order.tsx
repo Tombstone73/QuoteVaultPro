@@ -1,13 +1,22 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
+import {
+  beginCreateOrderSubmit,
+  createInitialOrderSubmitGuardState,
+  markCreateOrderSubmitFailed,
+  markCreateOrderSubmitSucceeded,
+} from "@/lib/createOrderSubmitGuard";
 import type { Product, Organization } from "@shared/schema";
 import { DocumentCreateForm } from "@/features/documents/create/DocumentCreateForm";
 
 export default function CreateOrder() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const [createOrderSubmitting, setCreateOrderSubmitting] = useState(false);
+  const createOrderSubmitGuardRef = useRef(createInitialOrderSubmitGuardState());
 
   // Fetch organization for tax rate
   const { data: organization } = useQuery<Organization>({
@@ -34,7 +43,10 @@ export default function CreateOrder() {
     mutationFn: async (formData: any) => {
       const response = await fetch("/api/orders", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(formData?.idempotencyKey ? { "Idempotency-Key": formData.idempotencyKey } : {}),
+        },
         body: JSON.stringify({
           ...formData,
           shippingMethod: formData.deliveryMethod,
@@ -72,9 +84,18 @@ export default function CreateOrder() {
       productsLoading={productsLoading}
       onNavigateBack={() => navigate("/orders")}
       onSubmit={async (formData) => {
-        createOrderMutation.mutate(formData);
+        const idempotencyKey = beginCreateOrderSubmit(createOrderSubmitGuardRef.current);
+        if (!idempotencyKey) return;
+        setCreateOrderSubmitting(true);
+        try {
+          await createOrderMutation.mutateAsync({ ...formData, idempotencyKey });
+          markCreateOrderSubmitSucceeded(createOrderSubmitGuardRef.current);
+        } catch {
+          markCreateOrderSubmitFailed(createOrderSubmitGuardRef.current);
+          setCreateOrderSubmitting(false);
+        }
       }}
-      isSubmitting={createOrderMutation.isPending}
+      isSubmitting={createOrderSubmitting || createOrderMutation.isPending}
     />
   );
 }
