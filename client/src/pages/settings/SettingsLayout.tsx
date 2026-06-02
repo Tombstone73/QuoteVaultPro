@@ -1059,11 +1059,22 @@ export function ProductionSettings() {
   };
 
   const prepressDefaultEnabled = (preferences as any)?.prepressDefaultEnabled ?? true;
+  const proofApprovalLockEnabled = preferences.proofing?.proofApprovalLockEnabled ?? false;
 
   const handlePrepressDefaultToggle = async (enabled: boolean) => {
     await updatePreferences({
       ...preferences,
       prepressDefaultEnabled: enabled,
+    });
+  };
+
+  const handleProofApprovalLockToggle = async (enabled: boolean) => {
+    await updatePreferences({
+      ...preferences,
+      proofing: {
+        ...(preferences.proofing ?? {}),
+        proofApprovalLockEnabled: enabled,
+      },
     });
   };
 
@@ -1159,6 +1170,29 @@ export function ProductionSettings() {
               id="prepress-default-enabled"
               checked={prepressDefaultEnabled}
               onCheckedChange={handlePrepressDefaultToggle}
+              disabled={isOrgPreferencesLoading || isOrgPreferencesUpdating}
+            />
+          </div>
+        </ProductionSettingsSection>
+
+        <ProductionSettingsSection
+          title="Proof Approval"
+          summary={proofApprovalLockEnabled ? "Required proof approval is locked" : "Required proof approval can be overridden"}
+          help="Controls whether product-required proof approval can be manually unchecked during quote and order intake."
+        >
+          <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+            <div className="flex-1 space-y-1">
+              <Label htmlFor="proof-approval-lock-enabled" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
+                Lock product-required Proof Approval
+              </Label>
+              <p className="text-titan-xs text-titan-text-muted">
+                When enabled, line items whose product requires proof approval keep the checkbox checked and locked.
+              </p>
+            </div>
+            <Switch
+              id="proof-approval-lock-enabled"
+              checked={proofApprovalLockEnabled}
+              onCheckedChange={handleProofApprovalLockToggle}
               disabled={isOrgPreferencesLoading || isOrgPreferencesUpdating}
             />
           </div>

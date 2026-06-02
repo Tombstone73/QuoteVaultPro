@@ -49,6 +49,7 @@ import { filterAndPrioritizeProductsForMaterial } from "@/components/orders/prod
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useCreateOrderLineItem, useDeleteOrderLineItem, useTransitionLineItemWorkflow, useUpdateOrderLineItem } from "@/hooks/useOrders";
 import { useOrderFiles } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
@@ -661,6 +662,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { isAdmin, isPlatformAdmin, isPlatformDeveloper } = useAuth();
+  const { preferences: orgPreferences } = useOrgPreferences();
   const canSeeDebug = isAdmin || isPlatformAdmin || isPlatformDeveloper;
   const [showLineItemDebug, setShowLineItemDebug] = useState(false);
 
@@ -1252,6 +1254,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [notes, setNotes] = useState<string>("");
   const [requiresDesignInput, setRequiresDesignInput] = useState(false);
   const [requiresPrepressInput, setRequiresPrepressInput] = useState(true);
+  const [requiresProofApprovalInput, setRequiresProofApprovalInput] = useState(false);
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
   const [optionSelectionsV2, setOptionSelectionsV2] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
   const [optionsV2Valid, setOptionsV2Valid] = useState(true);
@@ -1474,6 +1477,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setNotesDraftById((prev) => ({ ...prev, [itemId]: nextProductionNotes }));
     setRequiresDesignInput(Boolean((expandedItem as any).requiresDesign));
     setRequiresPrepressInput(Boolean((expandedItem as any).requiresPrepress));
+    setRequiresProofApprovalInput(Boolean((expandedItem as any).requiresProofApproval));
 
     const selections: Record<string, OptionSelection> = {};
     const savedSelectedOptions = (expandedItem.specsJson as any)?.selectedOptions;
@@ -1553,6 +1557,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       productionNotes: nextProductionNotes,
       requiresDesign: Boolean((expandedItem as any).requiresDesign),
       requiresPrepress: Boolean((expandedItem as any).requiresPrepress),
+      requiresProofApproval: Boolean((expandedItem as any).requiresProofApproval),
       optionSelections: selections,
       optionSelectionsV2: nextSelectionsV2.selected ?? {},
       totalPrice: currentTotal,
@@ -1653,6 +1658,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     if (typeof replacementDraft.requiresPrepress === "boolean") {
       setRequiresPrepressInput(replacementDraft.requiresPrepress);
     }
+    setRequiresProofApprovalInput(replacementDraft.requiresProofApproval);
     setOptionSelections(replacementDraft.optionSelections);
     setOptionSelectionsV2(replacementDraft.optionSelectionsV2);
     setPbv2SnapshotJson(replacementDraft.pbv2SnapshotJson);
@@ -1772,6 +1778,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       productionNotes: currentProductionNotes,
       requiresDesign: requiresDesignInput,
       requiresPrepress: requiresPrepressInput,
+      requiresProofApproval: requiresProofApprovalInput,
       optionSelections: pricingDirtyByUser ? optionSelections : saved.optionSelections,
       optionSelectionsV2: pricingDirtyByUser ? (optionSelectionsV2?.selected || {}) : saved.optionSelectionsV2,
       isPbv2Mode,
@@ -1820,6 +1827,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     isPbv2Mode,
     requiresDesignInput,
     requiresPrepressInput,
+    requiresProofApprovalInput,
     designBriefDraft,
     computedTotal,
     // Forces recompute against the freshly-written savedSnapshotRef after a save.
@@ -2249,6 +2257,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           description: notes || "",
           requiresDesign: requiresDesignInput,
           requiresPrepress: requiresPrepressInput,
+          requiresProofApproval: requiresProofApprovalInput,
           unitPrice: unitPrice.toFixed(2),
           totalPrice: totalPrice.toFixed(2),
           ...(pricingForSave
@@ -2304,6 +2313,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         productionNotes: productionNotesDraft,
         requiresDesign: requiresDesignInput,
         requiresPrepress: requiresPrepressInput,
+        requiresProofApproval: requiresProofApprovalInput,
         optionSelections,
         optionSelectionsV2: optionSelectionsV2.selected ?? {},
         totalPrice: resolvedTotal,
@@ -2732,7 +2742,15 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const renderedRequiresPrepress = isExpanded && expandedItem && expandedItem.id === item.id
                     ? requiresPrepressInput
                     : (typeof (item as any).requiresPrepress === "boolean" ? (item as any).requiresPrepress : null);
-                  const renderedRequiresProofApproval = Boolean((expandedProduct as any)?.requiresProofApproval ?? (item as any)?.requiresProofApproval);
+                  const proofApprovalRequiredByDefault = Boolean(
+                    isExpanded && expandedItem && expandedItem.id === item.id
+                      ? (expandedProduct as any)?.requiresProofApproval
+                      : (item as any)?.product?.requiresProofApproval ?? (item as any)?.requiresProofApproval
+                  );
+                  const proofApprovalLockEnabled = orgPreferences.proofing?.proofApprovalLockEnabled === true;
+                  const renderedRequiresProofApproval = isExpanded && expandedItem && expandedItem.id === item.id
+                    ? requiresProofApprovalInput
+                    : Boolean((item as any)?.requiresProofApproval);
 
                   let operationalWarning: string | null = null;
                   let operationalWarningTone: "warning" | "danger" | null = null;
@@ -3618,9 +3636,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 }
                                 requiresDesign={isExpanded && expandedItem?.id === item.id ? requiresDesignInput : Boolean((item as any).requiresDesign)}
                                 requiresPrepress={isExpanded && expandedItem?.id === item.id ? requiresPrepressInput : ((item as any).requiresPrepress ?? null)}
-                                requiresProofApproval={Boolean((item as any).requiresProofApproval)}
+                                requiresProofApproval={renderedRequiresProofApproval}
+                                proofApprovalRequiredByDefault={proofApprovalRequiredByDefault}
+                                proofApprovalLockEnabled={proofApprovalLockEnabled}
                                 onRequiresDesignChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresDesignInput : undefined}
                                 onRequiresPrepressChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresPrepressInput : undefined}
+                                onRequiresProofApprovalChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresProofApprovalInput : undefined}
                                 topAnchorRef={setLineItemTopAnchorRef(String(item.id))}
                                 widthInputRef={setLineItemWidthInputRef(String(item.id))}
                                 detailsSide="right"

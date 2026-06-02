@@ -2011,7 +2011,9 @@ export class OrdersRepository {
             .from(products)
             .where(eq(products.id, lineItem.productId))
             .limit(1);
-        const requiresProofApprovalSafe = Boolean(productProofRow?.requiresProofApproval);
+        const requiresProofApprovalSafe = typeof lineItem.requiresProofApproval === "boolean"
+            ? lineItem.requiresProofApproval
+            : Boolean(productProofRow?.requiresProofApproval);
         const baseCalculatedTotalCents = Number.isFinite(Number((lineItem as any)?.pbv2SnapshotJson?.pricing?.totalCents))
             ? Math.round(Number((lineItem as any).pbv2SnapshotJson.pricing.totalCents))
             : Math.round(Number(lineItem.totalPrice) * 100);

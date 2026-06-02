@@ -43,6 +43,7 @@ import {
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
 import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/materialsOverrideMode";
 import { resolveBillingInvoiceTriggerPolicyFromOrgPreferences } from "@shared/billingInvoicePolicy";
+import { resolveProofApprovalLockEnabledFromOrgPreferences } from "@shared/proofApprovalLock";
 import { resetTransactionalData, resetQuickBooksImportData } from "../services/orgResetService";
 import { resolveFileUploadNamingPolicyFromPreferences } from "../prepressFileService";
 
@@ -176,10 +177,18 @@ export function registerOrganizationRoutes(
       const fileUploadNaming = resolveFileUploadNamingPolicyFromPreferences(preferences, organizationId);
       const billingInvoiceTriggerPolicy = resolveBillingInvoiceTriggerPolicyFromOrgPreferences(preferences);
       const quotePreferences = resolveQuotePreferencesFromOrgPreferences(preferences, organizationId);
+      const rawProofing = (preferences as any)?.proofing && typeof (preferences as any).proofing === "object"
+        ? (preferences as any).proofing
+        : {};
+      const proofing = {
+        ...rawProofing,
+        proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences(preferences),
+      };
 
       res.json({
         ...(preferences as any),
         quotes: quotePreferences,
+        proofing,
         billingInvoiceTriggerPolicy,
         fileUploadNaming,
         prepressDefaultEnabled: org.prepressDefaultEnabled,

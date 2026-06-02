@@ -59,6 +59,9 @@ export function buildQuoteLineItemSavePayload(item: QuoteLineItemDraft, override
     },
     displayOrder: mergedItem.displayOrder ?? 0,
     status: mergedItem.status === "canceled" ? "canceled" : "active",
+    requiresDesign: mergedItem.requiresDesign,
+    requiresPrepress: mergedItem.requiresPrepress,
+    requiresProofApproval: mergedItem.requiresProofApproval,
   };
 }
 
