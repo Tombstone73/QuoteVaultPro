@@ -32,10 +32,12 @@ export default function PortalDocumentsPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl space-y-6">
+    <div className="mx-auto w-full max-w-6xl space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-normal">Documents</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Customer-visible invoices, quote files, and order documents.</p>
+        <h1 className="text-2xl font-semibold tracking-normal">Business Documents</h1>
+        <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+          Upload tax forms, resale certificates, or account documents. Artwork should be uploaded with the related quote/order/proof.
+        </p>
       </div>
 
       {error ? (
@@ -49,14 +51,16 @@ export default function PortalDocumentsPage() {
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-14 text-center">
             <FileText className="mb-3 h-9 w-9 text-muted-foreground" />
-            <p className="font-medium">No customer documents are available</p>
-            <p className="mt-1 text-sm text-muted-foreground">Documents will appear here when they are ready for you.</p>
+            <p className="font-medium">No business documents are available</p>
+            <p className="mt-1 max-w-lg text-sm text-muted-foreground">
+              Account documents shared by your print partner will appear here. Artwork belongs with the related quote, order, or proof.
+            </p>
           </CardContent>
         </Card>
       ) : (
         <div className="space-y-3">
           {files.map((file) => (
-            <div key={`${file.entityType}-${file.entityId}-${file.id}`} className="flex flex-col gap-3 rounded-md border p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div key={`${file.entityType}-${file.entityId}-${file.id}`} className="flex flex-col gap-3 rounded-md border bg-card p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="font-medium">{file.displayName}</p>
