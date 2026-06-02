@@ -26,7 +26,7 @@ interface ThemeContextValue {
 
 const ThemeContext = React.createContext<ThemeContextValue | undefined>(undefined);
 
-function applyThemeClass(id: ThemeId) {
+export function applyThemeClass(id: ThemeId) {
   const meta = THEMES[id];
   const el = document.documentElement;
   // Remove all known theme classes first

@@ -347,6 +347,7 @@ type PortalScope = {
   userId: string;
   organizationId: string;
   customerId: string;
+  contactId: string | null;
   customer: typeof customers.$inferSelect;
 };
 
@@ -459,7 +460,20 @@ type OrderInvoiceSummaryRow = Pick<
 
 type QuotePortalRow = Pick<
   typeof quotes.$inferSelect,
-  "id" | "quoteNumber" | "displayNumber" | "numberCore" | "createdAt" | "validUntil" | "status" | "subtotal" | "taxAmount" | "totalPrice" | "convertedToOrderId"
+  | "id"
+  | "organizationId"
+  | "customerId"
+  | "contactId"
+  | "quoteNumber"
+  | "displayNumber"
+  | "numberCore"
+  | "createdAt"
+  | "validUntil"
+  | "status"
+  | "subtotal"
+  | "taxAmount"
+  | "totalPrice"
+  | "convertedToOrderId"
 >;
 
 type QuoteLineItemPortalRow = Pick<
@@ -721,6 +735,44 @@ function mapQuoteActions(displayStatus: string): QuotePortalActionsDto {
   };
 }
 
+type PortalQuoteVisibilityInput = {
+  status?: unknown;
+  workflowStatus?: unknown;
+  convertedToOrderId?: unknown;
+};
+
+export function getPortalQuoteVisibilityReason(input: PortalQuoteVisibilityInput): string | null {
+  const status = normalizeStatus(input.status);
+  const workflowStatus = normalizeStatus(input.workflowStatus);
+
+  if (input.convertedToOrderId) return "converted_history";
+  if (status === "pending") return "sent";
+  if (workflowStatus === "customer_approved") return "customer_approved";
+  if (workflowStatus === "customer_revision_requested") return "customer_revision_requested";
+  if (workflowStatus === "customer_declined" || workflowStatus === "rejected") {
+    return status === "canceled" || status === "cancelled" ? "customer_declined" : null;
+  }
+
+  return null;
+}
+
+export function isPortalQuoteVisibleToCustomer(input: PortalQuoteVisibilityInput): boolean {
+  return getPortalQuoteVisibilityReason(input) !== null;
+}
+
+export function isPortalQuoteInCustomerScope(
+  input: {
+    organizationId?: string | null;
+    customerId?: string | null;
+  },
+  scope: {
+    organizationId: string;
+    customerId: string;
+  },
+): boolean {
+  return input.organizationId === scope.organizationId && input.customerId === scope.customerId;
+}
+
 export function mapPortalProofStatus(raw: unknown): { status: PortalProofStatus; displayStatus: string; customerActionRequired: boolean } {
   const status = normalizeStatus(raw);
   if (status === "awaiting_response" || status === "awaiting_customer") {
@@ -788,7 +840,9 @@ export function getPortalScope(req: Request): PortalScope {
     throw new PortalAccessError(403, "Portal customer scope is required");
   }
 
-  return { userId, organizationId, customerId, customer };
+  const contactId = (req as any).portalAccess?.contactId ?? null;
+
+  return { userId, organizationId, customerId, contactId, customer };
 }
 
 async function findPortalContactName(scope: PortalScope, email: string | null): Promise<string | null> {
@@ -1544,18 +1598,27 @@ async function getScopedPortalOrderId(scope: PortalScope, orderId: string): Prom
 
 async function getScopedPortalQuoteId(scope: PortalScope, quoteId: string): Promise<string | null> {
   const [quote] = await db
-    .select({ id: quotes.id })
+    .select({
+      id: quotes.id,
+      organizationId: quotes.organizationId,
+      customerId: quotes.customerId,
+      status: quotes.status,
+      convertedToOrderId: quotes.convertedToOrderId,
+    })
     .from(quotes)
-    .where(
-      and(
-        eq(quotes.id, quoteId),
-        eq(quotes.organizationId, scope.organizationId),
-        eq(quotes.customerId, scope.customerId),
-        inArray(quotes.status, CUSTOMER_VISIBLE_QUOTE_STATUSES),
-      ),
-    )
+    .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, scope.organizationId), eq(quotes.customerId, scope.customerId)))
     .limit(1);
-  return quote?.id ?? null;
+  if (!quote || !isPortalQuoteInCustomerScope(quote, scope)) return null;
+
+  const workflowStatesByQuoteId = await loadQuoteWorkflowStates([quote.id]);
+  const workflowState = workflowStatesByQuoteId.get(quote.id) ?? null;
+  return isPortalQuoteVisibleToCustomer({
+    status: quote.status,
+    convertedToOrderId: quote.convertedToOrderId,
+    workflowStatus: workflowState?.status,
+  })
+    ? quote.id
+    : null;
 }
 
 async function getCustomerVisibleProofAttachmentIds(scope: PortalScope, orderId: string): Promise<Set<string>> {
@@ -2732,18 +2795,51 @@ async function loadQuoteWorkflowStates(quoteIds: string[]) {
   return new Map(rows.map((row) => [row.quoteId, row]));
 }
 
-const CUSTOMER_VISIBLE_QUOTE_STATUSES: Array<"active" | "pending" | "pending_approval" | "canceled"> = [
-  "active",
-  "pending",
-  "pending_approval",
-  "canceled",
-];
+function countQuoteStatuses(rows: Array<{ status?: unknown; workflowStatus?: unknown }>): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const row of rows) {
+    const status = normalizeStatus(row.status) || "unknown";
+    counts[status] = (counts[status] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function countQuoteWorkflowStatuses(rows: Array<{ workflowStatus?: unknown }>): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const row of rows) {
+    const status = normalizeStatus(row.workflowStatus) || "none";
+    counts[status] = (counts[status] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function logPortalQuoteHydrationDiagnostics(args: {
+  scope: PortalScope;
+  beforeCount: number;
+  visibleCount: number;
+  excludedRows: Array<{ status?: unknown; workflowStatus?: unknown }>;
+}) {
+  if (args.beforeCount === 0 || args.visibleCount > 0) return;
+
+  console.info("[Portal Quotes] scoped quote hydration returned no visible quotes", {
+    organizationId: args.scope.organizationId,
+    portalCustomerId: args.scope.customerId,
+    portalContactId: args.scope.contactId,
+    beforeVisibilityFilter: args.beforeCount,
+    afterVisibilityFilter: args.visibleCount,
+    excludedStatusCounts: countQuoteStatuses(args.excludedRows),
+    excludedWorkflowStatusCounts: countQuoteWorkflowStatuses(args.excludedRows),
+  });
+}
 
 export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto[]> {
   const scope = getPortalScope(req);
   const rows = await db
     .select({
       id: quotes.id,
+      organizationId: quotes.organizationId,
+      customerId: quotes.customerId,
+      contactId: quotes.contactId,
       quoteNumber: quotes.quoteNumber,
       displayNumber: quotes.displayNumber,
       numberCore: quotes.numberCore,
@@ -2756,12 +2852,33 @@ export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto
       convertedToOrderId: quotes.convertedToOrderId,
     })
     .from(quotes)
-    .where(and(eq(quotes.organizationId, scope.organizationId), eq(quotes.customerId, scope.customerId), inArray(quotes.status, CUSTOMER_VISIBLE_QUOTE_STATUSES)))
+    .where(and(eq(quotes.organizationId, scope.organizationId), eq(quotes.customerId, scope.customerId)))
     .orderBy(desc(quotes.createdAt));
 
   const lineItemsByQuoteId = await loadQuoteLineItems(rows.map((row) => row.id));
   const workflowStatesByQuoteId = await loadQuoteWorkflowStates(rows.map((row) => row.id));
-  return rows.map((quote) =>
+  const rowsWithWorkflow = rows.map((quote) => ({
+    quote,
+    workflowState: workflowStatesByQuoteId.get(quote.id) ?? null,
+  }));
+  const visibleRows = rowsWithWorkflow.filter(({ quote, workflowState }) =>
+    isPortalQuoteInCustomerScope(quote, scope) &&
+    isPortalQuoteVisibleToCustomer({
+      status: quote.status,
+      convertedToOrderId: quote.convertedToOrderId,
+      workflowStatus: workflowState?.status,
+    }),
+  );
+  logPortalQuoteHydrationDiagnostics({
+    scope,
+    beforeCount: rows.length,
+    visibleCount: visibleRows.length,
+    excludedRows: rowsWithWorkflow
+      .filter(({ quote }) => !visibleRows.some((visible) => visible.quote.id === quote.id))
+      .map(({ quote, workflowState }) => ({ status: quote.status, workflowStatus: workflowState?.status })),
+  });
+
+  return visibleRows.map(({ quote, workflowState }) =>
     mapQuoteList(mapQuoteDetail(quote, lineItemsByQuoteId.get(quote.id) ?? [], workflowStatesByQuoteId.get(quote.id) ?? null)),
   );
 }
@@ -2771,6 +2888,9 @@ export async function getPortalQuote(req: Request, quoteId: string): Promise<Quo
   const [quote] = await db
     .select({
       id: quotes.id,
+      organizationId: quotes.organizationId,
+      customerId: quotes.customerId,
+      contactId: quotes.contactId,
       quoteNumber: quotes.quoteNumber,
       displayNumber: quotes.displayNumber,
       numberCore: quotes.numberCore,
@@ -2783,13 +2903,25 @@ export async function getPortalQuote(req: Request, quoteId: string): Promise<Quo
       convertedToOrderId: quotes.convertedToOrderId,
     })
     .from(quotes)
-    .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, scope.organizationId), eq(quotes.customerId, scope.customerId), inArray(quotes.status, CUSTOMER_VISIBLE_QUOTE_STATUSES)))
+    .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, scope.organizationId), eq(quotes.customerId, scope.customerId)))
     .limit(1);
 
   if (!quote) return null;
-  const lineItemsByQuoteId = await loadQuoteLineItems([quote.id]);
   const workflowStatesByQuoteId = await loadQuoteWorkflowStates([quote.id]);
-  return mapQuoteDetail(quote, lineItemsByQuoteId.get(quote.id) ?? [], workflowStatesByQuoteId.get(quote.id) ?? null);
+  const workflowState = workflowStatesByQuoteId.get(quote.id) ?? null;
+  if (
+    !isPortalQuoteInCustomerScope(quote, scope) ||
+    !isPortalQuoteVisibleToCustomer({
+      status: quote.status,
+      convertedToOrderId: quote.convertedToOrderId,
+      workflowStatus: workflowState?.status,
+    })
+  ) {
+    return null;
+  }
+
+  const lineItemsByQuoteId = await loadQuoteLineItems([quote.id]);
+  return mapQuoteDetail(quote, lineItemsByQuoteId.get(quote.id) ?? [], workflowState);
 }
 
 function sanitizePortalActionNote(value: unknown): string | null {
@@ -2886,6 +3018,9 @@ async function getScopedPortalQuoteRecord(scope: PortalScope, quoteId: string): 
   const [quote] = await db
     .select({
       id: quotes.id,
+      organizationId: quotes.organizationId,
+      customerId: quotes.customerId,
+      contactId: quotes.contactId,
       quoteNumber: quotes.quoteNumber,
       displayNumber: quotes.displayNumber,
       numberCore: quotes.numberCore,

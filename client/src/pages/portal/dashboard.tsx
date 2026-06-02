@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
-import { AlertCircle, ArrowRight, Download, FileText, Loader2, Package, ReceiptText } from "lucide-react";
+import type * as React from "react";
+import { AlertCircle, ArrowRight, Download, FileCheck, FileText, Loader2, Package, ReceiptText, WalletCards } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -50,12 +51,40 @@ function orderVariant(order: PortalOrderListDto): "default" | "secondary" | "des
 }
 
 function EmptyState({ text }: { text: string }) {
-  return <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">{text}</p>;
+  return (
+    <div className="rounded-md border bg-muted/30 px-4 py-8 text-center text-sm text-muted-foreground">
+      {text}
+    </div>
+  );
+}
+
+function SummaryTile({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  value: string | number;
+}) {
+  return (
+    <div className="rounded-md border border-border/80 bg-card p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm text-muted-foreground">{label}</p>
+          <p className="mt-2 text-2xl font-semibold leading-none">{value}</p>
+        </div>
+        <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground">
+          <Icon className="h-4 w-4" />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function InvoiceItem({ invoice }: { invoice: PortalInvoiceDto }) {
   return (
-    <div className="flex flex-col gap-3 rounded-md border p-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-3 rounded-md border bg-background p-4 sm:flex-row sm:items-center sm:justify-between">
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <Link to={`/portal/invoices/${invoice.id}`} className="font-medium hover:underline">
@@ -80,7 +109,7 @@ function InvoiceItem({ invoice }: { invoice: PortalInvoiceDto }) {
 
 function QuoteItem({ quote }: { quote: PortalQuoteListDto }) {
   return (
-    <div className="flex flex-col gap-3 rounded-md border p-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-3 rounded-md border bg-background p-4 sm:flex-row sm:items-center sm:justify-between">
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <Link to={`/portal/quotes/${quote.id}`} className="font-medium hover:underline">
@@ -102,7 +131,7 @@ function QuoteItem({ quote }: { quote: PortalQuoteListDto }) {
 
 function OrderItem({ order }: { order: PortalOrderListDto }) {
   return (
-    <div className="rounded-md border p-4">
+    <div className="rounded-md border bg-background p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-2">
@@ -131,7 +160,7 @@ function OrderItem({ order }: { order: PortalOrderListDto }) {
 
 function ProofItem({ proof }: { proof: PortalProofDto }) {
   return (
-    <div className="flex flex-col gap-3 rounded-md border p-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-3 rounded-md border bg-background p-4 sm:flex-row sm:items-center sm:justify-between">
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <Link to={`/portal/proofs/${proof.id}`} className="font-medium hover:underline">
@@ -150,7 +179,7 @@ function ProofItem({ proof }: { proof: PortalProofDto }) {
 
 function FileItem({ file }: { file: PortalDashboardFileDto }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md border p-4">
+    <div className="flex items-center justify-between gap-3 rounded-md border bg-background p-4">
       <div className="min-w-0">
         <p className="truncate font-medium">{file.displayName}</p>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -193,7 +222,7 @@ export default function PortalDashboardPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-6">
+    <div className="mx-auto w-full max-w-7xl space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-normal">Dashboard</h1>
@@ -201,35 +230,16 @@ export default function PortalDashboardPage() {
         </div>
       </div>
 
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <div className="rounded-md border p-4">
-          <ReceiptText className="mb-3 h-5 w-5 text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">Unpaid invoices</p>
-          <p className="mt-1 text-2xl font-semibold">{data.summary.openInvoiceCount}</p>
-        </div>
-        <div className="rounded-md border p-4">
-          <p className="text-sm text-muted-foreground">Payable balance</p>
-          <p className="mt-1 text-2xl font-semibold">{formatCurrency(data.summary.outstandingBalance)}</p>
-        </div>
-        <div className="rounded-md border p-4">
-          <FileText className="mb-3 h-5 w-5 text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">Quotes to review</p>
-          <p className="mt-1 text-2xl font-semibold">{data.summary.quotesNeedingAction}</p>
-        </div>
-        <div className="rounded-md border p-4">
-          <Package className="mb-3 h-5 w-5 text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">Active orders</p>
-          <p className="mt-1 text-2xl font-semibold">{data.summary.activeOrderCount}</p>
-        </div>
-        <div className="rounded-md border p-4">
-          <AlertCircle className="mb-3 h-5 w-5 text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">Proofs waiting</p>
-          <p className="mt-1 text-2xl font-semibold">{data.summary.proofsAwaitingApproval}</p>
-        </div>
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <SummaryTile icon={ReceiptText} label="Unpaid invoices" value={data.summary.openInvoiceCount} />
+        <SummaryTile icon={WalletCards} label="Payable balance" value={formatCurrency(data.summary.outstandingBalance)} />
+        <SummaryTile icon={FileText} label="Quotes to review" value={data.summary.quotesNeedingAction} />
+        <SummaryTile icon={Package} label="Active orders" value={data.summary.activeOrderCount} />
+        <SummaryTile icon={FileCheck} label="Proofs waiting" value={data.summary.proofsAwaitingApproval} />
       </section>
 
       <section className="grid gap-6 lg:grid-cols-2">
-        <Card>
+        <Card className="shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Outstanding Invoices</CardTitle>
             <Button asChild variant="ghost" size="sm">
@@ -244,7 +254,7 @@ export default function PortalDashboardPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Quotes Requiring Attention</CardTitle>
             <Button asChild variant="ghost" size="sm">
@@ -261,7 +271,7 @@ export default function PortalDashboardPage() {
       </section>
 
       <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-        <Card>
+        <Card className="shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Active Orders</CardTitle>
             <Button asChild variant="ghost" size="sm">
@@ -276,7 +286,7 @@ export default function PortalDashboardPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Proofs Awaiting Approval</CardTitle>
             <Button asChild variant="ghost" size="sm">
@@ -293,9 +303,9 @@ export default function PortalDashboardPage() {
       </section>
 
       <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-        <Card>
+        <Card className="shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>Recent Documents</CardTitle>
+            <CardTitle>Recent Business Documents</CardTitle>
             <Button asChild variant="ghost" size="sm">
               <Link to="/portal/documents">
                 View all
@@ -307,10 +317,8 @@ export default function PortalDashboardPage() {
             {data.recentFiles.length ? data.recentFiles.slice(0, 5).map((file) => <FileItem key={`${file.entityType}-${file.entityId}-${file.id}`} file={file} />) : <EmptyState text="No recent documents" />}
           </CardContent>
         </Card>
-      </section>
 
-      <section>
-        <Card>
+        <Card className="shadow-sm">
           <CardHeader>
             <CardTitle>Recent Activity</CardTitle>
           </CardHeader>
@@ -318,7 +326,7 @@ export default function PortalDashboardPage() {
             {data.recentActivity.length ? (
               <div className="space-y-3">
                 {data.recentActivity.map((item) => (
-                  <div key={item.id} className="flex items-center justify-between gap-4 rounded-md border p-3">
+                  <div key={item.id} className="flex items-center justify-between gap-4 rounded-md border bg-background p-3">
                     <p className="text-sm">{item.label}</p>
                     <p className="shrink-0 text-xs text-muted-foreground">{formatDate(item.occurredAt)}</p>
                   </div>
