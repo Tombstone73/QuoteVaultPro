@@ -6,6 +6,7 @@ import {
   auditLogs,
   companySettings,
   customerContacts,
+  customerContactLinks,
   customers,
   integrationConnections,
   invoiceLineItems,
@@ -351,6 +352,53 @@ type PortalScope = {
   customer: typeof customers.$inferSelect;
 };
 
+export type PortalProfileAddressDto = {
+  street1: string | null;
+  street2: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  country: string | null;
+};
+
+export type PortalProfileDto = {
+  company: {
+    name: string;
+    phone: string | null;
+    email: string | null;
+  };
+  billingAddress: PortalProfileAddressDto;
+  shippingAddress: PortalProfileAddressDto;
+  contact: {
+    firstName: string;
+    lastName: string;
+    phone: string | null;
+    email: string | null;
+    emailEditable: boolean;
+    emailEditMessage: string | null;
+  } | null;
+  latestPortalUpdate: {
+    updatedAt: string;
+    updatedBy: string | null;
+    fieldCount: number;
+  } | null;
+};
+
+type PortalProfileUpdatePayload = {
+  company?: {
+    phone?: string | null;
+    email?: string | null;
+  };
+  billingAddress?: Partial<PortalProfileAddressDto>;
+  shippingAddress?: Partial<PortalProfileAddressDto>;
+  contact?: {
+    firstName?: string;
+    lastName?: string;
+    phone?: string | null;
+    email?: string | null;
+  };
+};
+
 type InvoicePortalRow = Pick<
   typeof invoices.$inferSelect,
   | "id"
@@ -555,6 +603,116 @@ class PortalAccessError extends Error {
     super(message);
     this.statusCode = statusCode;
   }
+}
+
+const ADDRESS_UPDATE_FIELDS = ["street1", "street2", "city", "state", "postalCode", "country"] as const;
+const PROFILE_UPDATE_SHAPE = {
+  company: new Set(["phone", "email"]),
+  billingAddress: new Set(ADDRESS_UPDATE_FIELDS),
+  shippingAddress: new Set(ADDRESS_UPDATE_FIELDS),
+  contact: new Set(["firstName", "lastName", "phone", "email"]),
+} as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeEditableText(value: unknown, fieldLabel: string, maxLength: number): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") {
+    throw new PortalAccessError(400, `${fieldLabel} must be text.`);
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > maxLength) {
+    throw new PortalAccessError(400, `${fieldLabel} is too long.`);
+  }
+  return trimmed;
+}
+
+function normalizeRequiredProfileName(value: unknown, fieldLabel: string): string {
+  const text = normalizeEditableText(value, fieldLabel, 100);
+  if (!text) {
+    throw new PortalAccessError(400, `${fieldLabel} is required.`);
+  }
+  return text;
+}
+
+function normalizeEmail(value: unknown, fieldLabel = "Email"): string | null {
+  const email = normalizeEditableText(value, fieldLabel, 255);
+  if (!email) return null;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new PortalAccessError(400, `${fieldLabel} must be a valid email address.`);
+  }
+  return email;
+}
+
+function assertAllowedSectionKeys(sectionName: keyof typeof PROFILE_UPDATE_SHAPE, section: Record<string, unknown>) {
+  const allowed = PROFILE_UPDATE_SHAPE[sectionName];
+  for (const key of Object.keys(section)) {
+    if (!allowed.has(key as never)) {
+      throw new PortalAccessError(400, `Restricted or unsupported profile field: ${sectionName}.${key}`);
+    }
+  }
+}
+
+export function normalizePortalProfileUpdatePayload(payload: unknown): PortalProfileUpdatePayload {
+  if (!isRecord(payload)) {
+    throw new PortalAccessError(400, "Profile update payload is required.");
+  }
+
+  const allowedTopLevel = new Set(Object.keys(PROFILE_UPDATE_SHAPE));
+  for (const key of Object.keys(payload)) {
+    if (!allowedTopLevel.has(key)) {
+      throw new PortalAccessError(400, `Restricted or unsupported profile field: ${key}`);
+    }
+  }
+
+  const update: PortalProfileUpdatePayload = {};
+  if (payload.company !== undefined) {
+    if (!isRecord(payload.company)) throw new PortalAccessError(400, "Company profile data must be an object.");
+    assertAllowedSectionKeys("company", payload.company);
+    update.company = {};
+    if (Object.prototype.hasOwnProperty.call(payload.company, "phone")) {
+      update.company.phone = normalizeEditableText(payload.company.phone, "Company phone", 50);
+    }
+    if (Object.prototype.hasOwnProperty.call(payload.company, "email")) {
+      update.company.email = normalizeEmail(payload.company.email, "Company email");
+    }
+  }
+
+  for (const sectionName of ["billingAddress", "shippingAddress"] as const) {
+    const section = payload[sectionName];
+    if (section === undefined) continue;
+    if (!isRecord(section)) throw new PortalAccessError(400, `${sectionName} must be an object.`);
+    assertAllowedSectionKeys(sectionName, section);
+    update[sectionName] = {};
+    for (const field of ADDRESS_UPDATE_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(section, field)) {
+        update[sectionName]![field] = normalizeEditableText(section[field], field, 255);
+      }
+    }
+  }
+
+  if (payload.contact !== undefined) {
+    if (!isRecord(payload.contact)) throw new PortalAccessError(400, "Contact profile data must be an object.");
+    assertAllowedSectionKeys("contact", payload.contact);
+    update.contact = {};
+    if (Object.prototype.hasOwnProperty.call(payload.contact, "firstName")) {
+      update.contact.firstName = normalizeRequiredProfileName(payload.contact.firstName, "First name");
+    }
+    if (Object.prototype.hasOwnProperty.call(payload.contact, "lastName")) {
+      update.contact.lastName = normalizeRequiredProfileName(payload.contact.lastName, "Last name");
+    }
+    if (Object.prototype.hasOwnProperty.call(payload.contact, "phone")) {
+      update.contact.phone = normalizeEditableText(payload.contact.phone, "Contact phone", 50);
+    }
+    if (Object.prototype.hasOwnProperty.call(payload.contact, "email")) {
+      update.contact.email = normalizeEmail(payload.contact.email, "Contact email");
+    }
+  }
+
+  return update;
 }
 
 const toMoney = (value: unknown): number => {
@@ -893,6 +1051,282 @@ export async function getPortalSession(req: Request): Promise<PortalSessionDto> 
       canViewQuotes: true,
     },
   };
+}
+
+function normalizeIdentityEmail(value: unknown): string | null {
+  const email = String(value || "").trim().toLowerCase();
+  return email || null;
+}
+
+function addressFromCustomer(customer: typeof customers.$inferSelect, prefix: "billing" | "shipping"): PortalProfileAddressDto {
+  const keyPrefix = prefix === "billing" ? "billing" : "shipping";
+  return {
+    street1: (customer as any)[`${keyPrefix}Street1`] ?? null,
+    street2: (customer as any)[`${keyPrefix}Street2`] ?? null,
+    city: (customer as any)[`${keyPrefix}City`] ?? null,
+    state: (customer as any)[`${keyPrefix}State`] ?? null,
+    postalCode: (customer as any)[`${keyPrefix}PostalCode`] ?? null,
+    country: (customer as any)[`${keyPrefix}Country`] ?? null,
+  };
+}
+
+async function loadScopedPortalContact(scope: PortalScope): Promise<typeof customerContacts.$inferSelect | null> {
+  if (!scope.contactId) return null;
+  const [contact] = await db
+    .select()
+    .from(customerContacts)
+    .where(and(eq(customerContacts.id, scope.contactId), eq(customerContacts.organizationId, scope.organizationId)))
+    .limit(1);
+
+  if (!contact) return null;
+  if (contact.customerId === scope.customerId) return contact;
+
+  const [link] = await db
+    .select({ id: customerContactLinks.id })
+    .from(customerContactLinks)
+    .where(
+      and(
+        eq(customerContactLinks.organizationId, scope.organizationId),
+        eq(customerContactLinks.customerId, scope.customerId),
+        eq(customerContactLinks.contactId, contact.id),
+        ne(customerContactLinks.status, "removed"),
+      ),
+    )
+    .limit(1);
+
+  return link ? contact : null;
+}
+
+async function loadPortalProfileCustomer(scope: PortalScope) {
+  const [customer] = await db
+    .select()
+    .from(customers)
+    .where(and(eq(customers.organizationId, scope.organizationId), eq(customers.id, scope.customerId)))
+    .limit(1);
+  if (!customer) {
+    throw new PortalAccessError(404, "Customer profile not found.");
+  }
+  return customer;
+}
+
+function getPortalLoginEmail(req: Request): string | null {
+  const access = (req as any).portalAccess as { email?: unknown } | null | undefined;
+  return normalizeIdentityEmail((req as any).user?.email) ?? normalizeIdentityEmail(access?.email);
+}
+
+export function isPortalContactEmailLoginManaged(input: {
+  contactEmail?: unknown;
+  loginEmail?: unknown;
+  accessEmail?: unknown;
+}): boolean {
+  const contactEmail = normalizeIdentityEmail(input.contactEmail);
+  const loginEmail = normalizeIdentityEmail(input.loginEmail);
+  const accessEmail = normalizeIdentityEmail(input.accessEmail);
+  return Boolean(contactEmail && (contactEmail === loginEmail || contactEmail === accessEmail));
+}
+
+function isContactEmailLoginManaged(req: Request, contact: typeof customerContacts.$inferSelect | null): boolean {
+  if (!contact?.email) return false;
+  return isPortalContactEmailLoginManaged({
+    contactEmail: contact.email,
+    loginEmail: getPortalLoginEmail(req),
+    accessEmail: ((req as any).portalAccess as any)?.email,
+  });
+}
+
+async function loadLatestPortalProfileAudit(organizationId: string, customerId: string) {
+  const [latest] = await db
+    .select({
+      createdAt: auditLogs.createdAt,
+      userName: auditLogs.userName,
+      newValues: auditLogs.newValues,
+    })
+    .from(auditLogs)
+    .where(
+      and(
+        eq(auditLogs.organizationId, organizationId),
+        eq(auditLogs.entityType, "customer"),
+        eq(auditLogs.entityId, customerId),
+        eq(auditLogs.actionType, "CUSTOMER_PORTAL_PROFILE_UPDATE"),
+      ),
+    )
+    .orderBy(desc(auditLogs.createdAt))
+    .limit(1);
+
+  if (!latest) return null;
+  const fields = (latest.newValues as any)?.fields;
+  return {
+    updatedAt: toIso(latest.createdAt) ?? new Date().toISOString(),
+    updatedBy: latest.userName ?? null,
+    fieldCount: fields && typeof fields === "object" ? Object.keys(fields).length : 0,
+  };
+}
+
+async function buildPortalProfileDto(
+  req: Request,
+  customer: typeof customers.$inferSelect,
+  contact: typeof customerContacts.$inferSelect | null,
+): Promise<PortalProfileDto> {
+  const emailLoginManaged = isContactEmailLoginManaged(req, contact);
+  return {
+    company: {
+      name: customer.companyName,
+      phone: customer.phone ?? null,
+      email: customer.email ?? null,
+    },
+    billingAddress: addressFromCustomer(customer, "billing"),
+    shippingAddress: addressFromCustomer(customer, "shipping"),
+    contact: contact
+      ? {
+          firstName: contact.firstName,
+          lastName: contact.lastName,
+          phone: contact.phone ?? contact.mobile ?? null,
+          email: contact.email ?? null,
+          emailEditable: !emailLoginManaged,
+          emailEditMessage: emailLoginManaged
+            ? "This email is used for portal login. Contact support to change login email."
+            : null,
+        }
+      : null,
+    latestPortalUpdate: await loadLatestPortalProfileAudit(customer.organizationId, customer.id),
+  };
+}
+
+export async function getPortalProfile(req: Request): Promise<PortalProfileDto> {
+  const scope = getPortalScope(req);
+  const customer = await loadPortalProfileCustomer(scope);
+  const contact = await loadScopedPortalContact(scope);
+  return buildPortalProfileDto(req, customer, contact);
+}
+
+function valuesDiffer(oldValue: unknown, newValue: unknown): boolean {
+  return (oldValue ?? null) !== (newValue ?? null);
+}
+
+function recordProfileChange(
+  changes: { oldValues: Record<string, unknown>; newValues: Record<string, unknown> },
+  field: string,
+  oldValue: unknown,
+  newValue: unknown,
+) {
+  if (!valuesDiffer(oldValue, newValue)) return;
+  changes.oldValues[field] = oldValue ?? null;
+  changes.newValues[field] = newValue ?? null;
+}
+
+export async function updatePortalProfile(req: Request): Promise<PortalProfileDto> {
+  const scope = getPortalScope(req);
+  const payload = normalizePortalProfileUpdatePayload(req.body);
+  const customer = await loadPortalProfileCustomer(scope);
+  const contact = await loadScopedPortalContact(scope);
+
+  if (payload.contact && !contact) {
+    throw new PortalAccessError(400, "No portal contact is linked to this session.");
+  }
+  if (payload.contact && Object.prototype.hasOwnProperty.call(payload.contact, "email") && isContactEmailLoginManaged(req, contact)) {
+    throw new PortalAccessError(409, "Contact email is used for portal login and cannot be changed here.");
+  }
+
+  const customerUpdates: Partial<typeof customers.$inferInsert> = {};
+  const contactUpdates: Partial<typeof customerContacts.$inferInsert> = {};
+  const changes = { oldValues: {} as Record<string, unknown>, newValues: {} as Record<string, unknown> };
+
+  if (payload.company) {
+    if (Object.prototype.hasOwnProperty.call(payload.company, "phone")) {
+      customerUpdates.phone = payload.company.phone ?? null;
+      recordProfileChange(changes, "company.phone", customer.phone, payload.company.phone ?? null);
+    }
+    if (Object.prototype.hasOwnProperty.call(payload.company, "email")) {
+      customerUpdates.email = payload.company.email ?? null;
+      recordProfileChange(changes, "company.email", customer.email, payload.company.email ?? null);
+    }
+  }
+
+  for (const [sectionName, dbPrefix] of [
+    ["billingAddress", "billing"],
+    ["shippingAddress", "shipping"],
+  ] as const) {
+    const section = payload[sectionName];
+    if (!section) continue;
+    for (const field of ADDRESS_UPDATE_FIELDS) {
+      if (!Object.prototype.hasOwnProperty.call(section, field)) continue;
+      const dbField = `${dbPrefix}${field[0].toUpperCase()}${field.slice(1)}`;
+      (customerUpdates as any)[dbField] = section[field] ?? null;
+      recordProfileChange(changes, `${sectionName}.${field}`, (customer as any)[dbField], section[field] ?? null);
+    }
+  }
+
+  if (payload.contact && contact) {
+    if (Object.prototype.hasOwnProperty.call(payload.contact, "firstName")) {
+      contactUpdates.firstName = payload.contact.firstName!;
+      recordProfileChange(changes, "contact.firstName", contact.firstName, payload.contact.firstName);
+    }
+    if (Object.prototype.hasOwnProperty.call(payload.contact, "lastName")) {
+      contactUpdates.lastName = payload.contact.lastName!;
+      recordProfileChange(changes, "contact.lastName", contact.lastName, payload.contact.lastName);
+    }
+    if (Object.prototype.hasOwnProperty.call(payload.contact, "phone")) {
+      contactUpdates.phone = payload.contact.phone ?? null;
+      recordProfileChange(changes, "contact.phone", contact.phone, payload.contact.phone ?? null);
+    }
+    if (Object.prototype.hasOwnProperty.call(payload.contact, "email")) {
+      contactUpdates.email = payload.contact.email ?? null;
+      recordProfileChange(changes, "contact.email", contact.email, payload.contact.email ?? null);
+    }
+  }
+
+  const changedFields = Object.keys(changes.newValues);
+  if (changedFields.length === 0) {
+    return buildPortalProfileDto(req, customer, contact);
+  }
+
+  const actorName = String(((req as any).portalAccess as any)?.displayName || (req as any).user?.email || "").trim() || null;
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    if (Object.keys(customerUpdates).length > 0) {
+      await tx
+        .update(customers)
+        .set({ ...customerUpdates, updatedAt: now })
+        .where(and(eq(customers.organizationId, scope.organizationId), eq(customers.id, scope.customerId)));
+    }
+
+    if (contact && Object.keys(contactUpdates).length > 0) {
+      await tx
+        .update(customerContacts)
+        .set({ ...contactUpdates, updatedAt: now })
+        .where(and(eq(customerContacts.organizationId, scope.organizationId), eq(customerContacts.id, contact.id)));
+    }
+
+    await tx.insert(auditLogs).values({
+      organizationId: scope.organizationId,
+      userId: scope.userId,
+      userName: actorName,
+      actionType: "CUSTOMER_PORTAL_PROFILE_UPDATE",
+      entityType: "customer",
+      entityId: scope.customerId,
+      entityName: customer.companyName,
+      description: "Profile updated via customer portal",
+      oldValues: {
+        source: "customer_portal",
+        customerId: scope.customerId,
+        contactId: contact?.id ?? null,
+        fields: changes.oldValues,
+      },
+      newValues: {
+        source: "customer_portal",
+        customerId: scope.customerId,
+        contactId: contact?.id ?? null,
+        fields: changes.newValues,
+      },
+      ipAddress: req.ip,
+      userAgent: req.get?.("user-agent"),
+    });
+  });
+
+  const updatedCustomer = await loadPortalProfileCustomer(scope);
+  const updatedContact = await loadScopedPortalContact(scope);
+  return buildPortalProfileDto(req, updatedCustomer, updatedContact);
 }
 
 function mapInvoice(row: InvoicePortalRow, paymentRows: PaymentRollupRow[]): InvoicePortalDto {

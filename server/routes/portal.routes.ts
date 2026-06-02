@@ -16,6 +16,7 @@ import {
   getPortalOrderFileDownload,
   getPortalProof,
   getPortalProofFileDownload,
+  getPortalProfile,
   getPortalQuote,
   getPortalQuoteFileDownload,
   getPortalSession,
@@ -32,6 +33,7 @@ import {
   requestPortalProofRevision,
   requestPortalQuoteRevision,
   toPortalErrorResponse,
+  updatePortalProfile,
 } from "../services/portal.service";
 import { isSupabaseConfigured, SupabaseStorageService } from "../supabaseStorage";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
@@ -105,6 +107,22 @@ function portalPostById<T>(
         return res.status(404).json({ success: false, message: "Not found" });
       }
 
+      return res.json({ success: true, data });
+    } catch (error) {
+      console.error("[Portal] request failed", {
+        path: req.path,
+        method: req.method,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return sendPortalError(res, error);
+    }
+  };
+}
+
+function portalPatch<T>(handler: PortalHandler<T>) {
+  return async (req: Request, res: Response) => {
+    try {
+      const data = await handler(req);
       return res.json({ success: true, data });
     } catch (error) {
       console.error("[Portal] request failed", {
@@ -284,6 +302,8 @@ export function registerPortalRoutes(
 
   app.get("/api/portal/me", ...portalMiddlewares, portalGet(getPortalSession));
   app.get("/api/portal/dashboard", ...portalMiddlewares, portalGet(getPortalDashboard));
+  app.get("/api/portal/profile", ...portalMiddlewares, portalGet(getPortalProfile));
+  app.patch("/api/portal/profile", ...portalMiddlewares, portalPatch(updatePortalProfile));
 
   app.get("/api/portal/invoices", ...portalMiddlewares, portalGet(listPortalInvoices));
   app.get("/api/portal/invoices/:id/pdf", ...portalMiddlewares, portalInvoicePdf());

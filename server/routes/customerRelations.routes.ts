@@ -34,7 +34,7 @@ import { fromZodError } from "zod-validation-error";
 import { eq, desc, and, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "../db";
-import { orders, quotes, invoices, payments, customerCreditTransactions, customers, customerContacts } from "@shared/schema";
+import { auditLogs, orders, quotes, invoices, payments, customerCreditTransactions, customers, customerContacts } from "@shared/schema";
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import {
   insertCustomerContactSchema,
@@ -1108,12 +1108,39 @@ export function registerCustomerRelationsRoutes(
           ),
         );
 
+      const [latestPortalProfileUpdate] = await db
+        .select({
+          createdAt: auditLogs.createdAt,
+          userName: auditLogs.userName,
+          newValues: auditLogs.newValues,
+        })
+        .from(auditLogs)
+        .where(
+          and(
+            eq(auditLogs.organizationId, organizationId),
+            eq(auditLogs.entityType, "customer"),
+            eq(auditLogs.entityId, customerId),
+            eq(auditLogs.actionType, "CUSTOMER_PORTAL_PROFILE_UPDATE"),
+          ),
+        )
+        .orderBy(desc(auditLogs.createdAt))
+        .limit(1);
+
+      const portalProfileFields = (latestPortalProfileUpdate?.newValues as any)?.fields;
+
       return res.json({
         openOrderCount:      Number(orderAgg?.openOrderCount   ?? 0),
         lastOrderDate:       orderAgg?.lastOrderDate            ?? null,
         overdueInvoiceCount: Number(invoiceAgg?.overdueInvoiceCount ?? 0),
         lastInvoiceDate:     invoiceAgg?.lastInvoiceDate         ?? null,
         lastPaymentDate:     paymentAgg?.lastPaymentDate          ?? null,
+        recentPortalProfileUpdate: latestPortalProfileUpdate
+          ? {
+              updatedAt: latestPortalProfileUpdate.createdAt,
+              updatedBy: latestPortalProfileUpdate.userName ?? null,
+              fieldCount: portalProfileFields && typeof portalProfileFields === "object" ? Object.keys(portalProfileFields).length : 0,
+            }
+          : null,
       });
     } catch (error) {
       console.error("Error fetching customer activity:", error);

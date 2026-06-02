@@ -118,6 +118,11 @@ interface CustomerActivitySummary {
   overdueInvoiceCount: number;
   lastInvoiceDate: string | null;
   lastPaymentDate: string | null;
+  recentPortalProfileUpdate?: {
+    updatedAt: string;
+    updatedBy: string | null;
+    fieldCount: number;
+  } | null;
 }
 
 interface CustomerHeaderProps {
@@ -394,8 +399,14 @@ function CustomerHeader({
       </div>
       
       {/* Activity badges — only when meaningful data exists */}
-      {activitySummary && (activitySummary.openOrderCount > 0 || activitySummary.overdueInvoiceCount > 0 || activitySummary.lastOrderDate || activitySummary.lastPaymentDate) && (
+      {activitySummary && (activitySummary.openOrderCount > 0 || activitySummary.overdueInvoiceCount > 0 || activitySummary.lastOrderDate || activitySummary.lastPaymentDate || activitySummary.recentPortalProfileUpdate) && (
         <div className="flex items-center gap-2 mt-1.5 pt-1.5 border-t border-titan-border-subtle/50 flex-wrap">
+          {activitySummary.recentPortalProfileUpdate && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+              <UserCheck className="w-2.5 h-2.5" />
+              Profile updated via portal {formatDate(activitySummary.recentPortalProfileUpdate.updatedAt)}
+            </span>
+          )}
           {activitySummary.openOrderCount > 0 && (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/15 text-blue-400 border border-blue-500/30">
               <Briefcase className="w-2.5 h-2.5" />

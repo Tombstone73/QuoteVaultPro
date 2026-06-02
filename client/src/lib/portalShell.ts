@@ -1,7 +1,7 @@
 export type PortalNavItem = {
   to: string;
   label: string;
-  icon: "home" | "quotes" | "orders" | "proofs" | "invoices" | "documents";
+  icon: "home" | "quotes" | "orders" | "proofs" | "invoices" | "documents" | "profile";
   end?: boolean;
 };
 
@@ -12,6 +12,7 @@ export const portalNavItems: PortalNavItem[] = [
   { to: "/portal/proofs", label: "Proofs", icon: "proofs" },
   { to: "/portal/invoices", label: "Invoices", icon: "invoices" },
   { to: "/portal/documents", label: "Documents", icon: "documents" },
+  { to: "/portal/profile", label: "Profile", icon: "profile" },
 ];
 
 export type PortalAuthSessionState = "unauthenticated" | "authenticated_active" | "logging_out" | "logged_out";

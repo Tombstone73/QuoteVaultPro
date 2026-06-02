@@ -12,6 +12,7 @@ import {
   ReceiptText,
   ShoppingBag,
   Sun,
+  UserCircle,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -43,6 +44,7 @@ const NAV_ICONS = {
   proofs: FileCheck,
   invoices: ReceiptText,
   documents: Files,
+  profile: UserCircle,
 };
 
 function getStorage() {
