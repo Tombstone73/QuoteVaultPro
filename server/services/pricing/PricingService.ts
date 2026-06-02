@@ -123,6 +123,7 @@ export type PBV2RuntimePricingSnapshot = {
   resolvedFormulaExpression?: string;
   manualFormulaPresent?: boolean;
   manualFormulaIgnored?: boolean;
+  formulaOutputMeaning?: FormulaOutputMeaning;
   formulaVariables: Record<string, number | string | boolean | null>;
   formulaVariableSources?: Record<string, string>;
   rawSelections: Record<string, any>;
@@ -312,7 +313,8 @@ export type PricingPreviewEvaluationResult = {
     resolvedFormulaExpression?: string;
     manualFormulaPresent?: boolean;
     manualFormulaIgnored?: boolean;
-    formulaResultType?: "final_dollars";
+    formulaOutputMeaning?: FormulaOutputMeaning;
+    formulaResultType?: "final_dollars" | "billable_quantity";
     quantityBasisUsed?: string;
     selectedRate?: number | null;
     finalFormulaTotal?: number | null;
@@ -670,6 +672,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     quantity,
     formulaSourceMode: product.pricingEngine,
     pricingFormulaLibrary,
+    pricingProfileConfig: product.pricingProfileConfig,
     formulaVariables: formulaVariablesForPricing,
     formulaVariableSources: formulaVariableResolution.sources,
     pricingMatrixVariables: pricingMatrixVariablesForFormula,
@@ -944,6 +947,7 @@ export function evaluatePricingPreviewFromTree(input: {
       manualFormulaText: input.manualFormulaText,
       formulaSourceMode: input.formulaSourceMode,
       pricingFormulaLibrary: input.pricingFormulaLibrary ?? null,
+      pricingProfileConfig: input.pricingProfileConfig,
       formulaVariables: formulaVariablesForPricing,
       formulaVariableSources: formulaVariableResolution.sources,
       pricingMatrixVariables: pricingMatrixVariablesForFormula,
@@ -1068,6 +1072,7 @@ export function evaluatePricingPreviewFromTree(input: {
       rawSqftPerItem: widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0,
       rawTotalSqft: (widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0) * quantity,
       baseRateUsed: formulaDebug.baseRateUsed,
+      formulaOutputMeaning: formulaDebug.formulaOutputMeaning,
       formulaResultType: formulaDebug.formulaResultType,
       quantityBasisUsed: formulaDebug.quantityBasisUsed,
       selectedRate: formulaDebug.selectedRate,
@@ -2960,6 +2965,7 @@ type FormulaAwareBasePriceResult = {
 
 type FormulaSourceMode = "library" | "manual" | "profile";
 type ResolvedFormulaSource = "library" | "manual" | "tree_meta" | "product" | "profile" | "none";
+type FormulaOutputMeaning = "final_price" | "billable" | "generic";
 
 type PricingFormulaLibraryResolution = {
   id: string;
@@ -3312,6 +3318,7 @@ function calculateFormulaAwareBasePrice(input: {
   manualFormulaText?: string | null;
   formulaSourceMode?: FormulaSourceMode | "formulaLibrary" | "pricingFormula" | "pricingProfile" | null;
   pricingFormulaLibrary?: PricingFormulaLibraryResolution | null;
+  pricingProfileConfig?: unknown;
   formulaVariables?: Record<string, number>;
   formulaVariableSources?: Record<string, string>;
   pricingMatrixVariables?: Record<string, number>;
@@ -3351,6 +3358,13 @@ function calculateFormulaAwareBasePrice(input: {
   const formulaCandidate = sourceResolution.formula;
   const shouldEvaluateFormula = Boolean(formulaCandidate);
   const formulaToUse = shouldEvaluateFormula ? formulaCandidate : "";
+  const formulaOutputMeaning = resolveFormulaOutputMeaning({
+    source: sourceResolution.source,
+    treeJson: input.treeJson,
+    product: input.product,
+    pricingProfileConfig: input.pricingProfileConfig,
+    pricingFormulaLibrary: input.pricingFormulaLibrary,
+  });
   const tierResolution = withFormulaTierReferenceWarning(baseDetails.tierResolution, formulaToUse);
   const formulaVariables = input.formulaVariables
     ?? (input.product ? resolveSnapshotFormulaVariables(input.treeJson, input.product) : undefined);
@@ -3383,6 +3397,7 @@ function calculateFormulaAwareBasePrice(input: {
   formulaDebug.resolvedFormulaExpression = sourceResolution.formula || undefined;
   formulaDebug.manualFormulaPresent = sourceResolution.manualFormulaPresent;
   formulaDebug.manualFormulaIgnored = sourceResolution.manualFormulaIgnored;
+  formulaDebug.formulaOutputMeaning = formulaOutputMeaning;
   formulaDebug.errors = [
     ...(formulaDebug.errors ?? []),
     ...sourceResolution.warnings,
@@ -3454,6 +3469,7 @@ function calculateFormulaAwareBasePrice(input: {
     formulaVariables,
     formulaVariableSources: input.formulaVariableSources,
     pricingMatrixVariables: input.pricingMatrixVariables,
+    formulaOutputMeaning,
   });
 
   formulaDebug.formulaResolved = formulaEvaluation.formulaResolved;
@@ -3463,6 +3479,7 @@ function calculateFormulaAwareBasePrice(input: {
   formulaDebug.preCeilSqftTotal = formulaEvaluation.preCeilSqftTotal;
   formulaDebug.postCeilSqftTotal = formulaEvaluation.postCeilSqftTotal;
   formulaDebug.baseRateUsed = formulaEvaluation.baseRateUsed;
+  formulaDebug.formulaOutputMeaning = formulaEvaluation.formulaOutputMeaning;
   formulaDebug.formulaResultType = formulaEvaluation.formulaResultType;
   formulaDebug.quantityBasisUsed = formulaEvaluation.quantityBasisUsed;
   formulaDebug.selectedRate = formulaEvaluation.selectedRate;
@@ -3472,9 +3489,11 @@ function calculateFormulaAwareBasePrice(input: {
     ...formulaEvaluation.warnings,
   ];
 
-  const formulaTotalRaw = formulaEvaluation.appliedAs === "unitPrice"
-    ? formulaEvaluation.resultValue * input.quantity
-    : formulaEvaluation.resultValue;
+  const formulaTotalRaw = formulaEvaluation.finalFormulaTotal ?? (
+    formulaEvaluation.appliedAs === "unitPrice"
+      ? formulaEvaluation.resultValue * input.quantity
+      : formulaEvaluation.resultValue
+  );
   const preMinimumCents = roundCurrencyCents(formulaTotalRaw);
   const evaluatedFormulaTotalRounded = preMinimumCents / 100;
   const minimumApplied = baseDetails.minimumChargeCents > 0 && baseDetails.minimumChargeCents > preMinimumCents;
@@ -3716,6 +3735,7 @@ function buildRuntimePricingSnapshot(input: {
     resolvedFormulaExpression: formulaDebug.resolvedFormulaExpression ?? formulaSnapshot.formula,
     manualFormulaPresent: formulaDebug.manualFormulaPresent,
     manualFormulaIgnored: formulaDebug.manualFormulaIgnored,
+    formulaOutputMeaning: formulaDebug.formulaOutputMeaning,
     formulaVariables: formulaDebug.variables,
     formulaVariableSources: formulaDebug.variableSources,
     rawSelections: toPlainSelectionValues(input.rawSelections),
@@ -3827,6 +3847,7 @@ function evaluatePreviewFormulaToCents(input: {
   formulaVariables?: Record<string, number>;
   formulaVariableSources?: Record<string, string>;
   pricingMatrixVariables?: Record<string, number>;
+  formulaOutputMeaning?: FormulaOutputMeaning;
 }): {
   resultValue: number;
   formulaResolved?: string;
@@ -3835,7 +3856,8 @@ function evaluatePreviewFormulaToCents(input: {
   preCeilSqftTotal: number | null;
   postCeilSqftTotal: number | null;
   baseRateUsed: number;
-  formulaResultType: "final_dollars";
+  formulaOutputMeaning: FormulaOutputMeaning;
+  formulaResultType: "final_dollars" | "billable_quantity";
   quantityBasisUsed: string;
   selectedRate: number | null;
   finalFormulaTotal: number | null;
@@ -3908,6 +3930,7 @@ function evaluatePreviewFormulaToCents(input: {
   };
   const formulaResolved = resolveFormulaAliases(input.formula);
   const appliedAs = inferFormulaApplication(input.formula);
+  const formulaOutputMeaning = input.formulaOutputMeaning ?? "final_price";
   const steps: Array<{ label: string; value: number | string }> = [
     { label: 'ordered_w*ordered_h', value: input.orderedWidthIn * input.orderedHeightIn },
     { label: 'finished_w*finished_h', value: input.finishedWidthIn * input.finishedHeightIn },
@@ -3994,6 +4017,12 @@ function evaluatePreviewFormulaToCents(input: {
     if (!Number.isFinite(value)) {
       throw new Error('Formula returned a non-numeric result');
     }
+    const isBillableOutput = formulaOutputMeaning === "billable";
+    const finalFormulaTotal = isBillableOutput
+      ? value * resolvedBaseRate
+      : appliedAs === "unitPrice"
+        ? value * input.quantity
+        : value;
     return {
       resultValue: value,
       formulaResolved,
@@ -4002,12 +4031,13 @@ function evaluatePreviewFormulaToCents(input: {
       preCeilSqftTotal,
       postCeilSqftTotal,
       baseRateUsed: resolvedBaseRate,
-      formulaResultType: "final_dollars",
+      formulaOutputMeaning,
+      formulaResultType: isBillableOutput ? "billable_quantity" : "final_dollars",
       quantityBasisUsed: inferFormulaQuantityBasis(input.formula),
       selectedRate: resolvedBaseRate,
-      finalFormulaTotal: value,
-      likelyMisconfiguredFormula: isLikelyGeometryOnlyFormula(input.formula),
-      warnings: buildFormulaOutputWarnings(input.formula),
+      finalFormulaTotal,
+      likelyMisconfiguredFormula: isBillableOutput ? false : isLikelyGeometryOnlyFormula(input.formula),
+      warnings: isBillableOutput ? [] : buildFormulaOutputWarnings(input.formula),
     };
   } catch (error: any) {
     const message = typeof error?.message === 'string' ? error.message : 'Invalid formula';
@@ -4430,6 +4460,49 @@ function inferFormulaErrorCode(message: string): string {
   if (lower.includes('undefined symbol') || lower.includes('undefined variable')) return 'PBV2_FORMULA_MISSING_VARIABLE';
   if (lower.includes('non-numeric') || lower.includes('nan') || lower.includes('infinity')) return 'PBV2_FORMULA_NON_FINITE';
   return 'PBV2_FORMULA_PARSE_ERROR';
+}
+
+function normalizeFormulaOutputMeaning(value: unknown): FormulaOutputMeaning | null {
+  const raw = String(value || "").trim();
+  if (raw === "billable" || raw === "billable_quantity" || raw === "billable_sqft" || raw === "billable_qty_sqft") return "billable";
+  if (raw === "final_price" || raw === "final_dollars" || raw === "dollars") return "final_price";
+  if (raw === "generic") return "generic";
+  return null;
+}
+
+function recordValue(value: unknown): Record<string, any> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : null;
+}
+
+function formulaOutputMeaningFromConfig(config: unknown): FormulaOutputMeaning | null {
+  const record = recordValue(config);
+  if (!record) return null;
+  return normalizeFormulaOutputMeaning(record.formulaOutputMeaning ?? record.outputMeaning);
+}
+
+function resolveFormulaOutputMeaning(input: {
+  source: ResolvedFormulaSource;
+  treeJson: any;
+  product?: any;
+  pricingProfileConfig?: unknown;
+  pricingFormulaLibrary?: PricingFormulaLibraryResolution | null;
+}): FormulaOutputMeaning {
+  const treeMeta = recordValue(input.treeJson?.meta);
+  const candidates =
+    input.source === "library"
+      ? [
+          formulaOutputMeaningFromConfig(input.pricingFormulaLibrary?.config),
+          formulaOutputMeaningFromConfig(input.pricingProfileConfig),
+          formulaOutputMeaningFromConfig(input.product?.pricingProfileConfig),
+          normalizeFormulaOutputMeaning(treeMeta?.formulaOutputMeaning ?? treeMeta?.outputMeaning),
+        ]
+      : [
+          formulaOutputMeaningFromConfig(input.pricingProfileConfig),
+          formulaOutputMeaningFromConfig(input.product?.pricingProfileConfig),
+          normalizeFormulaOutputMeaning(treeMeta?.formulaOutputMeaning ?? treeMeta?.outputMeaning),
+        ];
+
+  return candidates.find((candidate): candidate is FormulaOutputMeaning => Boolean(candidate)) ?? "final_price";
 }
 
 function extractUndefinedFormulaSymbol(message: string): string | null {

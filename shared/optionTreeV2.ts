@@ -247,6 +247,8 @@ export type OptionTreeV2 = {
     baseWeightOz?: number;
     pricingProfileKey?: string;
     pricingFormula?: string;
+    formulaOutputMeaning?: "billable" | "final_price" | "generic";
+    outputMeaning?: "billable" | "final_price" | "generic";
     formulaVariables?: Record<string, number>;
     pricingFormulaVariables?: Record<string, number>;
     pricingV2?: PricingV2;
@@ -500,6 +502,8 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
       baseWeightOz: z.number().optional(),
       pricingProfileKey: z.string().optional(),
       pricingFormula: z.string().optional(),
+      formulaOutputMeaning: z.enum(["billable", "final_price", "generic"]).optional(),
+      outputMeaning: z.enum(["billable", "final_price", "generic"]).optional(),
       formulaVariables: z.record(z.number()).optional(),
       pricingFormulaVariables: z.record(z.number()).optional(),
       pricingV2: pricingV2Schema.optional(),

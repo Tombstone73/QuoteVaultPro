@@ -112,6 +112,34 @@ type FormulaTestBreakdown = {
   MACHINE_RATE: number;
 };
 
+type FormulaOutputMeaning = "billable" | "final_price" | "generic";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function normalizeFormulaOutputMeaning(value: unknown, pricingProfileKey?: string | null): FormulaOutputMeaning {
+  const raw = String(value || "").trim();
+  if (raw === "billable" || raw === "billable_quantity" || raw === "billable_sqft" || raw === "billable_qty_sqft") return "billable";
+  if (raw === "final_price" || raw === "final_dollars" || raw === "dollars") return "final_price";
+  if (raw === "generic") return "generic";
+  return pricingProfileKey === "fee" ? "final_price" : "billable";
+}
+
+function getFormulaOutputMeaningFromConfig(config: unknown, pricingProfileKey?: string | null): FormulaOutputMeaning {
+  if (!isRecord(config)) return normalizeFormulaOutputMeaning(undefined, pricingProfileKey);
+  return normalizeFormulaOutputMeaning(config.formulaOutputMeaning ?? config.outputMeaning, pricingProfileKey);
+}
+
+function setFormulaOutputMeaningInConfig(config: unknown, outputMeaning: FormulaOutputMeaning): Record<string, unknown> {
+  const current = isRecord(config) ? config : {};
+  return {
+    ...current,
+    formulaOutputMeaning: outputMeaning,
+    outputMeaning,
+  };
+}
+
 const emptyFormData: PricingFormulaInput = {
   name: "",
   code: "",
@@ -344,9 +372,17 @@ export default function PricingFormulasSettings() {
     setFormData(emptyFormData);
   };
 
+  const buildFormulaSavePayload = (data: PricingFormulaInput): PricingFormulaInput => {
+    const outputMeaning = getFormulaOutputMeaningFromConfig(data.config, data.pricingProfileKey);
+    return {
+      ...data,
+      config: setFormulaOutputMeaningInConfig(data.config, outputMeaning),
+    };
+  };
+
   const handleCreate = async () => {
     try {
-      await createMutation.mutateAsync(formData);
+      await createMutation.mutateAsync(buildFormulaSavePayload(formData));
       setIsCreateOpen(false);
       resetForm();
     } catch {
@@ -357,7 +393,7 @@ export default function PricingFormulasSettings() {
   const handleUpdate = async () => {
     if (!editingFormula) return;
     try {
-      await updateMutation.mutateAsync({ id: editingFormula.id, data: formData });
+      await updateMutation.mutateAsync({ id: editingFormula.id, data: buildFormulaSavePayload(formData) });
       setEditingFormula(null);
       resetForm();
     } catch {
@@ -970,10 +1006,14 @@ function FormulaEditorFields({
   testError,
   handleRunTest,
 }: FormulaEditorFieldsProps) {
-  const [outputMeaning, setOutputMeaning] = useState<"billable" | "final_price" | "generic">(
-    formData.pricingProfileKey === "fee" ? "final_price" : "billable"
-  );
+  const outputMeaning = getFormulaOutputMeaningFromConfig(formData.config, formData.pricingProfileKey);
   const [showSheetDebug, setShowSheetDebug] = useState(false);
+  const updateOutputMeaning = (value: FormulaOutputMeaning) => {
+    setFormData({
+      ...formData,
+      config: setFormulaOutputMeaningInConfig(formData.config, value),
+    });
+  };
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -1245,7 +1285,7 @@ function FormulaEditorFields({
                     <Select
                       value={outputMeaning}
                       onValueChange={(v) =>
-                        setOutputMeaning(v as "billable" | "final_price" | "generic")
+                        updateOutputMeaning(v as FormulaOutputMeaning)
                       }
                     >
                       <SelectTrigger className="h-8 text-sm">

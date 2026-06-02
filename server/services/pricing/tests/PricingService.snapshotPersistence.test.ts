@@ -104,6 +104,13 @@ function makeCoroplastTree() {
   };
 }
 
+function makeMagnetBillableTree() {
+  const tree = makeCoroplastTree() as any;
+  tree.pricingMatrix.rows[0].variables = { base_price: 5 };
+  tree.meta.pricingV2.base.perSqftCents = 500;
+  return tree;
+}
+
 beforeAll(async () => {
   await db.execute(sql`
     insert into organizations (id, name, slug)
@@ -156,6 +163,72 @@ beforeEach(async () => {
 });
 
 describe("PricingService PBV2 pricing snapshot persistence payload", () => {
+  test("saved line item pricing honors formula library billable output meaning", async () => {
+    const magnetFormula = "sheet_consumption_sqft(w,h,q,24,96,12,12,2)";
+    await db.execute(sql`
+      insert into pricing_formulas (
+        id,
+        organization_id,
+        name,
+        code,
+        description,
+        pricing_profile_key,
+        expression,
+        config,
+        is_active
+      )
+      values (
+        ${pricingFormulaId},
+        ${organizationId},
+        ${"Magnet Billable Sqft"},
+        ${"magnet_billable_sqft"},
+        ${"Bills magnets by billable consumed sqft"},
+        ${"default"},
+        ${magnetFormula},
+        ${JSON.stringify({ formulaOutputMeaning: "billable" })}::jsonb,
+        true
+      )
+      on conflict (id) do update
+      set expression = excluded.expression,
+          pricing_profile_key = excluded.pricing_profile_key,
+          config = excluded.config
+    `);
+
+    await db.execute(sql`
+      update products
+      set pricing_formula_id = ${pricingFormulaId},
+          pricing_formula = null,
+          pricing_engine = ${"formulaLibrary"},
+          pricing_profile_key = ${"default"},
+          pricing_profile_config = null
+      where id = ${productId}
+    `);
+
+    await db.execute(sql`
+      update pbv2_tree_versions
+      set tree_json = ${JSON.stringify(makeMagnetBillableTree())}::jsonb
+      where id = ${treeVersionId}
+    `);
+
+    const result = await priceLineItem({
+      organizationId,
+      productId,
+      quantity: 2,
+      widthIn: 18,
+      heightIn: 14,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+    });
+
+    expect(result.lineTotalCents).toBe(3000);
+    expect(result.breakdown.baseCents).toBe(3000);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formula).toBe(magnetFormula);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaOutputMeaning).toBe("billable");
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaEvaluatedTotal).toBe(30);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.evaluatedFormulaTotalRaw).toBe(30);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.rawBasePrice).toBe(5);
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.finalTotal).toBe(30);
+  });
+
   test("resolves product pricingFormulaId before stale legacy pricingFormula text", async () => {
     await db.execute(sql`
       insert into pricing_formulas (
