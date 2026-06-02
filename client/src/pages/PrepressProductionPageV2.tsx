@@ -66,6 +66,8 @@ type BridgedOriginalFile = {
   downloadUrl: string;
   thumbnailUrl: string | null;
   uploadedBy: string | null;
+  displayFilename?: string | null;
+  computedDisplayFilename?: string | null;
 };
 
 type LineItemFilesPayload = {
@@ -816,7 +818,7 @@ export default function PrepressProductionPageV2() {
     originalUrl: file.downloadUrl,
     previewUrl: file.downloadUrl,
     thumbUrl: file.thumbnailUrl,
-    displayName: file.originalFilename,
+    displayName: file.computedDisplayFilename || file.displayFilename || file.originalFilename,
     uploadedByLabel: file.uploadedBy || "—",
     tagLabel: "order",
     downloadUrl: file.downloadUrl,

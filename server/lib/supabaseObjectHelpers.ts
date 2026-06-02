@@ -144,6 +144,8 @@ export async function resolveOriginalFileAccess(
         fileRecordId?: string | null;
         fileName?: string | null;
         originalFilename?: string | null;
+        displayFilename?: string | null;
+        computedDisplayFilename?: string | null;
         mimeType?: string | null;
         fileUrl?: string | null;
         fileKey?: string | null;
@@ -154,7 +156,13 @@ export async function resolveOriginalFileAccess(
         logOnce?: (key: string, ...args: any[]) => void;
     }
 ): Promise<OriginalFileAccessResult> {
-    const displayFilename = String(attachment.originalFilename || attachment.fileName || `attachment-${attachment.id || "unknown"}`);
+    const displayFilename = String(
+        attachment.displayFilename ||
+        attachment.computedDisplayFilename ||
+        attachment.originalFilename ||
+        attachment.fileName ||
+        `attachment-${attachment.id || "unknown"}`
+    );
     const fallbackMimeType = attachment.mimeType ?? null;
     const logOnce = options?.logOnce;
     const legacyOriginal = buildLegacyReadableUrls({

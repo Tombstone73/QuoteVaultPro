@@ -58,6 +58,30 @@ export async function createLineItemFileRecord(input: CreateLineItemFileRecordIn
     throw new Error("Line item not found for organization");
   }
 
+  const existingConditions = [
+    eq(lineItemFiles.organizationId, organizationId),
+    eq(lineItemFiles.orderId, lineItemRow.orderId),
+    eq(lineItemFiles.lineItemId, lineItemRow.lineItemId),
+    eq(lineItemFiles.role, role),
+    eq(lineItemFiles.status, "active"),
+  ];
+
+  if (fileRecordId) {
+    existingConditions.push(eq(lineItemFiles.fileRecordId, fileRecordId));
+  } else {
+    existingConditions.push(eq(lineItemFiles.storagePath, storagePath));
+  }
+
+  const [existing] = await db
+    .select()
+    .from(lineItemFiles)
+    .where(and(...existingConditions))
+    .limit(1);
+
+  if (existing) {
+    return existing;
+  }
+
   const [created] = await db
     .insert(lineItemFiles)
     .values({
