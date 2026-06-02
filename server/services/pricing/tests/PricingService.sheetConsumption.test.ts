@@ -1037,6 +1037,50 @@ describe("sheet_consumption_sqft", () => {
     expect(result.debug?.formulaResultType).toBe("final_dollars");
   });
 
+  test("billable output meaning prices sheet_consumption_sqft as billable sqft times base price", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeTree(500),
+      widthIn: 18,
+      heightIn: 14,
+      quantity: 2,
+      pricingFormulaOverride: "sheet_consumption_sqft(w,h,q,24,96,12,12,2)",
+      pricingProfileConfig: { formulaOutputMeaning: "billable" },
+      debug: true,
+    });
+
+    expect(result.debug?.resultValue).toBe(6);
+    expect(result.debug?.formulaOutputMeaning).toBe("billable");
+    expect(result.debug?.formulaResultType).toBe("billable_quantity");
+    expect(result.debug?.selectedRate).toBe(5);
+    expect(result.totalPrice).toBeCloseTo(30, 2);
+    expect(result.debug?.errors ?? []).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_FORMULA_GEOMETRY_OUTPUT_ONLY" }),
+    ]));
+  });
+
+  test("formula library billable output meaning is honored in product pricing preview", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeTree(500),
+      widthIn: 18,
+      heightIn: 14,
+      quantity: 2,
+      formulaSourceMode: "formulaLibrary",
+      pricingFormulaLibrary: {
+        id: "magnet_billable_sqft",
+        name: "Magnet Billable Sqft",
+        expression: "sheet_consumption_sqft(w,h,q,24,96,12,12,2)",
+        config: { formulaOutputMeaning: "billable" },
+      },
+      debug: true,
+    });
+
+    expect(result.debug?.resolvedFormulaSource).toBe("library");
+    expect(result.debug?.resultValue).toBe(6);
+    expect(result.debug?.formulaOutputMeaning).toBe("billable");
+    expect(result.debug?.formulaResultType).toBe("billable_quantity");
+    expect(result.totalPrice).toBeCloseTo(30, 2);
+  });
+
   test("missing computed sheet usage emits an explicit tier error without raw quantity fallback", () => {
     const result = evaluatePricingPreviewFromTree({
       treeJson: {
