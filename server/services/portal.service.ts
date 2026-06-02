@@ -355,8 +355,8 @@ export type PortalQuoteDebugDto = {
   scopedWorkflowStatusCounts: Record<string, number>;
   visibleStatusCounts: Record<string, number>;
   visibleWorkflowStatusCounts: Record<string, number>;
-  scopedRows: Array<{ id: string; status: string; workflowStatus: string; contactId: string | null }>;
-  visibleRows: Array<{ id: string; status: string; workflowStatus: string; contactId: string | null }>;
+  scopedRows: Array<{ id: string; status: string; workflowStatus: string; visibleInCustomerPortal: boolean; contactId: string | null }>;
+  visibleRows: Array<{ id: string; status: string; workflowStatus: string; visibleInCustomerPortal: boolean; contactId: string | null }>;
 };
 
 type PortalScope = {
@@ -533,6 +533,7 @@ type QuotePortalRow = Pick<
   | "createdAt"
   | "validUntil"
   | "status"
+  | "visibleInCustomerPortal"
   | "subtotal"
   | "taxAmount"
   | "totalPrice"
@@ -912,9 +913,13 @@ type PortalQuoteVisibilityInput = {
   status?: unknown;
   workflowStatus?: unknown;
   convertedToOrderId?: unknown;
+  visibleInCustomerPortal?: unknown;
 };
 
 export function getPortalQuoteVisibilityReason(input: PortalQuoteVisibilityInput): string | null {
+  if (input.visibleInCustomerPortal === true) return "quote_visible";
+  if (input.visibleInCustomerPortal === false) return null;
+
   const status = normalizeStatus(input.status);
   const workflowStatus = normalizeStatus(input.workflowStatus);
 
@@ -2055,6 +2060,7 @@ async function getScopedPortalQuoteId(scope: PortalScope, quoteId: string): Prom
       organizationId: quotes.organizationId,
       customerId: quotes.customerId,
       status: quotes.status,
+      visibleInCustomerPortal: quotes.visibleInCustomerPortal,
       convertedToOrderId: quotes.convertedToOrderId,
     })
     .from(quotes)
@@ -2068,6 +2074,7 @@ async function getScopedPortalQuoteId(scope: PortalScope, quoteId: string): Prom
     status: quote.status,
     convertedToOrderId: quote.convertedToOrderId,
     workflowStatus: workflowState?.status,
+    visibleInCustomerPortal: quote.visibleInCustomerPortal,
   })
     ? quote.id
     : null;
@@ -3269,7 +3276,7 @@ function logPortalQuoteHydrationDiagnostics(args: {
   scope: PortalScope;
   beforeCount: number;
   visibleCount: number;
-  excludedRows: Array<{ status?: unknown; workflowStatus?: unknown }>;
+  excludedRows: Array<{ status?: unknown; workflowStatus?: unknown; visibleInCustomerPortal?: unknown }>;
 }) {
   if (args.visibleCount > 0) return;
 
@@ -3288,6 +3295,7 @@ type PortalQuoteTraceRow = {
   id: string;
   status?: unknown;
   workflowStatus?: unknown;
+  visibleInCustomerPortal?: unknown;
 };
 
 function portalQuoteTraceEnabled(req: Request): boolean {
@@ -3300,6 +3308,7 @@ function summarizePortalQuoteTraceRows(rows: PortalQuoteTraceRow[]) {
     id: row.id,
     status: normalizeStatus(row.status) || "unknown",
     workflowStatus: normalizeStatus(row.workflowStatus) || "none",
+    visibleInCustomerPortal: row.visibleInCustomerPortal === true,
   }));
 }
 
@@ -3365,6 +3374,7 @@ export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
+      visibleInCustomerPortal: quotes.visibleInCustomerPortal,
       subtotal: quotes.subtotal,
       taxAmount: quotes.taxAmount,
       totalPrice: quotes.totalPrice,
@@ -3386,6 +3396,7 @@ export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto
       status: quote.status,
       convertedToOrderId: quote.convertedToOrderId,
       workflowStatus: workflowState?.status,
+      visibleInCustomerPortal: quote.visibleInCustomerPortal,
     }),
   );
   logPortalQuoteHydrationDiagnostics({
@@ -3394,7 +3405,11 @@ export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto
     visibleCount: visibleRows.length,
     excludedRows: rowsWithWorkflow
       .filter(({ quote }) => !visibleRows.some((visible) => visible.quote.id === quote.id))
-      .map(({ quote, workflowState }) => ({ status: quote.status, workflowStatus: workflowState?.status })),
+      .map(({ quote, workflowState }) => ({
+        status: quote.status,
+        workflowStatus: workflowState?.status,
+        visibleInCustomerPortal: quote.visibleInCustomerPortal,
+      })),
   });
 
   const dtoRows = visibleRows.map(({ quote, workflowState }) =>
@@ -3403,8 +3418,18 @@ export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto
   await logPortalQuoteHydrationTrace({
     req,
     scope,
-    scopedRows: rowsWithWorkflow.map(({ quote, workflowState }) => ({ id: quote.id, status: quote.status, workflowStatus: workflowState?.status })),
-    visibleRows: visibleRows.map(({ quote, workflowState }) => ({ id: quote.id, status: quote.status, workflowStatus: workflowState?.status })),
+    scopedRows: rowsWithWorkflow.map(({ quote, workflowState }) => ({
+      id: quote.id,
+      status: quote.status,
+      workflowStatus: workflowState?.status,
+      visibleInCustomerPortal: quote.visibleInCustomerPortal,
+    })),
+    visibleRows: visibleRows.map(({ quote, workflowState }) => ({
+      id: quote.id,
+      status: quote.status,
+      workflowStatus: workflowState?.status,
+      visibleInCustomerPortal: quote.visibleInCustomerPortal,
+    })),
     dtoCount: dtoRows.length,
   });
   return dtoRows;
@@ -3424,6 +3449,7 @@ export async function getPortalCustomerQuoteDebug(organizationId: string, custom
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
+      visibleInCustomerPortal: quotes.visibleInCustomerPortal,
       subtotal: quotes.subtotal,
       taxAmount: quotes.taxAmount,
       totalPrice: quotes.totalPrice,
@@ -3444,6 +3470,7 @@ export async function getPortalCustomerQuoteDebug(organizationId: string, custom
       status: quote.status,
       convertedToOrderId: quote.convertedToOrderId,
       workflowStatus: workflowState?.status,
+      visibleInCustomerPortal: quote.visibleInCustomerPortal,
     }),
   );
 
@@ -3462,12 +3489,14 @@ export async function getPortalCustomerQuoteDebug(organizationId: string, custom
       id: quote.id,
       status: normalizeStatus(quote.status) || "unknown",
       workflowStatus: normalizeStatus(workflowState?.status) || "none",
+      visibleInCustomerPortal: quote.visibleInCustomerPortal === true,
       contactId: quote.contactId ?? null,
     })),
     visibleRows: visibleRows.map(({ quote, workflowState }) => ({
       id: quote.id,
       status: normalizeStatus(quote.status) || "unknown",
       workflowStatus: normalizeStatus(workflowState?.status) || "none",
+      visibleInCustomerPortal: quote.visibleInCustomerPortal === true,
       contactId: quote.contactId ?? null,
     })),
   };
@@ -3487,6 +3516,7 @@ export async function getPortalQuote(req: Request, quoteId: string): Promise<Quo
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
+      visibleInCustomerPortal: quotes.visibleInCustomerPortal,
       subtotal: quotes.subtotal,
       taxAmount: quotes.taxAmount,
       totalPrice: quotes.totalPrice,
@@ -3505,6 +3535,7 @@ export async function getPortalQuote(req: Request, quoteId: string): Promise<Quo
       status: quote.status,
       convertedToOrderId: quote.convertedToOrderId,
       workflowStatus: workflowState?.status,
+      visibleInCustomerPortal: quote.visibleInCustomerPortal,
     })
   ) {
     return null;
@@ -3617,6 +3648,7 @@ async function getScopedPortalQuoteRecord(scope: PortalScope, quoteId: string): 
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
+      visibleInCustomerPortal: quotes.visibleInCustomerPortal,
       subtotal: quotes.subtotal,
       taxAmount: quotes.taxAmount,
       totalPrice: quotes.totalPrice,
@@ -3626,7 +3658,8 @@ async function getScopedPortalQuoteRecord(scope: PortalScope, quoteId: string): 
     .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, scope.organizationId), eq(quotes.customerId, scope.customerId)))
     .limit(1);
 
-  return quote ?? null;
+  if (!quote?.visibleInCustomerPortal) return null;
+  return quote;
 }
 
 async function getPortalWorkflowState(quoteId: string): Promise<QuoteWorkflowPortalRow | null> {

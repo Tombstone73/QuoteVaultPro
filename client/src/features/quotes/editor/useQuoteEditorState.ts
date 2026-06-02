@@ -5,6 +5,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { isSessionExpiredError, notifySessionExpired } from "@/lib/authUtils";
 import { useAuth } from "@/hooks/useAuth";
+import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import { ROUTES } from "@/config/routes";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
@@ -119,6 +120,7 @@ export function useQuoteEditorState() {
     const navigate = useNavigate();
     const location = useLocation();
     const queryClientInstance = useQueryClient();
+    const { preferences: orgPreferences } = useOrgPreferences();
 
     // ============================================================================
     // ROUTE PARAMS & FLAGS
@@ -173,6 +175,12 @@ export function useQuoteEditorState() {
     // Quote-level tax override (overrides customer tax settings)
     const [quoteTaxExempt, setQuoteTaxExempt] = useState<boolean | null>(null);
     const [quoteTaxRateOverride, setQuoteTaxRateOverride] = useState<number | null>(null);
+    const [visibleInCustomerPortal, setVisibleInCustomerPortalState] = useState<boolean>(false);
+    const visibilityTouchedRef = useRef(false);
+    const setVisibleInCustomerPortal = useCallback((next: boolean) => {
+        visibilityTouchedRef.current = true;
+        setVisibleInCustomerPortalState(next);
+    }, []);
 
     // ============================================================================
     // FULFILLMENT STATE
@@ -227,6 +235,7 @@ export function useQuoteEditorState() {
         tags: string[];
         quoteTaxExempt: boolean | null;
         quoteTaxRateOverride: number | null;
+        visibleInCustomerPortal: boolean;
         lineItems: QuoteLineItemDraft[];
     } | null>(null);
 
@@ -257,6 +266,7 @@ export function useQuoteEditorState() {
         if (JSON.stringify(tags) !== JSON.stringify(snap.tags)) return true;
         if (quoteTaxExempt !== snap.quoteTaxExempt) return true;
         if (quoteTaxRateOverride !== snap.quoteTaxRateOverride) return true;
+        if (visibleInCustomerPortal !== snap.visibleInCustomerPortal) return true;
         
         // Compare line items (using stable TEMP-FIRST keys)
         const currentIds = new Set(lineItems.map(li => getStableLineItemKey(li)).filter((id): id is string => !!id));
@@ -292,6 +302,7 @@ export function useQuoteEditorState() {
         tags,
         quoteTaxExempt,
         quoteTaxRateOverride,
+        visibleInCustomerPortal,
         lineItems,
     ]);
 
@@ -346,6 +357,15 @@ export function useQuoteEditorState() {
             return response.json();
         },
     });
+    const savedQuotesVisibleByDefault =
+        orgPreferences?.quotes?.savedQuotesVisibleInPortalByDefault ??
+        ((organization as any)?.id === "org_titan_001");
+
+    useEffect(() => {
+        if (!isNewQuote) return;
+        if (visibilityTouchedRef.current) return;
+        setVisibleInCustomerPortalState(savedQuotesVisibleByDefault === true);
+    }, [isNewQuote, savedQuotesVisibleByDefault]);
 
     // ============================================================================
     // DATA FETCHING: Quote (existing quote only)
@@ -753,6 +773,8 @@ export function useQuoteEditorState() {
         // Load quote-level tax overrides if present
         setQuoteTaxExempt((q as any).quoteTaxExempt ?? null);
         setQuoteTaxRateOverride((q as any).quoteTaxRateOverride != null ? Number((q as any).quoteTaxRateOverride) : null);
+        visibilityTouchedRef.current = false;
+        setVisibleInCustomerPortalState((q as any).visibleInCustomerPortal === true);
 
         const hydratedLineItems = ((quote as any).lineItems || []).map(mapQuoteApiLineItemToDraft);
         setLineItems((prev) =>
@@ -787,6 +809,7 @@ export function useQuoteEditorState() {
             tags: (quote as any).tags || [],
             quoteTaxExempt: (quote as any).quoteTaxExempt ?? null,
             quoteTaxRateOverride: (quote as any).quoteTaxRateOverride != null ? Number((quote as any).quoteTaxRateOverride) : null,
+            visibleInCustomerPortal: (quote as any).visibleInCustomerPortal === true,
             requestedDueDate: (() => {
                 const raw = (quote as any).requestedDueDate;
                 if (!raw) return "";
@@ -1750,6 +1773,7 @@ export function useQuoteEditorState() {
             source: "internal",
             hasCustomerId: payloadHasCustomerId,
             hasLineItems: payloadHasLineItems,
+            visibleInCustomerPortal,
             // Tags and tax overrides (backend may not support yet, but include in payload)
             tags: tags, // Always include tags array (empty array if no tags)
             quoteTaxExempt: quoteTaxExempt ?? undefined,
@@ -1794,6 +1818,7 @@ export function useQuoteEditorState() {
             source: "internal",
             hasCustomerId: payloadHasCustomerId,
             hasLineItems: payloadHasLineItems,
+            visibleInCustomerPortal,
             // Tags and tax overrides (backend may not support yet, but include in payload)
             tags: tags, // Always include tags array (empty array if no tags)
             quoteTaxExempt: quoteTaxExempt ?? undefined,
@@ -1932,6 +1957,7 @@ export function useQuoteEditorState() {
                     tags,
                     quoteTaxExempt,
                     quoteTaxRateOverride,
+                    visibleInCustomerPortal,
                     lineItems: lineItems.map((li) => ({ ...li, status: li.status === "canceled" ? "canceled" : "active" })),
                 };
 
@@ -2420,6 +2446,7 @@ export function useQuoteEditorState() {
                     source: "internal",
                     hasCustomerId: !!payloadCustomerId,
                     hasLineItems: true, // We're including a line item
+                    visibleInCustomerPortal,
                     tags: tags,
                     quoteTaxExempt: quoteTaxExempt ?? undefined,
                     quoteTaxRateOverride: quoteTaxRateOverride ?? undefined,
@@ -2496,6 +2523,7 @@ export function useQuoteEditorState() {
             tags,
             quoteTaxExempt,
             quoteTaxRateOverride,
+            visibleInCustomerPortal,
             validateQuote,
         ]
     );
@@ -2603,6 +2631,8 @@ export function useQuoteEditorState() {
         setTags(snap.tags);
         setQuoteTaxExempt(snap.quoteTaxExempt);
         setQuoteTaxRateOverride(snap.quoteTaxRateOverride);
+        visibilityTouchedRef.current = false;
+        setVisibleInCustomerPortalState(snap.visibleInCustomerPortal);
         setLineItems(snap.lineItems.map((li) => ({ ...li })));
     }, [quoteId, lineItems]);
 
@@ -2672,6 +2702,7 @@ export function useQuoteEditorState() {
         tags,
         quoteTaxExempt,
         quoteTaxRateOverride,
+        visibleInCustomerPortal,
 
         // Line items (sorted by displayOrder)
         lineItems: sortedLineItems,
@@ -2772,6 +2803,7 @@ export function useQuoteEditorState() {
             },
             setQuoteTaxExempt,
             setQuoteTaxRateOverride,
+            setVisibleInCustomerPortal,
 
             // Product builder
             setSelectedProductId: handleProductSelect,

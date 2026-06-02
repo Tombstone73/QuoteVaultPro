@@ -94,6 +94,7 @@ type InboundReviewLink = {
 type QuoteRow = QuoteWithRelations & {
   label?: string | null; // This is the job label from quote record
   listLabel?: string | null; // List-only note, always editable
+  visibleInCustomerPortal?: boolean;
   previewThumbnails?: string[];
   thumbsCount?: number;
   lineItemsCount?: number;
@@ -118,6 +119,7 @@ const QUOTE_COLUMNS: ColumnDefinition[] = [
   { key: "jobLabel", label: "Job Label", defaultVisible: true, defaultWidth: 150, minWidth: 100, maxWidth: 250, sortable: true },
   { key: "thumbnails", label: "Preview", defaultVisible: true, defaultWidth: 140, minWidth: 120, maxWidth: 200 },
   { key: "status", label: "Status", defaultVisible: true, defaultWidth: 110, minWidth: 90, maxWidth: 150 },
+  { key: "portalVisibility", label: "Portal", defaultVisible: true, defaultWidth: 145, minWidth: 120, maxWidth: 180 },
   { key: "date", label: "Date", defaultVisible: true, defaultWidth: 110, minWidth: 90, maxWidth: 150, sortable: true },
   { key: "customer", label: "Customer", defaultVisible: true, defaultWidth: 180, minWidth: 120, maxWidth: 300, sortable: true },
   { key: "items", label: "Items", defaultVisible: true, defaultWidth: 80, minWidth: 60, maxWidth: 120, sortable: true },
@@ -187,6 +189,7 @@ export default function InternalQuotes() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [statusFilter, setStatusFilter] = useState<QuoteWorkflowState | "all">("all");
+  const [portalVisibilityFilter, setPortalVisibilityFilter] = useState<"all" | "visible" | "hidden">("all");
 
   // Pagination + performance controls (persisted per org+user)
   const [page, setPage] = useState(1);
@@ -272,7 +275,7 @@ export default function InternalQuotes() {
   useEffect(() => {
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchCustomer, searchProduct, startDate, endDate, statusFilter, sortKey, sortDirection, pageSize, includeThumbnails]);
+  }, [searchCustomer, searchProduct, startDate, endDate, statusFilter, portalVisibilityFilter, sortKey, sortDirection, pageSize, includeThumbnails]);
 
   const hasWarnedPerf = useRef(false);
   useEffect(() => {
@@ -338,6 +341,7 @@ export default function InternalQuotes() {
         startDate,
         endDate,
         status: statusFilter,
+        portalVisibility: portalVisibilityFilter,
         sortBy: sortKey,
         sortDir: sortDirection,
         page,
@@ -354,6 +358,7 @@ export default function InternalQuotes() {
       if (endDate) params.set("endDate", endDate);
 
       if (statusFilter !== 'all') params.set('status', statusFilter);
+      if (portalVisibilityFilter !== 'all') params.set('portalVisibility', portalVisibilityFilter);
       params.set('sortBy', sortKey);
       params.set('sortDir', sortDirection);
       params.set('page', String(page));
@@ -924,6 +929,21 @@ export default function InternalQuotes() {
             </div>
           </TableCell>
         );
+
+      case "portalVisibility":
+        return (
+          <TableCell style={getColStyle("portalVisibility")}>
+            {quote.visibleInCustomerPortal ? (
+              <Badge variant="default" title="This quote is visible in the customer portal.">
+                Visible
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100" title="Hidden quotes will not hydrate in the customer portal.">
+                Hidden from customer
+              </Badge>
+            )}
+          </TableCell>
+        );
       
       case "items":
         return (
@@ -1334,6 +1354,16 @@ export default function InternalQuotes() {
               ))}
             </SelectContent>
           </Select>
+          <Select value={portalVisibilityFilter} onValueChange={(value) => setPortalVisibilityFilter(value as "all" | "visible" | "hidden")}>
+            <SelectTrigger className="h-9 w-[180px]">
+              <SelectValue placeholder="Portal visibility" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All portal states</SelectItem>
+              <SelectItem value="visible">Visible</SelectItem>
+              <SelectItem value="hidden">Hidden</SelectItem>
+            </SelectContent>
+          </Select>
           <Input
             type="date"
             value={startDate}
@@ -1462,7 +1492,7 @@ export default function InternalQuotes() {
                   {filteredAndSortedQuotes.map((quote) => (
                     <TableRow
                       key={quote.id}
-                      className="cursor-pointer hover:bg-muted/50"
+                      className={`cursor-pointer hover:bg-muted/50 ${quote.visibleInCustomerPortal ? "" : "bg-amber-50/35 dark:bg-amber-950/20"}`}
                       onClick={() => navigate(ROUTES.quotes.detail(quote.id))}
                     >
                       {orderedColumns.map((col) => {

@@ -26,20 +26,24 @@ describe("portal quote status mapping", () => {
 });
 
 describe("portal quote hydration visibility", () => {
-  test("shows saved sent quotes for the logged-in portal customer", () => {
-    expect(isPortalQuoteVisibleToCustomer({ status: "pending" })).toBe(true);
-    expect(getPortalQuoteVisibilityReason({ status: "pending" })).toBe("sent");
-    expect(isPortalQuoteVisibleToCustomer({ status: "active", workflowStatus: "pending_customer_approval" })).toBe(true);
-    expect(getPortalQuoteVisibilityReason({ status: "active", workflowStatus: "pending_customer_approval" })).toBe("sent");
+  test("uses the saved quote portal visibility flag before quote status", () => {
+    expect(isPortalQuoteVisibleToCustomer({ status: "draft", visibleInCustomerPortal: true })).toBe(true);
+    expect(getPortalQuoteVisibilityReason({ status: "draft", visibleInCustomerPortal: true })).toBe("quote_visible");
+    expect(isPortalQuoteVisibleToCustomer({ status: "pending", visibleInCustomerPortal: false })).toBe(false);
+    expect(isPortalQuoteVisibleToCustomer({ status: "active", convertedToOrderId: "order_123", visibleInCustomerPortal: false })).toBe(false);
   });
 
-  test("does not show draft or internal approval quotes by default", () => {
+  test("does not show draft or internal approval quotes by default when no explicit flag is present", () => {
     expect(isPortalQuoteVisibleToCustomer({ status: "draft" })).toBe(false);
     expect(isPortalQuoteVisibleToCustomer({ status: "pending_approval" })).toBe(false);
     expect(isPortalQuoteVisibleToCustomer({ status: "active", workflowStatus: "staff_approved" })).toBe(false);
   });
 
-  test("keeps customer-actioned and converted quotes visible as account history", () => {
+  test("keeps legacy customer-actioned and converted quotes visible as account history when no explicit flag is present", () => {
+    expect(isPortalQuoteVisibleToCustomer({ status: "pending" })).toBe(true);
+    expect(getPortalQuoteVisibilityReason({ status: "pending" })).toBe("sent");
+    expect(isPortalQuoteVisibleToCustomer({ status: "active", workflowStatus: "pending_customer_approval" })).toBe(true);
+    expect(getPortalQuoteVisibilityReason({ status: "active", workflowStatus: "pending_customer_approval" })).toBe("sent");
     expect(isPortalQuoteVisibleToCustomer({ status: "active" })).toBe(true);
     expect(isPortalQuoteVisibleToCustomer({ status: "pending", workflowStatus: "customer_revision_requested" })).toBe(true);
     expect(isPortalQuoteVisibleToCustomer({ status: "active", workflowStatus: "customer_approved" })).toBe(true);

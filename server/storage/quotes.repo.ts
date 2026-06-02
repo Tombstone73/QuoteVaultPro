@@ -183,6 +183,7 @@ export class QuotesRepository {
             userRole?: string;
             source?: string;
             status?: WorkflowState;
+            portalVisibility?: "visible" | "hidden";
         }
     ) {
         // Include both active and draft quotes (don't filter out drafts)
@@ -274,6 +275,12 @@ export class QuotesRepository {
                     conditions.push(eq(quotes.status, mapped as any));
                 }
             }
+        }
+
+        if (filters?.portalVisibility === "visible") {
+            conditions.push(eq(quotes.visibleInCustomerPortal, true));
+        } else if (filters?.portalVisibility === "hidden") {
+            conditions.push(eq(quotes.visibleInCustomerPortal, false));
         }
 
         return { conditions };
@@ -379,6 +386,7 @@ export class QuotesRepository {
             userRole?: string;
             source?: string;
             status?: WorkflowState;
+            portalVisibility?: "visible" | "hidden";
             sortBy?: string;
             sortDir?: 'asc' | 'desc';
             page: number;
@@ -521,6 +529,7 @@ export class QuotesRepository {
         contactId?: string | null;
         customerName?: string;
         source?: string;
+        visibleInCustomerPortal?: boolean;
         status?: "draft" | "active" | "canceled";
         label?: string | null;
         taxRate?: number | null;
@@ -576,6 +585,7 @@ export class QuotesRepository {
                 contactId: data.contactId || null,
                 customerName: data.customerName,
                 source: data.source || 'internal',
+                visibleInCustomerPortal: data.visibleInCustomerPortal ?? false,
                 status: data.status || 'draft',
                 label: data.label ?? null,
                 subtotal: subtotal.toString(),
@@ -902,6 +912,7 @@ export class QuotesRepository {
         contactId?: string | null;
         customerName?: string | null;
         status?: "draft" | "active" | "canceled";
+        visibleInCustomerPortal?: boolean;
         subtotal?: number | null;
         taxRate?: number | null;
         taxAmount?: number | null;
@@ -919,9 +930,9 @@ export class QuotesRepository {
         shippingMode?: string | null;
     }): Promise<QuoteWithRelations> {
         const updateData: any = {
-            customerId: data.customerId ?? null,
-            contactId: data.contactId ?? null,
-            customerName: data.customerName ?? null,
+            customerId: data.customerId !== undefined ? data.customerId ?? null : sql`customer_id`,
+            contactId: data.contactId !== undefined ? data.contactId ?? null : sql`contact_id`,
+            customerName: data.customerName !== undefined ? data.customerName ?? null : sql`customer_name`,
             status: data.status ?? sql`status`,
             subtotal: data.subtotal != null ? data.subtotal.toString() : sql`subtotal`,
             taxRate: data.taxRate != null ? data.taxRate.toString() : sql`tax_rate`,
@@ -941,6 +952,7 @@ export class QuotesRepository {
         if (data.label !== undefined) updateData.label = data.label;
         if (data.shippingMethod !== undefined) updateData.shippingMethod = data.shippingMethod;
         if (data.shippingMode !== undefined) updateData.shippingMode = data.shippingMode;
+        if (data.visibleInCustomerPortal !== undefined) updateData.visibleInCustomerPortal = data.visibleInCustomerPortal;
 
         console.log(`[updateQuote] ID: ${id}, updateData:`, updateData);
 
@@ -1314,6 +1326,8 @@ export class QuotesRepository {
         maxPrice?: string;
         userRole?: string;
         source?: string;
+        status?: WorkflowState;
+        portalVisibility?: "visible" | "hidden";
     }): Promise<QuoteWithRelations[]> {
         try {
             // Include both active and draft quotes (don't filter out drafts)
@@ -1364,6 +1378,12 @@ export class QuotesRepository {
 
         if (filters?.maxPrice) {
             conditions.push(sql`${quotes.totalPrice}::numeric <= ${filters.maxPrice}::numeric`);
+        }
+
+        if (filters?.portalVisibility === "visible") {
+            conditions.push(eq(quotes.visibleInCustomerPortal, true));
+        } else if (filters?.portalVisibility === "hidden") {
+            conditions.push(eq(quotes.visibleInCustomerPortal, false));
         }
 
             const userQuotes = await this.dbInstance

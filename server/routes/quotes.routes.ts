@@ -83,6 +83,19 @@ function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
 }
 
+const TITAN_GRAPHICS_ORGANIZATION_ID = "org_titan_001";
+
+function savedQuotesVisibleInPortalByDefault(settings: unknown, organizationId: string): boolean {
+  const preferences = (settings as any)?.preferences;
+  const configured = preferences?.quotes?.savedQuotesVisibleInPortalByDefault;
+  if (typeof configured === "boolean") return configured;
+  return organizationId === TITAN_GRAPHICS_ORGANIZATION_ID;
+}
+
+function getAuditUserName(user: any): string | null {
+  return `${user?.firstName || ""} ${user?.lastName || ""}`.trim() || user?.email || null;
+}
+
 function hasExplicitPriceOverrideMetadata(value: any): boolean {
   const override = value?.priceOverride;
   const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
@@ -625,6 +638,12 @@ export function registerQuoteRoutes(
       }
 
       const orgTaxSettings = getOrganizationTaxSettings(org);
+      const requestedPortalVisibility =
+        typeof quotePayload.visibleInCustomerPortal === "boolean"
+          ? quotePayload.visibleInCustomerPortal
+          : undefined;
+      const visibleInCustomerPortal =
+        requestedPortalVisibility ?? savedQuotesVisibleInPortalByDefault(org.settings, organizationId);
 
       // Load customer for tax calculation (if applicable)
       let customer = null;
@@ -735,6 +754,7 @@ export function registerQuoteRoutes(
         contactId: contactId || undefined,
         customerName: customerName || undefined,
         source: source || 'internal',
+        visibleInCustomerPortal,
         status: finalStatus,
         label: quotePayload.label || undefined,
         lineItems: validatedLineItems,
@@ -985,6 +1005,10 @@ export function registerQuoteRoutes(
         userRole,
         source: req.query.source as string | undefined,
         status: status as any,
+        portalVisibility:
+          req.query.portalVisibility === "visible" || req.query.portalVisibility === "hidden"
+            ? (req.query.portalVisibility as "visible" | "hidden")
+            : undefined,
       };
 
       const hasPaging = pageRaw !== undefined || pageSizeRaw !== undefined;
@@ -1197,6 +1221,7 @@ export function registerQuoteRoutes(
         shipToPostalCode,
         shipToCountry,
         label,
+        visibleInCustomerPortal,
         tags: rawTags,
         listLabel,
       } = req.body;
@@ -1229,6 +1254,7 @@ export function registerQuoteRoutes(
         shippingMethod,
         shippingMode,
         status,
+        visibleInCustomerPortal,
         taxAmount,
       });
 
@@ -1238,7 +1264,11 @@ export function registerQuoteRoutes(
         return res.status(404).json({ message: "Quote not found" });
       }
 
-      if (!assertQuoteEditable(res, existing)) return;
+      const isVisibilityOnlyUpdate =
+        Object.keys(req.body || {}).length === 1 &&
+        visibleInCustomerPortal !== undefined;
+
+      if (!isVisibilityOnlyUpdate && !assertQuoteEditable(res, existing)) return;
 
       // If status is being changed, validate the transition
       if (status !== undefined && status !== existing.status) {
@@ -1340,6 +1370,7 @@ export function registerQuoteRoutes(
       if (label !== undefined) updateData.label = label; // jobLabel
       if (shippingMethod !== undefined) updateData.shippingMethod = shippingMethod;
       if (shippingMode !== undefined) updateData.shippingMode = shippingMode;
+      if (visibleInCustomerPortal !== undefined) updateData.visibleInCustomerPortal = visibleInCustomerPortal === true;
 
       // Add snapshot data if customer/shipping changed
       Object.assign(updateData, snapshotData);
@@ -1350,6 +1381,30 @@ export function registerQuoteRoutes(
       }
 
       let updatedQuote = await storage.updateQuote(organizationId, id, updateData);
+
+      if (
+        visibleInCustomerPortal !== undefined &&
+        Boolean((existing as any).visibleInCustomerPortal) !== Boolean(updatedQuote.visibleInCustomerPortal)
+      ) {
+        try {
+          await db.insert(auditLogs).values({
+            organizationId,
+            userId: userId ?? null,
+            userName: getAuditUserName(req.user),
+            actionType: "UPDATE",
+            entityType: "quote",
+            entityId: id,
+            entityName: updatedQuote.displayNumber || updatedQuote.quoteNumber?.toString() || id,
+            description: updatedQuote.visibleInCustomerPortal
+              ? "Quote made visible in customer portal"
+              : "Quote hidden from customer portal",
+            oldValues: { visibleInCustomerPortal: Boolean((existing as any).visibleInCustomerPortal) },
+            newValues: { visibleInCustomerPortal: Boolean(updatedQuote.visibleInCustomerPortal) },
+          });
+        } catch (auditError) {
+          console.error("[QuoteVisibility] Failed to audit portal visibility change:", auditError);
+        }
+      }
 
       const shouldRefreshAggregateTotals =
         subtotal !== undefined ||
