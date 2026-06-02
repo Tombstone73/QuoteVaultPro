@@ -1077,6 +1077,33 @@ describe("sheet_consumption_sqft", () => {
     expect(result.debug?.resolvedFormulaSource).toBe("library");
     expect(result.debug?.resultValue).toBe(6);
     expect(result.debug?.formulaOutputMeaning).toBe("billable");
+    expect(result.debug?.normalizedFormulaOutputMeaning).toBe("billable");
+    expect(result.debug?.formulaOutputMeaningRaw).toBe("billable");
+    expect(result.debug?.formulaOutputMeaningSource).toBe("formula_library.config.formulaOutputMeaning");
+    expect(result.debug?.formulaResultType).toBe("billable_quantity");
+    expect(result.totalPrice).toBeCloseTo(30, 2);
+  });
+
+  test("formula library output meaning aliases are normalized for product builder preview", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeTree(500),
+      widthIn: 18,
+      heightIn: 14,
+      quantity: 2,
+      formulaSourceMode: "formulaLibrary",
+      pricingFormulaLibrary: {
+        id: "magnet_billable_sqft",
+        name: "Magnet Billable Sqft",
+        expression: "sheet_consumption_sqft(w,h,q,24,96,12,12,2)",
+        config: { metadata: { formulaOutputMeaning: "billable qty / sqft" } },
+      },
+      debug: true,
+    });
+
+    expect(result.debug?.resultValue).toBe(6);
+    expect(result.debug?.normalizedFormulaOutputMeaning).toBe("billable");
+    expect(result.debug?.formulaOutputMeaningRaw).toBe("billable qty / sqft");
+    expect(result.debug?.formulaOutputMeaningSource).toBe("formula_library.config.metadata.formulaOutputMeaning");
     expect(result.debug?.formulaResultType).toBe("billable_quantity");
     expect(result.totalPrice).toBeCloseTo(30, 2);
   });
