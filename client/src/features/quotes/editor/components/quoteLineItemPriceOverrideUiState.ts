@@ -1,6 +1,8 @@
 import {
+  applyLineItemEditPriceOverride,
   hydrateLineItemEditPricingState,
   isLineItemPriceOverrideMode,
+  type LineItemEffectivePricing,
   type LineItemPriceOverrideMode,
 } from "@shared/lineItemPriceOverrides";
 
@@ -72,5 +74,37 @@ export function resolveQuoteLineItemOverrideUiState(
     selectedOverrideMode,
     selectValue: selectedOverrideMode ?? "__none",
     overrideValueCents,
+  };
+}
+
+export function resolveQuoteLineItemOverrideModeChange(input: {
+  baseCalculatedTotalCents: unknown;
+  quantity: unknown;
+  mode: LineItemPriceOverrideMode;
+  rawValue: unknown;
+  fallbackValueCents?: unknown;
+}): { valueCents: number; pricing: LineItemEffectivePricing; displayText: string } | null {
+  const parsedValue = Number.parseFloat(String(input.rawValue ?? ""));
+  const fallbackValueCents = Number(input.fallbackValueCents);
+  const valueCents =
+    Number.isFinite(parsedValue) && parsedValue >= 0
+      ? Math.round(parsedValue * 100)
+      : Number.isFinite(fallbackValueCents) && fallbackValueCents >= 0
+        ? Math.round(fallbackValueCents)
+        : null;
+
+  if (valueCents === null) return null;
+
+  const pricing = applyLineItemEditPriceOverride({
+    baseCalculatedTotalCents: input.baseCalculatedTotalCents,
+    quantity: input.quantity,
+    mode: input.mode,
+    valueCents,
+  });
+
+  return {
+    valueCents,
+    pricing,
+    displayText: (valueCents / 100).toFixed(2),
   };
 }
