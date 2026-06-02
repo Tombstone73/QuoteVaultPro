@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { formatDistanceToNow, format } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import CustomerForm from "@/components/customer-form";
+import ContactForm from "@/components/contact-form";
 import { CustomerIdentityBlock } from "./CustomerIdentityBlock";
 import { CustomerActionsMenu } from "./CustomerActionsMenu";
 import TransactionsTab from "./TransactionsTab";
@@ -38,6 +39,7 @@ import {
   GripVertical,
   Settings2,
   Plus,
+  Link2,
   UserCheck,
   UserMinus,
   Contact2,
@@ -508,10 +510,28 @@ interface ContactsPanelProps {
   layoutMode: LayoutMode;
 }
 
+interface ContactPickerResult {
+  id: string;
+  customerId: string;
+  firstName: string;
+  lastName: string;
+  title: string | null;
+  email: string | null;
+  phone: string | null;
+  mobile: string | null;
+  isPrimary: boolean;
+  companyName: string;
+}
+
 function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [showLinkDialog, setShowLinkDialog] = useState(false);
+  const [contactSearch, setContactSearch] = useState("");
+  const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
+  const [linkAsPrimary, setLinkAsPrimary] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [editingContact, setEditingContact] = useState<CustomerWithRelations["contacts"][0] | null>(null);
   const [editForm, setEditForm] = useState({
@@ -525,6 +545,37 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
 
   const isEmbedded = layoutMode === "embedded";
   const contacts = customer.contacts || [];
+  const contactSearchTerm = contactSearch.trim();
+  const contactPickerQuery = useQuery({
+    queryKey: ["contacts", "link-picker", customer.id, contactSearchTerm],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        page: "1",
+        pageSize: "25",
+        sortBy: "lastName",
+        sortDir: "asc",
+      });
+      if (contactSearchTerm) params.set("search", contactSearchTerm);
+
+      const response = await fetch(`/api/contacts?${params.toString()}`, {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Failed to search contacts");
+      const data = await response.json();
+      return (Array.isArray(data.contacts) ? data.contacts : []) as ContactPickerResult[];
+    },
+    enabled: showLinkDialog,
+  });
+  const linkableContacts = useMemo(
+    () => (contactPickerQuery.data || []).filter((contact) => contact.customerId !== customer.id),
+    [contactPickerQuery.data, customer.id],
+  );
+  const selectedContact = linkableContacts.find((contact) => contact.id === selectedContactId) || null;
+
+  const refreshCustomerContactData = () => {
+    queryClient.invalidateQueries({ queryKey: [`/api/customers/${customer.id}`] });
+    queryClient.invalidateQueries({ queryKey: ["contacts"] });
+  };
 
   // Set primary contact mutation
   const setPrimaryMutation = useMutation({
@@ -537,8 +588,7 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/customers/${customer.id}`] });
-      queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      refreshCustomerContactData();
       toast({ title: "Success", description: "Primary contact updated" });
     },
     onError: (error: Error) => {
@@ -559,8 +609,7 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/customers/${customer.id}`] });
-      queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      refreshCustomerContactData();
       setShowEditDialog(false);
       setEditingContact(null);
       toast({ title: "Success", description: "Contact updated" });
@@ -581,12 +630,43 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/customers/${customer.id}`] });
-      queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      refreshCustomerContactData();
       toast({ title: "Success", description: "Contact removed from company" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const linkExistingContactMutation = useMutation({
+    mutationFn: async ({ contactId, setPrimary }: { contactId: string; setPrimary: boolean }) => {
+      const response = await fetch(`/api/customers/${customer.id}/contacts/${contactId}/link`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ setPrimary }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || "Failed to link contact");
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      refreshCustomerContactData();
+      toast({
+        title: "Contact linked",
+        description: linkAsPrimary ? "Contact linked and set as primary." : "Contact linked to this customer.",
+      });
+      setShowLinkDialog(false);
+      setContactSearch("");
+      setSelectedContactId(null);
+      setLinkAsPrimary(false);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Unable to link contact", description: error.message, variant: "destructive" });
     },
   });
 
@@ -608,27 +688,59 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
     updateContactMutation.mutate({ id: editingContact.id, data: editForm });
   };
 
+  const handleLinkDialogOpenChange = (open: boolean) => {
+    setShowLinkDialog(open);
+    if (!open) {
+      setContactSearch("");
+      setSelectedContactId(null);
+      setLinkAsPrimary(false);
+    }
+  };
+
+  const handleConfirmLinkContact = () => {
+    if (!selectedContactId) {
+      toast({
+        title: "Choose a contact",
+        description: "Select an existing contact before linking.",
+        variant: "destructive",
+      });
+      return;
+    }
+    linkExistingContactMutation.mutate({ contactId: selectedContactId, setPrimary: linkAsPrimary });
+  };
+
   if (isEmbedded) return null; // Don't show in embedded mode
 
   return (
     <>
       <div className="bg-titan-bg-card border border-titan-border-subtle rounded-titan-xl p-4">
         {/* Header */}
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between gap-3 mb-4">
           <div className="flex items-center gap-2">
             <Contact2 className="w-5 h-5 text-titan-text-secondary" />
             <h3 className="text-titan-base font-semibold text-titan-text-primary">Contacts</h3>
             <span className="text-titan-xs text-titan-text-muted">({contacts.length})</span>
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 text-titan-xs border-titan-border-subtle text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
-            onClick={() => navigate(`/contacts?customerId=${customer.id}`)}
-          >
-            <Plus className="w-3.5 h-3.5 mr-1" />
-            Add Contact
-          </Button>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-titan-xs border-titan-border-subtle text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
+              onClick={() => setShowLinkDialog(true)}
+            >
+              <Link2 className="w-3.5 h-3.5 mr-1" />
+              Link Existing Contact
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-titan-xs border-titan-border-subtle text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
+              onClick={() => setShowCreateDialog(true)}
+            >
+              <Plus className="w-3.5 h-3.5 mr-1" />
+              Add Contact
+            </Button>
+          </div>
         </div>
 
         {/* Contacts List */}
@@ -720,6 +832,144 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
           </div>
         )}
       </div>
+
+      <ContactForm
+        open={showCreateDialog}
+        onOpenChange={setShowCreateDialog}
+        customerId={customer.id}
+      />
+
+      <Dialog open={showLinkDialog} onOpenChange={handleLinkDialogOpenChange}>
+        <DialogContent className="bg-titan-bg-card border-titan-border max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-titan-text-primary">Link Existing Contact</DialogTitle>
+          </DialogHeader>
+          <p className="text-titan-sm text-titan-text-muted">
+            Contacts belong to one customer at a time. Linking moves the selected contact to {customer.companyName}.
+          </p>
+
+          <div className="space-y-4 py-2">
+            <div>
+              <Label className="text-titan-text-secondary">Search Contacts</Label>
+              <div className="relative mt-1">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-titan-text-muted" />
+                <Input
+                  value={contactSearch}
+                  onChange={(event) => {
+                    setContactSearch(event.target.value);
+                    setSelectedContactId(null);
+                  }}
+                  placeholder="Search by name, email, phone, or company"
+                  className="pl-9 bg-titan-bg-input border-titan-border-subtle text-titan-text-primary"
+                />
+              </div>
+            </div>
+
+            <div className="max-h-72 overflow-y-auto rounded-titan-lg border border-titan-border-subtle">
+              {contactPickerQuery.isLoading ? (
+                <div className="flex items-center justify-center gap-2 px-4 py-8 text-titan-sm text-titan-text-muted">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Searching contacts...
+                </div>
+              ) : contactPickerQuery.isError ? (
+                <div className="px-4 py-8 text-center text-titan-sm text-titan-error">
+                  Failed to search contacts. Try again.
+                </div>
+              ) : linkableContacts.length === 0 ? (
+                <div className="px-4 py-8 text-center text-titan-sm text-titan-text-muted">
+                  {contactSearchTerm ? "No linkable contacts match your search." : "No linkable contacts found."}
+                </div>
+              ) : (
+                <div className="divide-y divide-titan-border-subtle">
+                  {linkableContacts.map((contact) => {
+                    const fullName = `${contact.firstName || ""} ${contact.lastName || ""}`.trim() || "Unnamed contact";
+                    const selected = selectedContactId === contact.id;
+                    return (
+                      <button
+                        key={contact.id}
+                        type="button"
+                        onClick={() => setSelectedContactId(contact.id)}
+                        className={cn(
+                          "flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-titan-bg-card-elevated",
+                          selected && "bg-titan-accent/10",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "mt-1 h-3 w-3 shrink-0 rounded-full border border-titan-border-subtle",
+                            selected && "border-titan-accent bg-titan-accent",
+                          )}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex flex-wrap items-center gap-2">
+                            <span className="text-titan-sm font-medium text-titan-text-primary">{fullName}</span>
+                            {contact.isPrimary ? (
+                              <span className="rounded bg-titan-accent/15 px-1.5 py-0.5 text-[10px] font-medium text-titan-accent">
+                                Primary at source company
+                              </span>
+                            ) : null}
+                          </span>
+                          <span className="mt-0.5 block text-titan-xs text-titan-text-muted">
+                            {contact.companyName || "Unknown company"}
+                          </span>
+                          <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-titan-xs text-titan-text-muted">
+                            {contact.email ? <span>{contact.email}</span> : null}
+                            {contact.phone ? <span>{contact.phone}</span> : null}
+                            {contact.mobile ? <span>{contact.mobile}</span> : null}
+                            {contact.title ? <span>{contact.title}</span> : null}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-titan-lg border border-titan-border-subtle p-3">
+              <div className="flex items-start gap-2">
+                <Checkbox
+                  id="linkAsPrimary"
+                  checked={linkAsPrimary}
+                  onCheckedChange={(checked) => setLinkAsPrimary(checked === true)}
+                />
+                <div className="grid gap-1">
+                  <Label htmlFor="linkAsPrimary" className="cursor-pointer text-titan-sm text-titan-text-primary">
+                    Set as primary contact
+                  </Label>
+                  <p className="text-titan-xs text-titan-text-muted">
+                    This will replace the current primary contact for {customer.companyName}.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {selectedContact ? (
+              <div className="rounded-titan-lg bg-titan-bg-card-elevated px-3 py-2 text-titan-xs text-titan-text-muted">
+                Ready to link {selectedContact.firstName} {selectedContact.lastName} from {selectedContact.companyName}.
+              </div>
+            ) : null}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => handleLinkDialogOpenChange(false)}
+              disabled={linkExistingContactMutation.isPending}
+              className="border-titan-border-subtle text-titan-text-secondary"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleConfirmLinkContact}
+              disabled={!selectedContactId || linkExistingContactMutation.isPending}
+              className="bg-titan-accent hover:bg-titan-accent/90 text-white"
+            >
+              {linkExistingContactMutation.isPending ? "Linking..." : "Link Contact"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Edit Contact Dialog */}
       <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>

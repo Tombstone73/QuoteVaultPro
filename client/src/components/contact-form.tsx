@@ -73,11 +73,15 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
         body: JSON.stringify(data),
         credentials: "include",
       });
-      if (!response.ok) throw new Error("Failed to create contact");
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || "Failed to create contact");
+      }
       return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [`/api/customers/${customerId}`] });
+      queryClient.invalidateQueries({ queryKey: ["contacts"] });
       toast({ title: "Success", description: "Contact created successfully" });
       reset();
       onOpenChange(false);
@@ -95,11 +99,15 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
         body: JSON.stringify(data),
         credentials: "include",
       });
-      if (!response.ok) throw new Error("Failed to update contact");
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || "Failed to update contact");
+      }
       return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [`/api/customers/${customerId}`] });
+      queryClient.invalidateQueries({ queryKey: ["contacts"] });
       toast({ title: "Success", description: "Contact updated successfully" });
       onOpenChange(false);
     },

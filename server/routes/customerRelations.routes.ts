@@ -9,6 +9,8 @@
  *   GET    /api/contacts
  *   GET    /api/contacts/:id
  *   POST   /api/customers/:customerId/contacts
+ *   POST   /api/customers/:customerId/contacts/:contactId/link
+ *   POST   /api/customer-contacts/:id/set-primary
  *   PATCH  /api/customer-contacts/:id
  *   DELETE /api/customer-contacts/:id
  *
@@ -57,6 +59,10 @@ import {
   filterQuoteBySearch,
   buildStatementSummary,
 } from "../lib/customerStatementHelpers";
+
+const linkExistingContactSchema = z.object({
+  setPrimary: z.boolean().optional().default(false),
+});
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -181,6 +187,71 @@ export function registerCustomerRelationsRoutes(
       }
       console.error("Error creating customer contact:", error);
       jsonError(res, 500, "Failed to create customer contact");
+    }
+  });
+
+  app.post("/api/customers/:customerId/contacts/:contactId/link", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
+
+      const customerId = String(req.params.customerId || "").trim();
+      const contactId = String(req.params.contactId || "").trim();
+      const { setPrimary } = linkExistingContactSchema.parse(req.body || {});
+
+      const targetCustomer = await storage.getCustomerById(organizationId, customerId);
+      if (!targetCustomer) return jsonError(res, 404, "Customer not found");
+
+      const existingContact = await storage.getContactWithRelations(contactId, organizationId);
+      if (!existingContact) return jsonError(res, 404, "Contact not found");
+
+      if (existingContact.customerId === customerId) {
+        return jsonError(res, 409, "Contact is already linked to this customer");
+      }
+
+      const linkedContact = await storage.updateCustomerContactForOrganization(
+        organizationId,
+        contactId,
+        {
+          customerId,
+          isPrimary: setPrimary,
+        },
+      );
+
+      res.json(linkedContact);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return jsonError(res, 400, fromZodError(error).message);
+      }
+      if (error instanceof Error && (error.message === "Customer contact not found" || error.message === "Customer not found")) {
+        return jsonError(res, 404, error.message);
+      }
+      console.error("Error linking customer contact:", error);
+      jsonError(res, 500, "Failed to link contact");
+    }
+  });
+
+  app.post("/api/customer-contacts/:id/set-primary", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
+
+      const contactWithCustomer = await storage.getContactWithRelations(req.params.id, organizationId);
+      if (!contactWithCustomer) return jsonError(res, 404, "Contact not found");
+
+      const contact = await storage.updateCustomerContactForOrganization(
+        organizationId,
+        req.params.id,
+        { isPrimary: true },
+      );
+
+      res.json(contact);
+    } catch (error) {
+      if (error instanceof Error && (error.message === "Customer contact not found" || error.message === "Customer not found")) {
+        return jsonError(res, 404, error.message);
+      }
+      console.error("Error setting primary contact:", error);
+      jsonError(res, 500, "Failed to set primary contact");
     }
   });
 
