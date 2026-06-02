@@ -62,7 +62,20 @@ import {
 
 const linkExistingContactSchema = z.object({
   setPrimary: z.boolean().optional().default(false),
+  confirmMove: z.boolean().optional().default(false),
 });
+
+function customerLinkContext(customer: { id: string; companyName?: string | null } | null | undefined) {
+  if (!customer) return null;
+  return {
+    id: customer.id,
+    companyName: customer.companyName || "Unknown company",
+  };
+}
+
+export function contactLinkRequiresMoveConfirmation(contactCustomerId: string | null | undefined, targetCustomerId: string) {
+  return Boolean(contactCustomerId && contactCustomerId !== targetCustomerId);
+}
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -197,7 +210,7 @@ export function registerCustomerRelationsRoutes(
 
       const customerId = String(req.params.customerId || "").trim();
       const contactId = String(req.params.contactId || "").trim();
-      const { setPrimary } = linkExistingContactSchema.parse(req.body || {});
+      const { setPrimary, confirmMove } = linkExistingContactSchema.parse(req.body || {});
 
       const targetCustomer = await storage.getCustomerById(organizationId, customerId);
       if (!targetCustomer) return jsonError(res, 404, "Customer not found");
@@ -205,8 +218,19 @@ export function registerCustomerRelationsRoutes(
       const existingContact = await storage.getContactWithRelations(contactId, organizationId);
       if (!existingContact) return jsonError(res, 404, "Contact not found");
 
-      if (existingContact.customerId === customerId) {
+      const fromCustomer = customerLinkContext(existingContact.customer);
+      const toCustomer = customerLinkContext(targetCustomer);
+      const moved = existingContact.customerId !== customerId;
+      const requiresMoveConfirmation = contactLinkRequiresMoveConfirmation(existingContact.customerId, customerId);
+
+      if (!moved) {
         return jsonError(res, 409, "Contact is already linked to this customer");
+      }
+
+      if (requiresMoveConfirmation && !confirmMove) {
+        const sourceCompany = fromCustomer?.companyName || "another customer";
+        const targetCompany = toCustomer?.companyName || "this customer";
+        return jsonError(res, 409, `Moving this contact from ${sourceCompany} to ${targetCompany} requires confirmation.`);
       }
 
       const linkedContact = await storage.updateCustomerContactForOrganization(
@@ -218,7 +242,14 @@ export function registerCustomerRelationsRoutes(
         },
       );
 
-      res.json(linkedContact);
+      res.json({
+        contact: linkedContact,
+        fromCustomer,
+        toCustomer,
+        moved,
+        requiresMoveConfirmation,
+        setPrimary,
+      });
     } catch (error) {
       if (error instanceof z.ZodError) {
         return jsonError(res, 400, fromZodError(error).message);

@@ -556,6 +556,9 @@ export class CustomersRepository {
 
             // Multi-company contact links are not modeled in the current schema.
             // Keep the existing single primary company flow by moving customer_id atomically.
+            const oldCustomerId = current.contact.customerId;
+            const isMovingCustomer = nextCustomerId !== oldCustomerId;
+            const wasOldCustomerPrimary = current.contact.isPrimary === true;
             const updateData: any = {
                 ...contactData,
                 customerId: nextCustomerId,
@@ -580,6 +583,30 @@ export class CustomersRepository {
 
             if (!contact) {
                 throw new Error("Customer contact not found");
+            }
+
+            if (isMovingCustomer && wasOldCustomerPrimary) {
+                const [oldPrimary] = await tx
+                    .select({ id: customerContacts.id })
+                    .from(customerContacts)
+                    .where(and(eq(customerContacts.customerId, oldCustomerId), eq(customerContacts.isPrimary, true)))
+                    .limit(1);
+
+                if (!oldPrimary) {
+                    const [fallbackPrimary] = await tx
+                        .select({ id: customerContacts.id })
+                        .from(customerContacts)
+                        .where(eq(customerContacts.customerId, oldCustomerId))
+                        .orderBy(asc(customerContacts.createdAt), asc(customerContacts.id))
+                        .limit(1);
+
+                    if (fallbackPrimary) {
+                        await tx
+                            .update(customerContacts)
+                            .set({ isPrimary: true, updatedAt: new Date() })
+                            .where(eq(customerContacts.id, fallbackPrimary.id));
+                    }
+                }
             }
 
             return contact;
