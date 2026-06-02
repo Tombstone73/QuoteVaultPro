@@ -39,6 +39,7 @@ import MyQuotes from "@/pages/portal/my-quotes";
 import MyOrders from "@/pages/portal/my-orders";
 import PortalDashboardPage from "@/pages/portal/dashboard";
 import PortalDocumentsPage from "@/pages/portal/documents";
+import PortalProfilePage from "@/pages/portal/profile";
 import PortalOrderDetailPage from "@/pages/portal/order-detail";
 import PortalProofDetailPage from "@/pages/portal/proof-detail";
 import PortalProofsPage from "@/pages/portal/proofs";
@@ -175,6 +176,7 @@ function Router() {
           <Route path="my-quotes" element={<Navigate to="/portal/quotes" replace />} />
           <Route path="quotes/:id" element={<PortalQuoteDetailPage />} />
           <Route path="documents" element={<PortalDocumentsPage />} />
+          <Route path="profile" element={<PortalProfilePage />} />
           <Route path="quotes/:id/checkout" element={<Navigate to="/portal/quotes" replace />} />
         </Route>
         <Route path="/privacy" element={<PrivacyPage />} />
@@ -346,6 +348,7 @@ function Router() {
         <Route path="my-quotes" element={<Navigate to="/portal/quotes" replace />} />
         <Route path="quotes/:id" element={<PortalQuoteDetailPage />} />
         <Route path="documents" element={<PortalDocumentsPage />} />
+        <Route path="profile" element={<PortalProfilePage />} />
         <Route path="quotes/:id/checkout" element={<Navigate to="/portal/quotes" replace />} />
       </Route>
 

@@ -184,6 +184,53 @@ export type PortalQuoteActionResultDto = {
   message: string;
 };
 
+export type PortalProfileAddressDto = {
+  street1: string | null;
+  street2: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  country: string | null;
+};
+
+export type PortalProfileDto = {
+  company: {
+    name: string;
+    phone: string | null;
+    email: string | null;
+  };
+  billingAddress: PortalProfileAddressDto;
+  shippingAddress: PortalProfileAddressDto;
+  contact: {
+    firstName: string;
+    lastName: string;
+    phone: string | null;
+    email: string | null;
+    emailEditable: boolean;
+    emailEditMessage: string | null;
+  } | null;
+  latestPortalUpdate: {
+    updatedAt: string;
+    updatedBy: string | null;
+    fieldCount: number;
+  } | null;
+};
+
+export type PortalProfileUpdatePayload = {
+  company?: {
+    phone?: string | null;
+    email?: string | null;
+  };
+  billingAddress?: Partial<PortalProfileAddressDto>;
+  shippingAddress?: Partial<PortalProfileAddressDto>;
+  contact?: {
+    firstName?: string;
+    lastName?: string;
+    phone?: string | null;
+    email?: string | null;
+  };
+};
+
 export type PortalDashboardFileDto = PortalFileDto & {
   entityType: "invoice" | "order" | "quote";
   entityId: string;
@@ -292,6 +339,10 @@ export const portalProofKeys = {
   detail: (proofId: string | undefined) => ["portal", "proofs", proofId] as const,
 };
 
+export const portalProfileKeys = {
+  current: ["portal", "profile"] as const,
+};
+
 async function portalFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (!path.startsWith("/api/portal/")) {
     throw new Error("Portal requests must use the portal API boundary");
@@ -337,6 +388,23 @@ export function usePortalDashboard() {
   return useQuery({
     queryKey: portalDashboardKeys.all,
     queryFn: () => portalFetch<PortalDashboardDto>("/api/portal/dashboard"),
+  });
+}
+
+export function usePortalProfile() {
+  return useQuery({
+    queryKey: portalProfileKeys.current,
+    queryFn: () => portalFetch<PortalProfileDto>("/api/portal/profile"),
+  });
+}
+
+export function useUpdatePortalProfile() {
+  return useMutation({
+    mutationFn: (payload: PortalProfileUpdatePayload) =>
+      portalFetch<PortalProfileDto>("/api/portal/profile", {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      }),
   });
 }
 
