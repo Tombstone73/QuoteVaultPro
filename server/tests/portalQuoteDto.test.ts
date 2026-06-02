@@ -29,6 +29,8 @@ describe("portal quote hydration visibility", () => {
   test("shows saved sent quotes for the logged-in portal customer", () => {
     expect(isPortalQuoteVisibleToCustomer({ status: "pending" })).toBe(true);
     expect(getPortalQuoteVisibilityReason({ status: "pending" })).toBe("sent");
+    expect(isPortalQuoteVisibleToCustomer({ status: "active", workflowStatus: "pending_customer_approval" })).toBe(true);
+    expect(getPortalQuoteVisibilityReason({ status: "active", workflowStatus: "pending_customer_approval" })).toBe("sent");
   });
 
   test("does not show draft or internal approval quotes by default", () => {
@@ -38,8 +40,10 @@ describe("portal quote hydration visibility", () => {
   });
 
   test("keeps customer-actioned and converted quotes visible as account history", () => {
+    expect(isPortalQuoteVisibleToCustomer({ status: "active" })).toBe(true);
     expect(isPortalQuoteVisibleToCustomer({ status: "pending", workflowStatus: "customer_revision_requested" })).toBe(true);
     expect(isPortalQuoteVisibleToCustomer({ status: "active", workflowStatus: "customer_approved" })).toBe(true);
+    expect(isPortalQuoteVisibleToCustomer({ status: "canceled" })).toBe(true);
     expect(isPortalQuoteVisibleToCustomer({ status: "canceled", workflowStatus: "rejected" })).toBe(true);
     expect(isPortalQuoteVisibleToCustomer({ status: "active", convertedToOrderId: "order_123" })).toBe(true);
   });
