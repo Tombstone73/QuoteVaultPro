@@ -521,7 +521,10 @@ export function useCreateOrder() {
     mutationFn: async (data: any) => {
       const response = await fetch("/api/orders", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(data?.idempotencyKey ? { "Idempotency-Key": data.idempotencyKey } : {}),
+        },
         body: JSON.stringify(data),
         credentials: "include",
       });
@@ -686,13 +689,16 @@ export function useConvertQuoteToOrder(quoteId?: string | null) {
   const navigate = useNavigate();
 
   return useMutation({
-    mutationFn: async (data: { quoteId?: string; poNumber?: string; dueDate?: string; promisedDate?: string; priority?: string; notesInternal?: string; customerId?: string; contactId?: string }) => {
+    mutationFn: async (data: { quoteId?: string; poNumber?: string; dueDate?: string; promisedDate?: string; priority?: string; notesInternal?: string; customerId?: string; contactId?: string; idempotencyKey?: string }) => {
       const targetQuoteId = data.quoteId ?? quoteId;
       if (!targetQuoteId) throw new Error("Missing quote id");
       const { quoteId: _omit, ...rest } = data;
       const response = await fetch(`/api/quotes/${targetQuoteId}/convert-to-order`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(data.idempotencyKey ? { "Idempotency-Key": data.idempotencyKey } : {}),
+        },
         body: JSON.stringify(rest),
         credentials: "include",
       });

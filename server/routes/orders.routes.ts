@@ -78,6 +78,11 @@ import {
     getInventoryReservationsGate,
     resolveInventoryPolicyFromOrgPreferences,
 } from "@shared/inventoryPolicy";
+import {
+    buildOrderCreationFingerprint,
+    extractOrderCreationIdempotencyKey,
+    orderCreationIdempotencyStore,
+} from "./helpers/orderCreationIdempotency.helpers";
 import { getClientBooleanOverride } from "../lib/clientBooleanOverride";
 import {
     mergePricingIntoSpecsJson,
@@ -1771,12 +1776,13 @@ export async function registerOrderRoutes(
             }
 
             // Validate the order data (excluding line items for now)
-            const { lineItems, ...orderFields } = req.body;
+            const { lineItems, idempotencyKey: _bodyIdempotencyKey, ...orderFields } = req.body;
 
             if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
                 return res.status(400).json({ message: "At least one line item is required" });
             }
 
+            const createOrderForRequest = async () => {
             // Load organization for tax settings
             const [org] = await db
                 .select()
@@ -1785,7 +1791,7 @@ export async function registerOrderRoutes(
                 .limit(1);
 
             if (!org) {
-                return res.status(500).json({ message: "Organization not found" });
+                throw Object.assign(new Error("Organization not found"), { statusCode: 500 });
             }
 
             const orgTaxSettings = getOrganizationTaxSettings(org);
@@ -1944,11 +1950,34 @@ export async function registerOrderRoutes(
                 }
             }
 
-            res.json(order);
+            return order;
+            };
+
+            const key = extractOrderCreationIdempotencyKey(req);
+            const fingerprint = buildOrderCreationFingerprint({
+                route: "POST /api/orders",
+                body: req.body,
+            });
+            const result = await orderCreationIdempotencyStore.run(
+                {
+                    scope: `${organizationId}:${userId}:orders:create`,
+                    key,
+                    fingerprint,
+                },
+                createOrderForRequest,
+            );
+
+            res.json(result.value);
         } catch (error) {
             if (error instanceof z.ZodError) {
                 console.error("Zod validation error:", error.errors);
                 return res.status(400).json({ message: fromZodError(error).message });
+            }
+            if ((error as any)?.code === "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD") {
+                return res.status(409).json({ message: (error as Error).message, code: (error as any).code });
+            }
+            if ((error as any)?.statusCode) {
+                return res.status((error as any).statusCode).json({ message: (error as Error).message });
             }
             console.error("Error creating order:", error);
             res.status(500).json({ message: "Failed to create order", error: (error as Error).message });
@@ -4274,16 +4303,39 @@ export async function registerOrderRoutes(
             const userId = getUserId(req.user);
             if (!userId) return res.status(401).json({ success: false, message: "User not authenticated" });
             const { poNumber, dueDate, promisedDate, priority, notesInternal } = req.body || {};
-            const order = await storage.convertQuoteToOrder(organizationId, req.params.id, userId, {
-                poNumber: poNumber ? String(poNumber) : undefined,
-                dueDate: dueDate ? new Date(dueDate) : undefined,
-                promisedDate: promisedDate ? new Date(promisedDate) : undefined,
-                priority: priority || "normal",
-                notesInternal: notesInternal ?? undefined,
+            const convertQuoteForRequest = async () => {
+                return await storage.convertQuoteToOrder(organizationId, req.params.id, userId, {
+                    poNumber: poNumber ? String(poNumber) : undefined,
+                    dueDate: dueDate ? new Date(dueDate) : undefined,
+                    promisedDate: promisedDate ? new Date(promisedDate) : undefined,
+                    priority: priority || "normal",
+                    notesInternal: notesInternal ?? undefined,
+                });
+            };
+            const key = extractOrderCreationIdempotencyKey(req);
+            const fingerprint = buildOrderCreationFingerprint({
+                route: "POST /api/quotes/:id/convert-to-order",
+                quoteId: req.params.id,
+                body: req.body,
             });
-            res.status(201).json({ success: true, data: { order } });
+            const result = await orderCreationIdempotencyStore.run(
+                {
+                    scope: `${organizationId}:${userId}:quotes:${req.params.id}:convert-to-order`,
+                    key,
+                    fingerprint,
+                },
+                convertQuoteForRequest,
+            );
+            res.status(result.replayed ? 200 : 201).json({ success: true, data: { order: result.value } });
         } catch (error: any) {
             console.error("[QUOTE TO ORDER CONVERSION] failed", error);
+            if (error?.code === "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD") {
+                return res.status(409).json({
+                    success: false,
+                    message: error.message,
+                    code: error.code,
+                });
+            }
             const status = error?.statusCode || (error?.message?.includes('already converted') ? 409 : 500);
             res.status(status).json({
                 success: false,
@@ -4377,28 +4429,54 @@ export async function registerOrderRoutes(
                 });
             }
 
-            const order = await storage.convertQuoteToOrder(organizationId, quoteId, userId, {
-                poNumber: poNumber ? String(poNumber) : undefined,
-                dueDate: dueDate || undefined,
-                promisedDate: promisedDate || undefined,
-                priority,
-                notesInternal,
-            });
+            const convertQuoteForRequest = async () => {
+                const order = await storage.convertQuoteToOrder(organizationId, quoteId, userId, {
+                    poNumber: poNumber ? String(poNumber) : undefined,
+                    dueDate: dueDate || undefined,
+                    promisedDate: promisedDate || undefined,
+                    priority,
+                    notesInternal,
+                });
 
-            await storage.createAuditLog(organizationId, {
-                userId,
-                userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-                actionType: 'CREATE',
-                entityType: 'order',
-                entityId: order.id,
-                entityName: order.orderNumber,
-                description: `Created order ${order.orderNumber} from quote ${quote.quoteNumber}`,
-                newValues: order,
-            });
+                await storage.createAuditLog(organizationId, {
+                    userId,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    actionType: 'CREATE',
+                    entityType: 'order',
+                    entityId: order.id,
+                    entityName: order.orderNumber,
+                    description: `Created order ${order.orderNumber} from quote ${quote.quoteNumber}`,
+                    newValues: order,
+                });
 
-            res.json(order);
+                return order;
+            };
+
+            const key = extractOrderCreationIdempotencyKey(req);
+            const fingerprint = buildOrderCreationFingerprint({
+                route: "POST /api/orders/from-quote/:quoteId",
+                quoteId,
+                body: req.body,
+            });
+            const result = await orderCreationIdempotencyStore.run(
+                {
+                    scope: `${organizationId}:${userId}:orders:from-quote:${quoteId}`,
+                    key,
+                    fingerprint,
+                },
+                convertQuoteForRequest,
+            );
+
+            res.json(result.value);
         } catch (error: any) {
             console.error("[CONVERT QUOTE TO ORDER] Error:", error);
+            if (error?.code === "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD") {
+                return res.status(409).json({
+                    message: error.message,
+                    error: error.message,
+                    code: error.code,
+                });
+            }
             if (error?.message?.includes('already converted')) {
                 return res.status(409).json({
                     message: error.message,
