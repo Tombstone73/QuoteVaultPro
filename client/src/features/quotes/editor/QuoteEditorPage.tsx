@@ -5,6 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -177,6 +179,43 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             });
         },
     });
+
+    const portalVisibilityMutation = useMutation({
+        mutationFn: async (visibleInCustomerPortal: boolean) => {
+            if (!state.quoteId) return null;
+            const res = await apiRequest("PATCH", `/api/quotes/${state.quoteId}`, { visibleInCustomerPortal });
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body?.message || "Failed to update portal visibility");
+            }
+            return res.json();
+        },
+        onMutate: () => {
+            return { previousVisibleInCustomerPortal: state.visibleInCustomerPortal };
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+            if (state.quoteId) {
+                queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
+            }
+        },
+        onError: (error: Error, _visible, context) => {
+            state.handlers.setVisibleInCustomerPortal(context?.previousVisibleInCustomerPortal ?? state.visibleInCustomerPortal);
+            toast({
+                title: "Visibility not updated",
+                description: error.message,
+                variant: "destructive",
+            });
+        },
+    });
+
+    const handlePortalVisibilityChange = (checked: boolean) => {
+        state.handlers.setVisibleInCustomerPortal(checked);
+        const shouldPersistImmediately = mode === "view" || workflowState === "approved" || workflowState === "converted";
+        if (state.quoteId && shouldPersistImmediately) {
+            portalVisibilityMutation.mutate(checked);
+        }
+    };
     
     const handleReviseQuote = () => {
         if (!state.quoteId) return;
@@ -1126,6 +1165,37 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
                     {/* RIGHT COLUMN: Fulfillment + Attachments + Info */}
                     <div className="space-y-6 lg:sticky lg:top-4 h-fit">
+                        {state.isInternalUser && (
+                            <Card className="rounded-lg border border-border/40 bg-card/50">
+                                <CardHeader className="pb-3">
+                                    <CardTitle className="text-base font-medium">Customer Portal</CardTitle>
+                                    <CardDescription>
+                                        Staff can control whether this saved quote appears for the customer.
+                                    </CardDescription>
+                                </CardHeader>
+                                <CardContent>
+                                    <div className="flex items-start justify-between gap-4 rounded-md border border-border/50 bg-background/40 p-3">
+                                        <div className="space-y-1">
+                                            <Label htmlFor="quote-portal-visibility" className="cursor-pointer text-sm font-medium">
+                                                Visible in customer portal
+                                            </Label>
+                                            <p className="text-xs text-muted-foreground">
+                                                {state.visibleInCustomerPortal
+                                                    ? "Customers can see this quote in Dashboard and Quotes."
+                                                    : "Hidden from customer portal until staff turns this on."}
+                                            </p>
+                                        </div>
+                                        <Switch
+                                            id="quote-portal-visibility"
+                                            checked={state.visibleInCustomerPortal}
+                                            onCheckedChange={handlePortalVisibilityChange}
+                                            disabled={state.isSaving || portalVisibilityMutation.isPending}
+                                        />
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        )}
+
                         {/* Fulfillment & Shipping Panel - Reuses Orders component */}
                         <OrderFulfillmentPanel
                             mode="quote"

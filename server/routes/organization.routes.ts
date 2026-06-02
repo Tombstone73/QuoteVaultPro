@@ -50,6 +50,20 @@ function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
 }
 
+const TITAN_GRAPHICS_ORGANIZATION_ID = "org_titan_001";
+
+function resolveQuotePreferencesFromOrgPreferences(preferences: unknown, organizationId: string) {
+  const rawQuotes = (preferences as any)?.quotes;
+  const quotes = rawQuotes && typeof rawQuotes === "object" ? rawQuotes : {};
+  return {
+    ...quotes,
+    savedQuotesVisibleInPortalByDefault:
+      typeof quotes.savedQuotesVisibleInPortalByDefault === "boolean"
+        ? quotes.savedQuotesVisibleInPortalByDefault
+        : organizationId === TITAN_GRAPHICS_ORGANIZATION_ID,
+  };
+}
+
 export function registerOrganizationRoutes(
   app: Express,
   middleware: {
@@ -161,9 +175,11 @@ export function registerOrganizationRoutes(
       const materialsOverrideMode = resolveMaterialsOverrideModeFromOrgPreferences(preferences);
       const fileUploadNaming = resolveFileUploadNamingPolicyFromPreferences(preferences, organizationId);
       const billingInvoiceTriggerPolicy = resolveBillingInvoiceTriggerPolicyFromOrgPreferences(preferences);
+      const quotePreferences = resolveQuotePreferencesFromOrgPreferences(preferences, organizationId);
 
       res.json({
         ...(preferences as any),
+        quotes: quotePreferences,
         billingInvoiceTriggerPolicy,
         fileUploadNaming,
         prepressDefaultEnabled: org.prepressDefaultEnabled,

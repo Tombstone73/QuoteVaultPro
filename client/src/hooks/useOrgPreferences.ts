@@ -19,6 +19,7 @@ export interface OrgPreferences {
 
   quotes?: {
     requireApproval?: boolean;
+    savedQuotesVisibleInPortalByDefault?: boolean;
   };
   orders?: {
     requireDueDateForProduction?: boolean;

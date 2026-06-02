@@ -1390,6 +1390,7 @@ export const quotes = pgTable("quotes", {
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
   customerName: varchar("customer_name", { length: 255 }),
   source: varchar("source", { length: 50 }).notNull().default('internal'),
+  visibleInCustomerPortal: boolean("visible_in_customer_portal").notNull().default(false),
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default("0"),
   // Tax system fields (taxRate kept for backward compatibility but now represents effective snapshot)
   taxRate: decimal("tax_rate", { precision: 5, scale: 4 }),
@@ -1446,6 +1447,7 @@ export const quotes = pgTable("quotes", {
   index("quotes_quote_number_idx").on(table.quoteNumber),
   index("quotes_display_number_idx").on(table.displayNumber),
   index("quotes_number_core_idx").on(table.numberCore),
+  index("quotes_portal_visibility_idx").on(table.organizationId, table.customerId, table.visibleInCustomerPortal),
   uniqueIndex("quotes_org_display_number_unique").on(table.organizationId, table.displayNumber).where(sql`${table.displayNumber} IS NOT NULL`),
   uniqueIndex("quotes_org_number_core_unique").on(table.organizationId, table.numberCore).where(sql`${table.numberCore} IS NOT NULL`),
   index("quotes_source_idx").on(table.source),
@@ -1552,6 +1554,7 @@ export const insertQuoteSchema = createInsertSchema(quotes).omit({
   contactId: z.string().optional().nullable(),
   status: z.enum(['draft', 'active', 'canceled']).default('draft').optional(),
   source: z.enum(['internal', 'customer_quick_quote']).default('internal'),
+  visibleInCustomerPortal: z.boolean().optional(),
   subtotal: z.coerce.number().min(0),
   taxRate: z.coerce.number().min(0).max(1).optional().nullable(),
   taxAmount: z.coerce.number().min(0).default(0),

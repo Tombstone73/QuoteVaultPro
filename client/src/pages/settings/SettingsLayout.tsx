@@ -1910,6 +1910,22 @@ export function PreferencesSettings() {
                 disabled={isUpdating}
               />
             </div>
+            <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="quotes-visible-by-default" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
+                  Saved quotes are visible in customer portal by default
+                </Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  When enabled, newly saved quotes are visible to portal customers unless staff hides them on the quote.
+                </p>
+              </div>
+              <Switch
+                id="quotes-visible-by-default"
+                checked={preferences?.quotes?.savedQuotesVisibleInPortalByDefault ?? false}
+                onCheckedChange={(checked) => handleQuoteToggle('savedQuotesVisibleInPortalByDefault', checked)}
+                disabled={isUpdating}
+              />
+            </div>
           </div>
         </div>
         
