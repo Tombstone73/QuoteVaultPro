@@ -747,11 +747,14 @@ export function getPortalQuoteVisibilityReason(input: PortalQuoteVisibilityInput
 
   if (input.convertedToOrderId) return "converted_history";
   if (status === "pending") return "sent";
+  if (workflowStatus === "pending_customer_approval") return "sent";
   if (workflowStatus === "customer_approved") return "customer_approved";
   if (workflowStatus === "customer_revision_requested") return "customer_revision_requested";
   if (workflowStatus === "customer_declined" || workflowStatus === "rejected") {
     return status === "canceled" || status === "cancelled" ? "customer_declined" : null;
   }
+  if (status === "active" && workflowStatus !== "staff_approved") return "accepted";
+  if (status === "canceled" || status === "cancelled") return "rejected";
 
   return null;
 }
@@ -2819,7 +2822,7 @@ function logPortalQuoteHydrationDiagnostics(args: {
   visibleCount: number;
   excludedRows: Array<{ status?: unknown; workflowStatus?: unknown }>;
 }) {
-  if (args.beforeCount === 0 || args.visibleCount > 0) return;
+  if (args.visibleCount > 0) return;
 
   console.info("[Portal Quotes] scoped quote hydration returned no visible quotes", {
     organizationId: args.scope.organizationId,
