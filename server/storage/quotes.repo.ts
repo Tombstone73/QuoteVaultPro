@@ -9,6 +9,7 @@ import {
     inboundOrderRecords,
     users,
     customers,
+    organizations,
     products,
     productVariants,
     type Quote,
@@ -20,6 +21,10 @@ import {
     type QuoteWorkflowState,
     type InsertQuoteWorkflowState,
 } from "@shared/schema";
+import {
+    resolveLineItemProofApprovalRequirement,
+    resolveProofApprovalLockEnabledFromOrgPreferences,
+} from "@shared/proofApprovalLock";
 import { and, eq, isNull, like, gte, lte, desc, asc, sql, inArray } from "drizzle-orm";
 import { DB_TO_WORKFLOW, getEffectiveWorkflowState, type QuoteWorkflowState as WorkflowState } from "@shared/quoteWorkflow";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
@@ -646,6 +651,12 @@ export class QuotesRepository {
             organizationId,
             Array.from(new Set(newLineItems.map((item) => item.productId).filter(Boolean))),
         );
+        const [orgForProofPolicy] = await this.dbInstance
+            .select({ settings: organizations.settings })
+            .from(organizations)
+            .where(eq(organizations.id, organizationId))
+            .limit(1);
+        const proofApprovalLockEnabled = resolveProofApprovalLockEnabledFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences);
 
         // Snapshot requiresProofApproval from product so conversion is not sensitive to later product edits.
         const newLineItemProductIds = Array.from(new Set(newLineItems.map((item) => item.productId).filter(Boolean)));
@@ -657,7 +668,13 @@ export class QuotesRepository {
             : [];
         const proofApprovalMap = new Map(proofApprovalRows.map((p) => [p.id, Boolean(p.requiresProofApproval)]));
 
-        const lineItemsData = newLineItems.map((item, index) => ({
+        const lineItemsData = newLineItems.map((item, index) => {
+            const proofApproval = resolveLineItemProofApprovalRequirement({
+                productRequiresProofApproval: proofApprovalMap.get(item.productId) ?? false,
+                requestedRequiresProofApproval: typeof (item as any).requiresProofApproval === "boolean" ? (item as any).requiresProofApproval : undefined,
+                proofApprovalLockEnabled,
+            });
+            return {
             ...materializeLineItemDesignSnapshot({
                 config: designConfigMap.get(item.productId) ?? null,
                 requestedNeedsDesignOverride: (item as any).needsDesignOverride,
@@ -709,8 +726,9 @@ export class QuotesRepository {
             }).effectiveRequiresDesign,
             requiresPrepress: typeof (item as any).requiresPrepress === 'boolean' ? (item as any).requiresPrepress : null,
             // Proof-approval snapshot (migration 0032): captured from product now so conversion is immune to later changes.
-            requiresProofApproval: proofApprovalMap.get(item.productId) ?? false,
-        }));
+            requiresProofApproval: proofApproval.requiresProofApproval,
+            };
+        });
 
         const createdLineItems = lineItemsData.length
             ? await this.dbInstance.insert(quoteLineItems).values(lineItemsData).returning()
@@ -755,6 +773,11 @@ export class QuotesRepository {
                         config: existingConfigMap.get(existingLineItem.productId) ?? null,
                         existingEffectiveRequiresDesign: existingLineItem.requiresDesign,
                     });
+                    const proofApproval = resolveLineItemProofApprovalRequirement({
+                        productRequiresProofApproval: existingProofApprovalMap.get(existingLineItem.productId) ?? false,
+                        requestedRequiresProofApproval: typeof existingLineItem.requiresProofApproval === "boolean" ? existingLineItem.requiresProofApproval : undefined,
+                        proofApprovalLockEnabled,
+                    });
 
                     const [updatedExistingLineItem] = await this.dbInstance
                         .update(quoteLineItems)
@@ -773,7 +796,7 @@ export class QuotesRepository {
                             internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
                             needsDesignOverride: designSnapshot.needsDesignOverride,
                             // Proof-approval snapshot (migration 0032)
-                            requiresProofApproval: existingProofApprovalMap.get(existingLineItem.productId) ?? false,
+                            requiresProofApproval: proofApproval.requiresProofApproval,
                         })
                         .where(eq(quoteLineItems.id, existingLineItem.id))
                         .returning();
@@ -1004,7 +1027,17 @@ export class QuotesRepository {
             .from(products)
             .where(eq(products.id, lineItem.productId))
             .limit(1);
-        const lineItemRequiresProofApproval = Boolean(proofProductRow?.requiresProofApproval);
+        const [orgForProofPolicy] = await this.dbInstance
+            .select({ settings: organizations.settings })
+            .from(organizations)
+            .where(eq(organizations.id, quoteRow.organizationId))
+            .limit(1);
+        const proofApproval = resolveLineItemProofApprovalRequirement({
+            productRequiresProofApproval: Boolean(proofProductRow?.requiresProofApproval),
+            requestedRequiresProofApproval: typeof (lineItem as any).requiresProofApproval === "boolean" ? (lineItem as any).requiresProofApproval : undefined,
+            proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
+        });
+        const lineItemRequiresProofApproval = proofApproval.requiresProofApproval;
 
         const lineItemData = {
             ...designSnapshot,
@@ -1057,6 +1090,7 @@ export class QuotesRepository {
                 id: quoteLineItems.id,
                 productId: quoteLineItems.productId,
                 requiresDesign: quoteLineItems.requiresDesign,
+                requiresProofApproval: quoteLineItems.requiresProofApproval,
                 quoteId: quoteLineItems.quoteId,
                 quantity: quoteLineItems.quantity,
                 linePrice: quoteLineItems.linePrice,
@@ -1171,6 +1205,25 @@ export class QuotesRepository {
             updateData.internalLaborRateSnapshot = designSnapshot.internalLaborRateSnapshot;
             updateData.needsDesignOverride = designSnapshot.needsDesignOverride;
             updateData.requiresDesign = designSnapshot.effectiveRequiresDesign;
+
+            if ((lineItem as any).requiresProofApproval !== undefined || lineItem.productId !== undefined) {
+                const [proofProductRow] = await this.dbInstance
+                    .select({ requiresProofApproval: products.requiresProofApproval })
+                    .from(products)
+                    .where(eq(products.id, lineItem.productId ?? currentLineItem.productId))
+                    .limit(1);
+                const [orgForProofPolicy] = await this.dbInstance
+                    .select({ settings: organizations.settings })
+                    .from(organizations)
+                    .where(eq(organizations.id, quoteRow.organizationId))
+                    .limit(1);
+                const proofApproval = resolveLineItemProofApprovalRequirement({
+                    productRequiresProofApproval: Boolean(proofProductRow?.requiresProofApproval),
+                    requestedRequiresProofApproval: typeof (lineItem as any).requiresProofApproval === "boolean" ? (lineItem as any).requiresProofApproval : undefined,
+                    proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
+                });
+                updateData.requiresProofApproval = proofApproval.requiresProofApproval;
+            }
         }
 
         const [updated] = await this.dbInstance

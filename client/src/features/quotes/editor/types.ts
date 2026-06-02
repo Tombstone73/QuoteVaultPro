@@ -45,6 +45,7 @@ export type QuoteLineItemDraft = {
   //                   null/undefined → fall back to productType / org default at conversion
   requiresDesign?: boolean;
   requiresPrepress?: boolean | null;
+  requiresProofApproval?: boolean | null;
   // DEPRECATED: Legacy override fields (kept for backward compatibility)
   priceOverridden?: boolean;
   overriddenPrice?: number | null;

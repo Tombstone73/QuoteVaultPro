@@ -16,6 +16,7 @@ export type OrderLineItemSavedSnapshot = {
   productionNotes: string;
   requiresDesign: boolean;
   requiresPrepress: boolean;
+  requiresProofApproval: boolean;
   optionSelections: Record<string, OptionSelection>;
   optionSelectionsV2: LineItemOptionSelectionsV2["selected"];
   totalPrice: number;
@@ -32,6 +33,7 @@ export type OrderLineItemDraftSnapshot = {
   productionNotes: string;
   requiresDesign: boolean;
   requiresPrepress: boolean;
+  requiresProofApproval: boolean;
   optionSelections: Record<string, OptionSelection>;
   optionSelectionsV2: LineItemOptionSelectionsV2["selected"];
   isPbv2Mode: boolean;
@@ -357,6 +359,7 @@ export function hasOrderLineItemDraftChanges(
     draft.productionNotes !== (saved.productionNotes || "") ||
     draft.requiresDesign !== saved.requiresDesign ||
     draft.requiresPrepress !== saved.requiresPrepress ||
+    draft.requiresProofApproval !== saved.requiresProofApproval ||
     (draft.isPbv2Mode ? currentOptionsV2 !== savedOptionsV2 : currentOptions !== savedOptions) ||
     draft.designBriefDraftJson !== draft.savedDesignBriefJson
   );

@@ -79,6 +79,11 @@ import {
     resolveInventoryPolicyFromOrgPreferences,
 } from "@shared/inventoryPolicy";
 import {
+    buildProofApprovalManualOverrideAuditEvent,
+    resolveLineItemProofApprovalRequirement,
+    resolveProofApprovalLockEnabledFromOrgPreferences,
+} from "@shared/proofApprovalLock";
+import {
     buildOrderCreationFingerprint,
     extractOrderCreationIdempotencyKey,
     orderCreationIdempotencyStore,
@@ -275,9 +280,13 @@ async function resolveEffectiveLineItemRouting(args: {
     productId: string;
     requestedRequiresDesign?: boolean | null;
     requestedRequiresPrepress?: boolean | null;
+    requestedRequiresProofApproval?: boolean | null;
 }) {
     const [org] = await db
-        .select({ prepressDefaultEnabled: organizations.prepressDefaultEnabled })
+        .select({
+            prepressDefaultEnabled: organizations.prepressDefaultEnabled,
+            settings: organizations.settings,
+        })
         .from(organizations)
         .where(eq(organizations.id, args.organizationId))
         .limit(1);
@@ -296,12 +305,18 @@ async function resolveEffectiveLineItemRouting(args: {
     const requiresPrepress = typeof args.requestedRequiresPrepress === "boolean"
         ? args.requestedRequiresPrepress
         : productRow?.requiresPrepressOverride ?? org?.prepressDefaultEnabled ?? true;
-    const requiresProofApproval = Boolean(productRow?.requiresProofApproval);
+    const proofApproval = resolveLineItemProofApprovalRequirement({
+        productRequiresProofApproval: Boolean(productRow?.requiresProofApproval),
+        requestedRequiresProofApproval: args.requestedRequiresProofApproval,
+        proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((org?.settings as any)?.preferences),
+    });
+    const requiresProofApproval = proofApproval.requiresProofApproval;
 
     return {
         requiresDesign,
         requiresPrepress,
         requiresProofApproval,
+        proofApprovalManualOverride: proofApproval.manualOverride,
         workflowState: getInitialWorkflowState({ requiresDesign, requiresPrepress, requiresProofApproval }),
     };
 }
@@ -762,6 +777,27 @@ async function getOrgPreferences(organizationId: string): Promise<any> {
         console.error('[getOrgPreferences] Error:', error);
         return {};
     }
+}
+
+async function createProofApprovalManualOverrideAuditLog(args: {
+    organizationId: string;
+    userId: string | null | undefined;
+    userName: string | null | undefined;
+    entityType: "quote_line_item" | "order_line_item";
+    entityId: string;
+    entityName?: string | null;
+}) {
+    const auditEvent = buildProofApprovalManualOverrideAuditEvent({
+        entityType: args.entityType,
+        entityId: args.entityId,
+        entityName: args.entityName,
+    });
+    await db.insert(auditLogs).values({
+        organizationId: args.organizationId,
+        userId: args.userId ?? null,
+        userName: args.userName ?? null,
+        ...auditEvent,
+    });
 }
 
 export async function registerOrderRoutes(
@@ -1795,6 +1831,7 @@ export async function registerOrderRoutes(
             }
 
             const orgTaxSettings = getOrganizationTaxSettings(org);
+            const proofApprovalLockEnabled = resolveProofApprovalLockEnabledFromOrgPreferences((org.settings as any)?.preferences);
 
             // Load customer for tax calculation (if applicable)
             let customer = null;
@@ -1866,10 +1903,21 @@ export async function registerOrderRoutes(
             );
 
             // Merge tax data into line items
+            const proofApprovalManualOverrideIndexes: number[] = [];
             const lineItemsWithTax = lineItems.map((item: any, index: number) => {
                 const taxData = totalsResult.lineItemsWithTax[index];
+                const product = productMap.get(item.productId);
+                const proofApproval = resolveLineItemProofApprovalRequirement({
+                    productRequiresProofApproval: Boolean(product?.requiresProofApproval),
+                    requestedRequiresProofApproval: typeof item.requiresProofApproval === "boolean" ? item.requiresProofApproval : undefined,
+                    proofApprovalLockEnabled,
+                });
+                if (proofApproval.manualOverride) {
+                    proofApprovalManualOverrideIndexes.push(index);
+                }
                 return {
                     ...item,
+                    requiresProofApproval: proofApproval.requiresProofApproval,
                     taxAmount: taxData.taxAmount,
                     isTaxableSnapshot: taxData.isTaxableSnapshot,
                 };
@@ -1934,6 +1982,22 @@ export async function registerOrderRoutes(
                 description: `Created order ${order.orderNumber}`,
                 newValues: order,
             });
+
+            if (proofApprovalManualOverrideIndexes.length > 0 && Array.isArray((order as any).lineItems)) {
+                const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+                for (const index of proofApprovalManualOverrideIndexes) {
+                    const lineItem = (order as any).lineItems[index];
+                    if (!lineItem?.id) continue;
+                    await createProofApprovalManualOverrideAuditLog({
+                        organizationId,
+                        userId,
+                        userName,
+                        entityType: "order_line_item",
+                        entityId: String(lineItem.id),
+                        entityName: lineItem.description ?? lineItemsWithTax[index]?.description ?? null,
+                    });
+                }
+            }
 
             if (Array.isArray((order as any).lineItems)) {
                 for (const lineItem of (order as any).lineItems) {
@@ -5624,6 +5688,7 @@ export async function registerOrderRoutes(
             // rather than treating Zod's default(false) as an intentional override.
             const requestedRequiresDesignOverride = getClientBooleanOverride(req.body, "requiresDesign");
             const requestedRequiresPrepressOverride = getClientBooleanOverride(req.body, "requiresPrepress");
+            const requestedRequiresProofApprovalOverride = getClientBooleanOverride(req.body, "requiresProofApproval");
 
             const designSnapshot = materializeLineItemDesignSnapshot({
                 config: await productDesignConfigRepository.getByProductId(organizationId, String(lineItemData.productId)),
@@ -5638,6 +5703,7 @@ export async function registerOrderRoutes(
                 productId: String(lineItemData.productId),
                 requestedRequiresDesign: designSnapshot.effectiveRequiresDesign,
                 requestedRequiresPrepress: requestedRequiresPrepressOverride,
+                requestedRequiresProofApproval: requestedRequiresProofApprovalOverride,
             });
 
             // Create line item with server-computed pricing
@@ -5669,6 +5735,17 @@ export async function registerOrderRoutes(
                 unitPrice: effectivePricing.effectiveUnitPriceCents / 100,
                 totalPrice: effectivePricing.effectiveTotalCents / 100,
             });
+
+            if (routing.proofApprovalManualOverride) {
+                await createProofApprovalManualOverrideAuditLog({
+                    organizationId,
+                    userId,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    entityType: "order_line_item",
+                    entityId: String(created.id),
+                    entityName: (created as any).description ?? null,
+                });
+            }
 
             // Auto-schedule production job if the product type has sendToProductionDefault=true.
             // Fail-soft: scheduling failure does not block the line item create response.
@@ -5787,10 +5864,13 @@ export async function registerOrderRoutes(
             const submittedFields = Object.keys(updateData).filter((field) => updateData[field] !== undefined);
             const requestedRequiresDesign = updateData.requiresDesign;
             const requestedRequiresPrepress = updateData.requiresPrepress;
+            const requestedRequiresProofApproval = updateData.requiresProofApproval;
             const hasRoutingChange =
                 updateData.productId !== undefined ||
                 (typeof requestedRequiresDesign === "boolean" && requestedRequiresDesign !== Boolean((oldLineItem as any).requiresDesign)) ||
-                (typeof requestedRequiresPrepress === "boolean" && requestedRequiresPrepress !== Boolean((oldLineItem as any).requiresPrepress));
+                (typeof requestedRequiresPrepress === "boolean" && requestedRequiresPrepress !== Boolean((oldLineItem as any).requiresPrepress)) ||
+                (typeof requestedRequiresProofApproval === "boolean" && requestedRequiresProofApproval !== Boolean((oldLineItem as any).requiresProofApproval));
+            let proofApprovalManualOverride = false;
 
             if (hasRoutingChange) {
                 if (!canEditLineItemRouting({
@@ -5808,7 +5888,11 @@ export async function registerOrderRoutes(
                     productId: String(updateData.productId ?? oldLineItem.productId),
                     requestedRequiresDesign: typeof requestedRequiresDesign === "boolean" ? requestedRequiresDesign : Boolean((oldLineItem as any).requiresDesign),
                     requestedRequiresPrepress: typeof requestedRequiresPrepress === "boolean" ? requestedRequiresPrepress : Boolean((oldLineItem as any).requiresPrepress),
+                    requestedRequiresProofApproval: typeof requestedRequiresProofApproval === "boolean" ? requestedRequiresProofApproval : Boolean((oldLineItem as any).requiresProofApproval),
                 });
+                proofApprovalManualOverride =
+                    routing.proofApprovalManualOverride &&
+                    (Boolean((oldLineItem as any).requiresProofApproval) || updateData.productId !== undefined);
 
                 const snapshotRequiresDesign = Boolean((oldLineItem as any).requiresDesignSnapshot);
                 updateData.needsDesignOverride = routing.requiresDesign === snapshotRequiresDesign
@@ -5950,6 +6034,17 @@ export async function registerOrderRoutes(
             }
 
             const lineItem = await storage.updateOrderLineItem(lineItemId, updateData);
+
+            if (proofApprovalManualOverride) {
+                await createProofApprovalManualOverrideAuditLog({
+                    organizationId,
+                    userId,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    entityType: "order_line_item",
+                    entityId: String(lineItem.id),
+                    entityName: (lineItem as any).description ?? null,
+                });
+            }
 
             if (userId) {
                 try {

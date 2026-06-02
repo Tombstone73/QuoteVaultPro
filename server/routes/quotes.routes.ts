@@ -44,6 +44,11 @@ import {
   auditLogs,
   quoteListNotes,
 } from "@shared/schema";
+import {
+  buildProofApprovalManualOverrideAuditEvent,
+  resolveLineItemProofApprovalRequirement,
+  resolveProofApprovalLockEnabledFromOrgPreferences,
+} from "@shared/proofApprovalLock";
 import { eq, desc, and, inArray, sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { inboundOrdersRepository } from "../storage/inboundOrders.repo";
@@ -94,6 +99,27 @@ function savedQuotesVisibleInPortalByDefault(settings: unknown, organizationId: 
 
 function getAuditUserName(user: any): string | null {
   return `${user?.firstName || ""} ${user?.lastName || ""}`.trim() || user?.email || null;
+}
+
+async function createProofApprovalManualOverrideAuditLog(args: {
+  organizationId: string;
+  userId: string | null | undefined;
+  userName: string | null | undefined;
+  entityType: "quote_line_item" | "order_line_item";
+  entityId: string;
+  entityName?: string | null;
+}) {
+  const auditEvent = buildProofApprovalManualOverrideAuditEvent({
+    entityType: args.entityType,
+    entityId: args.entityId,
+    entityName: args.entityName,
+  });
+  await db.insert(auditLogs).values({
+    organizationId: args.organizationId,
+    userId: args.userId ?? null,
+    userName: args.userName ?? null,
+    ...auditEvent,
+  });
 }
 
 function hasExplicitPriceOverrideMetadata(value: any): boolean {
@@ -638,6 +664,7 @@ export function registerQuoteRoutes(
       }
 
       const orgTaxSettings = getOrganizationTaxSettings(org);
+      const proofApprovalLockEnabled = resolveProofApprovalLockEnabledFromOrgPreferences((org.settings as any)?.preferences);
       const requestedPortalVisibility =
         typeof quotePayload.visibleInCustomerPortal === "boolean"
           ? quotePayload.visibleInCustomerPortal
@@ -713,13 +740,26 @@ export function registerQuoteRoutes(
 
       // Validate each line item, merge tax data, and preserve PBV2 pricing snapshots.
       const quoteCreateJsonChanges: Array<{ lineItemIndex: number; changes: unknown[] }> = [];
+      const proofApprovalManualOverrideIndexes: number[] = [];
       const validatedLineItems = rawLineItems.map((item: any, index: number) => {
         const taxData = totalsResult.lineItemsWithTax[index] ?? { taxAmount: 0, isTaxableSnapshot: true };
         const normalized = normalizeQuoteCreateLineItem(item, index, taxData);
+        const product = productMap.get(item.productId);
+        const proofApproval = resolveLineItemProofApprovalRequirement({
+          productRequiresProofApproval: Boolean(product?.requiresProofApproval),
+          requestedRequiresProofApproval: typeof item.requiresProofApproval === "boolean" ? item.requiresProofApproval : undefined,
+          proofApprovalLockEnabled,
+        });
         if (normalized.jsonChanges.length > 0) {
           quoteCreateJsonChanges.push({ lineItemIndex: index, changes: normalized.jsonChanges });
         }
-        return normalized.lineItem;
+        if (proofApproval.manualOverride) {
+          proofApprovalManualOverrideIndexes.push(index);
+        }
+        return {
+          ...normalized.lineItem,
+          requiresProofApproval: proofApproval.requiresProofApproval,
+        };
       });
 
       if (quoteCreateJsonChanges.length > 0) {
@@ -770,6 +810,22 @@ export function registerQuoteRoutes(
         carrierAccountNumber: quotePayload.carrierAccountNumber || undefined,
         shippingInstructions: quotePayload.shippingInstructions || undefined,
       });
+
+      if (proofApprovalManualOverrideIndexes.length > 0 && Array.isArray((quote as any).lineItems)) {
+        const userName = getAuditUserName(req.user);
+        for (const index of proofApprovalManualOverrideIndexes) {
+          const lineItem = (quote as any).lineItems[index];
+          if (!lineItem?.id) continue;
+          await createProofApprovalManualOverrideAuditLog({
+            organizationId,
+            userId,
+            userName,
+            entityType: "quote_line_item",
+            entityId: String(lineItem.id),
+            entityName: lineItem.productName ?? (validatedLineItems[index] as any)?.productName ?? null,
+          });
+        }
+      }
 
       // Upsert flags/tags into quote_list_notes if provided (same as UPDATE path)
       const { tags: rawTags, listLabel } = quotePayload;
@@ -1915,6 +1971,21 @@ export function registerQuoteRoutes(
 
       const allowedStatus = ["draft", "active", "canceled"];
       const incomingStatus = allowedStatus.includes(lineItem.status) ? lineItem.status : "active";
+      const [orgForProofPolicy] = await db
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+      const [productForProofPolicy] = await db
+        .select({ requiresProofApproval: products.requiresProofApproval })
+        .from(products)
+        .where(eq(products.id, lineItem.productId))
+        .limit(1);
+      const proofApproval = resolveLineItemProofApprovalRequirement({
+        productRequiresProofApproval: Boolean(productForProofPolicy?.requiresProofApproval),
+        requestedRequiresProofApproval: typeof lineItem.requiresProofApproval === "boolean" ? lineItem.requiresProofApproval : undefined,
+        proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
+      });
 
       const validatedLineItem = {
         productId: lineItem.productId,
@@ -1949,9 +2020,20 @@ export function registerQuoteRoutes(
         // Canonical routing intent (migration 0015)
         requiresDesign: lineItem.requiresDesign === true,
         requiresPrepress: typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : null,
+        requiresProofApproval: proofApproval.requiresProofApproval,
       };
 
       const createdLineItem = await storage.addLineItem(id, validatedLineItem);
+      if (proofApproval.manualOverride) {
+        await createProofApprovalManualOverrideAuditLog({
+          organizationId,
+          userId,
+          userName: getAuditUserName(req.user),
+          entityType: "quote_line_item",
+          entityId: String(createdLineItem.id),
+          entityName: (createdLineItem as any).productName ?? null,
+        });
+      }
       await refreshQuoteAggregateTotals(organizationId, id);
       res.json(createdLineItem);
     } catch (error) {
@@ -2270,12 +2352,44 @@ export function registerQuoteRoutes(
       // Canonical routing intent (migration 0015)
       if (lineItem.requiresDesign !== undefined) updateData.requiresDesign = lineItem.requiresDesign === true;
       if (lineItem.requiresPrepress !== undefined) updateData.requiresPrepress = typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : null;
+      let proofApprovalManualOverride = false;
+      if (lineItem.requiresProofApproval !== undefined || lineItem.productId !== undefined) {
+        const [orgForProofPolicy] = await db
+          .select({ settings: organizations.settings })
+          .from(organizations)
+          .where(eq(organizations.id, organizationId))
+          .limit(1);
+        const [productForProofPolicy] = await db
+          .select({ requiresProofApproval: products.requiresProofApproval })
+          .from(products)
+          .where(eq(products.id, lineItem.productId ?? currentLineItem.productId))
+          .limit(1);
+        const proofApproval = resolveLineItemProofApprovalRequirement({
+          productRequiresProofApproval: Boolean(productForProofPolicy?.requiresProofApproval),
+          requestedRequiresProofApproval: typeof lineItem.requiresProofApproval === "boolean" ? lineItem.requiresProofApproval : undefined,
+          proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
+        });
+        updateData.requiresProofApproval = proofApproval.requiresProofApproval;
+        proofApprovalManualOverride =
+          proofApproval.manualOverride &&
+          (Boolean((currentLineItem as any).requiresProofApproval) || lineItem.productId !== undefined);
+      }
 
       if (Object.keys(updateData).length === 0) {
         return res.status(400).json({ message: "No supported line item fields to update" });
       }
 
       const updatedLineItem = await storage.updateLineItem(lineItemId, updateData);
+      if (proofApprovalManualOverride) {
+        await createProofApprovalManualOverrideAuditLog({
+          organizationId,
+          userId,
+          userName: getAuditUserName(req.user),
+          entityType: "quote_line_item",
+          entityId: String(updatedLineItem.id),
+          entityName: (updatedLineItem as any).productName ?? null,
+        });
+      }
       await refreshQuoteAggregateTotals(organizationId, id);
       res.json(updatedLineItem);
     } catch (error) {

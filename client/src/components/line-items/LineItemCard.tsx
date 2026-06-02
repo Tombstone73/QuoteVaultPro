@@ -102,8 +102,11 @@ export type LineItemCardProps = {
   requiresDesign?: boolean;
   requiresPrepress?: boolean | null;
   requiresProofApproval?: boolean;
+  proofApprovalRequiredByDefault?: boolean;
+  proofApprovalLockEnabled?: boolean;
   onRequiresDesignChange?: (value: boolean) => void;
   onRequiresPrepressChange?: (value: boolean) => void;
+  onRequiresProofApprovalChange?: (value: boolean) => void;
   topAnchorRef?: (node: HTMLDivElement | null) => void;
   widthInputRef?: (node: HTMLInputElement | null) => void;
 
@@ -196,8 +199,11 @@ export function LineItemCard({
   requiresDesign = false,
   requiresPrepress = null,
   requiresProofApproval = false,
+  proofApprovalRequiredByDefault,
+  proofApprovalLockEnabled = false,
   onRequiresDesignChange,
   onRequiresPrepressChange,
+  onRequiresProofApprovalChange,
   topAnchorRef,
   widthInputRef,
   optionsSlot,
@@ -219,6 +225,10 @@ export function LineItemCard({
   const hasProductionNotes = Boolean(productionNotes && productionNotes.trim());
   const dragDisabled = Boolean(dragHandleProps?.disabled);
   const detailsOnRight = detailsSide === "right";
+  const proofRequiredByDefault = proofApprovalRequiredByDefault ?? requiresProofApproval === true;
+  const proofApprovalLocked = proofApprovalLockEnabled && proofRequiredByDefault;
+  const displayedRequiresProofApproval = proofApprovalLocked ? true : requiresProofApproval === true;
+  const proofApprovalDisabled = readOnly || proofApprovalLocked || !onRequiresProofApprovalChange;
   const [secondaryDetailsOpen, setSecondaryDetailsOpen] = useState(false);
 
   useEffect(() => {
@@ -293,11 +303,15 @@ export function LineItemCard({
             />
             Requires Prepress
           </label>
-          <label className="flex items-center gap-2 text-sm select-none text-muted-foreground">
+          <label className={cn(
+            "flex items-center gap-2 text-sm select-none",
+            proofApprovalDisabled ? "text-muted-foreground" : "cursor-pointer",
+          )}>
             <input
               type="checkbox"
-              checked={requiresProofApproval === true}
-              disabled
+              checked={displayedRequiresProofApproval}
+              onChange={(e) => onRequiresProofApprovalChange?.(e.target.checked)}
+              disabled={proofApprovalDisabled}
               className="h-4 w-4 rounded border-input accent-primary"
             />
             Proof Approval

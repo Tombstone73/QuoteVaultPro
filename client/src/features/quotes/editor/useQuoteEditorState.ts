@@ -90,6 +90,9 @@ function mapQuoteApiLineItemToDraft(item: any, idx: number): QuoteLineItemDraft 
         displayOrder: idx,
         notes: (item.specsJson as any)?.notes || undefined,
         productOptions: (item as any).productOptions || (item as any).product?.optionsJson || [],
+        requiresDesign: typeof item.requiresDesign === "boolean" ? item.requiresDesign : undefined,
+        requiresPrepress: typeof item.requiresPrepress === "boolean" ? item.requiresPrepress : null,
+        requiresProofApproval: typeof item.requiresProofApproval === "boolean" ? item.requiresProofApproval : null,
     };
 }
 
@@ -2209,6 +2212,7 @@ export function useQuoteEditorState() {
                 displayOrder: lineItems.length,
                 status: "draft",
                 productOptions: (product.optionsJson as any[]) || [],
+                requiresProofApproval: (product as any).requiresProofApproval === true,
             };
             // If we have a saved quote, create server-side draft so artwork can be attached immediately.
             if (quoteId) {
@@ -2230,6 +2234,7 @@ export function useQuoteEditorState() {
                         linePrice: base.linePrice,
                         priceBreakdown: base.priceBreakdown,
                         displayOrder: base.displayOrder,
+                        requiresProofApproval: base.requiresProofApproval,
                     });
                     const json = await resp.json().catch(() => ({}));
                     const created = json?.data || json;

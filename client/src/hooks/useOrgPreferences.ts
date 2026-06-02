@@ -52,6 +52,7 @@ export interface OrgPreferences {
 
   proofing?: {
     defaultProofDisclaimerText?: string;
+    proofApprovalLockEnabled?: boolean;
   };
 
   sidebar?: {

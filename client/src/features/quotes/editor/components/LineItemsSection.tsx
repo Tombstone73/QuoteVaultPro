@@ -28,6 +28,7 @@ import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTre
 import { buildPbv2DefaultSelections } from "@shared/pbv2OrderEntryRuntime";
 import { deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
+import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import {
   applyLineItemEditPriceOverride,
   getLineItemPriceOverrideLabel,
@@ -320,6 +321,7 @@ export function LineItemsSection({
   ensureLineItemId,
 }: LineItemsSectionProps) {
   const queryClient = useQueryClient();
+  const { preferences: orgPreferences } = useOrgPreferences();
   const count = lineItems.filter((li) => li.status !== "canceled").length;
 
   // TEMP UI-only reorder state (not persisted)
@@ -453,6 +455,7 @@ export function LineItemsSection({
   // Canonical routing intent (migration 0015)
   const [requiresDesign, setRequiresDesign] = useState<boolean>(false);
   const [requiresPrepress, setRequiresPrepress] = useState<boolean | null>(null);
+  const [requiresProofApproval, setRequiresProofApproval] = useState<boolean>(false);
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
   const [optionSelectionsV2, setOptionSelectionsV2] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
   const [optionsV2Valid, setOptionsV2Valid] = useState(true);
@@ -478,6 +481,7 @@ export function LineItemsSection({
         height: number;
         quantity: number;
         notes: string;
+        requiresProofApproval: boolean;
         selectedOptions: any[];
         optionSelectionsJson: any;
       }
@@ -555,6 +559,13 @@ export function LineItemsSection({
           ? productRequiresPrepress
           : null
     );
+    const itemRequiresProofApproval = (expandedItem as any).requiresProofApproval;
+    const productRequiresProofApproval = (expandedProduct as any)?.requiresProofApproval;
+    setRequiresProofApproval(
+      typeof itemRequiresProofApproval === "boolean"
+        ? itemRequiresProofApproval
+        : productRequiresProofApproval === true
+    );
     const selections: Record<string, OptionSelection> = {};
     (expandedItem.selectedOptions || []).forEach((opt: any) => {
       selections[opt.optionId] = {
@@ -614,6 +625,9 @@ export function LineItemsSection({
       height: expandedItem.height,
       quantity: expandedItem.quantity,
       notes: (expandedItem.specsJson as any)?.notes || expandedItem.notes || "",
+      requiresProofApproval: typeof (expandedItem as any).requiresProofApproval === "boolean"
+        ? (expandedItem as any).requiresProofApproval
+        : (expandedProduct as any)?.requiresProofApproval === true,
       selectedOptions: expandedItem.selectedOptions || [],
       optionSelectionsJson: (expandedItem as any)?.optionSelectionsJson ?? null,
     };
@@ -649,6 +663,10 @@ export function LineItemsSection({
     setRequiresPrepress(next);
   }, []);
 
+  const handleRequiresProofApprovalChange = useCallback((next: boolean) => {
+    setRequiresProofApproval(next);
+  }, []);
+
   // Detect if current item has unsaved changes (dirty state)
   const isDirty = useMemo(() => {
     if (!expandedItem || !expandedKey) return false;
@@ -668,10 +686,11 @@ export function LineItemsSection({
       Math.abs(heightNum - saved.height) > 0.01 ||
       qtyNum !== saved.quantity ||
       currentNotes !== savedNotes ||
+      requiresProofApproval !== saved.requiresProofApproval ||
       currentOptions !== savedOptions ||
       currentV2 !== savedV2
     );
-  }, [expandedItem, expandedKey, widthNum, heightNum, qtyNum, notes]);
+  }, [expandedItem, expandedKey, widthNum, heightNum, qtyNum, notes, requiresProofApproval]);
 
   // Handle save line item
   const handleSaveItem = async () => {
@@ -692,6 +711,7 @@ export function LineItemsSection({
           height: heightNum,
           quantity: qtyNum,
           notes: notes || "",
+          requiresProofApproval,
           selectedOptions: expandedItem.selectedOptions || [],
           optionSelectionsJson: (expandedItem as any)?.optionSelectionsJson ?? null,
         };
@@ -820,10 +840,11 @@ export function LineItemsSection({
       // Canonical routing intent (migration 0015)
       requiresDesign,
       requiresPrepress,
+      requiresProofApproval,
       ...(v2Patch as any),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expandedKey, widthNum, heightNum, qtyNum, notes, description, productionNotes, requiresDesign, requiresPrepress, isExpandedTreeV2, optionSelectionsV2]);
+  }, [expandedKey, widthNum, heightNum, qtyNum, notes, description, productionNotes, requiresDesign, requiresPrepress, requiresProofApproval, isExpandedTreeV2, optionSelectionsV2]);
 
   // Identity persistence must not reset edit snapshot; only explicit user saves do.
   // The snapshot is already correctly updated in handleSaveItem when user clicks Save.
@@ -1011,7 +1032,11 @@ export function LineItemsSection({
                     });
                     const editorPriceValue = overrideValueCents != null ? overrideValueCents / 100 : visiblePrice.displayTotal;
                     const hasProductionNotes = !!(item.productionNotes && item.productionNotes.trim());
-                    const requiresProofApproval = Boolean((product as any)?.requiresProofApproval ?? (item as any).requiresProofApproval);
+                    const productRequiresProofApproval = Boolean((product as any)?.requiresProofApproval);
+                    const renderedRequiresProofApproval = isExpanded
+                      ? requiresProofApproval
+                      : Boolean((item as any).requiresProofApproval ?? productRequiresProofApproval);
+                    const proofApprovalLockEnabled = orgPreferences.proofing?.proofApprovalLockEnabled === true;
 
                     return (
                       <SortableLineItemWrapper key={itemKey} id={itemKey}>
@@ -1184,9 +1209,12 @@ export function LineItemsSection({
                             onProductionNotesChange={setProductionNotes}
                             requiresDesign={requiresDesign}
                             requiresPrepress={requiresPrepress}
-                            requiresProofApproval={requiresProofApproval}
+                            requiresProofApproval={renderedRequiresProofApproval}
+                            proofApprovalRequiredByDefault={productRequiresProofApproval}
+                            proofApprovalLockEnabled={proofApprovalLockEnabled}
                             onRequiresDesignChange={handleRequiresDesignChange}
                             onRequiresPrepressChange={handleRequiresPrepressChange}
+                            onRequiresProofApprovalChange={handleRequiresProofApprovalChange}
                             widthInputRef={(node) => {
                               widthInputRefs.current[itemKey] = node;
                             }}
