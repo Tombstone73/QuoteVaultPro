@@ -47,6 +47,11 @@ import { formulaHelperScope, extractFormulaVariables } from "@shared/pbv2/formul
 import { buildDuplicateFormulaInput } from "@shared/pbv2/formulaUtils";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import {
+  hydrateFormulaOutputMeaning,
+  setFormulaOutputMeaningInConfig,
+  type FormulaOutputMeaning,
+} from "@/lib/pricingFormulaOutputMeaning";
 
 // Variable library for pricing formulas
 type VariableLibraryItem = {
@@ -112,32 +117,8 @@ type FormulaTestBreakdown = {
   MACHINE_RATE: number;
 };
 
-type FormulaOutputMeaning = "billable" | "final_price" | "generic";
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function normalizeFormulaOutputMeaning(value: unknown, pricingProfileKey?: string | null): FormulaOutputMeaning {
-  const raw = String(value || "").trim();
-  if (raw === "billable" || raw === "billable_quantity" || raw === "billable_sqft" || raw === "billable_qty_sqft") return "billable";
-  if (raw === "final_price" || raw === "final_dollars" || raw === "dollars") return "final_price";
-  if (raw === "generic") return "generic";
-  return pricingProfileKey === "fee" ? "final_price" : "billable";
-}
-
-function getFormulaOutputMeaningFromConfig(config: unknown, pricingProfileKey?: string | null): FormulaOutputMeaning {
-  if (!isRecord(config)) return normalizeFormulaOutputMeaning(undefined, pricingProfileKey);
-  return normalizeFormulaOutputMeaning(config.formulaOutputMeaning ?? config.outputMeaning, pricingProfileKey);
-}
-
-function setFormulaOutputMeaningInConfig(config: unknown, outputMeaning: FormulaOutputMeaning): Record<string, unknown> {
-  const current = isRecord(config) ? config : {};
-  return {
-    ...current,
-    formulaOutputMeaning: outputMeaning,
-    outputMeaning,
-  };
 }
 
 const emptyFormData: PricingFormulaInput = {
@@ -373,7 +354,7 @@ export default function PricingFormulasSettings() {
   };
 
   const buildFormulaSavePayload = (data: PricingFormulaInput): PricingFormulaInput => {
-    const outputMeaning = getFormulaOutputMeaningFromConfig(data.config, data.pricingProfileKey);
+    const outputMeaning = hydrateFormulaOutputMeaning(data.config).outputMeaning;
     return {
       ...data,
       config: setFormulaOutputMeaningInConfig(data.config, outputMeaning),
@@ -1006,7 +987,9 @@ function FormulaEditorFields({
   testError,
   handleRunTest,
 }: FormulaEditorFieldsProps) {
-  const outputMeaning = getFormulaOutputMeaningFromConfig(formData.config, formData.pricingProfileKey);
+  const outputMeaningHydration = hydrateFormulaOutputMeaning(formData.config);
+  const outputMeaning = outputMeaningHydration.outputMeaning;
+  const outputMeaningMissing = !outputMeaningHydration.hasSavedOutputMeaning;
   const [showSheetDebug, setShowSheetDebug] = useState(false);
   const updateOutputMeaning = (value: FormulaOutputMeaning) => {
     setFormData({
@@ -1293,13 +1276,21 @@ function FormulaEditorFields({
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="billable">Billable qty / sqft</SelectItem>
-                        <SelectItem value="final_price">Final price ($)</SelectItem>
+                        <SelectItem value="final_price">Final dollars</SelectItem>
                         <SelectItem value="generic">Generic number</SelectItem>
                       </SelectContent>
                     </Select>
                     <p className="text-[10px] text-muted-foreground mt-0.5">
                       How to interpret the result
                     </p>
+                    {outputMeaningMissing && (
+                      <div className="mt-1.5 flex items-start gap-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-snug text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                        <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                        <span>
+                          This formula has no saved output meaning. It will be treated as final dollars until explicitly changed.
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
