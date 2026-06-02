@@ -88,6 +88,13 @@ import { cn } from "@/lib/utils";
 import BackNavControls from "@/components/BackNavControls";
 import { ContactFlagPill } from "@/components/ContactFlagPill";
 import { apiRequest } from "@/lib/queryClient";
+import {
+  buildLinkExistingContactPayload,
+  canSubmitLinkContact,
+  getContactMoveConfirmationState,
+  normalizeContactPickerResult,
+  type NormalizedContactPickerResult,
+} from "./contactLinkingUi";
 
 // ============================================================
 // TYPE DEFINITIONS
@@ -510,18 +517,7 @@ interface ContactsPanelProps {
   layoutMode: LayoutMode;
 }
 
-interface ContactPickerResult {
-  id: string;
-  customerId: string | null;
-  firstName: string;
-  lastName: string;
-  title: string | null;
-  email: string | null;
-  phone: string | null;
-  mobile: string | null;
-  isPrimary: boolean;
-  companyName: string;
-}
+type ContactPickerResult = NormalizedContactPickerResult;
 
 interface LinkExistingContactResponse {
   contact: ContactPickerResult;
@@ -556,7 +552,7 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
   const isEmbedded = layoutMode === "embedded";
   const contacts = customer.contacts || [];
   const contactSearchTerm = contactSearch.trim();
-  const contactPickerQuery = useQuery({
+  const contactPickerQuery = useQuery<ContactPickerResult[]>({
     queryKey: ["contacts", "link-picker", customer.id, contactSearchTerm],
     queryFn: async () => {
       const params = new URLSearchParams({
@@ -572,7 +568,7 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
       });
       if (!response.ok) throw new Error("Failed to search contacts");
       const data = await response.json();
-      return (Array.isArray(data.contacts) ? data.contacts : []) as ContactPickerResult[];
+      return (Array.isArray(data.contacts) ? data.contacts : []).map(normalizeContactPickerResult);
     },
     enabled: showLinkDialog,
   });
@@ -581,7 +577,11 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
     [contactPickerQuery.data, customer.id],
   );
   const selectedContact = linkableContacts.find((contact) => contact.id === selectedContactId) || null;
-  const selectedContactRequiresMoveConfirmation = Boolean(selectedContact?.customerId);
+  const selectedContactMoveState = getContactMoveConfirmationState(selectedContact, {
+    id: customer.id,
+    companyName: customer.companyName,
+  });
+  const selectedContactRequiresMoveConfirmation = selectedContactMoveState.requiresMoveConfirmation;
 
   const refreshCustomerContactData = () => {
     queryClient.invalidateQueries({ queryKey: [`/api/customers/${customer.id}`] });
@@ -675,6 +675,12 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
     },
     onSuccess: (result) => {
       refreshCustomerContactData();
+      if (result.fromCustomer?.id) {
+        queryClient.invalidateQueries({ queryKey: [`/api/customers/${result.fromCustomer.id}`] });
+      }
+      if (result.toCustomer?.id) {
+        queryClient.invalidateQueries({ queryKey: [`/api/customers/${result.toCustomer.id}`] });
+      }
       const fromCompany = result.fromCustomer?.companyName;
       const toCompany = result.toCustomer?.companyName || customer.companyName;
       toast({
@@ -694,9 +700,12 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
     },
   });
   const canConfirmLink =
-    Boolean(selectedContactId) &&
-    !linkExistingContactMutation.isPending &&
-    (!selectedContactRequiresMoveConfirmation || moveConfirmed);
+    canSubmitLinkContact(
+      Boolean(selectedContactId),
+      linkExistingContactMutation.isPending,
+      selectedContactRequiresMoveConfirmation,
+      moveConfirmed,
+    );
 
   const handleEditClick = (contact: CustomerWithRelations["contacts"][0]) => {
     setEditingContact(contact);
@@ -743,11 +752,14 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
       });
       return;
     }
-    linkExistingContactMutation.mutate({
-      contactId: selectedContactId,
-      setPrimary: linkAsPrimary,
-      confirmMove: selectedContactRequiresMoveConfirmation && moveConfirmed,
-    });
+    linkExistingContactMutation.mutate(
+      buildLinkExistingContactPayload(
+        selectedContactId,
+        linkAsPrimary,
+        selectedContactRequiresMoveConfirmation,
+        moveConfirmed,
+      ),
+    );
   };
 
   if (isEmbedded) return null; // Don't show in embedded mode
@@ -977,7 +989,7 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
                   <div className="grid gap-2">
                     <div className="text-titan-sm font-medium text-titan-text-primary">
-                      This will move the contact from {selectedContact.companyName || "another customer"} to {customer.companyName}.
+                      {selectedContactMoveState.warningText}
                     </div>
                     <p className="text-titan-xs text-titan-text-muted">
                       Contacts currently belong to one customer at a time, so confirming will reassign the selected contact after the API succeeds.
@@ -987,7 +999,7 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
                         checked={moveConfirmed}
                         onCheckedChange={(checked) => setMoveConfirmed(checked === true)}
                       />
-                      <span>I understand this contact will be moved from {selectedContact.companyName || "its current customer"}.</span>
+                      <span>{selectedContactMoveState.checkboxText}</span>
                     </label>
                   </div>
                 </div>
@@ -1014,9 +1026,7 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
 
             {selectedContact ? (
               <div className="rounded-titan-lg bg-titan-bg-card-elevated px-3 py-2 text-titan-xs text-titan-text-muted">
-                {selectedContactRequiresMoveConfirmation
-                  ? `Selected ${selectedContact.firstName} ${selectedContact.lastName} from ${selectedContact.companyName || "another customer"}.`
-                  : `Ready to link ${selectedContact.firstName} ${selectedContact.lastName}.`}
+                {selectedContactMoveState.selectedSummary}
               </div>
             ) : null}
           </div>
