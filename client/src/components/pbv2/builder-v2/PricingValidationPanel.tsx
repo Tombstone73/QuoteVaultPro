@@ -130,7 +130,11 @@ type PricingPreviewResponse = {
     resolvedFormulaExpression?: string;
     manualFormulaPresent?: boolean;
     manualFormulaIgnored?: boolean;
-    formulaResultType?: "final_dollars";
+    formulaOutputMeaning?: "final_price" | "billable" | "generic";
+    formulaOutputMeaningSource?: string;
+    formulaOutputMeaningRaw?: unknown;
+    normalizedFormulaOutputMeaning?: "final_price" | "billable" | "generic";
+    formulaResultType?: "final_dollars" | "billable_quantity";
     quantityBasisUsed?: string;
     selectedRate?: number | null;
     finalFormulaTotal?: number | null;
@@ -1288,6 +1292,9 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       ) : null}
                       <div><span className="text-slate-400">Result value:</span> <span className="font-mono">{typeof formulaDebug.resultValue === "number" ? String(formulaDebug.resultValue) : "—"}</span></div>
                       <div><span className="text-slate-400">Applied as:</span> <span className="font-mono">{formulaDebug.appliedAs ?? "unknown"}</span></div>
+                      <div><span className="text-slate-400">Output meaning:</span> <span className="font-mono">{formulaDebug.normalizedFormulaOutputMeaning ?? formulaDebug.formulaOutputMeaning ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Output meaning source:</span> <span className="font-mono break-all">{formulaDebug.formulaOutputMeaningSource ?? "—"}</span></div>
+                      <div><span className="text-slate-400">Output meaning raw:</span> <span className="font-mono break-all">{formulaDebug.formulaOutputMeaningRaw == null ? "—" : String(formulaDebug.formulaOutputMeaningRaw)}</span></div>
                       <div><span className="text-slate-400">Formula output type:</span> <span className="font-mono">{formulaDebug.formulaResultType ?? "—"}</span></div>
                       <div><span className="text-slate-400">Formula basis:</span> <span className="font-mono">{formulaDebug.quantityBasisUsed ?? "—"}</span></div>
                       <div><span className="text-slate-400">Selected rate:</span> <span className="font-mono">{typeof formulaDebug.selectedRate === "number" ? currencyFormatter.format(formulaDebug.selectedRate) : "—"}</span></div>

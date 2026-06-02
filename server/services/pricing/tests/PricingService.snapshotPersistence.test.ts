@@ -223,6 +223,9 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     expect(result.breakdown.baseCents).toBe(3000);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formula).toBe(magnetFormula);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaOutputMeaning).toBe("billable");
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.normalizedFormulaOutputMeaning).toBe("billable");
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaOutputMeaningRaw).toBe("billable");
+    expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaOutputMeaningSource).toBe("formula_library.config.formulaOutputMeaning");
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaEvaluatedTotal).toBe(30);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.evaluatedFormulaTotalRaw).toBe(30);
     expect(result.pbv2SnapshotJson.pbv2PricingSnapshot?.rawBasePrice).toBe(5);

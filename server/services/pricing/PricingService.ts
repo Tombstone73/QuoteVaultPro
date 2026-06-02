@@ -124,6 +124,9 @@ export type PBV2RuntimePricingSnapshot = {
   manualFormulaPresent?: boolean;
   manualFormulaIgnored?: boolean;
   formulaOutputMeaning?: FormulaOutputMeaning;
+  formulaOutputMeaningSource?: string;
+  formulaOutputMeaningRaw?: unknown;
+  normalizedFormulaOutputMeaning?: FormulaOutputMeaning;
   formulaVariables: Record<string, number | string | boolean | null>;
   formulaVariableSources?: Record<string, string>;
   rawSelections: Record<string, any>;
@@ -314,6 +317,9 @@ export type PricingPreviewEvaluationResult = {
     manualFormulaPresent?: boolean;
     manualFormulaIgnored?: boolean;
     formulaOutputMeaning?: FormulaOutputMeaning;
+    formulaOutputMeaningSource?: string;
+    formulaOutputMeaningRaw?: unknown;
+    normalizedFormulaOutputMeaning?: FormulaOutputMeaning;
     formulaResultType?: "final_dollars" | "billable_quantity";
     quantityBasisUsed?: string;
     selectedRate?: number | null;
@@ -1073,6 +1079,9 @@ export function evaluatePricingPreviewFromTree(input: {
       rawTotalSqft: (widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0) * quantity,
       baseRateUsed: formulaDebug.baseRateUsed,
       formulaOutputMeaning: formulaDebug.formulaOutputMeaning,
+      formulaOutputMeaningSource: formulaDebug.formulaOutputMeaningSource,
+      formulaOutputMeaningRaw: formulaDebug.formulaOutputMeaningRaw,
+      normalizedFormulaOutputMeaning: formulaDebug.normalizedFormulaOutputMeaning,
       formulaResultType: formulaDebug.formulaResultType,
       quantityBasisUsed: formulaDebug.quantityBasisUsed,
       selectedRate: formulaDebug.selectedRate,
@@ -2966,6 +2975,11 @@ type FormulaAwareBasePriceResult = {
 type FormulaSourceMode = "library" | "manual" | "profile";
 type ResolvedFormulaSource = "library" | "manual" | "tree_meta" | "product" | "profile" | "none";
 type FormulaOutputMeaning = "final_price" | "billable" | "generic";
+type FormulaOutputMeaningResolution = {
+  rawValue: unknown;
+  normalized: FormulaOutputMeaning;
+  source: string;
+};
 
 type PricingFormulaLibraryResolution = {
   id: string;
@@ -3358,13 +3372,14 @@ function calculateFormulaAwareBasePrice(input: {
   const formulaCandidate = sourceResolution.formula;
   const shouldEvaluateFormula = Boolean(formulaCandidate);
   const formulaToUse = shouldEvaluateFormula ? formulaCandidate : "";
-  const formulaOutputMeaning = resolveFormulaOutputMeaning({
+  const formulaOutputMeaningResolution = resolveFormulaOutputMeaning({
     source: sourceResolution.source,
     treeJson: input.treeJson,
     product: input.product,
     pricingProfileConfig: input.pricingProfileConfig,
     pricingFormulaLibrary: input.pricingFormulaLibrary,
   });
+  const formulaOutputMeaning = formulaOutputMeaningResolution.normalized;
   const tierResolution = withFormulaTierReferenceWarning(baseDetails.tierResolution, formulaToUse);
   const formulaVariables = input.formulaVariables
     ?? (input.product ? resolveSnapshotFormulaVariables(input.treeJson, input.product) : undefined);
@@ -3398,6 +3413,9 @@ function calculateFormulaAwareBasePrice(input: {
   formulaDebug.manualFormulaPresent = sourceResolution.manualFormulaPresent;
   formulaDebug.manualFormulaIgnored = sourceResolution.manualFormulaIgnored;
   formulaDebug.formulaOutputMeaning = formulaOutputMeaning;
+  formulaDebug.formulaOutputMeaningSource = formulaOutputMeaningResolution.source;
+  formulaDebug.formulaOutputMeaningRaw = formulaOutputMeaningResolution.rawValue;
+  formulaDebug.normalizedFormulaOutputMeaning = formulaOutputMeaning;
   formulaDebug.errors = [
     ...(formulaDebug.errors ?? []),
     ...sourceResolution.warnings,
@@ -3736,6 +3754,9 @@ function buildRuntimePricingSnapshot(input: {
     manualFormulaPresent: formulaDebug.manualFormulaPresent,
     manualFormulaIgnored: formulaDebug.manualFormulaIgnored,
     formulaOutputMeaning: formulaDebug.formulaOutputMeaning,
+    formulaOutputMeaningSource: formulaDebug.formulaOutputMeaningSource,
+    formulaOutputMeaningRaw: formulaDebug.formulaOutputMeaningRaw,
+    normalizedFormulaOutputMeaning: formulaDebug.normalizedFormulaOutputMeaning,
     formulaVariables: formulaDebug.variables,
     formulaVariableSources: formulaDebug.variableSources,
     rawSelections: toPlainSelectionValues(input.rawSelections),
@@ -4463,9 +4484,11 @@ function inferFormulaErrorCode(message: string): string {
 }
 
 function normalizeFormulaOutputMeaning(value: unknown): FormulaOutputMeaning | null {
-  const raw = String(value || "").trim();
+  const raw = String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
   if (raw === "billable" || raw === "billable_quantity" || raw === "billable_sqft" || raw === "billable_qty_sqft") return "billable";
+  if (raw === "billable qty / sqft" || raw === "billable qty/sqft" || raw === "billable quantity / sqft" || raw === "billable quantity/sqft") return "billable";
   if (raw === "final_price" || raw === "final_dollars" || raw === "dollars") return "final_price";
+  if (raw === "final price" || raw === "final dollars" || raw === "final dollar amount") return "final_price";
   if (raw === "generic") return "generic";
   return null;
 }
@@ -4474,10 +4497,30 @@ function recordValue(value: unknown): Record<string, any> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : null;
 }
 
-function formulaOutputMeaningFromConfig(config: unknown): FormulaOutputMeaning | null {
+function formulaOutputMeaningFromConfig(config: unknown, sourcePrefix: string): FormulaOutputMeaningResolution | null {
   const record = recordValue(config);
   if (!record) return null;
-  return normalizeFormulaOutputMeaning(record.formulaOutputMeaning ?? record.outputMeaning);
+  const candidates: Array<{ rawValue: unknown; source: string }> = [
+    { rawValue: record.formulaOutputMeaning, source: `${sourcePrefix}.formulaOutputMeaning` },
+    { rawValue: record.outputMeaning, source: `${sourcePrefix}.outputMeaning` },
+    { rawValue: recordValue(record.metadata)?.formulaOutputMeaning, source: `${sourcePrefix}.metadata.formulaOutputMeaning` },
+    { rawValue: recordValue(record.metadata)?.outputMeaning, source: `${sourcePrefix}.metadata.outputMeaning` },
+    { rawValue: recordValue(record.output)?.meaning, source: `${sourcePrefix}.output.meaning` },
+    { rawValue: recordValue(record.formula)?.outputMeaning, source: `${sourcePrefix}.formula.outputMeaning` },
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeFormulaOutputMeaning(candidate.rawValue);
+    if (normalized) {
+      return {
+        rawValue: candidate.rawValue,
+        normalized,
+        source: candidate.source,
+      };
+    }
+  }
+
+  return null;
 }
 
 function resolveFormulaOutputMeaning(input: {
@@ -4486,23 +4529,38 @@ function resolveFormulaOutputMeaning(input: {
   product?: any;
   pricingProfileConfig?: unknown;
   pricingFormulaLibrary?: PricingFormulaLibraryResolution | null;
-}): FormulaOutputMeaning {
+}): FormulaOutputMeaningResolution {
   const treeMeta = recordValue(input.treeJson?.meta);
+  const treeMetaResolution = (() => {
+    const candidates: Array<{ rawValue: unknown; source: string }> = [
+      { rawValue: treeMeta?.formulaOutputMeaning, source: "tree.meta.formulaOutputMeaning" },
+      { rawValue: treeMeta?.outputMeaning, source: "tree.meta.outputMeaning" },
+    ];
+    for (const candidate of candidates) {
+      const normalized = normalizeFormulaOutputMeaning(candidate.rawValue);
+      if (normalized) return { rawValue: candidate.rawValue, normalized, source: candidate.source };
+    }
+    return null;
+  })();
   const candidates =
     input.source === "library"
       ? [
-          formulaOutputMeaningFromConfig(input.pricingFormulaLibrary?.config),
-          formulaOutputMeaningFromConfig(input.pricingProfileConfig),
-          formulaOutputMeaningFromConfig(input.product?.pricingProfileConfig),
-          normalizeFormulaOutputMeaning(treeMeta?.formulaOutputMeaning ?? treeMeta?.outputMeaning),
+          formulaOutputMeaningFromConfig(input.pricingFormulaLibrary?.config, "formula_library.config"),
+          formulaOutputMeaningFromConfig(input.pricingProfileConfig, "pricingProfileConfig"),
+          formulaOutputMeaningFromConfig(input.product?.pricingProfileConfig, "product.pricingProfileConfig"),
+          treeMetaResolution,
         ]
       : [
-          formulaOutputMeaningFromConfig(input.pricingProfileConfig),
-          formulaOutputMeaningFromConfig(input.product?.pricingProfileConfig),
-          normalizeFormulaOutputMeaning(treeMeta?.formulaOutputMeaning ?? treeMeta?.outputMeaning),
+          formulaOutputMeaningFromConfig(input.pricingProfileConfig, "pricingProfileConfig"),
+          formulaOutputMeaningFromConfig(input.product?.pricingProfileConfig, "product.pricingProfileConfig"),
+          treeMetaResolution,
         ];
 
-  return candidates.find((candidate): candidate is FormulaOutputMeaning => Boolean(candidate)) ?? "final_price";
+  return candidates.find((candidate): candidate is FormulaOutputMeaningResolution => Boolean(candidate)) ?? {
+    rawValue: null,
+    normalized: "final_price",
+    source: "default.final_price",
+  };
 }
 
 function extractUndefinedFormulaSymbol(message: string): string | null {
