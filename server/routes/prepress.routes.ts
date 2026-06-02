@@ -812,6 +812,7 @@ export function registerPrepressQueueRoutes(
       const searchQuery = req.query.search as string | undefined;
       const sortBy = typeof req.query.sortBy === "string" ? req.query.sortBy : "due_date";
       const sortOrder = String(req.query.sortOrder || "asc").toLowerCase() === "desc" ? "desc" : "asc";
+      const rushOnly = String(req.query.rush || "").toLowerCase() === "true";
 
       // Build base WHERE conditions.
       // Operational truth is workflow_state + active ownership, not line_item.status or routing snapshots.
@@ -1318,9 +1319,13 @@ export function registerPrepressQueueRoutes(
         ? destinationFilteredQueue.filter((q: any) => statusFilter.some((filterValue) => matchesPrepressStatusFilter(q, filterValue)))
         : destinationFilteredQueue;
 
+      const rushFilteredQueue = rushOnly
+        ? filteredQueue.filter((q: any) => q.rush === true)
+        : filteredQueue;
+
       const normalizedSearchQuery = searchQuery?.trim().toLowerCase() || "";
       const searchedQueue = normalizedSearchQuery
-        ? filteredQueue.filter((item: any) => {
+        ? rushFilteredQueue.filter((item: any) => {
             const searchFields = [
               item.jobNumber,
               item.orderId,
@@ -1333,7 +1338,7 @@ export function registerPrepressQueueRoutes(
 
             return searchFields.some((value) => String(value || "").toLowerCase().includes(normalizedSearchQuery));
           })
-        : filteredQueue;
+        : rushFilteredQueue;
 
       const compareStrings = (left: string | null | undefined, right: string | null | undefined) =>
         String(left || "").localeCompare(String(right || ""), undefined, { numeric: true, sensitivity: "base" });
@@ -1379,7 +1384,14 @@ export function registerPrepressQueueRoutes(
         console.log(`[Prepress Queue] org=${organizationId} ownerDrivenQueue=${sortedQueue.length}`);
       }
 
-      res.json({ success: true, data: sortedQueue });
+      res.json({
+        success: true,
+        data: sortedQueue,
+        meta: {
+          totalCount: queue.length,
+          filteredCount: sortedQueue.length,
+        },
+      });
     } catch (error: any) {
       console.error("[Prepress] Error fetching queue:", error);
       res.status(500).json({ error: error?.message || "Failed to fetch prepress queue" });

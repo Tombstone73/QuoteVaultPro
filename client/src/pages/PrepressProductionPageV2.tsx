@@ -12,6 +12,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
 import { formatDistanceToNow } from "date-fns";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
@@ -27,6 +28,15 @@ import {
 } from "@/hooks/useProduction";
 import type { PrepressQueueItem, PrepressQueueWorkflowState } from "@/hooks/useOrders";
 import { usePageVisible } from "@/hooks/usePageVisible";
+import {
+  DEFAULT_PREPRESS_LIST_PREFERENCES,
+  persistPrepressListPreferences,
+  readPersistedPrepressListPreferences,
+  type PrepressDestinationFilter,
+  type PrepressListPreferences,
+  type PrepressListSortBy,
+  type PrepressStatusFilter,
+} from "@/lib/prepressListPreferences";
 import type { FileUploadNamingPolicy } from "@shared/fileUploadNaming";
 
 type LineItemFile = {
@@ -79,6 +89,32 @@ type VisibleFileRecord = AttachmentData & {
 type PendingViewerRequest = {
   lineItemId: string;
   preferredFileId?: string | null;
+};
+
+type PrepressQueueResponse = {
+  items: PrepressQueueItem[];
+  totalCount: number;
+  filteredCount: number;
+};
+
+const PREPRESS_SORT_LABELS: Record<PrepressListSortBy, string> = {
+  due_date: "Due Date",
+  job_number: "Job #",
+  client: "Client",
+  type: "Type",
+  material: "Material",
+};
+
+const PREPRESS_DESTINATION_LABELS: Record<PrepressDestinationFilter, string> = {
+  all: "All",
+  roll: "Roll",
+  flatbed: "Flatbed",
+};
+
+const PREPRESS_STATUS_LABELS: Record<PrepressStatusFilter, string> = {
+  all: "All",
+  ready_for_prepress: "Ready for Prepress",
+  in_prepress: "In Prepress",
 };
 
 function formatOwnerLabel(item: Pick<PrepressQueueItem, "activeOwnerStepKey" | "activeOwnerStationKey"> | null | undefined) {
@@ -256,19 +292,22 @@ function getPrepressLineItemQueryKey(lineItemId: string | null) {
 
 export default function PrepressProductionPageV2() {
   const { toast } = useToast();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
   const isPageVisible = usePageVisible();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hasSelectedTagManuallyRef = useRef(false);
+  const userId = user?.id ?? null;
   
   // UI State
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [destinationFilter, setDestinationFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [rushFilter, setRushFilter] = useState(false);
-  const [sortBy, setSortBy] = useState("due_date");
-  const [sortAsc, setSortAsc] = useState(true);
+  const [destinationFilter, setDestinationFilter] = useState<PrepressDestinationFilter>(DEFAULT_PREPRESS_LIST_PREFERENCES.destination);
+  const [statusFilter, setStatusFilter] = useState<PrepressStatusFilter>(DEFAULT_PREPRESS_LIST_PREFERENCES.status);
+  const [rushFilter, setRushFilter] = useState(DEFAULT_PREPRESS_LIST_PREFERENCES.rush);
+  const [sortBy, setSortBy] = useState<PrepressListSortBy>(DEFAULT_PREPRESS_LIST_PREFERENCES.sortBy);
+  const [sortAsc, setSortAsc] = useState(DEFAULT_PREPRESS_LIST_PREFERENCES.sortDirection === "asc");
+  const [preferencesHydratedForUserId, setPreferencesHydratedForUserId] = useState<string | null>(null);
   const [prepressNotes, setPrepressNotes] = useState("");
   const [flagForQc, setFlagForQc] = useState(false);
   const [issueType, setIssueType] = useState("");
@@ -297,6 +336,38 @@ export default function PrepressProductionPageV2() {
   const [overrideReasonNote, setOverrideReasonNote] = useState("");
   const [nowMs, setNowMs] = useState(() => Date.now());
   const normalizedSearchQuery = searchQuery.trim();
+  const preferencesReady = !!userId && preferencesHydratedForUserId === userId;
+  const currentListPreferences = useMemo<PrepressListPreferences>(
+    () => ({
+      destination: destinationFilter,
+      status: statusFilter,
+      rush: rushFilter,
+      sortBy,
+      sortDirection: sortAsc ? "asc" : "desc",
+    }),
+    [destinationFilter, rushFilter, sortAsc, sortBy, statusFilter],
+  );
+
+  useEffect(() => {
+    if (!userId) {
+      setPreferencesHydratedForUserId(null);
+      return;
+    }
+
+    const persistedPreferences = readPersistedPrepressListPreferences(userId);
+    setDestinationFilter(persistedPreferences.destination);
+    setStatusFilter(persistedPreferences.status);
+    setRushFilter(persistedPreferences.rush);
+    setSortBy(persistedPreferences.sortBy);
+    setSortAsc(persistedPreferences.sortDirection === "asc");
+    persistPrepressListPreferences(userId, persistedPreferences);
+    setPreferencesHydratedForUserId(userId);
+  }, [userId]);
+
+  useEffect(() => {
+    if (!preferencesReady || !userId) return;
+    persistPrepressListPreferences(userId, currentListPreferences);
+  }, [currentListPreferences, preferencesReady, userId]);
 
   const queueFilters = useMemo(
     () => ({
@@ -340,14 +411,18 @@ export default function PrepressProductionPageV2() {
       if (import.meta.env.DEV) {
         console.log("[Prepress Queue]", data.data?.length || 0, "items");
       }
-      return data.data as PrepressQueueItem[];
+      const items = (Array.isArray(data.data) ? data.data : []) as PrepressQueueItem[];
+      const totalCount = Number.isFinite(Number(data.meta?.totalCount)) ? Number(data.meta.totalCount) : items.length;
+      const filteredCount = Number.isFinite(Number(data.meta?.filteredCount)) ? Number(data.meta.filteredCount) : items.length;
+      return { items, totalCount, filteredCount } satisfies PrepressQueueResponse;
     },
+    enabled: preferencesReady,
     staleTime: 0,
     refetchInterval: (query) => {
       // Never poll in hidden tabs — no one is watching.
       if (!isPageVisible) return false;
       // Stop polling when the queue is empty; rely on manual refresh (refreshPrepressQueue) for new arrivals.
-      const items = (query.state.data as PrepressQueueItem[]) ?? [];
+      const items = ((query.state.data as PrepressQueueResponse | undefined)?.items) ?? [];
       return items.length > 0 ? 10_000 : false;
     },
     refetchOnWindowFocus: false,
@@ -694,7 +769,9 @@ export default function PrepressProductionPageV2() {
   });
 
   // Derived state
-  const queue = queueData || [];
+  const queue = queueData?.items || [];
+  const totalQueueCount = queueData?.totalCount ?? queue.length;
+  const filteredQueueCount = queueData?.filteredCount ?? queue.length;
   const filteredQueue = queue;
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId) ?? null;
   const selectedAlertStation = useMemo<ProductionAlertStation>(() => {
@@ -814,6 +891,31 @@ export default function PrepressProductionPageV2() {
     selectedWorkflowState === "in_prepress" && activeSessionStartedAt && Number.isFinite(activeSessionStartedAt.getTime())
       ? Math.max(0, Math.floor((nowMs - activeSessionStartedAt.getTime()) / 1000))
       : 0;
+  const activePrepressViewLabels = useMemo(() => {
+    const labels: string[] = [];
+    if (currentListPreferences.destination !== DEFAULT_PREPRESS_LIST_PREFERENCES.destination) {
+      labels.push(`Destination=${PREPRESS_DESTINATION_LABELS[currentListPreferences.destination]}`);
+    }
+    if (currentListPreferences.status !== DEFAULT_PREPRESS_LIST_PREFERENCES.status) {
+      labels.push(`Status=${PREPRESS_STATUS_LABELS[currentListPreferences.status]}`);
+    }
+    if (currentListPreferences.rush !== DEFAULT_PREPRESS_LIST_PREFERENCES.rush) {
+      labels.push("Rush=Yes");
+    }
+    if (
+      currentListPreferences.sortBy !== DEFAULT_PREPRESS_LIST_PREFERENCES.sortBy ||
+      currentListPreferences.sortDirection !== DEFAULT_PREPRESS_LIST_PREFERENCES.sortDirection
+    ) {
+      labels.push(`Sort=${PREPRESS_SORT_LABELS[currentListPreferences.sortBy]} ${currentListPreferences.sortDirection === "asc" ? "A-Z" : "Z-A"}`);
+    }
+    if (normalizedSearchQuery) {
+      labels.push(`Search="${normalizedSearchQuery}"`);
+    }
+    return labels;
+  }, [currentListPreferences, normalizedSearchQuery]);
+  const hasActivePrepressView =
+    activePrepressViewLabels.length > 0 || filteredQueueCount < totalQueueCount;
+  const queueIsLoading = !preferencesReady || queueLoading;
 
   // Clear selection if selected item is not in queue
   React.useEffect(() => {
@@ -907,6 +1009,15 @@ export default function PrepressProductionPageV2() {
   // Handlers
   const handleRefresh = () => {
     void refetchQueue();
+  };
+
+  const handleClearPrepressViewFilters = () => {
+    setSearchQuery("");
+    setDestinationFilter(DEFAULT_PREPRESS_LIST_PREFERENCES.destination);
+    setStatusFilter(DEFAULT_PREPRESS_LIST_PREFERENCES.status);
+    setRushFilter(DEFAULT_PREPRESS_LIST_PREFERENCES.rush);
+    setSortBy(DEFAULT_PREPRESS_LIST_PREFERENCES.sortBy);
+    setSortAsc(DEFAULT_PREPRESS_LIST_PREFERENCES.sortDirection === "asc");
   };
 
   const handleOpenHistory = () => {
@@ -1194,7 +1305,7 @@ export default function PrepressProductionPageV2() {
             </div>
 
             <div className="flex gap-2">
-              <Select value={destinationFilter} onValueChange={setDestinationFilter}>
+              <Select value={destinationFilter} onValueChange={(value) => setDestinationFilter(value as PrepressDestinationFilter)}>
                 <SelectTrigger className="flex-1 bg-[#111921] border-[#2d3748] rounded-lg text-xs py-1 h-8 focus:ring-[#1773cf] focus:border-[#1773cf]">
                   <SelectValue />
                 </SelectTrigger>
@@ -1205,7 +1316,7 @@ export default function PrepressProductionPageV2() {
                 </SelectContent>
               </Select>
 
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as PrepressStatusFilter)}>
                 <SelectTrigger className="flex-1 bg-[#111921] border-[#2d3748] rounded-lg text-xs py-1 h-8 focus:ring-[#1773cf] focus:border-[#1773cf]">
                   <SelectValue />
                 </SelectTrigger>
@@ -1233,7 +1344,7 @@ export default function PrepressProductionPageV2() {
           <div className="flex items-center justify-between pt-2 border-t border-[#2d3748]/30">
             <div className="flex items-center gap-2">
               <span className="text-[10px] uppercase font-bold text-slate-500 tracking-tighter">Sort By:</span>
-              <Select value={sortBy} onValueChange={setSortBy}>
+              <Select value={sortBy} onValueChange={(value) => setSortBy(value as PrepressListSortBy)}>
                 <SelectTrigger className="bg-transparent border-none text-[11px] font-medium text-slate-300 p-0 focus:ring-0 h-auto w-auto">
                   <SelectValue />
                 </SelectTrigger>
@@ -1259,19 +1370,46 @@ export default function PrepressProductionPageV2() {
 
         {/* Job List */}
         <div className="min-h-0 flex-1 overflow-y-auto p-2 space-y-2">
-          {queueLoading && (
+          {!queueIsLoading && hasActivePrepressView && (
+            <div className="rounded-lg border border-[#1773cf]/40 bg-[#1773cf]/10 px-3 py-2 text-xs text-slate-200">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 space-y-1">
+                  <p className="font-semibold text-[#8ec5ff]">
+                    {filteredQueueCount === totalQueueCount
+                      ? `Showing ${filteredQueueCount} ${filteredQueueCount === 1 ? "job" : "jobs"}`
+                      : `Showing ${filteredQueueCount} of ${totalQueueCount} jobs`}
+                  </p>
+                  <p className="truncate text-slate-300">
+                    {activePrepressViewLabels.length > 0
+                      ? `View active: ${activePrepressViewLabels.join(", ")}`
+                      : "Results are filtered"}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleClearPrepressViewFilters}
+                  className="h-7 shrink-0 px-2 text-[11px] text-[#8ec5ff] hover:bg-[#1773cf]/20 hover:text-white"
+                >
+                  Clear Filters
+                </Button>
+              </div>
+            </div>
+          )}
+          {queueIsLoading && (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
             </div>
           )}
-          {!queueLoading && filteredQueue.length === 0 && (
+          {!queueIsLoading && filteredQueue.length === 0 && (
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <FileText className="w-12 h-12 text-slate-600 mb-3" />
               <p className="text-sm font-medium text-slate-400">No jobs in prepress queue</p>
               <p className="text-xs text-slate-600 mt-1">Adjust filters or clear search to see more jobs</p>
             </div>
           )}
-          {!queueLoading && filteredQueue.map((item) => (
+          {!queueIsLoading && filteredQueue.map((item) => (
             <JobCard
               key={item.lineItemId}
               item={item}
