@@ -478,6 +478,13 @@ export class CustomersRepository {
                 throw new Error("Customer not found");
             }
 
+            if (contactData.isPrimary) {
+                await tx
+                    .update(customerContacts)
+                    .set({ isPrimary: false, updatedAt: new Date() })
+                    .where(eq(customerContacts.customerId, customerId));
+            }
+
             const [contact] = await tx
                 .insert(customerContacts)
                 .values({
@@ -554,6 +561,16 @@ export class CustomersRepository {
                 customerId: nextCustomerId,
                 updatedAt: new Date(),
             };
+
+            if (updateData.isPrimary === true) {
+                await tx
+                    .update(customerContacts)
+                    .set({ isPrimary: false, updatedAt: new Date() })
+                    .where(and(
+                        eq(customerContacts.customerId, nextCustomerId),
+                        sql`${customerContacts.id} <> ${id}`,
+                    ));
+            }
 
             const [contact] = await tx
                 .update(customerContacts)
@@ -863,6 +880,8 @@ export class CustomersRepository {
                     ilike(customerContacts.firstName, `%${searchTerm}%`),
                     ilike(customerContacts.lastName, `%${searchTerm}%`),
                     ilike(customerContacts.email, `%${searchTerm}%`),
+                    ilike(customerContacts.phone, `%${searchTerm}%`),
+                    ilike(customerContacts.mobile, `%${searchTerm}%`),
                     ilike(customers.companyName, `%${searchTerm}%`),
                 ),
             )
