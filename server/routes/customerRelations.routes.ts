@@ -230,7 +230,13 @@ export function registerCustomerRelationsRoutes(
       if (requiresMoveConfirmation && !confirmMove) {
         const sourceCompany = fromCustomer?.companyName || "another customer";
         const targetCompany = toCustomer?.companyName || "this customer";
-        return jsonError(res, 409, `Moving this contact from ${sourceCompany} to ${targetCompany} requires confirmation.`);
+        return res.status(409).json({
+          success: false,
+          message: `Moving this contact from ${sourceCompany} to ${targetCompany} requires confirmation.`,
+          requiresMoveConfirmation: true,
+          fromCustomer,
+          toCustomer,
+        });
       }
 
       const linkedContact = await storage.updateCustomerContactForOrganization(

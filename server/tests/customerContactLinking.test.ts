@@ -157,6 +157,9 @@ describe("customer detail contact linking", () => {
       .expect(409);
 
     expect(res.body.message).toContain("requires confirmation");
+    expect(res.body.requiresMoveConfirmation).toBe(true);
+    expect(res.body.fromCustomer).toEqual({ id: SOURCE_CUSTOMER, companyName: "Source Customer" });
+    expect(res.body.toCustomer).toEqual({ id: TARGET_CUSTOMER, companyName: "Target Customer" });
 
     const unchanged = await getContactWithRelations(contact.id, ORG_ID);
     expect(unchanged?.customerId).toBe(SOURCE_CUSTOMER);
