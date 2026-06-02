@@ -1818,6 +1818,21 @@ export async function registerOrderRoutes(
                 return res.status(400).json({ message: "At least one line item is required" });
             }
 
+            const quoteLinkageFields = ["quoteId", "sourceQuoteId", "sourceQuoteNumber"].filter((field) => {
+                const value = orderFields[field];
+                return value !== undefined && value !== null && String(value).trim() !== "";
+            });
+            const linkedLineItemIndex = lineItems.findIndex((item: any) => {
+                const value = item?.quoteLineItemId;
+                return value !== undefined && value !== null && String(value).trim() !== "";
+            });
+            if (quoteLinkageFields.length > 0 || linkedLineItemIndex >= 0) {
+                return res.status(400).json({
+                    message: "Direct order creation cannot include quote linkage. Use the quote conversion endpoint for quote-derived orders.",
+                    code: "DIRECT_ORDER_QUOTE_LINKAGE_NOT_ALLOWED",
+                });
+            }
+
             const createOrderForRequest = async () => {
             // Load organization for tax settings
             const [org] = await db
