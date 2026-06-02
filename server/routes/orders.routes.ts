@@ -132,6 +132,8 @@ import {
     resolveLineItemMaterialDisplayLabel,
 } from "./flatStockNesting.shared";
 import { generatePackingSlipHtmlForOrder } from "../services/packingSlipService";
+import { getFileUploadNamingPolicy } from "../prepressFileService";
+import { withOrderOriginalArtworkDisplayFilename } from "../services/originalArtworkFiles";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -2948,6 +2950,8 @@ export async function registerOrderRoutes(
             const whereConditions: any[] = [eq(orderAttachments.orderId, orderId)];
             if (includeLineItems !== 'true') whereConditions.push(isNull(orderAttachments.orderLineItemId));
             const files = await db.select().from(orderAttachments).where(and(...whereConditions)).orderBy(desc(orderAttachments.createdAt));
+            const namingPolicy = await getFileUploadNamingPolicy(organizationId);
+            const orderNumber = (order as any).orderNumber ?? null;
 
             if (files.length > 0 && process.env.DEBUG_THUMBNAILS) {
                 console.log('[OrderAttachments:GET] 📊 Raw DB record (before enrichment):');
@@ -2960,7 +2964,9 @@ export async function registerOrderRoutes(
             }
 
             const logOnce = createRequestLogOnce();
-            const attachmentItems = await Promise.all(files.map((file) => enrichAttachmentWithUrls(file, { logOnce })));
+            const attachmentItems = await Promise.all(files.map((file) =>
+                enrichAttachmentWithUrls(withOrderOriginalArtworkDisplayFilename(file, { orderNumber, namingPolicy }), { logOnce })
+            ));
             let lineItemAssetItems: any[] = [];
 
             if (includeLineItems === 'true') {
@@ -3028,7 +3034,8 @@ export async function registerOrderRoutes(
                                 if (!asset) return null;
                                 const enriched = await enrichAssetPreviewUrls(asset);
                                 const originalAccess = await resolveOriginalFileAccess(asset, { logOnce });
-                                const filename = String((enriched as any).fileName ?? 'Artwork');
+                                const displayAsset = withOrderOriginalArtworkDisplayFilename(enriched as any, { orderNumber, namingPolicy });
+                                const filename = String((displayAsset as any).displayFilename ?? (enriched as any).fileName ?? 'Artwork');
                                 const previewThumbnailUrl =
                                     (enriched as any).previewThumbnailUrl ??
                                     (enriched as any).thumbnailUrl ??
@@ -3038,6 +3045,9 @@ export async function registerOrderRoutes(
                                 return {
                                     id: String(link.assetId),
                                     filename,
+                                    fileName: filename,
+                                    displayFilename: filename,
+                                    computedDisplayFilename: filename,
                                     mimeType: (enriched as any).mimeType ?? (asset as any)?.mimeType ?? null,
                                     fileSize: (enriched as any).fileSize ?? (asset as any)?.fileSize ?? null,
                                     objectPath: originalAccess.objectPath,
@@ -4861,7 +4871,22 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req);
             const files = await storage.listOrderFiles(req.params.id);
             const logOnce = createRequestLogOnce();
-            const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
+            const [orderRow] = organizationId
+                ? await db
+                    .select({ orderNumber: orders.orderNumber })
+                    .from(orders)
+                    .where(and(eq(orders.id, req.params.id), eq(orders.organizationId, organizationId)))
+                    .limit(1)
+                : [];
+            const namingPolicy = organizationId ? await getFileUploadNamingPolicy(organizationId) : null;
+            const enrichedFiles = await Promise.all(files.map((f) =>
+                enrichAttachmentWithUrls(
+                    namingPolicy
+                        ? withOrderOriginalArtworkDisplayFilename(f, { orderNumber: orderRow?.orderNumber ?? null, namingPolicy })
+                        : f,
+                    { logOnce }
+                )
+            ));
 
             // PHASE 2: Include linked assets for order-level attachments
             let enrichedAssets: any[] = [];
@@ -4870,7 +4895,13 @@ export async function registerOrderRoutes(
                     const { assetRepository } = await import('../services/assets/AssetRepository');
                     const { enrichAssetsWithRoles } = await import('../services/assets/enrichAssetWithUrls');
                     const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'order', req.params.id);
-                    enrichedAssets = await enrichAssetsWithRoles(linkedAssets);
+                    const assetsWithUrls = await enrichAssetsWithRoles(linkedAssets);
+                    enrichedAssets = namingPolicy
+                        ? assetsWithUrls.map((asset: any) => withOrderOriginalArtworkDisplayFilename(asset, {
+                            orderNumber: orderRow?.orderNumber ?? null,
+                            namingPolicy,
+                        }))
+                        : assetsWithUrls;
                 } catch (assetError) {
                     console.error('[OrderFiles:GET] Asset enrichment failed:', assetError);
                 }

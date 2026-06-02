@@ -43,6 +43,11 @@ import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 import { resolveActiveProductionOwners } from "./productionOwnership";
 import { resolveLineItemProofReleaseGate } from "./proofGateService";
 import { isCanceledOrder } from "@shared/operationalState";
+import {
+  getCanonicalOriginalFileIdentity,
+  withOrderOriginalArtworkDisplayFilename,
+} from "./originalArtworkFiles";
+import { getFileUploadNamingPolicy } from "../prepressFileService";
 
 type ProofDecision = "approved" | "rejected" | "revision_requested";
 type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "cancelled" | "superseded";
@@ -62,6 +67,7 @@ type ArtworkProofSource = {
   sourceId: string;
   orderId: string;
   orderLineItemId: string;
+  orderNumber?: string | null;
   fileRecordId: string | null;
   fileName: string;
   fileUrl: string | null;
@@ -103,6 +109,8 @@ export type EligibleProofArtworkSource = {
   fileUrl: string | null;
   thumbnailUrl: string | null;
   previewUrl: string | null;
+  displayFilename?: string | null;
+  computedDisplayFilename?: string | null;
   role: string | null;
   eligible: boolean;
   eligibilityReason: string | null;
@@ -1379,8 +1387,13 @@ type ResolvedEligibleArtworkSource = EligibleProofArtworkSource & {
 function buildEligibleArtworkSource(source: ArtworkProofSource, args: {
   publicSourceType: EligibleProofArtworkSource["sourceType"];
   role: string | null;
+  namingPolicy: Awaited<ReturnType<typeof getFileUploadNamingPolicy>>;
 }): ResolvedEligibleArtworkSource {
   const displayName = source.originalFilename || source.fileName;
+  const displayFile = withOrderOriginalArtworkDisplayFilename(source, {
+    orderNumber: source.orderNumber ?? null,
+    namingPolicy: args.namingPolicy,
+  });
   const eligibility = isSupportedProofArtworkSource(source);
 
   return {
@@ -1395,6 +1408,8 @@ function buildEligibleArtworkSource(source: ArtworkProofSource, args: {
     fileUrl: source.fileUrl ?? null,
     thumbnailUrl: source.thumbnailUrl ?? null,
     previewUrl: source.previewKey ?? null,
+    displayFilename: displayFile.displayFilename,
+    computedDisplayFilename: displayFile.computedDisplayFilename,
     role: args.role,
     eligible: eligibility.eligible,
     eligibilityReason: eligibility.reason,
@@ -1406,10 +1421,12 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
   organizationId: string;
   lineItemId: string;
 }): Promise<ResolvedEligibleArtworkSource[]> {
+  const namingPolicy = await getFileUploadNamingPolicy(args.organizationId);
   const attachmentSources = await tx
     .select({
       sourceId: orderAttachments.id,
       orderId: orderAttachments.orderId,
+      orderNumber: orders.orderNumber,
       orderLineItemId: orderAttachments.orderLineItemId,
       role: orderAttachments.role,
       fileRecordId: orderAttachments.fileRecordId,
@@ -1481,12 +1498,25 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
 
   const resolved: ResolvedEligibleArtworkSource[] = [];
   const seen = new Set<string>();
+  const seenCanonicalOriginals = new Set<string>();
+  const hasSeenCanonicalOriginal = (source: ArtworkProofSource): boolean => {
+    const identity = getCanonicalOriginalFileIdentity({
+      ...source,
+      storageKey: source.fileUrl ?? null,
+      storagePath: source.relativePath ?? null,
+    });
+    if (!identity) return false;
+    if (seenCanonicalOriginals.has(identity)) return true;
+    seenCanonicalOriginals.add(identity);
+    return false;
+  };
 
   for (const attachmentSource of attachmentSources) {
     const source: ArtworkProofSource = {
       sourceType: "attachment",
       sourceId: attachmentSource.sourceId,
       orderId: attachmentSource.orderId,
+      orderNumber: attachmentSource.orderNumber ?? null,
       orderLineItemId: String(attachmentSource.orderLineItemId || args.lineItemId),
       fileRecordId: attachmentSource.fileRecordId ?? null,
       fileName: attachmentSource.fileName,
@@ -1514,10 +1544,11 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       uploadedByName: attachmentSource.uploadedByName ?? null,
       updatedAt: attachmentSource.updatedAt ?? null,
     };
-    if (!seen.has(`attachment:${source.sourceId}`)) {
+    if (!seen.has(`attachment:${source.sourceId}`) && !hasSeenCanonicalOriginal(source)) {
       resolved.push(buildEligibleArtworkSource(source, {
         publicSourceType: "line_item_artwork",
         role: attachmentSource.role ?? null,
+        namingPolicy,
       }));
       seen.add(`attachment:${source.sourceId}`);
     }
@@ -1527,6 +1558,7 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
     .select({
       sourceId: assets.id,
       orderId: orderLineItems.orderId,
+      orderNumber: orders.orderNumber,
       orderLineItemId: orderLineItems.id,
       fileRecordId: assets.fileRecordId,
       fileName: assets.fileName,
@@ -1572,6 +1604,7 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       sourceType: "asset",
       sourceId: assetSource.sourceId,
       orderId: assetSource.orderId,
+      orderNumber: assetSource.orderNumber ?? null,
       orderLineItemId: assetSource.orderLineItemId,
       fileRecordId: assetSource.fileRecordId ?? null,
       fileName: assetSource.fileName,
@@ -1599,10 +1632,11 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       assetPreviewStatus: assetSource.assetPreviewStatus ?? null,
       assetPreviewError: assetSource.assetPreviewError ?? null,
     };
-    if (!seen.has(`asset:${source.sourceId}`)) {
+    if (!seen.has(`asset:${source.sourceId}`) && !hasSeenCanonicalOriginal(source)) {
       resolved.push(buildEligibleArtworkSource(source, {
         publicSourceType: "line_item_asset",
         role: assetSource.role ?? null,
+        namingPolicy,
       }));
       seen.add(`asset:${source.sourceId}`);
     }
@@ -1612,6 +1646,7 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
     .select({
       sourceId: lineItemFiles.id,
       orderId: lineItemFiles.orderId,
+      orderNumber: orders.orderNumber,
       orderLineItemId: lineItemFiles.lineItemId,
       fileRecordId: lineItemFiles.fileRecordId,
       fileName: lineItemFiles.originalFilename,
@@ -1624,9 +1659,11 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       updatedAt: lineItemFiles.createdAt,
     })
     .from(lineItemFiles)
+    .innerJoin(orders, eq(lineItemFiles.orderId, orders.id))
     .where(
       and(
         eq(lineItemFiles.organizationId, args.organizationId),
+        eq(orders.organizationId, args.organizationId),
         eq(lineItemFiles.lineItemId, args.lineItemId),
         eq(lineItemFiles.status, "active"),
       ),
@@ -1638,6 +1675,7 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       sourceType: "line_item_file",
       sourceId: lineItemFile.sourceId,
       orderId: lineItemFile.orderId,
+      orderNumber: lineItemFile.orderNumber ?? null,
       orderLineItemId: lineItemFile.orderLineItemId,
       fileRecordId: lineItemFile.fileRecordId ?? null,
       fileName: lineItemFile.fileName,
@@ -1663,10 +1701,11 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       uploadedByName: null,
       updatedAt: lineItemFile.updatedAt ?? null,
     };
-    if (!seen.has(`line-item-file:${source.sourceId}`)) {
+    if (!seen.has(`line-item-file:${source.sourceId}`) && !hasSeenCanonicalOriginal(source)) {
       resolved.push(buildEligibleArtworkSource(source, {
         publicSourceType: "line_item_file",
         role: lineItemFile.role ?? null,
+        namingPolicy,
       }));
       seen.add(`line-item-file:${source.sourceId}`);
     }
@@ -1862,6 +1901,10 @@ async function ensureProofAttachmentForSource(tx: any, args: {
   lineItemId: string;
   source: ArtworkProofSource;
 }): Promise<string> {
+  if (args.source.sourceType === "attachment") {
+    return args.source.sourceId;
+  }
+
   const matchingWhere = args.source.fileRecordId
     ? and(
         eq(orderAttachments.orderId, args.source.orderId),
@@ -1987,39 +2030,7 @@ async function ensureProofAttachmentForExistingAttachment(tx: any, args: {
     throwProofingConflict("Selected file is not eligible for proof draft creation");
   }
 
-  return ensureProofAttachmentForSource(tx, {
-    organizationId: args.organizationId,
-    lineItemId: args.lineItemId,
-    source: {
-      sourceType: "attachment",
-      sourceId: attachment.sourceId,
-      orderId: attachment.orderId,
-      orderLineItemId: lineItem.lineItemId,
-      fileRecordId: attachment.fileRecordId ?? null,
-      fileName: attachment.fileName,
-      fileUrl: attachment.fileUrl ?? null,
-      fileSize: attachment.fileSize ?? null,
-      sizeBytes: attachment.sizeBytes ?? null,
-      mimeType: attachment.mimeType ?? null,
-      description: attachment.description ?? null,
-      originalFilename: attachment.originalFilename ?? null,
-      storedFilename: attachment.storedFilename ?? null,
-      relativePath: attachment.relativePath ?? null,
-      storageProvider: attachment.storageProvider ?? null,
-      extension: attachment.extension ?? null,
-      checksum: attachment.checksum ?? null,
-      thumbKey: attachment.thumbKey ?? null,
-      previewKey: attachment.previewKey ?? null,
-      thumbStatus: attachment.thumbStatus ?? null,
-      thumbError: attachment.thumbError ?? null,
-      thumbnailRelativePath: attachment.thumbnailRelativePath ?? null,
-      thumbnailGeneratedAt: attachment.thumbnailGeneratedAt ?? null,
-      thumbnailUrl: attachment.thumbnailUrl ?? null,
-      uploadedByUserId: attachment.uploadedByUserId ?? null,
-      uploadedByName: attachment.uploadedByName ?? null,
-      updatedAt: attachment.updatedAt ?? null,
-    },
-  });
+  return attachment.sourceId;
 }
 
 export async function createLineItemProofVersionFromExistingAttachment(tx: any, args: {

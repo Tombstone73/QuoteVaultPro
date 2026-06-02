@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { usePageVisible } from "@/hooks/usePageVisible";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -101,9 +101,15 @@ type ProofFileRow = OrderFileWithUser & {
   authenticatedUrl?: string | null;
   downloadUrl?: string | null;
   objectPath?: string | null;
+  fileUrl?: string | null;
   previewUrl?: string | null;
   originalUrl?: string | null;
   thumbUrl?: string | null;
+  displayFilename?: string | null;
+  computedDisplayFilename?: string | null;
+  checksum?: string | null;
+  fileSize?: number | null;
+  sizeBytes?: number | null;
   role?: string | null;
   __source?: "attachment" | "asset";
 };
@@ -125,6 +131,8 @@ type EligibleProofArtworkSource = {
   fileUrl: string | null;
   thumbnailUrl: string | null;
   previewUrl: string | null;
+  displayFilename?: string | null;
+  computedDisplayFilename?: string | null;
   role: string | null;
   eligible: boolean;
   eligibilityReason: string | null;
@@ -215,6 +223,23 @@ function formatRelativeTime(value: string | Date | null | undefined) {
 function formatVersionLabel(version: ProofVersionHistoryEntry | null | undefined) {
   if (!version) return "No proof selected";
   return `Version ${version.versionNumber}`;
+}
+
+function getProofFileDisplayName(file: Pick<ProofFileRow, "displayFilename" | "computedDisplayFilename" | "originalFilename" | "fileName"> | null | undefined) {
+  return file?.computedDisplayFilename || file?.displayFilename || file?.originalFilename || file?.fileName || "File";
+}
+
+function getProofFileCanonicalIdentity(file: ProofFileRow | null | undefined) {
+  const fileRecordId = String(file?.fileRecordId || "").trim();
+  if (fileRecordId) return `file-record:${fileRecordId}`;
+  const checksum = String(file?.checksum || "").trim().toLowerCase();
+  if (checksum) return `checksum:${checksum}`;
+  const objectPath = String(file?.objectPath || file?.fileUrl || "").trim().toLowerCase();
+  if (objectPath) return `storage:${objectPath}`;
+  const filename = String(file?.originalFilename || file?.fileName || "").trim().toLowerCase();
+  const size = Number(file?.sizeBytes ?? file?.fileSize ?? 0);
+  const mimeType = String(file?.mimeType || "").trim().toLowerCase();
+  return filename || size > 0 || mimeType ? `legacy:${filename}:${Number.isFinite(size) ? size : 0}:${mimeType}` : null;
 }
 
 function getProofPreviewUrl(file: ProofFileRow | null | undefined) {
@@ -783,17 +808,6 @@ export default function StaffProofingPage() {
   const filesQuery = useOrderLineItemFiles(activeOrderId ?? undefined, activeLineItemId ?? undefined);
   const lineItemFiles = (filesQuery.data?.data ?? []) as ProofFileRow[];
 
-  const selectableProofFiles = useMemo(
-    () =>
-      lineItemFiles.filter(
-        (file): file is ProofAttachmentRow =>
-          file.__source !== "asset" &&
-          Boolean(file.id) &&
-          String(file.role || "").toLowerCase() === "proof",
-      ),
-    [lineItemFiles],
-  );
-
   const selectableArtworkFiles = useMemo(
     () =>
       lineItemFiles.filter(
@@ -803,6 +817,27 @@ export default function StaffProofingPage() {
           ["artwork", "attachment", "reference"].includes(String(file.role || "").toLowerCase()),
       ),
     [lineItemFiles],
+  );
+
+  const selectableArtworkIdentitySet = useMemo(() => {
+    const identities = new Set<string>();
+    for (const file of selectableArtworkFiles) {
+      const identity = getProofFileCanonicalIdentity(file);
+      if (identity) identities.add(identity);
+    }
+    return identities;
+  }, [selectableArtworkFiles]);
+
+  const selectableProofFiles = useMemo(
+    () =>
+      lineItemFiles.filter(
+        (file): file is ProofAttachmentRow => {
+          if (file.__source === "asset" || !file.id || String(file.role || "").toLowerCase() !== "proof") return false;
+          const identity = getProofFileCanonicalIdentity(file);
+          return !identity || !selectableArtworkIdentitySet.has(identity);
+        },
+      ),
+    [lineItemFiles, selectableArtworkIdentitySet],
   );
 
   const selectableDraftSourceFiles = useMemo(
@@ -2308,7 +2343,7 @@ export default function StaffProofingPage() {
                   <div className="mt-3 space-y-2">
                     {eligibleArtworkSources.map((source) => {
                       const isSelected = selectedArtworkSourceIds.includes(source.id);
-                      const displayName = source.originalFilename || source.fileName;
+                      const displayName = source.computedDisplayFilename || source.displayFilename || source.originalFilename || source.fileName;
                       return (
                         <label
                           key={`${source.sourceType}:${source.id}`}
@@ -2371,17 +2406,25 @@ export default function StaffProofingPage() {
                 </div>
 
                 <div className="grid gap-2">
-                  <Label>Select existing artwork or proof file</Label>
+                  <Label>Select existing proof file or original artwork</Label>
                   <ScrollArea className="h-56 rounded-lg border p-3">
                     <div className="space-y-2">
                       {selectableDraftSourceFiles.length === 0 ? (
                         <div className="text-sm text-muted-foreground">No eligible artwork or proof files are available yet.</div>
                       ) : (
-                        selectableDraftSourceFiles.map((file) => {
+                        selectableDraftSourceFiles.map((file, fileIndex) => {
                           const isSelected = selectedExistingAttachmentId === file.id;
+                          const isFirstProofFile = fileIndex === 0 && selectableProofFiles.length > 0;
+                          const isFirstArtworkFile = fileIndex === selectableProofFiles.length && selectableArtworkFiles.length > 0;
                           return (
-                            <button
-                              key={file.id}
+                            <Fragment key={file.id}>
+                              {isFirstProofFile ? (
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Proof Files</p>
+                              ) : null}
+                              {isFirstArtworkFile ? (
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Original Artwork</p>
+                              ) : null}
+                              <button
                               type="button"
                               disabled={Boolean(uploadFile)}
                               onClick={() => setSelectedExistingAttachmentId(file.id)}
@@ -2389,12 +2432,13 @@ export default function StaffProofingPage() {
                             >
                               <div className="flex items-center justify-between gap-3">
                                 <div>
-                                  <p className="text-sm font-medium">{file.originalFilename || file.fileName}</p>
+                                  <p className="text-sm font-medium">{getProofFileDisplayName(file)}</p>
                                   <p className="text-xs text-muted-foreground">{file.role || "file"} • {formatTimestamp(file.createdAt)}</p>
                                 </div>
-                                <Badge variant="outline">{file.__source || "attachment"}</Badge>
+                                <Badge variant="outline">{String(file.role || "").toLowerCase() === "proof" ? "proof" : "original"}</Badge>
                               </div>
-                            </button>
+                              </button>
+                            </Fragment>
                           );
                         })
                       )}

@@ -38,6 +38,8 @@ import { createLineItemFileRecord } from "../services/lineItemFileRecordService"
 import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { autoSyncCanonicalProofForLineItem } from "../services/proofingService";
+import { getFileUploadNamingPolicy } from "../prepressFileService";
+import { withOrderOriginalArtworkDisplayFilename } from "../services/originalArtworkFiles";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -71,7 +73,7 @@ export function registerOrderLineItemFileRoutes(
       console.log(`[OrderLineItemFiles:GET] orderId=${orderId}, lineItemId=${lineItemId}, orgId=${organizationId}`);
 
       // Validate the order belongs to the organization
-      const [order] = await db.select({ id: orders.id }).from(orders)
+      const [order] = await db.select({ id: orders.id, orderNumber: orders.orderNumber }).from(orders)
         .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
         .limit(1);
 
@@ -100,13 +102,24 @@ export function registerOrderLineItemFileRoutes(
 
       // Enrich each attachment with signed URLs
       const logOnce = createRequestLogOnce();
-      const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
+      const namingPolicy = await getFileUploadNamingPolicy(organizationId);
+      const enrichedFiles = await Promise.all(files.map((f) =>
+        enrichAttachmentWithUrls(withOrderOriginalArtworkDisplayFilename(f, {
+          orderNumber: order.orderNumber,
+          namingPolicy,
+        }), { logOnce })
+      ));
 
       // PHASE 2: Include linked assets with enriched URLs
       const { assetRepository } = await import('../services/assets/AssetRepository');
       const { enrichAssetsWithRoles } = await import('../services/assets/enrichAssetWithUrls');
       const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'order_line_item', lineItemId);
-      const enrichedAssets = await enrichAssetsWithRoles(linkedAssets);
+      const enrichedAssets = (await enrichAssetsWithRoles(linkedAssets)).map((asset: any) =>
+        withOrderOriginalArtworkDisplayFilename(asset, {
+          orderNumber: order.orderNumber,
+          namingPolicy,
+        })
+      );
 
       console.log(`[OrderLineItemFiles:GET] Found ${files.length} files + ${linkedAssets.length} assets for line item ${lineItemId}`);
       res.json({ success: true, data: enrichedFiles, assets: enrichedAssets });

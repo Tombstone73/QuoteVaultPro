@@ -40,6 +40,11 @@ import {
   type PrepressFileLabel,
 } from "@shared/fileUploadNaming";
 import { DEFAULT_ORGANIZATION_ID } from "./tenantContext";
+import {
+  dedupeByCanonicalOriginalFileIdentity,
+  getCanonicalOriginalFileIdentity,
+  withOrderOriginalArtworkDisplayFilename,
+} from "./services/originalArtworkFiles";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
 
@@ -65,6 +70,8 @@ export type BridgedOriginal = {
   downloadUrl: string;
   thumbnailUrl: string | null;
   uploadedBy: string | null;
+  displayFilename: string;
+  computedDisplayFilename: string;
 };
 
 export type EnsuredFinalArtworkResult = {
@@ -561,6 +568,7 @@ export async function getLineItemFiles(
       )
     )
     .orderBy(lineItemFiles.createdAt);
+  const namingPolicy = await getFileUploadNamingPolicy(organizationId);
 
   // Bridge in any order-level attachments that were uploaded before the order
   // entered the prepress queue (e.g. uploaded by customer on the checkout or
@@ -579,15 +587,28 @@ export async function getLineItemFiles(
       thumbKey: orderAttachments.thumbKey,
       createdAt: orderAttachments.createdAt,
       uploadedByName: orderAttachments.uploadedByName,
+      orderNumber: orders.orderNumber,
     })
     .from(orderAttachments)
-    .where(eq(orderAttachments.orderLineItemId, lineItemId))
+    .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+    .where(and(eq(orderAttachments.orderLineItemId, lineItemId), eq(orders.organizationId, organizationId)))
     .orderBy(orderAttachments.createdAt);
 
   const logOnce = createRequestLogOnce();
-  const bridgedOriginals: BridgedOriginal[] = await Promise.all(legacyRows.map(async (row) => {
+  const originalIdentities = allFiles
+    .filter((file) => file.role === "original")
+    .map((file) => getCanonicalOriginalFileIdentity(file));
+  const dedupedLegacyRows = dedupeByCanonicalOriginalFileIdentity(legacyRows, {
+    seedIdentities: originalIdentities,
+  });
+
+  const bridgedOriginals: BridgedOriginal[] = await Promise.all(dedupedLegacyRows.map(async (row) => {
+    const displayRow = withOrderOriginalArtworkDisplayFilename(row, {
+      orderNumber: row.orderNumber,
+      namingPolicy,
+    });
     const [originalAccess, thumbAccess] = await Promise.all([
-      resolveOriginalFileAccess(row, { logOnce }),
+      resolveOriginalFileAccess(displayRow, { logOnce }),
       resolveDerivativeFileAccess(row, "thumbnail", { logOnce }),
     ]);
 
@@ -602,6 +623,8 @@ export async function getLineItemFiles(
       downloadUrl: originalAccess.downloadUrl ?? originalAccess.originalUrl ?? "",
       thumbnailUrl: thumbAccess.url,
       uploadedBy: row.uploadedByName ?? null,
+      displayFilename: displayRow.displayFilename,
+      computedDisplayFilename: displayRow.computedDisplayFilename,
     };
   }));
 
