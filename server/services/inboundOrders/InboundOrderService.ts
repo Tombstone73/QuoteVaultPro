@@ -50,7 +50,7 @@ export type InboundMatchedCustomerSummary = {
 
 export type InboundMatchedContactSummary = {
   id: string;
-  customerId: string;
+  customerId: string | null;
   name: string;
   email: string | null;
   phone: string | null;
