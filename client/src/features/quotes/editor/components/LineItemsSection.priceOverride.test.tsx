@@ -3,6 +3,7 @@ import { describe, expect, it } from "@jest/globals";
 import type { QuoteLineItemDraft } from "../types";
 import {
   mergeQuoteLineItemPriceOverrideIntoSpecsJson,
+  resolveQuoteLineItemOverrideModeChange,
   resolveQuoteLineItemOverrideUiState,
 } from "./quoteLineItemPriceOverrideUiState";
 
@@ -135,5 +136,21 @@ describe("quote line item price override hydration", () => {
     expect(state.persistedOverrideMode).toBeNull();
     expect(state.selectValue).toBe("__none");
     expect(state.overrideValueCents).toBeNull();
+  });
+
+  it("reinterprets an entered override value when the override type changes", () => {
+    const next = resolveQuoteLineItemOverrideModeChange({
+      baseCalculatedTotalCents: 1500,
+      quantity: 3,
+      mode: "override_unit_after_margin",
+      rawValue: "10.00",
+      fallbackValueCents: 1500,
+    });
+
+    expect(next).not.toBeNull();
+    expect(next?.valueCents).toBe(1000);
+    expect(next?.pricing.effectiveTotalCents).toBe(3000);
+    expect(next?.pricing.effectiveUnitPriceCents).toBe(1000);
+    expect(next?.displayText).toBe("10.00");
   });
 });

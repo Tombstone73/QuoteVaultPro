@@ -29,14 +29,15 @@ import { buildPbv2DefaultSelections } from "@shared/pbv2OrderEntryRuntime";
 import { deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
 import {
+  applyLineItemEditPriceOverride,
   getLineItemPriceOverrideLabel,
-  resolveLineItemEffectivePricing,
   type LineItemPriceOverrideMode,
 } from "@shared/lineItemPriceOverrides";
 import {
   getQuoteLineItemOverrideValueCents,
   getQuoteLineItemPriceOverrideMode,
   mergeQuoteLineItemPriceOverrideIntoSpecsJson,
+  resolveQuoteLineItemOverrideModeChange,
   resolveQuoteLineItemOverrideUiState,
 } from "./quoteLineItemPriceOverrideUiState";
 
@@ -83,13 +84,11 @@ function buildQuoteLineItemOverridePatch(input: {
   baseTotalCents: number;
   quantity: number;
 }) {
-  const pricing = resolveLineItemEffectivePricing({
+  const pricing = applyLineItemEditPriceOverride({
     baseCalculatedTotalCents: input.baseTotalCents,
     quantity: input.quantity,
-    rawOverride: {
-      mode: input.mode,
-      valueCents: input.valueCents,
-    },
+    mode: input.mode,
+    valueCents: input.valueCents,
   });
 
   return {
@@ -726,6 +725,35 @@ export function LineItemsSection({
     const isTreeV2 = Boolean(optionSelectionsJson && typeof optionSelectionsJson === "object" && optionSelectionsJson.schemaVersion === 2);
 
     let formulaPrice = Number(item.formulaLinePrice ?? item.linePrice ?? 0) || 0;
+    const buildPricingPatch = (nextFormulaPrice: number): Partial<QuoteLineItemDraft> => {
+      const baseTotalCents = Math.round(nextFormulaPrice * 100);
+      const overridePatch =
+        typeof nextOverrideCents === "number" && Number.isFinite(nextOverrideCents) && priceOverrideMode
+          ? buildQuoteLineItemOverridePatch({
+              mode: priceOverrideMode,
+              valueCents: Math.max(0, Math.round(priceOverrideValueCents ?? nextOverrideCents)),
+              baseTotalCents,
+              quantity,
+            })
+          : null;
+      const effectiveOverrideCents = overridePatch ? overridePatch.pricing.effectiveTotalCents : null;
+      const effectiveLinePrice = effectiveOverrideCents != null ? effectiveOverrideCents / 100 : nextFormulaPrice;
+      const nextSpecsJson = mergeQuoteLineItemPriceOverrideIntoSpecsJson(item.specsJson, overridePatch?.priceOverride ?? null);
+
+      return {
+        specsJson: nextSpecsJson,
+        formulaLinePrice: nextFormulaPrice,
+        linePrice: effectiveLinePrice,
+        priceOverride: overridePatch?.priceOverride ?? null,
+        overridePriceCents: effectiveOverrideCents,
+        overrideAt: effectiveOverrideCents == null ? null : new Date().toISOString(),
+        overrideByUserId: null,
+        overrideReason: null,
+      };
+    };
+
+    onUpdateLineItem(itemKey, buildPricingPatch(formulaPrice));
+
     try {
       const calculateResponse = await apiRequest("POST", "/api/quotes/calculate", {
         productId: item.productId,
@@ -754,28 +782,7 @@ export function LineItemsSection({
       // Keep current formula fallback
     }
 
-    const baseTotalCents = Math.round(formulaPrice * 100);
-    const overridePatch =
-      typeof nextOverrideCents === "number" && Number.isFinite(nextOverrideCents) && priceOverrideMode
-        ? buildQuoteLineItemOverridePatch({
-            mode: priceOverrideMode,
-            valueCents: Math.max(0, Math.round(priceOverrideValueCents ?? nextOverrideCents)),
-            baseTotalCents,
-            quantity,
-          })
-        : null;
-    const effectiveLinePrice = overridePatch ? overridePatch.pricing.effectiveTotalCents / 100 : formulaPrice;
-    const nextSpecsJson = mergeQuoteLineItemPriceOverrideIntoSpecsJson(item.specsJson, overridePatch?.priceOverride ?? null);
-    const pricingPatch: Partial<QuoteLineItemDraft> = {
-      specsJson: nextSpecsJson,
-      formulaLinePrice: formulaPrice,
-      linePrice: effectiveLinePrice,
-      priceOverride: overridePatch?.priceOverride ?? null,
-      overridePriceCents: nextOverrideCents,
-      overrideAt: nextOverrideCents == null ? null : new Date().toISOString(),
-      overrideByUserId: null,
-      overrideReason: null,
-    };
+    const pricingPatch = buildPricingPatch(formulaPrice);
 
     onUpdateLineItem(itemKey, pricingPatch);
 
@@ -1089,10 +1096,13 @@ export function LineItemsSection({
                                     const mode = activeOrDraftOverrideMode;
                                     const quantity = Number(item.quantity) > 0 ? Number(item.quantity) : 1;
                                     const nextValueCents = newCents;
-                                    const nextEffectiveCents =
-                                      mode === "override_unit_after_margin" || mode === "override_unit_before_margin"
-                                        ? nextValueCents * quantity
-                                        : nextValueCents;
+                                    const nextPricing = applyLineItemEditPriceOverride({
+                                      baseCalculatedTotalCents: formulaCents,
+                                      quantity,
+                                      mode,
+                                      valueCents: nextValueCents,
+                                    });
+                                    const nextEffectiveCents = nextPricing.effectiveTotalCents;
 
                                     try {
                                       if (nextEffectiveCents !== formulaCents || mode !== "override_total_after_margin") {
@@ -1199,24 +1209,55 @@ export function LineItemsSection({
                                   <div className="grid gap-2 sm:grid-cols-[minmax(180px,260px)_1fr]">
                                     <select
                                       value={overrideUiState.selectValue}
-                                      onChange={(event) => {
+                                      onChange={async (event) => {
                                         const selectedValue = event.target.value;
+                                        const previousOverrideCents =
+                                          hasOverride && typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents)
+                                            ? item.overridePriceCents
+                                            : null;
                                         if (selectedValue === "__none") {
                                           setPriceOverrideModeByKey((prev) => {
                                             const next = { ...prev };
                                             delete next[itemKey];
                                             return next;
                                           });
-                                          setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: visiblePrice.displayTotal.toFixed(2) }));
+                                          setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: baseCalculatedTotal.toFixed(2) }));
+                                          await refreshQuotePricingAfterOverrideChange({
+                                            item,
+                                            itemKey,
+                                            nextOverrideCents: null,
+                                            priceOverrideMode: null,
+                                            priceOverrideValueCents: null,
+                                            previousOverrideCents,
+                                          });
                                           return;
                                         }
 
                                         const nextMode = selectedValue as LineItemPriceOverrideMode;
                                         setPriceOverrideModeByKey((prev) => ({ ...prev, [itemKey]: nextMode }));
-                                        const currentValueCents = getQuoteLineItemOverrideValueCents(item, nextMode);
-                                        const currentValue =
-                                          currentValueCents != null ? currentValueCents / 100 : visiblePrice.displayTotal;
-                                        setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: currentValue.toFixed(2) }));
+                                        const rawValue = priceEditTextByKey[itemKey] ?? editorPriceValue.toFixed(2);
+                                        const nextOverride = resolveQuoteLineItemOverrideModeChange({
+                                          baseCalculatedTotalCents,
+                                          quantity: Number(item.quantity) > 0 ? Number(item.quantity) : 1,
+                                          mode: nextMode,
+                                          rawValue,
+                                          fallbackValueCents: Math.round(editorPriceValue * 100),
+                                        });
+
+                                        if (!nextOverride) {
+                                          setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: editorPriceValue.toFixed(2) }));
+                                          return;
+                                        }
+
+                                        setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: nextOverride.displayText }));
+                                        await refreshQuotePricingAfterOverrideChange({
+                                          item,
+                                          itemKey,
+                                          nextOverrideCents: nextOverride.pricing.effectiveTotalCents,
+                                          priceOverrideMode: nextMode,
+                                          priceOverrideValueCents: nextOverride.valueCents,
+                                          previousOverrideCents,
+                                        });
                                       }}
                                       className="h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                                       disabled={readOnly}
