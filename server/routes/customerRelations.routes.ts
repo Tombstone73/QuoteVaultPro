@@ -123,8 +123,9 @@ export function registerCustomerRelationsRoutes(
       const pageSize = Math.min(200, req.query.pageSize ? parseInt(req.query.pageSize as string) : 50);
       const sortBy = req.query.sortBy as string | undefined;
       const sortDir = req.query.sortDir as string | undefined;
+      const filter = req.query.filter as string | undefined;
 
-      const result = await storage.getContactsPaged(organizationId, { search, page, pageSize, sortBy, sortDir });
+      const result = await storage.getContactsPaged(organizationId, { search, page, pageSize, sortBy, sortDir, filter });
       res.json({
         contacts: result.items,
         total: result.total,
@@ -186,9 +187,11 @@ export function registerCustomerRelationsRoutes(
       if (!organizationId) return jsonError(res, 500, "Missing organization context");
       const contactData = insertCustomerContactSchema.parse({
         ...req.body,
+        organizationId,
         customerId: req.params.customerId,
       });
-      const { customerId, ...contactFields } = contactData;
+      const { organizationId: _ignoredOrganizationId, customerId, ...contactFields } = contactData;
+      if (!customerId) return jsonError(res, 400, "Customer is required");
       const contact = await storage.createCustomerContactForOrganization(organizationId, customerId, contactFields);
       res.json(contact);
     } catch (error) {
@@ -203,6 +206,33 @@ export function registerCustomerRelationsRoutes(
     }
   });
 
+  app.post("/api/contacts", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
+      const contactData = insertCustomerContactSchema.parse({
+        ...req.body,
+        organizationId,
+        customerId: req.body?.customerId ?? null,
+        isPrimary: false,
+      });
+      const { organizationId: _ignoredOrganizationId, customerId, ...contactFields } = contactData;
+      const contact = customerId
+        ? await storage.createCustomerContactForOrganization(organizationId, customerId, contactFields)
+        : await storage.createContactForOrganization(organizationId, contactFields);
+      res.json(contact);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return jsonError(res, 400, fromZodError(error).message);
+      }
+      if (error instanceof Error && error.message === "Customer not found") {
+        return jsonError(res, 404, error.message);
+      }
+      console.error("Error creating contact:", error);
+      jsonError(res, 500, "Failed to create contact");
+    }
+  });
+
   app.post("/api/customers/:customerId/contacts/:contactId/link", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -210,7 +240,7 @@ export function registerCustomerRelationsRoutes(
 
       const customerId = String(req.params.customerId || "").trim();
       const contactId = String(req.params.contactId || "").trim();
-      const { setPrimary, confirmMove } = linkExistingContactSchema.parse(req.body || {});
+      const { setPrimary } = linkExistingContactSchema.parse(req.body || {});
 
       const targetCustomer = await storage.getCustomerById(organizationId, customerId);
       if (!targetCustomer) return jsonError(res, 404, "Customer not found");
@@ -220,30 +250,12 @@ export function registerCustomerRelationsRoutes(
 
       const fromCustomer = customerLinkContext(existingContact.customer);
       const toCustomer = customerLinkContext(targetCustomer);
-      const moved = existingContact.customerId !== customerId;
-      const requiresMoveConfirmation = contactLinkRequiresMoveConfirmation(existingContact.customerId, customerId);
 
-      if (!moved) {
-        return jsonError(res, 409, "Contact is already linked to this customer");
-      }
-
-      if (requiresMoveConfirmation && !confirmMove) {
-        const sourceCompany = fromCustomer?.companyName || "another customer";
-        const targetCompany = toCustomer?.companyName || "this customer";
-        return res.status(409).json({
-          success: false,
-          message: `Moving this contact from ${sourceCompany} to ${targetCompany} requires confirmation.`,
-          requiresMoveConfirmation: true,
-          fromCustomer,
-          toCustomer,
-        });
-      }
-
-      const linkedContact = await storage.updateCustomerContactForOrganization(
+      const linkedContact = await storage.createCustomerContactLinkForOrganization(
         organizationId,
+        customerId,
         contactId,
         {
-          customerId,
           isPrimary: setPrimary,
         },
       );
@@ -252,8 +264,8 @@ export function registerCustomerRelationsRoutes(
         contact: linkedContact,
         fromCustomer,
         toCustomer,
-        moved,
-        requiresMoveConfirmation,
+        moved: false,
+        requiresMoveConfirmation: false,
         setPrimary,
       });
     } catch (error) {
@@ -265,6 +277,62 @@ export function registerCustomerRelationsRoutes(
       }
       console.error("Error linking customer contact:", error);
       jsonError(res, 500, "Failed to link contact");
+    }
+  });
+
+  app.delete("/api/customers/:customerId/contacts/:contactId", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
+
+      await storage.unlinkCustomerContactForOrganization(organizationId, req.params.customerId, req.params.contactId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error unlinking customer contact:", error);
+      jsonError(res, 500, "Failed to unlink contact");
+    }
+  });
+
+  app.post("/api/customers/:customerId/contacts/:contactId/status", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
+      const status = z.enum(["active", "former", "removed"]).parse(req.body?.status);
+
+      const link = await storage.setCustomerContactLinkStatusForOrganization(
+        organizationId,
+        req.params.customerId,
+        req.params.contactId,
+        status,
+      );
+      res.json(link);
+    } catch (error) {
+      if (error instanceof z.ZodError) return jsonError(res, 400, fromZodError(error).message);
+      if (error instanceof Error && error.message === "Customer contact link not found") return jsonError(res, 404, error.message);
+      console.error("Error updating customer contact relationship:", error);
+      jsonError(res, 500, "Failed to update contact relationship");
+    }
+  });
+
+  app.post("/api/customers/:customerId/contacts/:contactId/set-primary", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
+
+      const contact = await storage.createCustomerContactLinkForOrganization(
+        organizationId,
+        req.params.customerId,
+        req.params.contactId,
+        { isPrimary: true, status: "active" },
+      );
+
+      res.json(contact);
+    } catch (error) {
+      if (error instanceof Error && (error.message === "Customer contact not found" || error.message === "Customer not found")) {
+        return jsonError(res, 404, error.message);
+      }
+      console.error("Error setting primary contact:", error);
+      jsonError(res, 500, "Failed to set primary contact");
     }
   });
 

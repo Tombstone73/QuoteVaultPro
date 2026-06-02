@@ -4,12 +4,14 @@ import request from "supertest";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { tenantContext } from "../tenantContext";
-import { registerCustomerRelationsRoutes, contactLinkRequiresMoveConfirmation } from "../routes/customerRelations.routes";
+import { registerCustomerRelationsRoutes } from "../routes/customerRelations.routes";
 import {
   createCustomerContactForOrganization,
   getContactWithRelations,
   getCustomerContacts,
 } from "../storage";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const suffix = `${Date.now()}_${Math.floor(Math.random() * 99999)}`;
 const ORG_ID = `org_contact_link_${suffix}`;
@@ -81,6 +83,8 @@ async function createContact(
 }
 
 beforeAll(async () => {
+  await db.execute(sql.raw(readFileSync(contactRelationshipMigrationPath, "utf8")));
+
   await db.execute(sql`
     insert into organizations (id, name, slug)
     values (${ORG_ID}, ${"Contact Link Test Org"}, ${`contact-link-${suffix}`})
@@ -109,9 +113,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  for (const customer of TEST_CUSTOMERS) {
-    await db.execute(sql`delete from customer_contacts where customer_id = ${customer.id}`);
-  }
+  await db.execute(sql`delete from customer_contact_links where organization_id = ${ORG_ID}`);
+  await db.execute(sql`delete from customer_contacts where organization_id = ${ORG_ID}`);
   for (const customer of TEST_CUSTOMERS) {
     await db.execute(sql`delete from customers where id = ${customer.id}`);
   }
@@ -121,6 +124,7 @@ afterAll(async () => {
 });
 
 const app = createTestApp();
+const contactRelationshipMigrationPath = resolve(process.cwd(), "server/db/migrations_v2/0079_contact_relationships.sql");
 
 describe("customer detail contact linking", () => {
   test("creates a contact from customer detail linked to the current customer", async () => {
@@ -137,51 +141,65 @@ describe("customer detail contact linking", () => {
     expect(res.body.customerId).toBe(CREATE_CUSTOMER);
     expect(res.body.firstName).toBe("Created");
     expect(res.body.lastName).toBe("Linked");
+
+    const contacts = await getCustomerContacts(CREATE_CUSTOMER);
+    expect(contacts.some((contact) => contact.id === res.body.id)).toBe(true);
   });
 
-  test("does not require move confirmation for an unlinked contact state", () => {
-    expect(contactLinkRequiresMoveConfirmation(null, TARGET_CUSTOMER)).toBe(false);
-    expect(contactLinkRequiresMoveConfirmation(undefined, TARGET_CUSTOMER)).toBe(false);
+  test("creates an independent contact without a customer", async () => {
+    const res = await request(app)
+      .post("/api/contacts")
+      .set(authHeaders)
+      .send({
+        firstName: "Independent",
+        lastName: "Person",
+        email: `independent.${suffix}@example.com`,
+      })
+      .expect(200);
+
+    expect(res.body.customerId).toBeNull();
+    expect(res.body.organizationId).toBe(ORG_ID);
   });
 
-  test("requires confirmation before moving a contact from another customer", async () => {
+  test("links an existing contact to multiple customers without moving it", async () => {
     const contact = await createContact(SOURCE_CUSTOMER, {
-      firstName: "Move",
-      lastName: "Guarded",
+      firstName: "Multi",
+      lastName: "Linked",
     });
 
     const res = await request(app)
       .post(`/api/customers/${TARGET_CUSTOMER}/contacts/${contact.id}/link`)
       .set(authHeaders)
       .send({ setPrimary: false })
-      .expect(409);
-
-    expect(res.body.message).toContain("requires confirmation");
-    expect(res.body.requiresMoveConfirmation).toBe(true);
-    expect(res.body.fromCustomer).toEqual({ id: SOURCE_CUSTOMER, companyName: "Source Customer" });
-    expect(res.body.toCustomer).toEqual({ id: TARGET_CUSTOMER, companyName: "Target Customer" });
-
-    const unchanged = await getContactWithRelations(contact.id, ORG_ID);
-    expect(unchanged?.customerId).toBe(SOURCE_CUSTOMER);
-  });
-
-  test("links a confirmed existing contact and returns source and target context", async () => {
-    const contact = await createContact(SOURCE_CUSTOMER, {
-      firstName: "Move",
-      lastName: "Confirmed",
-    });
-
-    const res = await request(app)
-      .post(`/api/customers/${TARGET_CUSTOMER}/contacts/${contact.id}/link`)
-      .set(authHeaders)
-      .send({ setPrimary: false, confirmMove: true })
       .expect(200);
 
     expect(res.body.contact.customerId).toBe(TARGET_CUSTOMER);
-    expect(res.body.moved).toBe(true);
-    expect(res.body.requiresMoveConfirmation).toBe(true);
+    expect(res.body.moved).toBe(false);
+    expect(res.body.requiresMoveConfirmation).toBe(false);
     expect(res.body.fromCustomer).toEqual({ id: SOURCE_CUSTOMER, companyName: "Source Customer" });
     expect(res.body.toCustomer).toEqual({ id: TARGET_CUSTOMER, companyName: "Target Customer" });
+
+    const sourceContacts = await getCustomerContacts(SOURCE_CUSTOMER);
+    const targetContacts = await getCustomerContacts(TARGET_CUSTOMER);
+    expect(sourceContacts.some((row) => row.id === contact.id)).toBe(true);
+    expect(targetContacts.some((row) => row.id === contact.id)).toBe(true);
+  });
+
+  test("unlinking a customer relationship keeps the contact", async () => {
+    const contact = await createContact(SOURCE_CUSTOMER, {
+      firstName: "Unlink",
+      lastName: "KeepsPerson",
+    });
+
+    await request(app)
+      .delete(`/api/customers/${SOURCE_CUSTOMER}/contacts/${contact.id}`)
+      .set(authHeaders)
+      .expect(200);
+
+    const sourceContacts = await getCustomerContacts(SOURCE_CUSTOMER);
+    const storedContact = await getContactWithRelations(contact.id, ORG_ID);
+    expect(sourceContacts.some((row) => row.id === contact.id)).toBe(false);
+    expect(storedContact?.id).toBe(contact.id);
   });
 
   test("setting a primary contact clears the prior primary for the same customer", async () => {
@@ -197,7 +215,7 @@ describe("customer detail contact linking", () => {
     });
 
     await request(app)
-      .post(`/api/customer-contacts/${secondContact.id}/set-primary`)
+      .post(`/api/customers/${PRIMARY_CUSTOMER}/contacts/${secondContact.id}/set-primary`)
       .set(authHeaders)
       .expect(200);
 
@@ -211,31 +229,36 @@ describe("customer detail contact linking", () => {
     expect(demoted?.isPrimary).toBe(false);
   });
 
-  test("moving a primary contact away repairs the old customer's primary contact", async () => {
-    const fallback = await createContact(REPAIR_SOURCE_CUSTOMER, {
-      firstName: "Repair",
-      lastName: "Fallback",
-      isPrimary: false,
-    });
-    const primaryToMove = await createContact(REPAIR_SOURCE_CUSTOMER, {
-      firstName: "Repair",
-      lastName: "Moved",
-      isPrimary: true,
+  test("marking a relationship former does not delete the contact", async () => {
+    const contact = await createContact(REPAIR_SOURCE_CUSTOMER, {
+      firstName: "Former",
+      lastName: "StillExists",
     });
 
     await request(app)
-      .post(`/api/customers/${REPAIR_TARGET_CUSTOMER}/contacts/${primaryToMove.id}/link`)
+      .post(`/api/customers/${REPAIR_SOURCE_CUSTOMER}/contacts/${contact.id}/status`)
       .set(authHeaders)
-      .send({ setPrimary: false, confirmMove: true })
+      .send({ status: "former" })
       .expect(200);
 
-    const oldCustomerContacts = await getCustomerContacts(REPAIR_SOURCE_CUSTOMER);
-    const oldCustomerPrimaries = oldCustomerContacts.filter((contact) => contact.isPrimary);
-    const movedContact = await getContactWithRelations(primaryToMove.id, ORG_ID);
+    const sourceContacts = await getCustomerContacts(REPAIR_SOURCE_CUSTOMER);
+    const storedContact = await getContactWithRelations(contact.id, ORG_ID);
+    const relationship = sourceContacts.find((row) => row.id === contact.id);
 
-    expect(oldCustomerPrimaries).toHaveLength(1);
-    expect(oldCustomerPrimaries[0]?.id).toBe(fallback.id);
-    expect(movedContact?.customerId).toBe(REPAIR_TARGET_CUSTOMER);
-    expect(movedContact?.isPrimary).toBe(false);
+    expect(storedContact?.id).toBe(contact.id);
+    expect(relationship?.linkStatus).toBe("former");
+    expect(relationship?.isPrimary).toBe(false);
+  });
+
+  test("relationship migration preserves existing associations", () => {
+    const migrationSql = readFileSync(
+      resolve(process.cwd(), "server/db/migrations_v2/0079_contact_relationships.sql"),
+      "utf8",
+    );
+
+    expect(migrationSql).toContain("CREATE TABLE IF NOT EXISTS customer_contact_links");
+    expect(migrationSql).toContain("INSERT INTO customer_contact_links");
+    expect(migrationSql).toContain("FROM customer_contacts cc");
+    expect(migrationSql).toContain("cc.is_primary");
   });
 });

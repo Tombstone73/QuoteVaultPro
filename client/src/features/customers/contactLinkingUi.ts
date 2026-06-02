@@ -11,6 +11,7 @@ export type ContactPickerSource = {
   isPrimary?: boolean | null;
   companyName?: string | null;
   company_name?: string | null;
+  linkedCustomers?: Array<{ id: string; companyName: string; status?: string; isPrimary?: boolean }> | null;
   customer?: {
     id?: string | null;
     companyName?: string | null;
@@ -29,6 +30,7 @@ export type NormalizedContactPickerResult = {
   mobile: string | null;
   isPrimary: boolean;
   companyName: string;
+  linkedCustomers: Array<{ id: string; companyName: string; status?: string; isPrimary?: boolean }>;
 };
 
 export type ContactMoveConfirmationState = {
@@ -55,6 +57,7 @@ export function normalizeContactPickerResult(contact: ContactPickerSource): Norm
     mobile: contact.mobile ?? null,
     isPrimary: contact.isPrimary === true,
     companyName,
+    linkedCustomers: Array.isArray(contact.linkedCustomers) ? contact.linkedCustomers : [],
   };
 }
 
@@ -64,14 +67,15 @@ export function getContactMoveConfirmationState(
 ): ContactMoveConfirmationState {
   const sourceCustomerName = selectedContact?.companyName || "another customer";
   const targetCustomerName = targetCustomer.companyName;
-  const hasDifferentCustomerId = Boolean(selectedContact?.customerId && selectedContact.customerId !== targetCustomer.id);
+  const hasOtherLinkedCustomer = Boolean(selectedContact?.customerId && selectedContact.customerId !== targetCustomer.id);
   const hasSourceCompanyWithoutId = Boolean(
     selectedContact &&
     !selectedContact.customerId &&
     selectedContact.companyName &&
     selectedContact.companyName !== targetCustomer.companyName,
   );
-  const requiresMoveConfirmation = hasDifferentCustomerId || hasSourceCompanyWithoutId;
+  const hasOtherCustomerContext = hasOtherLinkedCustomer || hasSourceCompanyWithoutId;
+  const requiresMoveConfirmation = false;
   const fullName = selectedContact
     ? `${selectedContact.firstName || ""} ${selectedContact.lastName || ""}`.trim() || "Unnamed contact"
     : "";
@@ -80,11 +84,11 @@ export function getContactMoveConfirmationState(
     requiresMoveConfirmation,
     sourceCustomerName,
     targetCustomerName,
-    warningText: `This contact currently belongs to ${sourceCustomerName}. Linking it to ${targetCustomerName} will move it.`,
-    checkboxText: `I understand this will move the contact from ${sourceCustomerName} to ${targetCustomerName}.`,
+    warningText: `This contact is currently linked to ${sourceCustomerName}. Linking it to ${targetCustomerName} will add another customer relationship.`,
+    checkboxText: `I understand this will link the contact to ${targetCustomerName}.`,
     selectedSummary: selectedContact
-      ? requiresMoveConfirmation
-        ? `Selected ${fullName} from ${sourceCustomerName}. Confirm the move before linking.`
+      ? hasOtherCustomerContext
+        ? `Selected ${fullName}. Currently linked to ${sourceCustomerName}; linking will add ${targetCustomerName}.`
         : `Ready to link ${fullName}.`
       : "",
   };
@@ -108,6 +112,6 @@ export function buildLinkExistingContactPayload(
   return {
     contactId,
     setPrimary,
-    confirmMove: requiresMoveConfirmation && moveConfirmed,
+    confirmMove: false,
   };
 }

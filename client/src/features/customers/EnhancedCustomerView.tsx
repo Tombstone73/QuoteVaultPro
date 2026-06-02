@@ -573,7 +573,10 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
     enabled: showLinkDialog,
   });
   const linkableContacts = useMemo(
-    () => (contactPickerQuery.data || []).filter((contact) => contact.customerId !== customer.id),
+    () => (contactPickerQuery.data || []).filter((contact) => {
+      const linkedCustomerIds = contact.linkedCustomers.map((linkedCustomer) => linkedCustomer.id);
+      return contact.customerId !== customer.id && !linkedCustomerIds.includes(customer.id);
+    }),
     [contactPickerQuery.data, customer.id],
   );
   const selectedContact = linkableContacts.find((contact) => contact.id === selectedContactId) || null;
@@ -591,7 +594,7 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
   // Set primary contact mutation
   const setPrimaryMutation = useMutation({
     mutationFn: async (contactId: string) => {
-      const response = await fetch(`/api/customer-contacts/${contactId}/set-primary`, {
+      const response = await fetch(`/api/customers/${customer.id}/contacts/${contactId}/set-primary`, {
         method: "POST",
         credentials: "include",
       });
@@ -633,7 +636,7 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
   // Unlink contact mutation (removes from company, doesn't delete)
   const unlinkContactMutation = useMutation({
     mutationFn: async (contactId: string) => {
-      const response = await fetch(`/api/customer-contacts/${contactId}`, {
+      const response = await fetch(`/api/customers/${customer.id}/contacts/${contactId}`, {
         method: "DELETE",
         credentials: "include",
       });
@@ -983,24 +986,17 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
               )}
             </div>
 
-            {selectedContactRequiresMoveConfirmation && selectedContact ? (
-              <div className="rounded-titan-lg border border-amber-500/40 bg-amber-500/10 p-3">
+            {selectedContact && selectedContactMoveState.sourceCustomerName !== "another customer" ? (
+              <div className="rounded-titan-lg border border-titan-border-subtle bg-titan-bg-card-elevated p-3">
                 <div className="flex items-start gap-2">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                  <Link2 className="mt-0.5 h-4 w-4 shrink-0 text-titan-text-muted" />
                   <div className="grid gap-2">
                     <div className="text-titan-sm font-medium text-titan-text-primary">
                       {selectedContactMoveState.warningText}
                     </div>
                     <p className="text-titan-xs text-titan-text-muted">
-                      Contacts currently belong to one customer at a time, so confirming will reassign the selected contact after the API succeeds.
+                      Contacts can be linked to multiple customers. The original customer relationship will stay in place.
                     </p>
-                    <label className="flex items-start gap-2 text-titan-xs text-titan-text-primary">
-                      <Checkbox
-                        checked={moveConfirmed}
-                        onCheckedChange={(checked) => setMoveConfirmed(checked === true)}
-                      />
-                      <span>{selectedContactMoveState.checkboxText}</span>
-                    </label>
                   </div>
                 </div>
               </div>

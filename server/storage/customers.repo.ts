@@ -2,6 +2,7 @@ import { db } from "../db";
 import {
     customers,
     customerContacts,
+    customerContactLinks,
     customerNotes,
     customerCreditTransactions,
     customerProductionFolderReferences,
@@ -12,7 +13,9 @@ import {
     type InsertCustomer,
     type CustomerWithRelations,
     type CustomerContact,
+    type CustomerContactLink,
     type InsertCustomerContact,
+    type InsertCustomerContactLink,
     type CustomerNote,
     type InsertCustomerNote,
     type CustomerCreditTransaction,
@@ -97,8 +100,20 @@ const contactSortExpressions: Record<ContactSortBy, any> = {
     firstName: sql`lower(coalesce(${customerContacts.firstName}, ''))`,
     email: sql`lower(coalesce(${customerContacts.email}, ''))`,
     phone: sql`lower(coalesce(${customerContacts.phone}, ''))`,
-    company: sql`lower(coalesce(${customers.companyName}, ''))`,
-    companyName: sql`lower(coalesce(${customers.companyName}, ''))`,
+    company: sql`lower(coalesce((
+        select string_agg(c.company_name, ', ' order by c.company_name)
+        from customer_contact_links ccl
+        join customers c on c.id = ccl.customer_id
+        where ccl.contact_id = ${customerContacts.id}
+          and ccl.status <> 'removed'
+    ), ''))`,
+    companyName: sql`lower(coalesce((
+        select string_agg(c.company_name, ', ' order by c.company_name)
+        from customer_contact_links ccl
+        join customers c on c.id = ccl.customer_id
+        where ccl.contact_id = ${customerContacts.id}
+          and ccl.status <> 'removed'
+    ), ''))`,
     createdAt: customerContacts.createdAt,
     updatedAt: customerContacts.updatedAt,
     orders: sql`(select count(*) from orders o where o.contact_id = ${customerContacts.id})`,
@@ -196,7 +211,7 @@ export class CustomersRepository {
                 );
 
             // Get unique customer IDs from contact matches
-            const contactCustomerIds = Array.from(new Set(matchedContacts.map(c => c.customerId)));
+            const contactCustomerIds = Array.from(new Set(matchedContacts.map(c => c.customerId).filter((id): id is string => Boolean(id))));
 
             // Fetch customers from contact matches that aren't already in matchedCustomers
             const existingCustomerIds = new Set(matchedCustomers.map(c => c.id));
@@ -396,6 +411,7 @@ export class CustomersRepository {
                 const [createdContact] = await tx
                     .insert(customerContacts)
                     .values({
+                        organizationId,
                         customerId: customer.id,
                         firstName: data.primaryContact.firstName,
                         lastName: data.primaryContact.lastName,
@@ -411,6 +427,13 @@ export class CustomersRepository {
                 }
 
                 contact = createdContact;
+                await tx.insert(customerContactLinks).values({
+                    organizationId,
+                    customerId: customer.id,
+                    contactId: contact.id,
+                    status: "active",
+                    isPrimary: data.primaryContact.isPrimary ?? true,
+                });
             }
 
             return { customer, contact };
@@ -441,12 +464,26 @@ export class CustomersRepository {
     }
 
     // Customer contacts operations
-    async getCustomerContacts(customerId: string): Promise<CustomerContact[]> {
-        return await this.dbInstance
-            .select()
-            .from(customerContacts)
-            .where(eq(customerContacts.customerId, customerId))
-            .orderBy(desc(customerContacts.isPrimary), customerContacts.firstName);
+    async getCustomerContacts(customerId: string): Promise<Array<CustomerContact & { linkId?: string; linkStatus?: string; isBilling?: boolean; isPortal?: boolean }>> {
+        const rows = await this.dbInstance
+            .select({ contact: customerContacts, link: customerContactLinks })
+            .from(customerContactLinks)
+            .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
+            .where(and(
+                eq(customerContactLinks.customerId, customerId),
+                sql`${customerContactLinks.status} <> 'removed'`,
+            ))
+            .orderBy(desc(customerContactLinks.isPrimary), customerContacts.firstName);
+
+        return rows.map(({ contact, link }) => ({
+            ...contact,
+            customerId: link.customerId,
+            isPrimary: link.isPrimary,
+            linkId: link.id,
+            linkStatus: link.status,
+            isBilling: link.isBilling,
+            isPortal: link.isPortal,
+        }));
     }
 
     async getCustomerContactById(id: string): Promise<CustomerContact | undefined> {
@@ -455,11 +492,119 @@ export class CustomersRepository {
     }
 
     async createCustomerContact(contactData: InsertCustomerContact): Promise<CustomerContact> {
-        const [contact] = await this.dbInstance.insert(customerContacts).values(contactData).returning();
+        const [contact] = await this.dbInstance.insert(customerContacts).values(contactData as any).returning();
         if (!contact) {
             throw new Error("Failed to create customer contact");
         }
         return contact;
+    }
+
+    async createContactForOrganization(
+        organizationId: string,
+        contactData: Omit<InsertCustomerContact, "organizationId" | "customerId"> & { customerId?: string | null },
+    ): Promise<CustomerContact> {
+        const [contact] = await this.dbInstance
+            .insert(customerContacts)
+            .values({
+                ...contactData,
+                organizationId,
+                customerId: contactData.customerId ?? null,
+                isPrimary: false,
+                status: "active" as const,
+            })
+            .returning();
+
+        if (!contact) {
+            throw new Error("Failed to create customer contact");
+        }
+
+        return contact;
+    }
+
+    async createCustomerContactLinkForOrganization(
+        organizationId: string,
+        customerId: string,
+        contactId: string,
+        linkData: Partial<Omit<InsertCustomerContactLink, "organizationId" | "customerId" | "contactId">> = {},
+    ): Promise<CustomerContact & { link: CustomerContactLink; customer?: Customer }> {
+        return await this.dbInstance.transaction(async (tx: any) => {
+            const [customer] = await tx
+                .select()
+                .from(customers)
+                .where(and(eq(customers.id, customerId), eq(customers.organizationId, organizationId)))
+                .limit(1);
+
+            if (!customer) {
+                throw new Error("Customer not found");
+            }
+
+            const [contact] = await tx
+                .select()
+                .from(customerContacts)
+                .where(and(eq(customerContacts.id, contactId), eq(customerContacts.organizationId, organizationId)))
+                .limit(1);
+
+            if (!contact) {
+                throw new Error("Customer contact not found");
+            }
+
+            const linkStatus = linkData.status ?? "active";
+            const isPrimary = linkData.isPrimary === true && linkStatus === "active";
+
+            if (isPrimary) {
+                await tx
+                    .update(customerContactLinks)
+                    .set({ isPrimary: false, updatedAt: new Date() })
+                    .where(and(eq(customerContactLinks.customerId, customerId), eq(customerContactLinks.status, "active")));
+            }
+
+            const [existingLink] = await tx
+                .select()
+                .from(customerContactLinks)
+                .where(and(
+                    eq(customerContactLinks.customerId, customerId),
+                    eq(customerContactLinks.contactId, contactId),
+                    sql`${customerContactLinks.status} <> 'removed'`,
+                ))
+                .limit(1);
+
+            const linkValues = {
+                organizationId,
+                customerId,
+                contactId,
+                status: linkStatus,
+                isPrimary,
+                isBilling: linkData.isBilling === true,
+                isPortal: linkData.isPortal === true,
+                updatedAt: new Date(),
+            };
+
+            const [link] = existingLink
+                ? await tx
+                    .update(customerContactLinks)
+                    .set(linkValues)
+                    .where(eq(customerContactLinks.id, existingLink.id))
+                    .returning()
+                : await tx
+                    .insert(customerContactLinks)
+                    .values(linkValues)
+                    .returning();
+
+            if (!contact.customerId) {
+                await tx
+                    .update(customerContacts)
+                    .set({ customerId, updatedAt: new Date() })
+                    .where(eq(customerContacts.id, contactId));
+            }
+
+            return {
+                ...contact,
+                customerId,
+                isPrimary: link.isPrimary,
+                link,
+                customer,
+            };
+        });
     }
 
     async createCustomerContactForOrganization(
@@ -480,16 +625,18 @@ export class CustomersRepository {
 
             if (contactData.isPrimary) {
                 await tx
-                    .update(customerContacts)
+                    .update(customerContactLinks)
                     .set({ isPrimary: false, updatedAt: new Date() })
-                    .where(eq(customerContacts.customerId, customerId));
+                    .where(and(eq(customerContactLinks.customerId, customerId), eq(customerContactLinks.status, "active")));
             }
 
             const [contact] = await tx
                 .insert(customerContacts)
                 .values({
                     ...contactData,
+                    organizationId,
                     customerId,
+                    status: "active" as const,
                 })
                 .returning();
 
@@ -497,7 +644,23 @@ export class CustomersRepository {
                 throw new Error("Failed to create customer contact");
             }
 
-            return contact;
+            const [link] = await tx
+                .insert(customerContactLinks)
+                .values({
+                    organizationId,
+                    customerId,
+                    contactId: contact.id,
+                    status: "active",
+                    isPrimary: contactData.isPrimary === true,
+                    isBilling: Array.isArray(contactData.flags) && contactData.flags.includes("billing_contact"),
+                })
+                .returning();
+
+            return {
+                ...contact,
+                customerId: link.customerId,
+                isPrimary: link.isPrimary,
+            };
         });
     }
 
@@ -527,22 +690,18 @@ export class CustomersRepository {
     ): Promise<CustomerContact> {
         return await this.dbInstance.transaction(async (tx: any) => {
             const [current] = await tx
-                .select({ contact: customerContacts, customer: customers })
+                .select()
                 .from(customerContacts)
-                .innerJoin(customers, eq(customerContacts.customerId, customers.id))
-                .where(and(eq(customerContacts.id, id), eq(customers.organizationId, organizationId)))
+                .where(and(eq(customerContacts.id, id), eq(customerContacts.organizationId, organizationId)))
                 .limit(1);
 
-            if (!current?.contact) {
+            if (!current) {
                 throw new Error("Customer contact not found");
             }
 
-            const nextCustomerId = contactData.customerId ?? current.contact.customerId;
-            if (!nextCustomerId) {
-                throw new Error("Customer is required");
-            }
+            const nextCustomerId = contactData.customerId ?? current.customerId;
 
-            if (nextCustomerId !== current.contact.customerId) {
+            if (nextCustomerId) {
                 const [targetCustomer] = await tx
                     .select({ id: customers.id })
                     .from(customers)
@@ -554,24 +713,21 @@ export class CustomersRepository {
                 }
             }
 
-            // Multi-company contact links are not modeled in the current schema.
-            // Keep the existing single primary company flow by moving customer_id atomically.
-            const oldCustomerId = current.contact.customerId;
-            const isMovingCustomer = nextCustomerId !== oldCustomerId;
-            const wasOldCustomerPrimary = current.contact.isPrimary === true;
+            const { isPrimary, customerId, ...personFields } = contactData;
             const updateData: any = {
-                ...contactData,
-                customerId: nextCustomerId,
+                ...personFields,
                 updatedAt: new Date(),
             };
+            if (nextCustomerId !== undefined) updateData.customerId = nextCustomerId ?? null;
 
-            if (updateData.isPrimary === true) {
+            if (nextCustomerId && isPrimary === true) {
                 await tx
-                    .update(customerContacts)
+                    .update(customerContactLinks)
                     .set({ isPrimary: false, updatedAt: new Date() })
                     .where(and(
-                        eq(customerContacts.customerId, nextCustomerId),
-                        sql`${customerContacts.id} <> ${id}`,
+                        eq(customerContactLinks.customerId, nextCustomerId),
+                        eq(customerContactLinks.status, "active"),
+                        sql`${customerContactLinks.contactId} <> ${id}`,
                     ));
             }
 
@@ -585,28 +741,42 @@ export class CustomersRepository {
                 throw new Error("Customer contact not found");
             }
 
-            if (isMovingCustomer && wasOldCustomerPrimary) {
-                const [oldPrimary] = await tx
-                    .select({ id: customerContacts.id })
-                    .from(customerContacts)
-                    .where(and(eq(customerContacts.customerId, oldCustomerId), eq(customerContacts.isPrimary, true)))
+            if (nextCustomerId) {
+                const [existingLink] = await tx
+                    .select()
+                    .from(customerContactLinks)
+                    .where(and(
+                        eq(customerContactLinks.customerId, nextCustomerId),
+                        eq(customerContactLinks.contactId, id),
+                        sql`${customerContactLinks.status} <> 'removed'`,
+                    ))
                     .limit(1);
 
-                if (!oldPrimary) {
-                    const [fallbackPrimary] = await tx
-                        .select({ id: customerContacts.id })
-                        .from(customerContacts)
-                        .where(eq(customerContacts.customerId, oldCustomerId))
-                        .orderBy(asc(customerContacts.createdAt), asc(customerContacts.id))
-                        .limit(1);
-
-                    if (fallbackPrimary) {
-                        await tx
-                            .update(customerContacts)
-                            .set({ isPrimary: true, updatedAt: new Date() })
-                            .where(eq(customerContacts.id, fallbackPrimary.id));
-                    }
+                if (existingLink) {
+                    const [updatedLink] = await tx
+                        .update(customerContactLinks)
+                        .set({
+                            isPrimary: isPrimary ?? existingLink.isPrimary,
+                            status: existingLink.status === "removed" ? "active" : existingLink.status,
+                            updatedAt: new Date(),
+                        })
+                        .where(eq(customerContactLinks.id, existingLink.id))
+                        .returning();
+                    return { ...contact, customerId: updatedLink.customerId, isPrimary: updatedLink.isPrimary };
                 }
+
+                const [newLink] = await tx
+                    .insert(customerContactLinks)
+                    .values({
+                        organizationId,
+                        customerId: nextCustomerId,
+                        contactId: id,
+                        status: "active",
+                        isPrimary: isPrimary === true,
+                    })
+                    .returning();
+
+                return { ...contact, customerId: newLink.customerId, isPrimary: newLink.isPrimary };
             }
 
             return contact;
@@ -614,7 +784,45 @@ export class CustomersRepository {
     }
 
     async deleteCustomerContact(id: string): Promise<void> {
-        await this.dbInstance.delete(customerContacts).where(eq(customerContacts.id, id));
+        await this.dbInstance
+            .update(customerContacts)
+            .set({ status: "archived", updatedAt: new Date() })
+            .where(eq(customerContacts.id, id));
+    }
+
+    async unlinkCustomerContactForOrganization(organizationId: string, customerId: string, contactId: string): Promise<void> {
+        await this.dbInstance
+            .update(customerContactLinks)
+            .set({ status: "removed", isPrimary: false, updatedAt: new Date() })
+            .where(and(
+                eq(customerContactLinks.organizationId, organizationId),
+                eq(customerContactLinks.customerId, customerId),
+                eq(customerContactLinks.contactId, contactId),
+                sql`${customerContactLinks.status} <> 'removed'`,
+            ));
+    }
+
+    async setCustomerContactLinkStatusForOrganization(
+        organizationId: string,
+        customerId: string,
+        contactId: string,
+        status: "active" | "former" | "removed",
+    ): Promise<CustomerContactLink> {
+        const updateData: any = { status, updatedAt: new Date() };
+        if (status !== "active") updateData.isPrimary = false;
+
+        const [link] = await this.dbInstance
+            .update(customerContactLinks)
+            .set(updateData)
+            .where(and(
+                eq(customerContactLinks.organizationId, organizationId),
+                eq(customerContactLinks.customerId, customerId),
+                eq(customerContactLinks.contactId, contactId),
+            ))
+            .returning();
+
+        if (!link) throw new Error("Customer contact link not found");
+        return link;
     }
 
     // Customer notes operations
@@ -741,19 +949,29 @@ export class CustomersRepository {
 
     async getContactWithRelations(id: string, organizationId?: string): Promise<(CustomerContact & { customer?: Customer }) | undefined> {
         const rows = await this.dbInstance
-            .select({ contact: customerContacts, customer: customers })
+            .select({ contact: customerContacts, link: customerContactLinks, customer: customers })
             .from(customerContacts)
-            .innerJoin(customers, eq(customerContacts.customerId, customers.id))
+            .leftJoin(customerContactLinks, and(
+                eq(customerContactLinks.contactId, customerContacts.id),
+                eq(customerContactLinks.status, "active"),
+            ))
+            .leftJoin(customers, eq(customerContactLinks.customerId, customers.id))
             .where(
                 organizationId
-                    ? and(eq(customerContacts.id, id), eq(customers.organizationId, organizationId))
+                    ? and(eq(customerContacts.id, id), eq(customerContacts.organizationId, organizationId))
                     : eq(customerContacts.id, id),
             )
+            .orderBy(desc(customerContactLinks.isPrimary), asc(customerContactLinks.createdAt))
             .limit(1);
 
         const row = rows[0];
         if (!row?.contact) return undefined;
-        return { ...row.contact, customer: row.customer };
+        return {
+            ...row.contact,
+            customerId: row.link?.customerId ?? row.contact.customerId ?? null,
+            isPrimary: row.link?.isPrimary ?? false,
+            customer: row.customer ?? undefined,
+        };
     }
 
     // --------------------------------------------------------
@@ -806,12 +1024,16 @@ export class CustomersRepository {
 
             // Contacts matching by name or email → resolve to customer IDs
             const byContact = await this.dbInstance
-                .select({ customerId: customerContacts.customerId })
-                .from(customerContacts)
-                .where(or(
-                    ilike(customerContacts.firstName, pattern),
-                    ilike(customerContacts.lastName, pattern),
-                    ilike(customerContacts.email, pattern),
+                .select({ customerId: customerContactLinks.customerId })
+                .from(customerContactLinks)
+                .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
+                .where(and(
+                    eq(customerContactLinks.status, "active"),
+                    or(
+                        ilike(customerContacts.firstName, pattern),
+                        ilike(customerContacts.lastName, pattern),
+                        ilike(customerContacts.email, pattern),
+                    ),
                 ));
 
             // Union + deduplicate while preserving org filter for contact-derived IDs
@@ -858,14 +1080,24 @@ export class CustomersRepository {
 
             const allContacts = pageIds.length > 0
                 ? await this.dbInstance
-                    .select()
-                    .from(customerContacts)
-                    .where(inArray(customerContacts.customerId, pageIds))
+                    .select({ contact: customerContacts, link: customerContactLinks })
+                    .from(customerContactLinks)
+                    .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
+                    .where(and(
+                        inArray(customerContactLinks.customerId, pageIds),
+                        sql`${customerContactLinks.status} <> 'removed'`,
+                    ))
                 : [];
 
             items = rows.map(c => ({
                 ...c,
-                contacts: allContacts.filter(ct => ct.customerId === c.id),
+                contacts: allContacts
+                    .filter(({ link }) => link.customerId === c.id)
+                    .map(({ contact, link }) => ({
+                        ...contact,
+                        customerId: link.customerId,
+                        isPrimary: link.isPrimary,
+                    })),
             }));
         }
 
@@ -885,9 +1117,16 @@ export class CustomersRepository {
     // --------------------------------------------------------
     async getContactsPaged(
         organizationId: string,
-        opts: { search?: string; page?: number; pageSize?: number; sortBy?: string; sortDir?: string },
+        opts: { search?: string; page?: number; pageSize?: number; sortBy?: string; sortDir?: string; filter?: string },
     ): Promise<{
-        items: Array<CustomerContact & { companyName: string; ordersCount: number; quotesCount: number; lastActivityAt: string | null }>;
+        items: Array<CustomerContact & {
+            companyName: string;
+            linkedCustomersCount: number;
+            linkedCustomers: Array<{ id: string; companyName: string; status: string; isPrimary: boolean }>;
+            ordersCount: number;
+            quotesCount: number;
+            lastActivityAt: string | null;
+        }>;
         total: number;
         page: number;
         pageSize: number;
@@ -899,26 +1138,62 @@ export class CustomersRepository {
         const pageSize = Math.min(200, Math.max(1, opts.pageSize ?? 50));
 
         const searchTerm = opts.search?.trim();
-        const baseCondition = eq(customers.organizationId, organizationId);
+        const baseConditions: any[] = [eq(customerContacts.organizationId, organizationId)];
+
+        if (opts.filter === "archived") {
+            baseConditions.push(eq(customerContacts.status, "archived"));
+        } else {
+            baseConditions.push(eq(customerContacts.status, "active"));
+        }
+
+        if (opts.filter === "unlinked") {
+            baseConditions.push(sql`not exists (
+                select 1
+                from customer_contact_links ccl
+                where ccl.contact_id = ${customerContacts.id}
+                  and ccl.status <> 'removed'
+            )`);
+        } else if (opts.filter === "linked") {
+            baseConditions.push(sql`exists (
+                select 1
+                from customer_contact_links ccl
+                where ccl.contact_id = ${customerContacts.id}
+                  and ccl.status = 'active'
+            )`);
+        } else if (opts.filter === "former") {
+            baseConditions.push(sql`exists (
+                select 1
+                from customer_contact_links ccl
+                where ccl.contact_id = ${customerContacts.id}
+                  and ccl.status = 'former'
+            )`);
+        }
+
         const whereClause = searchTerm
             ? and(
-                baseCondition,
+                ...baseConditions,
                 or(
                     ilike(customerContacts.firstName, `%${searchTerm}%`),
                     ilike(customerContacts.lastName, `%${searchTerm}%`),
                     ilike(customerContacts.email, `%${searchTerm}%`),
                     ilike(customerContacts.phone, `%${searchTerm}%`),
                     ilike(customerContacts.mobile, `%${searchTerm}%`),
-                    ilike(customers.companyName, `%${searchTerm}%`),
+                    sql`exists (
+                        select 1
+                        from customer_contact_links ccl
+                        join customers c on c.id = ccl.customer_id
+                        where ccl.contact_id = ${customerContacts.id}
+                          and ccl.status <> 'removed'
+                          and c.company_name ilike ${`%${searchTerm}%`}
+                    )`,
                 ),
             )
-            : baseCondition;
+            : and(...baseConditions);
 
         // True total count
         const [countRow] = await this.dbInstance
             .select({ count: sql<number>`count(*)` })
             .from(customerContacts)
-            .innerJoin(customers, eq(customerContacts.customerId, customers.id))
             .where(whereClause);
         const total = Number(countRow?.count ?? 0);
 
@@ -926,17 +1201,32 @@ export class CustomersRepository {
         const safePageClamped = Math.min(page, totalPages);
 
         const contactRows = await this.dbInstance
-            .select({ contact: customerContacts, customer: customers })
+            .select()
             .from(customerContacts)
-            .innerJoin(customers, eq(customerContacts.customerId, customers.id))
             .where(whereClause)
             .orderBy(...buildContactOrderBy(opts.sortBy, opts.sortDir))
             .limit(pageSize)
             .offset((safePageClamped - 1) * pageSize);
 
-        const enriched = await Promise.all(contactRows.map(async (row: { contact: CustomerContact; customer: Customer }) => {
-            const contact = row.contact;
-            const companyName = row.customer?.companyName ?? 'Unknown';
+        const enriched = await Promise.all(contactRows.map(async (contact: CustomerContact) => {
+            const linkedCustomerRows = await this.dbInstance
+                .select({ link: customerContactLinks, customer: customers })
+                .from(customerContactLinks)
+                .innerJoin(customers, eq(customerContactLinks.customerId, customers.id))
+                .where(and(
+                    eq(customerContactLinks.contactId, contact.id),
+                    sql`${customerContactLinks.status} <> 'removed'`,
+                ))
+                .orderBy(desc(customerContactLinks.isPrimary), asc(customers.companyName));
+
+            const linkedCustomers = linkedCustomerRows.map(({ link, customer }) => ({
+                id: customer.id,
+                companyName: customer.companyName,
+                status: link.status,
+                isPrimary: link.isPrimary,
+            }));
+            const activeLinkedCustomers = linkedCustomers.filter((customer) => customer.status === "active");
+            const companyName = activeLinkedCustomers.map((customer) => customer.companyName).join(", ") || "Unlinked";
 
             const [ordersRow] = await this.dbInstance.select({ count: sql<number>`count(*)` }).from(orders).where(eq(orders.contactId, contact.id));
             const ordersCount = Number(ordersRow?.count ?? 0);
@@ -958,7 +1248,17 @@ export class CustomersRepository {
                 lastActivityAt = lastQuote.createdAt.toISOString();
             }
 
-            return { ...contact, companyName, ordersCount, quotesCount, lastActivityAt };
+            return {
+                ...contact,
+                customerId: activeLinkedCustomers[0]?.id ?? contact.customerId ?? null,
+                isPrimary: linkedCustomerRows.some(({ link }) => link.isPrimary && link.status === "active"),
+                companyName,
+                linkedCustomersCount: activeLinkedCustomers.length,
+                linkedCustomers,
+                ordersCount,
+                quotesCount,
+                lastActivityAt,
+            };
         }));
 
         return {

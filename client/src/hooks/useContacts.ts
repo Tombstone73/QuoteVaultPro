@@ -20,7 +20,8 @@ import {
 
 export interface Contact {
   id: string;
-  customerId: string;
+  customerId: string | null;
+  organizationId?: string;
   firstName: string;
   lastName: string;
   title: string | null;
@@ -44,6 +45,8 @@ export interface Contact {
 
 export interface ContactWithStats extends Contact {
   companyName: string;
+  linkedCustomersCount?: number;
+  linkedCustomers?: Array<{ id: string; companyName: string; status: string; isPrimary: boolean }>;
   ordersCount: number;
   quotesCount: number;
   lastActivityAt: Date | null;
@@ -86,7 +89,7 @@ export interface ContactDetailResponse {
 }
 
 export interface UpdateContactInput {
-  customerId?: string;
+  customerId?: string | null;
   firstName?: string;
   lastName?: string;
   title?: string;
@@ -105,12 +108,12 @@ export interface UpdateContactInput {
 }
 
 export interface CreateContactInput extends UpdateContactInput {
-  customerId: string;
+  customerId?: string | null;
   firstName: string;
   lastName: string;
 }
 
-export function useContacts(filters?: { search?: string; page?: number; pageSize?: number; sortBy?: ContactListSortBy; sortDir?: ContactListSortDir }) {
+export function useContacts(filters?: { search?: string; page?: number; pageSize?: number; sortBy?: ContactListSortBy; sortDir?: ContactListSortDir; filter?: string }) {
   const queryState = {
     search: filters?.search ?? "",
     page: filters?.page ?? 1,
@@ -123,6 +126,7 @@ export function useContacts(filters?: { search?: string; page?: number; pageSize
     queryKey: buildContactListQueryKey(queryState),
     queryFn: async () => {
       const params = buildContactListSearchParams(queryState);
+      if (filters?.filter) params.set("filter", filters.filter);
 
       const response = await fetch(`/api/contacts?${params.toString()}`, {
         credentials: "include",
@@ -201,7 +205,7 @@ export function useCreateContact() {
   return useMutation({
     mutationFn: async (data: CreateContactInput) => {
       const { customerId, ...contactData } = data;
-      const response = await fetch(`/api/customers/${customerId}/contacts`, {
+      const response = await fetch(customerId ? `/api/customers/${customerId}/contacts` : "/api/contacts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(contactData),

@@ -11,8 +11,8 @@ const targetCustomer = {
   companyName: "Target Customer",
 };
 
-describe("contact linking move-confirmation UI state", () => {
-  test("selecting a contact from another customer shows move warning copy", () => {
+describe("contact linking relationship UI state", () => {
+  test("selecting a contact from another customer shows non-blocking linked context", () => {
     const selectedContact = normalizeContactPickerResult({
       id: "contact-1",
       customerId: "source-customer",
@@ -23,15 +23,15 @@ describe("contact linking move-confirmation UI state", () => {
 
     const state = getContactMoveConfirmationState(selectedContact, targetCustomer);
 
-    expect(state.requiresMoveConfirmation).toBe(true);
+    expect(state.requiresMoveConfirmation).toBe(false);
     expect(state.warningText).toBe(
-      "This contact currently belongs to Print Dispatch Marketing Services. Linking it to Target Customer will move it.",
+      "This contact is currently linked to Print Dispatch Marketing Services. Linking it to Target Customer will add another customer relationship.",
     );
     expect(state.checkboxText).toBe(
-      "I understand this will move the contact from Print Dispatch Marketing Services to Target Customer.",
+      "I understand this will link the contact to Target Customer.",
     );
     expect(state.selectedSummary).toBe(
-      "Selected Noah Frantz from Print Dispatch Marketing Services. Confirm the move before linking.",
+      "Selected Noah Frantz. Currently linked to Print Dispatch Marketing Services; linking will add Target Customer.",
     );
   });
 
@@ -48,10 +48,10 @@ describe("contact linking move-confirmation UI state", () => {
 
     expect(selectedContact.customerId).toBe("source-customer");
     expect(selectedContact.companyName).toBe("Print Dispatch Marketing Services");
-    expect(state.requiresMoveConfirmation).toBe(true);
+    expect(state.requiresMoveConfirmation).toBe(false);
   });
 
-  test("Link Contact stays disabled until move acknowledgement is checked", () => {
+  test("Link Contact is enabled after selection even when contact is linked elsewhere", () => {
     const selectedContact = normalizeContactPickerResult({
       id: "contact-1",
       customerId: "source-customer",
@@ -61,11 +61,10 @@ describe("contact linking move-confirmation UI state", () => {
     });
     const state = getContactMoveConfirmationState(selectedContact, targetCustomer);
 
-    expect(canSubmitLinkContact(true, false, state.requiresMoveConfirmation, false)).toBe(false);
-    expect(canSubmitLinkContact(true, false, state.requiresMoveConfirmation, true)).toBe(true);
+    expect(canSubmitLinkContact(true, false, state.requiresMoveConfirmation, false)).toBe(true);
   });
 
-  test("confirmMove true is sent only after acknowledgement", () => {
+  test("confirmMove is not sent for relationship linking", () => {
     expect(buildLinkExistingContactPayload("contact-1", false, true, false)).toEqual({
       contactId: "contact-1",
       setPrimary: false,
@@ -74,7 +73,7 @@ describe("contact linking move-confirmation UI state", () => {
     expect(buildLinkExistingContactPayload("contact-1", true, true, true)).toEqual({
       contactId: "contact-1",
       setPrimary: true,
-      confirmMove: true,
+      confirmMove: false,
     });
   });
 

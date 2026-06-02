@@ -2,6 +2,7 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 
 import { db } from "../db";
 import {
+  customerContactLinks,
   customerContacts,
   customers,
   inboundOrderDecisionFlags,
@@ -132,7 +133,7 @@ export type InboundCustomerSearchResult = {
 
 export type InboundContactSearchResult = {
   id: string;
-  customerId: string;
+  customerId: string | null;
   name: string;
   firstName: string;
   lastName: string;
@@ -509,7 +510,8 @@ export class InboundOrdersRepository {
   ): Promise<InboundContactSearchResult[]> {
     const predicates = [
       eq(customers.organizationId, organizationId),
-      eq(customerContacts.customerId, customerId),
+      eq(customerContactLinks.customerId, customerId),
+      eq(customerContactLinks.status, "active"),
     ];
     const trimmed = search?.trim();
 
@@ -527,19 +529,20 @@ export class InboundOrdersRepository {
     return this.dbInstance
       .select({
         id: customerContacts.id,
-        customerId: customerContacts.customerId,
+        customerId: customerContactLinks.customerId,
         firstName: customerContacts.firstName,
         lastName: customerContacts.lastName,
         name: sql<string>`trim(${customerContacts.firstName} || ' ' || ${customerContacts.lastName})`,
         email: customerContacts.email,
         phone: customerContacts.phone,
         mobile: customerContacts.mobile,
-        isPrimary: customerContacts.isPrimary,
+        isPrimary: customerContactLinks.isPrimary,
       })
-      .from(customerContacts)
-      .innerJoin(customers, eq(customerContacts.customerId, customers.id))
+      .from(customerContactLinks)
+      .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
+      .innerJoin(customers, eq(customerContactLinks.customerId, customers.id))
       .where(and(...predicates))
-      .orderBy(sql`case when ${customerContacts.isPrimary} then 0 else 1 end`, asc(customerContacts.lastName), asc(customerContacts.firstName))
+      .orderBy(sql`case when ${customerContactLinks.isPrimary} then 0 else 1 end`, asc(customerContacts.lastName), asc(customerContacts.firstName))
       .limit(limit);
   }
 
@@ -561,14 +564,16 @@ export class InboundOrdersRepository {
     const [contact] = await this.dbInstance
       .select({
         id: customerContacts.id,
-        customerId: customerContacts.customerId,
+        customerId: customerContactLinks.customerId,
+        organizationId: customerContacts.organizationId,
         firstName: customerContacts.firstName,
         lastName: customerContacts.lastName,
         title: customerContacts.title,
         email: customerContacts.email,
         phone: customerContacts.phone,
         mobile: customerContacts.mobile,
-        isPrimary: customerContacts.isPrimary,
+        isPrimary: customerContactLinks.isPrimary,
+        status: customerContacts.status,
         street1: customerContacts.street1,
         street2: customerContacts.street2,
         city: customerContacts.city,
@@ -583,12 +588,14 @@ export class InboundOrdersRepository {
         createdAt: customerContacts.createdAt,
         updatedAt: customerContacts.updatedAt,
       })
-      .from(customerContacts)
-      .innerJoin(customers, eq(customerContacts.customerId, customers.id))
+      .from(customerContactLinks)
+      .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
+      .innerJoin(customers, eq(customerContactLinks.customerId, customers.id))
       .where(
         and(
           eq(customers.organizationId, organizationId),
-          eq(customerContacts.customerId, customerId),
+          eq(customerContactLinks.customerId, customerId),
+          eq(customerContactLinks.status, "active"),
           eq(customerContacts.id, contactId),
         ),
       )

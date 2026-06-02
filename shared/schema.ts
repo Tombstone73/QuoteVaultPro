@@ -2359,7 +2359,9 @@ export type CustomerVisibleProduct = typeof customerVisibleProducts.$inferSelect
 // Customer Contacts table
 export const customerContacts = pgTable("customer_contacts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  // Deprecated compatibility field: relationship membership lives in customerContactLinks.
+  customerId: varchar("customer_id").references(() => customers.id, { onDelete: 'set null' }),
   firstName: varchar("first_name", { length: 100 }).notNull(),
   lastName: varchar("last_name", { length: 100 }).notNull(),
   title: varchar("title", { length: 100 }),
@@ -2381,9 +2383,13 @@ export const customerContacts = pgTable("customer_contacts", {
   // Internal CRM fields — staff-only, never exposed to customer-facing views
   internalNotes: text("internal_notes"),
   flags: jsonb("flags").$type<string[]>(),
+  status: varchar("status", { length: 30 }).default("active").notNull().$type<"active" | "archived">(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  index("customer_contacts_org_idx").on(table.organizationId),
+  index("customer_contacts_legacy_customer_idx").on(table.customerId),
+  index("customer_contacts_status_idx").on(table.status),
   // Partial unique index: one source-tracked contact per QB identity per customer.
   // Only enforced when both external_source and external_source_id are non-null,
   // so manually-created contacts (no source) are never affected.
@@ -2392,11 +2398,37 @@ export const customerContacts = pgTable("customer_contacts", {
     .where(sql`external_source IS NOT NULL AND external_source_id IS NOT NULL`),
 ]);
 
+export const customerContactLinks = pgTable("customer_contact_links", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: "cascade" }),
+  contactId: varchar("contact_id").notNull().references(() => customerContacts.id, { onDelete: "cascade" }),
+  status: varchar("status", { length: 30 }).default("active").notNull().$type<"active" | "former" | "removed">(),
+  isPrimary: boolean("is_primary").default(false).notNull(),
+  isBilling: boolean("is_billing").default(false).notNull(),
+  isPortal: boolean("is_portal").default(false).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("customer_contact_links_org_idx").on(table.organizationId),
+  index("customer_contact_links_customer_idx").on(table.customerId),
+  index("customer_contact_links_contact_idx").on(table.contactId),
+  index("customer_contact_links_status_idx").on(table.status),
+  uniqueIndex("customer_contact_links_active_pair_uidx")
+    .on(table.customerId, table.contactId)
+    .where(sql`status <> 'removed'`),
+  uniqueIndex("customer_contact_links_primary_uidx")
+    .on(table.customerId)
+    .where(sql`is_primary = true AND status = 'active'`),
+]);
+
 export const insertCustomerContactSchema = createInsertSchema(customerContacts).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
 }).extend({
+  organizationId: z.string().optional(),
+  customerId: z.string().nullable().optional(),
   // All structured address fields are optional
   street1: z.string().max(255).optional(),
   street2: z.string().max(255).optional(),
@@ -2412,9 +2444,22 @@ export const insertCustomerContactSchema = createInsertSchema(customerContacts).
 
 export const updateCustomerContactSchema = insertCustomerContactSchema.partial();
 
+export const insertCustomerContactLinkSchema = createInsertSchema(customerContactLinks).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  status: z.enum(["active", "former", "removed"]).optional(),
+});
+
+export const updateCustomerContactLinkSchema = insertCustomerContactLinkSchema.partial();
+
 export type InsertCustomerContact = z.infer<typeof insertCustomerContactSchema>;
 export type UpdateCustomerContact = z.infer<typeof updateCustomerContactSchema>;
 export type CustomerContact = typeof customerContacts.$inferSelect;
+export type InsertCustomerContactLink = z.infer<typeof insertCustomerContactLinkSchema>;
+export type UpdateCustomerContactLink = z.infer<typeof updateCustomerContactLinkSchema>;
+export type CustomerContactLink = typeof customerContactLinks.$inferSelect;
 
 export const customerPortalAccess = pgTable("customer_portal_access", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

@@ -1,7 +1,7 @@
 import OAuthClient from 'intuit-oauth';
 import crypto from 'crypto';
 import { db } from './db';
-import { oauthConnections, accountingSyncJobs, customers, customerContacts, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
+import { oauthConnections, accountingSyncJobs, customers, customerContacts, customerContactLinks, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
 import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
@@ -718,7 +718,7 @@ function mapQBCustomerToLocal(qbCustomer: any): Partial<Customer> {
 export { isSuspiciousContactName, deriveQBContactName };
 
 type QBContactPayload = {
-  customerId: string;
+  customerId: string | null;
   firstName: string;
   lastName: string;
   email: string | null;
@@ -795,6 +795,14 @@ type ContactUpsertOutcome = 'created' | 'updated';
 async function upsertQBContact(payload: QBContactPayload): Promise<ContactUpsertOutcome> {
   const { customerId, firstName, lastName, email, phone, mobile, isPrimary,
           externalSource, externalSourceId, externalSourceType } = payload;
+  if (!customerId) return 'updated';
+  const [customerForContact] = await db
+    .select({ organizationId: customers.organizationId })
+    .from(customers)
+    .where(eq(customers.id, customerId))
+    .limit(1);
+  const organizationId = customerForContact?.organizationId;
+  if (!organizationId) return 'updated';
 
   // Pass 0: match by definitive QB source identity
   const [bySource] = await db
@@ -894,7 +902,8 @@ async function upsertQBContact(payload: QBContactPayload): Promise<ContactUpsert
   }
 
   // Pass 3: no match — create with full source tracking
-  await db.insert(customerContacts).values({
+  const [createdContact] = await db.insert(customerContacts).values({
+    organizationId,
     customerId,
     firstName,
     lastName,
@@ -905,7 +914,22 @@ async function upsertQBContact(payload: QBContactPayload): Promise<ContactUpsert
     externalSource,
     externalSourceId,
     externalSourceType,
-  });
+  }).returning();
+  if (createdContact) {
+    if (isPrimary) {
+      await db
+        .update(customerContactLinks)
+        .set({ isPrimary: false, updatedAt: new Date() })
+        .where(and(eq(customerContactLinks.customerId, customerId), eq(customerContactLinks.status, "active")));
+    }
+    await db.insert(customerContactLinks).values({
+      organizationId,
+      customerId,
+      contactId: createdContact.id,
+      status: "active",
+      isPrimary,
+    }).onConflictDoNothing();
+  }
   return 'created';
 }
 
@@ -1469,7 +1493,7 @@ export type SuspiciousContactRow = {
   lastName: string;
   email: string | null;
   phone: string | null;
-  customerId: string;
+  customerId: string | null;
   companyName: string;
   externalSourceId: string | null;
 };

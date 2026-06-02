@@ -53,6 +53,8 @@ import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/compone
 import { useSmartBack } from "@/hooks/useSmartBack";
 import BackNavControls from "@/components/BackNavControls";
 
+type ContactRelationshipFilter = "all" | "unlinked" | "linked" | "former" | "archived";
+
 const defaultColumns = [
   { id: "firstName", label: "First Name", visible: true },
   { id: "lastName", label: "Last Name", visible: true },
@@ -76,13 +78,14 @@ export default function ContactsPage() {
   const [deletingContact, setDeletingContact] = useState<ContactWithStats | null>(null);
   const [sortKey, setSortKey] = useState<ContactListSortBy>("lastName");
   const [sortDirection, setSortDirection] = useState<ContactListSortDir>("asc");
+  const [relationshipFilter, setRelationshipFilter] = useState<ContactRelationshipFilter>("all");
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 50;
 
   // Reset to page 1 when the backend query shape changes
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, sortKey, sortDirection]);
+  }, [debouncedSearch, sortKey, sortDirection, relationshipFilter]);
 
   const deleteContactMutation = useDeleteContact();
   const updateContactMutation = useUpdateContact();
@@ -112,6 +115,7 @@ export default function ContactsPage() {
     pageSize: PAGE_SIZE,
     sortBy: sortKey,
     sortDir: sortDirection,
+    filter: relationshipFilter === "all" ? undefined : relationshipFilter,
   });
 
   // Role check - only internal users can access
@@ -234,6 +238,9 @@ export default function ContactsPage() {
           </div>
         );
       case "company":
+        if (!contact.customerId || contact.companyName === "Unlinked") {
+          return <span className="text-titan-text-muted">Unlinked</span>;
+        }
         return (
           <div className="flex items-center gap-2">
             <Building2 className="w-4 h-4 text-titan-text-muted" />
@@ -378,6 +385,18 @@ export default function ContactsPage() {
                 : `${data.total} contact${data.total !== 1 ? "s" : ""}`}
             </span>
           )}
+          <Select value={relationshipFilter} onValueChange={(value) => setRelationshipFilter(value as ContactRelationshipFilter)}>
+            <SelectTrigger className="h-9 w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="unlinked">Unlinked</SelectItem>
+              <SelectItem value="linked">Linked</SelectItem>
+              <SelectItem value="former">Former/Inactive</SelectItem>
+              <SelectItem value="archived">Archived</SelectItem>
+            </SelectContent>
+          </Select>
           <ListViewSettings
             columns={columns}
             onToggleVisibility={toggleVisibility}
@@ -602,10 +621,13 @@ function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactD
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.customerId) return;
     setIsSaving(true);
     try {
-      await onSave(formData);
+      await onSave({
+        ...formData,
+        customerId: formData.customerId || null,
+        isPrimary: formData.customerId ? formData.isPrimary : false,
+      });
     } finally {
       setIsSaving(false);
     }
@@ -619,21 +641,22 @@ function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactD
           <DialogDescription>
             {isEditing
               ? `Update contact information for ${contact?.firstName} ${contact?.lastName}`
-              : "Create a contact and attach it to a customer."}
+              : "Create an independent contact, or optionally attach it to a customer."}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="space-y-2">
-            <Label htmlFor="customerId">Company *</Label>
+            <Label htmlFor="customerId">Company</Label>
             <Select
-              value={formData.customerId}
-              onValueChange={(customerId) => setFormData({ ...formData, customerId })}
+              value={formData.customerId || "__unlinked__"}
+              onValueChange={(customerId) => setFormData({ ...formData, customerId: customerId === "__unlinked__" ? "" : customerId })}
               disabled={customersLoading}
             >
               <SelectTrigger id="customerId">
-                <SelectValue placeholder={customersLoading ? "Loading companies..." : "Select company"} />
+                <SelectValue placeholder={customersLoading ? "Loading companies..." : "No customer"} />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="__unlinked__">No customer</SelectItem>
                 {customerOptions.map((customer) => (
                   <SelectItem key={customer.id} value={customer.id}>
                     {customer.companyName}
@@ -702,6 +725,7 @@ function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactD
                 <Checkbox
                   id="isPrimary"
                   checked={formData.isPrimary}
+                  disabled={!formData.customerId}
                   onCheckedChange={(checked) => setFormData({ ...formData, isPrimary: Boolean(checked) })}
                 />
                 <Label htmlFor="isPrimary">Primary Contact</Label>
@@ -778,7 +802,7 @@ function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactD
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>
               Cancel
             </Button>
-            <Button type="submit" disabled={isSaving || !formData.customerId}>
+            <Button type="submit" disabled={isSaving}>
               {isSaving ? "Saving..." : isEditing ? "Save Changes" : "Create Contact"}
             </Button>
           </DialogFooter>
