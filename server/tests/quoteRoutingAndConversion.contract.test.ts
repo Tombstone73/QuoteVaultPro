@@ -3,15 +3,18 @@ import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "../db";
 import {
+  globalVariables,
   jobs,
   orderLineItems,
   orderListNotes,
   orders,
   productDesignConfigs,
   products,
+  quoteAttachments,
   quotes,
   quoteListNotes,
   quoteLineItems,
+  quoteWorkflowStates,
   type LineItemWorkflowState,
 } from "@shared/schema";
 
@@ -340,7 +343,122 @@ async function getWorkflowRow(lineItemId: string) {
   return row;
 }
 
+async function getQuoteTableCounts() {
+  const [quoteCount] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(quotes)
+    .where(eq(quotes.organizationId, organizationId));
+  const [quoteLineItemCount] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(quoteLineItems)
+    .innerJoin(quotes, eq(quoteLineItems.quoteId, quotes.id))
+    .where(eq(quotes.organizationId, organizationId));
+  const [quoteAttachmentCount] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(quoteAttachments)
+    .where(eq(quoteAttachments.organizationId, organizationId));
+  const [quoteWorkflowCount] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(quoteWorkflowStates)
+    .innerJoin(quotes, eq(quoteWorkflowStates.quoteId, quotes.id))
+    .where(eq(quotes.organizationId, organizationId));
+
+  return {
+    quotes: Number(quoteCount.count),
+    quoteLineItems: Number(quoteLineItemCount.count),
+    quoteAttachments: Number(quoteAttachmentCount.count),
+    quoteWorkflowStates: Number(quoteWorkflowCount.count),
+  };
+}
+
+async function getQuoteSequenceValue() {
+  const [row] = await db
+    .select({ value: globalVariables.value })
+    .from(globalVariables)
+    .where(and(eq(globalVariables.organizationId, organizationId), eq(globalVariables.name, "next_quote_number")))
+    .limit(1);
+
+  return row?.value ?? null;
+}
+
 describe("quote routing persistence and conversion contract", () => {
+  test("direct order creation does not create quote records or consume quote numbers", async () => {
+    const beforeCounts = await getQuoteTableCounts();
+    const beforeQuoteSequence = await getQuoteSequenceValue();
+
+    const dueDate = "2026-06-18T00:00:00.000Z";
+    const promisedDate = "2026-06-20T00:00:00.000Z";
+    const createdOrder = await ordersRepo.createOrder(organizationId, {
+      customerId,
+      contactId: null,
+      label: `Direct Order ${suffix}`,
+      poNumber: "PO-DIRECT-1",
+      status: "new",
+      priority: "high",
+      dueDate,
+      promisedDate,
+      requestedDueDate: dueDate,
+      discount: 2,
+      notesInternal: "Direct order note",
+      createdByUserId: userId,
+      shippingMethod: "pickup",
+      shippingMode: "single_shipment",
+      shippingCents: 150,
+      lineItems: [
+        {
+          productId,
+          productName: "Workflow Contract Direct Product",
+          variantId: null,
+          productType: "wide_roll",
+          description: "Workflow Contract Direct Product",
+          width: 24,
+          height: 36,
+          quantity: 2,
+          selectedOptions: [],
+          linePrice: 20,
+          totalPrice: 20,
+          specsJson: { notes: "direct item" },
+          optionSelectionsJson: { schemaVersion: 2, selected: {} },
+          pbv2TreeVersionId: null,
+          pbv2SnapshotJson: { pricing: { totalCents: 2000 } },
+          pricedAt: new Date(),
+          requiresDesign: false,
+          requiresPrepress: false,
+          requiresProofApproval: true,
+          productionNotes: "Keep direct production note",
+          sortOrder: 0,
+          taxAmount: 0,
+          isTaxableSnapshot: true,
+        } as any,
+      ],
+      taxRate: 0,
+      taxAmount: 0,
+      taxableSubtotal: 20,
+    } as any);
+
+    const afterCounts = await getQuoteTableCounts();
+    const afterQuoteSequence = await getQuoteSequenceValue();
+    const [createdLineItem] = createdOrder.lineItems;
+
+    expect(afterCounts).toEqual(beforeCounts);
+    expect(afterQuoteSequence).toBe(beforeQuoteSequence);
+    expect(createdOrder.orderNumber).toBeTruthy();
+    expect(createdOrder.quoteId).toBeNull();
+    expect(createdOrder.sourceQuoteNumber).toBeNull();
+    expect(createdOrder.label).toBe(`Direct Order ${suffix}`);
+    expect(createdOrder.poNumber).toBe("PO-DIRECT-1");
+    expect(createdOrder.priority).toBe("high");
+    expect(createdOrder.dueDate ? new Date(createdOrder.dueDate).toISOString() : null).toBe(dueDate);
+    expect(createdOrder.promisedDate ? new Date(createdOrder.promisedDate).toISOString() : null).toBe(promisedDate);
+    expect(createdOrder.shippingMethod).toBe("pickup");
+    expect(createdOrder.shippingCents).toBe(150);
+    expect(createdLineItem.quoteLineItemId).toBeNull();
+    expect(createdLineItem.requiresDesign).toBe(false);
+    expect(createdLineItem.requiresPrepress).toBe(false);
+    expect(createdLineItem.requiresProofApproval).toBe(true);
+    expect(createdLineItem.productionNotes).toBe("Keep direct production note");
+  });
+
   test("quote line items preserve routing truth through create and edit", async () => {
     const quote = await createMixedRoutingQuote(`Persistence ${suffix}`);
     const byName = new Map(quote.lineItems.map((lineItem: any) => [lineItem.productName, lineItem]));
@@ -457,9 +575,15 @@ describe("quote routing persistence and conversion contract", () => {
     } as any);
 
     const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+    const [convertedQuote] = await db
+      .select({ convertedToOrderId: quotes.convertedToOrderId })
+      .from(quotes)
+      .where(and(eq(quotes.id, quote.id), eq(quotes.organizationId, organizationId)))
+      .limit(1);
 
     expect(createdOrder.quoteId).toBe(quote.id);
     expect(createdOrder.sourceQuoteNumber).toBe(quote.quoteNumber);
+    expect(convertedQuote.convertedToOrderId).toBe(createdOrder.id);
     expect(createdOrder.billToName).toBe("Workflow Billing Contact");
     expect(createdOrder.billToCompany).toBe("Workflow Contract Customer");
     expect(createdOrder.billToAddress1).toBe("123 Snapshot Way");

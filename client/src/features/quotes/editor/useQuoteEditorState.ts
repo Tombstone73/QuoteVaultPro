@@ -35,6 +35,29 @@ export type SaveQuoteResult =
 
 export type QuoteDuplicateMode = "quote_only" | "quote_with_artwork";
 
+export type DirectOrderPayload = {
+    customerId: string | null;
+    contactId: string | null;
+    lineItems: Array<Record<string, any>>;
+    subtotal: number;
+    taxRate: number;
+    taxAmount: number;
+    taxableSubtotal: number;
+    discount: number;
+    label: string | null;
+    poNumber?: string;
+    dueDate: string | null;
+    requestedDueDate: string | null;
+    promisedDate: string | null;
+    priority: string;
+    notesInternal?: string;
+    shippingMethod: string;
+    shippingMode: "single_shipment";
+    shippingCents: number | null;
+    shippingInstructions: string | null;
+    idempotencyKey?: string;
+};
+
 /**
  * Helper: Get stable key for line item (TEMP-FIRST for consistency across TEMP → PERMANENT transitions)
  */
@@ -1794,6 +1817,74 @@ export function useQuoteEditorState() {
         return null;
     };
 
+    const buildDirectOrderPayload = (idempotencyKey?: string): DirectOrderPayload => {
+        const payloadCustomerId = selectedCustomer?.id ?? selectedCustomerId ?? (quote as any)?.customerId ?? null;
+        const lineItemPayloads = lineItems
+            .filter((li) => li.status !== "canceled" && !!li.productId)
+            .map((li, index) => ({
+                productId: li.productId,
+                productName: li.productName,
+                variantId: li.variantId ?? null,
+                variantName: li.variantName ?? null,
+                productType: li.productType || "wide_roll",
+                description: li.description || li.productName || "Item",
+                width: li.width,
+                height: li.height,
+                quantity: li.quantity,
+                specsJson: li.specsJson || {},
+                optionSelectionsJson: li.optionSelectionsJson ?? null,
+                pbv2TreeVersionId: li.pbv2TreeVersionId ?? null,
+                pbv2SnapshotJson: li.pbv2SnapshotJson ?? undefined,
+                pricedAt: li.pricedAt ?? undefined,
+                materialUsages: li.materialUsages ?? [],
+                selectedOptions: li.selectedOptions || [],
+                linePrice: li.linePrice ?? 0,
+                totalPrice: li.linePrice ?? 0,
+                priceBreakdown: li.priceBreakdown || {
+                    basePrice: li.linePrice ?? 0,
+                    optionsPrice: 0,
+                    total: li.linePrice ?? 0,
+                    formula: "",
+                },
+                sortOrder: li.displayOrder ?? index,
+                productionNotes: li.productionNotes ?? null,
+                requiresDesign: li.requiresDesign ?? false,
+                requiresPrepress: li.requiresPrepress ?? null,
+                requiresProofApproval: li.requiresProofApproval ?? null,
+                priceOverride: li.priceOverride ?? null,
+                overridePriceCents: li.overridePriceCents ?? null,
+                overrideAt: li.overrideAt ?? null,
+                overrideByUserId: li.overrideByUserId ?? null,
+                overrideReason: li.overrideReason ?? null,
+            }));
+
+        const dueDate = requestedDueDate ? new Date(`${requestedDueDate}T00:00:00.000Z`).toISOString() : null;
+        const promisedDate = orderPromisedDate ? new Date(`${orderPromisedDate}T00:00:00.000Z`).toISOString() : null;
+
+        return {
+            customerId: payloadCustomerId,
+            contactId: selectedContactId ?? null,
+            lineItems: lineItemPayloads,
+            subtotal,
+            taxRate: effectiveTaxRate,
+            taxAmount,
+            taxableSubtotal: subtotal,
+            discount: effectiveDiscount,
+            label: jobLabel || null,
+            poNumber: orderPoNumber.trim() || undefined,
+            dueDate,
+            requestedDueDate: dueDate,
+            promisedDate,
+            priority: orderPriority || "normal",
+            notesInternal: orderInternalNotes.trim() || undefined,
+            shippingMethod: deliveryMethod,
+            shippingMode: "single_shipment",
+            shippingCents,
+            shippingInstructions: quoteNotes || null,
+            ...(idempotencyKey ? { idempotencyKey } : {}),
+        };
+    };
+
     // ============================================================================
     // HANDLER: Save Quote
     // ============================================================================
@@ -2857,6 +2948,7 @@ export function useQuoteEditorState() {
 
             // Quote operations
             saveQuote: handleSaveQuote,
+            buildDirectOrderPayload,
             duplicateQuote,
             convertToOrder: handleConvertToOrder,
             handleBack,

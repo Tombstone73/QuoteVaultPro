@@ -1441,6 +1441,7 @@ export class OrdersRepository {
                     requiresDesign: requiresDesignSafe,
                     requiresProofApproval: requiresProofApprovalSafe,
                     requiresPrepress: requiresPrepressSafe,
+                    productionNotes: (li as any).productionNotes ?? null,
                     specsJson: specsJsonWithPricing,
                     selectedOptions: selectedOptionsSafe,
                     optionSelectionsJson: (li as any).optionSelectionsJson ?? null,

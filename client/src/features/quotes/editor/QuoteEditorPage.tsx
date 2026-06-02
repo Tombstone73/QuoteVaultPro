@@ -217,6 +217,50 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         },
     });
 
+    const createDirectOrderMutation = useMutation({
+        mutationFn: async (payload: Record<string, any>) => {
+            const response = await fetch("/api/orders", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    ...(payload?.idempotencyKey ? { "Idempotency-Key": payload.idempotencyKey } : {}),
+                },
+                body: JSON.stringify(payload),
+                credentials: "include",
+            });
+            const data = await response.json().catch(() => null);
+            if (!response.ok) {
+                throw new Error(data?.message || "Failed to create order");
+            }
+            if (!data?.id) {
+                throw new Error("Order creation did not return an id");
+            }
+            return data;
+        },
+        onSuccess: (order) => {
+            queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/orders", order.id] });
+            queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/design/queue"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/fulfillment/queue"] });
+            queryClient.invalidateQueries({ queryKey: ["customers"] });
+            toast({
+                title: "Order created",
+                description: order.orderNumber ? `Order ${order.orderNumber} was created.` : "Order was created.",
+            });
+            navigate(ROUTES.orders.detail(order.id));
+        },
+        onError: (error: Error) => {
+            toast({
+                title: "Error",
+                description: error.message,
+                variant: "destructive",
+            });
+        },
+    });
+
     const handlePortalVisibilityChange = (checked: boolean) => {
         state.handlers.setVisibleInCustomerPortal(checked);
         const shouldPersistImmediately = mode === "view" || workflowState === "approved" || workflowState === "converted";
@@ -694,29 +738,9 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         // For NEW quotes, always navigate to edit route with the new quoteId
         // (this is required for the quote to be properly loaded)
         if (result.kind === "created") {
-            // Special case: /orders/new uses the quote editor UI but immediately converts
-            // the created quote into an order and navigates to the order detail.
+            // /orders/new is handled by handleCreateOrder so direct orders do not
+            // create quotes or consume quote numbers.
             if (createTarget === "order") {
-                // Fire-and-forget-ish: convert hook handles toast + navigation.
-                void (async () => {
-                    try {
-                        await state.convertToOrderHook?.mutateAsync({
-                            quoteId: result.quoteId,
-                            poNumber: state.orderPoNumber.trim() || undefined,
-                            dueDate: state.requestedDueDate || undefined,
-                            promisedDate: state.orderPromisedDate || undefined,
-                            priority: state.orderPriority || "normal",
-                            notesInternal: state.orderInternalNotes.trim() || undefined,
-                        });
-                    } catch (err) {
-                        // Fall back to the quote editor (with id) so the user doesn't lose work.
-                        navigate(ROUTES.quotes.edit(result.quoteId), {
-                            replace: true,
-                            preventScrollReset: true,
-                            state: { quoteId: result.quoteId },
-                        });
-                    }
-                })();
                 return;
             }
 
@@ -760,7 +784,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
     /**
      * /orders/new primary action.
-     * Creates/updates the underlying quote, then converts it into an order.
+     * Creates an order directly without creating or converting a quote.
      */
     const handleCreateOrder = async () => {
         const idempotencyKey = beginCreateOrderSubmit(createOrderSubmitGuardRef.current);
@@ -776,17 +800,11 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
             customerSelectRef.current?.commitPendingFlags?.();
 
-            const result = await state.handlers.saveQuote();
-            await persistDraftShipToData(result.quoteId);
-            await state.convertToOrderHook?.mutateAsync({
-                quoteId: result.quoteId,
-                poNumber: state.orderPoNumber.trim() || undefined,
-                dueDate: state.requestedDueDate || undefined,
-                promisedDate: state.orderPromisedDate || undefined,
-                priority: state.orderPriority || "normal",
-                notesInternal: state.orderInternalNotes.trim() || undefined,
-                idempotencyKey,
-            });
+            const payload = {
+                ...state.handlers.buildDirectOrderPayload(idempotencyKey),
+                ...mapShipToPayloadToQuotePatch(draftShipToData),
+            };
+            await createDirectOrderMutation.mutateAsync(payload);
             markCreateOrderSubmitSucceeded(createOrderSubmitGuardRef.current);
         } catch (err) {
             markCreateOrderSubmitFailed(createOrderSubmitGuardRef.current);
@@ -795,7 +813,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 handleSessionExpired("quote-editor-create-order");
                 return;
             }
-            // saveQuote / convertToOrder both toast already; just fail-soft.
+            // Direct order mutation handles user-facing errors; just fail-soft here.
             console.error("[QuoteEditorPage] Create Order failed", err);
         }
     };
@@ -1134,8 +1152,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             onDuplicateLineItem={state.handlers.duplicateLineItem}
                             onRemoveLineItem={state.handlers.removeLineItem}
                             onReorderLineItems={state.handlers.reorderLineItemsByKeys}
-                            ensureQuoteId={ensureQuoteId}
-                            ensureLineItemId={state.handlers.ensureLineItemId}
+                            ensureQuoteId={createTarget === "order" ? undefined : ensureQuoteId}
+                            ensureLineItemId={createTarget === "order" ? undefined : state.handlers.ensureLineItemId}
                         />
 
                         {/* Quote Summary / Totals - Moved to left column */}
@@ -1153,7 +1171,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             selectedContactId={state.selectedContactId}
                             pricingStale={state.pricingStale}
                             canSaveQuote={state.canSaveQuote}
-                            isSaving={createTarget === "order" ? (createOrderSubmitting || state.isSaving || !!state.convertToOrderHook?.isPending) : state.isSaving}
+                            isSaving={createTarget === "order" ? (createOrderSubmitting || createDirectOrderMutation.isPending) : state.isSaving}
                             hasUnsavedChanges={state.hasUnsavedChanges}
                             readOnly={readOnly}
                             onSave={createTarget === "order" ? handleCreateOrder : handleSave}
