@@ -23,6 +23,7 @@ jest.mock("@/components/ui/sheet", () => ({
 let AiTriageBriefDetail: typeof import("./BugReportsPage").AiTriageBriefDetail;
 let AiTriageBriefHistoryPanel: typeof import("./BugReportsPage").AiTriageBriefHistoryPanel;
 let canGenerateAiTriageBrief: typeof import("./BugReportsPage").canGenerateAiTriageBrief;
+let canExportAiTriageBriefPdf: typeof import("./BugReportsPage").canExportAiTriageBriefPdf;
 let hasActiveTriageBrief: typeof import("./BugReportsPage").hasActiveTriageBrief;
 
 beforeAll(async () => {
@@ -30,6 +31,7 @@ beforeAll(async () => {
   AiTriageBriefDetail = module.AiTriageBriefDetail;
   AiTriageBriefHistoryPanel = module.AiTriageBriefHistoryPanel;
   canGenerateAiTriageBrief = module.canGenerateAiTriageBrief;
+  canExportAiTriageBriefPdf = module.canExportAiTriageBriefPdf;
   hasActiveTriageBrief = module.hasActiveTriageBrief;
 });
 
@@ -96,6 +98,13 @@ describe("AI Triage Brief UI", () => {
     expect(canGenerateAiTriageBrief(undefined, false)).toBe(false);
   });
 
+  test("allows PDF export only for completed briefs and owner/admin users", () => {
+    expect(canExportAiTriageBriefPdf(baseBrief({ status: "completed" }), true)).toBe(true);
+    expect(canExportAiTriageBriefPdf(baseBrief({ status: "processing" }), true)).toBe(false);
+    expect(canExportAiTriageBriefPdf(baseBrief({ status: "failed" }), true)).toBe(false);
+    expect(canExportAiTriageBriefPdf(baseBrief({ status: "completed" }), false)).toBe(false);
+  });
+
   test("renders no brief state", () => {
     const html = renderToStaticMarkup(
       <AiTriageBriefHistoryPanel
@@ -127,16 +136,28 @@ describe("AI Triage Brief UI", () => {
   test("renders pending, failed, and completed detail states", () => {
     const pending = renderToStaticMarkup(<AiTriageBriefDetail brief={baseBrief({ status: "pending" })} />);
     const failed = renderToStaticMarkup(<AiTriageBriefDetail brief={baseBrief({ status: "failed", errorMessage: "Provider failed." })} />);
-    const completed = renderToStaticMarkup(<AiTriageBriefDetail brief={baseBrief({ result: completedResult, summary: completedResult.executiveSummary })} />);
+    const completed = renderToStaticMarkup(<AiTriageBriefDetail brief={baseBrief({ result: completedResult, summary: completedResult.executiveSummary })} canExportPdf />);
 
     expect(pending).toContain("Brief is pending");
     expect(failed).toContain("AI triage brief failed");
     expect(failed).toContain("Provider failed");
     expect(completed).toContain("Executive Summary");
+    expect(completed).toContain("Export PDF");
+    expect(completed).toContain("/api/bug-reports/ai-triage-briefs/brief_1/pdf");
     expect(completed).toContain("Active reports only");
     expect(completed).toContain("Top Operational Risks");
     expect(completed).toContain("Suggested Priority Order");
     expect(completed).toContain("Recommended Next Sprint");
     expect(completed).toContain("75%");
+  });
+
+  test("does not render PDF export for pending or non-admin detail state", () => {
+    const pending = renderToStaticMarkup(<AiTriageBriefDetail brief={baseBrief({ status: "pending" })} canExportPdf />);
+    const completedWithoutPermission = renderToStaticMarkup(
+      <AiTriageBriefDetail brief={baseBrief({ result: completedResult, summary: completedResult.executiveSummary })} canExportPdf={false} />,
+    );
+
+    expect(pending).not.toContain("Export PDF");
+    expect(completedWithoutPermission).not.toContain("Export PDF");
   });
 });

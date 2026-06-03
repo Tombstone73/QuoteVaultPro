@@ -8,6 +8,7 @@ import {
   aiTriageBriefService,
 } from "../services/ai/aiTriageBriefService";
 import { aiTriageBriefQueue } from "../services/ai/aiTriageBriefQueue";
+import { buildAiTriageBriefPdfFilename, generateAiTriageBriefPdfBytes } from "../lib/aiTriageBriefPdf";
 
 function getUserId(user: any): string | null {
   return user?.claims?.sub ?? user?.id ?? null;
@@ -134,6 +135,44 @@ export function registerAiTriageBriefRoutes(
         });
       }
       return res.json({ success: true, data: brief });
+    } catch (error) {
+      return handleTriageBriefError(res, error);
+    }
+  });
+
+  router.get("/bug-reports/ai-triage-briefs/:id/pdf", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    if (!isOrgAdminOrOwner(req)) {
+      return res.status(403).json({
+        success: false,
+        code: "AI_TRIAGE_BRIEF_PERMISSION_REQUIRED",
+        message: "Access denied. Organization Owner or Admin role required.",
+      });
+    }
+
+    const orgId = getRequestOrganizationId(req);
+    try {
+      const brief = await aiTriageBriefService.getBrief(orgId, req.params.id);
+      if (!brief) {
+        return res.status(404).json({
+          success: false,
+          code: "AI_TRIAGE_BRIEF_NOT_FOUND",
+          message: "AI triage brief not found.",
+        });
+      }
+      if (brief.status !== "completed" || !brief.result) {
+        return res.status(409).json({
+          success: false,
+          code: "AI_TRIAGE_BRIEF_NOT_COMPLETED",
+          message: "Only completed AI triage briefs can be exported as PDF.",
+        });
+      }
+
+      const pdfBytes = await generateAiTriageBriefPdfBytes(brief);
+      const filename = buildAiTriageBriefPdfFilename(brief.completedAt ?? brief.createdAt);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.status(200).send(Buffer.from(pdfBytes));
     } catch (error) {
       return handleTriageBriefError(res, error);
     }
