@@ -5,6 +5,7 @@ import {
   createHostedSession,
   getPaymentSettings,
   PaymentProviderError,
+  recordHostedResult,
   updatePaymentSettings,
 } from "../services/payments/paymentProvider.service";
 
@@ -17,6 +18,30 @@ function getActor(req: any) {
     userId: getUserId(req.user) || null,
     userName: `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || null,
   };
+}
+
+function hasPaymentRecordPermission(user: any): boolean {
+  const role = String(user?.role || user?.orgRole || "").trim().toLowerCase();
+  if (["owner", "admin", "manager", "staff", "employee"].includes(role)) return true;
+
+  const permissions = Array.isArray(user?.permissions) ? user.permissions.map((permission: unknown) => String(permission).toLowerCase()) : [];
+  if (permissions.includes("payments.record") || permissions.includes("payments:record") || permissions.includes("payment:record")) {
+    return true;
+  }
+
+  const paymentPermissions = user?.paymentPermissions || user?.payments;
+  if (paymentPermissions && typeof paymentPermissions === "object" && paymentPermissions.record === true) return true;
+
+  return false;
+}
+
+function requirePaymentRecordPermission(req: any, res: any, next: any) {
+  if (hasPaymentRecordPermission(req.user)) return next();
+  return res.status(403).json({
+    success: false,
+    code: "PAYMENT_PERMISSION_REQUIRED",
+    error: "Recording EPS hosted payment results requires a staff/admin user with payment permission.",
+  });
 }
 
 function safeErrorPayload(error: any) {
@@ -83,6 +108,17 @@ const hostedSessionSchema = amountInvoiceSchema.extend({
   idempotencyKey: z.string().trim().max(160).optional().nullable(),
 });
 
+const recordHostedResultSchema = z.object({
+  paymentId: z.string().trim().min(1),
+  epsTransactionId: z.string().trim().min(1).max(160),
+  authCode: z.string().trim().max(100).optional().nullable(),
+  approvedAmountCents: z.coerce.number().int().min(0),
+  responseCode: z.string().trim().max(100).optional().nullable(),
+  responseMessage: z.string().trim().max(500).optional().nullable(),
+  result: z.enum(["approved", "failed", "canceled"]),
+  amountOverride: z.boolean().optional(),
+});
+
 export function registerPaymentProviderRoutes(
   app: Express,
   middleware: {
@@ -128,6 +164,18 @@ export function registerPaymentProviderRoutes(
       return res.json({ success: true, data });
     } catch (error: any) {
       return sendPaymentError(res, error, { route: "POST /api/payments/eps/hosted-session", organizationId });
+    }
+  });
+
+  app.post("/api/payments/eps/record-hosted-result", isAuthenticated, tenantContext, requirePaymentRecordPermission, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+    try {
+      const body = recordHostedResultSchema.parse(req.body || {});
+      const data = await recordHostedResult({ ...body, organizationId, actor: getActor(req) });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      return sendPaymentError(res, error, { route: "POST /api/payments/eps/record-hosted-result", organizationId });
     }
   });
 

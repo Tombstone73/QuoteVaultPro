@@ -83,7 +83,7 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
         eq(payments.organizationId, organizationId),
         sql`${payments.syncStatus} in ('pending','failed')`,
         sql`${payments.updatedAt} <= ${cutoff}`,
-        sql`lower(${payments.status}) = 'succeeded'`,
+        sql`lower(${payments.status}) in ('succeeded','captured')`,
         sql`coalesce(${invoices.qbInvoiceId}, '') <> ''`
       )
     );
@@ -142,7 +142,7 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
         eq(payments.organizationId, organizationId),
         inArray(payments.syncStatus, paymentStatuses as any),
         sql`${payments.updatedAt} <= ${cutoff}`,
-        sql`lower(${payments.status}) = 'succeeded'`,
+        sql`lower(${payments.status}) in ('succeeded','captured')`,
         sql`coalesce(${invoices.qbInvoiceId}, '') <> ''`
       )
     )

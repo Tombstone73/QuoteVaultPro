@@ -253,7 +253,7 @@ function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: st
           coalesce(${invoices.totalCents}, 0) -
           coalesce((
             select sum(case
-              when ${payments.status} = 'succeeded' then ${payments.amountCents}
+              when ${payments.status} in ('succeeded', 'captured') then ${payments.amountCents}
               when ${payments.status} = 'refunded' then -${payments.amountCents}
               else 0
             end)
@@ -397,7 +397,7 @@ function getNetInternalPaymentCents(paymentRows: Array<{ id?: string | null; sta
     const status = normalizePaymentStatus(payment?.status);
     const amountCents = Math.max(0, Math.round(Number(payment?.amountCents || 0)));
 
-    if (status === 'succeeded') {
+    if (status === 'succeeded' || status === 'captured') {
       paid += amountCents;
     } else if (status === 'refunded') {
       paid -= amountCents;

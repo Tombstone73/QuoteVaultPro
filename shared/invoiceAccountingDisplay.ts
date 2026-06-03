@@ -165,7 +165,7 @@ export function summarizeImportedQuickBooksPayments(
 
   for (const payment of payments || []) {
     const paymentStatus = normalizePaymentStatus(payment?.status);
-    if (paymentStatus !== 'succeeded') continue;
+    if (paymentStatus !== 'succeeded' && paymentStatus !== 'captured') continue;
 
     const amountCents = toSafeCents(payment?.amountCents);
     if (amountCents <= 0) continue;
@@ -222,7 +222,7 @@ export function normalizeInvoiceAccountingDisplay(
     ? (invoice.payments || []).reduce((sum, payment) => {
         const paymentStatus = normalizePaymentStatus(payment?.status);
         const amountCents = toSafeCents(payment?.amountCents);
-        if (paymentStatus === 'succeeded') return sum + amountCents;
+        if (paymentStatus === 'succeeded' || paymentStatus === 'captured') return sum + amountCents;
         if (paymentStatus === 'refunded') return sum - amountCents;
         return sum;
       }, 0)

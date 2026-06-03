@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Checkbox } from "@/components/ui/checkbox";
 import { PdfViewer } from "@/components/media/PdfViewer";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import {
@@ -29,7 +30,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useInvoice, useBillInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInvoiceReminderHistory, useSendInvoiceReminder } from "@/hooks/useInvoices";
 import { useOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
-import { useCreateEpsHostedSession, usePaymentSettings } from "@/hooks/usePaymentSettings";
+import { useCreateEpsHostedSession, usePaymentSettings, useRecordEpsHostedResult } from "@/hooks/usePaymentSettings";
 import { Page } from "@/components/titan/Page";
 import { format } from "date-fns";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
@@ -182,15 +183,18 @@ export default function InvoiceDetailPage() {
   const voidInvoicePayment = useVoidInvoicePayment();
   const paymentSettings = usePaymentSettings();
   const createEpsHostedSessionMutation = useCreateEpsHostedSession();
+  const recordEpsHostedResultMutation = useRecordEpsHostedResult();
   const reminderHistory = useInvoiceReminderHistory(invoiceId);
   const sendReminder = useSendInvoiceReminder();
 
   const [addPaymentDialogOpen, setAddPaymentDialogOpen] = useState(false);
   const [stripePayOpen, setStripePayOpen] = useState(false);
   const [recordPaymentOpen, setRecordPaymentOpen] = useState(false);
+  const [recordEpsResultOpen, setRecordEpsResultOpen] = useState(false);
   const [voidConfirmOpen, setVoidConfirmOpen] = useState(false);
   const [pdfOpen, setPdfOpen] = useState(false);
   const [selectedPaymentToVoid, setSelectedPaymentToVoid] = useState<any | null>(null);
+  const [selectedEpsPayment, setSelectedEpsPayment] = useState<any | null>(null);
 
   const [recordPaymentErrors, setRecordPaymentErrors] = useState<{ amount?: string; method?: string }>({});
   const [pdfLoadState, setPdfLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
@@ -201,6 +205,13 @@ export default function InvoiceDetailPage() {
   const [manualAppliedAt, setManualAppliedAt] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
   const [manualNotes, setManualNotes] = useState<string>('');
   const [manualReference, setManualReference] = useState<string>('');
+  const [epsResult, setEpsResult] = useState<'approved' | 'failed' | 'canceled'>('approved');
+  const [epsTransactionId, setEpsTransactionId] = useState('');
+  const [epsAuthCode, setEpsAuthCode] = useState('');
+  const [epsApprovedAmount, setEpsApprovedAmount] = useState('');
+  const [epsResponseCode, setEpsResponseCode] = useState('');
+  const [epsResponseMessage, setEpsResponseMessage] = useState('');
+  const [epsAmountOverride, setEpsAmountOverride] = useState(false);
 
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState("");
@@ -291,6 +302,7 @@ export default function InvoiceDetailPage() {
     paymentSettings.data?.epsEnabled === true &&
     paymentSettings.data?.epsReady === true &&
     paymentSettings.data?.epsSupportedModes?.includes("hosted_cnp");
+  const canRecordEpsHostedResult = !!invoice && isStaffUser && invoiceStatus !== 'void' && !paymentActionsLocked;
 
   const canEditInvoice = !!invoice && isStaffUser && invoiceStatus === 'draft' && !(isImportedFromQuickBooks && isHistoricalImport);
   const canEditFinancial = canEditInvoice && !isImportedFromQuickBooks;
@@ -454,6 +466,12 @@ export default function InvoiceDetailPage() {
     return raw;
   };
 
+  const pendingEpsHostedPayments = paymentsList.filter((payment: any) =>
+    normalizeProvider(payment) === "eps" &&
+    normalizePaymentStatus(payment) === "pending" &&
+    String(payment?.epsMode || "").trim().toLowerCase() === "hosted_cnp"
+  );
+
   const toPaymentMethodLabel = (method: any): string => {
     const raw = String(method || '').trim().toLowerCase();
     if (!raw) return 'Manual';
@@ -571,6 +589,62 @@ export default function InvoiceDetailPage() {
       invoicePayments.refetch();
     } catch (e: any) {
       toast({ title: 'Failed to void payment', description: e?.message || 'Unknown error', variant: 'destructive' });
+    }
+  };
+
+  const openRecordEpsResult = (payment: any) => {
+    setSelectedEpsPayment(payment);
+    setEpsResult('approved');
+    setEpsTransactionId('');
+    setEpsAuthCode('');
+    setEpsApprovedAmount(formatCurrencyFromCents(Number(payment?.amountCents || 0)).replace(/[$,]/g, ''));
+    setEpsResponseCode('');
+    setEpsResponseMessage('');
+    setEpsAmountOverride(false);
+    setRecordEpsResultOpen(true);
+  };
+
+  const submitEpsHostedResult = async () => {
+    if (!selectedEpsPayment?.id) return;
+
+    const approvedAmountCents = parseMoneyToCents(epsApprovedAmount);
+    const pendingAmountCents = Math.max(0, Math.round(Number(selectedEpsPayment.amountCents || 0)));
+    const amountMismatch = epsResult === 'approved' && approvedAmountCents !== pendingAmountCents;
+
+    if (!epsTransactionId.trim()) {
+      toast({ title: 'EPS transaction id required', description: 'Copy the transaction id from the EPS portal.', variant: 'destructive' });
+      return;
+    }
+    if (epsResult === 'approved' && approvedAmountCents <= 0) {
+      toast({ title: 'Approved amount required', description: 'Approved EPS payments must have an amount greater than zero.', variant: 'destructive' });
+      return;
+    }
+    if (amountMismatch && !epsAmountOverride) {
+      toast({ title: 'Amount override required', description: 'Check the override box before recording a different approved amount.', variant: 'destructive' });
+      return;
+    }
+
+    try {
+      await recordEpsHostedResultMutation.mutateAsync({
+        paymentId: selectedEpsPayment.id,
+        epsTransactionId: epsTransactionId.trim(),
+        authCode: epsAuthCode.trim() || null,
+        approvedAmountCents,
+        responseCode: epsResponseCode.trim() || null,
+        responseMessage: epsResponseMessage.trim() || null,
+        result: epsResult,
+        amountOverride: amountMismatch && epsAmountOverride,
+      });
+      toast({
+        title: epsResult === 'approved' ? 'EPS payment recorded' : 'EPS payment closed',
+        description: epsResult === 'approved' ? 'The invoice rollup now reflects the confirmed EPS payment.' : `The pending EPS payment was marked ${epsResult}.`,
+      });
+      setRecordEpsResultOpen(false);
+      setSelectedEpsPayment(null);
+      refetch();
+      invoicePayments.refetch();
+    } catch (e: any) {
+      toast({ title: 'Failed to record EPS result', description: e?.message || 'Unknown error', variant: 'destructive' });
     }
   };
 
@@ -1034,6 +1108,10 @@ export default function InvoiceDetailPage() {
     }
   };
 
+  const epsDialogPendingAmountCents = Math.max(0, Math.round(Number(selectedEpsPayment?.amountCents || 0)));
+  const epsDialogApprovedAmountCents = parseMoneyToCents(epsApprovedAmount);
+  const epsDialogAmountMismatch = epsResult === 'approved' && epsDialogApprovedAmountCents !== epsDialogPendingAmountCents;
+
   return (
     <Page maxWidth="full">
       <div className="mx-auto w-full max-w-[1600px] space-y-4 min-w-0">
@@ -1165,6 +1243,122 @@ export default function InvoiceDetailPage() {
                 disabled={recordManualPayment.isPending}
               >
                 {recordManualPayment.isPending ? 'Recording…' : 'Record Payment'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={recordEpsResultOpen} onOpenChange={setRecordEpsResultOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Record EPS Result</DialogTitle>
+            </DialogHeader>
+
+            <div className="grid gap-4">
+              <Alert>
+                <AlertCircle className="h-4 w-4" />
+                <AlertTitle>Confirm this against the EPS portal before recording.</AlertTitle>
+                <AlertDescription>
+                  PTK creation does not confirm payment. Record only the final EPS portal result for this hosted payment.
+                </AlertDescription>
+              </Alert>
+
+              <div className="grid gap-2">
+                <Label>Payment result</Label>
+                <Select value={epsResult} onValueChange={(value) => setEpsResult(value as 'approved' | 'failed' | 'canceled')}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="approved">Approved</SelectItem>
+                    <SelectItem value="failed">Failed</SelectItem>
+                    <SelectItem value="canceled">Canceled</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="eps-transaction-id">EPS transaction id</Label>
+                <Input
+                  id="eps-transaction-id"
+                  value={epsTransactionId}
+                  onChange={(event) => setEpsTransactionId(event.target.value)}
+                  placeholder="Required from EPS portal"
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="eps-auth-code">Auth code</Label>
+                <Input
+                  id="eps-auth-code"
+                  value={epsAuthCode}
+                  onChange={(event) => setEpsAuthCode(event.target.value)}
+                  placeholder="Optional"
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="eps-approved-amount">Approved amount</Label>
+                <Input
+                  id="eps-approved-amount"
+                  inputMode="decimal"
+                  value={epsApprovedAmount}
+                  onChange={(event) => setEpsApprovedAmount(event.target.value)}
+                  placeholder="0.00"
+                />
+                <div className="text-xs text-muted-foreground">
+                  Pending amount: {formatCurrencyFromCents(epsDialogPendingAmountCents)}
+                </div>
+                {epsDialogAmountMismatch ? (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/30 dark:bg-amber-950/20 dark:text-amber-200">
+                    Approved amount differs from the pending EPS amount. Verify the EPS portal transaction before using the override.
+                  </div>
+                ) : null}
+              </div>
+
+              {epsDialogAmountMismatch ? (
+                <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+                  <Checkbox
+                    checked={epsAmountOverride}
+                    onCheckedChange={(checked) => setEpsAmountOverride(checked === true)}
+                  />
+                  <span>
+                    I verified the EPS portal amount and want to record this amount override.
+                  </span>
+                </label>
+              ) : null}
+
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-2">
+                  <Label htmlFor="eps-response-code">Response code</Label>
+                  <Input
+                    id="eps-response-code"
+                    value={epsResponseCode}
+                    onChange={(event) => setEpsResponseCode(event.target.value)}
+                    placeholder="Optional"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="eps-response-message">Response message</Label>
+                  <Input
+                    id="eps-response-message"
+                    value={epsResponseMessage}
+                    onChange={(event) => setEpsResponseMessage(event.target.value)}
+                    placeholder="Optional"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button variant="outline" disabled={recordEpsHostedResultMutation.isPending}>Cancel</Button>
+              </DialogClose>
+              <Button
+                onClick={submitEpsHostedResult}
+                disabled={recordEpsHostedResultMutation.isPending || (epsDialogAmountMismatch && !epsAmountOverride)}
+              >
+                {recordEpsHostedResultMutation.isPending ? 'Recording...' : 'Record EPS Result'}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -2063,12 +2257,37 @@ export default function InvoiceDetailPage() {
                         </Alert>
                       ) : null}
 
-                      {paymentsList.some((payment: any) => normalizeProvider(payment) === "eps" && normalizePaymentStatus(payment) === "pending") ? (
+                      {pendingEpsHostedPayments.length > 0 ? (
                         <Alert>
                           <AlertCircle className="h-4 w-4" />
-                          <AlertTitle>EPS payment pending</AlertTitle>
+                          <AlertTitle>EPS hosted payment pending</AlertTitle>
                           <AlertDescription>
-                            The EPS document provided does not include a webhook or status endpoint. Keep hosted payments pending until the result is confirmed and recorded.
+                            <div className="space-y-3">
+                              <div>
+                                The EPS document provided does not include a webhook or status endpoint. Keep hosted payments pending until the result is confirmed in the EPS portal and recorded.
+                              </div>
+                              <div className="space-y-2">
+                                {pendingEpsHostedPayments.map((payment: any) => (
+                                  <div key={payment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background px-3 py-2">
+                                    <div className="text-sm">
+                                      <span className="font-medium">{formatCurrencyFromCents(Number(payment.amountCents || 0))}</span>
+                                      <span className="mx-2 text-muted-foreground/50">&bull;</span>
+                                      <span className="text-muted-foreground">Created {formatDate(payment.createdAt || payment.appliedAt)}</span>
+                                    </div>
+                                    {canRecordEpsHostedResult ? (
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => openRecordEpsResult(payment)}
+                                      >
+                                        Record EPS Result
+                                      </Button>
+                                    ) : null}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
                           </AlertDescription>
                         </Alert>
                       ) : null}
@@ -2170,7 +2389,13 @@ export default function InvoiceDetailPage() {
                                 const status = normalizePaymentStatus(payment);
                                 const isVoided = status === 'voided';
                                 const isSucceeded = status === 'succeeded';
+                                const isSettled = isSucceeded || status === 'captured';
                                 const canVoid = provider === 'manual' && isSucceeded && !isVoided;
+                                const canRecordThisEpsResult =
+                                  canRecordEpsHostedResult &&
+                                  provider === 'eps' &&
+                                  status === 'pending' &&
+                                  String(payment?.epsMode || '').trim().toLowerCase() === 'hosted_cnp';
 
                                 const syncStatusRaw = String(payment?.syncStatus || '').trim().toLowerCase();
                                 const syncErrorRaw = String(payment?.syncError || '').trim();
@@ -2189,7 +2414,7 @@ export default function InvoiceDetailPage() {
                                   return '';
                                 })();
 
-                                const canAttemptQbSync = isSucceeded && !isVoided && qbConnected && invoiceHasQbInvoiceId;
+                                const canAttemptQbSync = isSettled && !isVoided && qbConnected && invoiceHasQbInvoiceId;
                                 const isRowSyncing = qbPaymentSyncMutation.isPending && String(qbPaymentSyncMutation.variables || '') === String(payment.id);
 
                                 return (
@@ -2238,6 +2463,8 @@ export default function InvoiceDetailPage() {
                                       <Badge className="bg-green-600 text-white hover:bg-green-600">Approved</Badge>
                                     ) : status === 'failed' ? (
                                       <Badge variant="destructive">Failed</Badge>
+                                    ) : status === 'canceled' ? (
+                                      <Badge variant="secondary">Canceled</Badge>
                                     ) : status === 'refunded' ? (
                                       <Badge variant="secondary">Refunded</Badge>
                                     ) : status === 'captured' ? (
@@ -2295,7 +2522,7 @@ export default function InvoiceDetailPage() {
                                         </TooltipProvider>
                                       )}
 
-                                      {!isSyncedToQb && isSucceeded && !isVoided ? (
+                                      {!isSyncedToQb && isSettled && !isVoided ? (
                                         qbSyncDisabledReason ? (
                                           <TooltipProvider>
                                             <Tooltip>
@@ -2333,7 +2560,15 @@ export default function InvoiceDetailPage() {
                                 )}
                                 {isStaffUser && (
                                   <TableCell>
-                                    {canVoid ? (
+                                    {canRecordThisEpsResult ? (
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => openRecordEpsResult(payment)}
+                                      >
+                                        Record EPS Result
+                                      </Button>
+                                    ) : canVoid ? (
                                       <Button
                                         variant="outline"
                                         size="sm"

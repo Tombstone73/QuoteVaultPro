@@ -91,3 +91,47 @@ export function useCreateEpsHostedSession() {
     },
   });
 }
+
+export function useRecordEpsHostedResult() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      paymentId: string;
+      epsTransactionId: string;
+      authCode?: string | null;
+      approvedAmountCents: number;
+      responseCode?: string | null;
+      responseMessage?: string | null;
+      result: "approved" | "failed" | "canceled";
+      amountOverride?: boolean;
+    }) => {
+      const response = await fetch("/api/payments/eps/record-hosted-result", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(input),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.success === false) {
+        throw new Error(payload?.error || payload?.message || "Failed to record EPS payment result");
+      }
+      return payload.data as {
+        payment: any;
+        invoice?: any;
+        response: {
+          status: "approved" | "failed";
+          responseMessage?: string | null;
+        };
+      };
+    },
+    onSuccess: (data) => {
+      const invoiceId = data?.payment?.invoiceId || data?.invoice?.id;
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      if (invoiceId) {
+        queryClient.invalidateQueries({ queryKey: ["invoices", invoiceId] });
+        queryClient.invalidateQueries({ queryKey: ["invoicePayments", invoiceId] });
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] });
+    },
+  });
+}
