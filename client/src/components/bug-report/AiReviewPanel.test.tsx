@@ -43,10 +43,20 @@ function baseReview(overrides: Partial<AiReviewDto>): AiReviewDto {
   };
 }
 
-function renderPanel(data: CurrentBugAiReviewResponse | null | undefined) {
+function renderPanel(
+  data: CurrentBugAiReviewResponse | null | undefined,
+  options: {
+    feedbackType?: "bug" | "feature";
+    canRunFallback?: boolean;
+    error?: Error | null;
+  } = {},
+) {
   return renderToStaticMarkup(
     <AiReviewPanel
       data={data}
+      feedbackType={options.feedbackType ?? "bug"}
+      canRunFallback={options.canRunFallback}
+      error={options.error}
       isLoading={false}
       isActionPending={false}
       onRun={() => undefined}
@@ -68,7 +78,16 @@ describe("AiReviewPanel", () => {
     expect(html).toContain("Run AI Review");
   });
 
-  test("hides run action when feature flag is disabled", () => {
+  test("renders empty bug state with run action when owner/admin fallback is allowed", () => {
+    const html = renderPanel(undefined, { feedbackType: "bug", canRunFallback: true });
+
+    expect(html).toContain("AI Advisory");
+    expect(html).toContain("No review yet");
+    expect(html).toContain("Run AI Review");
+    expect(html).not.toContain("AI review available to admins/owners only");
+  });
+
+  test("shows a clear disabled state when feature flag is disabled", () => {
     const html = renderPanel({
       review: null,
       featureFlags: { enabled: false, adminsOnly: true },
@@ -76,6 +95,18 @@ describe("AiReviewPanel", () => {
     });
 
     expect(html).toContain("AI Advisory");
+    expect(html).toContain("AI review is disabled");
+    expect(html).not.toContain("Run AI Review");
+  });
+
+  test("does not show run action for feature requests in Phase 1", () => {
+    const html = renderPanel({
+      review: null,
+      featureFlags: { enabled: true, adminsOnly: true },
+      canRun: true,
+    }, { feedbackType: "feature", canRunFallback: true });
+
+    expect(html).toContain("AI bug review is available for bug reports only in Phase 1");
     expect(html).not.toContain("Run AI Review");
   });
 

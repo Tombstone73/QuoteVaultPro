@@ -55,6 +55,18 @@ interface BugReportNote {
   createdAt: string;
 }
 
+class AiReviewApiError extends Error {
+  status: number;
+  code: string | null;
+
+  constructor(status: number, message: string, code: string | null = null) {
+    super(message);
+    this.name = "AiReviewApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const STATUS_OPTIONS = [
@@ -157,7 +169,14 @@ async function postNote(bugReportId: string, note: string): Promise<BugReportNot
 
 async function fetchAiReview(bugReportId: string): Promise<CurrentBugAiReviewResponse> {
   const res = await fetch(`/api/bug-reports/${bugReportId}/ai-review`, { credentials: "include" });
-  if (!res.ok) throw new Error("Failed to fetch AI review");
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as { message?: string; code?: string };
+    throw new AiReviewApiError(
+      res.status,
+      body.message ?? "Failed to fetch AI review",
+      body.code ?? null,
+    );
+  }
   const body = await res.json();
   return body.data as CurrentBugAiReviewResponse;
 }
@@ -229,7 +248,7 @@ export default function BugReportsPage() {
     enabled: !!selectedId,
   });
 
-  const { data: aiReviewData, isLoading: aiReviewLoading } = useQuery<CurrentBugAiReviewResponse>({
+  const { data: aiReviewData, isLoading: aiReviewLoading, error: aiReviewError } = useQuery<CurrentBugAiReviewResponse, Error>({
     queryKey: ["/api/bug-reports/ai-review", selectedId],
     queryFn: () => fetchAiReview(selectedId!),
     enabled: !!selectedId,
@@ -573,6 +592,9 @@ export default function BugReportsPage() {
                 {/* ── Internal Notes ────────────────────────────────────────── */}
                 <AiReviewPanel
                   data={aiReviewData}
+                  feedbackType={detail.type}
+                  canRunFallback={isAdminOrOwner}
+                  error={aiReviewError}
                   isLoading={aiReviewLoading}
                   isActionPending={createAiReviewMutation.isPending || rerunAiReviewMutation.isPending}
                   onRun={() => createAiReviewMutation.mutate()}

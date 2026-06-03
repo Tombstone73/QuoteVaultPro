@@ -6,6 +6,7 @@ const getCurrentBugReview = jest.fn<(...args: any[]) => Promise<any>>();
 const requestBugReview = jest.fn<(...args: any[]) => Promise<any>>();
 const rerunReview = jest.fn<(...args: any[]) => Promise<any>>();
 const enqueue = jest.fn();
+const getCapabilities = jest.fn<(...args: any[]) => Promise<any>>();
 
 class MockAiReviewServiceError extends Error {
   statusCode: number;
@@ -29,6 +30,10 @@ jest.unstable_mockModule("../services/ai/aiReviewService", () => ({
 
 jest.unstable_mockModule("../services/ai/aiReviewQueue", () => ({
   aiReviewQueue: { enqueue },
+}));
+
+jest.unstable_mockModule("../services/ai/aiProviderResolver", () => ({
+  aiProviderResolver: { getCapabilities },
 }));
 
 let registerAiReviewRoutes: any;
@@ -59,6 +64,16 @@ describe("AI review routes", () => {
     jest.clearAllMocks();
     process.env.AI_BUG_REVIEW_ENABLED = "true";
     process.env.AI_BUG_REVIEW_ADMINS_ONLY = "true";
+    getCapabilities.mockResolvedValue({
+      enabled: true,
+      mode: "titanos_managed",
+      provider: "openai",
+      model: "test-model",
+      hasApiKey: false,
+      features: { bugReview: true },
+      permissions: { canRunBugReview: true, canManageSettings: true },
+      usage: { monthlyUsageLimit: null },
+    });
     requestBugReview.mockResolvedValue({ id: "review_1", status: "pending" });
     rerunReview.mockResolvedValue({ id: "review_2", status: "pending" });
     getCurrentBugReview.mockResolvedValue(null);
@@ -90,7 +105,16 @@ describe("AI review routes", () => {
   });
 
   test("POST returns 503 when feature flag is disabled", async () => {
-    process.env.AI_BUG_REVIEW_ENABLED = "false";
+    getCapabilities.mockResolvedValueOnce({
+      enabled: false,
+      mode: "disabled",
+      provider: null,
+      model: null,
+      hasApiKey: false,
+      features: { bugReview: false },
+      permissions: { canRunBugReview: false, canManageSettings: true },
+      usage: { monthlyUsageLimit: null },
+    });
 
     const response = await request(buildApp()).post("/api/bug-reports/bug_1/ai-review");
 

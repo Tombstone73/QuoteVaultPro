@@ -1,4 +1,4 @@
-import { getAiBugReviewFeatureFlags, getAiBugReviewProviderConfig, getAiBugReviewStaleMinutes } from "./aiBugReviewConfig";
+import { getAiBugReviewStaleMinutes } from "./aiBugReviewConfig";
 import { buildBugReviewPrompt } from "./prompts/bugReviewPrompt";
 import { parseAiJsonObject, validateBugReviewJson } from "./bugReviewValidator";
 import {
@@ -13,6 +13,7 @@ import {
   type AiReviewsRepository,
 } from "../../storage/aiReviews.repo";
 import type { AiReviewDto, BugAiReviewResult } from "@shared/aiReviewContracts";
+import { aiProviderResolver } from "./aiProviderResolver";
 
 export class AiReviewServiceError extends Error {
   statusCode: number;
@@ -106,8 +107,8 @@ export class AiReviewService {
   }
 
   async requestBugReview(input: RequestBugReviewInput): Promise<AiReviewDto> {
-    const flags = getAiBugReviewFeatureFlags();
-    if (!flags.enabled) {
+    const resolvedProvider = await aiProviderResolver.resolveProvider({ orgId: input.orgId, feature: "bug_review" });
+    if (!resolvedProvider.enabled) {
       throw new AiReviewServiceError("AI_BUG_REVIEW_DISABLED", "AI bug review is disabled.", 503);
     }
 
@@ -220,8 +221,13 @@ export class AiReviewService {
       return;
     }
 
-    const providerConfig = getAiBugReviewProviderConfig();
-    const claimed = await this.repo.markProcessing(input.orgId, input.reviewId, providerConfig.provider, providerConfig.model || "unconfigured");
+    const resolvedProvider = await aiProviderResolver.resolveProvider({ orgId: input.orgId, feature: "bug_review" });
+    const claimed = await this.repo.markProcessing(
+      input.orgId,
+      input.reviewId,
+      resolvedProvider.provider || "unconfigured",
+      resolvedProvider.model || "unconfigured",
+    );
     if (!claimed) {
       console.warn("[AiReviewService] Skipping AI review provider call because processing claim failed.", {
         orgId: input.orgId,
@@ -258,9 +264,12 @@ export class AiReviewService {
 
     try {
       providerResponse = await this.provider.generateBugReview({
+        orgId: input.orgId,
+        feature: "bug_review",
         system: builtPrompt.system,
         user: builtPrompt.user,
         promptVersion: builtPrompt.promptVersion,
+        providerConfig: resolvedProvider,
       });
 
       const firstResult = this.validateProviderResponse(providerResponse.rawText);
@@ -270,10 +279,13 @@ export class AiReviewService {
       }
 
       const repairResponse = await this.provider.generateBugReview({
+        orgId: input.orgId,
+        feature: "bug_review",
         system: builtPrompt.system,
         user: buildRepairPrompt(providerResponse.rawText, firstResult.errors),
         promptVersion: builtPrompt.promptVersion,
         repairAttempt: true,
+        providerConfig: resolvedProvider,
       });
 
       const repaired = this.validateProviderResponse(repairResponse.rawText);

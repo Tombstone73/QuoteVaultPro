@@ -1,20 +1,32 @@
-import { getAiBugReviewProviderConfig } from "../aiBugReviewConfig";
 import {
   AiProviderUnavailableError,
   type AiProviderAdapter,
   type AiProviderRequest,
   type AiProviderResponse,
 } from "./AiProviderAdapter";
+import { aiProviderResolver } from "../aiProviderResolver";
+
+function getTimeoutMs(): number {
+  const parsed = Number(process.env.AI_PROVIDER_TIMEOUT_MS || process.env.AI_BUG_REVIEW_TIMEOUT_MS || 30000);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30000;
+}
 
 export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
   async generateBugReview(request: AiProviderRequest): Promise<AiProviderResponse> {
-    const config = getAiBugReviewProviderConfig();
-    if (!config.endpoint || !config.apiKey || !config.model) {
+    const config = request.providerConfig ?? await aiProviderResolver.resolveProvider({
+      orgId: request.orgId,
+      feature: request.feature,
+    });
+
+    if (!config.enabled || !config.endpoint || !config.apiKey || !config.model || !config.provider) {
       throw new AiProviderUnavailableError("AI bug review provider is not configured.");
+    }
+    if (config.provider !== "openai" && config.provider !== "openai_compatible") {
+      throw new AiProviderUnavailableError(`AI provider ${config.provider} is not supported by the current adapter.`);
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), getTimeoutMs());
     const started = Date.now();
 
     try {
@@ -54,6 +66,8 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
           latencyMs: Date.now() - started,
           promptVersion: request.promptVersion,
           repairAttempt: Boolean(request.repairAttempt),
+          mode: config.mode,
+          source: config.source,
           providerRequestId: body?.id ?? null,
           usage: body?.usage ?? null,
         },

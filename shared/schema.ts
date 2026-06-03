@@ -40,6 +40,14 @@ import {
   type WorkflowImpact,
   workflowImpactValues,
 } from "./aiReviewContracts";
+import {
+  aiFeatureValues,
+  aiModeValues,
+  aiProviderValues,
+  type AiFeature,
+  type AiMode,
+  type AiProvider,
+} from "./aiFoundationContracts";
 
 // ============================================================
 // DOWNLOAD INTENT (Future-proofing for preflight/print variants)
@@ -6302,6 +6310,90 @@ export const insertFeedbackAiReviewSchema = createInsertSchema(feedbackAiReviews
 
 export type FeedbackAiReview = typeof feedbackAiReviews.$inferSelect;
 export type InsertFeedbackAiReview = typeof feedbackAiReviews.$inferInsert;
+
+// ============================================================
+// AI FOUNDATION - org-scoped provider settings and usage
+// ============================================================
+export const organizationAiSettings = pgTable("organization_ai_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  mode: text("mode").$type<AiMode>().notNull().default("disabled"),
+  provider: text("provider").$type<AiProvider>(),
+  model: text("model"),
+  encryptedApiKey: text("encrypted_api_key"),
+  apiKeyLast4: varchar("api_key_last4", { length: 8 }),
+  encryptionKeyId: text("encryption_key_id"),
+  isEnabled: boolean("is_enabled").notNull().default(false),
+  bugReviewEnabled: boolean("bug_review_enabled").notNull().default(false),
+  featureReviewEnabled: boolean("feature_review_enabled").notNull().default(false),
+  duplicateDetectionEnabled: boolean("duplicate_detection_enabled").notNull().default(false),
+  orderParsingEnabled: boolean("order_parsing_enabled").notNull().default(false),
+  emailProcessingEnabled: boolean("email_processing_enabled").notNull().default(false),
+  customerSupportEnabled: boolean("customer_support_enabled").notNull().default(false),
+  inventoryRecommendationsEnabled: boolean("inventory_recommendations_enabled").notNull().default(false),
+  productionAssistanceEnabled: boolean("production_assistance_enabled").notNull().default(false),
+  monthlyUsageLimit: integer("monthly_usage_limit"),
+  includedMonthlyCreditsCents: integer("included_monthly_credits_cents"),
+  overageEnabled: boolean("overage_enabled").notNull().default(false),
+  billingMetadata: jsonb("billing_metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("organization_ai_settings_org_uidx").on(table.orgId),
+  index("organization_ai_settings_mode_idx").on(table.mode),
+  index("organization_ai_settings_provider_idx").on(table.provider),
+]);
+
+export const insertOrganizationAiSettingsSchema = createInsertSchema(organizationAiSettings, {
+  mode: z.enum(aiModeValues),
+  provider: z.enum(aiProviderValues).optional().nullable(),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateOrganizationAiSettingsSchema = insertOrganizationAiSettingsSchema.partial().omit({
+  orgId: true,
+  encryptedApiKey: true,
+  apiKeyLast4: true,
+  encryptionKeyId: true,
+});
+
+export type OrganizationAiSettings = typeof organizationAiSettings.$inferSelect;
+export type InsertOrganizationAiSettings = typeof organizationAiSettings.$inferInsert;
+export type UpdateOrganizationAiSettings = z.infer<typeof updateOrganizationAiSettingsSchema>;
+
+export const aiUsage = pgTable("ai_usage", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  feature: text("feature").$type<AiFeature>().notNull(),
+  provider: text("provider").notNull(),
+  model: text("model"),
+  requestCount: integer("request_count").notNull().default(1),
+  inputTokens: integer("input_tokens").notNull().default(0),
+  outputTokens: integer("output_tokens").notNull().default(0),
+  totalTokens: integer("total_tokens").notNull().default(0),
+  estimatedCostCents: integer("estimated_cost_cents"),
+  mode: text("mode").notNull(),
+  source: text("source").notNull().default("server"),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_usage_org_feature_created_idx").on(table.orgId, table.feature, table.createdAt),
+  index("ai_usage_org_provider_created_idx").on(table.orgId, table.provider, table.createdAt),
+  index("ai_usage_org_created_idx").on(table.orgId, table.createdAt),
+]);
+
+export const insertAiUsageSchema = createInsertSchema(aiUsage, {
+  feature: z.enum(aiFeatureValues),
+}).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type AiUsage = typeof aiUsage.$inferSelect;
+export type InsertAiUsage = typeof aiUsage.$inferInsert;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // BUG REPORT NOTES — admin-only internal notes per bug report

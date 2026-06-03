@@ -8,6 +8,9 @@ import type { AiReviewDto, CurrentBugAiReviewResponse } from "@shared/aiReviewCo
 
 interface AiReviewPanelProps {
   data: CurrentBugAiReviewResponse | null | undefined;
+  feedbackType: "bug" | "feature";
+  canRunFallback?: boolean;
+  error?: Error | null;
   isLoading: boolean;
   isActionPending: boolean;
   onRun: () => void;
@@ -125,10 +128,27 @@ function CompletedReview({ review, canRun, isActionPending, onRerun }: {
   );
 }
 
-export function AiReviewPanel({ data, isLoading, isActionPending, onRun, onRerun }: AiReviewPanelProps) {
+function getErrorStatus(error: Error | null | undefined): number | null {
+  const candidate = error as (Error & { status?: unknown }) | null | undefined;
+  return typeof candidate?.status === "number" ? candidate.status : null;
+}
+
+export function AiReviewPanel({
+  data,
+  feedbackType,
+  canRunFallback = false,
+  error,
+  isLoading,
+  isActionPending,
+  onRun,
+  onRerun,
+}: AiReviewPanelProps) {
   const review = data?.review ?? null;
-  const canRun = Boolean(data?.canRun);
-  const featureEnabled = Boolean(data?.featureFlags.enabled);
+  const isBugReport = feedbackType === "bug";
+  const canRun = isBugReport && Boolean(data?.canRun ?? canRunFallback);
+  const featureEnabled = data?.featureFlags.enabled ?? true;
+  const errorStatus = getErrorStatus(error);
+  const permissionDenied = errorStatus === 401 || errorStatus === 403;
 
   return (
     <Card>
@@ -153,7 +173,19 @@ export function AiReviewPanel({ data, isLoading, isActionPending, onRun, onRerun
             <p className="text-sm text-muted-foreground">
               AI can produce an advisory review for human triage. It will not change this bug report.
             </p>
-            {featureEnabled && canRun && (
+            {!isBugReport ? (
+              <p className="rounded-md bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                AI bug review is available for bug reports only in Phase 1.
+              </p>
+            ) : !featureEnabled ? (
+              <p className="rounded-md bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                AI review is disabled.
+              </p>
+            ) : permissionDenied || !canRun ? (
+              <p className="rounded-md bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                AI review available to admins/owners only.
+              </p>
+            ) : (
               <Button type="button" size="sm" className="gap-2" onClick={onRun} disabled={isActionPending}>
                 <Sparkles className="h-4 w-4" />
                 Run AI Review
