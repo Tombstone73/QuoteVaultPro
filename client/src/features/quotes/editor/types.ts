@@ -55,6 +55,13 @@ export type QuoteLineItemDraft = {
   productOptions?: any[];
   status?: "draft" | "active" | "canceled";
   pendingAttachments?: File[]; // TEMP: Files selected but not yet uploaded
+  pendingOrderAttachments?: Array<{
+    uploadId: string;
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    uploadedAt: string;
+  }>;
 };
 
 export type Address = {

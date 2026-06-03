@@ -2,6 +2,7 @@ import {
   getPortalQuoteVisibilityReason,
   isPortalQuoteInCustomerScope,
   isPortalQuoteVisibleToCustomer,
+  mapPortalOrderStatus,
   mapPortalQuoteStatus,
 } from "../services/portal.service";
 
@@ -58,5 +59,12 @@ describe("portal quote hydration visibility", () => {
     expect(isPortalQuoteInCustomerScope({ organizationId: "org_1", customerId: "cust_1" }, scope)).toBe(true);
     expect(isPortalQuoteInCustomerScope({ organizationId: "org_1", customerId: "cust_2" }, scope)).toBe(false);
     expect(isPortalQuoteInCustomerScope({ organizationId: "org_2", customerId: "cust_1" }, scope)).toBe(false);
+  });
+});
+
+describe("portal order visibility defaults", () => {
+  test("newly created orders map to customer-visible portal status without a quote visibility flag", () => {
+    expect(mapPortalOrderStatus({ status: "new" })).toBe("Received");
+    expect(mapPortalOrderStatus({ status: "created" })).toBe("Received");
   });
 });

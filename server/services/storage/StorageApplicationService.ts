@@ -8,6 +8,7 @@ import { storageJobRepository } from "../../storage/storageJob.repo";
 import { storagePolicyResolver } from "./StoragePolicyResolver";
 import { storageRegistry } from "./StorageRegistry";
 import type { StorageResourceContext, StoredObjectDescriptor } from "./adapters/StorageProviderAdapter";
+import { deleteFile } from "../../utils/fileStorage";
 
 function lifecycleStateForStorageTarget(storageTarget: StoredObjectDescriptor["storageTarget"]): FileRecord["lifecycleState"] {
   switch (storageTarget) {
@@ -296,6 +297,11 @@ export class StorageApplicationService {
         stage = "mark_upload_session_linked";
         sourceUploadMeta.linkedAt = new Date().toISOString();
         await saveUploadSessionMeta(sourceUploadMeta.uploadId, sourceUploadMeta);
+        const sourcePath = sourceUploadMeta.relativePath ?? null;
+        const canonicalPath = persistedObject.localPathRef ?? persistedObject.objectKey ?? null;
+        if (sourcePath && sourcePath !== canonicalPath) {
+          await deleteFile(sourcePath).catch(() => false);
+        }
         await deleteUploadSession(sourceUploadMeta.uploadId);
       }
 

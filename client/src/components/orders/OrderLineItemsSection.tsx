@@ -3473,7 +3473,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         orderId={orderId}
                                         lineItemId={item.id}
                                         productName={productName}
-                                        defaultExpanded={readOnly ? true : false}
+                                        defaultExpanded={true}
                                       />
                                     </div>
 
@@ -3645,7 +3645,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 topAnchorRef={setLineItemTopAnchorRef(String(item.id))}
                                 widthInputRef={setLineItemWidthInputRef(String(item.id))}
                                 detailsSide="right"
-                                collapseSecondaryDetails={true}
+                                collapseSecondaryDetails={false}
                                 compactExpandedLayout={true}
                                 isDirty={isExpanded && expandedItem && expandedItem.id === item.id ? isDirty : false}
                                 isSaving={savingItemId === item.id}

@@ -16,7 +16,7 @@ import { getThumbSrc } from "@/lib/getThumbSrc";
 import { objectsUrl } from "@/lib/apiConfig";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
-import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
+import { uploadAttachmentViaChunked, type TemporaryOrderAttachmentUpload } from "@/lib/uploads/chunkedAttachmentUpload";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -92,6 +92,8 @@ interface LineItemAttachmentsPanelProps {
   ensureLineItemId?: () => Promise<{ quoteId: string; lineItemId: string }>;
   /** The line item key (tempId or id) - used for persisting expansion state across route transitions */
   lineItemKey?: string;
+  pendingOrderAttachments?: TemporaryOrderAttachmentUpload[];
+  onTemporaryOrderUpload?: (files: File[]) => Promise<void>;
 }
 
 export function LineItemAttachmentsPanel({
@@ -104,6 +106,8 @@ export function LineItemAttachmentsPanel({
   ensureQuoteId,
   ensureLineItemId,
   lineItemKey,
+  pendingOrderAttachments = [],
+  onTemporaryOrderUpload,
 }: LineItemAttachmentsPanelProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -223,7 +227,7 @@ export function LineItemAttachmentsPanel({
     },
   });
 
-  const fileCount = attachments.length;
+  const fileCount = attachments.length + pendingOrderAttachments.length;
   const viewerAttachments = useMemo(() => toAttachmentViewerAttachments(attachments as any[]), [attachments]);
 
   // Format file size for display
@@ -247,6 +251,26 @@ export function LineItemAttachmentsPanel({
   };
 
   const performUpload = async (filesToUpload: File[]) => {
+    if (parentType === "order" && !orderId && onTemporaryOrderUpload) {
+      setIsUploading(true);
+      try {
+        await onTemporaryOrderUpload(filesToUpload);
+        toast({
+          title: "Artwork Uploaded",
+          description: `${filesToUpload.length} file${filesToUpload.length !== 1 ? "s" : ""} staged for this new order.`,
+        });
+      } catch (error: any) {
+        toast({
+          title: "Upload Failed",
+          description: error?.message || "Failed to upload files.",
+          variant: "destructive",
+        });
+      } finally {
+        setIsUploading(false);
+        clearFileInput();
+      }
+      return;
+    }
 
     // CRITICAL: Ensure line item is persisted BEFORE upload
     // This happens AFTER user selected file, so we still have valid IDs
@@ -688,7 +712,7 @@ export function LineItemAttachmentsPanel({
                 e.stopPropagation();
                 handleUploadClick(e);
               }}
-              disabled={isUploading || isCreatingQuote || isPersistingLineItem || (!lineItemId && !ensureLineItemId)}
+              disabled={isUploading || isCreatingQuote || isPersistingLineItem || (!lineItemId && !ensureLineItemId && !onTemporaryOrderUpload)}
             >
               {(isUploading || isCreatingQuote || isPersistingLineItem) ? (
                 <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
@@ -703,7 +727,7 @@ export function LineItemAttachmentsPanel({
                 ? "Uploading..."
                 : "Upload Artwork"}
             </Button>
-            {!lineItemId && !ensureLineItemId ? (
+            {!lineItemId && !ensureLineItemId && !onTemporaryOrderUpload ? (
               <p className="text-xs text-muted-foreground text-center mt-1">
                 Save line item to upload artwork
               </p>
@@ -719,8 +743,23 @@ export function LineItemAttachmentsPanel({
       {/* Expanded content - file list */}
       {isExpanded && fileCount > 0 && (
         <div className="px-3 pb-3 space-y-2 border-t">
+          {pendingOrderAttachments.length > 0 && (
+            <div className="space-y-1 pt-2">
+              {pendingOrderAttachments.map((file) => (
+                <div key={file.uploadId} className="flex items-center gap-2 p-1.5 rounded bg-background">
+                  <File className="w-4 h-4 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium truncate">{file.fileName}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {formatFileSize(file.sizeBytes)} · staged
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           {/* File list */}
-          {isLoading ? (
+          {isLoading && attachments.length === 0 ? (
             <p className="text-xs text-muted-foreground text-center py-2">Loading...</p>
           ) : attachments.length > 0 ? (
             <div className="space-y-1">
@@ -972,11 +1011,11 @@ export function LineItemAttachmentsPanel({
                 );
               })}
             </div>
-          ) : (
+          ) : pendingOrderAttachments.length === 0 ? (
             <p className="text-xs text-muted-foreground text-center py-2">
               No artwork attached
             </p>
-          )}
+          ) : null}
         </div>
       )}
 

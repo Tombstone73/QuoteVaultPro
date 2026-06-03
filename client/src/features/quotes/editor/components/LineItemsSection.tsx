@@ -19,6 +19,7 @@ import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } 
 import { ProductOptionsPanel } from "./ProductOptionsPanel";
 import { ProductOptionsPanelV2 } from "./ProductOptionsPanelV2";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
+import { uploadTemporaryOrderAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 import { setPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
 import { cn, isValidHttpUrl } from "@/lib/utils";
@@ -58,6 +59,7 @@ type LineItemsSectionProps = {
   onReorderLineItems?: (orderedKeys: string[]) => Promise<{ ok: boolean }>;
   ensureQuoteId?: () => Promise<string>;
   ensureLineItemId?: (itemKey: string) => Promise<{ quoteId: string; lineItemId: string }>;
+  createTarget?: "quote" | "order";
 };
 
 function getItemKey(item: QuoteLineItemDraft): string {
@@ -319,6 +321,7 @@ export function LineItemsSection({
   onReorderLineItems,
   ensureQuoteId,
   ensureLineItemId,
+  createTarget = "quote",
 }: LineItemsSectionProps) {
   const queryClient = useQueryClient();
   const { preferences: orgPreferences } = useOrgPreferences();
@@ -471,6 +474,35 @@ export function LineItemsSection({
   // Set before onExpandedKeyChange so the effect fires on the correct render.
   const pendingScrollToItemKeyRef = useRef<string | null>(null);
   const widthInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  const uploadTemporaryOrderAttachments = useCallback(
+    async (itemKey: string, files: File[]) => {
+      if (!itemKey || files.length === 0) return;
+      const uploaded = [];
+      let errorCount = 0;
+      for (const file of files) {
+        try {
+          uploaded.push(await uploadTemporaryOrderAttachmentViaChunked(file));
+        } catch (error) {
+          errorCount += 1;
+          console.error("[LineItemsSection] TEMP order artwork upload failed", error);
+        }
+      }
+      if (uploaded.length > 0) {
+        const currentItem = lineItems.find((li) => getItemKey(li) === itemKey);
+        onUpdateLineItem(itemKey, {
+          pendingOrderAttachments: [
+            ...((currentItem?.pendingOrderAttachments as any[]) ?? []),
+            ...uploaded,
+          ],
+        });
+      }
+      if (uploaded.length === 0 && errorCount > 0) {
+        throw new Error("Failed to stage artwork for this new order.");
+      }
+    },
+    [lineItems, onUpdateLineItem],
+  );
 
   // Track saved state snapshot for dirty detection
   const savedSnapshotRef = useRef<
@@ -1328,15 +1360,23 @@ export function LineItemsSection({
                                 </div>
                                 <LineItemAttachmentsPanel
                                   quoteId={quoteId}
+                                  parentType={createTarget === "order" ? "order" : "quote"}
+                                  orderId={null}
                                   lineItemId={item.id}
                                   productName={item.productName}
-                                  defaultExpanded={readOnly ? true : false}
-                                  ensureQuoteId={!readOnly ? ensureQuoteId : undefined}
-                                  ensureLineItemId={!readOnly && ensureLineItemId ? () => {
+                                  defaultExpanded={true}
+                                  ensureQuoteId={createTarget === "order" ? undefined : (!readOnly ? ensureQuoteId : undefined)}
+                                  ensureLineItemId={createTarget === "order" ? undefined : (!readOnly && ensureLineItemId ? () => {
                                     setPendingScrollPosition(window.scrollY);
                                     setPendingExpandedLineItemId(itemKey, itemIndex);
                                     return ensureLineItemId(itemKey);
-                                  } : undefined}
+                                  } : undefined)}
+                                  pendingOrderAttachments={item.pendingOrderAttachments}
+                                  onTemporaryOrderUpload={
+                                    !readOnly && createTarget === "order"
+                                      ? (files) => uploadTemporaryOrderAttachments(itemKey, files)
+                                      : undefined
+                                  }
                                   lineItemKey={itemKey}
                                 />
                               </div>

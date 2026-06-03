@@ -15,7 +15,15 @@ export type ChunkedUploadResult = {
   linkResponse: any;
 };
 
-export async function uploadAttachmentViaChunked(args: ChunkedUploadArgs): Promise<ChunkedUploadResult> {
+type UploadChunksArgs = {
+  file: File;
+  purpose: UploadPurpose;
+  parentId?: string | null;
+  temporaryOrderAttachment?: boolean;
+  onProgress?: (percent: number) => void;
+};
+
+async function uploadChunks(args: UploadChunksArgs): Promise<{ uploadId: string; fileId: string }> {
   const initPayload = {
     filename: args.file.name,
     mimeType: args.file.type || "application/octet-stream",
@@ -23,6 +31,7 @@ export async function uploadAttachmentViaChunked(args: ChunkedUploadArgs): Promi
     purpose: args.purpose,
     quoteId: args.purpose === "quote-attachment" ? args.parentId : undefined,
     orderId: args.purpose === "order-attachment" ? args.parentId : undefined,
+    temporary: args.temporaryOrderAttachment === true ? true : undefined,
   };
 
   const initResp = await fetch("/api/uploads/init", {
@@ -89,7 +98,9 @@ export async function uploadAttachmentViaChunked(args: ChunkedUploadArgs): Promi
     body: JSON.stringify(
       args.purpose === "quote-attachment"
         ? { quoteId: args.parentId, totalChunks }
-        : { orderId: args.parentId, totalChunks },
+        : args.temporaryOrderAttachment
+          ? { temporary: true, totalChunks }
+          : { orderId: args.parentId, totalChunks },
     ),
   });
 
@@ -103,6 +114,12 @@ export async function uploadAttachmentViaChunked(args: ChunkedUploadArgs): Promi
   if (!fileId) {
     throw new Error("Finalize did not return fileId");
   }
+
+  return { uploadId, fileId };
+}
+
+export async function uploadAttachmentViaChunked(args: ChunkedUploadArgs): Promise<ChunkedUploadResult> {
+  const { uploadId, fileId } = await uploadChunks(args);
 
   const linkResp = await fetch(args.linkUrl, {
     method: "POST",
@@ -123,5 +140,35 @@ export async function uploadAttachmentViaChunked(args: ChunkedUploadArgs): Promi
     uploadId,
     finalizedFileId: fileId,
     linkResponse,
+  };
+}
+
+export type TemporaryOrderAttachmentUpload = {
+  uploadId: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedAt: string;
+};
+
+export async function uploadTemporaryOrderAttachmentViaChunked(
+  file: File,
+  onProgress?: (percent: number) => void,
+): Promise<TemporaryOrderAttachmentUpload> {
+  const { fileId } = await uploadChunks({
+    file,
+    purpose: "order-attachment",
+    temporaryOrderAttachment: true,
+    onProgress,
+  });
+
+  onProgress?.(100);
+
+  return {
+    uploadId: fileId,
+    fileName: file.name,
+    mimeType: file.type || "application/octet-stream",
+    sizeBytes: file.size,
+    uploadedAt: new Date().toISOString(),
   };
 }
