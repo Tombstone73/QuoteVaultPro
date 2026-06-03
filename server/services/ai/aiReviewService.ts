@@ -1,4 +1,4 @@
-import { getAiBugReviewFeatureFlags, getAiBugReviewProviderConfig } from "./aiBugReviewConfig";
+import { getAiBugReviewFeatureFlags, getAiBugReviewProviderConfig, getAiBugReviewStaleMinutes } from "./aiBugReviewConfig";
 import { buildBugReviewPrompt } from "./prompts/bugReviewPrompt";
 import { parseAiJsonObject, validateBugReviewJson } from "./bugReviewValidator";
 import {
@@ -77,6 +77,19 @@ function buildRepairPrompt(rawText: string, validationErrors: unknown): string {
   ].join("\n");
 }
 
+function staleBeforeDate(): Date {
+  return new Date(Date.now() - getAiBugReviewStaleMinutes() * 60 * 1000);
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: unknown }).code === "23505",
+  );
+}
+
 export class AiReviewService {
   constructor(
     private readonly repo: AiReviewsRepository = new DrizzleAiReviewsRepository(),
@@ -84,6 +97,10 @@ export class AiReviewService {
   ) {}
 
   async getCurrentBugReview(orgId: string, bugReportId: string): Promise<AiReviewDto | null> {
+    await this.recoverStaleActiveReviewsForBugReport(orgId, bugReportId, {
+      userId: null,
+      email: "system",
+    });
     const review = await this.repo.getCurrentReviewForBugReport(orgId, bugReportId);
     return review ? toAiReviewDto(review) : null;
   }
@@ -102,6 +119,8 @@ export class AiReviewService {
       throw new AiReviewServiceError("AI_REVIEW_BUGS_ONLY", "Phase 1 AI review only supports bug reports.", 400);
     }
 
+    await this.recoverStaleActiveReviewsForBugReport(input.orgId, input.bugReportId, input.actor);
+
     const current = await this.repo.getCurrentReviewForBugReport(input.orgId, input.bugReportId);
     if (current && ACTIVE_STATUSES.has(current.status)) {
       throw new AiReviewServiceError("AI_REVIEW_ALREADY_ACTIVE", "An AI review is already pending or processing.", 409);
@@ -119,14 +138,22 @@ export class AiReviewService {
       createdAt: bug.createdAt,
     });
 
-    const created = await this.repo.createPendingReview({
-      orgId: input.orgId,
-      bugReportId: input.bugReportId,
-      requestedByUserId: input.actor.userId,
-      requestedByEmail: input.actor.email,
-      promptVersion: builtPrompt.promptVersion,
-      inputSnapshot: builtPrompt.inputSnapshot,
-    });
+    let created;
+    try {
+      created = await this.repo.createPendingReview({
+        orgId: input.orgId,
+        bugReportId: input.bugReportId,
+        requestedByUserId: input.actor.userId,
+        requestedByEmail: input.actor.email,
+        promptVersion: builtPrompt.promptVersion,
+        inputSnapshot: builtPrompt.inputSnapshot,
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new AiReviewServiceError("AI_REVIEW_ALREADY_ACTIVE", "An AI review is already pending or processing.", 409);
+      }
+      throw error;
+    }
 
     await this.safeAudit({
       orgId: input.orgId,
@@ -194,7 +221,26 @@ export class AiReviewService {
     }
 
     const providerConfig = getAiBugReviewProviderConfig();
-    await this.repo.markProcessing(input.orgId, input.reviewId, providerConfig.provider, providerConfig.model || "unconfigured");
+    const claimed = await this.repo.markProcessing(input.orgId, input.reviewId, providerConfig.provider, providerConfig.model || "unconfigured");
+    if (!claimed) {
+      console.warn("[AiReviewService] Skipping AI review provider call because processing claim failed.", {
+        orgId: input.orgId,
+        reviewId: input.reviewId,
+      });
+      await this.safeAudit({
+        orgId: input.orgId,
+        userId: null,
+        userEmail: "system",
+        actionType: "UPDATE",
+        entityId: input.reviewId,
+        entityName: `AI review ${input.reviewId}`,
+        description: `AI bug review processing skipped because the queue claim failed for review ${input.reviewId}`,
+        newValues: {
+          status: "claim_failed",
+        },
+      });
+      return;
+    }
 
     const builtPrompt = buildBugReviewPrompt({
       id: bug.id,
@@ -327,6 +373,35 @@ export class AiReviewService {
         newValues: {
           status: "failed",
           errorCode,
+        },
+      });
+    }
+  }
+
+  private async recoverStaleActiveReviewsForBugReport(orgId: string, bugReportId: string, actor: AiReviewActor): Promise<void> {
+    const staleMinutes = getAiBugReviewStaleMinutes();
+    const reason = `AI bug review recovered as failed after being active for more than ${staleMinutes} minutes.`;
+    const recovered = await this.repo.recoverStaleActiveReviewsForBugReport(
+      orgId,
+      bugReportId,
+      staleBeforeDate(),
+      reason,
+    );
+
+    for (const row of recovered) {
+      await this.safeAudit({
+        orgId,
+        userId: actor.userId,
+        userEmail: actor.email || "system",
+        actionType: "UPDATE",
+        entityId: row.id,
+        entityName: `AI review ${row.id}`,
+        description: `Stale AI bug review recovered for bug report ${row.bugReportId}`,
+        newValues: {
+          status: "failed",
+          previousActiveStateRecovered: true,
+          errorCode: "stale_review_recovered",
+          staleMinutes,
         },
       });
     }

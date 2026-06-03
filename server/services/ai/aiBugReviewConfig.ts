@@ -23,3 +23,8 @@ export function getAiBugReviewProviderConfig() {
     timeoutMs: Number(process.env.AI_BUG_REVIEW_TIMEOUT_MS || 30000),
   };
 }
+
+export function getAiBugReviewStaleMinutes(): number {
+  const parsed = Number(process.env.AI_BUG_REVIEW_STALE_MINUTES || 15);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 15;
+}

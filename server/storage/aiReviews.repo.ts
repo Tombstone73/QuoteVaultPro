@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   auditLogs,
@@ -58,6 +58,7 @@ export interface AiReviewsRepository {
   markProcessing(orgId: string, reviewId: string, provider: string, model: string): Promise<FeedbackAiReview | null>;
   completeReview(input: CompleteAiReviewInput): Promise<FeedbackAiReview | null>;
   failReview(input: FailAiReviewInput): Promise<FeedbackAiReview | null>;
+  recoverStaleActiveReviewsForBugReport(orgId: string, bugReportId: string, staleBefore: Date, reason: string): Promise<FeedbackAiReview[]>;
   createAuditLog(input: AuditAiReviewInput): Promise<void>;
 }
 
@@ -163,6 +164,7 @@ export class DrizzleAiReviewsRepository implements AiReviewsRepository {
           eq(feedbackAiReviews.bugReportId, input.bugReportId),
           eq(feedbackAiReviews.reviewKind, "bug_review"),
           eq(feedbackAiReviews.isCurrent, true),
+          sql`${feedbackAiReviews.status} NOT IN ('pending', 'processing')`,
         ));
 
       return tx
@@ -252,6 +254,47 @@ export class DrizzleAiReviewsRepository implements AiReviewsRepository {
       ))
       .returning();
     return updated ?? null;
+  }
+
+  async recoverStaleActiveReviewsForBugReport(
+    orgId: string,
+    bugReportId: string,
+    staleBefore: Date,
+    reason: string,
+  ): Promise<FeedbackAiReview[]> {
+    const rows = await db
+      .update(feedbackAiReviews)
+      .set({
+        status: "failed",
+        errorCode: "stale_review_recovered",
+        errorMessage: reason,
+        validationErrors: {
+          recoveredAt: new Date().toISOString(),
+          staleBefore: staleBefore.toISOString(),
+          reason,
+        },
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(feedbackAiReviews.orgId, orgId),
+        eq(feedbackAiReviews.bugReportId, bugReportId),
+        eq(feedbackAiReviews.reviewKind, "bug_review"),
+        eq(feedbackAiReviews.isCurrent, true),
+        or(
+          and(
+            eq(feedbackAiReviews.status, "pending"),
+            sql`${feedbackAiReviews.createdAt} < ${staleBefore}`,
+          ),
+          and(
+            eq(feedbackAiReviews.status, "processing"),
+            sql`coalesce(${feedbackAiReviews.startedAt}, ${feedbackAiReviews.updatedAt}, ${feedbackAiReviews.createdAt}) < ${staleBefore}`,
+          ),
+        ),
+      ))
+      .returning();
+
+    return rows;
   }
 
   async createAuditLog(input: AuditAiReviewInput): Promise<void> {
