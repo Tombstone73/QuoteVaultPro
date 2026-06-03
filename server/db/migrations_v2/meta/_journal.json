@@ -568,6 +568,13 @@
       "when": 1782086400000,
       "tag": "0085_printershero_managed_ai_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1782172800000,
+      "tag": "0086_ai_usage_billing_basis",
+      "breakpoints": true
     }
   ]
 }

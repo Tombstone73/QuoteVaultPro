@@ -6369,12 +6369,14 @@ export const aiUsage = pgTable("ai_usage", {
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   feature: text("feature").$type<AiFeature>().notNull(),
   provider: text("provider").notNull(),
-  model: text("model"),
+  model: text("model").notNull(),
   requestCount: integer("request_count").notNull().default(1),
   inputTokens: integer("input_tokens").notNull().default(0),
   outputTokens: integer("output_tokens").notNull().default(0),
   totalTokens: integer("total_tokens").notNull().default(0),
-  estimatedCostCents: integer("estimated_cost_cents"),
+  estimatedCostCents: integer("estimated_cost_cents").notNull().default(0),
+  costCurrency: text("cost_currency").notNull().default("USD"),
+  pricingSnapshot: jsonb("pricing_snapshot").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   mode: text("mode").notNull(),
   source: text("source").notNull().default("server"),
   metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
@@ -6390,6 +6392,27 @@ export const insertAiUsageSchema = createInsertSchema(aiUsage, {
 }).omit({
   id: true,
   createdAt: true,
+}).superRefine((data, ctx) => {
+  if (data.mode !== "printershero_managed") {
+    return;
+  }
+
+  const snapshot = data.pricingSnapshot;
+  const hasManagedBillingBasis = snapshot
+    && typeof snapshot === "object"
+    && !Array.isArray(snapshot)
+    && "basis" in snapshot
+    && "currency" in snapshot
+    && "provider" in snapshot
+    && "model" in snapshot;
+
+  if (!hasManagedBillingBasis) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["pricingSnapshot"],
+      message: "Printers Hero managed AI usage requires a pricing snapshot with billing basis.",
+    });
+  }
 });
 
 export type AiUsage = typeof aiUsage.$inferSelect;
