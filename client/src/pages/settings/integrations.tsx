@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import qbLogoUrl from '@/assets/integrations/qb-logo-01.png';
+import stripeLogoUrl from '@/assets/integrations/stripe-logo.png';
+import epsLogoUrl from '@/assets/integrations/enhanced-payment-systems-logo.png';
 import { usePageVisible } from "@/hooks/usePageVisible";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
@@ -15,8 +17,9 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
-import { usePaymentSettings, useUpdatePaymentSettings } from "@/hooks/usePaymentSettings";
+import { usePaymentSettings, useUpdatePaymentSettings, type PaymentProvider } from "@/hooks/usePaymentSettings";
 import { QBTransientDisconnectBanner } from "@/components/integrations/QBTransientDisconnectBanner";
+import { PaymentProcessorSettingsCard } from "@/components/settings/PaymentProcessorSettingsCard";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -27,9 +30,7 @@ import {
   Clock,
   AlertCircle,
   ExternalLink,
-  CreditCard,
   Loader2,
-  Lock,
 } from "lucide-react";
 import {
   Table,
@@ -367,13 +368,13 @@ export default function SettingsIntegrations() {
     },
   });
 
-  const { data: stripeStatus, isLoading: isLoadingStripeStatus } = useQuery<StripeStatusEnvelope>({
+  const { data: stripeStatus } = useQuery<StripeStatusEnvelope>({
     queryKey: ["/api/integrations/stripe/status"],
   });
 
-  const { data: paymentSettings, isLoading: isLoadingPaymentSettings } = usePaymentSettings();
+  const { data: paymentSettings } = usePaymentSettings();
   const updatePaymentSettingsMutation = useUpdatePaymentSettings();
-  const [epsProvider, setEpsProvider] = useState<'none' | 'eps'>('none');
+  const [paymentProvider, setPaymentProvider] = useState<PaymentProvider>('none');
   const [epsEnabled, setEpsEnabled] = useState(false);
   const [epsAccountNumber, setEpsAccountNumber] = useState('');
   const [epsApiKey, setEpsApiKey] = useState('');
@@ -381,17 +382,29 @@ export default function SettingsIntegrations() {
 
   useEffect(() => {
     if (!paymentSettings) return;
-    setEpsProvider(paymentSettings.provider);
+    setPaymentProvider(paymentSettings.provider);
     setEpsEnabled(paymentSettings.epsEnabled);
     setEpsAccountNumber(paymentSettings.epsAccountNumber || '');
     setEpsApiKey('');
     setEpsCnpBaseUrl(paymentSettings.epsCnpBaseUrl || 'https://postransactions.com/cnp');
   }, [paymentSettings]);
 
+  const savePaymentProviderDefault = async (provider: PaymentProvider) => {
+    try {
+      await updatePaymentSettingsMutation.mutateAsync({ provider });
+      setPaymentProvider(provider);
+      toast({
+        title: provider === 'none' ? 'Payment processor default cleared' : 'Default payment processor updated',
+      });
+    } catch (error: any) {
+      toast({ title: 'Payment processor default failed', description: error.message, variant: 'destructive' });
+    }
+  };
+
   const saveEpsSettings = async () => {
     try {
       await updatePaymentSettingsMutation.mutateAsync({
-        provider: epsProvider,
+        provider: paymentProvider,
         epsEnabled,
         epsAccountNumber: epsAccountNumber.trim() || null,
         ...(epsApiKey.trim() ? { epsApiKey: epsApiKey.trim() } : {}),
@@ -861,6 +874,17 @@ export default function SettingsIntegrations() {
         return <Badge variant="outline">{status}</Badge>;
     }
   };
+
+  const stripeReady = stripeStatus?.data?.connected === true && stripeStatus.data.chargesEnabled === true;
+  const stripeNeedsSetup = Boolean(stripeStatus?.data?.stripeAccountId) && !stripeReady;
+  const stripeProcessorStatus = stripeReady ? "ready" : stripeNeedsSetup ? "needs_setup" : "off";
+  const epsProcessorStatus = paymentSettings?.epsReady
+    ? "ready"
+    : paymentSettings?.provider === "eps" || paymentSettings?.epsEnabled || epsEnabled
+      ? "needs_setup"
+      : "off";
+  const stripeIsDefault = paymentProvider === "stripe";
+  const epsIsDefault = paymentProvider === "eps";
 
   return (
     <div className="container mx-auto p-6 max-w-6xl">
@@ -1502,43 +1526,23 @@ export default function SettingsIntegrations() {
         </CardContent>
       </Card>
 
-      {/* Stripe Integration */}
-      <Card className="mb-6">
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle>
-                <span className="bg-white/90 rounded-md px-3 py-1.5 inline-flex items-center gap-2 shrink-0">
-                  <CreditCard className="w-5 h-5 text-gray-700" />
-                  <span className="text-sm font-semibold text-gray-800">Stripe (Connect)</span>
-                </span>
-              </CardTitle>
-              <CardDescription>
-                Accept card payments on behalf of each connected organization
-              </CardDescription>
-            </div>
-            {isLoadingStripeStatus ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : stripeStatus?.data?.connected ? (
-              <Badge className="bg-green-500">
-                <CheckCircle2 className="w-3 h-3 mr-1" />
-                Connected
-              </Badge>
-            ) : stripeStatus?.data?.stripeAccountId ? (
-              <Badge variant="secondary">
-                <AlertCircle className="w-3 h-3 mr-1" />
-                Setup Required
-              </Badge>
-            ) : (
-              <Badge variant="outline">
-                <XCircle className="w-3 h-3 mr-1" />
-                Not Connected
-              </Badge>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
+      <div className="mb-3">
+        <h2 className="text-xl font-semibold">Payment Processors</h2>
+        <p className="text-sm text-muted-foreground">
+          Enabled processors can be configured here, but only the default processor is used automatically for hosted invoice payments. Manual payment recording stays separate.
+        </p>
+      </div>
+
+      <PaymentProcessorSettingsCard
+        processorName="Stripe"
+        logoSrc={stripeLogoUrl}
+        logoAlt="Stripe"
+        description="Stripe Connect card payments for hosted invoice payment actions"
+        status={stripeProcessorStatus}
+        isDefault={stripeIsDefault}
+        defaultExpanded={stripeIsDefault || !stripeStatus?.data?.stripeAccountId}
+      >
+        <div className="space-y-4">
             {stripeStatus?.data?.lastError ? (
               <div className="bg-destructive/10 border border-destructive/20 text-destructive rounded-lg p-3 text-sm">
                 <div className="font-semibold mb-1">Last error</div>
@@ -1580,9 +1584,19 @@ export default function SettingsIntegrations() {
 
             <div className="flex flex-wrap gap-2">
               <Button
+                type="button"
+                onClick={() => savePaymentProviderDefault('stripe')}
+                disabled={!stripeReady || stripeIsDefault || updatePaymentSettingsMutation.isPending}
+                variant={stripeIsDefault ? "secondary" : "default"}
+              >
+                {stripeIsDefault ? 'Default processor' : 'Use Stripe as default'}
+              </Button>
+
+              <Button
                 onClick={() => stripeConnectMutation.mutate()}
                 disabled={stripeConnectMutation.isPending}
                 className="min-w-[220px]"
+                variant="outline"
               >
                 <ExternalLink className="w-4 h-4 mr-2" />
                 {stripeStatus?.data?.stripeAccountId ? 'Continue Stripe Setup' : 'Connect Stripe'}
@@ -1608,64 +1622,34 @@ export default function SettingsIntegrations() {
             <p className="text-xs text-muted-foreground">
               You’ll be redirected to Stripe to complete onboarding.
             </p>
-          </div>
-        </CardContent>
-      </Card>
+        </div>
+      </PaymentProcessorSettingsCard>
 
-      {/* EPS Payment Provider */}
-      <Card className="mb-6">
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <CreditCard className="h-5 w-5" />
-                Enhanced Payments Systems
-              </CardTitle>
-              <CardDescription>
-                Optional EPS gateway configuration for invoice payment actions
-              </CardDescription>
-            </div>
-            {isLoadingPaymentSettings ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : paymentSettings?.epsReady ? (
-              <Badge className="bg-green-500">
-                <CheckCircle2 className="mr-1 h-3 w-3" />
-                Ready
-              </Badge>
-            ) : paymentSettings?.provider === "eps" || paymentSettings?.epsEnabled ? (
-              <Badge variant="secondary">
-                <AlertCircle className="mr-1 h-3 w-3" />
-                Needs Setup
-              </Badge>
-            ) : (
-              <Badge variant="outline">
-                <XCircle className="mr-1 h-3 w-3" />
-                Off
-              </Badge>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
+      <PaymentProcessorSettingsCard
+        processorName="Enhanced Payment Systems"
+        logoSrc={epsLogoUrl}
+        logoAlt="Enhanced Payment Systems"
+        description="EPS hosted payment configuration for invoice payment actions"
+        status={epsProcessorStatus}
+        isDefault={epsIsDefault}
+        defaultExpanded={epsIsDefault || !paymentSettings?.epsReady}
+      >
+        <div className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label>Payment provider</Label>
-              <Select value={epsProvider} onValueChange={(value: "none" | "eps") => setEpsProvider(value)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">None</SelectItem>
-                  <SelectItem value="eps">EPS</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
             <div className="flex items-center justify-between gap-3 rounded-md border p-3">
               <div>
                 <Label htmlFor="eps-enabled">Enable EPS</Label>
-                <p className="text-xs text-muted-foreground">Payment actions stay disabled until required fields are present.</p>
+                <p className="text-xs text-muted-foreground">Credentials make EPS available; default selection controls automatic use.</p>
               </div>
               <Switch id="eps-enabled" checked={epsEnabled} onCheckedChange={setEpsEnabled} />
+            </div>
+
+            <div className="rounded-md border p-3">
+              <Label>Default hosted processor</Label>
+              <p className="mt-1 text-sm font-medium">
+                {epsIsDefault ? "EPS is the default processor" : stripeIsDefault ? "Stripe is the default processor" : "No default processor selected"}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">Only one default processor can be saved at a time.</p>
             </div>
 
             <div className="space-y-2">
@@ -1718,7 +1702,7 @@ export default function SettingsIntegrations() {
           </div>
 
           {paymentSettings?.missing?.length ? (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
               Missing: {paymentSettings.missing.join(", ")}
             </div>
           ) : null}
@@ -1732,9 +1716,25 @@ export default function SettingsIntegrations() {
               )}
               Save EPS Settings
             </Button>
+            <Button
+              type="button"
+              variant={epsIsDefault ? "secondary" : "outline"}
+              onClick={() => savePaymentProviderDefault('eps')}
+              disabled={!paymentSettings?.epsReady || epsIsDefault || updatePaymentSettingsMutation.isPending}
+            >
+              {epsIsDefault ? "Default processor" : "Use EPS as default"}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => savePaymentProviderDefault('none')}
+              disabled={paymentProvider === "none" || updatePaymentSettingsMutation.isPending}
+            >
+              Clear hosted default
+            </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </PaymentProcessorSettingsCard>
 
       {/* Data Import / Export */}
       <Card>

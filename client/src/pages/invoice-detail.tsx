@@ -40,6 +40,7 @@ import StripePayDialog from "@/components/payments/StripePayDialog";
 import { QBTransientDisconnectBanner } from "@/components/integrations/QBTransientDisconnectBanner";
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { getInvoiceEditLockMessage } from "@/lib/invoiceEditLockCopy";
+import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "@shared/paymentProviderResolution";
 
 type StripeIntegrationStatusEnvelope = {
   success: boolean;
@@ -296,7 +297,7 @@ export default function InvoiceDetailPage() {
     : 'invoice.pdf';
 
   const canRecordPayment = !!invoice && isStaffUser && invoiceStatus !== 'void' && remainingCents > 0 && !paymentActionsLocked;
-  const epsHostedEnabled =
+  const epsHostedAvailable =
     canRecordPayment &&
     paymentSettings.data?.provider === "eps" &&
     paymentSettings.data?.epsEnabled === true &&
@@ -855,7 +856,7 @@ export default function InvoiceDetailPage() {
       toast({ title: 'QuickBooks sync failed', description: e?.message || 'Unknown error', variant: 'destructive' });
     },
   });
-  const canPayInvoice =
+  const stripeHostedAvailable =
     !!invoice &&
     isStaffUser &&
     invoiceStatus !== 'void' &&
@@ -864,6 +865,16 @@ export default function InvoiceDetailPage() {
     !paymentActionsLocked &&
     stripeConnected &&
     stripeChargesEnabled;
+  const availableHostedPaymentProviders = [
+    stripeHostedAvailable ? "stripe" : null,
+    epsHostedAvailable ? "eps" : null,
+  ].filter((provider): provider is HostedPaymentProvider => provider === "stripe" || provider === "eps");
+  const hostedPaymentResolution = resolveHostedPaymentProvider({
+    configuredDefaultProvider: paymentSettings.data?.provider ?? "none",
+    availableProviders: availableHostedPaymentProviders,
+  });
+  const canPayInvoice = hostedPaymentResolution.provider === "stripe";
+  const epsHostedEnabled = hostedPaymentResolution.provider === "eps";
 
   const orderCustomerName: string | null = order?.customer?.companyName || order?.customer?.name || order?.billToCompany || null;
   const orderCustomerId: string | null = order?.customer?.id || order?.customerId || null;

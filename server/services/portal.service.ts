@@ -39,6 +39,8 @@ import { resolveOriginalFileAccess } from "../lib/supabaseObjectHelpers";
 import { buildProofArtifactSummary, INCOMPLETE_PROOF_MESSAGE, recordProofResponse } from "./proofingService";
 import { recordPortalFollowUpItem } from "./portalFollowUps";
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
+import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "@shared/paymentProviderResolution";
+import { getPaymentSettings } from "./payments/paymentProvider.service";
 
 export type PortalSessionDto = {
   userId: string;
@@ -1573,6 +1575,19 @@ async function getStripeAccountId(organizationId: string): Promise<string> {
   const stripeAccountId = stripeConn?.externalAccountId ? String(stripeConn.externalAccountId) : "";
   if (!stripeAccountId || String(stripeConn?.status || "connected") === "disconnected") {
     throw new PortalAccessError(409, "Stripe is not connected for this organization");
+  }
+
+  const paymentSettings = await getPaymentSettings(organizationId);
+  const availableHostedPaymentProviders = [
+    "stripe",
+    paymentSettings.epsReady ? "eps" : null,
+  ].filter((provider): provider is HostedPaymentProvider => provider === "stripe" || provider === "eps");
+  const hostedPaymentResolution = resolveHostedPaymentProvider({
+    configuredDefaultProvider: paymentSettings.provider,
+    availableProviders: availableHostedPaymentProviders,
+  });
+  if (hostedPaymentResolution.provider !== "stripe") {
+    throw new PortalAccessError(409, "Stripe is not the selected hosted payment processor for this organization");
   }
 
   return stripeAccountId;

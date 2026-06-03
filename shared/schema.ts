@@ -4249,7 +4249,7 @@ export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 export type UpdatePayment = z.infer<typeof updatePaymentSchema>;
 export type Payment = typeof payments.$inferSelect;
 
-export const paymentProviderSchema = z.enum(['none', 'eps']);
+export const paymentProviderSchema = z.enum(['none', 'stripe', 'eps']);
 export const epsPaymentModeSchema = z.enum(['hosted_cnp', 'token_cnp', 'card_present', 'ach', 'gift_card']);
 
 export const organizationPaymentSettings = pgTable("organization_payment_settings", {

@@ -90,7 +90,7 @@ export function sendEpsPhase1Disabled(res: any, action: string) {
 }
 
 const paymentSettingsPatchSchema = z.object({
-  provider: z.enum(["none", "eps"]).optional(),
+  provider: z.enum(["none", "stripe", "eps"]).optional(),
   epsEnabled: z.boolean().optional(),
   epsAccountNumber: z.string().trim().max(100).nullable().optional(),
   epsApiKey: z.string().trim().max(500).nullable().optional(),
