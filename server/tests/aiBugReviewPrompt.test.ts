@@ -5,6 +5,7 @@ describe("buildBugReviewPrompt", () => {
   test("requires advisory-only structured output fields", () => {
     const prompt = buildBugReviewPrompt({
       id: "bug_1",
+      referenceNumber: "B-0001",
       title: "Save fails",
       description: "The save button fails.",
       severity: "high",
@@ -15,6 +16,8 @@ describe("buildBugReviewPrompt", () => {
     });
 
     expect(prompt.system).toContain("advisory-only");
+    expect(prompt.user).toContain("B-0001");
+    expect(prompt.inputSnapshot.referenceNumber).toBe("B-0001");
     expect(prompt.user).toContain("workflowImpact");
     expect(prompt.user).toContain("revenueRisk");
     expect(prompt.user).toContain("suggestedOwner");
@@ -24,6 +27,7 @@ describe("buildBugReviewPrompt", () => {
   test("redacts non-allowlisted metadata and URL query values from input snapshot", () => {
     const prompt = buildBugReviewPrompt({
       id: "bug_1",
+      referenceNumber: "B-0001",
       title: "Save fails",
       description: "The save button fails.",
       severity: "high",

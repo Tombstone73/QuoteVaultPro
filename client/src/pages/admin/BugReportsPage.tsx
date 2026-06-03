@@ -5,6 +5,7 @@ import { Brain, Bug, Download, ExternalLink, FileText, RefreshCw, Send } from "l
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -27,6 +28,7 @@ import type { AiTriageBriefDto, AiTriageBriefListResponse } from "@shared/aiTria
 
 interface BugReportListItem {
   id: string;
+  referenceNumber: string;
   type: "bug" | "feature";
   title: string;
   severity: "low" | "medium" | "high" | "critical";
@@ -115,11 +117,13 @@ const TYPE_LABELS: Record<string, string> = {
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
-async function fetchBugReports(params: { status?: string; severity?: string; type?: string }) {
+async function fetchBugReports(params: { status?: string; severity?: string; type?: string; search?: string; sort?: string }) {
   const qs = new URLSearchParams();
   if (params.status && params.status !== "all")   qs.set("status", params.status);
   if (params.severity && params.severity !== "all") qs.set("severity", params.severity);
   if (params.type && params.type !== "all") qs.set("type", params.type);
+  if (params.search?.trim()) qs.set("search", params.search.trim());
+  if (params.sort && params.sort !== "newest") qs.set("sort", params.sort);
   const res = await fetch(`/api/bug-reports?${qs.toString()}`, { credentials: "include" });
   if (!res.ok) throw new Error("Failed to fetch bug reports");
   const body = await res.json();
@@ -330,6 +334,8 @@ export default function BugReportsPage() {
   const [statusFilter, setStatusFilter]     = useState("all");
   const [severityFilter, setSeverityFilter] = useState("all");
   const [typeFilter, setTypeFilter]         = useState("all");
+  const [searchFilter, setSearchFilter]     = useState("");
+  const [sortFilter, setSortFilter]         = useState("newest");
   const [selectedId, setSelectedId]         = useState<string | null>(null);
   const [selectedBriefId, setSelectedBriefId] = useState<string | null>(null);
   const [noteText, setNoteText]             = useState("");
@@ -338,8 +344,8 @@ export default function BugReportsPage() {
   const isAdminOrOwner = user?.role === "admin" || user?.role === "owner";
 
   const { data: reports, isLoading, refetch, isRefetching } = useQuery<BugReportListItem[]>({
-    queryKey: ["/api/bug-reports", statusFilter, severityFilter, typeFilter],
-    queryFn: () => fetchBugReports({ status: statusFilter, severity: severityFilter, type: typeFilter }),
+    queryKey: ["/api/bug-reports", statusFilter, severityFilter, typeFilter, searchFilter, sortFilter],
+    queryFn: () => fetchBugReports({ status: statusFilter, severity: severityFilter, type: typeFilter, search: searchFilter, sort: sortFilter }),
     enabled: isAdminOrOwner,
   });
 
@@ -396,7 +402,7 @@ export default function BugReportsPage() {
         (old) => old ? { ...old, status: result.status } : old,
       );
       queryClient.setQueryData<BugReportListItem[]>(
-        ["/api/bug-reports", statusFilter, severityFilter, typeFilter],
+        ["/api/bug-reports", statusFilter, severityFilter, typeFilter, searchFilter, sortFilter],
         (old) => old?.map((r) => r.id === result.id ? { ...r, status: result.status } : r),
       );
       toast({ title: "Status updated" });
@@ -544,6 +550,29 @@ export default function BugReportsPage() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="flex min-w-[220px] flex-1 items-center gap-2">
+              <span className="text-sm text-muted-foreground">Search</span>
+              <Input
+                value={searchFilter}
+                onChange={(event) => setSearchFilter(event.target.value)}
+                placeholder="B-0042 or title"
+                className="h-8"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Sort</span>
+              <Select value={sortFilter} onValueChange={setSortFilter}>
+                <SelectTrigger className="h-8 w-[150px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="newest">Newest</SelectItem>
+                  <SelectItem value="oldest">Oldest</SelectItem>
+                  <SelectItem value="reference_asc">Reference A-Z</SelectItem>
+                  <SelectItem value="reference_desc">Reference Z-A</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -560,6 +589,7 @@ export default function BugReportsPage() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>Reference</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Severity</TableHead>
@@ -572,14 +602,14 @@ export default function BugReportsPage() {
               {isLoading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <TableRow key={i}>
-                    {Array.from({ length: 6 }).map((__, j) => (
+                    {Array.from({ length: 7 }).map((__, j) => (
                       <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
                     ))}
                   </TableRow>
                 ))
               ) : !reports || reports.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">
                     No feedback items found matching current filters.
                   </TableCell>
                 </TableRow>
@@ -590,6 +620,9 @@ export default function BugReportsPage() {
                     className="cursor-pointer hover:bg-muted/50"
                     onClick={() => setSelectedId(r.id)}
                   >
+                    <TableCell className="whitespace-nowrap text-xs font-semibold">
+                      {r.referenceNumber}
+                    </TableCell>
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                       {format(new Date(r.createdAt), "MMM d, yyyy HH:mm")}
                     </TableCell>
@@ -636,7 +669,10 @@ export default function BugReportsPage() {
               <SheetHeader>
                 <SheetTitle className="flex items-start gap-2 pr-6 text-wrap">
                   <Bug className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
-                  {detail.title}
+                  <span>
+                    <span className="mr-2 font-mono text-base text-muted-foreground">{detail.referenceNumber}</span>
+                    {detail.title}
+                  </span>
                 </SheetTitle>
                 <SheetDescription className="flex flex-wrap gap-2 items-center">
                   <Badge variant={TYPE_VARIANT[detail.type] ?? "outline"}>
@@ -666,6 +702,11 @@ export default function BugReportsPage() {
               </SheetHeader>
 
               <div className="space-y-5 pt-6">
+                {/* Meta */}
+                <DetailSection label="Reference">
+                  <p className="font-mono text-sm font-semibold">{detail.referenceNumber}</p>
+                </DetailSection>
+
                 {/* Meta */}
                 <DetailSection label="Submitted by">
                   <p className="text-sm">{detail.createdByEmail}</p>
@@ -753,6 +794,7 @@ export default function BugReportsPage() {
                 <AiReviewPanel
                   data={aiReviewData}
                   feedbackType={detail.type}
+                  referenceNumber={detail.referenceNumber}
                   canRunFallback={isAdminOrOwner}
                   error={aiReviewError}
                   isLoading={aiReviewLoading}

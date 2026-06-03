@@ -43,6 +43,39 @@ function formatFilters(filters: Record<string, unknown> | null | undefined): str
   return `Status: ${status}; Severity: ${severity}; Type: ${type}; Limit: ${limit}. Resolved and closed reports excluded.`;
 }
 
+function extractReportReferences(reportSnapshot: unknown): Array<{ id: string; referenceNumber: string; title: string }> {
+  if (!Array.isArray(reportSnapshot)) return [];
+  return reportSnapshot
+    .map((item) => {
+      const row = item && typeof item === "object" ? item as Record<string, unknown> : {};
+      return {
+        id: safeText(row.id),
+        referenceNumber: safeText(row.referenceNumber),
+        title: safeText(row.title),
+      };
+    })
+    .filter((item) => item.referenceNumber);
+}
+
+export function formatReportReferenceList(reportSnapshot: unknown): string {
+  const references = extractReportReferences(reportSnapshot);
+  if (!references.length) return "No report references captured.";
+  return references
+    .slice(0, 40)
+    .map((item) => `${item.referenceNumber}${item.title ? ` ${item.title}` : ""}`)
+    .join("; ");
+}
+
+function buildReferenceLookup(reportSnapshot: unknown): Map<string, string> {
+  const lookup = new Map<string, string>();
+  for (const item of extractReportReferences(reportSnapshot)) {
+    const label = `${item.referenceNumber}${item.title ? ` ${item.title}` : ""}`;
+    lookup.set(item.referenceNumber, label);
+    if (item.id) lookup.set(item.id, label);
+  }
+  return lookup;
+}
+
 function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
   const paragraphs = safeText(text).split(/\n+/).map((part) => part.trim()).filter(Boolean);
   const lines: string[] = [];
@@ -247,6 +280,7 @@ export async function generateAiTriageBriefPdfBytes(brief: AiTriageBriefDto): Pr
   writer.labelValue("Generated", formatDateTime(generatedAt));
   writer.labelValue("Requested by", safeText(brief.requestedByEmail || "Not recorded"));
   writer.labelValue("Filters used", formatFilters(brief.filtersSnapshot));
+  writer.labelValue("Report references", formatReportReferenceList(brief.reportSnapshot));
   writer.cursorY -= 8;
   writer.text(
     "AI Advisory Only. This document is planning guidance only. It does not change ticket status, severity, priority, roadmap data, or work items.",
@@ -286,12 +320,13 @@ export async function generateAiTriageBriefPdfBytes(brief: AiTriageBriefDto): Pr
   renderPrioritySection(writer, "Recommended Next Sprint", result.recommendedNextSprint);
 
   writer.section("Duplicate Signals");
+  const referenceLookup = buildReferenceLookup(brief.reportSnapshot);
   if (!result.duplicateSignals.length) {
     writer.text("None identified.", { size: 10, color: MUTED_COLOR });
   } else {
     result.duplicateSignals.forEach((item, index) => {
       writer.bullet(`${index + 1}. ${item.theme} (${formatPercent(item.confidence)} confidence)`);
-      writer.text(`Reports: ${item.reportIds.join(", ")}`, { size: 9.5, indent: 22, color: MUTED_COLOR, lineHeight: 13 });
+      writer.text(`Reports: ${item.reportIds.map((id) => referenceLookup.get(id) ?? id).join(", ")}`, { size: 9.5, indent: 22, color: MUTED_COLOR, lineHeight: 13 });
       writer.text(`Rationale: ${item.rationale}`, { size: 9.5, indent: 22, color: MUTED_COLOR, lineHeight: 13 });
     });
   }

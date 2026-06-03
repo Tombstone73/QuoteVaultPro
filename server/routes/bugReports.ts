@@ -22,7 +22,7 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { db } from "../db";
 import { bugReports, bugReportNotes, auditLogs } from "@shared/schema";
-import { eq, and, desc, asc, sql } from "drizzle-orm";
+import { eq, and, desc, asc, or, sql } from "drizzle-orm";
 import { getRequestOrganizationId } from "../tenantContext";
 import { isSupabaseConfigured } from "../supabaseStorage";
 
@@ -77,6 +77,8 @@ const listBugReportsQuerySchema = z.object({
   status:   z.string().optional(),
   severity: z.enum(SEVERITY_VALUES).optional(),
   type:     z.enum(["bug", "feature", "all"]).default("all"),
+  search:   z.string().trim().max(120).optional(),
+  sort:     z.enum(["newest", "oldest", "reference_asc", "reference_desc"]).default("newest"),
   limit:    z.coerce.number().int().min(1).max(200).default(50),
   cursor:   z.string().optional(), // createdAt-based ISO string cursor
 });
@@ -338,7 +340,7 @@ export function registerBugReportRoutes(
           status: "open",
           metadata: (metadata as Record<string, unknown>) ?? {},
         })
-        .returning({ id: bugReports.id });
+        .returning({ id: bugReports.id, referenceNumber: bugReports.referenceNumber });
 
       // Org-scoped audit log
       try {
@@ -350,16 +352,16 @@ export function registerBugReportRoutes(
           entityType: "bug_report",
           entityId: created.id,
           entityName: title,
-          description: `Feedback submitted: [${type}] [${severity}] ${title}`,
+          description: `Feedback submitted: ${created.referenceNumber} [${type}] [${severity}] ${title}`,
           ipAddress: req.ip ?? null,
           userAgent,
-          newValues: { type },
+          newValues: { type, referenceNumber: created.referenceNumber },
         });
       } catch (auditErr) {
         console.error("[BugReports] Audit log failed:", auditErr);
       }
 
-      return res.status(201).json({ success: true, data: { id: created.id }, message: "Bug report created." });
+      return res.status(201).json({ success: true, data: { id: created.id, referenceNumber: created.referenceNumber }, message: "Bug report created." });
     } catch (err) {
       console.error("[BugReports] Create failed:", err);
       return res.status(500).json({ success: false, message: "Failed to create bug report." });
@@ -373,7 +375,7 @@ export function registerBugReportRoutes(
       return res.status(400).json({ success: false, message: "Invalid query parameters." });
     }
 
-    const { status, severity, type, limit, cursor } = parseQ.data;
+    const { status, severity, type, search, sort, limit, cursor } = parseQ.data;
     const orgId = getRequestOrganizationId(req);
 
     try {
@@ -381,13 +383,29 @@ export function registerBugReportRoutes(
       if (status)   conditions.push(eq(bugReports.status, status));
       if (severity) conditions.push(eq(bugReports.severity, severity));
       if (type !== "all") conditions.push(eq(bugReports.type, type));
+      if (search) {
+        const pattern = `%${search.replace(/[%_]/g, "\\$&")}%`;
+        conditions.push(or(
+          sql`${bugReports.referenceNumber} ILIKE ${pattern} ESCAPE '\'`,
+          sql`${bugReports.title} ILIKE ${pattern} ESCAPE '\'`,
+        )!);
+      }
       if (cursor) {
         conditions.push(sql`${bugReports.createdAt} < ${cursor}::timestamptz`);
       }
 
+      const orderByColumns = sort === "oldest"
+        ? [asc(bugReports.createdAt)]
+        : sort === "reference_asc"
+          ? [asc(bugReports.referenceNumber), asc(bugReports.createdAt)]
+          : sort === "reference_desc"
+            ? [desc(bugReports.referenceNumber), desc(bugReports.createdAt)]
+            : [desc(bugReports.createdAt)];
+
       const rows = await db
         .select({
           id:               bugReports.id,
+          referenceNumber:  bugReports.referenceNumber,
           type:             bugReports.type,
           title:            bugReports.title,
           severity:         bugReports.severity,
@@ -398,7 +416,7 @@ export function registerBugReportRoutes(
         })
         .from(bugReports)
         .where(and(...conditions))
-        .orderBy(desc(bugReports.createdAt))
+        .orderBy(...orderByColumns)
         .limit(limit);
 
       const nextCursor = rows.length === limit
@@ -440,7 +458,7 @@ export function registerBugReportRoutes(
           entityType: "bug_report",
           entityId: id,
           entityName: row.title,
-          description: `Bug report viewed: [${row.severity}] ${row.title}`,
+          description: `Bug report viewed: ${row.referenceNumber} [${row.severity}] ${row.title}`,
           ipAddress: req.ip ?? null,
           userAgent: req.get("user-agent") ?? "",
         });
@@ -551,7 +569,7 @@ export function registerBugReportRoutes(
     try {
       // Verify report belongs to this org
       const [existing] = await db
-        .select({ id: bugReports.id, title: bugReports.title })
+        .select({ id: bugReports.id, referenceNumber: bugReports.referenceNumber, title: bugReports.title })
         .from(bugReports)
         .where(and(eq(bugReports.orgId, orgId), eq(bugReports.id, id)))
         .limit(1);
@@ -576,10 +594,10 @@ export function registerBugReportRoutes(
           entityType: "bug_report",
           entityId: id,
           entityName: existing.title,
-          description: `Bug report status updated to '${status}': ${existing.title}`,
+          description: `Bug report status updated to '${status}': ${existing.referenceNumber} ${existing.title}`,
           ipAddress: req.ip ?? null,
           userAgent: req.get("user-agent") ?? "",
-          newValues: { status },
+          newValues: { status, referenceNumber: existing.referenceNumber },
         });
       } catch (auditErr) {
         console.error("[BugReports] Status update audit log failed:", auditErr);
@@ -612,7 +630,7 @@ export function registerBugReportRoutes(
     try {
       // Verify report belongs to this org
       const [existing] = await db
-        .select({ id: bugReports.id })
+        .select({ id: bugReports.id, referenceNumber: bugReports.referenceNumber })
         .from(bugReports)
         .where(and(eq(bugReports.orgId, orgId), eq(bugReports.id, id)))
         .limit(1);
@@ -641,8 +659,8 @@ export function registerBugReportRoutes(
           actionType: "CREATE",
           entityType: "bug_report_note",
           entityId: created.id,
-          entityName: `Note on bug report ${id}`,
-          description: `Internal note added to bug report ${id}`,
+          entityName: `Note on bug report ${existing.referenceNumber}`,
+          description: `Internal note added to bug report ${existing.referenceNumber}`,
           ipAddress: req.ip ?? null,
           userAgent: req.get("user-agent") ?? "",
         });

@@ -21,6 +21,7 @@ export interface TriageBriefFilters {
 
 export interface TriageBriefReportRow {
   id: string;
+  referenceNumber: string;
   type: "bug" | "feature";
   title: string;
   description: string;
@@ -156,6 +157,7 @@ export class DrizzleAiTriageBriefsRepository implements AiTriageBriefsRepository
     const rows = await db
       .select({
         id: bugReports.id,
+        referenceNumber: bugReports.referenceNumber,
         type: bugReports.type,
         title: bugReports.title,
         description: bugReports.description,

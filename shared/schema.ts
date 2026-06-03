@@ -6226,6 +6226,7 @@ export const assetLinksRelations = relations(assetLinks, ({ one }) => ({
 export const bugReports = pgTable("bug_reports", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  referenceNumber: text("reference_number").notNull().default(sql`NULL`),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   createdByEmail: text("created_by_email").notNull(),
   type: text("type").notNull().default('bug'), // 'bug' | 'feature'
@@ -6242,6 +6243,8 @@ export const bugReports = pgTable("bug_reports", {
   metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
+  uniqueIndex("bug_reports_reference_number_uidx").on(table.referenceNumber),
+  index("bug_reports_reference_number_idx").on(table.referenceNumber),
   index("bug_reports_org_created_at_idx").on(table.orgId, table.createdAt),
   index("bug_reports_org_severity_idx").on(table.orgId, table.severity),
   index("bug_reports_org_status_idx").on(table.orgId, table.status),

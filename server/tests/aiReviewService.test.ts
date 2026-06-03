@@ -54,6 +54,7 @@ function makeRepo(overrides: Record<string, any> = {}) {
     getBugReportForReview: jest.fn(async () => ({
       id: "bug_1",
       orgId: "org_1",
+      referenceNumber: "B-0001",
       type: "bug",
       title: "Save fails",
       description: "Save fails on quotes.",
@@ -137,6 +138,7 @@ describe("AiReviewService", () => {
       getBugReportForReview: jest.fn(async () => ({
         id: "feature_1",
         orgId: "org_1",
+        referenceNumber: "F-0001",
         type: "feature",
         title: "Add dashboard",
         description: "Add dashboard.",
