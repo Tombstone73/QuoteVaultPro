@@ -2,6 +2,7 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   aiUsage,
+  insertAiUsageSchema,
   organizationAiSettings,
   type AiUsage,
   type InsertAiUsage,
@@ -121,9 +122,10 @@ export class DrizzleAiFoundationRepository implements AiFoundationRepository {
   }
 
   async recordUsage(data: InsertAiUsage): Promise<AiUsage> {
+    const parsed = insertAiUsageSchema.parse(data);
     const [row] = await db
       .insert(aiUsage)
-      .values(data)
+      .values(parsed as InsertAiUsage)
       .returning();
     if (!row) {
       throw new Error("Failed to record AI usage.");
