@@ -11,6 +11,50 @@ function getTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 30000;
 }
 
+function trimTrailingSlashes(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+export function composeOpenAiChatCompletionsEndpoint(endpoint: string, provider: string | null): string {
+  const trimmed = endpoint.trim();
+  if (!trimmed) return trimmed;
+
+  try {
+    const url = new URL(trimmed);
+    const path = trimTrailingSlashes(url.pathname || "");
+    const isOpenAi = provider === "openai";
+    const isOpenAiCompatible = provider === "openai_compatible";
+
+    if (isOpenAi && (path === "" || path === "/")) {
+      url.pathname = "/v1/chat/completions";
+      return url.toString();
+    }
+
+    if ((isOpenAi || isOpenAiCompatible) && path === "/v1") {
+      url.pathname = "/v1/chat/completions";
+      return url.toString();
+    }
+
+    if (isOpenAi && path === "/chat/completions") {
+      url.pathname = "/v1/chat/completions";
+      return url.toString();
+    }
+
+    return trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+function safeEndpointDiagnostic(endpoint: string): string {
+  try {
+    const url = new URL(endpoint);
+    return `${url.host}${url.pathname}`;
+  } catch {
+    return "invalid-endpoint-url";
+  }
+}
+
 export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
   async generateBugReview(request: AiProviderRequest): Promise<AiProviderResponse> {
     const config = request.providerConfig ?? await aiProviderResolver.resolveProvider({
@@ -25,12 +69,13 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       throw new AiProviderUnavailableError(`AI provider ${config.provider} is not supported by the current adapter.`);
     }
 
+    const endpoint = composeOpenAiChatCompletionsEndpoint(config.endpoint, config.provider);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), getTimeoutMs());
     const started = Date.now();
 
     try {
-      const response = await fetch(config.endpoint, {
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -49,7 +94,15 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       });
 
       if (!response.ok) {
-        throw new Error(`AI provider returned HTTP ${response.status}.`);
+        console.warn("[AI_PROVIDER] Provider request failed.", {
+          provider: config.provider,
+          model: config.model,
+          endpoint: safeEndpointDiagnostic(endpoint),
+          status: response.status,
+        });
+        throw new Error(
+          `AI provider endpoint/model is not configured correctly. Provider ${config.provider} returned HTTP ${response.status} for ${safeEndpointDiagnostic(endpoint)} using model ${config.model}.`,
+        );
       }
 
       const body = await response.json() as any;
