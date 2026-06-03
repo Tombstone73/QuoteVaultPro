@@ -15,10 +15,12 @@ import { z } from "zod";
 import { integrationConnections } from "../../shared/schema";
 import { resolveQuickBooksPreferencesFromOrgPreferences, type QuickBooksSyncPolicy } from "../../shared/quickBooksPreferences";
 import { normalizeInvoiceAccountingDisplay, normalizeQuickBooksLineItemsSnapshot } from "../../shared/invoiceAccountingDisplay";
+import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "../../shared/paymentProviderResolution";
 import { emailService } from "../emailService";
 import { jobs } from "../../shared/schema";
 import { storage } from "../storage";
 import { isCanceledOrder } from "../../shared/operationalState";
+import { getPaymentSettings } from "../services/payments/paymentProvider.service";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -426,6 +428,26 @@ export async function registerMvpInvoicingRoutes(
           success: false,
           error: 'Stripe is not connected for this organization.',
           code: 'STRIPE_NOT_CONNECTED',
+        });
+      }
+
+      const paymentSettings = await getPaymentSettings(organizationId);
+      const availableHostedPaymentProviders = [
+        "stripe",
+        paymentSettings.epsReady ? "eps" : null,
+      ].filter((provider): provider is HostedPaymentProvider => provider === "stripe" || provider === "eps");
+      const hostedPaymentResolution = resolveHostedPaymentProvider({
+        configuredDefaultProvider: paymentSettings.provider,
+        availableProviders: availableHostedPaymentProviders,
+      });
+      if (hostedPaymentResolution.provider !== "stripe") {
+        return res.status(409).json({
+          success: false,
+          error: hostedPaymentResolution.reason === "multiple_available_no_default"
+            ? "Multiple hosted payment processors are available. Select a default processor in Accounting Settings before creating an invoice payment."
+            : "Stripe is not the selected hosted payment processor for this organization.",
+          code: "PAYMENT_PROVIDER_NOT_SELECTED",
+          data: hostedPaymentResolution,
         });
       }
 

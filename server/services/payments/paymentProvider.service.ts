@@ -49,7 +49,7 @@ export type RecordHostedResultInput = {
 };
 
 export type SafePaymentSettings = {
-  provider: "none" | "eps";
+  provider: "none" | "stripe" | "eps";
   epsEnabled: boolean;
   epsAccountNumber: string | null;
   epsApiKeyConfigured: boolean;
@@ -107,12 +107,16 @@ export function toSafePaymentSettings(row: OrganizationPaymentSettings | null | 
       )
     : ["hosted_cnp"];
 
-  const provider = row.provider === "eps" ? "eps" : "none";
-  const missing: string[] = [];
-  if (provider !== "eps") missing.push("provider");
-  if (!row.epsEnabled) missing.push("epsEnabled");
-  if (!asString(row.epsAccountNumber)) missing.push("epsAccountNumber");
-  if (!asString(row.epsApiKey)) missing.push("epsApiKey");
+  const provider = row.provider === "eps" || row.provider === "stripe" ? row.provider : "none";
+  const epsMissing: string[] = [];
+  if (!row.epsEnabled) epsMissing.push("epsEnabled");
+  if (!asString(row.epsAccountNumber)) epsMissing.push("epsAccountNumber");
+  if (!asString(row.epsApiKey)) epsMissing.push("epsApiKey");
+  const missing = provider === "none"
+    ? ["provider"]
+    : provider === "eps" || row.epsEnabled
+      ? epsMissing
+      : [];
 
   return {
     provider,
@@ -125,7 +129,7 @@ export function toSafePaymentSettings(row: OrganizationPaymentSettings | null | 
     epsGiftBaseUrl: asString(row.epsGiftBaseUrl) || "https://postransactions.com/gift",
     epsDeviceSerialNumber: asString(row.epsDeviceSerialNumber) || null,
     epsSupportedModes: supportedModes,
-    epsReady: missing.length === 0,
+    epsReady: epsMissing.length === 0,
     missing,
   };
 }
@@ -390,7 +394,7 @@ export async function getPaymentSettings(organizationId: string): Promise<SafePa
 export async function updatePaymentSettings(
   organizationId: string,
   input: Partial<{
-    provider: "none" | "eps";
+    provider: "none" | "stripe" | "eps";
     epsEnabled: boolean;
     epsAccountNumber: string | null;
     epsApiKey: string | null;

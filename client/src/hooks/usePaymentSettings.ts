@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-export type PaymentProvider = "none" | "eps";
+export type PaymentProvider = "none" | "stripe" | "eps";
 export type EpsPaymentMode = "hosted_cnp" | "token_cnp" | "card_present" | "ach" | "gift_card";
 
 export type PaymentSettingsView = {
