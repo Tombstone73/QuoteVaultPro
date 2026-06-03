@@ -1825,7 +1825,7 @@ export async function registerAttachmentRoutes(
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-      const { filename, mimeType, size, purpose, quoteId, orderId } = req.body || {};
+      const { filename, mimeType, size, purpose, quoteId, orderId, temporary } = req.body || {};
       if (!filename || typeof filename !== "string") return res.status(400).json({ error: "filename is required" });
       if (!mimeType || typeof mimeType !== "string") return res.status(400).json({ error: "mimeType is required" });
       if (size == null || Number.isNaN(Number(size))) return res.status(400).json({ error: "size is required" });
@@ -1845,12 +1845,15 @@ export async function registerAttachmentRoutes(
         if (!quote) return res.status(404).json({ error: "Quote not found" });
         if (!assertQuoteEditable(res, quote)) return;
       } else if (purpose === "order-attachment") {
-        if (!orderId || typeof orderId !== "string")
+        const isTemporaryOrderUpload = temporary === true;
+        if (!isTemporaryOrderUpload && (!orderId || typeof orderId !== "string"))
           return res.status(400).json({ error: "orderId is required for order-attachment" });
 
         // Validate order belongs to org
-        const order = await storage.getOrderById(organizationId, orderId);
-        if (!order) return res.status(404).json({ error: "Order not found" });
+        if (!isTemporaryOrderUpload) {
+          const order = await storage.getOrderById(organizationId, orderId);
+          if (!order) return res.status(404).json({ error: "Order not found" });
+        }
       }
 
       const { createUploadSession } = await import("../services/chunkedUploads");
@@ -1859,7 +1862,7 @@ export async function registerAttachmentRoutes(
         createdByUserId: userId,
         purpose,
         quoteId: purpose === "quote-attachment" ? quoteId : null,
-        orderId: purpose === "order-attachment" ? orderId : null,
+        orderId: purpose === "order-attachment" && typeof orderId === "string" ? orderId : null,
         filename,
         mimeType,
         sizeBytes: Number(size),
@@ -1930,11 +1933,12 @@ export async function registerAttachmentRoutes(
       if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
       const { uploadId } = req.params;
-      const { quoteId, orderId } = req.body || {};
+      const { quoteId, orderId, temporary } = req.body || {};
       if (!uploadId) return res.status(400).json({ error: "uploadId is required" });
 
-      // Require either quoteId or orderId
-      if (!quoteId && !orderId) return res.status(400).json({ error: "quoteId or orderId is required" });
+      const isTemporaryOrderUpload = temporary === true;
+      // Require either quoteId/orderId, except finalized TEMP order uploads during /orders/new.
+      if (!quoteId && !orderId && !isTemporaryOrderUpload) return res.status(400).json({ error: "quoteId or orderId is required" });
       if (quoteId && orderId) return res.status(400).json({ error: "Cannot specify both quoteId and orderId" });
 
       if (quoteId) {

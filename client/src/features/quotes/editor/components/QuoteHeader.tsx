@@ -17,6 +17,7 @@ type QuoteHeaderProps = {
     updatedByLabel?: string;
     editMode: boolean;
     editModeDisabled?: boolean;
+    showEditModeToggle?: boolean;
     showReviseButton?: boolean;
     isRevisingQuote?: boolean;
     onBack: () => void;
@@ -37,6 +38,7 @@ export function QuoteHeader({
     updatedByLabel,
     editMode,
     editModeDisabled = false,
+    showEditModeToggle = true,
     showReviseButton = false,
     isRevisingQuote = false,
     onBack,
@@ -92,15 +94,17 @@ export function QuoteHeader({
 
             {/* Right: Edit Mode + Actions */}
             <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2">
-                    <Switch
-                        checked={editMode}
-                        onCheckedChange={onEditModeChange}
-                        disabled={editModeDisabled}
-                        aria-label="Toggle Edit Mode"
-                    />
-                    <span className="text-xs text-muted-foreground">Edit Mode</span>
-                </div>
+                {showEditModeToggle && (
+                    <div className="flex items-center gap-2">
+                        <Switch
+                            checked={editMode}
+                            onCheckedChange={onEditModeChange}
+                            disabled={editModeDisabled}
+                            aria-label="Toggle Edit Mode"
+                        />
+                        <span className="text-xs text-muted-foreground">Edit Mode</span>
+                    </div>
+                )}
 
                 {showReviseButton && !!quoteId && (
                     <Button

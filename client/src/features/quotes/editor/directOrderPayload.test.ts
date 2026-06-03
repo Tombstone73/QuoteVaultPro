@@ -37,6 +37,15 @@ describe("buildDirectOrderPayloadFromEditorState", () => {
       priceBreakdown: { basePrice: 42, optionsPrice: 0, total: 42, formula: "fixture" },
       displayOrder: 0,
       status: "active",
+      pendingOrderAttachments: [
+        {
+          uploadId: "upload-temp-1",
+          fileName: "banner-art.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 12345,
+          uploadedAt: "2026-06-03T12:00:00.000Z",
+        },
+      ],
     };
 
     const payload = buildDirectOrderPayloadFromEditorState({
@@ -92,7 +101,51 @@ describe("buildDirectOrderPayloadFromEditorState", () => {
       requiresProofApproval: true,
       optionSelectionsJson: { schemaVersion: 2, selected: { finish: "hem" } },
       pbv2SnapshotJson: { pricing: { totalCents: 4200 } },
+      pendingOrderAttachmentUploadIds: ["upload-temp-1"],
     });
     expect(payload.lineItems[0]).not.toHaveProperty("quoteLineItemId");
+  });
+
+  test("omits canceled line items and keeps empty TEMP upload lists stable", () => {
+    const payload = buildDirectOrderPayloadFromEditorState({
+      selectedCustomer: undefined,
+      selectedCustomerId: "customer-1",
+      selectedContactId: null,
+      lineItems: [
+        {
+          tempId: "temp-1",
+          productId: "product-1",
+          productName: "Decal",
+          variantId: null,
+          variantName: null,
+          productType: "wide_roll",
+          width: 10,
+          height: 10,
+          quantity: 1,
+          specsJson: {},
+          selectedOptions: [],
+          linePrice: 12,
+          priceBreakdown: { total: 12 },
+          displayOrder: 0,
+          status: "active",
+        } as QuoteLineItemDraft,
+      ],
+      subtotal: 12,
+      effectiveTaxRate: 0,
+      taxAmount: 0,
+      effectiveDiscount: 0,
+      jobLabel: "",
+      orderPoNumber: "",
+      requestedDueDate: "",
+      orderPromisedDate: "",
+      orderPriority: "",
+      orderInternalNotes: "",
+      deliveryMethod: "pickup",
+      shippingCents: 0,
+      quoteNotes: "",
+    });
+
+    expect(payload.lineItems).toHaveLength(1);
+    expect(payload.lineItems[0].pendingOrderAttachmentUploadIds).toEqual([]);
   });
 });

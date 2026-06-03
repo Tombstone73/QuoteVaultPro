@@ -170,7 +170,9 @@ export async function finalizeUploadSession(options: {
     throw new Error("Unsupported upload purpose");
   }
 
-  // For quote attachments we require quoteId; for order attachments we require orderId
+  // For quote attachments we require quoteId. Order attachments may be finalized
+  // without orderId only for draft/new-order TEMP uploads, then linked after
+  // /api/orders succeeds.
   if (meta.purpose === "quote-attachment") {
     if (!options.quoteId) throw new Error("quoteId is required for quote-attachment");
     if (meta.quoteId && meta.quoteId !== options.quoteId) {
@@ -178,11 +180,10 @@ export async function finalizeUploadSession(options: {
     }
     meta.quoteId = options.quoteId;
   } else if (meta.purpose === "order-attachment") {
-    if (!options.orderId) throw new Error("orderId is required for order-attachment");
     if (meta.orderId && meta.orderId !== options.orderId) {
       throw new Error("Upload session orderId mismatch");
     }
-    meta.orderId = options.orderId;
+    meta.orderId = options.orderId ?? null;
   }
 
   if (meta.status === "finalized" && meta.relativePath && meta.checksum) {
@@ -212,10 +213,11 @@ export async function finalizeUploadSession(options: {
   await saveUploadSessionMeta(meta.uploadId, meta);
 
   const storedFilename = generateStoredFilename(meta.originalFilename);
+  const tempOrderResourceId = `draft-${meta.uploadId}`;
   const relativePath = generateRelativePath({
     organizationId: meta.organizationId,
     resourceType: meta.purpose === "quote-attachment" ? "quote" : "order",
-    resourceId: meta.purpose === "quote-attachment" ? options.quoteId! : options.orderId!,
+    resourceId: meta.purpose === "quote-attachment" ? options.quoteId! : (options.orderId ?? tempOrderResourceId),
     storedFilename,
   });
 

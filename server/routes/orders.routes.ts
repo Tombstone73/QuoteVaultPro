@@ -996,6 +996,105 @@ export async function registerOrderRoutes(
         });
     };
 
+    const getPendingOrderAttachmentUploadIds = (lineItem: any): string[] => {
+        const raw = Array.isArray(lineItem?.pendingOrderAttachmentUploadIds)
+            ? lineItem.pendingOrderAttachmentUploadIds
+            : Array.isArray(lineItem?.pendingOrderAttachments)
+                ? lineItem.pendingOrderAttachments.map((attachment: any) => attachment?.uploadId)
+                : [];
+
+        return Array.from(new Set(
+            raw
+                .map((uploadId: unknown) => typeof uploadId === "string" ? uploadId.trim() : "")
+                .filter((uploadId: string) => uploadId.length > 0)
+        ));
+    };
+
+    const promoteDirectOrderPendingArtwork = async (args: {
+        organizationId: string;
+        order: any;
+        sourceLineItems: any[];
+        createdLineItems: any[];
+        userId: string;
+        userName: string;
+        requestedTarget?: string | null;
+    }): Promise<Array<{ lineItemIndex: number; uploadId: string; message: string }>> => {
+        const warnings: Array<{ lineItemIndex: number; uploadId: string; message: string }> = [];
+
+        for (let index = 0; index < args.sourceLineItems.length; index += 1) {
+            const uploadIds = getPendingOrderAttachmentUploadIds(args.sourceLineItems[index]);
+            if (uploadIds.length === 0) continue;
+
+            const createdLineItem = args.createdLineItems[index];
+            const orderLineItemId = createdLineItem?.id ? String(createdLineItem.id) : null;
+            if (!orderLineItemId) {
+                for (const uploadId of uploadIds) {
+                    warnings.push({ lineItemIndex: index, uploadId, message: "Created order line item was not returned for TEMP artwork promotion." });
+                }
+                continue;
+            }
+
+            for (const uploadId of uploadIds) {
+                try {
+                    const attachment = await persistOrderAttachment({
+                        orderId: String(args.order.id),
+                        orderLineItemId,
+                        quoteId: null,
+                        organizationId: args.organizationId,
+                        userId: args.userId,
+                        userName: args.userName,
+                        requestedTarget: args.requestedTarget,
+                        orderNumber: args.order.orderNumber ? String(args.order.orderNumber) : undefined,
+                        role: "artwork",
+                        side: "na",
+                        isPrimary: false,
+                        source: {
+                            kind: "upload-session",
+                            uploadId,
+                            expectedPurpose: "order-attachment",
+                            expectedParentId: String(args.order.id),
+                        },
+                    });
+
+                    await kickoffOrderPdfThumbnailProcessing({
+                        organizationId: args.organizationId,
+                        attachment,
+                        logLabel: "DirectOrderPendingArtwork",
+                    });
+
+                    await createOriginalLineItemFileFromOrderAttachment({
+                        organizationId: args.organizationId,
+                        orderId: String(args.order.id),
+                        lineItemId: orderLineItemId,
+                        attachment,
+                        userId: args.userId,
+                    });
+
+                    try {
+                        await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+                            organizationId: args.organizationId,
+                            lineItemId: orderLineItemId,
+                            actorUserId: args.userId,
+                            reason: "artwork_saved",
+                        }));
+                    } catch (proofSyncError) {
+                        console.error("[AutoProofSync:DIRECT_ORDER_TEMP_ARTWORK] Failed after TEMP artwork promotion (non-fatal):", proofSyncError);
+                    }
+                } catch (error: any) {
+                    console.error("[DirectOrderPendingArtwork] Failed to promote TEMP upload", {
+                        orderId: args.order.id,
+                        orderLineItemId,
+                        uploadId,
+                        error: error?.message || String(error),
+                    });
+                    warnings.push({ lineItemIndex: index, uploadId, message: error?.message || "Failed to promote TEMP artwork upload." });
+                }
+            }
+        }
+
+        return warnings;
+    };
+
     app.get("/api/workflow/order", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
@@ -2041,6 +2140,24 @@ export async function registerOrderRoutes(
                 }
             }
 
+            const pendingArtworkWarnings = await promoteDirectOrderPendingArtwork({
+                organizationId,
+                order,
+                sourceLineItems: lineItems,
+                createdLineItems: Array.isArray((order as any).lineItems) ? (order as any).lineItems : [],
+                userId,
+                userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                requestedTarget: typeof req.body?.requestedStorageTarget === "string"
+                    ? req.body.requestedStorageTarget
+                    : typeof req.body?.storageTarget === "string"
+                        ? req.body.storageTarget
+                        : null,
+            });
+
+            if (pendingArtworkWarnings.length > 0) {
+                (order as any).attachmentPromotionWarnings = pendingArtworkWarnings;
+            }
+
             return order;
             };
 
@@ -2058,10 +2175,20 @@ export async function registerOrderRoutes(
                 createOrderForRequest,
             );
 
+            const attachmentPromotionWarnings = Array.isArray((result.value as any)?.attachmentPromotionWarnings)
+                ? (result.value as any).attachmentPromotionWarnings
+                : [];
+
             res.json({
                 success: true,
-                data: { order: result.value },
-                message: "Order created successfully",
+                data: {
+                    order: result.value,
+                    ...(attachmentPromotionWarnings.length > 0 ? { attachmentPromotionWarnings } : {}),
+                },
+                message: attachmentPromotionWarnings.length > 0
+                    ? "Order created successfully with artwork promotion warnings"
+                    : "Order created successfully",
+                ...(attachmentPromotionWarnings.length > 0 ? { warnings: attachmentPromotionWarnings } : {}),
                 ...result.value,
             });
         } catch (error) {

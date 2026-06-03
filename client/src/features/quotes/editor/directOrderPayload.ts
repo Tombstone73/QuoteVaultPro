@@ -85,6 +85,11 @@ export function buildDirectOrderPayloadFromEditorState(input: BuildDirectOrderPa
             overrideAt: li.overrideAt ?? null,
             overrideByUserId: li.overrideByUserId ?? null,
             overrideReason: li.overrideReason ?? null,
+            pendingOrderAttachmentUploadIds: Array.isArray(li.pendingOrderAttachments)
+                ? li.pendingOrderAttachments
+                    .map((attachment) => attachment?.uploadId)
+                    .filter((uploadId): uploadId is string => typeof uploadId === "string" && uploadId.trim().length > 0)
+                : [],
         }));
 
     const dueDate = input.requestedDueDate ? new Date(`${input.requestedDueDate}T00:00:00.000Z`).toISOString() : null;

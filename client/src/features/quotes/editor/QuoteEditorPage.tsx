@@ -460,7 +460,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     };
 
     // Edit Mode is a UI state (not per-section) and controls whether inputs render at all.
-    const [editMode, setEditMode] = useState(mode !== "view");
+    const [editMode, setEditMode] = useState(createTarget === "order" ? true : mode !== "view");
     const readOnly = !editMode || isLocked;
 
     // Enforce enterprise locking: approved/converted quotes are view-only
@@ -1077,11 +1077,16 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                     showReviseButton={isLocked}
                     isRevisingQuote={reviseMutation.isPending}
                     editMode={editMode}
-                    editModeDisabled={state.isSaving || isLocked}
+                    editModeDisabled={createTarget === "order" ? true : state.isSaving || isLocked}
+                    showEditModeToggle={createTarget !== "order"}
                     onBack={handleBack}
                     onDuplicateQuote={() => setShowDuplicateDialog(true)}
                     onReviseQuote={handleReviseQuote}
                     onEditModeChange={(next) => {
+                        if (createTarget === "order") {
+                            setEditMode(true);
+                            return;
+                        }
                         if (isLocked) {
                             toast({ title: 'Locked', description: lockedHint, variant: 'destructive' });
                             setEditMode(false);
@@ -1163,6 +1168,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             onReorderLineItems={state.handlers.reorderLineItemsByKeys}
                             ensureQuoteId={createTarget === "order" ? undefined : ensureQuoteId}
                             ensureLineItemId={createTarget === "order" ? undefined : state.handlers.ensureLineItemId}
+                            createTarget={createTarget}
                         />
 
                         {/* Quote Summary / Totals - Moved to left column */}
@@ -1212,7 +1218,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
                     {/* RIGHT COLUMN: Fulfillment + Attachments + Info */}
                     <div className="space-y-6 lg:sticky lg:top-4 h-fit">
-                        {state.isInternalUser && (
+                        {state.isInternalUser && createTarget !== "order" && (
                             <Card className="rounded-lg border border-border/40 bg-card/50">
                                 <CardHeader className="pb-3">
                                     <CardTitle className="text-base font-medium">Customer Portal</CardTitle>
