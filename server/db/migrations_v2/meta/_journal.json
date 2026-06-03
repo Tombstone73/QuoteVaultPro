@@ -547,6 +547,13 @@
       "when": 1781827200000,
       "tag": "0082_eps_phase1_hosted_only",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1781913600000,
+      "tag": "0083_feedback_ai_reviews",
+      "breakpoints": true
     }
   ]
 }

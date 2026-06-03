@@ -25,6 +25,21 @@ import {
 } from "./materialInventory";
 import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "./materialWeight";
 import { normalizeMaterialVendorProductUrl } from "./materialVendorPurchasing";
+import {
+  type AiReviewKind,
+  aiReviewKindValues,
+  type AiReviewStatus,
+  aiReviewStatusValues,
+  type AiSeverityLevel,
+  aiSeverityLevelValues,
+  type BugAiReviewResult,
+  type RevenueRisk,
+  revenueRiskValues,
+  type SuggestedOwner,
+  suggestedOwnerValues,
+  type WorkflowImpact,
+  workflowImpactValues,
+} from "./aiReviewContracts";
 
 // ============================================================
 // DOWNLOAD INTENT (Future-proofing for preflight/print variants)
@@ -6222,6 +6237,71 @@ export const bugReports = pgTable("bug_reports", {
 
 export type BugReport = typeof bugReports.$inferSelect;
 export type InsertBugReport = typeof bugReports.$inferInsert;
+
+// ============================================================
+// FEEDBACK AI REVIEWS - advisory org-scoped AI review history
+// ============================================================
+export const feedbackAiReviews = pgTable("feedback_ai_reviews", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  bugReportId: varchar("bug_report_id").notNull().references(() => bugReports.id, { onDelete: "cascade" }),
+  reviewKind: text("review_kind").$type<AiReviewKind>().notNull().default("bug_review"),
+  status: text("status").$type<AiReviewStatus>().notNull().default("pending"),
+  isCurrent: boolean("is_current").notNull().default(true),
+  requestedByUserId: varchar("requested_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  requestedByEmail: text("requested_by_email").notNull(),
+  provider: text("provider"),
+  model: text("model"),
+  providerMetadata: jsonb("provider_metadata").$type<Record<string, unknown>>(),
+  promptVersion: text("prompt_version").notNull(),
+  inputSnapshot: jsonb("input_snapshot").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  result: jsonb("result").$type<BugAiReviewResult>(),
+  summary: text("summary"),
+  severityAssessment: text("severity_assessment").$type<AiSeverityLevel>(),
+  businessImpact: text("business_impact").$type<AiSeverityLevel>(),
+  urgency: text("urgency").$type<AiSeverityLevel>(),
+  implementationPriority: text("implementation_priority").$type<AiSeverityLevel>(),
+  workflowImpact: text("workflow_impact").$type<WorkflowImpact>(),
+  revenueRisk: text("revenue_risk").$type<RevenueRisk>(),
+  suggestedOwner: text("suggested_owner").$type<SuggestedOwner>(),
+  confidence: decimal("confidence", { precision: 4, scale: 3 }),
+  validationErrors: jsonb("validation_errors").$type<unknown>(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("feedback_ai_reviews_org_bug_current_idx").on(table.orgId, table.bugReportId, table.isCurrent),
+  index("feedback_ai_reviews_org_status_created_idx").on(table.orgId, table.status, table.createdAt),
+  index("feedback_ai_reviews_org_kind_created_idx").on(table.orgId, table.reviewKind, table.createdAt),
+  index("feedback_ai_reviews_org_suggested_owner_idx").on(table.orgId, table.suggestedOwner),
+  index("feedback_ai_reviews_org_workflow_impact_idx").on(table.orgId, table.workflowImpact),
+  index("feedback_ai_reviews_org_revenue_risk_idx").on(table.orgId, table.revenueRisk),
+  uniqueIndex("feedback_ai_reviews_one_current_bug_review_uidx")
+    .on(table.orgId, table.bugReportId, table.reviewKind)
+    .where(sql`${table.isCurrent} = true`),
+]);
+
+export const insertFeedbackAiReviewSchema = createInsertSchema(feedbackAiReviews, {
+  reviewKind: z.enum(aiReviewKindValues),
+  status: z.enum(aiReviewStatusValues),
+  severityAssessment: z.enum(aiSeverityLevelValues).optional().nullable(),
+  businessImpact: z.enum(aiSeverityLevelValues).optional().nullable(),
+  urgency: z.enum(aiSeverityLevelValues).optional().nullable(),
+  implementationPriority: z.enum(aiSeverityLevelValues).optional().nullable(),
+  workflowImpact: z.enum(workflowImpactValues).optional().nullable(),
+  revenueRisk: z.enum(revenueRiskValues).optional().nullable(),
+  suggestedOwner: z.enum(suggestedOwnerValues).optional().nullable(),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type FeedbackAiReview = typeof feedbackAiReviews.$inferSelect;
+export type InsertFeedbackAiReview = typeof feedbackAiReviews.$inferInsert;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // BUG REPORT NOTES — admin-only internal notes per bug report
