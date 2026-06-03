@@ -46,11 +46,7 @@ export function OrderStatusPillSelector({
   }
 
   if (!pills || pills.length === 0) {
-    return (
-      <span className="text-sm text-muted-foreground">
-        No status pills configured for this state
-      </span>
-    );
+    return null;
   }
 
   return (
