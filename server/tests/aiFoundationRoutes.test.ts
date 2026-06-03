@@ -130,7 +130,10 @@ describe("AI foundation routes", () => {
       .send({ mode: "bring_your_own", provider: "openai", model: "gpt-test", apiKey: "sk-secret", bugReviewEnabled: true, triageBriefEnabled: true });
 
     expect(response.status).toBe(200);
-    expect(updateSettings).toHaveBeenCalledWith("org_1", expect.objectContaining({ apiKey: "sk-secret" }));
+    expect(updateSettings).toHaveBeenCalledWith("org_1", expect.objectContaining({
+      apiKey: "sk-secret",
+      triageBriefEnabled: true,
+    }));
     expect(JSON.stringify(response.body)).not.toContain("sk-secret");
   });
 });
