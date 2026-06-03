@@ -22,19 +22,29 @@ jest.mock("@/components/ui/sheet", () => ({
 
 let AiTriageBriefDetail: typeof import("./BugReportsPage").AiTriageBriefDetail;
 let AiTriageBriefHistoryPanel: typeof import("./BugReportsPage").AiTriageBriefHistoryPanel;
+let BugReportFiltersBar: typeof import("./BugReportsPage").BugReportFiltersBar;
+let SortableTableHead: typeof import("./BugReportsPage").SortableTableHead;
 let canGenerateAiTriageBrief: typeof import("./BugReportsPage").canGenerateAiTriageBrief;
 let canExportAiTriageBriefPdf: typeof import("./BugReportsPage").canExportAiTriageBriefPdf;
 let downloadAiTriageBriefPdf: typeof import("./BugReportsPage").downloadAiTriageBriefPdf;
+let getNextBugReportSortState: typeof import("./BugReportsPage").getNextBugReportSortState;
+let getTriageBriefHistorySummary: typeof import("./BugReportsPage").getTriageBriefHistorySummary;
 let hasActiveTriageBrief: typeof import("./BugReportsPage").hasActiveTriageBrief;
+let sortBugReportsForDisplay: typeof import("./BugReportsPage").sortBugReportsForDisplay;
 
 beforeAll(async () => {
   const module = await import("./BugReportsPage");
   AiTriageBriefDetail = module.AiTriageBriefDetail;
   AiTriageBriefHistoryPanel = module.AiTriageBriefHistoryPanel;
+  BugReportFiltersBar = module.BugReportFiltersBar;
+  SortableTableHead = module.SortableTableHead;
   canGenerateAiTriageBrief = module.canGenerateAiTriageBrief;
   canExportAiTriageBriefPdf = module.canExportAiTriageBriefPdf;
   downloadAiTriageBriefPdf = module.downloadAiTriageBriefPdf;
+  getNextBugReportSortState = module.getNextBugReportSortState;
+  getTriageBriefHistorySummary = module.getTriageBriefHistorySummary;
   hasActiveTriageBrief = module.hasActiveTriageBrief;
+  sortBugReportsForDisplay = module.sortBugReportsForDisplay;
 });
 
 function baseBrief(overrides: Partial<AiTriageBriefDto> = {}): AiTriageBriefDto {
@@ -84,7 +94,45 @@ const completedResult: NonNullable<AiTriageBriefDto["result"]> = {
   confidence: 0.75,
 };
 
+function report(overrides: Partial<import("./BugReportsPage").BugReportListItem>): import("./BugReportsPage").BugReportListItem {
+  return {
+    id: overrides.id ?? "report_1",
+    referenceNumber: overrides.referenceNumber ?? "B-0001",
+    type: overrides.type ?? "bug",
+    title: overrides.title ?? "Default report",
+    severity: overrides.severity ?? "medium",
+    status: overrides.status ?? "open",
+    createdAt: overrides.createdAt ?? "2026-01-01T00:00:00Z",
+    createdByEmail: overrides.createdByEmail ?? "admin@example.test",
+    url: overrides.url ?? "https://example.test",
+  };
+}
+
 describe("AI Triage Brief UI", () => {
+  test("renders compact filter bar with Filters inline and search using remaining width", () => {
+    const html = renderToStaticMarkup(
+      <BugReportFiltersBar
+        statusFilter="all"
+        severityFilter="all"
+        typeFilter="all"
+        searchFilter=""
+        onStatusChange={() => undefined}
+        onSeverityChange={() => undefined}
+        onTypeChange={() => undefined}
+        onSearchChange={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Filters");
+    expect(html).toContain("Status");
+    expect(html).toContain("Severity");
+    expect(html).toContain("Type");
+    expect(html).toContain("Search");
+    expect(html).toContain("flex flex-wrap items-center gap-3");
+    expect(html).toContain("flex-1");
+    expect(html).not.toContain("<h3");
+  });
+
   test("detects active briefs for polling", () => {
     expect(hasActiveTriageBrief({ briefs: [baseBrief({ status: "processing" })], canGenerate: true, featureEnabled: true })).toBe(true);
     expect(hasActiveTriageBrief({ briefs: [baseBrief({ status: "completed" })], canGenerate: true, featureEnabled: true })).toBe(false);
@@ -113,6 +161,7 @@ describe("AI Triage Brief UI", () => {
         data={{ briefs: [], canGenerate: true, featureEnabled: true }}
         isLoading={false}
         onSelect={() => undefined}
+        isExpanded
       />,
     );
 
@@ -129,11 +178,135 @@ describe("AI Triage Brief UI", () => {
         data={{ briefs: [], canGenerate: false, featureEnabled: false }}
         isLoading={false}
         onSelect={() => undefined}
+        isExpanded
       />,
     );
 
     expect(html).toContain("AI Triage Brief is disabled in AI Settings");
   });
+
+  test("history is collapsed by default and shows summary when collapsed", () => {
+    const data: AiTriageBriefListResponse = {
+      briefs: [
+        baseBrief({ id: "brief_1", createdAt: "2026-06-01T16:00:00Z" }),
+        baseBrief({ id: "brief_2", createdAt: "2026-06-03T16:00:00Z" }),
+      ],
+      canGenerate: true,
+      featureEnabled: true,
+    };
+    const html = renderToStaticMarkup(
+      <AiTriageBriefHistoryPanel
+        data={data}
+        isLoading={false}
+        onSelect={() => undefined}
+      />,
+    );
+
+    expect(getTriageBriefHistorySummary(data)).toEqual({ count: 2, latestLabel: "Jun 3, 2026" });
+    expect(html).toContain("AI Triage Brief History (2)");
+    expect(html).toContain("Latest: Jun 3, 2026");
+    expect(html).toContain("Expand");
+    expect(html).toContain("Active reports only");
+    expect(html).not.toContain("Normal triage briefs analyze active feedback only");
+    expect(html).not.toContain("admin@example.test");
+  });
+
+  test("history expands and collapses using the expanded prop", () => {
+    const data: AiTriageBriefListResponse = {
+      briefs: [baseBrief({ id: "brief_1", summary: "Quote save reliability", createdAt: "2026-06-03T00:00:00Z" })],
+      canGenerate: true,
+      featureEnabled: true,
+    };
+    const collapsed = renderToStaticMarkup(
+      <AiTriageBriefHistoryPanel data={data} isLoading={false} onSelect={() => undefined} isExpanded={false} />,
+    );
+    const expanded = renderToStaticMarkup(
+      <AiTriageBriefHistoryPanel data={data} isLoading={false} onSelect={() => undefined} isExpanded />,
+    );
+
+    expect(collapsed).toContain("Expand");
+    expect(collapsed).not.toContain("Quote save reliability");
+    expect(expanded).toContain("Collapse");
+    expect(expanded).toContain("Quote save reliability");
+    expect(expanded).toContain("admin@example.test");
+  });
+
+  test("cycles table sort state and renders sort indicators", () => {
+    const asc = getNextBugReportSortState({ key: null, direction: null }, "referenceNumber");
+    const desc = getNextBugReportSortState(asc, "referenceNumber");
+    const reset = getNextBugReportSortState(desc, "referenceNumber");
+    const ascHtml = renderToStaticMarkup(
+      <table>
+        <thead>
+          <tr>
+            <SortableTableHead label="Reference" sortKey="referenceNumber" sortState={asc} onSort={() => undefined} />
+          </tr>
+        </thead>
+      </table>,
+    );
+    const descHtml = renderToStaticMarkup(
+      <table>
+        <thead>
+          <tr>
+            <SortableTableHead label="Reference" sortKey="referenceNumber" sortState={desc} onSort={() => undefined} />
+          </tr>
+        </thead>
+      </table>,
+    );
+
+    expect(asc).toEqual({ key: "referenceNumber", direction: "asc" });
+    expect(desc).toEqual({ key: "referenceNumber", direction: "desc" });
+    expect(reset).toEqual({ key: null, direction: null });
+    expect(ascHtml).toContain("▲");
+    expect(descHtml).toContain("▼");
+  });
+
+  test("reference sort uses prefix and numeric portions", () => {
+    const sorted = sortBugReportsForDisplay([
+      report({ id: "b100", referenceNumber: "B-0100" }),
+      report({ id: "f2", referenceNumber: "F-0002", type: "feature" }),
+      report({ id: "b2", referenceNumber: "B-0002" }),
+      report({ id: "b10", referenceNumber: "B-0010" }),
+    ], { key: "referenceNumber", direction: "asc" });
+
+    expect(sorted.map((item) => item.referenceNumber)).toEqual(["B-0002", "B-0010", "B-0100", "F-0002"]);
+  });
+
+  test("created sort preserves newest-first default and supports explicit created sort", () => {
+    const items = [
+      report({ id: "old", referenceNumber: "B-0001", createdAt: "2026-01-01T00:00:00Z" }),
+      report({ id: "new", referenceNumber: "B-0002", createdAt: "2026-06-01T00:00:00Z" }),
+    ];
+
+    expect(sortBugReportsForDisplay(items, { key: null, direction: null }).map((item) => item.id)).toEqual(["new", "old"]);
+    expect(sortBugReportsForDisplay(items, { key: "createdAt", direction: "asc" }).map((item) => item.id)).toEqual(["old", "new"]);
+  });
+
+  test("severity and status sorts use workflow order", () => {
+    const severitySorted = sortBugReportsForDisplay([
+      report({ id: "critical", severity: "critical" }),
+      report({ id: "low", severity: "low" }),
+      report({ id: "high", severity: "high" }),
+    ], { key: "severity", direction: "asc" });
+    const statusSorted = sortBugReportsForDisplay([
+      report({ id: "closed", status: "closed" }),
+      report({ id: "review", status: "in_review" }),
+      report({ id: "open", status: "open" }),
+    ], { key: "status", direction: "asc" });
+
+    expect(severitySorted.map((item) => item.id)).toEqual(["low", "high", "critical"]);
+    expect(statusSorted.map((item) => item.id)).toEqual(["open", "review", "closed"]);
+  });
+
+  test("search results can still be sorted client-side", () => {
+    const searchResults = [
+      report({ id: "b10", referenceNumber: "B-0010", title: "Quote save" }),
+      report({ id: "b2", referenceNumber: "B-0002", title: "Quote save" }),
+    ];
+
+    expect(sortBugReportsForDisplay(searchResults, { key: "referenceNumber", direction: "asc" }).map((item) => item.id)).toEqual(["b2", "b10"]);
+  });
+
 
   test("renders pending, failed, and completed detail states", () => {
     const pending = renderToStaticMarkup(<AiTriageBriefDetail brief={baseBrief({ status: "pending" })} />);
