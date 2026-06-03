@@ -1,6 +1,6 @@
 export type InvoicePaymentStatus = 'unpaid' | 'partial' | 'paid' | 'refunded';
 
-export type PaymentStatus = 'pending' | 'succeeded' | 'failed' | 'canceled' | 'refunded' | 'voided';
+export type PaymentStatus = 'pending' | 'succeeded' | 'captured' | 'failed' | 'canceled' | 'refunded' | 'voided';
 
 export type PaymentRollupInput = {
   id?: string | number | null | undefined;
@@ -37,6 +37,7 @@ const normalizeStatus = (raw: unknown): PaymentStatus | 'unknown' => {
   const s = String(raw).trim().toLowerCase();
   if (s === 'pending') return 'pending';
   if (s === 'succeeded') return 'succeeded';
+  if (s === 'captured') return 'captured';
   if (s === 'failed') return 'failed';
   if (s === 'canceled' || s === 'cancelled') return 'canceled';
   if (s === 'refunded') return 'refunded';
@@ -73,7 +74,7 @@ export function computeInvoicePaymentRollup(params: {
     const status = normalizeStatus(p.status);
     const amountCents = toSafeCents(p.amountCents);
 
-    if (status === 'succeeded') {
+    if (status === 'succeeded' || status === 'captured') {
       hadSucceeded = true;
       paid += amountCents;
     } else if (status === 'refunded') {
