@@ -22,12 +22,14 @@ jest.mock("@/components/ui/sheet", () => ({
 
 let AiTriageBriefDetail: typeof import("./BugReportsPage").AiTriageBriefDetail;
 let AiTriageBriefHistoryPanel: typeof import("./BugReportsPage").AiTriageBriefHistoryPanel;
+let canGenerateAiTriageBrief: typeof import("./BugReportsPage").canGenerateAiTriageBrief;
 let hasActiveTriageBrief: typeof import("./BugReportsPage").hasActiveTriageBrief;
 
 beforeAll(async () => {
   const module = await import("./BugReportsPage");
   AiTriageBriefDetail = module.AiTriageBriefDetail;
   AiTriageBriefHistoryPanel = module.AiTriageBriefHistoryPanel;
+  canGenerateAiTriageBrief = module.canGenerateAiTriageBrief;
   hasActiveTriageBrief = module.hasActiveTriageBrief;
 });
 
@@ -82,6 +84,16 @@ describe("AI Triage Brief UI", () => {
   test("detects active briefs for polling", () => {
     expect(hasActiveTriageBrief({ briefs: [baseBrief({ status: "processing" })], canGenerate: true, featureEnabled: true })).toBe(true);
     expect(hasActiveTriageBrief({ briefs: [baseBrief({ status: "completed" })], canGenerate: true, featureEnabled: true })).toBe(false);
+  });
+
+  test("enables Generate AI Triage Brief only when capability is enabled", () => {
+    const enabled: AiTriageBriefListResponse = { briefs: [], canGenerate: true, featureEnabled: true };
+    const disabled: AiTriageBriefListResponse = { briefs: [], canGenerate: false, featureEnabled: false };
+
+    expect(canGenerateAiTriageBrief(enabled, false)).toBe(true);
+    expect(canGenerateAiTriageBrief(enabled, true)).toBe(false);
+    expect(canGenerateAiTriageBrief(disabled, false)).toBe(false);
+    expect(canGenerateAiTriageBrief(undefined, false)).toBe(false);
   });
 
   test("renders no brief state", () => {

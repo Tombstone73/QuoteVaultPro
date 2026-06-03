@@ -333,10 +333,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // MVP Invoicing + Payments routes extracted to ./routes/mvpInvoicing.routes.ts (do NOT re-add here)
   await registerMvpInvoicingRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
 
+  // AI triage routes must be registered before Bug Reports' /:id detail route.
+  registerAiTriageBriefRoutes(app, { isAuthenticated, tenantContext });
+
   // Bug report routes extracted to ./routes/bugReports.ts (do NOT re-add here)
   registerBugReportRoutes(app, { isAuthenticated, tenantContext });
   registerAiReviewRoutes(app, { isAuthenticated, tenantContext });
-  registerAiTriageBriefRoutes(app, { isAuthenticated, tenantContext });
 
   // Admin Storage Settings routes extracted to ./routes/adminStorage.routes.ts (do NOT re-add here)
 

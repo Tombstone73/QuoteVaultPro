@@ -96,6 +96,19 @@ describe("AI triage brief routes", () => {
     expect(listBriefs).not.toHaveBeenCalled();
   });
 
+  test("list route is not shadowed by a later bug report detail route", async () => {
+    const app = buildApp();
+    app.get("/api/bug-reports/:id", (_req, res) => {
+      res.status(418).json({ success: false, message: "shadowed" });
+    });
+
+    const response = await request(app).get("/api/bug-reports/ai-triage-briefs");
+
+    expect(response.status).toBe(200);
+    expect(response.body.message).not.toBe("shadowed");
+    expect(listBriefs).toHaveBeenCalledWith("org_1");
+  });
+
   test("POST returns 503 when triage feature is disabled", async () => {
     getCapabilities.mockResolvedValueOnce({
       enabled: true,

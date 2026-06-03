@@ -269,6 +269,10 @@ export function hasActiveTriageBrief(data: AiTriageBriefListResponse | undefined
   return Boolean(data?.briefs.some((brief) => brief.status === "pending" || brief.status === "processing"));
 }
 
+export function canGenerateAiTriageBrief(data: AiTriageBriefListResponse | undefined, isPending: boolean): boolean {
+  return Boolean(data?.featureEnabled && data?.canGenerate && !isPending);
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function BugReportsPage() {
@@ -430,11 +434,7 @@ export default function BugReportsPage() {
             variant="default"
             size="sm"
             onClick={() => createTriageBriefMutation.mutate()}
-            disabled={
-              createTriageBriefMutation.isPending ||
-              !triageBriefData?.featureEnabled ||
-              !triageBriefData?.canGenerate
-            }
+            disabled={!canGenerateAiTriageBrief(triageBriefData, createTriageBriefMutation.isPending)}
             className="gap-2"
           >
             <Brain className="h-4 w-4" />
@@ -819,9 +819,9 @@ export function AiTriageBriefHistoryPanel({
   isLoading: boolean;
   onSelect: (id: string) => void;
 }) {
-  const disabledMessage = !data?.featureEnabled
+  const disabledMessage = data?.featureEnabled === false
     ? "AI Triage Brief is disabled in AI Settings."
-    : !data?.canGenerate
+    : data && !data.canGenerate
       ? "AI Triage Brief is available to admins and owners only."
       : null;
 
