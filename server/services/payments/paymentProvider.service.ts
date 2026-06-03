@@ -31,6 +31,23 @@ type ProviderResult = {
   reused?: boolean;
 };
 
+export type EpsHostedResult = "approved" | "failed" | "canceled";
+
+type HostedResultPaymentStatus = "captured" | "failed" | "canceled";
+
+export type RecordHostedResultInput = {
+  organizationId: string;
+  paymentId: string;
+  epsTransactionId: string;
+  authCode?: string | null;
+  approvedAmountCents: number;
+  responseCode?: string | null;
+  responseMessage?: string | null;
+  result: EpsHostedResult;
+  amountOverride?: boolean;
+  actor?: Actor;
+};
+
 export type SafePaymentSettings = {
   provider: "none" | "eps";
   epsEnabled: boolean;
@@ -227,6 +244,33 @@ export function validateEpsIdempotencyKey(input: unknown): string {
     throw new PaymentProviderError("idempotencyKey is required and must be 8-160 characters.", "IDEMPOTENCY_KEY_REQUIRED", 400);
   }
   return key;
+}
+
+export function mapHostedResultToPaymentStatus(result: EpsHostedResult): HostedResultPaymentStatus {
+  if (result === "approved") return "captured";
+  if (result === "failed") return "failed";
+  if (result === "canceled") return "canceled";
+  throw new PaymentProviderError("Invalid EPS hosted payment result.", "INVALID_EPS_RESULT", 400);
+}
+
+export function validateHostedResultAmount(input: {
+  pendingAmountCents: number;
+  approvedAmountCents: number;
+  result: EpsHostedResult;
+  amountOverride?: boolean;
+}) {
+  const pendingAmountCents = Math.max(0, Math.round(Number(input.pendingAmountCents || 0)));
+  const approvedAmountCents = Math.max(0, Math.round(Number(input.approvedAmountCents || 0)));
+
+  if (input.result === "approved" && approvedAmountCents <= 0) {
+    throw new PaymentProviderError("approvedAmountCents must be greater than 0 for approved EPS payments.", "INVALID_APPROVED_AMOUNT", 400);
+  }
+  if (input.result === "approved" && approvedAmountCents !== pendingAmountCents && !input.amountOverride) {
+    throw new PaymentProviderError("Approved amount must match the pending EPS payment amount unless amountOverride is explicitly true.", "EPS_AMOUNT_MISMATCH", 409);
+  }
+  if (input.result === "approved" && approvedAmountCents > pendingAmountCents) {
+    throw new PaymentProviderError("Approved amount cannot exceed the pending EPS payment amount.", "OVERPAYMENT_NOT_ALLOWED", 400);
+  }
 }
 
 function existingPaymentResult(payment: any): ProviderResult {
@@ -491,6 +535,182 @@ export async function createHostedSession(input: {
   });
 
   return { payment, response, hostedPaymentUrl };
+}
+
+export async function recordHostedResult(input: RecordHostedResultInput): Promise<ProviderResult & { invoice: Record<string, unknown> | null }> {
+  const paymentId = asString(input.paymentId);
+  const epsTransactionId = asString(input.epsTransactionId);
+  const result = input.result;
+  const nextStatus = mapHostedResultToPaymentStatus(result);
+  const approvedAmountCents = Math.max(0, Math.round(Number(input.approvedAmountCents || 0)));
+
+  if (!paymentId) {
+    throw new PaymentProviderError("paymentId is required.", "PAYMENT_ID_REQUIRED", 400);
+  }
+  if (!epsTransactionId) {
+    throw new PaymentProviderError("EPS transaction id is required.", "EPS_TRANSACTION_ID_REQUIRED", 400);
+  }
+
+  const resultRecord = await db.transaction(async (tx) => {
+    const [pendingPayment] = await tx
+      .select()
+      .from(payments)
+      .where(and(eq(payments.id, paymentId), eq(payments.organizationId, input.organizationId)))
+      .limit(1);
+
+    if (!pendingPayment) {
+      throw new PaymentProviderError("Pending EPS payment not found.", "PAYMENT_NOT_FOUND", 404);
+    }
+    if (
+      String((pendingPayment as any).provider || "").toLowerCase() !== "eps" ||
+      String((pendingPayment as any).epsMode || "").toLowerCase() !== "hosted_cnp" ||
+      String((pendingPayment as any).status || "").toLowerCase() !== "pending"
+    ) {
+      throw new PaymentProviderError("Only pending EPS hosted payments can be confirmed manually.", "EPS_HOSTED_PAYMENT_NOT_PENDING", 409);
+    }
+
+    const [duplicateTransaction] = await tx
+      .select({ id: payments.id })
+      .from(payments)
+      .where(
+        and(
+          eq(payments.organizationId, input.organizationId),
+          eq(payments.provider, "eps"),
+          eq(payments.providerTransactionId, epsTransactionId),
+        ),
+      )
+      .limit(1);
+
+    if (duplicateTransaction) {
+      throw new PaymentProviderError("This EPS transaction id has already been recorded.", "EPS_TRANSACTION_DUPLICATE", 409);
+    }
+
+    const pendingAmountCents = Math.max(0, Math.round(Number((pendingPayment as any).amountCents || 0)));
+    validateHostedResultAmount({
+      pendingAmountCents,
+      approvedAmountCents,
+      result,
+      amountOverride: input.amountOverride,
+    });
+
+    const now = new Date();
+    const amountOverride = result === "approved" && approvedAmountCents !== pendingAmountCents;
+    const existingMetadata = ((pendingPayment as any).metadata && typeof (pendingPayment as any).metadata === "object")
+      ? (pendingPayment as any).metadata
+      : {};
+    const nextAmountCents = result === "approved" ? approvedAmountCents : pendingAmountCents;
+
+    const [updated] = await tx
+      .update(payments)
+      .set({
+        status: nextStatus,
+        amount: formatCentsAsEpsAmount(nextAmountCents),
+        amountCents: nextAmountCents,
+        providerTransactionId: epsTransactionId,
+        epsAuthCode: asString(input.authCode) || null,
+        epsResponseCode: asString(input.responseCode) || null,
+        epsResponseMessage: asString(input.responseMessage) || null,
+        epsApprovedAmountCents: approvedAmountCents,
+        metadata: {
+          ...existingMetadata,
+          eps: {
+            ...((existingMetadata as any).eps || {}),
+            manualHostedResult: {
+              result,
+              recordedAt: now.toISOString(),
+              recordedByUserId: input.actor?.userId || null,
+              amountOverride,
+              responseCode: asString(input.responseCode) || null,
+            },
+          },
+        } as any,
+        notes:
+          result === "approved"
+            ? "EPS hosted payment manually confirmed from EPS portal"
+            : `EPS hosted payment manually marked ${result} from EPS portal`,
+        note:
+          result === "approved"
+            ? "EPS hosted payment manually confirmed from EPS portal"
+            : `EPS hosted payment manually marked ${result} from EPS portal`,
+        appliedAt: result === "approved" ? now : (pendingPayment as any).appliedAt,
+        paidAt: result === "approved" ? now : null,
+        succeededAt: result === "approved" ? now : null,
+        failedAt: result === "failed" ? now : null,
+        canceledAt: result === "canceled" ? now : null,
+        syncStatus: result === "approved" ? "pending" : "skipped",
+        updatedAt: now,
+      } as any)
+      .where(
+        and(
+          eq(payments.id, paymentId),
+          eq(payments.organizationId, input.organizationId),
+          eq(payments.provider, "eps"),
+          eq(payments.status, "pending"),
+          eq(payments.epsMode, "hosted_cnp"),
+        ),
+      )
+      .returning();
+
+    if (!updated) {
+      throw new PaymentProviderError("Only pending EPS hosted payments can be confirmed manually.", "EPS_HOSTED_PAYMENT_NOT_PENDING", 409);
+    }
+
+    return { payment: updated as any, pendingAmountCents };
+  });
+
+  const updatedPayment = resultRecord.payment;
+  const updatedInvoice = await refreshInvoiceStatus(String((updatedPayment as any).invoiceId));
+  const invoiceName = String((updatedInvoice as any)?.invoiceNumber || (updatedPayment as any).invoiceId || "");
+  const amountOverride = result === "approved" && approvedAmountCents !== resultRecord.pendingAmountCents;
+  const auditValues = {
+    paymentId: updatedPayment.id,
+    epsTransactionId,
+    amountCents: Number((updatedPayment as any).amountCents || 0),
+    approvedAmountCents,
+    responseCode: asString(input.responseCode) || null,
+    amountOverride,
+  };
+
+  await audit({
+    organizationId: input.organizationId,
+    actor: input.actor,
+    actionType: `eps_hosted_result_${result}`,
+    entityId: String((updatedPayment as any).invoiceId),
+    entityName: invoiceName,
+    description:
+      result === "approved"
+        ? "EPS hosted payment result manually recorded as approved"
+        : `EPS hosted payment result manually recorded as ${result}`,
+    values: auditValues,
+  });
+
+  if (amountOverride) {
+    await audit({
+      organizationId: input.organizationId,
+      actor: input.actor,
+      actionType: "eps_hosted_amount_override",
+      entityId: String((updatedPayment as any).invoiceId),
+      entityName: invoiceName,
+      description: "EPS hosted payment approved amount override recorded",
+      values: auditValues,
+    });
+  }
+
+  const response = normalizeEpsResponse({
+    TransactionResult: result === "approved",
+    ResponseMsg: asString(input.responseMessage) || result,
+    ResponseCode: asString(input.responseCode) || null,
+    TransactionID: epsTransactionId,
+    ApprovedAmount: formatCentsAsEpsAmount(approvedAmountCents),
+    AuthCode: asString(input.authCode) || null,
+    Method: "creditsale",
+  });
+
+  return {
+    payment: updatedPayment,
+    invoice: (updatedInvoice as any) || null,
+    response,
+  };
 }
 
 export async function createTokenSale(input: {

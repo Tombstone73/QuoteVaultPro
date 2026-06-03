@@ -86,6 +86,30 @@ describe('computeInvoicePaymentRollup', () => {
     expect(r).toEqual({ amountPaidCents: 1000, amountDueCents: 0, paymentStatus: 'paid' });
   });
 
+  test('approved manual EPS hosted result marks paid only through captured ledger state', () => {
+    const pending = computeInvoicePaymentRollup({
+      invoiceTotalCents: 2500,
+      payments: [{ id: 'p_eps_hosted_1', status: 'pending', amountCents: 2500 }],
+    });
+    expect(pending).toEqual({ amountPaidCents: 0, amountDueCents: 2500, paymentStatus: 'unpaid' });
+
+    const captured = computeInvoicePaymentRollup({
+      invoiceTotalCents: 2500,
+      payments: [{ id: 'p_eps_hosted_1', status: 'captured', amountCents: 2500 }],
+    });
+    expect(captured).toEqual({ amountPaidCents: 2500, amountDueCents: 0, paymentStatus: 'paid' });
+  });
+
+  test('failed and canceled EPS hosted results do not mark invoice paid', () => {
+    for (const status of ['failed', 'canceled'] as const) {
+      const r = computeInvoicePaymentRollup({
+        invoiceTotalCents: 2500,
+        payments: [{ id: `p_eps_${status}`, status, amountCents: 2500 }],
+      });
+      expect(r).toEqual({ amountPaidCents: 0, amountDueCents: 2500, paymentStatus: 'unpaid' });
+    }
+  });
+
   test('does not double-count duplicate payment ids', () => {
     const r = computeInvoicePaymentRollup({
       invoiceTotalCents: 10000,

@@ -1275,7 +1275,7 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
   if (!payment) throw new Error('Payment not found');
 
   const status = String((payment as any).status || '').toLowerCase();
-  if (status !== 'succeeded') throw new Error('Only succeeded payments can be synced to QuickBooks');
+  if (status !== 'succeeded' && status !== 'captured') throw new Error('Only succeeded or captured payments can be synced to QuickBooks');
 
   const [invoice] = await db
     .select()
@@ -3107,7 +3107,7 @@ export async function importQBInvoicesByIds(
           .where(and(
             eq(payments.organizationId, organizationId),
             eq(payments.invoiceId, params.invoiceId),
-            eq(payments.status, 'succeeded'),
+            sql`lower(${payments.status}) in ('succeeded','captured')`,
             eq(payments.syncStatus, 'synced'),
             isNotNull(payments.externalAccountingId),
             isNull(payments.qbReconciledAt),
