@@ -153,7 +153,7 @@ export default function AiSettingsPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="disabled">Disabled</SelectItem>
-                  <SelectItem value="titanos_managed">TitanOS Managed AI</SelectItem>
+                  <SelectItem value="titanos_managed">Printers Hero Managed AI</SelectItem>
                   <SelectItem value="bring_your_own">Bring Your Own AI</SelectItem>
                 </SelectContent>
               </Select>
