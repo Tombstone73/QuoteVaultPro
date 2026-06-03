@@ -70,6 +70,14 @@ describe('computeInvoicePaymentRollup', () => {
     expect(r).toEqual({ amountPaidCents: 700, amountDueCents: 300, paymentStatus: 'partial' });
   });
 
+  test('treats captured provider payments as paid financial history', () => {
+    const r = computeInvoicePaymentRollup({
+      invoiceTotalCents: 1000,
+      payments: [{ id: 'p_eps_capture_1', status: 'captured', amountCents: 1000 }],
+    });
+    expect(r).toEqual({ amountPaidCents: 1000, amountDueCents: 0, paymentStatus: 'paid' });
+  });
+
   test('does not double-count duplicate payment ids', () => {
     const r = computeInvoicePaymentRollup({
       invoiceTotalCents: 10000,

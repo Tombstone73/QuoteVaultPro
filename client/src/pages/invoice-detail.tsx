@@ -29,6 +29,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useInvoice, useBillInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInvoiceReminderHistory, useSendInvoiceReminder } from "@/hooks/useInvoices";
 import { useOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
+import { useCreateEpsHostedSession, usePaymentSettings } from "@/hooks/usePaymentSettings";
 import { Page } from "@/components/titan/Page";
 import { format } from "date-fns";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
@@ -179,6 +180,8 @@ export default function InvoiceDetailPage() {
   const invoicePayments = useInvoicePayments(invoiceId);
   const recordManualPayment = useRecordManualInvoicePayment();
   const voidInvoicePayment = useVoidInvoicePayment();
+  const paymentSettings = usePaymentSettings();
+  const createEpsHostedSessionMutation = useCreateEpsHostedSession();
   const reminderHistory = useInvoiceReminderHistory(invoiceId);
   const sendReminder = useSendInvoiceReminder();
 
@@ -282,6 +285,12 @@ export default function InvoiceDetailPage() {
     : 'invoice.pdf';
 
   const canRecordPayment = !!invoice && isStaffUser && invoiceStatus !== 'void' && remainingCents > 0 && !paymentActionsLocked;
+  const epsHostedEnabled =
+    canRecordPayment &&
+    paymentSettings.data?.provider === "eps" &&
+    paymentSettings.data?.epsEnabled === true &&
+    paymentSettings.data?.epsReady === true &&
+    paymentSettings.data?.epsSupportedModes?.includes("hosted_cnp");
 
   const canEditInvoice = !!invoice && isStaffUser && invoiceStatus === 'draft' && !(isImportedFromQuickBooks && isHistoricalImport);
   const canEditFinancial = canEditInvoice && !isImportedFromQuickBooks;
@@ -432,9 +441,11 @@ export default function InvoiceDetailPage() {
     }
   };
 
-  const normalizeProvider = (p: any): 'stripe' | 'manual' => {
+  const normalizeProvider = (p: any): 'stripe' | 'eps' | 'manual' => {
     const raw = String(p?.provider || 'manual').trim().toLowerCase();
-    return raw === 'stripe' ? 'stripe' : 'manual';
+    if (raw === 'stripe') return 'stripe';
+    if (raw === 'eps') return 'eps';
+    return 'manual';
   };
 
   const normalizePaymentStatus = (p: any): string => {
@@ -449,6 +460,30 @@ export default function InvoiceDetailPage() {
     if (raw === 'bank_transfer') return 'Bank Transfer';
     if (raw === 'ach') return 'ACH';
     return raw.replaceAll('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  };
+
+  const openEpsHostedPayment = async () => {
+    if (!invoiceId || !invoice) return;
+    try {
+      const result = await createEpsHostedSessionMutation.mutateAsync({
+        invoiceId,
+        amountCents: remainingCents,
+        idempotencyKey: `eps-hosted-${invoiceId}-${remainingCents}`,
+      });
+      const hostedPaymentUrl = result.hostedPaymentUrl || result.payment?.epsHostedPaymentUrl;
+      if (!hostedPaymentUrl) {
+        throw new Error('EPS did not return a hosted payment URL');
+      }
+      window.open(hostedPaymentUrl, '_blank', 'noopener,noreferrer');
+      toast({
+        title: result.reused ? 'EPS hosted session reopened' : 'EPS hosted session created',
+        description: 'The payment is pending until the result is recorded or otherwise confirmed.',
+      });
+      refetch();
+      invoicePayments.refetch();
+    } catch (error: any) {
+      toast({ title: 'EPS payment failed', description: error.message, variant: 'destructive' });
+    }
   };
 
   useEffect(() => {
@@ -1266,6 +1301,17 @@ export default function InvoiceDetailPage() {
                       </Button>
                     ) : null}
 
+                    {epsHostedEnabled ? (
+                      <Button
+                        variant="outline"
+                        onClick={openEpsHostedPayment}
+                        disabled={createEpsHostedSessionMutation.isPending}
+                      >
+                        <ExternalLink className="mr-2 h-4 w-4" />
+                        {createEpsHostedSessionMutation.isPending ? 'Opening EPS…' : 'EPS Hosted'}
+                      </Button>
+                    ) : null}
+
                     {canRecordPayment ? (
                       <Button onClick={openRecordPayment}>
                         <DollarSign className="mr-2 h-4 w-4" />
@@ -1995,8 +2041,37 @@ export default function InvoiceDetailPage() {
                               Pay Invoice
                             </Button>
                           )}
+                          {epsHostedEnabled && (
+                            <Button
+                              variant="outline"
+                              onClick={openEpsHostedPayment}
+                              disabled={createEpsHostedSessionMutation.isPending}
+                            >
+                              {createEpsHostedSessionMutation.isPending ? 'Opening EPS…' : 'EPS Hosted'}
+                            </Button>
+                          )}
                         </div>
                       </div>
+
+                      {paymentSettings.data?.provider === "eps" && paymentSettings.data?.epsEnabled && !paymentSettings.data?.epsReady ? (
+                        <Alert>
+                          <AlertCircle className="h-4 w-4" />
+                          <AlertTitle>EPS setup incomplete</AlertTitle>
+                          <AlertDescription>
+                            EPS payment actions are disabled until required settings are saved in Settings &gt; Accounting &amp; Integrations.
+                          </AlertDescription>
+                        </Alert>
+                      ) : null}
+
+                      {paymentsList.some((payment: any) => normalizeProvider(payment) === "eps" && normalizePaymentStatus(payment) === "pending") ? (
+                        <Alert>
+                          <AlertCircle className="h-4 w-4" />
+                          <AlertTitle>EPS payment pending</AlertTitle>
+                          <AlertDescription>
+                            The EPS document provided does not include a webhook or status endpoint. Keep hosted and ACH payments pending until the result is confirmed and recorded.
+                          </AlertDescription>
+                        </Alert>
+                      ) : null}
 
                       {importedQuickBooksPaymentsEnabled ? (
                         <Alert>
@@ -2130,6 +2205,11 @@ export default function InvoiceDetailPage() {
                                         <CreditCard className="h-3.5 w-3.5" />
                                         Stripe
                                       </Badge>
+                                    ) : provider === 'eps' ? (
+                                      <Badge variant="secondary" className="gap-1">
+                                        <CreditCard className="h-3.5 w-3.5" />
+                                        EPS
+                                      </Badge>
                                     ) : (
                                       <Badge variant="outline" className="gap-1">
                                         <HandCoins className="h-3.5 w-3.5" />
@@ -2137,7 +2217,11 @@ export default function InvoiceDetailPage() {
                                       </Badge>
                                     )}
                                     <div className="text-sm text-muted-foreground">
-                                      {provider === 'stripe' ? 'Card (Stripe)' : toPaymentMethodLabel(payment.method)}
+                                      {provider === 'stripe'
+                                        ? 'Card (Stripe)'
+                                        : provider === 'eps'
+                                          ? `${toPaymentMethodLabel(payment.method)}${payment.epsMode ? ` (${String(payment.epsMode).replaceAll('_', ' ')})` : ''}`
+                                          : toPaymentMethodLabel(payment.method)}
                                     </div>
                                   </div>
                                 </TableCell>
@@ -2148,9 +2232,19 @@ export default function InvoiceDetailPage() {
                                   <div className="flex items-center gap-2">
                                     {isVoided ? (
                                       <Badge variant="secondary">VOIDED</Badge>
+                                    ) : status === 'pending' ? (
+                                      <Badge variant="outline">Pending</Badge>
+                                    ) : status === 'succeeded' ? (
+                                      <Badge className="bg-green-600 text-white hover:bg-green-600">Approved</Badge>
+                                    ) : status === 'failed' ? (
+                                      <Badge variant="destructive">Failed</Badge>
+                                    ) : status === 'refunded' ? (
+                                      <Badge variant="secondary">Refunded</Badge>
+                                    ) : status === 'captured' ? (
+                                      <Badge className="bg-green-600 text-white hover:bg-green-600">Captured</Badge>
                                     ) : null}
                                     <span className="capitalize text-sm">
-                                      {String(payment.status || 'succeeded').replaceAll('_', ' ')}
+                                      {status === 'succeeded' ? 'approved' : String(payment.status || 'succeeded').replaceAll('_', ' ')}
                                     </span>
                                   </div>
                                 </TableCell>

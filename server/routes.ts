@@ -218,6 +218,7 @@ import { registerQuoteLineItemFileRoutes } from './routes/quoteLineItemFiles.rou
 import { registerQuickBooksRoutes } from './routes/quickbooks.routes';
 import { registerProcurementRoutes } from './routes/procurement.routes';
 import { registerStripeRoutes } from './routes/stripe.routes';
+import { registerPaymentProviderRoutes } from './routes/paymentProvider.routes';
 import { registerCatalogSettingsRoutes } from './routes/catalogSettings.routes';
 import { registerAdminStorageRoutes } from './routes/adminStorage.routes';
 import { registerPricingRoutes } from './routes/pricing.routes';
@@ -456,6 +457,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Stripe Connect integration routes extracted to ./routes/stripe.routes.ts (do NOT re-add here)
   registerStripeRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner });
+
+  // Payment provider settings + EPS gateway routes extracted to ./routes/paymentProvider.routes.ts.
+  registerPaymentProviderRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner });
 
   // Product Types + Global Variables routes extracted to ./routes/catalogSettings.routes.ts (do NOT re-add here)
   registerCatalogSettingsRoutes(app, { isAuthenticated, tenantContext, isAdmin, requireOrgOwnerAdmin });

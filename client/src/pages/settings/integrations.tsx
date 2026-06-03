@@ -1,11 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import qbLogoUrl from '@/assets/integrations/qb-logo-01.png';
 import { usePageVisible } from "@/hooks/usePageVisible";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -13,6 +15,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
+import { usePaymentSettings, useUpdatePaymentSettings, type EpsPaymentMode } from "@/hooks/usePaymentSettings";
 import { QBTransientDisconnectBanner } from "@/components/integrations/QBTransientDisconnectBanner";
 import {
   ArrowLeft,
@@ -179,6 +182,14 @@ const WARNING_REASON_LABELS: Record<string, string> = {
   missing_invoice_number: 'No QB invoice #',
   missing_total: 'No QB total',
 };
+
+const EPS_MODE_OPTIONS: Array<{ value: EpsPaymentMode; label: string }> = [
+  { value: "hosted_cnp", label: "Hosted CNP" },
+  { value: "token_cnp", label: "Token CNP" },
+  { value: "card_present", label: "Card Present" },
+  { value: "ach", label: "ACH" },
+  { value: "gift_card", label: "Gift Card" },
+];
 
 type QBReferenceDebugField = {
   name: string | null;
@@ -358,6 +369,61 @@ export default function SettingsIntegrations() {
   const { data: stripeStatus, isLoading: isLoadingStripeStatus } = useQuery<StripeStatusEnvelope>({
     queryKey: ["/api/integrations/stripe/status"],
   });
+
+  const { data: paymentSettings, isLoading: isLoadingPaymentSettings } = usePaymentSettings();
+  const updatePaymentSettingsMutation = useUpdatePaymentSettings();
+  const [epsProvider, setEpsProvider] = useState<'none' | 'eps'>('none');
+  const [epsEnabled, setEpsEnabled] = useState(false);
+  const [epsAccountNumber, setEpsAccountNumber] = useState('');
+  const [epsApiKey, setEpsApiKey] = useState('');
+  const [epsDeviceSerialNumber, setEpsDeviceSerialNumber] = useState('');
+  const [epsCnpBaseUrl, setEpsCnpBaseUrl] = useState('https://postransactions.com/cnp');
+  const [epsCardPresentBaseUrl, setEpsCardPresentBaseUrl] = useState('https://postransactions.com/connet');
+  const [epsAchBaseUrl, setEpsAchBaseUrl] = useState('https://postransactions.com/ach');
+  const [epsGiftBaseUrl, setEpsGiftBaseUrl] = useState('https://postransactions.com/gift');
+  const [epsSupportedModes, setEpsSupportedModes] = useState<EpsPaymentMode[]>(["hosted_cnp", "token_cnp", "card_present", "ach", "gift_card"]);
+
+  useEffect(() => {
+    if (!paymentSettings) return;
+    setEpsProvider(paymentSettings.provider);
+    setEpsEnabled(paymentSettings.epsEnabled);
+    setEpsAccountNumber(paymentSettings.epsAccountNumber || '');
+    setEpsApiKey('');
+    setEpsDeviceSerialNumber(paymentSettings.epsDeviceSerialNumber || '');
+    setEpsCnpBaseUrl(paymentSettings.epsCnpBaseUrl || 'https://postransactions.com/cnp');
+    setEpsCardPresentBaseUrl(paymentSettings.epsCardPresentBaseUrl || 'https://postransactions.com/connet');
+    setEpsAchBaseUrl(paymentSettings.epsAchBaseUrl || 'https://postransactions.com/ach');
+    setEpsGiftBaseUrl(paymentSettings.epsGiftBaseUrl || 'https://postransactions.com/gift');
+    setEpsSupportedModes(paymentSettings.epsSupportedModes?.length ? paymentSettings.epsSupportedModes : ["hosted_cnp", "token_cnp", "card_present", "ach", "gift_card"]);
+  }, [paymentSettings]);
+
+  const toggleEpsMode = (mode: EpsPaymentMode, checked: boolean) => {
+    setEpsSupportedModes((current) => {
+      const next = checked ? Array.from(new Set([...current, mode])) : current.filter((item) => item !== mode);
+      return next.length ? next : current;
+    });
+  };
+
+  const saveEpsSettings = async () => {
+    try {
+      await updatePaymentSettingsMutation.mutateAsync({
+        provider: epsProvider,
+        epsEnabled,
+        epsAccountNumber: epsAccountNumber.trim() || null,
+        ...(epsApiKey.trim() ? { epsApiKey: epsApiKey.trim() } : {}),
+        epsDeviceSerialNumber: epsDeviceSerialNumber.trim() || null,
+        epsCnpBaseUrl: epsCnpBaseUrl.trim() || 'https://postransactions.com/cnp',
+        epsCardPresentBaseUrl: epsCardPresentBaseUrl.trim() || 'https://postransactions.com/connet',
+        epsAchBaseUrl: epsAchBaseUrl.trim() || 'https://postransactions.com/ach',
+        epsGiftBaseUrl: epsGiftBaseUrl.trim() || 'https://postransactions.com/gift',
+        epsSupportedModes,
+      });
+      setEpsApiKey('');
+      toast({ title: 'EPS settings saved' });
+    } catch (error: any) {
+      toast({ title: 'EPS settings failed', description: error.message, variant: 'destructive' });
+    }
+  };
 
   // Fetch sync jobs
   const { data: jobsData, isLoading: isLoadingJobs } = useQuery<{ jobs: SyncJob[] }>({
@@ -1562,6 +1628,143 @@ export default function SettingsIntegrations() {
             <p className="text-xs text-muted-foreground">
               You’ll be redirected to Stripe to complete onboarding.
             </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* EPS Payment Provider */}
+      <Card className="mb-6">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <CreditCard className="h-5 w-5" />
+                Enhanced Payments Systems
+              </CardTitle>
+              <CardDescription>
+                Optional EPS gateway configuration for invoice payment actions
+              </CardDescription>
+            </div>
+            {isLoadingPaymentSettings ? (
+              <Loader2 className="h-5 w-5 animate-spin" />
+            ) : paymentSettings?.epsReady ? (
+              <Badge className="bg-green-500">
+                <CheckCircle2 className="mr-1 h-3 w-3" />
+                Ready
+              </Badge>
+            ) : paymentSettings?.provider === "eps" || paymentSettings?.epsEnabled ? (
+              <Badge variant="secondary">
+                <AlertCircle className="mr-1 h-3 w-3" />
+                Needs Setup
+              </Badge>
+            ) : (
+              <Badge variant="outline">
+                <XCircle className="mr-1 h-3 w-3" />
+                Off
+              </Badge>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Payment provider</Label>
+              <Select value={epsProvider} onValueChange={(value: "none" | "eps") => setEpsProvider(value)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  <SelectItem value="eps">EPS</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 rounded-md border p-3">
+              <div>
+                <Label htmlFor="eps-enabled">Enable EPS</Label>
+                <p className="text-xs text-muted-foreground">Payment actions stay disabled until required fields are present.</p>
+              </div>
+              <Switch id="eps-enabled" checked={epsEnabled} onCheckedChange={setEpsEnabled} />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="eps-account">EPS account number</Label>
+              <Input id="eps-account" value={epsAccountNumber} onChange={(event) => setEpsAccountNumber(event.target.value)} />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="eps-api-key">EPS API key</Label>
+              <Input
+                id="eps-api-key"
+                type="password"
+                value={epsApiKey}
+                onChange={(event) => setEpsApiKey(event.target.value)}
+                placeholder={paymentSettings?.epsApiKeyConfigured ? "Configured. Enter a new key to replace." : "Required"}
+              />
+              <p className="text-xs text-muted-foreground">
+                {paymentSettings?.epsApiKeyConfigured ? "Stored server-side only." : "Not configured."}
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="eps-device">Card-present device serial number</Label>
+              <Input id="eps-device" value={epsDeviceSerialNumber} onChange={(event) => setEpsDeviceSerialNumber(event.target.value)} />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Supported modes</Label>
+              <div className="grid gap-2 rounded-md border p-3 sm:grid-cols-2">
+                {EPS_MODE_OPTIONS.map((mode) => (
+                  <label key={mode.value} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={epsSupportedModes.includes(mode.value)}
+                      onChange={(event) => toggleEpsMode(mode.value, event.target.checked)}
+                    />
+                    <span>{mode.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <Separator />
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="eps-cnp-base">CNP base URL</Label>
+              <Input id="eps-cnp-base" value={epsCnpBaseUrl} onChange={(event) => setEpsCnpBaseUrl(event.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="eps-cp-base">Card-present base URL</Label>
+              <Input id="eps-cp-base" value={epsCardPresentBaseUrl} onChange={(event) => setEpsCardPresentBaseUrl(event.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="eps-ach-base">ACH base URL</Label>
+              <Input id="eps-ach-base" value={epsAchBaseUrl} onChange={(event) => setEpsAchBaseUrl(event.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="eps-gift-base">Gift base URL</Label>
+              <Input id="eps-gift-base" value={epsGiftBaseUrl} onChange={(event) => setEpsGiftBaseUrl(event.target.value)} />
+            </div>
+          </div>
+
+          {paymentSettings?.missing?.length ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Missing: {paymentSettings.missing.join(", ")}
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={saveEpsSettings} disabled={updatePaymentSettingsMutation.isPending}>
+              {updatePaymentSettingsMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <CheckCircle2 className="mr-2 h-4 w-4" />
+              )}
+              Save EPS Settings
+            </Button>
           </div>
         </CardContent>
       </Card>

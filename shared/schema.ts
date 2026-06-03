@@ -4161,12 +4161,24 @@ export const payments = pgTable("payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
-  provider: varchar("provider", { length: 20 }).notNull().default('manual'), // manual | stripe
+  provider: varchar("provider", { length: 20 }).notNull().default('manual'), // manual | stripe | eps
   status: varchar("status", { length: 20 }).notNull().default('succeeded'), // pending | succeeded | failed | canceled | refunded
   amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
   amountCents: integer("amount_cents").notNull().default(0),
   currency: varchar("currency", { length: 8 }).notNull().default('USD'),
   stripePaymentIntentId: text("stripe_payment_intent_id"),
+  providerTransactionId: text("provider_transaction_id"),
+  providerIdempotencyKey: text("provider_idempotency_key"),
+  epsPtk: text("eps_ptk"),
+  epsHostedPaymentUrl: text("eps_hosted_payment_url"),
+  epsMode: varchar("eps_mode", { length: 32 }),
+  epsMethod: varchar("eps_method", { length: 32 }),
+  epsAuthCode: text("eps_auth_code"),
+  epsResponseCode: text("eps_response_code"),
+  epsResponseMessage: text("eps_response_message"),
+  epsApprovedAmountCents: integer("eps_approved_amount_cents"),
+  epsTokenLast4: varchar("eps_token_last4", { length: 8 }),
+  epsCardType: varchar("eps_card_type", { length: 32 }),
   succeededAt: timestamp("succeeded_at", { withTimezone: true }),
   failedAt: timestamp("failed_at", { withTimezone: true }),
   canceledAt: timestamp("canceled_at", { withTimezone: true }),
@@ -4191,6 +4203,13 @@ export const payments = pgTable("payments", {
   index("payments_provider_idx").on(table.provider),
   index("payments_status_idx").on(table.status),
   uniqueIndex("payments_org_stripe_payment_intent_id_uidx").on(table.organizationId, table.stripePaymentIntentId),
+  uniqueIndex("payments_org_provider_transaction_id_uidx")
+    .on(table.organizationId, table.provider, table.providerTransactionId)
+    .where(sql`${table.providerTransactionId} IS NOT NULL`),
+  uniqueIndex("payments_org_provider_idempotency_key_uidx")
+    .on(table.organizationId, table.provider, table.providerIdempotencyKey)
+    .where(sql`${table.providerIdempotencyKey} IS NOT NULL`),
+  index("payments_eps_ptk_idx").on(table.organizationId, table.epsPtk),
   index("payments_method_idx").on(table.method),
   index("payments_created_by_user_id_idx").on(table.createdByUserId),
   index("payments_sync_status_idx").on(table.syncStatus),
@@ -4208,8 +4227,8 @@ export const insertPaymentSchema = createInsertSchema(payments).omit({
   organizationId: true,
 }).extend({
   amount: z.coerce.number().positive(),
-  provider: z.enum(['manual','stripe']).default('manual'),
-  status: z.enum(['pending','succeeded','failed','canceled','refunded','voided']).default('succeeded'),
+  provider: z.enum(['manual','stripe','eps']).default('manual'),
+  status: z.enum(['pending','succeeded','failed','canceled','refunded','voided','captured']).default('succeeded'),
   currency: z.string().min(1).max(8).default('USD'),
   method: z.enum(['cash','check','wire','bank_transfer','credit_card','ach','other']).default('other'),
   notes: z.string().optional().nullable(),
@@ -4229,6 +4248,55 @@ export const updatePaymentSchema = insertPaymentSchema.partial().extend({
 export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 export type UpdatePayment = z.infer<typeof updatePaymentSchema>;
 export type Payment = typeof payments.$inferSelect;
+
+export const paymentProviderSchema = z.enum(['none', 'eps']);
+export const epsPaymentModeSchema = z.enum(['hosted_cnp', 'token_cnp', 'card_present', 'ach', 'gift_card']);
+
+export const organizationPaymentSettings = pgTable("organization_payment_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  provider: varchar("provider", { length: 20 }).notNull().default('none'),
+  epsEnabled: boolean("eps_enabled").notNull().default(false),
+  epsAccountNumber: text("eps_account_number"),
+  epsApiKey: text("eps_api_key"),
+  epsCnpBaseUrl: text("eps_cnp_base_url").notNull().default('https://postransactions.com/cnp'),
+  epsCardPresentBaseUrl: text("eps_card_present_base_url").notNull().default('https://postransactions.com/connet'),
+  epsAchBaseUrl: text("eps_ach_base_url").notNull().default('https://postransactions.com/ach'),
+  epsGiftBaseUrl: text("eps_gift_base_url").notNull().default('https://postransactions.com/gift'),
+  epsDeviceSerialNumber: text("eps_device_serial_number"),
+  epsSupportedModes: jsonb("eps_supported_modes").$type<string[]>().default(sql`'["hosted_cnp","token_cnp","card_present","ach","gift_card"]'::jsonb`).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("organization_payment_settings_org_uidx").on(table.organizationId),
+  index("organization_payment_settings_provider_idx").on(table.provider),
+]);
+
+export const insertOrganizationPaymentSettingsSchema = createInsertSchema(organizationPaymentSettings).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  provider: paymentProviderSchema.default('none'),
+  epsEnabled: z.boolean().default(false),
+  epsAccountNumber: z.string().trim().max(100).optional().nullable(),
+  epsApiKey: z.string().trim().max(500).optional().nullable(),
+  epsCnpBaseUrl: z.string().url().optional(),
+  epsCardPresentBaseUrl: z.string().url().optional(),
+  epsAchBaseUrl: z.string().url().optional(),
+  epsGiftBaseUrl: z.string().url().optional(),
+  epsDeviceSerialNumber: z.string().trim().max(100).optional().nullable(),
+  epsSupportedModes: z.array(epsPaymentModeSchema).default(['hosted_cnp', 'token_cnp', 'card_present', 'ach', 'gift_card']),
+});
+
+export const updateOrganizationPaymentSettingsSchema = insertOrganizationPaymentSettingsSchema.partial().extend({
+  epsApiKey: z.string().trim().max(500).optional().nullable(),
+});
+
+export type OrganizationPaymentSettings = typeof organizationPaymentSettings.$inferSelect;
+export type InsertOrganizationPaymentSettings = z.infer<typeof insertOrganizationPaymentSettingsSchema>;
+export type UpdateOrganizationPaymentSettings = z.infer<typeof updateOrganizationPaymentSettingsSchema>;
 
 // Stripe/Webhook events (idempotency + audit trail)
 export const paymentWebhookEvents = pgTable("payment_webhook_events", {
