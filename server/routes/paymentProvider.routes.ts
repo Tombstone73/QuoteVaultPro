@@ -2,15 +2,9 @@ import type { Express } from "express";
 import { z } from "zod";
 import { getRequestOrganizationId } from "../tenantContext";
 import {
-  closeEpsBatch,
-  createAchSale,
-  createCardPresentSale,
-  createGiftCardSale,
   createHostedSession,
-  createTokenSale,
   getPaymentSettings,
   PaymentProviderError,
-  runEpsFollowOn,
   updatePaymentSettings,
 } from "../services/payments/paymentProvider.service";
 
@@ -54,16 +48,28 @@ function sendPaymentError(res: any, error: any, context: Record<string, unknown>
   return res.status(safe.statusCode).json(safe.payload);
 }
 
+export const EPS_PHASE1_DISABLED_MESSAGE =
+  "This EPS action is disabled in Phase 1. It requires EPS certification documentation and official status/callback handling before activation.";
+
+export function sendEpsPhase1Disabled(res: any, action: string) {
+  return res.status(501).json({
+    success: false,
+    code: "EPS_PHASE1_DISABLED",
+    error: EPS_PHASE1_DISABLED_MESSAGE,
+    data: {
+      action,
+      enabledPhase1Modes: ["hosted_cnp"],
+      requiredBeforeActivation: ["EPS certification docs", "official EPS status or callback handling"],
+    },
+  });
+}
+
 const paymentSettingsPatchSchema = z.object({
   provider: z.enum(["none", "eps"]).optional(),
   epsEnabled: z.boolean().optional(),
   epsAccountNumber: z.string().trim().max(100).nullable().optional(),
   epsApiKey: z.string().trim().max(500).nullable().optional(),
   epsCnpBaseUrl: z.string().url().optional(),
-  epsCardPresentBaseUrl: z.string().url().optional(),
-  epsAchBaseUrl: z.string().url().optional(),
-  epsGiftBaseUrl: z.string().url().optional(),
-  epsDeviceSerialNumber: z.string().trim().max(100).nullable().optional(),
   epsSupportedModes: z.array(z.enum(["hosted_cnp", "token_cnp", "card_present", "ach", "gift_card"])).optional(),
 });
 
@@ -75,54 +81,6 @@ const amountInvoiceSchema = z.object({
 
 const hostedSessionSchema = amountInvoiceSchema.extend({
   idempotencyKey: z.string().trim().max(160).optional().nullable(),
-});
-
-const tokenSaleSchema = amountInvoiceSchema.extend({
-  idempotencyKey: z.string().trim().min(8).max(160),
-  token: z.string().trim().min(1).max(500),
-  expirationDate: z.string().trim().min(3).max(10),
-  firstName: z.string().trim().max(100).optional().nullable(),
-  lastName: z.string().trim().max(100).optional().nullable(),
-  address: z.string().trim().max(255).optional().nullable(),
-  zip: z.string().trim().max(32).optional().nullable(),
-  email: z.string().trim().email().optional().nullable(),
-  paySource: z.string().trim().max(32).optional().nullable(),
-});
-
-const achSaleSchema = amountInvoiceSchema.extend({
-  idempotencyKey: z.string().trim().min(8).max(160),
-  checkAccount: z.string().trim().min(1).max(64),
-  checkRouting: z.string().trim().min(1).max(64),
-  checkType: z.string().trim().max(32).default("Checking"),
-  paySource: z.enum(["CCD", "PPD", "WEB"]).default("WEB"),
-  firstName: z.string().trim().max(100).optional().nullable(),
-  lastName: z.string().trim().max(100).optional().nullable(),
-  business: z.string().trim().max(100).optional().nullable(),
-  address: z.string().trim().max(255).optional().nullable(),
-  address2: z.string().trim().max(255).optional().nullable(),
-  city: z.string().trim().max(100).optional().nullable(),
-  state: z.string().trim().max(32).optional().nullable(),
-  zip: z.string().trim().max(32).optional().nullable(),
-  phone: z.string().trim().max(50).optional().nullable(),
-});
-
-const giftCardSaleSchema = amountInvoiceSchema.extend({
-  idempotencyKey: z.string().trim().min(8).max(160),
-  giftCardToken: z.string().trim().min(1).max(128),
-  owner: z.string().trim().max(100).optional().nullable(),
-  location: z.string().trim().max(100).optional().nullable(),
-});
-
-const followOnSchema = z.object({
-  invoiceId: z.string().trim().min(1),
-  paymentId: z.string().trim().optional().nullable(),
-  providerTransactionId: z.string().trim().optional().nullable(),
-  amountCents: z.coerce.number().int().positive().optional().nullable(),
-  idempotencyKey: z.string().trim().min(8).max(160),
-});
-
-const closeBatchSchema = z.object({
-  idempotencyKey: z.string().trim().min(8).max(160),
 });
 
 export function registerPaymentProviderRoutes(
@@ -151,7 +109,10 @@ export function registerPaymentProviderRoutes(
     if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
     try {
       const body = paymentSettingsPatchSchema.parse(req.body || {});
-      const settings = await updatePaymentSettings(organizationId, body as any);
+      const settings = await updatePaymentSettings(organizationId, {
+        ...body,
+        epsSupportedModes: ["hosted_cnp"],
+      } as any);
       return res.json({ success: true, data: settings });
     } catch (error: any) {
       return sendPaymentError(res, error, { route: "PATCH /api/payment-settings", organizationId });
@@ -171,98 +132,34 @@ export function registerPaymentProviderRoutes(
   });
 
   app.post("/api/payments/eps/token-sale", isAuthenticated, tenantContext, async (req: any, res) => {
-    const organizationId = getRequestOrganizationId(req);
-    if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-    try {
-      const body = tokenSaleSchema.parse(req.body || {});
-      const data = await createTokenSale({ ...body, organizationId, actor: getActor(req) });
-      return res.json({ success: true, data });
-    } catch (error: any) {
-      return sendPaymentError(res, error, { route: "POST /api/payments/eps/token-sale", organizationId });
-    }
+    return sendEpsPhase1Disabled(res, "token-sale");
   });
 
   app.post("/api/payments/eps/card-present-sale", isAuthenticated, tenantContext, async (req: any, res) => {
-    const organizationId = getRequestOrganizationId(req);
-    if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-    try {
-      const body = amountInvoiceSchema.extend({ idempotencyKey: z.string().trim().min(8).max(160) }).parse(req.body || {});
-      const data = await createCardPresentSale({ ...body, organizationId, actor: getActor(req) });
-      return res.json({ success: true, data });
-    } catch (error: any) {
-      return sendPaymentError(res, error, { route: "POST /api/payments/eps/card-present-sale", organizationId });
-    }
+    return sendEpsPhase1Disabled(res, "card-present-sale");
   });
 
   app.post("/api/payments/eps/ach-sale", isAuthenticated, tenantContext, async (req: any, res) => {
-    const organizationId = getRequestOrganizationId(req);
-    if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-    try {
-      const body = achSaleSchema.parse(req.body || {});
-      const data = await createAchSale({ ...body, organizationId, actor: getActor(req) });
-      return res.json({ success: true, data });
-    } catch (error: any) {
-      return sendPaymentError(res, error, { route: "POST /api/payments/eps/ach-sale", organizationId });
-    }
+    return sendEpsPhase1Disabled(res, "ach-sale");
   });
 
   app.post("/api/payments/eps/gift-card-sale", isAuthenticated, tenantContext, async (req: any, res) => {
-    const organizationId = getRequestOrganizationId(req);
-    if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-    try {
-      const body = giftCardSaleSchema.parse(req.body || {});
-      const data = await createGiftCardSale({ ...body, organizationId, actor: getActor(req) });
-      return res.json({ success: true, data });
-    } catch (error: any) {
-      return sendPaymentError(res, error, { route: "POST /api/payments/eps/gift-card-sale", organizationId });
-    }
+    return sendEpsPhase1Disabled(res, "gift-card-sale");
   });
 
   app.post("/api/payments/eps/void", isAuthenticated, tenantContext, async (req: any, res) => {
-    const organizationId = getRequestOrganizationId(req);
-    if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-    try {
-      const body = followOnSchema.parse(req.body || {});
-      const data = await runEpsFollowOn({ ...body, organizationId, action: "void", actor: getActor(req) });
-      return res.json({ success: true, data });
-    } catch (error: any) {
-      return sendPaymentError(res, error, { route: "POST /api/payments/eps/void", organizationId });
-    }
+    return sendEpsPhase1Disabled(res, "void");
   });
 
   app.post("/api/payments/eps/refund", isAuthenticated, tenantContext, async (req: any, res) => {
-    const organizationId = getRequestOrganizationId(req);
-    if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-    try {
-      const body = followOnSchema.parse(req.body || {});
-      const data = await runEpsFollowOn({ ...body, organizationId, action: "refund", actor: getActor(req) });
-      return res.json({ success: true, data });
-    } catch (error: any) {
-      return sendPaymentError(res, error, { route: "POST /api/payments/eps/refund", organizationId });
-    }
+    return sendEpsPhase1Disabled(res, "refund");
   });
 
   app.post("/api/payments/eps/capture", isAuthenticated, tenantContext, async (req: any, res) => {
-    const organizationId = getRequestOrganizationId(req);
-    if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-    try {
-      const body = followOnSchema.parse(req.body || {});
-      const data = await runEpsFollowOn({ ...body, organizationId, action: "capture", actor: getActor(req) });
-      return res.json({ success: true, data });
-    } catch (error: any) {
-      return sendPaymentError(res, error, { route: "POST /api/payments/eps/capture", organizationId });
-    }
+    return sendEpsPhase1Disabled(res, "capture");
   });
 
   app.post("/api/payments/eps/close-batch", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
-    const organizationId = getRequestOrganizationId(req);
-    if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-    try {
-      const body = closeBatchSchema.parse(req.body || {});
-      const data = await closeEpsBatch({ ...body, organizationId, actor: getActor(req) });
-      return res.json({ success: true, data });
-    } catch (error: any) {
-      return sendPaymentError(res, error, { route: "POST /api/payments/eps/close-batch", organizationId });
-    }
+    return sendEpsPhase1Disabled(res, "close-batch");
   });
 }

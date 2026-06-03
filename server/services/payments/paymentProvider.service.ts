@@ -76,7 +76,7 @@ function getDefaultSafeSettings(): SafePaymentSettings {
     epsAchBaseUrl: "https://postransactions.com/ach",
     epsGiftBaseUrl: "https://postransactions.com/gift",
     epsDeviceSerialNumber: null,
-    epsSupportedModes: ["hosted_cnp", "token_cnp", "card_present", "ach", "gift_card"],
+    epsSupportedModes: ["hosted_cnp"],
     epsReady: false,
     missing: ["provider"],
   };
@@ -88,7 +88,7 @@ export function toSafePaymentSettings(row: OrganizationPaymentSettings | null | 
     ? ((row as any).epsSupportedModes as string[]).filter((mode): mode is EpsMode =>
         ["hosted_cnp", "token_cnp", "card_present", "ach", "gift_card"].includes(mode),
       )
-    : ["hosted_cnp", "token_cnp", "card_present", "ach", "gift_card"];
+    : ["hosted_cnp"];
 
   const provider = row.provider === "eps" ? "eps" : "none";
   const missing: string[] = [];
@@ -380,7 +380,7 @@ export async function updatePaymentSettings(
     epsDeviceSerialNumber: Object.prototype.hasOwnProperty.call(input, "epsDeviceSerialNumber")
       ? asString(input.epsDeviceSerialNumber) || null
       : existing?.epsDeviceSerialNumber ?? null,
-    epsSupportedModes: input.epsSupportedModes ?? ((existing?.epsSupportedModes as EpsMode[] | undefined) || ["hosted_cnp", "token_cnp", "card_present", "ach", "gift_card"]),
+    epsSupportedModes: input.epsSupportedModes ?? ((existing?.epsSupportedModes as EpsMode[] | undefined) || ["hosted_cnp"]),
     updatedAt: now,
     createdAt: existing?.createdAt ?? now,
   };

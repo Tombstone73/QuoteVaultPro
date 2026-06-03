@@ -540,6 +540,13 @@
       "when": 1781740800000,
       "tag": "0081_eps_payment_provider",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1781827200000,
+      "tag": "0082_eps_phase1_hosted_only",
+      "breakpoints": true
     }
   ]
 }

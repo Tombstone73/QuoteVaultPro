@@ -31,7 +31,7 @@ const DEFAULT_CARD_PRESENT_BASE_URL = "https://postransactions.com/connet";
 const DEFAULT_ACH_BASE_URL = "https://postransactions.com/ach";
 const DEFAULT_GIFT_BASE_URL = "https://postransactions.com/gift";
 
-const SENSITIVE_KEY_PATTERN = /(apikey|api_key|cvv|card|pan|checkaccount|checkrouting|routing|accountnum|account_num|expiration|expdate|token)$/i;
+const SENSITIVE_KEY_PATTERN = /(apikey|api_key|ptk|cvv|card|pan|checkaccount|checkrouting|routing|accountnum|account_num|expiration|expdate|token)$/i;
 
 function trimSlashes(value: string): string {
   return value.replace(/\/+$/, "");

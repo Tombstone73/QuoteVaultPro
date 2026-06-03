@@ -15,7 +15,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
-import { usePaymentSettings, useUpdatePaymentSettings, type EpsPaymentMode } from "@/hooks/usePaymentSettings";
+import { usePaymentSettings, useUpdatePaymentSettings } from "@/hooks/usePaymentSettings";
 import { QBTransientDisconnectBanner } from "@/components/integrations/QBTransientDisconnectBanner";
 import {
   ArrowLeft,
@@ -183,12 +183,13 @@ const WARNING_REASON_LABELS: Record<string, string> = {
   missing_total: 'No QB total',
 };
 
-const EPS_MODE_OPTIONS: Array<{ value: EpsPaymentMode; label: string }> = [
-  { value: "hosted_cnp", label: "Hosted CNP" },
-  { value: "token_cnp", label: "Token CNP" },
-  { value: "card_present", label: "Card Present" },
-  { value: "ach", label: "ACH" },
-  { value: "gift_card", label: "Gift Card" },
+const EPS_PHASE1_MODE_STATUS: Array<{ label: string; status: "available" | "disabled"; description: string }> = [
+  { label: "Hosted Credit Card", status: "available", description: "Available in Phase 1 through the EPS hosted form." },
+  { label: "Token CNP", status: "disabled", description: "Coming later after EPS certification docs and official status handling." },
+  { label: "ACH", status: "disabled", description: "Coming later after EPS certification docs and clearing/status handling." },
+  { label: "Card Present", status: "disabled", description: "Coming later after device certification and status handling." },
+  { label: "Gift Card", status: "disabled", description: "Coming later after EPS certification docs and status handling." },
+  { label: "Batch Close", status: "disabled", description: "Coming later after settlement/certification procedures are documented." },
 ];
 
 type QBReferenceDebugField = {
@@ -376,12 +377,7 @@ export default function SettingsIntegrations() {
   const [epsEnabled, setEpsEnabled] = useState(false);
   const [epsAccountNumber, setEpsAccountNumber] = useState('');
   const [epsApiKey, setEpsApiKey] = useState('');
-  const [epsDeviceSerialNumber, setEpsDeviceSerialNumber] = useState('');
   const [epsCnpBaseUrl, setEpsCnpBaseUrl] = useState('https://postransactions.com/cnp');
-  const [epsCardPresentBaseUrl, setEpsCardPresentBaseUrl] = useState('https://postransactions.com/connet');
-  const [epsAchBaseUrl, setEpsAchBaseUrl] = useState('https://postransactions.com/ach');
-  const [epsGiftBaseUrl, setEpsGiftBaseUrl] = useState('https://postransactions.com/gift');
-  const [epsSupportedModes, setEpsSupportedModes] = useState<EpsPaymentMode[]>(["hosted_cnp", "token_cnp", "card_present", "ach", "gift_card"]);
 
   useEffect(() => {
     if (!paymentSettings) return;
@@ -389,20 +385,8 @@ export default function SettingsIntegrations() {
     setEpsEnabled(paymentSettings.epsEnabled);
     setEpsAccountNumber(paymentSettings.epsAccountNumber || '');
     setEpsApiKey('');
-    setEpsDeviceSerialNumber(paymentSettings.epsDeviceSerialNumber || '');
     setEpsCnpBaseUrl(paymentSettings.epsCnpBaseUrl || 'https://postransactions.com/cnp');
-    setEpsCardPresentBaseUrl(paymentSettings.epsCardPresentBaseUrl || 'https://postransactions.com/connet');
-    setEpsAchBaseUrl(paymentSettings.epsAchBaseUrl || 'https://postransactions.com/ach');
-    setEpsGiftBaseUrl(paymentSettings.epsGiftBaseUrl || 'https://postransactions.com/gift');
-    setEpsSupportedModes(paymentSettings.epsSupportedModes?.length ? paymentSettings.epsSupportedModes : ["hosted_cnp", "token_cnp", "card_present", "ach", "gift_card"]);
   }, [paymentSettings]);
-
-  const toggleEpsMode = (mode: EpsPaymentMode, checked: boolean) => {
-    setEpsSupportedModes((current) => {
-      const next = checked ? Array.from(new Set([...current, mode])) : current.filter((item) => item !== mode);
-      return next.length ? next : current;
-    });
-  };
 
   const saveEpsSettings = async () => {
     try {
@@ -411,12 +395,8 @@ export default function SettingsIntegrations() {
         epsEnabled,
         epsAccountNumber: epsAccountNumber.trim() || null,
         ...(epsApiKey.trim() ? { epsApiKey: epsApiKey.trim() } : {}),
-        epsDeviceSerialNumber: epsDeviceSerialNumber.trim() || null,
         epsCnpBaseUrl: epsCnpBaseUrl.trim() || 'https://postransactions.com/cnp',
-        epsCardPresentBaseUrl: epsCardPresentBaseUrl.trim() || 'https://postransactions.com/connet',
-        epsAchBaseUrl: epsAchBaseUrl.trim() || 'https://postransactions.com/ach',
-        epsGiftBaseUrl: epsGiftBaseUrl.trim() || 'https://postransactions.com/gift',
-        epsSupportedModes,
+        epsSupportedModes: ["hosted_cnp"],
       });
       setEpsApiKey('');
       toast({ title: 'EPS settings saved' });
@@ -1708,45 +1688,32 @@ export default function SettingsIntegrations() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="eps-device">Card-present device serial number</Label>
-              <Input id="eps-device" value={epsDeviceSerialNumber} onChange={(event) => setEpsDeviceSerialNumber(event.target.value)} />
-            </div>
-
-            <div className="space-y-2">
-              <Label>Supported modes</Label>
-              <div className="grid gap-2 rounded-md border p-3 sm:grid-cols-2">
-                {EPS_MODE_OPTIONS.map((mode) => (
-                  <label key={mode.value} className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={epsSupportedModes.includes(mode.value)}
-                      onChange={(event) => toggleEpsMode(mode.value, event.target.checked)}
-                    />
-                    <span>{mode.label}</span>
-                  </label>
-                ))}
-              </div>
+              <Label htmlFor="eps-cnp-base">Hosted CNP base URL</Label>
+              <Input id="eps-cnp-base" value={epsCnpBaseUrl} onChange={(event) => setEpsCnpBaseUrl(event.target.value)} />
             </div>
           </div>
 
           <Separator />
 
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="eps-cnp-base">CNP base URL</Label>
-              <Input id="eps-cnp-base" value={epsCnpBaseUrl} onChange={(event) => setEpsCnpBaseUrl(event.target.value)} />
+          <div className="space-y-3">
+            <div>
+              <h4 className="text-sm font-medium">EPS capability status</h4>
+              <p className="text-xs text-muted-foreground">
+                Phase 1 is hosted-card-payment only. Other EPS actions are disabled server-side until certification and official status handling are complete.
+              </p>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="eps-cp-base">Card-present base URL</Label>
-              <Input id="eps-cp-base" value={epsCardPresentBaseUrl} onChange={(event) => setEpsCardPresentBaseUrl(event.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="eps-ach-base">ACH base URL</Label>
-              <Input id="eps-ach-base" value={epsAchBaseUrl} onChange={(event) => setEpsAchBaseUrl(event.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="eps-gift-base">Gift base URL</Label>
-              <Input id="eps-gift-base" value={epsGiftBaseUrl} onChange={(event) => setEpsGiftBaseUrl(event.target.value)} />
+            <div className="grid gap-2 md:grid-cols-2">
+              {EPS_PHASE1_MODE_STATUS.map((mode) => (
+                <div key={mode.label} className="flex items-start justify-between gap-3 rounded-md border p-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">{mode.label}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{mode.description}</div>
+                  </div>
+                  <Badge variant={mode.status === "available" ? "default" : "outline"} className="shrink-0">
+                    {mode.status === "available" ? "Available" : "Coming later"}
+                  </Badge>
+                </div>
+              ))}
             </div>
           </div>
 
