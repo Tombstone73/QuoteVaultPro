@@ -3,6 +3,7 @@ import {
   EpsGatewayClient,
   formatCentsAsEpsAmount,
   normalizeEpsResponse,
+  redactEpsPayload,
 } from "../services/payments/epsGatewayClient";
 import {
   PaymentProviderError,
@@ -110,6 +111,27 @@ describe("EPS gateway client", () => {
     expect(calls).toHaveLength(1);
     expect((calls[0].init.headers as Record<string, string>).apikey).toBe("super-secret");
     expect(String(calls[0].init.body)).not.toContain("super-secret");
+  });
+
+  test("redacts PTK, token, card, and bank-like fields from safe payload metadata", () => {
+    const redacted = redactEpsPayload({
+      apikey: "secret-api-key",
+      ptk: "EokmyfhVcn76",
+      token: "tok_123456789",
+      AccountNum: "4111111111111111",
+      checkaccount: "123456789",
+      checkrouting: "021000021",
+      nested: { expirationdate: "12/29", cvv: "123" },
+      amount: "29.75",
+    }) as Record<string, unknown>;
+
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain("secret-api-key");
+    expect(serialized).not.toContain("EokmyfhVcn76");
+    expect(serialized).not.toContain("tok_123456789");
+    expect(serialized).not.toContain("4111111111111111");
+    expect(serialized).not.toContain("123456789");
+    expect(serialized).toContain("29.75");
   });
 });
 

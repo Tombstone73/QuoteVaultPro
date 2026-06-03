@@ -59,6 +59,14 @@ describe('computeInvoicePaymentRollup', () => {
     expect(r).toEqual({ amountPaidCents: 250, amountDueCents: 750, paymentStatus: 'partial' });
   });
 
+  test('does not mark an invoice paid from EPS hosted PTK creation alone', () => {
+    const r = computeInvoicePaymentRollup({
+      invoiceTotalCents: 2500,
+      payments: [{ id: 'p_eps_hosted_pending', status: 'pending', amountCents: 2500 }],
+    });
+    expect(r).toEqual({ amountPaidCents: 0, amountDueCents: 2500, paymentStatus: 'unpaid' });
+  });
+
   test('treats manual and stripe the same (status-based)', () => {
     const r = computeInvoicePaymentRollup({
       invoiceTotalCents: 1000,

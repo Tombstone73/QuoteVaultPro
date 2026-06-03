@@ -4264,7 +4264,7 @@ export const organizationPaymentSettings = pgTable("organization_payment_setting
   epsAchBaseUrl: text("eps_ach_base_url").notNull().default('https://postransactions.com/ach'),
   epsGiftBaseUrl: text("eps_gift_base_url").notNull().default('https://postransactions.com/gift'),
   epsDeviceSerialNumber: text("eps_device_serial_number"),
-  epsSupportedModes: jsonb("eps_supported_modes").$type<string[]>().default(sql`'["hosted_cnp","token_cnp","card_present","ach","gift_card"]'::jsonb`).notNull(),
+  epsSupportedModes: jsonb("eps_supported_modes").$type<string[]>().default(sql`'["hosted_cnp"]'::jsonb`).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
@@ -4287,7 +4287,7 @@ export const insertOrganizationPaymentSettingsSchema = createInsertSchema(organi
   epsAchBaseUrl: z.string().url().optional(),
   epsGiftBaseUrl: z.string().url().optional(),
   epsDeviceSerialNumber: z.string().trim().max(100).optional().nullable(),
-  epsSupportedModes: z.array(epsPaymentModeSchema).default(['hosted_cnp', 'token_cnp', 'card_present', 'ach', 'gift_card']),
+  epsSupportedModes: z.array(epsPaymentModeSchema).default(['hosted_cnp']),
 });
 
 export const updateOrganizationPaymentSettingsSchema = insertOrganizationPaymentSettingsSchema.partial().extend({

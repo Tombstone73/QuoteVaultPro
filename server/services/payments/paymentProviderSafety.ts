@@ -41,7 +41,7 @@ function defaultSafePaymentSettings(): SafePaymentSettings {
     epsAchBaseUrl: "https://postransactions.com/ach",
     epsGiftBaseUrl: "https://postransactions.com/gift",
     epsDeviceSerialNumber: null,
-    epsSupportedModes: ["hosted_cnp", "token_cnp", "card_present", "ach", "gift_card"],
+    epsSupportedModes: ["hosted_cnp"],
     epsReady: false,
     missing: ["provider"],
   };
@@ -53,7 +53,7 @@ export function toSafePaymentSettings(row: Record<string, any> | null | undefine
     ? row.epsSupportedModes.filter((mode: string): mode is EpsMode =>
         ["hosted_cnp", "token_cnp", "card_present", "ach", "gift_card"].includes(mode),
       )
-    : ["hosted_cnp", "token_cnp", "card_present", "ach", "gift_card"];
+    : ["hosted_cnp"];
 
   const provider = row.provider === "eps" ? "eps" : "none";
   const missing: string[] = [];

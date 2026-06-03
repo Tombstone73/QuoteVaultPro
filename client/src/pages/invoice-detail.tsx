@@ -1308,7 +1308,7 @@ export default function InvoiceDetailPage() {
                         disabled={createEpsHostedSessionMutation.isPending}
                       >
                         <ExternalLink className="mr-2 h-4 w-4" />
-                        {createEpsHostedSessionMutation.isPending ? 'Opening EPS…' : 'EPS Hosted'}
+                        {createEpsHostedSessionMutation.isPending ? 'Opening EPS...' : 'Pay with EPS Hosted Form'}
                       </Button>
                     ) : null}
 
@@ -2047,7 +2047,7 @@ export default function InvoiceDetailPage() {
                               onClick={openEpsHostedPayment}
                               disabled={createEpsHostedSessionMutation.isPending}
                             >
-                              {createEpsHostedSessionMutation.isPending ? 'Opening EPS…' : 'EPS Hosted'}
+                              {createEpsHostedSessionMutation.isPending ? 'Opening EPS...' : 'Pay with EPS Hosted Form'}
                             </Button>
                           )}
                         </div>
@@ -2068,7 +2068,7 @@ export default function InvoiceDetailPage() {
                           <AlertCircle className="h-4 w-4" />
                           <AlertTitle>EPS payment pending</AlertTitle>
                           <AlertDescription>
-                            The EPS document provided does not include a webhook or status endpoint. Keep hosted and ACH payments pending until the result is confirmed and recorded.
+                            The EPS document provided does not include a webhook or status endpoint. Keep hosted payments pending until the result is confirmed and recorded.
                           </AlertDescription>
                         </Alert>
                       ) : null}
