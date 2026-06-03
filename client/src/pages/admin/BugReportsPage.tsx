@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { Brain, Bug, ExternalLink, FileText, RefreshCw, Send } from "lucide-react";
+import { Brain, Bug, Download, ExternalLink, FileText, RefreshCw, Send } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -271,6 +271,14 @@ export function hasActiveTriageBrief(data: AiTriageBriefListResponse | undefined
 
 export function canGenerateAiTriageBrief(data: AiTriageBriefListResponse | undefined, isPending: boolean): boolean {
   return Boolean(data?.featureEnabled && data?.canGenerate && !isPending);
+}
+
+export function canExportAiTriageBriefPdf(brief: AiTriageBriefDto, isAdminOrOwner: boolean): boolean {
+  return isAdminOrOwner && brief.status === "completed";
+}
+
+function getAiTriageBriefPdfUrl(briefId: string): string {
+  return `/api/bug-reports/ai-triage-briefs/${encodeURIComponent(briefId)}/pdf`;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -791,7 +799,7 @@ export default function BugReportsPage() {
               ))}
             </div>
           ) : (
-            <AiTriageBriefDetail brief={selectedBrief} />
+            <AiTriageBriefDetail brief={selectedBrief} canExportPdf={canExportAiTriageBriefPdf(selectedBrief, isAdminOrOwner)} />
           )}
         </SheetContent>
       </Sheet>
@@ -877,15 +885,25 @@ export function AiTriageBriefHistoryPanel({
   );
 }
 
-export function AiTriageBriefDetail({ brief }: { brief: AiTriageBriefDto }) {
+export function AiTriageBriefDetail({ brief, canExportPdf = false }: { brief: AiTriageBriefDto; canExportPdf?: boolean }) {
   const result = brief.result;
 
   return (
     <>
       <SheetHeader>
-        <SheetTitle className="flex items-center gap-2 pr-6">
-          <Brain className="h-5 w-5" />
-          AI Triage Brief
+        <SheetTitle className="flex items-start justify-between gap-3 pr-6">
+          <span className="flex items-center gap-2">
+            <Brain className="h-5 w-5" />
+            AI Triage Brief
+          </span>
+          {canExportPdf && brief.status === "completed" ? (
+            <Button asChild size="sm" variant="outline" className="gap-2">
+              <a href={getAiTriageBriefPdfUrl(brief.id)} target="_blank" rel="noreferrer">
+                <Download className="h-4 w-4" />
+                Export PDF
+              </a>
+            </Button>
+          ) : null}
         </SheetTitle>
         <SheetDescription className="flex flex-wrap items-center gap-2">
           <Badge variant="outline">AI Advisory</Badge>

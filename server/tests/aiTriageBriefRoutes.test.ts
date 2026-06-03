@@ -42,6 +42,59 @@ jest.unstable_mockModule("../services/ai/aiProviderResolver", () => ({
 
 let registerAiTriageBriefRoutes: any;
 
+const completedResult = {
+  executiveSummary: "Active reports cluster around quote save reliability.",
+  topOperationalRisks: [{ title: "Quote save failures", impact: "Operators cannot save work.", confidence: 0.8, rationale: "Multiple reports mention save failures." }],
+  topWorkflowRisks: [{ title: "Quote workflow blocked", impact: "Quote work stalls.", confidence: 0.7, rationale: "Saving is required before handoff." }],
+  topRevenueRisks: [{ title: "Quote conversion delay", impact: "Revenue may be delayed.", confidence: 0.6, rationale: "Quotes cannot progress." }],
+  topBugClusters: [{ issue: "Quote save fails", reportCount: 2, affectedModules: ["Quotes"], impact: "Blocks quote editing." }],
+  topFeatureRequests: [{ feature: "Bulk proof reminders", requestCount: 1, value: "Less manual follow-up.", complexity: "unknown" }],
+  duplicateSignals: [{ theme: "Quote save", reportIds: ["bug_1", "bug_2"], rationale: "Same module and symptom.", confidence: 0.8 }],
+  suggestedPriorityOrder: [{ item: "Investigate quote save", rationale: "High workflow impact.", urgency: "high" }],
+  recommendedNextSprint: [{ item: "Reproduce quote save", rationale: "Needed before fix.", urgency: "high" }],
+  unknowns: ["No logs supplied."],
+  confidence: 0.75,
+};
+
+function baseBrief(overrides: Record<string, any> = {}) {
+  return {
+    id: "brief_1",
+    orgId: "org_1",
+    status: "completed",
+    requestedByEmail: "admin@example.com",
+    filtersSnapshot: { status: "open", severity: "all", type: "all", limit: 100 },
+    reportSnapshot: [],
+    provider: "openai",
+    model: "gpt-4o-mini",
+    mode: "printershero_managed",
+    promptVersion: "triage-brief-v1",
+    result: completedResult,
+    summary: completedResult.executiveSummary,
+    topRisks: null,
+    topFeatures: null,
+    recommendedPriorities: null,
+    duplicateSignals: null,
+    workflowRisks: null,
+    revenueRisks: null,
+    unknowns: null,
+    confidence: 0.75,
+    providerMetadata: { hidden: true },
+    usageMetadata: { hidden: true },
+    errorCode: null,
+    errorMessage: null,
+    createdAt: "2026-06-03T12:00:00.000Z",
+    startedAt: "2026-06-03T12:00:01.000Z",
+    completedAt: "2026-06-03T12:00:05.000Z",
+    ...overrides,
+  };
+}
+
+function parseBinaryResponse(res: any, callback: (error: Error | null, body?: Buffer) => void) {
+  const chunks: Buffer[] = [];
+  res.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+  res.on("end", () => callback(null, Buffer.concat(chunks)));
+}
+
 beforeAll(async () => {
   const routeModule = await import("../routes/aiTriageBriefs.routes");
   registerAiTriageBriefRoutes = routeModule.registerAiTriageBriefRoutes;
@@ -77,7 +130,7 @@ describe("AI triage brief routes", () => {
       usage: { monthlyUsageLimit: null },
     });
     listBriefs.mockResolvedValue([]);
-    getBrief.mockResolvedValue({ id: "brief_1", status: "completed" });
+    getBrief.mockResolvedValue(baseBrief());
     requestTriageBrief.mockResolvedValue({ id: "brief_1", status: "pending" });
   });
 
@@ -148,5 +201,45 @@ describe("AI triage brief routes", () => {
 
     expect(response.status).toBe(403);
     expect(requestTriageBrief).not.toHaveBeenCalled();
+  });
+
+  test("completed brief PDF export succeeds with PDF headers and safe filename", async () => {
+    const response = await request(buildApp())
+      .get("/api/bug-reports/ai-triage-briefs/brief_1/pdf")
+      .buffer(true)
+      .parse(parseBinaryResponse);
+
+    expect(response.status).toBe(200);
+    expect(response.headers["content-type"]).toContain("application/pdf");
+    expect(response.headers["content-disposition"]).toContain("attachment;");
+    expect(response.headers["content-disposition"]).toContain("printers-hero-ai-triage-brief-2026-06-03.pdf");
+    expect(response.body.slice(0, 4).toString()).toBe("%PDF");
+    expect(getBrief).toHaveBeenCalledWith("org_1", "brief_1");
+  });
+
+  test.each(["pending", "processing", "failed"])("%s brief cannot be exported as PDF", async (status) => {
+    getBrief.mockResolvedValueOnce(baseBrief({ status, result: status === "failed" ? null : completedResult }));
+
+    const response = await request(buildApp()).get("/api/bug-reports/ai-triage-briefs/brief_1/pdf");
+
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("AI_TRIAGE_BRIEF_NOT_COMPLETED");
+  });
+
+  test("cross-org PDF export is denied by org-scoped lookup", async () => {
+    getBrief.mockImplementationOnce(async (orgId: string) => orgId === "org_1" ? baseBrief() : null);
+
+    const response = await request(buildApp({ orgId: "org_2" })).get("/api/bug-reports/ai-triage-briefs/brief_1/pdf");
+
+    expect(response.status).toBe(404);
+    expect(response.body.code).toBe("AI_TRIAGE_BRIEF_NOT_FOUND");
+    expect(getBrief).toHaveBeenCalledWith("org_2", "brief_1");
+  });
+
+  test("non-admin cannot export PDF", async () => {
+    const response = await request(buildApp({ orgRole: "member" })).get("/api/bug-reports/ai-triage-briefs/brief_1/pdf");
+
+    expect(response.status).toBe(403);
+    expect(getBrief).not.toHaveBeenCalled();
   });
 });
