@@ -9,6 +9,7 @@ import {
 } from "@shared/schema";
 import {
   defaultAiFeatureFlags,
+  normalizeAiMode,
   type AiFeatureFlags,
   type SafeAiSettingsDto,
 } from "@shared/aiFoundationContracts";
@@ -72,7 +73,7 @@ export function toSafeAiSettingsDto(orgId: string, row: OrganizationAiSettings |
   return {
     id: row.id,
     orgId: row.orgId,
-    mode: row.mode,
+    mode: normalizeAiMode(row.mode),
     provider: row.provider,
     model: row.model,
     isEnabled: row.isEnabled,

@@ -32,7 +32,7 @@ function normalizeModel(model: string | null | undefined): string | null | undef
 function asModeEnabled(mode: OrganizationAiSettings["mode"] | undefined, explicit?: boolean): boolean | undefined {
   if (explicit !== undefined) return explicit;
   if (mode === "disabled") return false;
-  if (mode === "titanos_managed" || mode === "bring_your_own") return true;
+  if (mode === "printershero_managed" || mode === "bring_your_own") return true;
   return undefined;
 }
 
@@ -70,7 +70,7 @@ export class AiSettingsService {
     if (patch.productionAssistanceEnabled !== undefined) update.productionAssistanceEnabled = patch.productionAssistanceEnabled;
     if (patch.monthlyUsageLimit !== undefined) update.monthlyUsageLimit = patch.monthlyUsageLimit;
 
-    if (patch.clearApiKey || patch.mode === "disabled" || patch.mode === "titanos_managed") {
+    if (patch.clearApiKey || patch.mode === "disabled" || patch.mode === "printershero_managed") {
       update.encryptedApiKey = null;
       update.apiKeyLast4 = null;
       update.encryptionKeyId = null;

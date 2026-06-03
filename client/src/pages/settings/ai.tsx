@@ -11,7 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import type { AiCapabilitiesDto, AiMode, AiProvider, SafeAiSettingsDto } from "@shared/aiFoundationContracts";
 
-type AiSettingsDraft = {
+export type AiSettingsDraft = {
   mode: AiMode;
   provider: AiProvider | "none";
   model: string;
@@ -43,8 +43,8 @@ async function fetchAiCapabilities(): Promise<AiCapabilitiesDto> {
   return body.data as AiCapabilitiesDto;
 }
 
-async function saveAiSettings(draft: AiSettingsDraft): Promise<SafeAiSettingsDto> {
-  const payload = {
+export function buildAiSettingsPayload(draft: AiSettingsDraft) {
+  return {
     mode: draft.mode,
     provider: draft.provider === "none" ? null : draft.provider,
     model: draft.model.trim() || null,
@@ -56,6 +56,10 @@ async function saveAiSettings(draft: AiSettingsDraft): Promise<SafeAiSettingsDto
     orderParsingEnabled: draft.mode !== "disabled" && draft.orderParsingEnabled,
     monthlyUsageLimit: draft.monthlyUsageLimit.trim() ? Number(draft.monthlyUsageLimit) : null,
   };
+}
+
+async function saveAiSettings(draft: AiSettingsDraft): Promise<SafeAiSettingsDto> {
+  const payload = buildAiSettingsPayload(draft);
 
   const response = await fetch("/api/ai/settings", {
     method: "PATCH",
@@ -153,7 +157,7 @@ export default function AiSettingsPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="disabled">Disabled</SelectItem>
-                  <SelectItem value="titanos_managed">Printers Hero Managed AI</SelectItem>
+                  <SelectItem value="printershero_managed">Printers Hero Managed AI</SelectItem>
                   <SelectItem value="bring_your_own">Bring Your Own AI</SelectItem>
                 </SelectContent>
               </Select>

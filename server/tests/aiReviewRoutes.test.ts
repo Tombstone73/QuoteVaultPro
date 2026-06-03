@@ -66,7 +66,7 @@ describe("AI review routes", () => {
     process.env.AI_BUG_REVIEW_ADMINS_ONLY = "true";
     getCapabilities.mockResolvedValue({
       enabled: true,
-      mode: "titanos_managed",
+      mode: "printershero_managed",
       provider: "openai",
       model: "test-model",
       hasApiKey: false,
