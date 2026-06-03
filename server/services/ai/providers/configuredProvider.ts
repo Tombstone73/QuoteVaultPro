@@ -57,6 +57,14 @@ function safeEndpointDiagnostic(endpoint: string): string {
 
 export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
   async generateBugReview(request: AiProviderRequest): Promise<AiProviderResponse> {
+    return this.generateJson(request);
+  }
+
+  async generateTriageBrief(request: AiProviderRequest): Promise<AiProviderResponse> {
+    return this.generateJson(request);
+  }
+
+  private async generateJson(request: AiProviderRequest): Promise<AiProviderResponse> {
     const config = request.providerConfig ?? await aiProviderResolver.resolveProvider({
       orgId: request.orgId,
       feature: request.feature,

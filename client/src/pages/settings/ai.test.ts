@@ -9,6 +9,7 @@ describe("AI settings payload", () => {
       model: "gpt-test",
       apiKey: "",
       bugReviewEnabled: true,
+      triageBriefEnabled: true,
       featureReviewEnabled: false,
       duplicateDetectionEnabled: false,
       orderParsingEnabled: false,
@@ -19,6 +20,7 @@ describe("AI settings payload", () => {
       mode: "printershero_managed",
       isEnabled: true,
       bugReviewEnabled: true,
+      triageBriefEnabled: true,
     }));
     expect(JSON.stringify(buildAiSettingsPayload(draft))).not.toContain("titanos_managed");
   });

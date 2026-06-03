@@ -61,6 +61,7 @@ export class AiSettingsService {
       update.isEnabled = asModeEnabled(patch.mode, patch.isEnabled);
     }
     if (patch.bugReviewEnabled !== undefined) update.bugReviewEnabled = patch.bugReviewEnabled;
+    if (patch.triageBriefEnabled !== undefined) update.triageBriefEnabled = patch.triageBriefEnabled;
     if (patch.featureReviewEnabled !== undefined) update.featureReviewEnabled = patch.featureReviewEnabled;
     if (patch.duplicateDetectionEnabled !== undefined) update.duplicateDetectionEnabled = patch.duplicateDetectionEnabled;
     if (patch.orderParsingEnabled !== undefined) update.orderParsingEnabled = patch.orderParsingEnabled;
@@ -92,6 +93,7 @@ export class AiSettingsService {
       update.provider = null;
       update.model = null;
       update.bugReviewEnabled = false;
+      update.triageBriefEnabled = false;
       update.featureReviewEnabled = false;
       update.duplicateDetectionEnabled = false;
       update.orderParsingEnabled = false;

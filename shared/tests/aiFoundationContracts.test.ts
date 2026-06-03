@@ -9,6 +9,7 @@ describe("AI foundation contracts", () => {
       model: "gpt-test",
       apiKey: "sk-test",
       bugReviewEnabled: true,
+      triageBriefEnabled: true,
       monthlyUsageLimit: 1000,
     });
 
@@ -29,6 +30,7 @@ describe("AI foundation contracts", () => {
 
   test("future AI features default off", () => {
     expect(defaultAiFeatureFlags.bugReview).toBe(false);
+    expect(defaultAiFeatureFlags.triageBrief).toBe(false);
     expect(defaultAiFeatureFlags.featureReview).toBe(false);
     expect(defaultAiFeatureFlags.duplicateDetection).toBe(false);
   });

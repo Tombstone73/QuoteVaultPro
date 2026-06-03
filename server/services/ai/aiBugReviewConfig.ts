@@ -1,4 +1,5 @@
 export const BUG_REVIEW_PROMPT_VERSION = "bug-review-v1";
+export const TRIAGE_BRIEF_PROMPT_VERSION = "triage-brief-v1";
 
 function readBooleanEnv(name: string, defaultValue: boolean): boolean {
   const raw = process.env[name];
@@ -26,5 +27,10 @@ export function getAiBugReviewProviderConfig() {
 
 export function getAiBugReviewStaleMinutes(): number {
   const parsed = Number(process.env.AI_BUG_REVIEW_STALE_MINUTES || 15);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 15;
+}
+
+export function getAiTriageBriefStaleMinutes(): number {
+  const parsed = Number(process.env.AI_TRIAGE_BRIEF_STALE_MINUTES || process.env.AI_BUG_REVIEW_STALE_MINUTES || 15);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 15;
 }

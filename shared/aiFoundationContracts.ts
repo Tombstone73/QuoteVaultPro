@@ -4,6 +4,7 @@ export const aiModeValues = ["disabled", "printershero_managed", "bring_your_own
 export const aiProviderValues = ["openai", "anthropic", "future"] as const;
 export const aiFeatureValues = [
   "bug_review",
+  "triage_brief",
   "feature_review",
   "duplicate_detection",
   "order_parsing",
@@ -27,6 +28,7 @@ export function normalizeAiMode(value: unknown): AiMode {
 
 export const aiFeatureFlagsSchema = z.object({
   bugReview: z.boolean(),
+  triageBrief: z.boolean(),
   featureReview: z.boolean(),
   duplicateDetection: z.boolean(),
   orderParsing: z.boolean(),
@@ -46,6 +48,7 @@ export const aiSettingsUpdateSchema = z.object({
   clearApiKey: z.boolean().optional(),
   isEnabled: z.boolean().optional(),
   bugReviewEnabled: z.boolean().optional(),
+  triageBriefEnabled: z.boolean().optional(),
   featureReviewEnabled: z.boolean().optional(),
   duplicateDetectionEnabled: z.boolean().optional(),
   orderParsingEnabled: z.boolean().optional(),
@@ -82,6 +85,7 @@ export interface AiCapabilitiesDto {
   permissions: {
     canManageSettings: boolean;
     canRunBugReview: boolean;
+    canGenerateTriageBrief: boolean;
   };
   usage: {
     monthlyUsageLimit: number | null;
@@ -90,6 +94,7 @@ export interface AiCapabilitiesDto {
 
 export const defaultAiFeatureFlags: AiFeatureFlags = {
   bugReview: false,
+  triageBrief: false,
   featureReview: false,
   duplicateDetection: false,
   orderParsing: false,

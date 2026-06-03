@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { Bug, ExternalLink, RefreshCw, Send } from "lucide-react";
+import { Brain, Bug, ExternalLink, FileText, RefreshCw, Send } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { AiReviewPanel } from "@/components/bug-report/AiReviewPanel";
 import { getAiReviewPollingInterval } from "@/components/bug-report/aiReviewPolling";
 import type { CurrentBugAiReviewResponse } from "@shared/aiReviewContracts";
+import type { AiTriageBriefDto, AiTriageBriefListResponse } from "@shared/aiTriageBriefContracts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -62,6 +63,18 @@ class AiReviewApiError extends Error {
   constructor(status: number, message: string, code: string | null = null) {
     super(message);
     this.name = "AiReviewApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+class AiTriageBriefApiError extends Error {
+  status: number;
+  code: string | null;
+
+  constructor(status: number, message: string, code: string | null = null) {
+    super(message);
+    this.name = "AiTriageBriefApiError";
     this.status = status;
     this.code = code;
   }
@@ -209,6 +222,53 @@ async function rerunAiReview(reviewId: string): Promise<{ reviewId: string; stat
   return body.data as { reviewId: string; status: string };
 }
 
+async function fetchAiTriageBriefs(): Promise<AiTriageBriefListResponse> {
+  const res = await fetch("/api/bug-reports/ai-triage-briefs", { credentials: "include" });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as { message?: string; code?: string };
+    throw new AiTriageBriefApiError(
+      res.status,
+      body.message ?? "Failed to fetch AI triage briefs",
+      body.code ?? null,
+    );
+  }
+  const body = await res.json();
+  return body.data as AiTriageBriefListResponse;
+}
+
+async function fetchAiTriageBrief(briefId: string): Promise<AiTriageBriefDto> {
+  const res = await fetch(`/api/bug-reports/ai-triage-briefs/${briefId}`, { credentials: "include" });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as { message?: string; code?: string };
+    throw new AiTriageBriefApiError(
+      res.status,
+      body.message ?? "Failed to fetch AI triage brief",
+      body.code ?? null,
+    );
+  }
+  const body = await res.json();
+  return body.data as AiTriageBriefDto;
+}
+
+async function createAiTriageBrief(filters: { status: string; severity: string; type: string }): Promise<{ briefId: string; status: string }> {
+  const res = await fetch("/api/bug-reports/ai-triage-brief", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ filters }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body as { message?: string }).message ?? "Failed to queue AI triage brief");
+  }
+  const body = await res.json();
+  return body.data as { briefId: string; status: string };
+}
+
+export function hasActiveTriageBrief(data: AiTriageBriefListResponse | undefined): boolean {
+  return Boolean(data?.briefs.some((brief) => brief.status === "pending" || brief.status === "processing"));
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function BugReportsPage() {
@@ -219,6 +279,7 @@ export default function BugReportsPage() {
   const [severityFilter, setSeverityFilter] = useState("all");
   const [typeFilter, setTypeFilter]         = useState("all");
   const [selectedId, setSelectedId]         = useState<string | null>(null);
+  const [selectedBriefId, setSelectedBriefId] = useState<string | null>(null);
   const [noteText, setNoteText]             = useState("");
   const noteRef = useRef<HTMLTextAreaElement>(null);
 
@@ -246,6 +307,23 @@ export default function BugReportsPage() {
     queryKey: ["/api/bug-reports/notes", selectedId],
     queryFn: () => fetchNotes(selectedId!),
     enabled: !!selectedId,
+  });
+
+  const { data: triageBriefData, isLoading: triageBriefsLoading } = useQuery<AiTriageBriefListResponse, Error>({
+    queryKey: ["/api/bug-reports/ai-triage-briefs"],
+    queryFn: fetchAiTriageBriefs,
+    enabled: isAdminOrOwner,
+    refetchInterval: (query) => hasActiveTriageBrief(query.state.data as AiTriageBriefListResponse | undefined) ? 3000 : false,
+  });
+
+  const { data: selectedBrief, isLoading: selectedBriefLoading } = useQuery<AiTriageBriefDto, Error>({
+    queryKey: ["/api/bug-reports/ai-triage-briefs", selectedBriefId],
+    queryFn: () => fetchAiTriageBrief(selectedBriefId!),
+    enabled: Boolean(selectedBriefId),
+    refetchInterval: (query) => {
+      const brief = query.state.data as AiTriageBriefDto | undefined;
+      return brief?.status === "pending" || brief?.status === "processing" ? 3000 : false;
+    },
   });
 
   const { data: aiReviewData, isLoading: aiReviewLoading, error: aiReviewError } = useQuery<CurrentBugAiReviewResponse, Error>({
@@ -310,6 +388,18 @@ export default function BugReportsPage() {
     },
   });
 
+  const createTriageBriefMutation = useMutation({
+    mutationFn: () => createAiTriageBrief({ status: statusFilter, severity: severityFilter, type: typeFilter }),
+    onSuccess: (result) => {
+      setSelectedBriefId(result.briefId);
+      queryClient.invalidateQueries({ queryKey: ["/api/bug-reports/ai-triage-briefs"] });
+      toast({ title: "AI triage brief queued" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "AI triage brief failed", description: err.message, variant: "destructive" });
+    },
+  });
+
   const handleAddNote = () => {
     const trimmed = noteText.trim();
     if (!trimmed) return;
@@ -335,10 +425,26 @@ export default function BugReportsPage() {
             <p className="text-sm text-muted-foreground">User-submitted bug reports and feature requests for your organization</p>
           </div>
         </div>
-        <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isRefetching} className="gap-2">
-          <RefreshCw className={`h-4 w-4 ${isRefetching ? "animate-spin" : ""}`} />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => createTriageBriefMutation.mutate()}
+            disabled={
+              createTriageBriefMutation.isPending ||
+              !triageBriefData?.featureEnabled ||
+              !triageBriefData?.canGenerate
+            }
+            className="gap-2"
+          >
+            <Brain className="h-4 w-4" />
+            {createTriageBriefMutation.isPending ? "Generating..." : "Generate AI Triage Brief"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isRefetching} className="gap-2">
+            <RefreshCw className={`h-4 w-4 ${isRefetching ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -393,6 +499,12 @@ export default function BugReportsPage() {
           </div>
         </CardContent>
       </Card>
+
+      <AiTriageBriefHistoryPanel
+        data={triageBriefData}
+        isLoading={triageBriefsLoading}
+        onSelect={setSelectedBriefId}
+      />
 
       {/* Table */}
       <Card>
@@ -669,6 +781,20 @@ export default function BugReportsPage() {
           )}
         </SheetContent>
       </Sheet>
+
+      <Sheet open={!!selectedBriefId} onOpenChange={(open) => { if (!open) setSelectedBriefId(null); }}>
+        <SheetContent side="right" className="w-full sm:max-w-2xl overflow-y-auto">
+          {selectedBriefLoading || !selectedBrief ? (
+            <div className="space-y-4 pt-6">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <Skeleton key={i} className="h-4 w-full" />
+              ))}
+            </div>
+          ) : (
+            <AiTriageBriefDetail brief={selectedBrief} />
+          )}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
@@ -681,5 +807,254 @@ function DetailSection({ label, children }: { label: string; children: React.Rea
       <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
       {children}
     </div>
+  );
+}
+
+export function AiTriageBriefHistoryPanel({
+  data,
+  isLoading,
+  onSelect,
+}: {
+  data: AiTriageBriefListResponse | undefined;
+  isLoading: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const disabledMessage = !data?.featureEnabled
+    ? "AI Triage Brief is disabled in AI Settings."
+    : !data?.canGenerate
+      ? "AI Triage Brief is available to admins and owners only."
+      : null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm font-medium">
+          <FileText className="h-4 w-4" />
+          AI Triage Brief History
+          <Badge variant="outline">AI Advisory</Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          Normal triage briefs analyze active feedback only: open and in review. Resolved and closed reports are excluded.
+        </p>
+        {disabledMessage ? (
+          <p className="text-sm text-muted-foreground">{disabledMessage}</p>
+        ) : null}
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        ) : !data?.briefs.length ? (
+          <p className="text-sm text-muted-foreground">No AI triage brief has been generated yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {data.briefs.slice(0, 5).map((brief) => (
+              <button
+                key={brief.id}
+                type="button"
+                onClick={() => onSelect(brief.id)}
+                className="flex w-full items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-left hover:bg-muted/50"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">
+                    {brief.summary || "AI Triage Brief"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {format(new Date(brief.createdAt), "MMM d, yyyy HH:mm")} by {brief.requestedByEmail}
+                  </p>
+                </div>
+                <Badge variant={brief.status === "failed" ? "destructive" : brief.status === "completed" ? "default" : "secondary"}>
+                  {brief.status}
+                </Badge>
+              </button>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+export function AiTriageBriefDetail({ brief }: { brief: AiTriageBriefDto }) {
+  const result = brief.result;
+
+  return (
+    <>
+      <SheetHeader>
+        <SheetTitle className="flex items-center gap-2 pr-6">
+          <Brain className="h-5 w-5" />
+          AI Triage Brief
+        </SheetTitle>
+        <SheetDescription className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline">AI Advisory</Badge>
+          <Badge variant={brief.status === "failed" ? "destructive" : brief.status === "completed" ? "default" : "secondary"}>
+            {brief.status}
+          </Badge>
+          <Badge variant="secondary">Active reports only</Badge>
+          <span>{format(new Date(brief.createdAt), "MMM d, yyyy HH:mm")}</span>
+        </SheetDescription>
+      </SheetHeader>
+
+      <div className="space-y-5 pt-6">
+        {brief.status === "pending" || brief.status === "processing" ? (
+          <div className="rounded-md border border-border p-4">
+            <p className="text-sm font-medium">Brief is {brief.status}.</p>
+            <p className="text-sm text-muted-foreground">The page will refresh while the AI triage brief is being prepared.</p>
+          </div>
+        ) : null}
+
+        {brief.status === "failed" ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4">
+            <p className="text-sm font-medium text-destructive">AI triage brief failed</p>
+            <p className="text-sm text-muted-foreground">{brief.errorMessage || "The provider did not return a valid brief."}</p>
+          </div>
+        ) : null}
+
+        {result ? (
+          <>
+            <BriefSection title="Executive Summary">
+              <p className="text-sm whitespace-pre-wrap">{result.executiveSummary}</p>
+            </BriefSection>
+            <BriefSection title="Top Operational Risks">
+              <RiskList items={result.topOperationalRisks} />
+            </BriefSection>
+            <BriefSection title="Top Workflow Risks">
+              <RiskList items={result.topWorkflowRisks} />
+            </BriefSection>
+            <BriefSection title="Top Revenue Risks">
+              <RiskList items={result.topRevenueRisks} />
+            </BriefSection>
+            <BriefSection title="Top Bug Clusters">
+              <BugClusterList items={result.topBugClusters} />
+            </BriefSection>
+            <BriefSection title="Top Feature Requests">
+              <FeatureRequestList items={result.topFeatureRequests} />
+            </BriefSection>
+            <BriefSection title="Duplicate Signals">
+              <DuplicateSignalList items={result.duplicateSignals} />
+            </BriefSection>
+            <BriefSection title="Suggested Priority Order">
+              <PriorityList items={result.suggestedPriorityOrder} />
+            </BriefSection>
+            <BriefSection title="Recommended Next Sprint">
+              <PriorityList items={result.recommendedNextSprint} />
+            </BriefSection>
+            <BriefSection title="Unknowns">
+              <SimpleList items={result.unknowns} />
+            </BriefSection>
+            <BriefSection title="Confidence">
+              <p className="text-sm font-medium">{Math.round(result.confidence * 100)}%</p>
+            </BriefSection>
+          </>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+function BriefSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="space-y-2 border-t border-border pt-4">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function RiskList({ items }: { items: NonNullable<AiTriageBriefDto["result"]>["topOperationalRisks"] }) {
+  if (!items.length) return <p className="text-sm text-muted-foreground">None identified.</p>;
+  return (
+    <div className="space-y-2">
+      {items.map((item, index) => (
+        <div key={`${item.title}-${index}`} className="rounded-md border border-border p-3">
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-sm font-medium">{item.title}</p>
+            <Badge variant="outline">{Math.round(item.confidence * 100)}%</Badge>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">{item.impact}</p>
+          <p className="mt-2 text-xs text-muted-foreground">{item.rationale}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function BugClusterList({ items }: { items: NonNullable<AiTriageBriefDto["result"]>["topBugClusters"] }) {
+  if (!items.length) return <p className="text-sm text-muted-foreground">None identified.</p>;
+  return (
+    <div className="space-y-2">
+      {items.map((item, index) => (
+        <div key={`${item.issue}-${index}`} className="rounded-md border border-border p-3">
+          <p className="text-sm font-medium">{item.issue}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{item.reportCount} report{item.reportCount === 1 ? "" : "s"}</p>
+          <p className="mt-2 text-sm text-muted-foreground">{item.impact}</p>
+          <p className="mt-2 text-xs text-muted-foreground">Modules: {item.affectedModules.join(", ") || "Unknown"}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FeatureRequestList({ items }: { items: NonNullable<AiTriageBriefDto["result"]>["topFeatureRequests"] }) {
+  if (!items.length) return <p className="text-sm text-muted-foreground">None identified.</p>;
+  return (
+    <div className="space-y-2">
+      {items.map((item, index) => (
+        <div key={`${item.feature}-${index}`} className="rounded-md border border-border p-3">
+          <p className="text-sm font-medium">{item.feature}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{item.requestCount} request{item.requestCount === 1 ? "" : "s"}</p>
+          <p className="mt-2 text-sm text-muted-foreground">{item.value}</p>
+          <p className="mt-2 text-xs text-muted-foreground">Complexity: {item.complexity}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DuplicateSignalList({ items }: { items: NonNullable<AiTriageBriefDto["result"]>["duplicateSignals"] }) {
+  if (!items.length) return <p className="text-sm text-muted-foreground">None identified.</p>;
+  return (
+    <div className="space-y-2">
+      {items.map((item, index) => (
+        <div key={`${item.theme}-${index}`} className="rounded-md border border-border p-3">
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-sm font-medium">{item.theme}</p>
+            <Badge variant="outline">{Math.round(item.confidence * 100)}%</Badge>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">{item.rationale}</p>
+          <p className="mt-2 text-xs text-muted-foreground">Reports: {item.reportIds.join(", ")}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PriorityList({ items }: { items: NonNullable<AiTriageBriefDto["result"]>["suggestedPriorityOrder"] }) {
+  if (!items.length) return <p className="text-sm text-muted-foreground">None identified.</p>;
+  return (
+    <ol className="space-y-2">
+      {items.map((item, index) => (
+        <li key={`${item.item}-${index}`} className="rounded-md border border-border p-3">
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-sm font-medium">{index + 1}. {item.item}</p>
+            <Badge variant={item.urgency === "critical" ? "destructive" : item.urgency === "high" ? "default" : "outline"}>
+              {item.urgency}
+            </Badge>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">{item.rationale}</p>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function SimpleList({ items }: { items: string[] }) {
+  if (!items.length) return <p className="text-sm text-muted-foreground">None listed.</p>;
+  return (
+    <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+      {items.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+    </ul>
   );
 }

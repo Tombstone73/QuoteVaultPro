@@ -44,6 +44,8 @@ function featureEnabled(features: AiFeatureFlags, feature: AiFeature): boolean {
   switch (feature) {
     case "bug_review":
       return features.bugReview;
+    case "triage_brief":
+      return features.triageBrief;
     case "feature_review":
       return features.featureReview;
     case "duplicate_detection":
@@ -180,6 +182,7 @@ export class AiProviderResolver {
         permissions: {
           canManageSettings: permissions.canManageSettings,
           canRunBugReview: permissions.canRunBugReview && legacyBugEnabled,
+          canGenerateTriageBrief: false,
         },
         usage: { monthlyUsageLimit: null },
       };
@@ -199,6 +202,7 @@ export class AiProviderResolver {
       permissions: {
         canManageSettings: permissions.canManageSettings,
         canRunBugReview: permissions.canRunBugReview && enabled && features.bugReview,
+        canGenerateTriageBrief: permissions.canRunBugReview && enabled && features.triageBrief,
       },
       usage: { monthlyUsageLimit: settings.monthlyUsageLimit },
     };

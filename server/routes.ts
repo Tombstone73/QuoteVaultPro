@@ -26,6 +26,7 @@ import {
 import { registerMeRoutes } from "./routes/me";
 import { registerBugReportRoutes } from "./routes/bugReports";
 import { registerAiReviewRoutes } from "./routes/aiReviews.routes";
+import { registerAiTriageBriefRoutes } from "./routes/aiTriageBriefs.routes";
 import { registerAiFoundationRoutes } from "./routes/aiFoundation.routes";
 import { registerProofingRoutes } from "./routes/proofing.routes";
 import { registerPortalProofRoutes } from "./routes/portalProof.routes";
@@ -335,6 +336,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Bug report routes extracted to ./routes/bugReports.ts (do NOT re-add here)
   registerBugReportRoutes(app, { isAuthenticated, tenantContext });
   registerAiReviewRoutes(app, { isAuthenticated, tenantContext });
+  registerAiTriageBriefRoutes(app, { isAuthenticated, tenantContext });
 
   // Admin Storage Settings routes extracted to ./routes/adminStorage.routes.ts (do NOT re-add here)
 
