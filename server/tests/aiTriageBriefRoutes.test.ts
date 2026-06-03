@@ -100,10 +100,13 @@ beforeAll(async () => {
   registerAiTriageBriefRoutes = routeModule.registerAiTriageBriefRoutes;
 });
 
-function buildApp(options: { orgRole?: string | null; orgId?: string; user?: Record<string, any> } = {}) {
+function buildApp(options: { orgRole?: string | null; orgId?: string; user?: Record<string, any>; authenticated?: boolean } = {}) {
   const app = express();
   app.use(express.json());
-  const isAuthenticated = (req: any, _res: any, next: any) => {
+  const isAuthenticated = (req: any, res: any, next: any) => {
+    if (options.authenticated === false) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
     req.user = options.user ?? { id: "user_1", email: "admin@example.com", role: "admin" };
     next();
   };
@@ -203,8 +206,8 @@ describe("AI triage brief routes", () => {
     expect(requestTriageBrief).not.toHaveBeenCalled();
   });
 
-  test("completed brief PDF export succeeds with PDF headers and safe filename", async () => {
-    const response = await request(buildApp())
+  test.each(["owner", "admin"])("completed brief PDF export succeeds for org %s with PDF headers and safe filename", async (orgRole) => {
+    const response = await request(buildApp({ orgRole }))
       .get("/api/bug-reports/ai-triage-briefs/brief_1/pdf")
       .buffer(true)
       .parse(parseBinaryResponse);
@@ -215,6 +218,14 @@ describe("AI triage brief routes", () => {
     expect(response.headers["content-disposition"]).toContain("printers-hero-ai-triage-brief-2026-06-03.pdf");
     expect(response.body.slice(0, 4).toString()).toBe("%PDF");
     expect(getBrief).toHaveBeenCalledWith("org_1", "brief_1");
+  });
+
+  test("unauthenticated PDF export is denied by auth middleware", async () => {
+    const response = await request(buildApp({ authenticated: false })).get("/api/bug-reports/ai-triage-briefs/brief_1/pdf");
+
+    expect(response.status).toBe(401);
+    expect(response.body.message).toBe("Unauthorized");
+    expect(getBrief).not.toHaveBeenCalled();
   });
 
   test.each(["pending", "processing", "failed"])("%s brief cannot be exported as PDF", async (status) => {
