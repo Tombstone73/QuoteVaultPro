@@ -281,6 +281,46 @@ function getAiTriageBriefPdfUrl(briefId: string): string {
   return `/api/bug-reports/ai-triage-briefs/${encodeURIComponent(briefId)}/pdf`;
 }
 
+function parseFilenameFromContentDisposition(headerValue: string | null): string | null {
+  if (!headerValue) return null;
+  const filenameMatch = headerValue.match(/filename\s*=\s*"([^"]+)"/i) || headerValue.match(/filename\s*=\s*([^;\s]+)/i);
+  return filenameMatch?.[1] ?? null;
+}
+
+function safeDownloadFilename(filename: string): string {
+  return filename.replace(/[/\\?%*:|"<>]/g, "-") || "printers-hero-ai-triage-brief.pdf";
+}
+
+export async function downloadAiTriageBriefPdf(briefId: string): Promise<void> {
+  const response = await fetch(getAiTriageBriefPdfUrl(briefId), { method: "GET", credentials: "include" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new AiTriageBriefApiError(
+      response.status,
+      (body as { message?: string }).message ?? "Failed to export AI triage brief PDF",
+      (body as { code?: string }).code ?? null,
+    );
+  }
+
+  const blob = await response.blob();
+  const filename = safeDownloadFilename(
+    parseFilenameFromContentDisposition(response.headers.get("content-disposition")) ?? "printers-hero-ai-triage-brief.pdf",
+  );
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.rel = "noopener";
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function BugReportsPage() {
@@ -887,6 +927,23 @@ export function AiTriageBriefHistoryPanel({
 
 export function AiTriageBriefDetail({ brief, canExportPdf = false }: { brief: AiTriageBriefDto; canExportPdf?: boolean }) {
   const result = brief.result;
+  const { toast } = useToast();
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+
+  const handleExportPdf = async () => {
+    setIsExportingPdf(true);
+    try {
+      await downloadAiTriageBriefPdf(brief.id);
+    } catch (error) {
+      toast({
+        title: "PDF export failed",
+        description: error instanceof Error ? error.message : "Unable to export AI triage brief PDF.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
 
   return (
     <>
@@ -897,11 +954,9 @@ export function AiTriageBriefDetail({ brief, canExportPdf = false }: { brief: Ai
             AI Triage Brief
           </span>
           {canExportPdf && brief.status === "completed" ? (
-            <Button asChild size="sm" variant="outline" className="gap-2">
-              <a href={getAiTriageBriefPdfUrl(brief.id)} target="_blank" rel="noreferrer">
-                <Download className="h-4 w-4" />
-                Export PDF
-              </a>
+            <Button type="button" size="sm" variant="outline" className="gap-2" onClick={handleExportPdf} disabled={isExportingPdf}>
+              <Download className="h-4 w-4" />
+              {isExportingPdf ? "Exporting..." : "Export PDF"}
             </Button>
           ) : null}
         </SheetTitle>

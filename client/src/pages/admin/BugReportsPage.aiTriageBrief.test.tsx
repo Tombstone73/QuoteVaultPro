@@ -24,6 +24,7 @@ let AiTriageBriefDetail: typeof import("./BugReportsPage").AiTriageBriefDetail;
 let AiTriageBriefHistoryPanel: typeof import("./BugReportsPage").AiTriageBriefHistoryPanel;
 let canGenerateAiTriageBrief: typeof import("./BugReportsPage").canGenerateAiTriageBrief;
 let canExportAiTriageBriefPdf: typeof import("./BugReportsPage").canExportAiTriageBriefPdf;
+let downloadAiTriageBriefPdf: typeof import("./BugReportsPage").downloadAiTriageBriefPdf;
 let hasActiveTriageBrief: typeof import("./BugReportsPage").hasActiveTriageBrief;
 
 beforeAll(async () => {
@@ -32,6 +33,7 @@ beforeAll(async () => {
   AiTriageBriefHistoryPanel = module.AiTriageBriefHistoryPanel;
   canGenerateAiTriageBrief = module.canGenerateAiTriageBrief;
   canExportAiTriageBriefPdf = module.canExportAiTriageBriefPdf;
+  downloadAiTriageBriefPdf = module.downloadAiTriageBriefPdf;
   hasActiveTriageBrief = module.hasActiveTriageBrief;
 });
 
@@ -143,7 +145,6 @@ describe("AI Triage Brief UI", () => {
     expect(failed).toContain("Provider failed");
     expect(completed).toContain("Executive Summary");
     expect(completed).toContain("Export PDF");
-    expect(completed).toContain("/api/bug-reports/ai-triage-briefs/brief_1/pdf");
     expect(completed).toContain("Active reports only");
     expect(completed).toContain("Top Operational Risks");
     expect(completed).toContain("Suggested Priority Order");
@@ -159,5 +160,55 @@ describe("AI Triage Brief UI", () => {
 
     expect(pending).not.toContain("Export PDF");
     expect(completedWithoutPermission).not.toContain("Export PDF");
+  });
+
+  test("PDF export uses authenticated fetch and downloads returned blob", async () => {
+    const click = jest.fn();
+    const originalFetch = global.fetch;
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    const createObjectURL = jest.fn(() => "blob:triage-brief");
+    const revokeObjectURL = jest.fn();
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name: string) => name.toLowerCase() === "content-disposition"
+          ? 'attachment; filename="printers-hero-ai-triage-brief-2026-06-03.pdf"'
+          : null,
+      },
+      blob: async () => new Blob(["%PDF"], { type: "application/pdf" }),
+    }));
+    const appendChildSpy = jest.spyOn(document.body, "appendChild");
+    const originalCreateElement = document.createElement.bind(document);
+    const createElementSpy = jest.spyOn(document, "createElement");
+
+    global.fetch = fetchMock as any;
+    URL.createObjectURL = createObjectURL as any;
+    URL.revokeObjectURL = revokeObjectURL as any;
+    createElementSpy.mockImplementationOnce((tagName: string) => {
+      const anchor = originalCreateElement(tagName);
+      anchor.click = click;
+      return anchor;
+    });
+
+    try {
+      await downloadAiTriageBriefPdf("brief_1");
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/bug-reports/ai-triage-briefs/brief_1/pdf", expect.objectContaining({
+        method: "GET",
+        credentials: "include",
+      }));
+      expect(appendChildSpy).toHaveBeenCalled();
+      expect(click).toHaveBeenCalled();
+      expect(createObjectURL).toHaveBeenCalled();
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:triage-brief");
+    } finally {
+      global.fetch = originalFetch;
+      URL.createObjectURL = originalCreateObjectURL;
+      URL.revokeObjectURL = originalRevokeObjectURL;
+      appendChildSpy.mockRestore();
+      createElementSpy.mockRestore();
+    }
   });
 });
