@@ -1,6 +1,6 @@
 export interface AiProviderRequest {
   orgId: string;
-  feature: "bug_review";
+  feature: "bug_review" | "triage_brief";
   system: string;
   user: string;
   promptVersion: string;
@@ -25,6 +25,7 @@ export interface AiProviderResponse {
 
 export interface AiProviderAdapter {
   generateBugReview(request: AiProviderRequest): Promise<AiProviderResponse>;
+  generateTriageBrief(request: AiProviderRequest): Promise<AiProviderResponse>;
 }
 
 export class AiProviderUnavailableError extends Error {

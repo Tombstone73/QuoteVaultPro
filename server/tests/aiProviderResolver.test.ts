@@ -47,6 +47,7 @@ describe("AI provider resolver", () => {
       encryptedApiKey: null,
       isEnabled: true,
       bugReviewEnabled: true,
+      triageBriefEnabled: true,
       featureReviewEnabled: false,
       duplicateDetectionEnabled: false,
       orderParsingEnabled: false,
@@ -75,6 +76,7 @@ describe("AI provider resolver", () => {
       encryptedApiKey: null,
       isEnabled: true,
       bugReviewEnabled: true,
+      triageBriefEnabled: true,
       featureReviewEnabled: false,
       duplicateDetectionEnabled: false,
       orderParsingEnabled: false,
@@ -104,6 +106,7 @@ describe("AI provider resolver", () => {
       encryptedApiKey: encrypted.encrypted,
       isEnabled: true,
       bugReviewEnabled: true,
+      triageBriefEnabled: false,
       featureReviewEnabled: false,
       duplicateDetectionEnabled: false,
       orderParsingEnabled: false,
@@ -120,5 +123,35 @@ describe("AI provider resolver", () => {
     expect(resolved.mode).toBe("bring_your_own");
     expect(resolved.apiKey).toBe("customer-key");
     expect(resolved.endpoint).toContain("openai.com");
+  });
+
+  test("resolves triage brief as its own enabled AI Foundation feature", async () => {
+    const resolver = new AiProviderResolver(makeRepo({
+      id: "settings_1",
+      orgId: "org_1",
+      mode: "printershero_managed",
+      provider: "openai",
+      model: null,
+      encryptedApiKey: null,
+      isEnabled: true,
+      bugReviewEnabled: false,
+      triageBriefEnabled: true,
+      featureReviewEnabled: false,
+      duplicateDetectionEnabled: false,
+      orderParsingEnabled: false,
+      emailProcessingEnabled: false,
+      customerSupportEnabled: false,
+      inventoryRecommendationsEnabled: false,
+      productionAssistanceEnabled: false,
+      monthlyUsageLimit: null,
+    }) as any);
+
+    const resolved = await resolver.resolveProvider({ orgId: "org_1", feature: "triage_brief" });
+    const capabilities = await resolver.getCapabilities("org_1", { canManageSettings: true, canRunBugReview: true });
+
+    expect(resolved.enabled).toBe(true);
+    expect(resolved.feature).toBe("triage_brief");
+    expect(capabilities.features.triageBrief).toBe(true);
+    expect(capabilities.permissions.canGenerateTriageBrief).toBe(true);
   });
 });

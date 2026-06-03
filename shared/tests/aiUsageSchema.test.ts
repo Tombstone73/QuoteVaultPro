@@ -48,7 +48,7 @@ describe("AI usage schema", () => {
   test("accepts managed usage with pricing snapshot billing basis", () => {
     const parsed = insertAiUsageSchema.parse({
       orgId: "org_1",
-      feature: "bug_review",
+      feature: "triage_brief",
       provider: "openai",
       model: "gpt-4o-mini",
       mode: "printershero_managed",
@@ -70,6 +70,7 @@ describe("AI usage schema", () => {
     });
 
     expect(parsed.mode).toBe("printershero_managed");
+    expect(parsed.feature).toBe("triage_brief");
     expect(parsed.estimatedCostCents).toBe(1);
     expect(parsed.pricingSnapshot).toMatchObject({
       basis: "estimated",

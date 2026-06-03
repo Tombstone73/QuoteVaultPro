@@ -41,6 +41,10 @@ import {
   workflowImpactValues,
 } from "./aiReviewContracts";
 import {
+  type AiTriageBriefResult,
+  triageBriefStatusValues,
+} from "./aiTriageBriefContracts";
+import {
   aiFeatureValues,
   aiModeValues,
   aiProviderValues,
@@ -6312,6 +6316,55 @@ export type FeedbackAiReview = typeof feedbackAiReviews.$inferSelect;
 export type InsertFeedbackAiReview = typeof feedbackAiReviews.$inferInsert;
 
 // ============================================================
+// FEEDBACK AI TRIAGE BRIEFS - advisory collection-level planning history
+// ============================================================
+export const feedbackAiTriageBriefs = pgTable("feedback_ai_triage_briefs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("pending"),
+  requestedByUserId: varchar("requested_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  requestedByEmail: text("requested_by_email").notNull(),
+  filtersSnapshot: jsonb("filters_snapshot").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  reportSnapshot: jsonb("report_snapshot").notNull().default(sql`'[]'::jsonb`),
+  provider: text("provider"),
+  model: text("model"),
+  mode: text("mode"),
+  promptVersion: text("prompt_version").notNull(),
+  result: jsonb("result").$type<AiTriageBriefResult>(),
+  summary: text("summary"),
+  topRisks: jsonb("top_risks"),
+  topFeatures: jsonb("top_features"),
+  recommendedPriorities: jsonb("recommended_priorities"),
+  duplicateSignals: jsonb("duplicate_signals"),
+  workflowRisks: jsonb("workflow_risks"),
+  revenueRisks: jsonb("revenue_risks"),
+  unknowns: jsonb("unknowns"),
+  confidence: decimal("confidence", { precision: 5, scale: 3 }),
+  providerMetadata: jsonb("provider_metadata").$type<Record<string, unknown>>(),
+  usageMetadata: jsonb("usage_metadata").$type<Record<string, unknown>>(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("feedback_ai_triage_briefs_org_status_created_idx").on(table.orgId, table.status, table.createdAt),
+  index("feedback_ai_triage_briefs_org_created_idx").on(table.orgId, table.createdAt),
+]);
+
+export const insertFeedbackAiTriageBriefSchema = createInsertSchema(feedbackAiTriageBriefs, {
+  status: z.enum(triageBriefStatusValues),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type FeedbackAiTriageBrief = typeof feedbackAiTriageBriefs.$inferSelect;
+export type InsertFeedbackAiTriageBrief = typeof feedbackAiTriageBriefs.$inferInsert;
+
+// ============================================================
 // AI FOUNDATION - org-scoped provider settings and usage
 // ============================================================
 export const organizationAiSettings = pgTable("organization_ai_settings", {
@@ -6325,6 +6378,7 @@ export const organizationAiSettings = pgTable("organization_ai_settings", {
   encryptionKeyId: text("encryption_key_id"),
   isEnabled: boolean("is_enabled").notNull().default(false),
   bugReviewEnabled: boolean("bug_review_enabled").notNull().default(false),
+  triageBriefEnabled: boolean("triage_brief_enabled").notNull().default(false),
   featureReviewEnabled: boolean("feature_review_enabled").notNull().default(false),
   duplicateDetectionEnabled: boolean("duplicate_detection_enabled").notNull().default(false),
   orderParsingEnabled: boolean("order_parsing_enabled").notNull().default(false),

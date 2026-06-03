@@ -23,10 +23,12 @@ describe("AI settings service", () => {
       provider: "openai",
       model: "gpt-test",
       bugReviewEnabled: true,
+      triageBriefEnabled: true,
     });
 
     expect(saved.mode).toBe("printershero_managed");
     expect(saved.isEnabled).toBe(true);
+    expect(saved.triageBriefEnabled).toBe(true);
     expect(dto.mode).toBe("printershero_managed");
   });
 

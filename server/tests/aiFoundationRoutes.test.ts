@@ -74,8 +74,8 @@ describe("AI foundation routes", () => {
       provider: "openai",
       model: "gpt-test",
       hasApiKey: false,
-      features: { bugReview: true },
-      permissions: { canManageSettings: true, canRunBugReview: true },
+      features: { bugReview: true, triageBrief: true },
+      permissions: { canManageSettings: true, canRunBugReview: true, canGenerateTriageBrief: true },
       usage: { monthlyUsageLimit: null },
     });
     getSettings.mockResolvedValue({
@@ -86,7 +86,7 @@ describe("AI foundation routes", () => {
       model: null,
       isEnabled: false,
       hasApiKey: false,
-      features: { bugReview: false },
+      features: { bugReview: false, triageBrief: false },
       monthlyUsageLimit: null,
       createdAt: null,
       updatedAt: null,
@@ -99,7 +99,7 @@ describe("AI foundation routes", () => {
       model: "gpt-test",
       isEnabled: true,
       hasApiKey: false,
-      features: { bugReview: true },
+      features: { bugReview: true, triageBrief: true },
       monthlyUsageLimit: null,
       createdAt: null,
       updatedAt: null,
@@ -111,6 +111,7 @@ describe("AI foundation routes", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.data.features.bugReview).toBe(true);
+    expect(response.body.data.features.triageBrief).toBe(true);
     expect(response.body.data.mode).toBe("printershero_managed");
     expect(response.body.data.hasApiKey).toBe(false);
     expect(JSON.stringify(response.body)).not.toContain("sk-");
@@ -126,7 +127,7 @@ describe("AI foundation routes", () => {
   test("settings PATCH requires owner/admin and never returns submitted API key", async () => {
     const response = await request(buildApp())
       .patch("/api/ai/settings")
-      .send({ mode: "bring_your_own", provider: "openai", model: "gpt-test", apiKey: "sk-secret", bugReviewEnabled: true });
+      .send({ mode: "bring_your_own", provider: "openai", model: "gpt-test", apiKey: "sk-secret", bugReviewEnabled: true, triageBriefEnabled: true });
 
     expect(response.status).toBe(200);
     expect(updateSettings).toHaveBeenCalledWith("org_1", expect.objectContaining({ apiKey: "sk-secret" }));

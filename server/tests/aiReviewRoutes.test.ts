@@ -70,8 +70,8 @@ describe("AI review routes", () => {
       provider: "openai",
       model: "test-model",
       hasApiKey: false,
-      features: { bugReview: true },
-      permissions: { canRunBugReview: true, canManageSettings: true },
+      features: { bugReview: true, triageBrief: false },
+      permissions: { canRunBugReview: true, canGenerateTriageBrief: false, canManageSettings: true },
       usage: { monthlyUsageLimit: null },
     });
     requestBugReview.mockResolvedValue({ id: "review_1", status: "pending" });
@@ -111,8 +111,8 @@ describe("AI review routes", () => {
       provider: null,
       model: null,
       hasApiKey: false,
-      features: { bugReview: false },
-      permissions: { canRunBugReview: false, canManageSettings: true },
+      features: { bugReview: false, triageBrief: false },
+      permissions: { canRunBugReview: false, canGenerateTriageBrief: false, canManageSettings: true },
       usage: { monthlyUsageLimit: null },
     });
 

@@ -17,6 +17,7 @@ export type AiSettingsDraft = {
   model: string;
   apiKey: string;
   bugReviewEnabled: boolean;
+  triageBriefEnabled: boolean;
   featureReviewEnabled: boolean;
   duplicateDetectionEnabled: boolean;
   orderParsingEnabled: boolean;
@@ -51,6 +52,7 @@ export function buildAiSettingsPayload(draft: AiSettingsDraft) {
     apiKey: draft.apiKey.trim() || undefined,
     isEnabled: draft.mode !== "disabled",
     bugReviewEnabled: draft.mode !== "disabled" && draft.bugReviewEnabled,
+    triageBriefEnabled: draft.mode !== "disabled" && draft.triageBriefEnabled,
     featureReviewEnabled: draft.mode !== "disabled" && draft.featureReviewEnabled,
     duplicateDetectionEnabled: draft.mode !== "disabled" && draft.duplicateDetectionEnabled,
     orderParsingEnabled: draft.mode !== "disabled" && draft.orderParsingEnabled,
@@ -82,6 +84,7 @@ function draftFromSettings(settings: SafeAiSettingsDto | undefined): AiSettingsD
     model: settings?.model ?? "",
     apiKey: "",
     bugReviewEnabled: settings?.features.bugReview ?? false,
+    triageBriefEnabled: settings?.features.triageBrief ?? false,
     featureReviewEnabled: settings?.features.featureReview ?? false,
     duplicateDetectionEnabled: settings?.features.duplicateDetection ?? false,
     orderParsingEnabled: settings?.features.orderParsing ?? false,
@@ -217,13 +220,19 @@ export default function AiSettingsPage() {
           <div className="space-y-3">
             <div>
               <h3 className="text-sm font-medium">Feature Toggles</h3>
-              <p className="text-xs text-muted-foreground">Only Bug Review is implemented in Phase 1. Other toggles reserve the foundation contract.</p>
+              <p className="text-xs text-muted-foreground">Enable AI capabilities that are available to this organization.</p>
             </div>
             <FeatureToggle
               label="Bug Review"
               checked={draft.bugReviewEnabled}
               disabled={disabled}
               onChange={(checked) => setDraft((current) => ({ ...current, bugReviewEnabled: checked }))}
+            />
+            <FeatureToggle
+              label="AI Triage Brief"
+              checked={draft.triageBriefEnabled}
+              disabled={disabled}
+              onChange={(checked) => setDraft((current) => ({ ...current, triageBriefEnabled: checked }))}
             />
             <FeatureToggle
               label="Feature Review"

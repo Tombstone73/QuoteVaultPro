@@ -24,6 +24,7 @@ export interface AiSettingsUpdateData {
   encryptionKeyId?: string | null;
   isEnabled?: boolean;
   bugReviewEnabled?: boolean;
+  triageBriefEnabled?: boolean;
   featureReviewEnabled?: boolean;
   duplicateDetectionEnabled?: boolean;
   orderParsingEnabled?: boolean;
@@ -44,6 +45,7 @@ export function toAiFeatureFlags(row: OrganizationAiSettings | null | undefined)
   if (!row) return { ...defaultAiFeatureFlags };
   return {
     bugReview: row.bugReviewEnabled,
+    triageBrief: row.triageBriefEnabled,
     featureReview: row.featureReviewEnabled,
     duplicateDetection: row.duplicateDetectionEnabled,
     orderParsing: row.orderParsingEnabled,
