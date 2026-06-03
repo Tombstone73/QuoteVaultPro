@@ -1,5 +1,6 @@
 import {
   defaultAiFeatureFlags,
+  normalizeAiMode,
   type AiCapabilitiesDto,
   type AiFeature,
   type AiFeatureFlags,
@@ -65,7 +66,7 @@ function featureEnabled(features: AiFeatureFlags, feature: AiFeature): boolean {
 function defaultDisabled(feature: AiFeature, settings: OrganizationAiSettings | null = null): ResolvedAiProvider {
   return {
     enabled: false,
-    mode: settings?.mode ?? "disabled",
+    mode: settings ? normalizeAiMode(settings.mode) : "disabled",
     provider: settings?.provider ?? null,
     model: settings?.model ?? null,
     endpoint: null,
@@ -84,7 +85,7 @@ function getManagedProvider(): ResolvedAiProvider {
 
   return {
     enabled: Boolean(endpoint && apiKey && model),
-    mode: "titanos_managed",
+    mode: "printershero_managed",
     provider,
     model: model || null,
     endpoint: endpoint || null,
@@ -122,11 +123,12 @@ export class AiProviderResolver {
     }
 
     const features = toAiFeatureFlags(settings);
-    if (!settings.isEnabled || settings.mode === "disabled" || !featureEnabled(features, input.feature)) {
+    const mode = normalizeAiMode(settings.mode);
+    if (!settings.isEnabled || mode === "disabled" || !featureEnabled(features, input.feature)) {
       return defaultDisabled(input.feature, settings);
     }
 
-    if (settings.mode === "titanos_managed") {
+    if (mode === "printershero_managed") {
       const managed = getManagedProvider();
       return {
         ...managed,
@@ -137,7 +139,7 @@ export class AiProviderResolver {
       };
     }
 
-    if (settings.mode === "bring_your_own") {
+    if (mode === "bring_your_own") {
       if (!settings.provider || !settings.model || !settings.encryptedApiKey || !isAiSecretEncryptionConfigured()) {
         return defaultDisabled(input.feature, settings);
       }
@@ -170,7 +172,7 @@ export class AiProviderResolver {
       const legacyBugEnabled = legacy.enabled || readBooleanEnv("AI_BUG_REVIEW_ENABLED", false);
       return {
         enabled: legacyBugEnabled,
-        mode: legacyBugEnabled ? "titanos_managed" : "disabled",
+        mode: legacyBugEnabled ? "printershero_managed" : "disabled",
         provider: legacyBugEnabled ? "openai" : null,
         model: legacy.model,
         hasApiKey: false,
@@ -184,11 +186,12 @@ export class AiProviderResolver {
     }
 
     const features = toAiFeatureFlags(settings);
-    const enabled = settings.isEnabled && settings.mode !== "disabled";
+    const mode = normalizeAiMode(settings.mode);
+    const enabled = settings.isEnabled && mode !== "disabled";
 
     return {
       enabled,
-      mode: settings.mode,
+      mode,
       provider: settings.provider,
       model: settings.model,
       hasApiKey: Boolean(settings.encryptedApiKey),

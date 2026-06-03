@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { aiSettingsUpdateSchema, defaultAiFeatureFlags } from "../aiFoundationContracts";
+import { aiSettingsUpdateSchema, defaultAiFeatureFlags, normalizeAiMode } from "../aiFoundationContracts";
 
 describe("AI foundation contracts", () => {
   test("accepts valid org AI settings updates", () => {
@@ -18,7 +18,13 @@ describe("AI foundation contracts", () => {
 
   test("rejects unknown modes and providers", () => {
     expect(() => aiSettingsUpdateSchema.parse({ mode: "always_on" })).toThrow();
+    expect(() => aiSettingsUpdateSchema.parse({ mode: "titanos_managed" })).toThrow();
     expect(() => aiSettingsUpdateSchema.parse({ provider: "plaintext_llm" })).toThrow();
+  });
+
+  test("normalizes legacy managed mode on read only", () => {
+    expect(normalizeAiMode("titanos_managed")).toBe("printershero_managed");
+    expect(normalizeAiMode("printershero_managed")).toBe("printershero_managed");
   });
 
   test("future AI features default off", () => {

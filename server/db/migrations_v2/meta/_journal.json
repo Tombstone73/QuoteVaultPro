@@ -561,6 +561,13 @@
       "when": 1782000000000,
       "tag": "0084_ai_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1782086400000,
+      "tag": "0085_printershero_managed_ai_mode",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const aiModeValues = ["disabled", "titanos_managed", "bring_your_own"] as const;
+export const aiModeValues = ["disabled", "printershero_managed", "bring_your_own"] as const;
 export const aiProviderValues = ["openai", "anthropic", "future"] as const;
 export const aiFeatureValues = [
   "bug_review",
@@ -16,6 +16,14 @@ export const aiFeatureValues = [
 export type AiMode = (typeof aiModeValues)[number];
 export type AiProvider = (typeof aiProviderValues)[number];
 export type AiFeature = (typeof aiFeatureValues)[number];
+
+// Temporary read-side compatibility for rows written before migration 0085.
+// New writes must use printershero_managed through aiSettingsUpdateSchema.
+export function normalizeAiMode(value: unknown): AiMode {
+  if (value === "titanos_managed") return "printershero_managed";
+  if ((aiModeValues as readonly string[]).includes(String(value))) return value as AiMode;
+  return "disabled";
+}
 
 export const aiFeatureFlagsSchema = z.object({
   bugReview: z.boolean(),

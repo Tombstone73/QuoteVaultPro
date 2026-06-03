@@ -70,7 +70,7 @@ describe("AI foundation routes", () => {
     jest.clearAllMocks();
     getCapabilities.mockResolvedValue({
       enabled: true,
-      mode: "titanos_managed",
+      mode: "printershero_managed",
       provider: "openai",
       model: "gpt-test",
       hasApiKey: false,
@@ -94,7 +94,7 @@ describe("AI foundation routes", () => {
     updateSettings.mockResolvedValue({
       id: "settings_1",
       orgId: "org_1",
-      mode: "titanos_managed",
+      mode: "printershero_managed",
       provider: "openai",
       model: "gpt-test",
       isEnabled: true,
@@ -111,6 +111,7 @@ describe("AI foundation routes", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.data.features.bugReview).toBe(true);
+    expect(response.body.data.mode).toBe("printershero_managed");
     expect(response.body.data.hasApiKey).toBe(false);
     expect(JSON.stringify(response.body)).not.toContain("sk-");
   });

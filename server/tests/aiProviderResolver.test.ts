@@ -41,7 +41,7 @@ describe("AI provider resolver", () => {
     const resolver = new AiProviderResolver(makeRepo({
       id: "settings_1",
       orgId: "org_1",
-      mode: "titanos_managed",
+      mode: "printershero_managed",
       provider: "openai",
       model: null,
       encryptedApiKey: null,
@@ -60,9 +60,37 @@ describe("AI provider resolver", () => {
     const resolved = await resolver.resolveProvider({ orgId: "org_1", feature: "bug_review" });
 
     expect(resolved.enabled).toBe(true);
-    expect(resolved.mode).toBe("titanos_managed");
+    expect(resolved.mode).toBe("printershero_managed");
     expect(resolved.apiKey).toBe("managed-key");
     expect(resolved.model).toBe("managed-model");
+  });
+
+  test("normalizes legacy managed settings rows to Printers Hero managed mode", async () => {
+    const resolver = new AiProviderResolver(makeRepo({
+      id: "settings_legacy",
+      orgId: "org_1",
+      mode: "titanos_managed",
+      provider: "openai",
+      model: null,
+      encryptedApiKey: null,
+      isEnabled: true,
+      bugReviewEnabled: true,
+      featureReviewEnabled: false,
+      duplicateDetectionEnabled: false,
+      orderParsingEnabled: false,
+      emailProcessingEnabled: false,
+      customerSupportEnabled: false,
+      inventoryRecommendationsEnabled: false,
+      productionAssistanceEnabled: false,
+      monthlyUsageLimit: null,
+    }) as any);
+
+    const resolved = await resolver.resolveProvider({ orgId: "org_1", feature: "bug_review" });
+    const capabilities = await resolver.getCapabilities("org_1", { canManageSettings: true, canRunBugReview: true });
+
+    expect(resolved.enabled).toBe(true);
+    expect(resolved.mode).toBe("printershero_managed");
+    expect(capabilities.mode).toBe("printershero_managed");
   });
 
   test("resolves BYOK by decrypting only in backend provider resolution", async () => {
