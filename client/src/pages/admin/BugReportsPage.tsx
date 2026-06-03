@@ -18,6 +18,9 @@ import {
 } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { AiReviewPanel } from "@/components/bug-report/AiReviewPanel";
+import { getAiReviewPollingInterval } from "@/components/bug-report/aiReviewPolling";
+import type { CurrentBugAiReviewResponse } from "@shared/aiReviewContracts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -152,6 +155,41 @@ async function postNote(bugReportId: string, note: string): Promise<BugReportNot
   return body.data as BugReportNote;
 }
 
+async function fetchAiReview(bugReportId: string): Promise<CurrentBugAiReviewResponse> {
+  const res = await fetch(`/api/bug-reports/${bugReportId}/ai-review`, { credentials: "include" });
+  if (!res.ok) throw new Error("Failed to fetch AI review");
+  const body = await res.json();
+  return body.data as CurrentBugAiReviewResponse;
+}
+
+async function createAiReview(bugReportId: string): Promise<{ reviewId: string; status: string }> {
+  const res = await fetch(`/api/bug-reports/${bugReportId}/ai-review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body as { message?: string }).message ?? "Failed to queue AI review");
+  }
+  const body = await res.json();
+  return body.data as { reviewId: string; status: string };
+}
+
+async function rerunAiReview(reviewId: string): Promise<{ reviewId: string; status: string }> {
+  const res = await fetch(`/api/ai-reviews/${reviewId}/rerun`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body as { message?: string }).message ?? "Failed to rerun AI review");
+  }
+  const body = await res.json();
+  return body.data as { reviewId: string; status: string };
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function BugReportsPage() {
@@ -191,6 +229,15 @@ export default function BugReportsPage() {
     enabled: !!selectedId,
   });
 
+  const { data: aiReviewData, isLoading: aiReviewLoading } = useQuery<CurrentBugAiReviewResponse>({
+    queryKey: ["/api/bug-reports/ai-review", selectedId],
+    queryFn: () => fetchAiReview(selectedId!),
+    enabled: !!selectedId,
+    refetchInterval: (query) => {
+      return getAiReviewPollingInterval(query.state.data as CurrentBugAiReviewResponse | undefined);
+    },
+  });
+
   const statusMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) =>
       patchBugReportStatus(id, status),
@@ -219,6 +266,28 @@ export default function BugReportsPage() {
     },
     onError: (err: Error) => {
       toast({ title: "Failed to add note", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const createAiReviewMutation = useMutation({
+    mutationFn: () => createAiReview(selectedId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/bug-reports/ai-review", selectedId] });
+      toast({ title: "AI review queued" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "AI review failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const rerunAiReviewMutation = useMutation({
+    mutationFn: (reviewId: string) => rerunAiReview(reviewId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/bug-reports/ai-review", selectedId] });
+      toast({ title: "AI review queued" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "AI review failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -502,6 +571,14 @@ export default function BugReportsPage() {
                 )}
 
                 {/* ── Internal Notes ────────────────────────────────────────── */}
+                <AiReviewPanel
+                  data={aiReviewData}
+                  isLoading={aiReviewLoading}
+                  isActionPending={createAiReviewMutation.isPending || rerunAiReviewMutation.isPending}
+                  onRun={() => createAiReviewMutation.mutate()}
+                  onRerun={(reviewId) => rerunAiReviewMutation.mutate(reviewId)}
+                />
+
                 <div className="border-t border-border pt-5 space-y-4">
                   <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     Internal Notes
