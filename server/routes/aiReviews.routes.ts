@@ -73,6 +73,14 @@ export function registerAiReviewRoutes(
   const router = Router();
 
   router.get("/bug-reports/:id/ai-review", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    if (!isOrgAdminOrOwner(req)) {
+      return res.status(403).json({
+        success: false,
+        code: "AI_REVIEW_PERMISSION_REQUIRED",
+        message: "Access denied. Organization Owner or Admin role required.",
+      });
+    }
+
     const orgId = getRequestOrganizationId(req);
     const flags = getAiBugReviewFeatureFlags();
     const canRun = flags.enabled && isOrgAdminOrOwner(req);

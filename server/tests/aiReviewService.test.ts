@@ -75,6 +75,7 @@ function makeRepo(overrides: Record<string, any> = {}) {
     markProcessing: jest.fn(async () => null),
     completeReview: jest.fn(async () => null),
     failReview: jest.fn(async () => null),
+    recoverStaleActiveReviewsForBugReport: jest.fn(async () => []),
     createAuditLog: jest.fn(async () => undefined),
     ...overrides,
   };
@@ -168,6 +169,88 @@ describe("AiReviewService", () => {
     expect(repo.createAuditLog).toHaveBeenCalled();
   });
 
+  test("recovers stale pending reviews before creating a new review", async () => {
+    process.env.AI_BUG_REVIEW_STALE_MINUTES = "15";
+    const staleRow = {
+      id: "review_stale_pending",
+      orgId: "org_1",
+      bugReportId: "bug_1",
+      status: "failed",
+    };
+    const repo = makeRepo({
+      recoverStaleActiveReviewsForBugReport: jest.fn(async () => [staleRow]),
+    });
+    const service = new AiReviewService(repo as any, makeProvider(validProviderJson) as any);
+
+    await service.requestBugReview({
+      orgId: "org_1",
+      bugReportId: "bug_1",
+      actor: { userId: "user_1", email: "admin@example.com" },
+    });
+
+    expect(repo.recoverStaleActiveReviewsForBugReport).toHaveBeenCalledWith(
+      "org_1",
+      "bug_1",
+      expect.any(Date),
+      expect.stringContaining("more than 15 minutes"),
+    );
+    expect(repo.createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      entityId: "review_stale_pending",
+      newValues: expect.objectContaining({ errorCode: "stale_review_recovered" }),
+    }));
+    expect(repo.createPendingReview).toHaveBeenCalledTimes(1);
+  });
+
+  test("recovers stale processing reviews before creating a new review", async () => {
+    const staleRow = {
+      id: "review_stale_processing",
+      orgId: "org_1",
+      bugReportId: "bug_1",
+      status: "failed",
+    };
+    const repo = makeRepo({
+      recoverStaleActiveReviewsForBugReport: jest.fn(async () => [staleRow]),
+    });
+    const service = new AiReviewService(repo as any, makeProvider(validProviderJson) as any);
+
+    await service.requestBugReview({
+      orgId: "org_1",
+      bugReportId: "bug_1",
+      actor: { userId: "user_1", email: "admin@example.com" },
+    });
+
+    expect(repo.createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      entityId: "review_stale_processing",
+      description: expect.stringContaining("Stale AI bug review recovered"),
+    }));
+    expect(repo.createPendingReview).toHaveBeenCalledTimes(1);
+  });
+
+  test("reruns create a new review while preserving source history", async () => {
+    const sourceReview = {
+      id: "review_old",
+      orgId: "org_1",
+      bugReportId: "bug_1",
+      reviewKind: "bug_review",
+      status: "completed",
+      isCurrent: false,
+      requestedByEmail: "admin@example.com",
+      promptVersion: "bug-review-v1",
+    };
+    const repo = makeRepo({
+      getReviewById: jest.fn(async () => sourceReview),
+    });
+    const service = new AiReviewService(repo as any, makeProvider(validProviderJson) as any);
+
+    await service.rerunReview("org_1", "review_old", { userId: "user_1", email: "admin@example.com" });
+
+    expect(repo.getReviewById).toHaveBeenCalledWith("org_1", "review_old");
+    expect(repo.createPendingReview).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: "org_1",
+      bugReportId: "bug_1",
+    }));
+  });
+
   test("marks review failed after two invalid provider responses", async () => {
     const repo = makeRepo({
       getReviewById: jest.fn(async () => ({
@@ -186,6 +269,58 @@ describe("AiReviewService", () => {
     expect(provider.generateBugReview).toHaveBeenCalledTimes(2);
     expect(repo.failReview).toHaveBeenCalledWith(expect.objectContaining({
       errorCode: "invalid_json",
+    }));
+  });
+
+  test("failed processing claim does not invoke provider", async () => {
+    const repo = makeRepo({
+      getReviewById: jest.fn(async () => ({
+        id: "review_1",
+        orgId: "org_1",
+        bugReportId: "bug_1",
+        status: "pending",
+      })),
+      markProcessing: jest.fn(async () => null),
+    });
+    const provider = makeProvider(validProviderJson);
+    const service = new AiReviewService(repo as any, provider as any);
+
+    await service.processReview({ orgId: "org_1", reviewId: "review_1" });
+
+    expect(repo.markProcessing).toHaveBeenCalled();
+    expect(provider.generateBugReview).not.toHaveBeenCalled();
+    expect(repo.createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      entityId: "review_1",
+      description: expect.stringContaining("claim failed"),
+    }));
+  });
+
+  test("successful processing claim invokes provider", async () => {
+    const repo = makeRepo({
+      getReviewById: jest.fn(async () => ({
+        id: "review_1",
+        orgId: "org_1",
+        bugReportId: "bug_1",
+        status: "pending",
+      })),
+      markProcessing: jest.fn(async () => ({ id: "review_1", status: "processing" })),
+      completeReview: jest.fn(async () => ({
+        id: "review_1",
+        orgId: "org_1",
+        bugReportId: "bug_1",
+        status: "completed",
+        promptVersion: "bug-review-v1",
+      })),
+    });
+    const provider = makeProvider(validProviderJson);
+    const service = new AiReviewService(repo as any, provider as any);
+
+    await service.processReview({ orgId: "org_1", reviewId: "review_1" });
+
+    expect(repo.markProcessing).toHaveBeenCalled();
+    expect(provider.generateBugReview).toHaveBeenCalledTimes(1);
+    expect(repo.completeReview).toHaveBeenCalledWith(expect.objectContaining({
+      reviewId: "review_1",
     }));
   });
 });

@@ -38,7 +38,7 @@ beforeAll(async () => {
   registerAiReviewRoutes = routeModule.registerAiReviewRoutes;
 });
 
-function buildApp(options: { orgRole?: string; orgId?: string; user?: Record<string, any> } = {}) {
+function buildApp(options: { orgRole?: string | null; orgId?: string; user?: Record<string, any> } = {}) {
   const app = express();
   app.use(express.json());
   const isAuthenticated = (req: any, _res: any, next: any) => {
@@ -47,7 +47,7 @@ function buildApp(options: { orgRole?: string; orgId?: string; user?: Record<str
   };
   const tenantContext = (req: any, _res: any, next: any) => {
     req.organizationId = options.orgId ?? "org_1";
-    req.orgRole = options.orgRole ?? "admin";
+    req.orgRole = options.orgRole === undefined ? "admin" : options.orgRole;
     next();
   };
   registerAiReviewRoutes(app, { isAuthenticated, tenantContext });
@@ -64,12 +64,29 @@ describe("AI review routes", () => {
     getCurrentBugReview.mockResolvedValue(null);
   });
 
-  test("GET returns current review data and passes tenant org id to service", async () => {
-    const response = await request(buildApp({ orgId: "org_2" })).get("/api/bug-reports/bug_1/ai-review");
+  test.each(["owner", "admin"])("GET allows org %s", async (orgRole) => {
+    const response = await request(buildApp({ orgId: "org_2", orgRole })).get("/api/bug-reports/bug_1/ai-review");
 
     expect(response.status).toBe(200);
     expect(response.body.data.canRun).toBe(true);
     expect(getCurrentBugReview).toHaveBeenCalledWith("org_2", "bug_1");
+  });
+
+  test.each(["manager", "member"])("GET denies org %s", async (orgRole) => {
+    const response = await request(buildApp({ orgRole })).get("/api/bug-reports/bug_1/ai-review");
+
+    expect(response.status).toBe(403);
+    expect(getCurrentBugReview).not.toHaveBeenCalled();
+  });
+
+  test("GET denies customer portal style users without an owner/admin org role", async () => {
+    const response = await request(buildApp({
+      orgRole: null,
+      user: { id: "customer_1", email: "customer@example.com", role: "customer" },
+    })).get("/api/bug-reports/bug_1/ai-review");
+
+    expect(response.status).toBe(403);
+    expect(getCurrentBugReview).not.toHaveBeenCalled();
   });
 
   test("POST returns 503 when feature flag is disabled", async () => {
