@@ -9,6 +9,7 @@ import type { AiReviewDto, CurrentBugAiReviewResponse } from "@shared/aiReviewCo
 interface AiReviewPanelProps {
   data: CurrentBugAiReviewResponse | null | undefined;
   feedbackType: "bug" | "feature";
+  referenceNumber?: string | null;
   canRunFallback?: boolean;
   error?: Error | null;
   isLoading: boolean;
@@ -136,6 +137,7 @@ function getErrorStatus(error: Error | null | undefined): number | null {
 export function AiReviewPanel({
   data,
   feedbackType,
+  referenceNumber,
   canRunFallback = false,
   error,
   isLoading,
@@ -155,7 +157,7 @@ export function AiReviewPanel({
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-sm">
           <Brain className="h-4 w-4" />
-          AI Review
+          {referenceNumber ? `AI Review for ${referenceNumber}` : "AI Review"}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">

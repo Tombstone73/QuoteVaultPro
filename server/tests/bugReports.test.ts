@@ -11,6 +11,11 @@
 
 import { describe, it, expect } from "@jest/globals";
 import { z } from "zod";
+import {
+  buildFeedbackReferenceNumber,
+  formatFeedbackReferenceLabel,
+  isFeedbackReferenceNumber,
+} from "@shared/feedbackReferenceNumbers";
 
 // ─── Inline: create bug report DTO schema ─────────────────────────────────────
 // Must stay in sync with server/routes/bugReports.ts createBugReportSchema.
@@ -36,6 +41,8 @@ const listBugReportsQuerySchema = z.object({
   status:   z.string().optional(),
   severity: z.enum(SEVERITY_VALUES).optional(),
   type:     z.enum(["bug", "feature", "all"]).default("all"),
+  search:   z.string().trim().max(120).optional(),
+  sort:     z.enum(["newest", "oldest", "reference_asc", "reference_desc"]).default("newest"),
   limit:    z.coerce.number().int().min(1).max(200).default(50),
   cursor:   z.string().optional(),
 });
@@ -187,6 +194,36 @@ describe("listBugReportsQuerySchema", () => {
   it("rejects invalid severity filter", () => {
     const result = listBugReportsQuerySchema.safeParse({ severity: "urgent" });
     expect(result.success).toBe(false);
+  });
+
+  it("accepts reference search and reference sort", () => {
+    const result = listBugReportsQuerySchema.safeParse({ search: "B-0001", sort: "reference_asc" });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.search).toBe("B-0001");
+      expect(result.data.sort).toBe("reference_asc");
+    }
+  });
+
+  it("rejects invalid sort values", () => {
+    const result = listBugReportsQuerySchema.safeParse({ sort: "priority" });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("feedback reference numbers", () => {
+  it("formats separate canonical bug and feature references", () => {
+    expect(buildFeedbackReferenceNumber("bug", 1)).toBe("B-0001");
+    expect(buildFeedbackReferenceNumber("bug", 42)).toBe("B-0042");
+    expect(buildFeedbackReferenceNumber("feature", 1)).toBe("F-0001");
+    expect(buildFeedbackReferenceNumber("feature", 17)).toBe("F-0017");
+  });
+
+  it("validates and labels permanent references", () => {
+    expect(isFeedbackReferenceNumber("B-0001")).toBe(true);
+    expect(isFeedbackReferenceNumber("F-0017")).toBe(true);
+    expect(isFeedbackReferenceNumber("BUG-1")).toBe(false);
+    expect(formatFeedbackReferenceLabel("B-0042", "Design Page Update")).toBe("B-0042 Design Page Update");
   });
 });
 

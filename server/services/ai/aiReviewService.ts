@@ -129,6 +129,7 @@ export class AiReviewService {
 
     const builtPrompt = buildBugReviewPrompt({
       id: bug.id,
+      referenceNumber: bug.referenceNumber,
       title: bug.title,
       description: bug.description,
       severity: bug.severity,
@@ -162,12 +163,13 @@ export class AiReviewService {
       userEmail: input.actor.email,
       actionType: "CREATE",
       entityId: created.id,
-      entityName: `AI review for ${bug.title}`,
-      description: `AI bug review requested for bug report ${bug.id}`,
+      entityName: `AI review for ${bug.referenceNumber}`,
+      description: `AI bug review requested for ${bug.referenceNumber}`,
       ipAddress: input.actor.ipAddress,
       userAgent: input.actor.userAgent,
       newValues: {
         bugReportId: bug.id,
+        referenceNumber: bug.referenceNumber,
         status: created.status,
         promptVersion: created.promptVersion,
       },
@@ -250,6 +252,7 @@ export class AiReviewService {
 
     const builtPrompt = buildBugReviewPrompt({
       id: bug.id,
+      referenceNumber: bug.referenceNumber,
       title: bug.title,
       description: bug.description,
       severity: bug.severity,

@@ -78,6 +78,22 @@ describe("AiReviewPanel", () => {
     expect(html).toContain("Run AI Review");
   });
 
+  test("renders review title with permanent reference number when provided", () => {
+    const html = renderToStaticMarkup(
+      <AiReviewPanel
+        data={{ review: null, featureFlags: { enabled: true, adminsOnly: true }, canRun: true }}
+        feedbackType="bug"
+        referenceNumber="B-0001"
+        isLoading={false}
+        isActionPending={false}
+        onRun={() => undefined}
+        onRerun={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("AI Review for B-0001");
+  });
+
   test("renders empty bug state with run action when owner/admin fallback is allowed", () => {
     const html = renderPanel(undefined, { feedbackType: "bug", canRunFallback: true });
 

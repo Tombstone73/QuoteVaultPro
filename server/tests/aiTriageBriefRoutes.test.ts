@@ -63,7 +63,7 @@ function baseBrief(overrides: Record<string, any> = {}) {
     status: "completed",
     requestedByEmail: "admin@example.com",
     filtersSnapshot: { status: "open", severity: "all", type: "all", limit: 100 },
-    reportSnapshot: [],
+    reportSnapshot: [{ id: "bug_1", referenceNumber: "B-0001", title: "Quote save fails" }],
     provider: "openai",
     model: "gpt-4o-mini",
     mode: "printershero_managed",

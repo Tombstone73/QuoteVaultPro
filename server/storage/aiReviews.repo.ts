@@ -51,7 +51,7 @@ export interface AuditAiReviewInput {
 }
 
 export interface AiReviewsRepository {
-  getBugReportForReview(orgId: string, bugReportId: string): Promise<Pick<BugReport, "id" | "orgId" | "type" | "title" | "description" | "severity" | "url" | "screenWidth" | "screenHeight" | "metadata" | "createdAt"> | null>;
+  getBugReportForReview(orgId: string, bugReportId: string): Promise<Pick<BugReport, "id" | "orgId" | "referenceNumber" | "type" | "title" | "description" | "severity" | "url" | "screenWidth" | "screenHeight" | "metadata" | "createdAt"> | null>;
   getCurrentReviewForBugReport(orgId: string, bugReportId: string): Promise<FeedbackAiReview | null>;
   getReviewById(orgId: string, reviewId: string): Promise<FeedbackAiReview | null>;
   createPendingReview(input: CreatePendingAiReviewInput): Promise<FeedbackAiReview>;
@@ -113,6 +113,7 @@ export class DrizzleAiReviewsRepository implements AiReviewsRepository {
       .select({
         id: bugReports.id,
         orgId: bugReports.orgId,
+        referenceNumber: bugReports.referenceNumber,
         type: bugReports.type,
         title: bugReports.title,
         description: bugReports.description,

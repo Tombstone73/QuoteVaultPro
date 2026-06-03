@@ -22,9 +22,9 @@ const validProviderJson = JSON.stringify({
   topRevenueRisks: [{ title: "Quote conversion risk", impact: "Quotes cannot move forward.", confidence: 0.7, rationale: "Failed quotes delay revenue." }],
   topBugClusters: [{ issue: "Quote save fails", reportCount: 1, affectedModules: ["Quotes"], impact: "Blocks quote editing." }],
   topFeatureRequests: [{ feature: "Bulk proof reminders", requestCount: 1, value: "Reduces manual follow-up.", complexity: "unknown; no implementation details provided" }],
-  duplicateSignals: [{ theme: "Quote save", reportIds: ["bug_1"], rationale: "Single report only, no duplicate confirmed.", confidence: 0.2 }],
-  suggestedPriorityOrder: [{ item: "Investigate quote save failures", rationale: "Highest workflow impact.", urgency: "high" }],
-  recommendedNextSprint: [{ item: "Reproduce quote save failures", rationale: "Needed before implementation.", urgency: "high" }],
+  duplicateSignals: [{ theme: "B-0001 Quote save", reportIds: ["B-0001"], rationale: "Single report only, no duplicate confirmed.", confidence: 0.2 }],
+  suggestedPriorityOrder: [{ item: "B-0001 Investigate quote save failures", rationale: "Highest workflow impact.", urgency: "high" }],
+  recommendedNextSprint: [{ item: "B-0001 Reproduce quote save failures", rationale: "Needed before implementation.", urgency: "high" }],
   unknowns: ["No stack trace supplied."],
   confidence: 0.76,
 });
@@ -33,6 +33,7 @@ function makeRepo(overrides: Record<string, any> = {}) {
   return {
     listReportsForBrief: jest.fn(async () => [{
       id: "bug_1",
+      referenceNumber: "B-0001",
       type: "bug",
       title: "Save fails",
       description: "Saving a quote fails.",
@@ -137,6 +138,7 @@ describe("AiTriageBriefService", () => {
         filtersSnapshot: { status: "open" },
         reportSnapshot: [{
           id: "bug_1",
+          referenceNumber: "B-0001",
           type: "bug",
           title: "Save fails",
           description: "Saving a quote fails.",
@@ -155,6 +157,7 @@ describe("AiTriageBriefService", () => {
         filtersSnapshot: { status: "open" },
         reportSnapshot: [{
           id: "bug_1",
+          referenceNumber: "B-0001",
           type: "bug",
           title: "Save fails",
           description: "Saving a quote fails.",

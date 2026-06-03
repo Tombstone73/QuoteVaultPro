@@ -38,6 +38,7 @@ describe("AI triage brief prompt and validator", () => {
       filtersSnapshot: { status: "open", type: "all", reportCount: 1 },
       reports: [{
         id: "bug_1",
+        referenceNumber: "B-0001",
         type: "bug",
         title: "Save fails",
         description: "Saving a quote fails.",
@@ -55,6 +56,8 @@ describe("AI triage brief prompt and validator", () => {
     expect(prompt.system).toContain("must never change ticket status");
     expect(prompt.user).toContain("Filters snapshot");
     expect(prompt.user).toContain("Report snapshot");
+    expect(prompt.user).toContain("B-0001");
+    expect(prompt.user).toContain("prefer the permanent reference numbers");
     expect(prompt.user).not.toContain("do-not-include");
     expect(prompt.user).not.toContain("token=secret");
   });
