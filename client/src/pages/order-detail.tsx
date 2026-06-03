@@ -28,7 +28,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { AlertTriangle, Ban, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown } from "lucide-react";
+import { AlertTriangle, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
@@ -64,13 +64,17 @@ import {
 // TitanOS State Architecture
 import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 import { 
-  CompleteProductionButton, 
   CloseOrderButton, 
   ReopenOrderButton 
 } from "@/components/StateTransitionButtons";
 import type { OrderState } from "@/hooks/useOrderState";
 import { isTerminalState as checkIfTerminalState } from "@/hooks/useOrderState";
 import { OrderLineItemsSection, type OrderLineItemsSectionHandle } from "@/components/orders/OrderLineItemsSection";
+import {
+  hasOrderDetailSecondaryActions,
+  OrderDetailPrimaryActions,
+  OrderDetailSecondaryActions,
+} from "@/components/orders/OrderDetailActionPanels";
 import { orchestrateOrderSave } from "@/pages/orderSaveOrchestration";
 import { createOrderNavigationGuard } from "@/pages/orderNavigationGuard";
 import { ManualReservationsCard } from "@/components/orders/ManualReservationsCard";
@@ -1783,9 +1787,6 @@ export default function OrderDetail() {
               <h1 className="text-titan-xl font-semibold tracking-tight text-titan-text-primary">
                 {`Order ${titleText}`}
               </h1>
-              <p className="text-titan-sm text-titan-text-muted mt-1">
-                {`Created ${formatDate(order.createdAt)}`}
-              </p>
             </div>
           </div>
 
@@ -1800,15 +1801,6 @@ export default function OrderDetail() {
           </div>
 
           <div className="flex items-center gap-3">
-            {canEditOrder && !isOrderEditRoute && (
-              <Button asChild variant="outline" size="sm" className="rounded-titan-md">
-                <Link to={ROUTES.orders.edit(order.id)} state={{ referrer: buildReferrer(location) }}>
-                  <Edit className="w-4 h-4 mr-2" />
-                  Edit Order
-                </Link>
-              </Button>
-            )}
-
             {isOrderEditRoute && (
               <Button asChild variant="outline" size="sm" className="rounded-titan-md">
                 <Link to={ROUTES.orders.detail(order.id)}>
@@ -1817,105 +1809,26 @@ export default function OrderDetail() {
               </Button>
             )}
 
-            {canEditOrder && (
-              <>
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={() => void handleSaveOrder()}
-                  disabled={!isDirty || updateOrder.isPending || isSavingOrder}
-                  className="rounded-titan-md"
-                  title={hasDirtyLineItem ? "Saves open line item changes too" : undefined}
-                >
-                  {updateOrder.isPending || isSavingOrder ? "Saving..." : "Save Order"}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void handleCancelOrderEdits()}
-                  disabled={!isDirty || updateOrder.isPending || isSavingOrder}
-                  className="rounded-titan-md"
-                >
-                  Discard changes
-                </Button>
-              </>
-            )}
-
-            {/* Mark Completed Button */}
-            {isAdminOrOwner && !isTerminal && allowedNextStatuses.includes('completed') && (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={() => {
-                  // If strict mode and incomplete items, show dialog
-                  if (requireLineItemsDone && incompleteLi.length > 0) {
-                    setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
-                    return;
-                  }
-                  // Otherwise show regular confirmation
+            <OrderDetailPrimaryActions
+              canEditOrder={canEditOrder}
+              canMarkCompleted={isAdminOrOwner && !isTerminal && allowedNextStatuses.includes('completed')}
+              canCompleteProduction={isAdminOrOwner && order.state === 'open'}
+              orderId={order.id}
+              isDirty={isDirty}
+              isSavingOrder={isSavingOrder}
+              isUpdatingOrder={updateOrder.isPending}
+              isTransitioningStatus={transitionStatus.isPending}
+              hasDirtyLineItem={hasDirtyLineItem}
+              onSaveOrder={handleSaveOrder}
+              onDiscardChanges={handleCancelOrderEdits}
+              onMarkCompleted={() => {
+                if (requireLineItemsDone && incompleteLi.length > 0) {
                   setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
-                }}
-                disabled={transitionStatus.isPending}
-                className="rounded-titan-md bg-green-600 hover:bg-green-700 text-white"
-              >
-                <Check className="w-4 h-4 mr-2" />
-                Mark Completed
-              </Button>
-            )}
-
-            {canCancelOrder && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowCancelOrderDialog(true)}
-                disabled={cancelOrderMutation.isPending}
-                className="rounded-titan-md border-destructive/60 text-destructive hover:bg-destructive/10"
-              >
-                <Ban className="w-4 h-4 mr-2" />
-                Cancel Order
-              </Button>
-            )}
-
-            {isAdminOrOwner && order.state === 'open' && (
-              <CompleteProductionButton orderId={order.id} />
-            )}
-
-            {proofBypassed ? (
-              <Badge variant="outline" className="border-amber-500/50 bg-amber-500/10 text-amber-700">
-                Proof Bypassed
-              </Badge>
-            ) : null}
-
-            {isAdminOrOwner && !orderIsCanceled && (
-              proofBypassed ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => proofPolicyMutation.mutate({ policy: "inherit_default" })}
-                  disabled={proofPolicyMutation.isPending}
-                >
-                  Require Proof Defaults
-                </Button>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <Input
-                    value={proofBypassReason}
-                    onChange={(event) => setProofBypassReason(event.target.value)}
-                    placeholder="Bypass reason"
-                    className="h-9 w-40"
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => proofPolicyMutation.mutate({ policy: "bypass", reason: proofBypassReason })}
-                    disabled={proofPolicyMutation.isPending}
-                  >
-                    Bypass Proof
-                  </Button>
-                </div>
-              )
-            )}
-
+                  return;
+                }
+                setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
+              }}
+            />
           </div>
         </div>
 
@@ -3472,6 +3385,32 @@ export default function OrderDetail() {
                 </CardContent>
               )}
             </Card>
+
+            {hasOrderDetailSecondaryActions({
+              canCancelOrder,
+              canManageProofPolicy: isAdminOrOwner && !orderIsCanceled,
+              proofBypassed,
+            }) && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Secondary Actions</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <OrderDetailSecondaryActions
+                    canCancelOrder={canCancelOrder}
+                    canManageProofPolicy={isAdminOrOwner && !orderIsCanceled}
+                    proofBypassed={proofBypassed}
+                    proofBypassReason={proofBypassReason}
+                    isCancelingOrder={cancelOrderMutation.isPending}
+                    isUpdatingProofPolicy={proofPolicyMutation.isPending}
+                    onCancelOrder={() => setShowCancelOrderDialog(true)}
+                    onProofBypassReasonChange={setProofBypassReason}
+                    onBypassProof={() => proofPolicyMutation.mutate({ policy: "bypass", reason: proofBypassReason })}
+                    onRequireProofDefaults={() => proofPolicyMutation.mutate({ policy: "inherit_default" })}
+                  />
+                </CardContent>
+              </Card>
+            )}
           </div>
         </div>
       </ContentLayout>
