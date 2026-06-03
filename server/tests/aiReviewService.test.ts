@@ -34,6 +34,12 @@ jest.unstable_mockModule("../storage/aiReviews.repo", () => ({
   }),
 }));
 
+const resolveProvider = jest.fn<(...args: any[]) => Promise<any>>();
+
+jest.unstable_mockModule("../services/ai/aiProviderResolver", () => ({
+  aiProviderResolver: { resolveProvider },
+}));
+
 let AiReviewService: any;
 let AiReviewServiceError: any;
 
@@ -109,9 +115,21 @@ const validProviderJson = JSON.stringify({
 
 describe("AiReviewService", () => {
   beforeEach(() => {
+    jest.clearAllMocks();
     process.env.AI_BUG_REVIEW_ENABLED = "true";
     process.env.AI_BUG_REVIEW_PROVIDER = "test";
     process.env.AI_BUG_REVIEW_MODEL = "test-model";
+    resolveProvider.mockResolvedValue({
+      enabled: true,
+      mode: "legacy_env",
+      provider: "test",
+      model: "test-model",
+      endpoint: "https://ai.example.test",
+      apiKey: "test-key",
+      feature: "bug_review",
+      source: "legacy_env",
+      settings: null,
+    });
   });
 
   test("rejects feature requests in Phase 1", async () => {

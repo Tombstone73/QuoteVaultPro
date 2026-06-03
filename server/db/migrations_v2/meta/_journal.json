@@ -554,6 +554,13 @@
       "when": 1781913600000,
       "tag": "0083_feedback_ai_reviews",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1782000000000,
+      "tag": "0084_ai_foundation",
+      "breakpoints": true
     }
   ]
 }

@@ -1,9 +1,9 @@
 import { Router, type Request, type Response, type RequestHandler } from "express";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { getRequestOrganizationId } from "../tenantContext";
-import { getAiBugReviewFeatureFlags } from "../services/ai/aiBugReviewConfig";
 import { AiReviewServiceError, aiReviewService } from "../services/ai/aiReviewService";
 import { aiReviewQueue } from "../services/ai/aiReviewQueue";
+import { aiProviderResolver } from "../services/ai/aiProviderResolver";
 
 function getUserId(user: any): string | null {
   return user?.claims?.sub ?? user?.id ?? null;
@@ -82,8 +82,15 @@ export function registerAiReviewRoutes(
     }
 
     const orgId = getRequestOrganizationId(req);
-    const flags = getAiBugReviewFeatureFlags();
-    const canRun = flags.enabled && isOrgAdminOrOwner(req);
+    const capabilities = await aiProviderResolver.getCapabilities(orgId, {
+      canManageSettings: isOrgAdminOrOwner(req),
+      canRunBugReview: isOrgAdminOrOwner(req),
+    });
+    const flags = {
+      enabled: capabilities.enabled && capabilities.features.bugReview,
+      adminsOnly: true,
+    };
+    const canRun = capabilities.permissions.canRunBugReview;
 
     try {
       const review = await aiReviewService.getCurrentBugReview(orgId, req.params.id);
@@ -101,8 +108,12 @@ export function registerAiReviewRoutes(
   });
 
   router.post("/bug-reports/:id/ai-review", isAuthenticated, tenantContext, aiReviewMutationLimiter, async (req: Request, res: Response) => {
-    const flags = getAiBugReviewFeatureFlags();
-    if (!flags.enabled) {
+    const orgId = getRequestOrganizationId(req);
+    const capabilities = await aiProviderResolver.getCapabilities(orgId, {
+      canManageSettings: isOrgAdminOrOwner(req),
+      canRunBugReview: isOrgAdminOrOwner(req),
+    });
+    if (!capabilities.enabled || !capabilities.features.bugReview) {
       return res.status(503).json({
         success: false,
         code: "AI_BUG_REVIEW_DISABLED",
@@ -116,8 +127,6 @@ export function registerAiReviewRoutes(
         message: "Access denied. Organization Owner or Admin role required.",
       });
     }
-
-    const orgId = getRequestOrganizationId(req);
     try {
       const review = await aiReviewService.requestBugReview({
         orgId,
@@ -141,8 +150,12 @@ export function registerAiReviewRoutes(
   });
 
   router.post("/ai-reviews/:id/rerun", isAuthenticated, tenantContext, aiReviewMutationLimiter, async (req: Request, res: Response) => {
-    const flags = getAiBugReviewFeatureFlags();
-    if (!flags.enabled) {
+    const orgId = getRequestOrganizationId(req);
+    const capabilities = await aiProviderResolver.getCapabilities(orgId, {
+      canManageSettings: isOrgAdminOrOwner(req),
+      canRunBugReview: isOrgAdminOrOwner(req),
+    });
+    if (!capabilities.enabled || !capabilities.features.bugReview) {
       return res.status(503).json({
         success: false,
         code: "AI_BUG_REVIEW_DISABLED",
@@ -156,8 +169,6 @@ export function registerAiReviewRoutes(
         message: "Access denied. Organization Owner or Admin role required.",
       });
     }
-
-    const orgId = getRequestOrganizationId(req);
     try {
       const review = await aiReviewService.rerunReview(orgId, req.params.id, buildActor(req));
       aiReviewQueue.enqueue({ orgId, reviewId: review.id });

@@ -78,6 +78,7 @@ import {
   HardDrive,
   Wrench,
   Hash,
+  Brain,
   type LucideIcon,
 } from "lucide-react";
 
@@ -178,6 +179,12 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     path: "/settings/storage",
     icon: HardDrive,
     description: "Canonical storage routing and provider status"
+  },
+  {
+    label: "AI Settings",
+    path: "/settings/ai",
+    icon: Brain,
+    description: "AI provider mode, BYOK, and feature availability"
   },
   { 
     label: "Production & Operations", 

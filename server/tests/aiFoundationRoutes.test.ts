@@ -1,0 +1,134 @@
+import { jest, beforeAll, beforeEach, describe, expect, test } from "@jest/globals";
+import express from "express";
+import request from "supertest";
+
+const getCapabilities = jest.fn<(...args: any[]) => Promise<any>>();
+const getSettings = jest.fn<(...args: any[]) => Promise<any>>();
+const updateSettings = jest.fn<(...args: any[]) => Promise<any>>();
+
+jest.unstable_mockModule("../db", () => ({
+  db: {
+    insert: () => ({
+      values: async () => undefined,
+    }),
+  },
+}));
+
+jest.unstable_mockModule("../tenantContext", () => ({
+  getRequestOrganizationId: (req: any) => req.organizationId,
+}));
+
+jest.unstable_mockModule("../services/ai/aiProviderResolver", () => ({
+  aiProviderResolver: { getCapabilities },
+}));
+
+jest.unstable_mockModule("../services/ai/aiSettingsService", () => ({
+  AiSettingsServiceError: class MockAiSettingsServiceError extends Error {
+    statusCode: number;
+    code: string;
+    constructor(code: string, message: string, statusCode = 400) {
+      super(message);
+      this.code = code;
+      this.statusCode = statusCode;
+    }
+  },
+  aiSettingsService: { getSettings, updateSettings },
+}));
+
+let registerAiFoundationRoutes: any;
+
+beforeAll(async () => {
+  const routeModule = await import("../routes/aiFoundation.routes");
+  registerAiFoundationRoutes = routeModule.registerAiFoundationRoutes;
+});
+
+function buildApp(options: { orgRole?: string; orgId?: string } = {}) {
+  const app = express();
+  app.use(express.json());
+  const isAuthenticated = (req: any, _res: any, next: any) => {
+    req.user = { id: "user_1", email: "admin@example.test", role: "admin" };
+    next();
+  };
+  const tenantContext = (req: any, _res: any, next: any) => {
+    req.organizationId = options.orgId ?? "org_1";
+    req.orgRole = options.orgRole ?? "admin";
+    next();
+  };
+  const requireOrgOwnerAdmin = (req: any, res: any, next: any) => {
+    if (req.orgRole === "owner" || req.orgRole === "admin") {
+      req.actorOrgRole = req.orgRole;
+      return next();
+    }
+    return res.status(403).json({ message: "Access denied. Organization Owner or Admin role required." });
+  };
+  registerAiFoundationRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
+  return app;
+}
+
+describe("AI foundation routes", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    getCapabilities.mockResolvedValue({
+      enabled: true,
+      mode: "titanos_managed",
+      provider: "openai",
+      model: "gpt-test",
+      hasApiKey: false,
+      features: { bugReview: true },
+      permissions: { canManageSettings: true, canRunBugReview: true },
+      usage: { monthlyUsageLimit: null },
+    });
+    getSettings.mockResolvedValue({
+      id: "settings_1",
+      orgId: "org_1",
+      mode: "disabled",
+      provider: null,
+      model: null,
+      isEnabled: false,
+      hasApiKey: false,
+      features: { bugReview: false },
+      monthlyUsageLimit: null,
+      createdAt: null,
+      updatedAt: null,
+    });
+    updateSettings.mockResolvedValue({
+      id: "settings_1",
+      orgId: "org_1",
+      mode: "titanos_managed",
+      provider: "openai",
+      model: "gpt-test",
+      isEnabled: true,
+      hasApiKey: false,
+      features: { bugReview: true },
+      monthlyUsageLimit: null,
+      createdAt: null,
+      updatedAt: null,
+    });
+  });
+
+  test("capabilities endpoint returns safe feature and permission data", async () => {
+    const response = await request(buildApp()).get("/api/ai/capabilities");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.features.bugReview).toBe(true);
+    expect(response.body.data.hasApiKey).toBe(false);
+    expect(JSON.stringify(response.body)).not.toContain("sk-");
+  });
+
+  test("settings GET requires owner/admin", async () => {
+    const response = await request(buildApp({ orgRole: "manager" })).get("/api/ai/settings");
+
+    expect(response.status).toBe(403);
+    expect(getSettings).not.toHaveBeenCalled();
+  });
+
+  test("settings PATCH requires owner/admin and never returns submitted API key", async () => {
+    const response = await request(buildApp())
+      .patch("/api/ai/settings")
+      .send({ mode: "bring_your_own", provider: "openai", model: "gpt-test", apiKey: "sk-secret", bugReviewEnabled: true });
+
+    expect(response.status).toBe(200);
+    expect(updateSettings).toHaveBeenCalledWith("org_1", expect.objectContaining({ apiKey: "sk-secret" }));
+    expect(JSON.stringify(response.body)).not.toContain("sk-secret");
+  });
+});
