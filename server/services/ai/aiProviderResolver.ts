@@ -23,7 +23,7 @@ export interface ResolvedAiProvider {
   endpoint: string | null;
   apiKey: string | null;
   feature: AiFeature;
-  source: "settings" | "titanos_managed_env" | "legacy_env" | "disabled";
+  source: "settings" | "printershero_managed_env" | "legacy_env" | "disabled";
   settings: OrganizationAiSettings | null;
 }
 
@@ -77,10 +77,10 @@ function defaultDisabled(feature: AiFeature, settings: OrganizationAiSettings | 
 }
 
 function getManagedProvider(): ResolvedAiProvider {
-  const provider = (process.env.TITANOS_MANAGED_AI_PROVIDER?.trim() || process.env.AI_BUG_REVIEW_PROVIDER?.trim() || "openai") as AiProvider;
-  const endpoint = process.env.TITANOS_MANAGED_AI_ENDPOINT?.trim() || process.env.AI_BUG_REVIEW_ENDPOINT?.trim() || "";
-  const apiKey = process.env.TITANOS_MANAGED_AI_API_KEY?.trim() || process.env.AI_BUG_REVIEW_API_KEY?.trim() || "";
-  const model = process.env.TITANOS_MANAGED_AI_MODEL?.trim() || process.env.AI_BUG_REVIEW_MODEL?.trim() || "";
+  const provider = (process.env.PRINTERSHERO_MANAGED_AI_PROVIDER?.trim() || process.env.AI_BUG_REVIEW_PROVIDER?.trim() || "openai") as AiProvider;
+  const endpoint = process.env.PRINTERSHERO_MANAGED_AI_ENDPOINT?.trim() || process.env.AI_BUG_REVIEW_ENDPOINT?.trim() || "";
+  const apiKey = process.env.PRINTERSHERO_MANAGED_AI_API_KEY?.trim() || process.env.AI_BUG_REVIEW_API_KEY?.trim() || "";
+  const model = process.env.PRINTERSHERO_MANAGED_AI_MODEL?.trim() || process.env.AI_BUG_REVIEW_MODEL?.trim() || "";
 
   return {
     enabled: Boolean(endpoint && apiKey && model),
@@ -90,7 +90,7 @@ function getManagedProvider(): ResolvedAiProvider {
     endpoint: endpoint || null,
     apiKey: apiKey || null,
     feature: "bug_review",
-    source: "titanos_managed_env",
+    source: "printershero_managed_env",
     settings: null,
   };
 }

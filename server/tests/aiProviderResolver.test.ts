@@ -14,9 +14,13 @@ describe("AI provider resolver", () => {
   beforeEach(() => {
     process.env.AI_SETTINGS_ENCRYPTION_KEY = "resolver-test-key";
     process.env.AI_BUG_REVIEW_ENABLED = "false";
-    process.env.TITANOS_MANAGED_AI_ENDPOINT = "https://managed.example.test/chat";
-    process.env.TITANOS_MANAGED_AI_API_KEY = "managed-key";
-    process.env.TITANOS_MANAGED_AI_MODEL = "managed-model";
+    delete process.env.PRINTERSHERO_MANAGED_AI_PROVIDER;
+    delete process.env.PRINTERSHERO_MANAGED_AI_ENDPOINT;
+    delete process.env.PRINTERSHERO_MANAGED_AI_API_KEY;
+    delete process.env.PRINTERSHERO_MANAGED_AI_MODEL;
+    process.env.PRINTERSHERO_MANAGED_AI_ENDPOINT = "https://managed.example.test/chat";
+    process.env.PRINTERSHERO_MANAGED_AI_API_KEY = "managed-key";
+    process.env.PRINTERSHERO_MANAGED_AI_MODEL = "managed-model";
   });
 
   test("falls back to legacy env when no settings row exists", async () => {
@@ -33,7 +37,7 @@ describe("AI provider resolver", () => {
     expect(resolved.apiKey).toBe("legacy-key");
   });
 
-  test("resolves TitanOS managed settings without exposing customer keys", async () => {
+  test("resolves Printers Hero managed settings without exposing customer keys", async () => {
     const resolver = new AiProviderResolver(makeRepo({
       id: "settings_1",
       orgId: "org_1",
