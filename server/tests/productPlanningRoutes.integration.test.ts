@@ -1,0 +1,417 @@
+import { afterEach, beforeAll, describe, expect, test } from "@jest/globals";
+import express, { type NextFunction, type Response } from "express";
+import request from "supertest";
+import { and, eq, inArray, sql } from "drizzle-orm";
+
+import { db } from "../db";
+import { runMigrations } from "../runMigrations";
+import { registerProductPlanningRoutes } from "../routes/productPlanning.routes";
+import {
+  organizations,
+  productPlanningDependencies,
+  productPlanningEvents,
+  productPlanningReleases,
+  productPlanningWorkItems,
+  users,
+} from "../../shared/schema";
+
+type AppOptions = {
+  orgId: string;
+  userId?: string;
+  orgRole?: string;
+  userRole?: string;
+  authenticated?: boolean;
+};
+
+const cleanupOrgIds: string[] = [];
+const cleanupUserIds: string[] = [];
+
+beforeAll(async () => {
+  await runMigrations();
+}, 90_000);
+
+afterEach(async () => {
+  if (cleanupOrgIds.length > 0) {
+    await db.delete(organizations).where(inArray(organizations.id, [...cleanupOrgIds]));
+    cleanupOrgIds.length = 0;
+  }
+  if (cleanupUserIds.length > 0) {
+    await db.delete(users).where(inArray(users.id, [...cleanupUserIds]));
+    cleanupUserIds.length = 0;
+  }
+});
+
+function assertInternalUser(req: any, res: Response) {
+  if (String(req.user?.role ?? "").toLowerCase() === "customer") {
+    res.status(403).json({ success: false, message: "Internal access required." });
+    return false;
+  }
+  return true;
+}
+
+function buildApp(options: AppOptions) {
+  const app = express();
+  app.use(express.json());
+
+  const isAuthenticated = (req: any, res: Response, next: NextFunction) => {
+    if (options.authenticated === false) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+    req.user = {
+      id: options.userId ?? `user_${options.orgId}`,
+      claims: { sub: options.userId ?? `user_${options.orgId}` },
+      role: options.userRole ?? options.orgRole ?? "admin",
+    };
+    return next();
+  };
+
+  const tenantContext = (req: any, _res: Response, next: NextFunction) => {
+    req.organizationId = options.orgId;
+    req.orgRole = options.orgRole ?? "admin";
+    return next();
+  };
+
+  registerProductPlanningRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
+  return app;
+}
+
+async function createFixture() {
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+  const [org] = await db.insert(organizations).values({
+    name: `Product Planning Route ${suffix}`,
+    slug: `pp-route-${suffix}`.slice(0, 95),
+  }).returning();
+  cleanupOrgIds.push(org.id);
+
+  const [user] = await db.insert(users).values({
+    email: `pp-route-${suffix}@example.test`,
+    firstName: "Product",
+    lastName: "Planning",
+    role: "admin",
+  }).returning();
+  cleanupUserIds.push(user.id);
+
+  return { org, user, app: buildApp({ orgId: org.id, userId: user.id }) };
+}
+
+async function createWorkItem(
+  organizationId: string,
+  attrs: Partial<typeof productPlanningWorkItems.$inferInsert> = {},
+) {
+  const reference = attrs.reference ?? `PP-T-${Math.floor(Math.random() * 100000000)}`;
+  const [item] = await db.insert(productPlanningWorkItems).values({
+    organizationId,
+    reference,
+    title: attrs.title ?? `Planning item ${reference}`,
+    workItemType: attrs.workItemType ?? "feature",
+    planningStatus: attrs.planningStatus ?? "backlog",
+    priority: attrs.priority ?? "medium",
+    module: attrs.module ?? "Core",
+    phase: attrs.phase ?? null,
+    sortOrder: attrs.sortOrder ?? null,
+    roadmapOrder: attrs.roadmapOrder ?? null,
+    releaseTarget: attrs.releaseTarget ?? null,
+    releaseId: attrs.releaseId ?? null,
+    updatedAt: attrs.updatedAt ?? new Date(),
+    ...attrs,
+  }).returning();
+  return item;
+}
+
+async function createRelease(organizationId: string, attrs: Partial<typeof productPlanningReleases.$inferInsert> = {}) {
+  const [release] = await db.insert(productPlanningReleases).values({
+    organizationId,
+    name: attrs.name ?? `Release ${Math.floor(Math.random() * 1000000)}`,
+    status: attrs.status ?? "planned",
+    targetDate: attrs.targetDate ?? null,
+    ...attrs,
+  }).returning();
+  return release;
+}
+
+describe("Product Planning movement routes", () => {
+  test("move-status updates planningStatus and writes an event", async () => {
+    const { org, app } = await createFixture();
+    const item = await createWorkItem(org.id, { planningStatus: "backlog" });
+
+    const response = await request(app)
+      .post(`/api/product-planning/work-items/${item.id}/move-status`)
+      .send({ planningStatus: "testing", sortOrder: 30 });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.planningStatus).toBe("testing");
+    expect(response.body.data.sortOrder).toBe(30);
+
+    const [event] = await db
+      .select()
+      .from(productPlanningEvents)
+      .where(and(eq(productPlanningEvents.organizationId, org.id), eq(productPlanningEvents.workItemId, item.id), eq(productPlanningEvents.eventType, "status_changed")))
+      .limit(1);
+    expect(event).toBeTruthy();
+  });
+
+  test("move-phase updates phase and writes an event", async () => {
+    const { org, app } = await createFixture();
+    const item = await createWorkItem(org.id, { phase: null });
+
+    const response = await request(app)
+      .post(`/api/product-planning/work-items/${item.id}/move-phase`)
+      .send({ phase: "v1_5", roadmapOrder: 20 });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.phase).toBe("v1_5");
+    expect(response.body.data.roadmapOrder).toBe(20);
+
+    const [event] = await db
+      .select()
+      .from(productPlanningEvents)
+      .where(and(eq(productPlanningEvents.organizationId, org.id), eq(productPlanningEvents.workItemId, item.id), eq(productPlanningEvents.eventType, "phase_changed")))
+      .limit(1);
+    expect(event).toBeTruthy();
+  });
+
+  test("reorder updates sortOrder and roadmapOrder", async () => {
+    const { org, app } = await createFixture();
+    const first = await createWorkItem(org.id, { sortOrder: 10, roadmapOrder: 10 });
+    const second = await createWorkItem(org.id, { sortOrder: 20, roadmapOrder: 20 });
+
+    const response = await request(app)
+      .post("/api/product-planning/work-items/reorder")
+      .send({
+        items: [
+          { id: first.id, sortOrder: 20, roadmapOrder: 40, planningStatus: "ready", phase: "go_live" },
+          { id: second.id, sortOrder: 10, roadmapOrder: 30, planningStatus: "ready", phase: "go_live" },
+        ],
+      });
+
+    expect(response.status).toBe(200);
+    const rows = await db
+      .select()
+      .from(productPlanningWorkItems)
+      .where(and(eq(productPlanningWorkItems.organizationId, org.id), inArray(productPlanningWorkItems.id, [first.id, second.id])));
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    expect(byId.get(first.id)?.sortOrder).toBe(20);
+    expect(byId.get(first.id)?.roadmapOrder).toBe(40);
+    expect(byId.get(second.id)?.sortOrder).toBe(10);
+    expect(byId.get(second.id)?.roadmapOrder).toBe(30);
+  });
+
+  test("invalid item IDs fail safely", async () => {
+    const { app } = await createFixture();
+
+    const moveStatus = await request(app)
+      .post("/api/product-planning/work-items/missing-id/move-status")
+      .send({ planningStatus: "testing" });
+    expect(moveStatus.status).toBe(404);
+
+    const reorder = await request(app)
+      .post("/api/product-planning/work-items/reorder")
+      .send({ items: [{ id: "missing-id", sortOrder: 10 }] });
+    expect(reorder.status).toBe(404);
+    expect(reorder.body.success).toBe(false);
+  });
+
+  test("unauthorized and non-dev users are blocked", async () => {
+    const { org } = await createFixture();
+    const item = await createWorkItem(org.id);
+
+    const unauthenticated = await request(buildApp({ orgId: org.id, authenticated: false }))
+      .post(`/api/product-planning/work-items/${item.id}/move-status`)
+      .send({ planningStatus: "testing" });
+    expect(unauthenticated.status).toBe(401);
+
+    const nonDev = await request(buildApp({ orgId: org.id, orgRole: "member", userRole: "member" }))
+      .post(`/api/product-planning/work-items/${item.id}/move-status`)
+      .send({ planningStatus: "testing" });
+    expect(nonDev.status).toBe(403);
+  });
+});
+
+describe("Product Planning release routes", () => {
+  test("creates a release, assigns a work item, and reports release progress", async () => {
+    const { org, app } = await createFixture();
+    const item = await createWorkItem(org.id, { releaseTarget: null });
+
+    const createReleaseRes = await request(app)
+      .post("/api/product-planning/releases")
+      .send({ name: "Version Test", targetDate: "2026-07-01" });
+
+    expect(createReleaseRes.status).toBe(201);
+    const releaseId = createReleaseRes.body.data.id;
+
+    const assignRes = await request(app)
+      .patch(`/api/product-planning/work-items/${item.id}`)
+      .send({ releaseId, releaseTarget: "Version Test" });
+
+    expect(assignRes.status).toBe(200);
+    expect(assignRes.body.data.releaseId).toBe(releaseId);
+    expect(assignRes.body.data.releaseTarget).toBe("Version Test");
+
+    const dashboard = await request(app).get("/api/product-planning/dashboard");
+    expect(dashboard.status).toBe(200);
+    expect(dashboard.body.data.releaseProgress).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: releaseId, totalCount: 1, openCount: 1, releasedCount: 0 }),
+    ]));
+  });
+
+  test("invalid release assignment fails safely", async () => {
+    const { org, app } = await createFixture();
+    const item = await createWorkItem(org.id);
+
+    const response = await request(app)
+      .patch(`/api/product-planning/work-items/${item.id}`)
+      .send({ releaseId: "missing-release" });
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+  });
+
+  test("unauthorized and non-dev users are blocked", async () => {
+    const { org } = await createFixture();
+
+    const unauthenticated = await request(buildApp({ orgId: org.id, authenticated: false }))
+      .post("/api/product-planning/releases")
+      .send({ name: "Blocked Release" });
+    expect(unauthenticated.status).toBe(401);
+
+    const nonDev = await request(buildApp({ orgId: org.id, orgRole: "member", userRole: "member" }))
+      .post("/api/product-planning/releases")
+      .send({ name: "Blocked Release" });
+    expect(nonDev.status).toBe(403);
+  });
+});
+
+describe("Product Planning dependency routes", () => {
+  test("creates and removes a dependency", async () => {
+    const { org, app } = await createFixture();
+    const workItem = await createWorkItem(org.id);
+    const blocker = await createWorkItem(org.id, { title: "Blocking item" });
+
+    const createRes = await request(app)
+      .post(`/api/product-planning/work-items/${workItem.id}/dependencies`)
+      .send({ dependsOnWorkItemId: blocker.id, dependencyType: "requires" });
+
+    expect(createRes.status).toBe(201);
+    expect(createRes.body.data.dependsOnWorkItemId).toBe(blocker.id);
+
+    const listRes = await request(app).get(`/api/product-planning/work-items/${workItem.id}/dependencies`);
+    expect(listRes.status).toBe(200);
+    expect(listRes.body.data).toHaveLength(1);
+    expect(listRes.body.data[0].dependsOnWorkItem.reference).toBe(blocker.reference);
+
+    const deleteRes = await request(app)
+      .delete(`/api/product-planning/work-items/${workItem.id}/dependencies/${createRes.body.data.id}`);
+    expect(deleteRes.status).toBe(200);
+
+    const rows = await db
+      .select()
+      .from(productPlanningDependencies)
+      .where(and(eq(productPlanningDependencies.organizationId, org.id), eq(productPlanningDependencies.workItemId, workItem.id)));
+    expect(rows).toHaveLength(0);
+  });
+
+  test("prevents self, duplicate, and circular dependencies", async () => {
+    const { org, app } = await createFixture();
+    const first = await createWorkItem(org.id);
+    const second = await createWorkItem(org.id);
+
+    const self = await request(app)
+      .post(`/api/product-planning/work-items/${first.id}/dependencies`)
+      .send({ dependsOnWorkItemId: first.id, dependencyType: "requires" });
+    expect(self.status).toBe(400);
+
+    const created = await request(app)
+      .post(`/api/product-planning/work-items/${first.id}/dependencies`)
+      .send({ dependsOnWorkItemId: second.id, dependencyType: "requires" });
+    expect(created.status).toBe(201);
+
+    const duplicate = await request(app)
+      .post(`/api/product-planning/work-items/${first.id}/dependencies`)
+      .send({ dependsOnWorkItemId: second.id, dependencyType: "requires" });
+    expect(duplicate.status).toBe(409);
+
+    const circular = await request(app)
+      .post(`/api/product-planning/work-items/${second.id}/dependencies`)
+      .send({ dependsOnWorkItemId: first.id, dependencyType: "requires" });
+    expect(circular.status).toBe(400);
+  });
+
+  test("dashboard unresolved dependency count reflects open dependencies", async () => {
+    const { org, app } = await createFixture();
+    const workItem = await createWorkItem(org.id, { priority: "high" });
+    const blocker = await createWorkItem(org.id, { planningStatus: "in_progress" });
+
+    await request(app)
+      .post(`/api/product-planning/work-items/${workItem.id}/dependencies`)
+      .send({ dependsOnWorkItemId: blocker.id, dependencyType: "requires" })
+      .expect(201);
+
+    const dashboard = await request(app).get("/api/product-planning/dashboard");
+    expect(dashboard.status).toBe(200);
+    expect(dashboard.body.data.unresolvedDependencyCount).toBe(1);
+    expect(dashboard.body.data.itemsWithUnresolvedDependencies).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: workItem.id }),
+    ]));
+  });
+
+  test("unauthorized and non-dev users are blocked", async () => {
+    const { org } = await createFixture();
+    const workItem = await createWorkItem(org.id);
+    const blocker = await createWorkItem(org.id);
+
+    const unauthenticated = await request(buildApp({ orgId: org.id, authenticated: false }))
+      .post(`/api/product-planning/work-items/${workItem.id}/dependencies`)
+      .send({ dependsOnWorkItemId: blocker.id });
+    expect(unauthenticated.status).toBe(401);
+
+    const nonDev = await request(buildApp({ orgId: org.id, orgRole: "member", userRole: "member" }))
+      .post(`/api/product-planning/work-items/${workItem.id}/dependencies`)
+      .send({ dependsOnWorkItemId: blocker.id });
+    expect(nonDev.status).toBe(403);
+  });
+});
+
+describe("Product Planning dashboard aggregates", () => {
+  test("reports bug counts, stalled validation, dependencies, module workload, and release progress", async () => {
+    const { org, app } = await createFixture();
+    const release = await createRelease(org.id, { name: "Dashboard Release" });
+    const staleDate = new Date(Date.now() - 9 * 24 * 60 * 60 * 1000);
+    const criticalBug = await createWorkItem(org.id, { title: "Critical bug", workItemType: "bug", priority: "critical", module: "Bugs" });
+    await createWorkItem(org.id, { title: "High bug", workItemType: "bug", priority: "high", module: "Bugs" });
+    const stalled = await createWorkItem(org.id, {
+      title: "Stalled validation",
+      planningStatus: "dev_validation",
+      module: "Validation",
+      updatedAt: staleDate,
+    });
+    const blocker = await createWorkItem(org.id, { title: "Open blocker", planningStatus: "in_progress", module: "Dependencies" });
+    const assignedReleased = await createWorkItem(org.id, { title: "Released item", planningStatus: "released", releaseId: release.id, module: "Release" });
+    await createWorkItem(org.id, { title: "Open release item", planningStatus: "ready", releaseId: release.id, module: "Release" });
+
+    await db.insert(productPlanningDependencies).values({
+      organizationId: org.id,
+      workItemId: criticalBug.id,
+      dependsOnWorkItemId: blocker.id,
+      dependencyType: "requires",
+    });
+
+    const dashboard = await request(app).get("/api/product-planning/dashboard");
+
+    expect(dashboard.status).toBe(200);
+    expect(dashboard.body.data.criticalOpenBugCount).toBe(1);
+    expect(dashboard.body.data.highOpenBugCount).toBe(1);
+    expect(dashboard.body.data.openBugCount).toBe(2);
+    expect(dashboard.body.data.itemsStalledInValidation).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: stalled.id }),
+    ]));
+    expect(dashboard.body.data.unresolvedDependencyCount).toBe(1);
+    expect(dashboard.body.data.byModuleWorkload).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "Bugs", count: 2 }),
+      expect.objectContaining({ key: "Release", count: 2 }),
+    ]));
+    expect(dashboard.body.data.releaseProgress).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: release.id, totalCount: 2, releasedCount: 1, openCount: 1 }),
+    ]));
+    expect(assignedReleased.id).toBeTruthy();
+  });
+});
