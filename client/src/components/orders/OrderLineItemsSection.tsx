@@ -2392,6 +2392,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         status: item.status || "new",
         requiresDesign: Boolean((item as any).requiresDesign),
         requiresPrepress: Boolean((item as any).requiresPrepress),
+        requiresProofApproval: Boolean((item as any).requiresProofApproval),
+        sortOrder: (item as any).sortOrder ?? 0,
         specsJson: item.specsJson || null,
       };
 

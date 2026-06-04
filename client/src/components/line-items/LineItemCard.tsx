@@ -1,11 +1,22 @@
 import { type FocusEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ChevronRight, GripVertical, Loader2, Minus, Plus, Save, Check, Undo2 } from "lucide-react";
+import { ChevronRight, Copy, GripVertical, Loader2, Minus, Plus, Save, Check, Trash2, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -148,6 +159,57 @@ function selectInputTextOnFocus(event: FocusEvent<HTMLInputElement>) {
       }
     });
   }
+}
+
+function stopLineItemActionPropagation(event: React.SyntheticEvent) {
+  event.stopPropagation();
+}
+
+function RemoveLineItemButton({
+  onRemove,
+  iconOnly = false,
+}: {
+  onRemove: () => void;
+  iconOnly?: boolean;
+}) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size={iconOnly ? "icon" : "sm"}
+          className={cn(
+            iconOnly ? "h-8 w-8 shrink-0" : "h-8",
+            "text-destructive hover:text-destructive"
+          )}
+          aria-label="Remove line item"
+          title="Remove line item"
+          onClick={stopLineItemActionPropagation}
+          onPointerDown={stopLineItemActionPropagation}
+        >
+          {iconOnly ? <Trash2 className="h-4 w-4" aria-hidden="true" /> : "Remove Item"}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent onClick={stopLineItemActionPropagation}>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Remove line item?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This removes the line item from the quote or order. This action cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            onClick={onRemove}
+          >
+            Remove line item
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
 }
 
 export function LineItemCard({
@@ -368,17 +430,7 @@ export function LineItemCard({
                 Duplicate Item
               </Button>
             )}
-            {onRemove && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-8 text-destructive hover:text-destructive"
-                onClick={onRemove}
-              >
-                Remove Item
-              </Button>
-            )}
+            {onRemove && <RemoveLineItemButton onRemove={onRemove} />}
           </div>
           {isDirty && (
             <div className="text-xs text-amber-600">Unsaved</div>
@@ -417,16 +469,42 @@ export function LineItemCard({
     </Collapsible>
   ) : secondaryDetailsContent;
 
+  const headerActions = !readOnly && (onDuplicate || onRemove) ? (
+    <div className="absolute right-2.5 top-2.5 z-10 flex items-center gap-1">
+      {onDuplicate && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 shrink-0"
+          aria-label="Duplicate line item"
+          title="Duplicate line item"
+          onClick={(event) => {
+            stopLineItemActionPropagation(event);
+            onDuplicate();
+          }}
+          onPointerDown={stopLineItemActionPropagation}
+        >
+          <Copy className="h-4 w-4" aria-hidden="true" />
+        </Button>
+      )}
+      {onRemove && <RemoveLineItemButton onRemove={onRemove} iconOnly />}
+    </div>
+  ) : null;
+
   return (
     <div
       id={`line-item-${id}`}
       tabIndex={-1}
-      className={cn("rounded-lg border border-border/40 bg-background/30 focus:outline-none", isExpanded && "bg-background/40 border-border/60")}
+      className={cn("relative rounded-lg border border-border/40 bg-background/30 focus:outline-none", isExpanded && "bg-background/40 border-border/60")}
     >
       {/* Collapsed Summary Row - Enterprise Dense Layout */}
       <button
         type="button"
-        className="w-full text-left p-2.5 hover:bg-muted/20 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded-lg"
+        className={cn(
+          "w-full text-left p-2.5 hover:bg-muted/20 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded-lg",
+          headerActions && "pr-20"
+        )}
         onClick={onToggleExpand}
         aria-expanded={isExpanded}
         aria-controls={contentId}
@@ -539,6 +617,7 @@ export function LineItemCard({
           </div>
         )}
       </button>
+      {headerActions}
 
       {/* Expanded Editor - When Expanded (edit mode OR view mode) */}
       {isExpanded && (

@@ -1,16 +1,42 @@
 import React from "react";
-import { describe, expect, it } from "@jest/globals";
+import { describe, expect, it, jest } from "@jest/globals";
 import { TextDecoder, TextEncoder } from "util";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
-import { LineItemCard } from "./LineItemCard";
+import { LineItemCard, type LineItemCardProps } from "./LineItemCard";
 
 (globalThis as any).TextEncoder = TextEncoder;
 (globalThis as any).TextDecoder = TextDecoder;
+(globalThis as any).PointerEvent = (globalThis as any).PointerEvent ?? MouseEvent;
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const { renderToStaticMarkup } = require("react-dom/server") as typeof import("react-dom/server");
 
 function formatMoney(value: number): string {
   return `$${value.toFixed(2)}`;
+}
+
+function buildLineItemCardProps(overrides: Partial<LineItemCardProps> = {}): LineItemCardProps {
+  return {
+    id: "li-test",
+    itemKey: "li-test",
+    contentId: "li-test-details",
+    isExpanded: false,
+    onToggleExpand: () => undefined,
+    title: "Banner",
+    sizeLabel: '24" x 36"',
+    qtyLabel: "Qty 2",
+    unitPriceLabel: "$40.00/ea",
+    totalLabel: "$80.00",
+    width: "24",
+    height: "36",
+    quantity: 2,
+    price: 80,
+    description: "",
+    productionNotes: "",
+    ...overrides,
+  };
 }
 
 function renderCollapsedPrice(lineItem: Record<string, any>, aggregateTotalCents?: number | null) {
@@ -23,25 +49,50 @@ function renderCollapsedPrice(lineItem: Record<string, any>, aggregateTotalCents
 
   return renderToStaticMarkup(
     <LineItemCard
-      id={lineItem.id ?? lineItem.tempId ?? "li-test"}
-      itemKey={lineItem.tempId ?? lineItem.id ?? "li-test"}
-      contentId="li-test-details"
-      isExpanded={false}
-      onToggleExpand={() => undefined}
-      title={lineItem.productName ?? lineItem.description ?? "Item"}
-      sizeLabel={`${lineItem.width ?? 1}" x ${lineItem.height ?? 1}"`}
-      qtyLabel={`Qty ${lineItem.quantity ?? 1}`}
-      unitPriceLabel={`${formatMoney(display.displayPerEach)}/ea`}
-      totalLabel={formatMoney(display.displayTotal)}
-      width={String(lineItem.width ?? 1)}
-      height={String(lineItem.height ?? 1)}
-      quantity={Number(lineItem.quantity ?? 1)}
-      price={display.displayTotal}
-      description=""
-      productionNotes=""
-      readOnly
+      {...buildLineItemCardProps({
+        id: lineItem.id ?? lineItem.tempId ?? "li-test",
+        itemKey: lineItem.tempId ?? lineItem.id ?? "li-test",
+        title: lineItem.productName ?? lineItem.description ?? "Item",
+        sizeLabel: `${lineItem.width ?? 1}" x ${lineItem.height ?? 1}"`,
+        qtyLabel: `Qty ${lineItem.quantity ?? 1}`,
+        unitPriceLabel: `${formatMoney(display.displayPerEach)}/ea`,
+        totalLabel: formatMoney(display.displayTotal),
+        width: String(lineItem.width ?? 1),
+        height: String(lineItem.height ?? 1),
+        quantity: Number(lineItem.quantity ?? 1),
+        price: display.displayTotal,
+        readOnly: true,
+      })}
     />,
   );
+}
+
+async function renderInteractiveLineItemCard(props: Partial<LineItemCardProps>) {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  let root: Root | null = null;
+
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<LineItemCard {...buildLineItemCardProps(props)} />);
+  });
+
+  return {
+    container,
+    cleanup: async () => {
+      await act(async () => {
+        root?.unmount();
+      });
+      container.remove();
+      document.body.innerHTML = "";
+    },
+  };
+}
+
+function click(element: Element) {
+  act(() => {
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
 }
 
 describe("LineItemCard visible price render path", () => {
@@ -74,5 +125,75 @@ describe("LineItemCard visible price render path", () => {
 
     expect(html).toContain("$80.00");
     expect(html).toContain("$40.00/ea");
+  });
+});
+
+describe("LineItemCard collapsed header actions", () => {
+  it("renders duplicate and remove actions while collapsed for quote line items", async () => {
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      itemKey: "quote-line-1",
+      isExpanded: false,
+      onDuplicate: () => undefined,
+      onRemove: () => undefined,
+    });
+
+    expect(container.querySelector('button[aria-label="Duplicate line item"]')).toBeTruthy();
+    expect(container.querySelector('button[aria-label="Remove line item"]')).toBeTruthy();
+    await cleanup();
+  });
+
+  it("renders duplicate and remove actions while collapsed for order line items", async () => {
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      itemKey: "order-line-1",
+      isExpanded: false,
+      onDuplicate: () => undefined,
+      onRemove: () => undefined,
+    });
+
+    expect(container.querySelector('button[aria-label="Duplicate line item"]')).toBeTruthy();
+    expect(container.querySelector('button[aria-label="Remove line item"]')).toBeTruthy();
+    await cleanup();
+  });
+
+  it("calls the existing duplicate handler from the collapsed header", async () => {
+    const onDuplicate = jest.fn();
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: false,
+      onDuplicate,
+      onRemove: () => undefined,
+    });
+
+    const duplicateButton = container.querySelector('button[aria-label="Duplicate line item"]');
+    expect(duplicateButton).toBeTruthy();
+
+    click(duplicateButton!);
+
+    expect(onDuplicate).toHaveBeenCalledTimes(1);
+    await cleanup();
+  });
+
+  it("requires confirmation before calling the existing remove handler", async () => {
+    const onRemove = jest.fn();
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: false,
+      onDuplicate: () => undefined,
+      onRemove,
+    });
+
+    const removeButton = container.querySelector('button[aria-label="Remove line item"]');
+    expect(removeButton).toBeTruthy();
+
+    click(removeButton!);
+
+    expect(onRemove).not.toHaveBeenCalled();
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Remove line item",
+    );
+    expect(confirmButton).toBeTruthy();
+
+    click(confirmButton!);
+
+    expect(onRemove).toHaveBeenCalledTimes(1);
+    await cleanup();
   });
 });
