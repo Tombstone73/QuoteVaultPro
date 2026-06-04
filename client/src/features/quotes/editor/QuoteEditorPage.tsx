@@ -26,6 +26,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch, apiRequest, queryClient } from "@/lib/queryClient";
+import { openAuthenticatedPdfPreview } from "@/lib/authenticatedPdfPreview";
 import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
 import {
     beginCreateOrderSubmit,
@@ -396,9 +397,17 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         requestApprovalMutation.mutate(state.quoteId);
     };
 
-    const handlePreviewQuote = () => {
+    const handlePreviewQuote = async () => {
         if (!state.quoteId) return;
-        window.open(`/api/quotes/${encodeURIComponent(state.quoteId)}/pdf`, "_blank", "noopener,noreferrer");
+        try {
+            await openAuthenticatedPdfPreview(`/api/quotes/${encodeURIComponent(state.quoteId)}/pdf`);
+        } catch (error) {
+            toast({
+                title: "Preview failed",
+                description: error instanceof Error ? error.message : "Could not open the quote PDF.",
+                variant: "destructive",
+            });
+        }
     };
 
     // Quote update mutation for shipTo fields (like orders)
