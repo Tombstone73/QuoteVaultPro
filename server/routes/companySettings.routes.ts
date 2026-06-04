@@ -98,7 +98,7 @@ export function registerCompanySettingsRoutes(
       res.json(normalizeCompanySettingsDto(settings));
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: fromZodError(error).message });
+        return res.status(400).json({ message: getZodMessage(error) });
       }
       console.error("Error creating company settings:", error);
       res.status(500).json({ message: "Failed to create company settings" });
@@ -122,7 +122,7 @@ export function registerCompanySettingsRoutes(
       res.json(normalizeCompanySettingsDto(settings));
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: fromZodError(error).message });
+        return res.status(400).json({ message: getZodMessage(error) });
       }
       console.error("Error updating company settings:", error);
       res.status(500).json({ message: "Failed to update company settings" });
@@ -169,12 +169,16 @@ export function registerCompanySettingsRoutes(
 
       const asset = await enrichAssetWithUrls(finalized.linkedRecord as any);
       const dataUrl = `data:${upload.mimeType};base64,${upload.buffer.toString("base64")}`;
+      const savedLogoUrl = asset.originalUrl ?? asset.fileUrl ?? asset.objectPath ?? null;
 
       res.json({
         success: true,
         assetId: asset.id,
         invoiceLogoAssetId: asset.id,
-        invoiceLogoUrl: dataUrl,
+        invoiceLogoUrl: savedLogoUrl,
+        originalUrl: asset.originalUrl ?? null,
+        fileUrl: asset.fileUrl ?? null,
+        objectPath: asset.objectPath ?? null,
         previewUrl: asset.originalUrl ?? asset.fileUrl ?? dataUrl,
         fileName: asset.fileName,
         mimeType: asset.mimeType,

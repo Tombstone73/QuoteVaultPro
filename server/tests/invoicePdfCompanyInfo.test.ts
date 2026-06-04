@@ -113,6 +113,33 @@ describe("invoice PDF company info and remittance data", () => {
     expect(extractDecodedPdfContent(bytes)).toContain("No Logo Print");
   });
 
+  test("stable uploaded logo reference safely falls back when asset content is unavailable", async () => {
+    const bytes = await generateInvoicePdfBytes({
+      ...baseInvoiceParams,
+      companySettings: {
+        companyDisplayName: "Asset Logo Print",
+        invoiceLogoAssetId: "asset_missing",
+        invoiceLogoUrl: "/objects/uploads/org_1/invoice-logo/logo.png",
+      },
+    } as any);
+
+    expect(bytes.length).toBeGreaterThan(500);
+    expect(extractDecodedPdfContent(bytes)).toContain("Asset Logo Print");
+  });
+
+  test("legacy data URL logo does not break PDF generation", async () => {
+    const bytes = await generateInvoicePdfBytes({
+      ...baseInvoiceParams,
+      companySettings: {
+        companyDisplayName: "Legacy Logo Print",
+        invoiceLogoUrl: "data:image/png;base64,bm90LWEtcmVhbC1wbmc=",
+      },
+    } as any);
+
+    expect(bytes.length).toBeGreaterThan(500);
+    expect(extractDecodedPdfContent(bytes)).toContain("Legacy Logo Print");
+  });
+
   test("payment instructions, footer, checks payable, and remittance fields render when present", async () => {
     const bytes = await generateInvoicePdfBytes({
       ...baseInvoiceParams,

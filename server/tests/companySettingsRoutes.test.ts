@@ -2,6 +2,7 @@ import { jest, beforeAll, beforeEach, describe, expect, test } from "@jest/globa
 import express from "express";
 import request from "supertest";
 import {
+  INVOICE_LOGO_DATA_URL_MESSAGE,
   INVOICE_LOGO_MAX_BYTES,
   INVOICE_LOGO_TOO_LARGE_MESSAGE,
 } from "@shared/companyInfoInvoiceBranding";
@@ -12,6 +13,7 @@ const getCompanySettings = jest.fn<(...args: any[]) => Promise<any>>();
 const createCompanySettings = jest.fn<(...args: any[]) => Promise<any>>();
 const updateCompanySettings = jest.fn<(...args: any[]) => Promise<any>>();
 const finalizeUpload = jest.fn<(...args: any[]) => Promise<any>>();
+const enrichAssetWithUrls = jest.fn<(...args: any[]) => Promise<any>>();
 
 jest.unstable_mockModule("../storage", () => ({
   storage: {
@@ -32,7 +34,7 @@ jest.unstable_mockModule("../services/storage/StorageApplicationService", () => 
 }));
 
 jest.unstable_mockModule("../services/assets/enrichAssetWithUrls", () => ({
-  enrichAssetWithUrls: jest.fn(),
+  enrichAssetWithUrls,
 }));
 
 let registerCompanySettingsRoutes: any;
@@ -179,5 +181,69 @@ describe("company settings routes", () => {
       message: INVOICE_LOGO_TOO_LARGE_MESSAGE,
     });
     expect(finalizeUpload).not.toHaveBeenCalled();
+  });
+
+  test("rejects embedded data URLs in invoiceLogoUrl with a friendly message", async () => {
+    const response = await request(buildApp())
+      .post("/api/company-settings")
+      .send({
+        companyDisplayName: "Acme Print",
+        invoiceLogoUrl: "data:image/png;base64,bG9nbw==",
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ message: INVOICE_LOGO_DATA_URL_MESSAGE });
+    expect(createCompanySettings).not.toHaveBeenCalled();
+  });
+
+  test("saves company settings after logo upload using stable asset and storage references", async () => {
+    finalizeUpload.mockResolvedValue({
+      linkedRecord: {
+        id: "asset_1",
+        fileName: "logo.png",
+        mimeType: "image/png",
+      },
+    });
+    enrichAssetWithUrls.mockResolvedValue({
+      id: "asset_1",
+      fileName: "logo.png",
+      mimeType: "image/png",
+      originalUrl: "/objects/uploads/org_1/invoice-logo/logo.png",
+      fileUrl: "/objects/uploads/org_1/invoice-logo/logo.png",
+      objectPath: "uploads/org_1/invoice-logo/logo.png",
+    });
+
+    const upload = await request(buildApp())
+      .post("/api/company-settings/invoice-logo")
+      .send({
+        fileName: "logo.png",
+        mimeType: "image/png",
+        dataBase64: Buffer.from("logo").toString("base64"),
+      });
+
+    expect(upload.status).toBe(200);
+    expect(upload.body).toMatchObject({
+      success: true,
+      assetId: "asset_1",
+      invoiceLogoAssetId: "asset_1",
+      invoiceLogoUrl: "/objects/uploads/org_1/invoice-logo/logo.png",
+    });
+    expect(upload.body.invoiceLogoUrl).not.toContain("data:image");
+    expect(upload.body.previewUrl).toBe("/objects/uploads/org_1/invoice-logo/logo.png");
+
+    const save = await request(buildApp())
+      .post("/api/company-settings")
+      .send({
+        companyDisplayName: "Acme Print",
+        invoiceLogoAssetId: upload.body.invoiceLogoAssetId,
+        invoiceLogoUrl: upload.body.invoiceLogoUrl,
+      });
+
+    expect(save.status).toBe(200);
+    expect(createCompanySettings).toHaveBeenCalledWith("org_1", expect.objectContaining({
+      invoiceLogoAssetId: "asset_1",
+      invoiceLogoUrl: "/objects/uploads/org_1/invoice-logo/logo.png",
+      logoUrl: "/objects/uploads/org_1/invoice-logo/logo.png",
+    }));
   });
 });
