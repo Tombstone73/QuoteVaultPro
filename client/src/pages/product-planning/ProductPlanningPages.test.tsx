@@ -46,6 +46,7 @@ jest.mock("@/components/ui/select", () => ({
 }));
 
 let ProductPlanningWorkItemDetailPage: typeof import("./ProductPlanningPages").ProductPlanningWorkItemDetailPage;
+let ProductPlanningDashboardPage: typeof import("./ProductPlanningPages").ProductPlanningDashboardPage;
 let ProductPlanningRoadmapPage: typeof import("./ProductPlanningPages").ProductPlanningRoadmapPage;
 let BacklogExpandedRow: typeof import("./ProductPlanningPages").BacklogExpandedRow;
 let DetailDependencies: typeof import("./ProductPlanningPages").DetailDependencies;
@@ -54,6 +55,7 @@ beforeAll(async () => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   const module = await import("./ProductPlanningPages");
   ProductPlanningWorkItemDetailPage = module.ProductPlanningWorkItemDetailPage;
+  ProductPlanningDashboardPage = module.ProductPlanningDashboardPage;
   ProductPlanningRoadmapPage = module.ProductPlanningRoadmapPage;
   BacklogExpandedRow = module.BacklogExpandedRow;
   DetailDependencies = module.DetailDependencies;
@@ -229,6 +231,59 @@ const aiSuggestions = [{
   reviewedByUserId: null,
 }];
 
+const dashboardData = {
+  totalBacklogCount: 3,
+  criticalOpenBugCount: 1,
+  highOpenBugCount: 1,
+  openBugCount: 2,
+  itemsInTesting: 0,
+  itemsInDevValidation: 1,
+  itemsInMainValidation: 0,
+  topPrioritizedFeatures: [detailItem],
+  majorBugs: [],
+  topPriorityScoreFeatures: [],
+  majorBugsBlockingGoLive: [],
+  releaseProgress: [],
+  itemsStalledInValidation: [],
+  itemsWithUnresolvedDependencies: [],
+  byModuleWorkload: [{ key: "Planning", count: 2 }],
+  cleanupOpportunities: [],
+  byStatus: [{ key: "backlog", count: 2 }],
+  byPhase: [{ key: "go_live", count: 1 }],
+  byModule: [{ key: "Planning", count: 2 }],
+};
+
+const backlogAnalysis = {
+  counts: {
+    totalItems: 3,
+    missingModules: 1,
+    missingPhases: 2,
+    missingOwners: 3,
+    missingReleases: 2,
+    missingDescriptions: 1,
+    potentialDuplicates: 1,
+    potentialEpicGroups: 1,
+  },
+  healthScore: 72,
+  issues: [{ label: "Missing modules", count: 1, severity: "high" }],
+  nextActions: ["Assign modules to 1 item(s).", "Review 1 possible epic grouping(s)."],
+  goLiveReadiness: {
+    blockers: [detailItem],
+    highValueFeatures: [detailItem],
+    quickWins: [detailItem],
+    futureItems: [],
+    reasoning: "Ranked by priority and phase.",
+  },
+  epicGroups: [{
+    epicName: "Planning Improvements",
+    module: "Planning",
+    relatedItems: [detailItem],
+    confidence: 80,
+    reasoning: "Planning items belong together.",
+  }],
+  suggestions: [aiSuggestions[0]],
+};
+
 describe("Product Planning UX detail surfaces", () => {
   test("detail page renders readable planning sections, hierarchy, dependencies, and timeline", async () => {
     (global as any).fetch = jest.fn(async (url: string) => {
@@ -266,6 +321,70 @@ describe("Product Planning UX detail surfaces", () => {
     });
     await flushQueries();
     expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/ai-suggestions/suggestion_1/accept", {});
+    cleanup(root, container);
+  });
+
+  test("AI panel empty state exposes activation actions", async () => {
+    (global as any).fetch = jest.fn(async (url: string) => {
+      if (url === "/api/product-planning/work-items/item_1") return responseJson({ success: true, data: detailItem });
+      if (url === "/api/product-planning/releases") return responseJson({ success: true, data: [detailItem.release] });
+      if (url === "/api/product-planning/work-items?limit=250") return responseJson({ success: true, data: [detailItem] });
+      if (url === "/api/product-planning/work-items/item_1/ai-suggestions") return responseJson({ success: true, data: [] });
+      return responseJson({ success: false, message: "Not found" }, 404);
+    }) as any;
+    mockApiRequest.mockImplementation((method, url) => Promise.resolve({
+      json: async () => ({ data: url?.includes("find-duplicates") ? { suggestions: [] } : [] }),
+    }));
+
+    const { container, root } = renderWithProviders(<ProductPlanningWorkItemDetailPage />);
+    await flushQueries();
+
+    expect(container.textContent).toContain("No pending AI suggestions.");
+    expect(container.textContent).toContain("Analyze Work Item");
+    expect(container.textContent).toContain("Suggest Epic");
+    expect(container.textContent).toContain("Suggest Roadmap Placement");
+
+    const clickByText = async (label: string) => {
+      const button = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes(label)) as HTMLButtonElement;
+      act(() => {
+        Simulate.click(button);
+      });
+      await flushQueries();
+    };
+
+    await clickByText("Analyze Work Item");
+    await clickByText("Suggest Epic");
+    await clickByText("Suggest Roadmap Placement");
+
+    expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/work-items/item_1/ai/analyze", {});
+    expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/work-items/item_1/suggest-epic", {});
+    expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/work-items/item_1/suggest-roadmap-placement", {});
+    cleanup(root, container);
+  });
+
+  test("dashboard analyzes backlog and renders assistant panels", async () => {
+    (global as any).fetch = jest.fn(async (url: string) => {
+      if (url === "/api/product-planning/dashboard") return responseJson({ success: true, data: dashboardData });
+      return responseJson({ success: false, message: "Not found" }, 404);
+    }) as any;
+    mockApiRequest.mockImplementationOnce(() => Promise.resolve({
+      json: async () => ({ data: backlogAnalysis }),
+    }));
+
+    const { container, root } = renderWithProviders(<ProductPlanningDashboardPage />, "/product-planning");
+    await flushQueries();
+
+    const analyzeButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Analyze Backlog")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(analyzeButton);
+    });
+    await flushQueries();
+
+    expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/ai/analyze-backlog", {});
+    expect(container.textContent).toContain("Backlog Health Score");
+    expect(container.textContent).toContain("Recommended Next Actions");
+    expect(container.textContent).toContain("Go-Live Readiness");
+    expect(container.textContent).toContain("Planning Improvements");
     cleanup(root, container);
   });
 
@@ -337,6 +456,47 @@ describe("Product Planning UX detail surfaces", () => {
     expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/roadmap/suggest-grouping", {});
     expect(container.textContent).toContain("Roadmap Suggestions");
     expect(container.textContent).toContain("Customer-facing item should be reviewed for Version 1.1.");
+    cleanup(root, container);
+  });
+
+  test("roadmap analysis renders roadmap recommendations", async () => {
+    (global as any).fetch = jest.fn(async (url: string) => {
+      if (String(url).startsWith("/api/product-planning/work-items?")) return responseJson({ success: true, data: [detailItem] });
+      if (url === "/api/product-planning/releases") return responseJson({ success: true, data: [detailItem.release] });
+      return responseJson({ success: false, message: "Not found" }, 404);
+    }) as any;
+    mockApiRequest.mockImplementationOnce(() => Promise.resolve({
+      json: async () => ({
+        data: {
+          recommendations: [{ phase: "go_live", action: "Overloaded", count: 14, reasoning: "Go Live has 14 items." }],
+          suggestions: [{
+            id: "roadmap_suggestion_2",
+            workItemId: "item_1",
+            suggestionType: "phase",
+            currentValue: "future",
+            suggestedValue: "go_live",
+            confidence: "80.00",
+            reasoning: "Critical item should move earlier.",
+            status: "pending",
+            createdAt: "2026-06-02T12:00:00.000Z",
+            reviewedAt: null,
+            reviewedByUserId: null,
+          }],
+        },
+      }),
+    }));
+
+    const { container, root } = renderWithProviders(<ProductPlanningRoadmapPage />, "/product-planning/roadmap");
+    await flushQueries();
+    const button = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Analyze Roadmap")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(button);
+    });
+    await flushQueries();
+
+    expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/roadmap/analyze", {});
+    expect(container.textContent).toContain("Roadmap Analysis");
+    expect(container.textContent).toContain("Go Live has 14 items.");
     cleanup(root, container);
   });
 });

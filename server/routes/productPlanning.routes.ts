@@ -46,10 +46,13 @@ import { validateProductPlanningParent } from "../services/productPlanningHierar
 import { calculateProductPlanningPriorityScore } from "../services/productPlanningPriority";
 import {
   findSimilarProductPlanningItems,
+  generateBacklogAnalysis,
   generateBugPlanningSummary,
+  generateEpicDiscoverySuggestions,
   generateImplementationNotesSuggestion,
   generateImportCleanupSuggestions,
   generateProductPlanningAiReviewSuggestions,
+  generateRoadmapAnalysis,
   generateRoadmapGroupingSuggestions,
   type ProductPlanningAiSuggestionDraft,
 } from "../services/productPlanningAi";
@@ -499,6 +502,26 @@ async function listAiCandidateWorkItems(organizationId: string) {
     .limit(250);
 }
 
+async function getWorkItemAiContext(organizationId: string, id: string) {
+  const item = await getWorkItemForOrg(organizationId, id);
+  if (!item) return null;
+  const [dependsOn, blockedBy] = await Promise.all([
+    db
+      .select({ id: productPlanningDependencies.id })
+      .from(productPlanningDependencies)
+      .where(and(eq(productPlanningDependencies.organizationId, organizationId), eq(productPlanningDependencies.workItemId, id))),
+    db
+      .select({ id: productPlanningDependencies.id })
+      .from(productPlanningDependencies)
+      .where(and(eq(productPlanningDependencies.organizationId, organizationId), eq(productPlanningDependencies.dependsOnWorkItemId, id))),
+  ]);
+  return {
+    ...item,
+    dependencyCount: dependsOn.length,
+    blockedByCount: blockedBy.length,
+  };
+}
+
 async function persistAiSuggestions(
   organizationId: string,
   suggestions: ProductPlanningAiSuggestionDraft[],
@@ -912,7 +935,7 @@ export function registerProductPlanningRoutes(
       if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       const id = String(req.params.id);
-      const item = await getWorkItemForOrg(organizationId, id);
+      const item = await getWorkItemAiContext(organizationId, id);
       if (!item) return res.status(404).json({ success: false, message: "Product Planning work item not found." });
       const candidates = await listAiCandidateWorkItems(organizationId);
       const drafts = generateProductPlanningAiReviewSuggestions(item, candidates);
@@ -991,6 +1014,88 @@ export function registerProductPlanningRoutes(
     } catch (error) {
       console.error("[ProductPlanning] Implementation notes generation failed:", error);
       res.status(500).json({ success: false, message: "Failed to generate implementation notes." });
+    }
+  });
+
+  app.post("/api/product-planning/work-items/:id/suggest-epic", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const id = String(req.params.id);
+      const actorUserId = getUserId(req.user) ?? null;
+      const item = await getWorkItemForOrg(organizationId, id);
+      if (!item) return res.status(404).json({ success: false, message: "Product Planning work item not found." });
+      const candidates = await listAiCandidateWorkItems(organizationId);
+      const existingEpic = candidates.find((candidate) =>
+        candidate.workItemType === "epic" &&
+        candidate.id !== id &&
+        candidate.module &&
+        item.module &&
+        candidate.module.toLowerCase() === item.module.toLowerCase());
+      const analysis = generateBacklogAnalysis(candidates);
+      const suggestedGroup = analysis.epicGroups.find((group) =>
+        group.relatedItems.some((related) => related.id === id));
+      const drafts: ProductPlanningAiSuggestionDraft[] = [{
+        workItemId: id,
+        suggestionType: "parent_epic",
+        currentValue: item.parentId ?? null,
+        suggestedValue: existingEpic
+          ? { id: existingEpic.id, reference: existingEpic.reference, title: existingEpic.title }
+          : {
+              epicName: suggestedGroup?.epicName ?? `${item.module || "Planning"} Improvements`,
+              relatedItems: suggestedGroup?.relatedItems.map((related) => ({ id: related.id, reference: related.reference, title: related.title })) ?? [{ id: item.id, reference: item.reference, title: item.title }],
+            },
+        confidence: existingEpic ? 76 : suggestedGroup?.confidence ?? 62,
+        reasoning: existingEpic
+          ? `Found an existing epic in the same module: ${existingEpic.reference}.`
+          : "Suggested a possible epic grouping from nearby backlog items. Review before creating or assigning an epic.",
+      }];
+      const suggestions = await persistAiSuggestions(organizationId, drafts);
+      await recordPlanningEvent({
+        organizationId,
+        workItemId: id,
+        eventType: "ai_suggestion_created",
+        message: `AI suggested epic placement for ${item.reference}`,
+        metadata: { suggestionId: suggestions[0]?.id ?? null },
+        actorUserId,
+      });
+      res.status(201).json({ success: true, data: suggestions, message: "Epic suggestion generated." });
+    } catch (error) {
+      console.error("[ProductPlanning] Epic suggestion failed:", error);
+      res.status(500).json({ success: false, message: "Failed to generate epic suggestion." });
+    }
+  });
+
+  app.post("/api/product-planning/work-items/:id/suggest-roadmap-placement", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const id = String(req.params.id);
+      const actorUserId = getUserId(req.user) ?? null;
+      const item = await getWorkItemForOrg(organizationId, id);
+      if (!item) return res.status(404).json({ success: false, message: "Product Planning work item not found." });
+      const candidates = await listAiCandidateWorkItems(organizationId);
+      const drafts = generateRoadmapGroupingSuggestions(candidates).filter((suggestion) => suggestion.workItemId === id);
+      const suggestions = await persistAiSuggestions(organizationId, drafts.length > 0 ? drafts : [{
+        workItemId: id,
+        suggestionType: "release_recommendation",
+        currentValue: item.releaseTarget ?? item.releaseId ?? null,
+        suggestedValue: { releaseTarget: item.phase === "go_live" ? "Go Live" : "Review release target" },
+        confidence: item.phase ? 66 : 55,
+        reasoning: "No clear phase movement was detected, but release placement should be reviewed for sequencing.",
+      }]);
+      await recordPlanningEvent({
+        organizationId,
+        workItemId: id,
+        eventType: "ai_roadmap_recommendation_generated",
+        message: `AI suggested roadmap placement for ${item.reference}`,
+        metadata: { suggestionIds: suggestions.map((suggestion) => suggestion.id) },
+        actorUserId,
+      });
+      res.status(201).json({ success: true, data: suggestions, message: "Roadmap placement suggestion generated." });
+    } catch (error) {
+      console.error("[ProductPlanning] Roadmap placement suggestion failed:", error);
+      res.status(500).json({ success: false, message: "Failed to generate roadmap placement suggestion." });
     }
   });
 
@@ -1871,6 +1976,126 @@ export function registerProductPlanningRoutes(
     }
   });
 
+  app.post("/api/product-planning/ai/analyze-backlog", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const items = await listAiCandidateWorkItems(organizationId);
+      const analysis = generateBacklogAnalysis(items);
+      const suggestions = await persistAiSuggestions(organizationId, analysis.suggestions);
+      await recordProductPlanningAudit({
+        organizationId,
+        actorUserId,
+        actionType: "ai_backlog_analysis_generated",
+        entityType: "product_planning_backlog",
+        description: "AI backlog analysis generated for Product Planning.",
+        newValues: {
+          counts: analysis.counts,
+          healthScore: analysis.healthScore,
+          suggestionCount: suggestions.length,
+          nextActions: analysis.nextActions,
+        },
+      });
+      res.status(201).json({
+        success: true,
+        data: { ...analysis, suggestions },
+        message: "Backlog analysis generated.",
+      });
+    } catch (error) {
+      console.error("[ProductPlanning] Backlog AI analysis failed:", error);
+      res.status(500).json({ success: false, message: "Failed to generate backlog analysis." });
+    }
+  });
+
+  app.post("/api/product-planning/ai/suggest-epics", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const items = await listAiCandidateWorkItems(organizationId);
+      const drafts = generateEpicDiscoverySuggestions(items);
+      const suggestions = await persistAiSuggestions(organizationId, drafts);
+      await recordProductPlanningAudit({
+        organizationId,
+        actorUserId,
+        actionType: "ai_epic_suggestions_generated",
+        entityType: "product_planning_backlog",
+        description: "AI epic discovery suggestions generated for Product Planning.",
+        newValues: { suggestionCount: suggestions.length },
+      });
+      res.status(201).json({ success: true, data: { suggestions }, message: "Epic suggestions generated." });
+    } catch (error) {
+      console.error("[ProductPlanning] Epic discovery failed:", error);
+      res.status(500).json({ success: false, message: "Failed to generate epic suggestions." });
+    }
+  });
+
+  app.post("/api/product-planning/ai/go-live-readiness", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const analysis = generateBacklogAnalysis(await listAiCandidateWorkItems(organizationId));
+      await recordProductPlanningAudit({
+        organizationId,
+        actorUserId,
+        actionType: "ai_go_live_readiness_generated",
+        entityType: "product_planning_backlog",
+        description: "AI go-live readiness analysis generated for Product Planning.",
+        newValues: analysis.goLiveReadiness,
+      });
+      res.status(201).json({ success: true, data: analysis.goLiveReadiness, message: "Go-live readiness generated." });
+    } catch (error) {
+      console.error("[ProductPlanning] Go-live readiness failed:", error);
+      res.status(500).json({ success: false, message: "Failed to generate go-live readiness." });
+    }
+  });
+
+  app.post("/api/product-planning/ai/backlog-health", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const analysis = generateBacklogAnalysis(await listAiCandidateWorkItems(organizationId));
+      const data = { healthScore: analysis.healthScore, issues: analysis.issues, suggestedFixes: analysis.nextActions, counts: analysis.counts };
+      await recordProductPlanningAudit({
+        organizationId,
+        actorUserId,
+        actionType: "ai_backlog_health_generated",
+        entityType: "product_planning_backlog",
+        description: "AI backlog health score generated for Product Planning.",
+        newValues: data,
+      });
+      res.status(201).json({ success: true, data, message: "Backlog health generated." });
+    } catch (error) {
+      console.error("[ProductPlanning] Backlog health failed:", error);
+      res.status(500).json({ success: false, message: "Failed to generate backlog health." });
+    }
+  });
+
+  app.post("/api/product-planning/roadmap/analyze", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const analysis = generateRoadmapAnalysis(await listAiCandidateWorkItems(organizationId));
+      const suggestions = await persistAiSuggestions(organizationId, analysis.suggestions);
+      await recordProductPlanningAudit({
+        organizationId,
+        actorUserId,
+        actionType: "ai_roadmap_analysis_generated",
+        entityType: "product_planning_roadmap",
+        description: "AI roadmap analysis generated for Product Planning.",
+        newValues: { recommendations: analysis.recommendations, suggestionCount: suggestions.length },
+      });
+      res.status(201).json({ success: true, data: { recommendations: analysis.recommendations, suggestions }, message: "Roadmap analysis generated." });
+    } catch (error) {
+      console.error("[ProductPlanning] Roadmap analysis failed:", error);
+      res.status(500).json({ success: false, message: "Failed to generate roadmap analysis." });
+    }
+  });
+
   app.post("/api/product-planning/import/csv/preview", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
     try {
       if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
@@ -1943,6 +2168,63 @@ export function registerProductPlanningRoutes(
       if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
       console.error("[ProductPlanning] Import AI review failed:", error);
       res.status(500).json({ success: false, message: "Failed to generate import cleanup suggestions." });
+    }
+  });
+
+  app.post("/api/product-planning/imports/:batchId/analyze", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const batchId = String(req.params.batchId);
+      const [batch] = await db
+        .select()
+        .from(productPlanningImportBatches)
+        .where(and(eq(productPlanningImportBatches.organizationId, organizationId), eq(productPlanningImportBatches.id, batchId)))
+        .limit(1);
+      if (!batch) return res.status(404).json({ success: false, message: "Product Planning import batch not found." });
+      const importedItems = await db
+        .select()
+        .from(productPlanningWorkItems)
+        .where(and(
+          eq(productPlanningWorkItems.organizationId, organizationId),
+          eq(productPlanningWorkItems.importedBatchId, batchId),
+          isNull(productPlanningWorkItems.archivedAt),
+        ))
+        .limit(250);
+      const allItems = await listAiCandidateWorkItems(organizationId);
+      const importedIds = new Set(importedItems.map((item) => item.id));
+      const analysis = generateBacklogAnalysis(importedItems);
+      const duplicateSuggestions = importedItems.flatMap((item) =>
+        findSimilarProductPlanningItems(item, allItems.filter((candidate) => !importedIds.has(candidate.id)), 2).map((candidate) => ({
+          workItemId: item.id,
+          suggestionType: "duplicate_candidate" as const,
+          currentValue: { id: item.id, reference: item.reference, title: item.title },
+          suggestedValue: {
+            id: candidate.item.id,
+            reference: candidate.item.reference,
+            title: candidate.item.title,
+            similarity: candidate.similarity,
+          },
+          confidence: candidate.similarity,
+          reasoning: candidate.reasoning,
+        }))
+      );
+      const suggestions = await persistAiSuggestions(organizationId, [...analysis.suggestions, ...duplicateSuggestions].slice(0, 100));
+      await recordProductPlanningAudit({
+        organizationId,
+        actorUserId,
+        actionType: "ai_import_analysis_generated",
+        entityType: "product_planning_import_batch",
+        entityId: batchId,
+        entityName: batch.filename ?? "CSV import",
+        description: "AI imported backlog analysis generated for Product Planning.",
+        newValues: { counts: analysis.counts, suggestionCount: suggestions.length },
+      });
+      res.status(201).json({ success: true, data: { ...analysis, suggestions }, message: "Imported backlog analysis generated." });
+    } catch (error) {
+      console.error("[ProductPlanning] Import batch analysis failed:", error);
+      res.status(500).json({ success: false, message: "Failed to analyze imported backlog." });
     }
   });
 

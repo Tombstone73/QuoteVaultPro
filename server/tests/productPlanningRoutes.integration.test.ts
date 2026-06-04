@@ -370,6 +370,120 @@ describe("Product Planning AI suggestion routes", () => {
       .send({});
     expect(nonDev.status).toBe(403);
   });
+
+  test("analyze work item generates active planning suggestions", async () => {
+    const { org, app } = await createFixture();
+    const item = await createWorkItem(org.id, {
+      title: "Customer portal payment blocker",
+      description: null,
+      notes: "Blocks go live billing workflow.",
+      priority: "medium",
+      module: null,
+      phase: null,
+      releaseTarget: null,
+    });
+
+    const response = await request(app)
+      .post(`/api/product-planning/work-items/${item.id}/ai/analyze`)
+      .send({});
+
+    expect(response.status).toBe(201);
+    expect(response.body.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({ suggestionType: "priority", status: "pending" }),
+      expect.objectContaining({ suggestionType: "implementation_notes", status: "pending" }),
+      expect.objectContaining({ suggestionType: "release_recommendation", status: "pending" }),
+    ]));
+  });
+
+  test("analyze backlog returns health, go-live readiness, next actions, and stored suggestions", async () => {
+    const { org, app } = await createFixture();
+    await createWorkItem(org.id, { title: "Customer portal login blocker", module: null, phase: null, priority: "critical", description: null, releaseTarget: null });
+    await createWorkItem(org.id, { title: "Customer portal login failure", module: "Customer Portal", phase: "go_live", priority: "high", description: "Related duplicate candidate", releaseTarget: null });
+    await createWorkItem(org.id, { title: "Inventory purchasing automation", module: "Inventory", phase: null, priority: "high", businessValue: "high", complexity: "small" });
+
+    const response = await request(app)
+      .post("/api/product-planning/ai/analyze-backlog")
+      .send({});
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.healthScore).toEqual(expect.any(Number));
+    expect(response.body.data.nextActions.length).toBeGreaterThan(0);
+    expect(response.body.data.goLiveReadiness.blockers.length).toBeGreaterThan(0);
+    expect(response.body.data.suggestions.length).toBeGreaterThan(0);
+  });
+
+  test("suggest epics stores advisory epic suggestions", async () => {
+    const { org, app } = await createFixture();
+    await createWorkItem(org.id, { title: "Customer portal login", module: "Customer Portal" });
+    await createWorkItem(org.id, { title: "Customer portal upload", module: "Customer Portal" });
+    await createWorkItem(org.id, { title: "Customer portal approvals", module: "Customer Portal" });
+
+    const response = await request(app)
+      .post("/api/product-planning/ai/suggest-epics")
+      .send({});
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ suggestionType: "parent_epic", status: "pending" }),
+    ]));
+  });
+
+  test("go-live readiness and backlog health routes return actionable summaries", async () => {
+    const { org, app } = await createFixture();
+    await createWorkItem(org.id, { title: "Go live blocker", phase: "go_live", priority: "critical", workItemType: "bug", description: null });
+
+    const readiness = await request(app)
+      .post("/api/product-planning/ai/go-live-readiness")
+      .send({});
+    const health = await request(app)
+      .post("/api/product-planning/ai/backlog-health")
+      .send({});
+
+    expect(readiness.status).toBe(201);
+    expect(readiness.body.data.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Go live blocker" }),
+    ]));
+    expect(health.status).toBe(201);
+    expect(health.body.data.healthScore).toEqual(expect.any(Number));
+    expect(health.body.data.issues).toEqual(expect.any(Array));
+  });
+
+  test("import batch analysis reviews imported backlog items", async () => {
+    const { org, app } = await createFixture();
+    const [batch] = await db.insert(productPlanningImportBatches).values({
+      organizationId: org.id,
+      filename: "imported-backlog.csv",
+      rowCount: 2,
+      importedCount: 2,
+      status: "completed",
+    }).returning();
+    await createWorkItem(org.id, { title: "Imported portal login", module: null, phase: null, importedBatchId: batch.id, sourceType: "csv_import" });
+    await createWorkItem(org.id, { title: "Imported portal login duplicate", module: "Customer Portal", importedBatchId: batch.id, sourceType: "csv_import" });
+
+    const response = await request(app)
+      .post(`/api/product-planning/imports/${batch.id}/analyze`)
+      .send({});
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.counts.totalItems).toBe(2);
+    expect(response.body.data.suggestions.length).toBeGreaterThan(0);
+  });
+
+  test("roadmap analysis returns recommendations and suggestions", async () => {
+    const { org, app } = await createFixture();
+    await createWorkItem(org.id, { title: "Future critical portal item", phase: "future", priority: "critical", module: "Customer Portal" });
+    await createWorkItem(org.id, { title: "Unassigned go-live blocker", phase: null, priority: "critical", module: "Orders" });
+
+    const response = await request(app)
+      .post("/api/product-planning/roadmap/analyze")
+      .send({});
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.recommendations.length).toBeGreaterThan(0);
+    expect(response.body.data.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ suggestionType: "phase", status: "pending" }),
+    ]));
+  });
 });
 
 describe("Product Planning movement routes", () => {

@@ -213,6 +213,36 @@ type DashboardData = {
   byModule: Array<{ key: string | null; count: number }>;
 };
 
+type ProductPlanningBacklogAnalysis = {
+  counts: {
+    totalItems: number;
+    missingModules: number;
+    missingPhases: number;
+    missingOwners: number;
+    missingReleases: number;
+    missingDescriptions: number;
+    potentialDuplicates: number;
+    potentialEpicGroups: number;
+  };
+  healthScore: number;
+  issues: Array<{ label: string; count: number; severity: "low" | "medium" | "high" }>;
+  nextActions: string[];
+  goLiveReadiness: {
+    blockers: WorkItem[];
+    highValueFeatures: WorkItem[];
+    quickWins: WorkItem[];
+    futureItems: WorkItem[];
+    reasoning: string;
+  };
+  epicGroups: Array<{ epicName: string; module: string; relatedItems: WorkItem[]; confidence: number; reasoning: string }>;
+  suggestions: ProductPlanningAiSuggestion[];
+};
+
+type ProductPlanningRoadmapAnalysis = {
+  recommendations: Array<{ phase: string; action: string; count: number; reasoning: string }>;
+  suggestions: ProductPlanningAiSuggestion[];
+};
+
 type ImportPreview = {
   mappedRows: Array<{
     rowNumber: number;
@@ -562,15 +592,128 @@ function CleanupOpportunitiesList({ opportunities }: { opportunities: DashboardD
   );
 }
 
+function BacklogAiAnalysisPanel({ analysis }: { analysis: ProductPlanningBacklogAnalysis }) {
+  const readiness = analysis.goLiveReadiness;
+  return (
+    <div className="grid gap-4 lg:grid-cols-3">
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Brain className="h-4 w-4 text-primary" />
+            Backlog Health Score
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="text-3xl font-semibold">{analysis.healthScore}</div>
+          {analysis.issues.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No major backlog health issues found.</p>
+          ) : analysis.issues.slice(0, 6).map((issue) => (
+            <div key={issue.label} className="flex items-center justify-between rounded-md border border-border p-2 text-sm">
+              <span>{issue.label}</span>
+              <Badge variant={issue.severity === "high" ? "destructive" : "secondary"}>{issue.count}</Badge>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Recommended Next Actions</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {analysis.nextActions.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No immediate cleanup actions detected.</p>
+          ) : analysis.nextActions.map((action) => (
+            <div key={action} className="rounded-md border border-border p-2 text-sm">{action}</div>
+          ))}
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Suggested Epics</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {analysis.epicGroups.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No epic groupings found yet.</p>
+          ) : analysis.epicGroups.slice(0, 5).map((group) => (
+            <div key={`${group.epicName}-${group.module}`} className="rounded-md border border-border p-2 text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium">{group.epicName}</span>
+                <Badge variant="secondary">{group.relatedItems.length}</Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">{group.reasoning}</p>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+      <Card className="lg:col-span-3">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Go-Live Readiness</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-4">
+          <MiniReadinessList title="Blocking Go Live" items={readiness.blockers} />
+          <MiniReadinessList title="High Value Features" items={readiness.highValueFeatures} />
+          <MiniReadinessList title="Quick Wins" items={readiness.quickWins} />
+          <MiniReadinessList title="Future Items" items={readiness.futureItems} />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function MiniReadinessList({ title, items }: { title: string; items: WorkItem[] }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-xs font-medium uppercase text-muted-foreground">{title}</div>
+      {items.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No items found.</p>
+      ) : items.slice(0, 5).map((item) => (
+        <Link key={item.id} to={workItemPath(item)} className="block rounded-md border border-border p-2 text-xs hover:bg-muted/40">
+          <span className="mr-2 font-mono text-muted-foreground">{item.reference}</span>
+          {item.title}
+        </Link>
+      ))}
+    </div>
+  );
+}
+
 export function ProductPlanningDashboardPage() {
+  const { toast } = useToast();
+  const [backlogAnalysis, setBacklogAnalysis] = useState<ProductPlanningBacklogAnalysis | null>(null);
   const { data, isLoading, refetch, isRefetching } = useQuery<DashboardData>({
     queryKey: ["/api/product-planning/dashboard"],
     queryFn: () => fetchJson<DashboardData>("/api/product-planning/dashboard"),
   });
+  const analyzeBacklogMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/product-planning/ai/analyze-backlog", {});
+      return (await res.json()).data as ProductPlanningBacklogAnalysis;
+    },
+    onSuccess: (analysis) => {
+      setBacklogAnalysis(analysis);
+      toast({ title: "Backlog analysis ready", description: `${analysis.suggestions.length} suggestion(s) stored for review.` });
+    },
+    onError: (error: Error) => toast({ title: "Backlog analysis failed", description: error.message, variant: "destructive" }),
+  });
+  const suggestEpicsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/product-planning/ai/suggest-epics", {});
+      return (await res.json()).data as { suggestions: ProductPlanningAiSuggestion[] };
+    },
+    onSuccess: (data) => toast({ title: "Epic suggestions ready", description: `${data.suggestions.length} epic suggestion(s) stored.` }),
+    onError: (error: Error) => toast({ title: "Epic suggestions failed", description: error.message, variant: "destructive" }),
+  });
 
   return (
     <ProductPlanningShell>
-      <div className="flex justify-end">
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button variant="outline" size="sm" onClick={() => analyzeBacklogMutation.mutate()} disabled={analyzeBacklogMutation.isPending} className="gap-2">
+          <Brain className="h-4 w-4" />
+          {analyzeBacklogMutation.isPending ? "Analyzing..." : "Analyze Backlog"}
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => suggestEpicsMutation.mutate()} disabled={suggestEpicsMutation.isPending} className="gap-2">
+          <ClipboardList className="h-4 w-4" />
+          Suggest Epics
+        </Button>
         <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isRefetching} className="gap-2">
           <RefreshCw className={`h-4 w-4 ${isRefetching ? "animate-spin" : ""}`} />
           Refresh
@@ -590,6 +733,7 @@ export function ProductPlanningDashboardPage() {
             <StatCard title="DEV validation" value={data.itemsInDevValidation} />
             <StatCard title="MAIN validation" value={data.itemsInMainValidation} />
           </div>
+          {backlogAnalysis && <BacklogAiAnalysisPanel analysis={backlogAnalysis} />}
           <div className="grid gap-4 lg:grid-cols-2">
             <CompactItemList title="Major Bugs" items={data.majorBugs} icon={<Bug className="h-4 w-4 text-destructive" />} emptyMessage="No prioritized bugs yet." actionLabel="Push Bug Reports" actionTo={ROUTES.admin.bugReports} />
             <CompactItemList title="Prioritized Features" items={data.topPrioritizedFeatures} icon={<ClipboardList className="h-4 w-4 text-primary" />} emptyMessage="No prioritized features yet." actionLabel="Create Work Item" actionTo={ROUTES.productPlanning.backlog} />
@@ -1241,6 +1385,7 @@ export function ProductPlanningRoadmapPage() {
     module: "",
   });
   const [roadmapSuggestions, setRoadmapSuggestions] = useState<ProductPlanningAiSuggestion[]>([]);
+  const [roadmapAnalysis, setRoadmapAnalysis] = useState<ProductPlanningRoadmapAnalysis | null>(null);
   const queryString = useMemo(() => {
     const params = new URLSearchParams({ sortBy: "roadmapOrder", sortDirection: "asc", limit: "250" });
     Object.entries(filters).forEach(([key, value]) => {
@@ -1298,6 +1443,19 @@ export function ProductPlanningRoadmapPage() {
     onError: (error: Error) => toast({ title: "Roadmap suggestions failed", description: error.message, variant: "destructive" }),
   });
 
+  const roadmapAnalysisMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/product-planning/roadmap/analyze", {});
+      return (await res.json()).data as ProductPlanningRoadmapAnalysis;
+    },
+    onSuccess: (analysis) => {
+      setRoadmapAnalysis(analysis);
+      setRoadmapSuggestions(analysis.suggestions);
+      toast({ title: "Roadmap analysis ready", description: `${analysis.recommendations.length} recommendation(s) generated.` });
+    },
+    onError: (error: Error) => toast({ title: "Roadmap analysis failed", description: error.message, variant: "destructive" }),
+  });
+
   function moveWithinPhase(phase: Phase | null, itemId: string, direction: -1 | 1) {
     const items = sortByRoadmapOrder(rows.filter((item) => item.phase === phase));
     const index = items.findIndex((item) => item.id === itemId);
@@ -1317,7 +1475,7 @@ export function ProductPlanningRoadmapPage() {
   return (
     <ProductPlanningShell>
       <Card>
-        <CardContent className="grid gap-3 p-4 md:grid-cols-[repeat(4,minmax(0,1fr))_auto]">
+        <CardContent className="grid gap-3 p-4 md:grid-cols-[repeat(4,minmax(0,1fr))_auto_auto]">
           <FilterSelect value={filters.workItemType} onChange={(value) => setFilters({ ...filters, workItemType: value })} options={WORK_ITEM_TYPES} placeholder="Type" />
           <FilterSelect value={filters.priority} onChange={(value) => setFilters({ ...filters, priority: value })} options={PRIORITIES} placeholder="Priority" />
           <FilterSelect value={filters.planningStatus} onChange={(value) => setFilters({ ...filters, planningStatus: value })} options={STATUSES} placeholder="Status" />
@@ -1326,8 +1484,28 @@ export function ProductPlanningRoadmapPage() {
             <Brain className="h-4 w-4" />
             Suggest Grouping
           </Button>
+          <Button variant="outline" size="sm" onClick={() => roadmapAnalysisMutation.mutate()} disabled={roadmapAnalysisMutation.isPending} className="gap-2">
+            <RefreshCw className={`h-4 w-4 ${roadmapAnalysisMutation.isPending ? "animate-spin" : ""}`} />
+            Analyze Roadmap
+          </Button>
         </CardContent>
       </Card>
+      {roadmapAnalysis && (
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm">Roadmap Analysis</CardTitle></CardHeader>
+          <CardContent className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {roadmapAnalysis.recommendations.map((recommendation) => (
+              <div key={recommendation.phase} className="rounded-md border border-border p-3 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">{labelFor(PHASES, recommendation.phase as Phase) || recommendation.phase}</span>
+                  <Badge variant={recommendation.action === "Balanced" ? "secondary" : "outline"}>{recommendation.action}</Badge>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">{recommendation.reasoning}</p>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
       {roadmapSuggestions.length > 0 && (
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm">Roadmap Suggestions</CardTitle></CardHeader>
@@ -1766,6 +1944,30 @@ export function ProductPlanningWorkItemDetailPage() {
     onError: (error: Error) => toast({ title: "Notes generation failed", description: error.message, variant: "destructive" }),
   });
 
+  const suggestEpicMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/suggest-epic`, {});
+      return (await res.json()).data as ProductPlanningAiSuggestion[];
+    },
+    onSuccess: (suggestions) => {
+      invalidate();
+      toast({ title: "Epic suggestion ready", description: `${suggestions.length} suggestion(s) stored.` });
+    },
+    onError: (error: Error) => toast({ title: "Epic suggestion failed", description: error.message, variant: "destructive" }),
+  });
+
+  const suggestRoadmapMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/suggest-roadmap-placement`, {});
+      return (await res.json()).data as ProductPlanningAiSuggestion[];
+    },
+    onSuccess: (suggestions) => {
+      invalidate();
+      toast({ title: "Roadmap suggestion ready", description: `${suggestions.length} suggestion(s) stored.` });
+    },
+    onError: (error: Error) => toast({ title: "Roadmap suggestion failed", description: error.message, variant: "destructive" }),
+  });
+
   const acceptSuggestionMutation = useMutation({
     mutationFn: async (suggestionId: string) => {
       const res = await apiRequest("POST", `/api/product-planning/ai-suggestions/${suggestionId}/accept`, {});
@@ -1861,9 +2063,11 @@ export function ProductPlanningWorkItemDetailPage() {
             onReview={() => aiReviewMutation.mutate()}
             onFindSimilar={() => findSimilarMutation.mutate()}
             onGenerateNotes={() => implementationNotesMutation.mutate()}
+            onSuggestEpic={() => suggestEpicMutation.mutate()}
+            onSuggestRoadmap={() => suggestRoadmapMutation.mutate()}
             onAccept={(suggestionId) => acceptSuggestionMutation.mutate(suggestionId)}
             onReject={(suggestionId) => rejectSuggestionMutation.mutate(suggestionId)}
-            isBusy={aiReviewMutation.isPending || findSimilarMutation.isPending || implementationNotesMutation.isPending || acceptSuggestionMutation.isPending || rejectSuggestionMutation.isPending}
+            isBusy={aiReviewMutation.isPending || findSimilarMutation.isPending || implementationNotesMutation.isPending || suggestEpicMutation.isPending || suggestRoadmapMutation.isPending || acceptSuggestionMutation.isPending || rejectSuggestionMutation.isPending}
           />
           <DetailGrid item={item} />
           <DetailSource item={item} />
@@ -1892,6 +2096,8 @@ function AiSuggestionsPanel({
   onReview,
   onFindSimilar,
   onGenerateNotes,
+  onSuggestEpic,
+  onSuggestRoadmap,
   onAccept,
   onReject,
   isBusy,
@@ -1900,6 +2106,8 @@ function AiSuggestionsPanel({
   onReview: () => void;
   onFindSimilar: () => void;
   onGenerateNotes: () => void;
+  onSuggestEpic: () => void;
+  onSuggestRoadmap: () => void;
   onAccept: (suggestionId: string) => void;
   onReject: (suggestionId: string) => void;
   isBusy: boolean;
@@ -1916,12 +2124,17 @@ function AiSuggestionsPanel({
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={onReview} disabled={isBusy}>Review & Triage</Button>
+          <Button variant="outline" size="sm" onClick={onReview} disabled={isBusy}>Analyze Work Item</Button>
           <Button variant="outline" size="sm" onClick={onFindSimilar} disabled={isBusy}>Find Similar Items</Button>
           <Button variant="outline" size="sm" onClick={onGenerateNotes} disabled={isBusy}>Implementation Notes</Button>
+          <Button variant="outline" size="sm" onClick={onSuggestEpic} disabled={isBusy}>Suggest Epic</Button>
+          <Button variant="outline" size="sm" onClick={onSuggestRoadmap} disabled={isBusy}>Suggest Roadmap Placement</Button>
         </div>
         {pending.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">No pending AI suggestions.</div>
+          <div className="space-y-2 rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">
+            <div>No pending AI suggestions.</div>
+            <div>Run an analysis action above to generate priority, module, phase, epic, duplicate, release, or implementation-note suggestions for review.</div>
+          </div>
         ) : pending.map((suggestion) => (
           <div key={suggestion.id} className="space-y-2 rounded-md border border-border p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2100,6 +2313,7 @@ export function ProductPlanningImportsPage() {
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [lastImportResult, setLastImportResult] = useState<ImportCommitResult | null>(null);
   const [importSuggestions, setImportSuggestions] = useState<ProductPlanningAiSuggestion[]>([]);
+  const [importAnalysis, setImportAnalysis] = useState<ProductPlanningBacklogAnalysis | null>(null);
   const [bulkImportReviewStatus, setBulkImportReviewStatus] = useState<AiSuggestionStatus | null>(null);
 
   const { data: imports = [] } = useQuery<ImportBatch[]>({
@@ -2127,6 +2341,7 @@ export function ProductPlanningImportsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
       toast({ title: "Import completed", description: `${data.importedItems?.length ?? 0} rows imported.` });
       setLastImportResult(data);
+      setImportAnalysis(null);
       setPreview(null);
       setCsv("");
       setFilename(null);
@@ -2144,6 +2359,19 @@ export function ProductPlanningImportsPage() {
       toast({ title: "Import AI review complete", description: `${data.suggestions.length} suggestion(s) ready.` });
     },
     onError: (error: Error) => toast({ title: "Import AI review failed", description: error.message, variant: "destructive" }),
+  });
+
+  const analyzeImportedBacklogMutation = useMutation({
+    mutationFn: async (batchId: string) => {
+      const res = await apiRequest("POST", `/api/product-planning/imports/${batchId}/analyze`, {});
+      return (await res.json()).data as ProductPlanningBacklogAnalysis;
+    },
+    onSuccess: (analysis) => {
+      setImportAnalysis(analysis);
+      setImportSuggestions(analysis.suggestions);
+      toast({ title: "Imported backlog analysis ready", description: `${analysis.suggestions.length} suggestion(s) stored.` });
+    },
+    onError: (error: Error) => toast({ title: "Imported backlog analysis failed", description: error.message, variant: "destructive" }),
   });
 
   const updateImportSuggestionStatus = (suggestionId: string, status: AiSuggestionStatus) => {
@@ -2197,6 +2425,7 @@ export function ProductPlanningImportsPage() {
     setPreview(null);
     setLastImportResult(null);
     setImportSuggestions([]);
+    setImportAnalysis(null);
   }
 
   return (
@@ -2245,6 +2474,14 @@ export function ProductPlanningImportsPage() {
                   <Link to={`${ROUTES.productPlanning.backlog}?importedBatchId=${lastImportResult.batch.id}`}>
                     <Button variant="outline" size="sm">View Imported Items</Button>
                   </Link>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => analyzeImportedBacklogMutation.mutate(lastImportResult.batch.id)}
+                    disabled={analyzeImportedBacklogMutation.isPending}
+                  >
+                    {analyzeImportedBacklogMutation.isPending ? "Analyzing..." : "Analyze Imported Backlog"}
+                  </Button>
                 </div>
                 {lastImportResult.skippedRows.length > 0 && (
                   <div className="mt-3 max-h-28 overflow-auto text-xs text-muted-foreground">
@@ -2255,6 +2492,7 @@ export function ProductPlanningImportsPage() {
                 )}
               </div>
             )}
+            {importAnalysis && <BacklogAiAnalysisPanel analysis={importAnalysis} />}
             {preview && <ImportPreviewTable preview={preview} />}
             {importSuggestions.length > 0 && (
               <ImportAiSuggestions
