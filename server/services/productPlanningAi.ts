@@ -26,6 +26,7 @@ export type WorkItemForAi = {
   description?: string | null;
   notes?: string | null;
   workItemType: string;
+  planningStatus?: string | null;
   priority: string;
   businessValue?: string | null;
   complexity?: string | null;
@@ -33,6 +34,36 @@ export type WorkItemForAi = {
   module?: string | null;
   tags?: string[] | null;
   parentId?: string | null;
+  ownerUserId?: string | null;
+  releaseId?: string | null;
+  releaseTarget?: string | null;
+  dependencyCount?: number;
+  blockedByCount?: number;
+};
+
+export type ProductPlanningBacklogAnalysis = {
+  counts: {
+    totalItems: number;
+    missingModules: number;
+    missingPhases: number;
+    missingOwners: number;
+    missingReleases: number;
+    missingDescriptions: number;
+    potentialDuplicates: number;
+    potentialEpicGroups: number;
+  };
+  healthScore: number;
+  issues: Array<{ label: string; count: number; severity: "low" | "medium" | "high" }>;
+  nextActions: string[];
+  goLiveReadiness: {
+    blockers: WorkItemForAi[];
+    highValueFeatures: WorkItemForAi[];
+    quickWins: WorkItemForAi[];
+    futureItems: WorkItemForAi[];
+    reasoning: string;
+  };
+  epicGroups: Array<{ epicName: string; module: string; relatedItems: WorkItemForAi[]; confidence: number; reasoning: string }>;
+  suggestions: ProductPlanningAiSuggestionDraft[];
 };
 
 type ImportReviewRow = {
@@ -179,6 +210,68 @@ function guessPhase(item: WorkItemForAi): { value: string; confidence: number; r
   return null;
 }
 
+function hasText(value: string | null | undefined): boolean {
+  return Boolean(value && value.trim());
+}
+
+function itemWeight(item: WorkItemForAi): number {
+  const priorityWeight: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+  const valueWeight: Record<string, number> = { very_high: 4, high: 3, medium: 2, low: 1 };
+  const complexityWeight: Record<string, number> = { small: 3, medium: 2, large: 1, massive: 0 };
+  return (priorityWeight[item.priority] ?? 1)
+    + (valueWeight[item.businessValue ?? ""] ?? 0)
+    + (complexityWeight[item.complexity ?? ""] ?? 1)
+    + (item.phase === "go_live" ? 2 : 0)
+    + (item.blockedByCount ?? 0);
+}
+
+function groupItemsByPlanningTheme(items: WorkItemForAi[]) {
+  const groups = new Map<string, WorkItemForAi[]>();
+  for (const item of items) {
+    const key = item.module || guessModule(item)?.value || "Unassigned Planning";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(item);
+  }
+  return Array.from(groups.entries())
+    .filter(([, grouped]) => grouped.length >= 3)
+    .map(([module, relatedItems]) => ({
+      epicName: module.includes("&") || module.includes("Automation") ? module : `${module} Improvements`,
+      module,
+      relatedItems: relatedItems.slice(0, 20),
+      confidence: Math.min(92, 58 + relatedItems.length * 4),
+      reasoning: `${relatedItems.length} active backlog item(s) share the ${module} planning theme.`,
+    }))
+    .sort((a, b) => b.relatedItems.length - a.relatedItems.length)
+    .slice(0, 8);
+}
+
+function backlogDuplicateSuggestions(items: WorkItemForAi[], limit = 12): ProductPlanningAiSuggestionDraft[] {
+  const suggestions: ProductPlanningAiSuggestionDraft[] = [];
+  const seenPairs = new Set<string>();
+  for (const item of items) {
+    for (const duplicate of findSimilarProductPlanningItems(item, items, 3)) {
+      const pairKey = [item.id, duplicate.item.id].sort().join(":");
+      if (seenPairs.has(pairKey)) continue;
+      seenPairs.add(pairKey);
+      suggestions.push({
+        workItemId: item.id,
+        suggestionType: "duplicate_candidate",
+        currentValue: { id: item.id, reference: item.reference, title: item.title },
+        suggestedValue: {
+          id: duplicate.item.id,
+          reference: duplicate.item.reference,
+          title: duplicate.item.title,
+          similarity: duplicate.similarity,
+        },
+        confidence: duplicate.similarity,
+        reasoning: duplicate.reasoning,
+      });
+      if (suggestions.length >= limit) return suggestions;
+    }
+  }
+  return suggestions;
+}
+
 function pushIfDifferent(
   suggestions: ProductPlanningAiSuggestionDraft[],
   item: WorkItemForAi,
@@ -277,6 +370,50 @@ export function generateProductPlanningAiReviewSuggestions(
       reasoning: duplicate.reasoning,
     });
   }
+
+  if (!hasText(item.description)) {
+    suggestions.push({
+      workItemId: item.id,
+      suggestionType: "implementation_notes",
+      currentValue: item.description ?? null,
+      suggestedValue: {
+        action: "add_missing_description",
+        field: "description",
+        prompt: "Add the problem, user impact, expected outcome, and validation notes before implementation.",
+      },
+      confidence: 74,
+      reasoning: "This item has no description, which makes planning and prioritization harder.",
+    });
+  }
+
+  if (!item.releaseId && !hasText(item.releaseTarget)) {
+    suggestions.push({
+      workItemId: item.id,
+      suggestionType: "release_recommendation",
+      currentValue: null,
+      suggestedValue: {
+        releaseTarget: item.phase === "go_live" ? "Go Live" : item.phase ? item.phase : "Review release target",
+      },
+      confidence: item.phase ? 70 : 58,
+      reasoning: "This item has no assigned release. Review whether it belongs in the current roadmap or should stay in backlog.",
+    });
+  }
+
+  if ((item.blockedByCount ?? 0) > 0) {
+    suggestions.push({
+      workItemId: item.id,
+      suggestionType: "implementation_notes",
+      currentValue: null,
+      suggestedValue: {
+        action: "review_blockers",
+        blockedByCount: item.blockedByCount,
+      },
+      confidence: 76,
+      reasoning: `${item.blockedByCount} item(s) depend on this work item. Review blockers before sequencing implementation.`,
+    });
+  }
+
+  suggestions.push(generateImplementationNotesSuggestion(item));
 
   return suggestions;
 }
@@ -387,6 +524,194 @@ export function generateImportCleanupSuggestions(input: {
   }
 
   return suggestions;
+}
+
+export function generateBacklogAnalysis(items: WorkItemForAi[]): ProductPlanningBacklogAnalysis {
+  const activeItems = items.filter((item) => item.planningStatus !== "archived");
+  const duplicateSuggestions = backlogDuplicateSuggestions(activeItems);
+  const epicGroups = groupItemsByPlanningTheme(activeItems);
+  const suggestions: ProductPlanningAiSuggestionDraft[] = [...duplicateSuggestions];
+
+  for (const item of activeItems) {
+    if (!hasText(item.module)) {
+      const moduleGuess = guessModule(item);
+      if (moduleGuess) {
+        suggestions.push({
+          workItemId: item.id,
+          suggestionType: "module",
+          currentValue: item.module ?? null,
+          suggestedValue: moduleGuess.value,
+          confidence: moduleGuess.confidence,
+          reasoning: moduleGuess.reason,
+        });
+      }
+    }
+    if (!item.phase) {
+      const complexity = item.complexity ? null : guessComplexity(item);
+      const phase = guessPhase({ ...item, complexity: item.complexity ?? complexity?.value ?? null });
+      if (phase) {
+        suggestions.push({
+          workItemId: item.id,
+          suggestionType: "phase",
+          currentValue: null,
+          suggestedValue: phase.value,
+          confidence: phase.confidence,
+          reasoning: phase.reason,
+        });
+      }
+    }
+    if (!hasText(item.description)) {
+      suggestions.push({
+        workItemId: item.id,
+        suggestionType: "implementation_notes",
+        currentValue: null,
+        suggestedValue: { action: "add_missing_description", reference: item.reference },
+        confidence: 68,
+        reasoning: "Missing description found during backlog analysis.",
+      });
+    }
+    if (!item.releaseId && !hasText(item.releaseTarget) && (item.priority === "critical" || item.priority === "high" || item.phase === "go_live")) {
+      suggestions.push({
+        workItemId: item.id,
+        suggestionType: "release_recommendation",
+        currentValue: null,
+        suggestedValue: { releaseTarget: item.phase === "go_live" ? "Go Live" : "Review release target" },
+        confidence: 66,
+        reasoning: "High-priority or go-live item has no release assignment.",
+      });
+    }
+  }
+
+  for (const group of epicGroups) {
+    suggestions.push({
+      workItemId: null,
+      suggestionType: "parent_epic",
+      currentValue: null,
+      suggestedValue: {
+        epicName: group.epicName,
+        module: group.module,
+        relatedItems: group.relatedItems.map((item) => ({ id: item.id, reference: item.reference, title: item.title })),
+      },
+      confidence: group.confidence,
+      reasoning: group.reasoning,
+    });
+  }
+
+  const counts = {
+    totalItems: activeItems.length,
+    missingModules: activeItems.filter((item) => !hasText(item.module)).length,
+    missingPhases: activeItems.filter((item) => !item.phase).length,
+    missingOwners: activeItems.filter((item) => !hasText(item.ownerUserId)).length,
+    missingReleases: activeItems.filter((item) => !item.releaseId && !hasText(item.releaseTarget)).length,
+    missingDescriptions: activeItems.filter((item) => !hasText(item.description)).length,
+    potentialDuplicates: duplicateSuggestions.length,
+    potentialEpicGroups: epicGroups.length,
+  };
+  const issueCount = counts.missingModules
+    + counts.missingPhases
+    + counts.missingOwners
+    + counts.missingReleases
+    + counts.missingDescriptions
+    + counts.potentialDuplicates
+    + counts.potentialEpicGroups;
+  const healthScore = activeItems.length === 0
+    ? 100
+    : Math.max(0, Math.min(100, 100 - Math.round((issueCount / Math.max(1, activeItems.length * 3)) * 100)));
+  const issues = [
+    { label: "Missing modules", count: counts.missingModules, severity: "high" as const },
+    { label: "Missing phases", count: counts.missingPhases, severity: "high" as const },
+    { label: "Missing owners", count: counts.missingOwners, severity: "medium" as const },
+    { label: "Missing releases", count: counts.missingReleases, severity: "medium" as const },
+    { label: "Missing descriptions", count: counts.missingDescriptions, severity: "medium" as const },
+    { label: "Potential duplicates", count: counts.potentialDuplicates, severity: "medium" as const },
+    { label: "Potential epic groups", count: counts.potentialEpicGroups, severity: "low" as const },
+  ].filter((issue) => issue.count > 0);
+
+  const blockers = activeItems
+    .filter((item) => item.phase === "go_live" || item.priority === "critical" || item.workItemType === "bug")
+    .sort((a, b) => itemWeight(b) - itemWeight(a))
+    .slice(0, 10);
+  const highValueFeatures = activeItems
+    .filter((item) => item.workItemType !== "bug" && (item.businessValue === "very_high" || item.businessValue === "high" || item.priority === "high"))
+    .sort((a, b) => itemWeight(b) - itemWeight(a))
+    .slice(0, 10);
+  const quickWins = activeItems
+    .filter((item) => item.complexity === "small" && (item.priority === "high" || item.businessValue === "high" || item.businessValue === "very_high"))
+    .sort((a, b) => itemWeight(b) - itemWeight(a))
+    .slice(0, 10);
+  const futureItems = activeItems
+    .filter((item) => item.phase === "future" || item.priority === "low" || item.complexity === "massive")
+    .sort((a, b) => itemWeight(b) - itemWeight(a))
+    .slice(0, 10);
+
+  const nextActions = [
+    counts.potentialEpicGroups > 0 ? `Review ${counts.potentialEpicGroups} possible epic grouping(s).` : null,
+    counts.missingModules > 0 ? `Assign modules to ${counts.missingModules} item(s).` : null,
+    counts.potentialDuplicates > 0 ? `Review ${counts.potentialDuplicates} duplicate candidate(s).` : null,
+    counts.missingReleases > 0 ? `Review ${counts.missingReleases} unassigned release target(s).` : null,
+    blockers.length > 0 ? `Review ${blockers.length} go-live blocker candidate(s).` : null,
+  ].filter(Boolean) as string[];
+
+  return {
+    counts,
+    healthScore,
+    issues,
+    nextActions,
+    goLiveReadiness: {
+      blockers,
+      highValueFeatures,
+      quickWins,
+      futureItems,
+      reasoning: "Ranked by priority, business value, complexity, go-live phase, bug status, and blocker signals.",
+    },
+    epicGroups,
+    suggestions: suggestions.slice(0, 100),
+  };
+}
+
+export function generateEpicDiscoverySuggestions(items: WorkItemForAi[]): ProductPlanningAiSuggestionDraft[] {
+  return groupItemsByPlanningTheme(items).map((group) => ({
+    workItemId: null,
+    suggestionType: "parent_epic",
+    currentValue: null,
+    suggestedValue: {
+      epicName: group.epicName,
+      module: group.module,
+      relatedItems: group.relatedItems.map((item) => ({ id: item.id, reference: item.reference, title: item.title })),
+    },
+    confidence: group.confidence,
+    reasoning: group.reasoning,
+  }));
+}
+
+export function generateRoadmapAnalysis(items: WorkItemForAi[]) {
+  const byPhase = new Map<string, WorkItemForAi[]>();
+  for (const item of items) {
+    const phase = item.phase || "unassigned";
+    if (!byPhase.has(phase)) byPhase.set(phase, []);
+    byPhase.get(phase)!.push(item);
+  }
+  const recommendations = Array.from(byPhase.entries()).map(([phase, phaseItems]) => {
+    const highWeight = phaseItems.filter((item) => item.priority === "critical" || item.priority === "high").length;
+    const lowWeight = phaseItems.filter((item) => item.priority === "low" || item.complexity === "massive").length;
+    const action = phaseItems.length > 12
+      ? "Overloaded"
+      : phaseItems.length < 2
+        ? "Under-populated"
+        : lowWeight > highWeight && phase !== "future"
+          ? "Review for Future"
+          : highWeight > 0 && phase === "future"
+            ? "Review for Go Live"
+            : "Balanced";
+    return {
+      phase,
+      action,
+      count: phaseItems.length,
+      reasoning: `${phaseItems.length} item(s), ${highWeight} high-priority item(s), ${lowWeight} low-priority or massive item(s).`,
+    };
+  });
+  const suggestions = generateRoadmapGroupingSuggestions(items);
+  return { recommendations, suggestions };
 }
 
 export function generateBugPlanningSummary(bugReport: {
