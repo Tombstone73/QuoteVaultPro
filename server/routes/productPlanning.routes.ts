@@ -54,6 +54,7 @@ const listQuerySchema = z.object({
   sourceType: z.enum(productPlanningSourceTypeValues).optional(),
   ownerUserId: z.string().trim().max(255).optional(),
   releaseId: z.string().trim().max(255).optional(),
+  importedBatchId: z.string().trim().max(255).optional(),
   includeArchived: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
   sortBy: z.enum(["createdAt", "updatedAt", "priority", "priorityScore", "reference", "module", "phase", "roadmapOrder", "sortOrder"]).default("updatedAt"),
   sortDirection: z.enum(["asc", "desc"]).default("desc"),
@@ -542,6 +543,7 @@ export function registerProductPlanningRoutes(
       if (query.sourceType) conditions.push(eq(productPlanningWorkItems.sourceType, query.sourceType));
       if (query.ownerUserId) conditions.push(eq(productPlanningWorkItems.ownerUserId, query.ownerUserId));
       if (query.releaseId) conditions.push(eq(productPlanningWorkItems.releaseId, query.releaseId));
+      if (query.importedBatchId) conditions.push(eq(productPlanningWorkItems.importedBatchId, query.importedBatchId));
       if (query.search) {
         const pattern = `%${query.search.replace(/[%_]/g, "\\$&")}%`;
         conditions.push(or(
@@ -620,7 +622,90 @@ export function registerProductPlanningRoutes(
         ))
         .orderBy(asc(productPlanningWorkItems.sortOrder), asc(productPlanningWorkItems.createdAt));
 
-      res.json({ success: true, data: { ...item, parent, children, events } });
+      const release = item.releaseId
+        ? await db
+          .select()
+          .from(productPlanningReleases)
+          .where(and(eq(productPlanningReleases.organizationId, organizationId), eq(productPlanningReleases.id, item.releaseId)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : null;
+
+      const sourceBugReport = item.sourceBugReportId
+        ? await db
+          .select({
+            id: bugReports.id,
+            referenceNumber: bugReports.referenceNumber,
+            title: bugReports.title,
+            status: bugReports.status,
+            severity: bugReports.severity,
+          })
+          .from(bugReports)
+          .where(and(eq(bugReports.orgId, organizationId), eq(bugReports.id, item.sourceBugReportId)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : null;
+
+      const importBatch = item.importedBatchId
+        ? await db
+          .select()
+          .from(productPlanningImportBatches)
+          .where(and(eq(productPlanningImportBatches.organizationId, organizationId), eq(productPlanningImportBatches.id, item.importedBatchId)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : null;
+
+      const dependencies = await db
+        .select()
+        .from(productPlanningDependencies)
+        .where(and(eq(productPlanningDependencies.organizationId, organizationId), eq(productPlanningDependencies.workItemId, id)))
+        .orderBy(desc(productPlanningDependencies.createdAt));
+
+      const blockedBy = await db
+        .select()
+        .from(productPlanningDependencies)
+        .where(and(eq(productPlanningDependencies.organizationId, organizationId), eq(productPlanningDependencies.dependsOnWorkItemId, id)))
+        .orderBy(desc(productPlanningDependencies.createdAt));
+
+      const dependencyItemIds = Array.from(new Set([
+        ...dependencies.map((dependency) => dependency.dependsOnWorkItemId),
+        ...blockedBy.map((dependency) => dependency.workItemId),
+      ]));
+      const dependencyItems = dependencyItemIds.length
+        ? await db
+          .select({
+            id: productPlanningWorkItems.id,
+            reference: productPlanningWorkItems.reference,
+            title: productPlanningWorkItems.title,
+            workItemType: productPlanningWorkItems.workItemType,
+            planningStatus: productPlanningWorkItems.planningStatus,
+            priority: productPlanningWorkItems.priority,
+          })
+          .from(productPlanningWorkItems)
+          .where(and(eq(productPlanningWorkItems.organizationId, organizationId), inArray(productPlanningWorkItems.id, dependencyItemIds)))
+        : [];
+      const dependencyItemById = new Map(dependencyItems.map((dependencyItem) => [dependencyItem.id, dependencyItem]));
+
+      res.json({
+        success: true,
+        data: {
+          ...item,
+          parent,
+          children,
+          release,
+          sourceBugReport,
+          importBatch,
+          dependencies: dependencies.map((dependency) => ({
+            ...dependency,
+            dependsOnWorkItem: dependencyItemById.get(dependency.dependsOnWorkItemId) ?? null,
+          })),
+          blockedBy: blockedBy.map((dependency) => ({
+            ...dependency,
+            workItem: dependencyItemById.get(dependency.workItemId) ?? null,
+          })),
+          events,
+        },
+      });
     } catch (error) {
       console.error("[ProductPlanning] Detail failed:", error);
       res.status(500).json({ success: false, message: "Failed to fetch Product Planning work item." });

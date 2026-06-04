@@ -7,9 +7,11 @@ import { db } from "../db";
 import { runMigrations } from "../runMigrations";
 import { registerProductPlanningRoutes } from "../routes/productPlanning.routes";
 import {
+  bugReports,
   organizations,
   productPlanningDependencies,
   productPlanningEvents,
+  productPlanningImportBatches,
   productPlanningReleases,
   productPlanningWorkItems,
   users,
@@ -128,6 +130,111 @@ async function createRelease(organizationId: string, attrs: Partial<typeof produ
   }).returning();
   return release;
 }
+
+describe("Product Planning detail route", () => {
+  test("returns hierarchy, release, source, import, dependencies, blocked-by, and activity", async () => {
+    const { org, user, app } = await createFixture();
+    const release = await createRelease(org.id, { name: "Detail Release" });
+    const [importBatch] = await db.insert(productPlanningImportBatches).values({
+      organizationId: org.id,
+      filename: "detail-import.csv",
+      rowCount: 3,
+      importedCount: 2,
+      skippedCount: 1,
+      status: "completed_with_errors",
+      createdByUserId: user.id,
+    }).returning();
+    const [bugReport] = await db.insert(bugReports).values({
+      orgId: org.id,
+      referenceNumber: `B-${String(Math.floor(Math.random() * 1000000)).padStart(6, "0")}`,
+      createdByUserId: user.id,
+      createdByEmail: user.email ?? "detail@example.test",
+      title: "Original bug title",
+      description: "Original bug description",
+      severity: "high",
+      url: "https://example.test/detail",
+      userAgent: "jest",
+      status: "open",
+    }).returning();
+    const parent = await createWorkItem(org.id, { title: "Parent epic", workItemType: "epic" });
+    const blocker = await createWorkItem(org.id, { title: "Blocking dependency", priority: "high" });
+    const blockedChild = await createWorkItem(org.id, { title: "Blocked by detail item", priority: "critical" });
+    const item = await createWorkItem(org.id, {
+      title: "Detailed item",
+      parentId: parent.id,
+      releaseId: release.id,
+      sourceType: "bug_report",
+      sourceBugReportId: bugReport.id,
+      sourceReference: "CSV-123",
+      importedBatchId: importBatch.id,
+    });
+    const child = await createWorkItem(org.id, { title: "Child item", parentId: item.id, sortOrder: 10 });
+
+    await db.insert(productPlanningDependencies).values([
+      {
+        organizationId: org.id,
+        workItemId: item.id,
+        dependsOnWorkItemId: blocker.id,
+        dependencyType: "requires",
+        createdByUserId: user.id,
+      },
+      {
+        organizationId: org.id,
+        workItemId: blockedChild.id,
+        dependsOnWorkItemId: item.id,
+        dependencyType: "blocks",
+        createdByUserId: user.id,
+      },
+    ]);
+    await db.insert(productPlanningEvents).values([
+      {
+        organizationId: org.id,
+        workItemId: item.id,
+        eventType: "created",
+        message: "Created first",
+        createdByUserId: user.id,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+      {
+        organizationId: org.id,
+        workItemId: item.id,
+        eventType: "updated",
+        message: "Updated second",
+        createdByUserId: user.id,
+        createdAt: new Date("2026-01-02T00:00:00.000Z"),
+      },
+    ]);
+
+    const response = await request(app).get(`/api/product-planning/work-items/${item.id}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual(expect.objectContaining({
+      id: item.id,
+      parent: expect.objectContaining({ id: parent.id, reference: parent.reference }),
+      release: expect.objectContaining({ id: release.id, name: "Detail Release" }),
+      sourceBugReport: expect.objectContaining({ id: bugReport.id, title: "Original bug title" }),
+      importBatch: expect.objectContaining({ id: importBatch.id, filename: "detail-import.csv" }),
+    }));
+    expect(response.body.data.children).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: child.id, reference: child.reference }),
+    ]));
+    expect(response.body.data.dependencies).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        workItemId: item.id,
+        dependsOnWorkItemId: blocker.id,
+        dependsOnWorkItem: expect.objectContaining({ id: blocker.id, reference: blocker.reference }),
+      }),
+    ]));
+    expect(response.body.data.blockedBy).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        workItemId: blockedChild.id,
+        dependsOnWorkItemId: item.id,
+        workItem: expect.objectContaining({ id: blockedChild.id, reference: blockedChild.reference }),
+      }),
+    ]));
+    expect(response.body.data.events.map((event: { message: string }) => event.message)).toEqual(["Updated second", "Created first"]);
+  });
+});
 
 describe("Product Planning movement routes", () => {
   test("move-status updates planningStatus and writes an event", async () => {

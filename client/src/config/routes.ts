@@ -134,6 +134,7 @@ export const ROUTES = {
     kanban: "/product-planning/kanban",
     roadmap: "/product-planning/roadmap",
     imports: "/product-planning/imports",
+    workItemDetail: (id: string) => `/product-planning/work-items/${id}`,
   },
 
   // Customers
