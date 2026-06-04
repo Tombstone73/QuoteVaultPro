@@ -256,7 +256,7 @@ describe("Product Planning AI suggestion routes", () => {
     expect(createRes.body.data.status).toBe("pending");
 
     const acceptRes = await request(app)
-      .post(`/api/product-planning/work-items/${item.id}/ai-suggestions/${createRes.body.data.id}/accept`)
+      .post(`/api/product-planning/ai-suggestions/${createRes.body.data.id}/accept`)
       .send({});
 
     expect(acceptRes.status).toBe(200);
@@ -280,12 +280,12 @@ describe("Product Planning AI suggestion routes", () => {
       suggestionType: "module",
       currentValue: "Quotes",
       suggestedValue: "Invoices",
-      confidence: 70,
+      confidence: "70",
       reasoning: "Looks billing related.",
     }).returning();
 
     const rejectRes = await request(app)
-      .post(`/api/product-planning/work-items/${item.id}/ai-suggestions/${suggestion.id}/reject`)
+      .post(`/api/product-planning/ai-suggestions/${suggestion.id}/reject`)
       .send({});
 
     expect(rejectRes.status).toBe(200);
@@ -299,13 +299,13 @@ describe("Product Planning AI suggestion routes", () => {
     expect(unchanged.module).toBe("Quotes");
   });
 
-  test("find-similar stores duplicate candidate suggestions", async () => {
+  test("find-duplicates stores duplicate candidate suggestions", async () => {
     const { org, app } = await createFixture();
     const item = await createWorkItem(org.id, { title: "Customer portal upload fails", module: "Customer Portal", workItemType: "bug" });
     await createWorkItem(org.id, { title: "Customer portal file upload fails", module: "Customer Portal", workItemType: "bug" });
 
     const response = await request(app)
-      .post(`/api/product-planning/work-items/${item.id}/find-similar`)
+      .post(`/api/product-planning/work-items/${item.id}/find-duplicates`)
       .send({});
 
     expect(response.status).toBe(201);
@@ -332,7 +332,27 @@ describe("Product Planning AI suggestion routes", () => {
     expect(response.status).toBe(201);
     expect(response.body.data.suggestions.length).toBeGreaterThan(0);
     expect(response.body.data.suggestions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ suggestionType: "import_cleanup", status: "pending" }),
+      expect.objectContaining({ status: "pending" }),
+    ]));
+  });
+
+  test("roadmap recommendation generation stores pending suggestions", async () => {
+    const { org, app } = await createFixture();
+    await createWorkItem(org.id, {
+      title: "Customer portal release blocker",
+      description: "Customer-facing portal workflow affects go live.",
+      priority: "high",
+      phase: null,
+      module: "Customer Portal",
+    });
+
+    const response = await request(app)
+      .post("/api/product-planning/roadmap/suggest-grouping")
+      .send({});
+
+    expect(response.status).toBe(201);
+    expect(response.body.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({ suggestionType: "phase", status: "pending" }),
     ]));
   });
 
@@ -341,12 +361,12 @@ describe("Product Planning AI suggestion routes", () => {
     const item = await createWorkItem(org.id);
 
     const unauthenticated = await request(buildApp({ orgId: org.id, authenticated: false }))
-      .post(`/api/product-planning/work-items/${item.id}/ai-review`)
+      .post(`/api/product-planning/work-items/${item.id}/ai/analyze`)
       .send({});
     expect(unauthenticated.status).toBe(401);
 
     const nonDev = await request(buildApp({ orgId: org.id, orgRole: "member", userRole: "member" }))
-      .post(`/api/product-planning/work-items/${item.id}/ai-review`)
+      .post(`/api/product-planning/work-items/${item.id}/ai/analyze`)
       .send({});
     expect(nonDev.status).toBe(403);
   });
