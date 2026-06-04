@@ -11,9 +11,15 @@ export const INVOICE_LOGO_HELPER_TEXT =
 export const INVOICE_LOGO_TOO_LARGE_MESSAGE =
   `Logo file is too large. Please upload a ${INVOICE_LOGO_ACCEPTED_FORMATS_LABEL} under ${INVOICE_LOGO_MAX_SIZE_LABEL}.`;
 export const INVOICE_LOGO_UNSUPPORTED_TYPE_MESSAGE = "Logo must be a PNG or JPG file.";
+export const INVOICE_LOGO_DATA_URL_MESSAGE =
+  "Invoice logo must be a saved logo reference, not an embedded image. Please upload the logo again.";
 
 export function isInvoiceLogoAcceptedMimeType(value: unknown): value is typeof INVOICE_LOGO_ACCEPTED_MIME_TYPES[number] {
   return typeof value === "string" && (INVOICE_LOGO_ACCEPTED_MIME_TYPES as readonly string[]).includes(value);
+}
+
+export function isInvoiceLogoDataUrl(value: unknown): boolean {
+  return typeof value === "string" && value.trim().toLowerCase().startsWith("data:");
 }
 
 const optionalText = (max: number) =>
@@ -21,6 +27,16 @@ const optionalText = (max: number) =>
     (value) => (typeof value === "string" && value.trim() === "" ? null : value),
     z.string().trim().max(max).nullable().optional(),
   );
+
+const optionalLogoReference = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? null : value),
+  z.string()
+    .trim()
+    .max(20000)
+    .refine((value) => !isInvoiceLogoDataUrl(value), INVOICE_LOGO_DATA_URL_MESSAGE)
+    .nullable()
+    .optional(),
+);
 
 export const companyAddressSchema = z.object({
   line1: optionalText(255),
@@ -44,7 +60,7 @@ export const companyInfoInvoiceBrandingSchema = z.object({
   taxId: optionalText(100),
   physicalAddress: companyAddressSchema.default({}),
   remittanceAddress: remittanceAddressSchema.default({ enabled: false }),
-  invoiceLogoUrl: optionalText(20000),
+  invoiceLogoUrl: optionalLogoReference,
   invoiceLogoAssetId: optionalText(255),
   invoicePaymentInstructions: optionalText(4000),
   invoiceFooterNote: optionalText(2000),
@@ -96,7 +112,9 @@ export function normalizeCompanySettingsDto(raw: unknown): CompanySettingsDto {
     taxId: record.taxId,
     physicalAddress: record.physicalAddress,
     remittanceAddress: record.remittanceAddress,
-    invoiceLogoUrl: record.invoiceLogoUrl ?? record.logoUrl,
+    invoiceLogoUrl: isInvoiceLogoDataUrl(record.invoiceLogoUrl ?? record.logoUrl)
+      ? null
+      : record.invoiceLogoUrl ?? record.logoUrl,
     invoiceLogoAssetId: record.invoiceLogoAssetId,
     invoicePaymentInstructions: record.invoicePaymentInstructions,
     invoiceFooterNote: record.invoiceFooterNote,

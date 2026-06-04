@@ -8,7 +8,7 @@ import { INVOICE_LOGO_MAX_BYTES, INVOICE_LOGO_TOO_LARGE_MESSAGE, INVOICE_LOGO_UN
 (globalThis as any).TextEncoder = TextEncoder;
 (globalThis as any).TextDecoder = TextDecoder;
 
-const mockApiRequest = jest.fn();
+const mockApiRequest = jest.fn<(...args: any[]) => Promise<any>>();
 const mockToast = jest.fn();
 
 jest.mock("@/lib/queryClient", () => ({
@@ -27,6 +27,7 @@ jest.mock("@/components/ui/switch", () => ({
 
 const { renderToStaticMarkup } = require("react-dom/server") as typeof import("react-dom/server");
 const { CompanyInfoInvoiceBrandingCard } = require("./CompanyInfoInvoiceBrandingCard") as typeof import("./CompanyInfoInvoiceBrandingCard");
+const logoDataUrl = "data:image/png;base64,bG9nbw==";
 
 beforeAll(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -100,6 +101,31 @@ function attachLogo(container: HTMLElement, selected: File) {
   });
 }
 
+async function waitForExpectation(assertion: () => void) {
+  let lastError: unknown = null;
+  for (let i = 0; i < 30; i++) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+  }
+  throw lastError;
+}
+
+function clickSave(container: HTMLElement) {
+  const saveButton = Array.from(container.querySelectorAll("button"))
+    .find((button) => button.textContent?.includes("Save Company Info")) as HTMLButtonElement | undefined;
+  expect(saveButton).toBeTruthy();
+  act(() => {
+    saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
 describe("CompanyInfoInvoiceBrandingCard", () => {
   it("groups company identity fields separately from invoice payment details", () => {
     const html = renderWithCompanySettings({
@@ -167,6 +193,76 @@ describe("CompanyInfoInvoiceBrandingCard", () => {
       description: INVOICE_LOGO_UNSUPPORTED_TYPE_MESSAGE,
       variant: "destructive",
     }));
+
+    cleanup(root, container);
+  });
+
+  it("keeps upload preview data out of the company settings save payload", async () => {
+    mockApiRequest.mockImplementation(async (method: string, url: string, data?: any) => {
+      if (url === "/api/company-settings/invoice-logo") {
+        return {
+          json: async () => ({
+            success: true,
+            assetId: "asset_1",
+            invoiceLogoAssetId: "asset_1",
+            invoiceLogoUrl: "/objects/uploads/org_1/invoice-logo/logo.png",
+            previewUrl: logoDataUrl,
+          }),
+        };
+      }
+      return {
+        json: async () => ({ id: "settings_1", ...data }),
+      };
+    });
+    const { container, root } = renderInteractive({ id: "settings_1", companyDisplayName: "Acme Print" });
+
+    attachLogo(container, file("logo.png", 1000, "image/png"));
+    await waitForExpectation(() => {
+      expect(mockApiRequest).toHaveBeenCalledWith(
+        "POST",
+        "/api/company-settings/invoice-logo",
+        expect.objectContaining({ fileName: "logo.png", mimeType: "image/png" }),
+      );
+      const preview = container.querySelector("img[alt='Invoice logo preview']") as HTMLImageElement | null;
+      expect(preview?.getAttribute("src")).toBe(logoDataUrl);
+    });
+
+    clickSave(container);
+    await waitForExpectation(() => {
+      expect(mockApiRequest).toHaveBeenCalledWith(
+        "PATCH",
+        "/api/company-settings/settings_1",
+        expect.objectContaining({
+          invoiceLogoAssetId: "asset_1",
+          invoiceLogoUrl: "/objects/uploads/org_1/invoice-logo/logo.png",
+        }),
+      );
+    });
+
+    const saveCall = mockApiRequest.mock.calls.find((call) => call[0] === "PATCH") as any[] | undefined;
+    expect(saveCall?.[2]?.invoiceLogoUrl).not.toContain("data:image");
+
+    cleanup(root, container);
+  });
+
+  it("shows the returned preview after logo upload", async () => {
+    mockApiRequest.mockResolvedValue({
+      json: async () => ({
+        success: true,
+        assetId: "asset_1",
+        invoiceLogoAssetId: "asset_1",
+        invoiceLogoUrl: "/objects/uploads/org_1/invoice-logo/logo.png",
+        previewUrl: logoDataUrl,
+      }),
+    } as any);
+    const { container, root } = renderInteractive({ id: "settings_1" });
+
+    attachLogo(container, file("logo.png", 1000, "image/png"));
+
+    await waitForExpectation(() => {
+      const preview = container.querySelector("img[alt='Invoice logo preview']") as HTMLImageElement | null;
+      expect(preview?.getAttribute("src")).toBe(logoDataUrl);
+    });
 
     cleanup(root, container);
   });

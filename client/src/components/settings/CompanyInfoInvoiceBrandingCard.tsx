@@ -16,6 +16,7 @@ import {
   INVOICE_LOGO_MAX_BYTES,
   INVOICE_LOGO_TOO_LARGE_MESSAGE,
   INVOICE_LOGO_UNSUPPORTED_TYPE_MESSAGE,
+  isInvoiceLogoDataUrl,
   isInvoiceLogoAcceptedMimeType,
 } from "@shared/companyInfoInvoiceBranding";
 
@@ -129,22 +130,37 @@ function extractUploadErrorMessage(error: Error): string {
   return error.message;
 }
 
+function toSavedLogoUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || isInvoiceLogoDataUrl(trimmed)) return null;
+  return trimmed;
+}
+
+function resolveLogoPreviewUrl(settings: CompanySettings): string {
+  return String(settings.invoiceLogoUrl || "").trim();
+}
+
 export function CompanyInfoInvoiceBrandingCard() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [draft, setDraft] = useState<CompanySettings>(emptySettings);
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState("");
 
   const { data: settings, isLoading } = useQuery<CompanySettings>({
     queryKey: ["/api/company-settings"],
   });
 
   useEffect(() => {
-    setDraft(normalizeSettings(settings));
+    const normalized = normalizeSettings(settings);
+    setDraft(normalized);
+    setLogoPreviewUrl(resolveLogoPreviewUrl(normalized));
   }, [settings]);
 
   const saveMutation = useMutation({
     mutationFn: async (data: CompanySettings) => {
+      const savedLogoUrl = toSavedLogoUrl(data.invoiceLogoUrl);
       const payload = {
         companyDisplayName: data.companyDisplayName,
         legalCompanyName: data.legalCompanyName,
@@ -157,8 +173,8 @@ export function CompanyInfoInvoiceBrandingCard() {
           ...normalizeAddress(data.remittanceAddress),
           enabled: data.remittanceAddress?.enabled === true,
         },
-        invoiceLogoUrl: data.invoiceLogoUrl,
-        invoiceLogoAssetId: data.invoiceLogoAssetId,
+        invoiceLogoUrl: savedLogoUrl,
+        invoiceLogoAssetId: data.invoiceLogoAssetId || null,
         invoicePaymentInstructions: data.invoicePaymentInstructions,
         invoiceFooterNote: data.invoiceFooterNote,
         checksPayableTo: data.checksPayableTo,
@@ -169,7 +185,9 @@ export function CompanyInfoInvoiceBrandingCard() {
       return response.json();
     },
     onSuccess: (saved) => {
-      setDraft(normalizeSettings(saved));
+      const normalized = normalizeSettings(saved);
+      setDraft(normalized);
+      setLogoPreviewUrl(resolveLogoPreviewUrl(normalized));
       queryClient.invalidateQueries({ queryKey: ["/api/company-settings"] });
       toast({ title: "Company info saved", description: "Invoice branding settings are ready for generated invoices." });
     },
@@ -193,11 +211,14 @@ export function CompanyInfoInvoiceBrandingCard() {
       return response.json();
     },
     onSuccess: (uploaded) => {
+      const savedLogoUrl = toSavedLogoUrl(uploaded.invoiceLogoUrl ?? uploaded.originalUrl ?? uploaded.fileUrl ?? uploaded.objectPath);
+      const previewUrl = String(uploaded.previewUrl || uploaded.originalUrl || savedLogoUrl || "").trim();
       setDraft((current) => ({
         ...current,
-        invoiceLogoUrl: uploaded.invoiceLogoUrl ?? uploaded.previewUrl ?? "",
+        invoiceLogoUrl: savedLogoUrl ?? "",
         invoiceLogoAssetId: uploaded.invoiceLogoAssetId ?? uploaded.assetId ?? "",
       }));
+      setLogoPreviewUrl(previewUrl);
       toast({ title: "Logo uploaded", description: "Save settings to use this logo on invoices." });
     },
     onError: (error: Error) => {
@@ -221,7 +242,8 @@ export function CompanyInfoInvoiceBrandingCard() {
   };
 
   const remittanceEnabled = draft.remittanceAddress?.enabled === true;
-  const hasLogo = !!draft.invoiceLogoUrl;
+  const displayLogoUrl = logoPreviewUrl || toSavedLogoUrl(draft.invoiceLogoUrl) || "";
+  const hasLogo = !!(displayLogoUrl || draft.invoiceLogoAssetId);
 
   return (
     <Card>
@@ -283,7 +305,11 @@ export function CompanyInfoInvoiceBrandingCard() {
                 <Label>Invoice logo</Label>
                 <div className="flex h-32 items-center justify-center rounded-md border bg-muted/30 p-3">
                   {hasLogo ? (
-                    <img src={draft.invoiceLogoUrl ?? ""} alt="Invoice logo preview" className="max-h-full max-w-full object-contain" />
+                    displayLogoUrl ? (
+                      <img src={displayLogoUrl} alt="Invoice logo preview" className="max-h-full max-w-full object-contain" />
+                    ) : (
+                      <span className="text-sm text-muted-foreground">Logo uploaded</span>
+                    )
                   ) : (
                     <span className="text-sm text-muted-foreground">No logo selected</span>
                   )}
@@ -316,7 +342,10 @@ export function CompanyInfoInvoiceBrandingCard() {
                     type="button"
                     variant="ghost"
                     disabled={!hasLogo}
-                    onClick={() => setDraft((current) => ({ ...current, invoiceLogoUrl: "", invoiceLogoAssetId: "" }))}
+                    onClick={() => {
+                      setDraft((current) => ({ ...current, invoiceLogoUrl: "", invoiceLogoAssetId: "" }));
+                      setLogoPreviewUrl("");
+                    }}
                   >
                     <Trash2 className="mr-2 h-4 w-4" />
                     Remove

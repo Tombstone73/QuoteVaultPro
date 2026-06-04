@@ -1,9 +1,15 @@
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 
-import type { CompanyAddress, RemittanceAddress } from '@shared/companyInfoInvoiceBranding';
+import {
+  isInvoiceLogoAcceptedMimeType,
+  isInvoiceLogoDataUrl,
+  type CompanyAddress,
+  type RemittanceAddress,
+} from '@shared/companyInfoInvoiceBranding';
 import { DEFAULT_INVOICE_PDF_THEME, type InvoicePdfTheme, type Rgb } from './invoicePdfTheme';
 
 type CompanySettingsLike = {
+  organizationId?: string | null;
   companyName?: string | null;
   companyDisplayName?: string | null;
   legalCompanyName?: string | null;
@@ -305,6 +311,65 @@ function tryDecodeDataUrl(dataUrl: string): { mime: 'png' | 'jpeg'; bytes: Uint8
   }
 }
 
+async function readBufferFromStorageHandle(handle: { kind: 'signed_url' | 'local_path'; value: string }): Promise<Buffer> {
+  if (handle.kind === 'local_path') {
+    const { readFile } = await import('fs/promises');
+    return readFile(handle.value);
+  }
+
+  const response = await fetch(handle.value);
+  if (!response.ok) {
+    throw new Error(`Logo storage read failed with ${response.status}`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+async function resolveInvoiceLogoAssetDataUrl(companySettings: CompanySettingsLike): Promise<string | null> {
+  const organizationId = cleanText(companySettings?.organizationId);
+  const assetId = cleanText(companySettings?.invoiceLogoAssetId);
+  if (!organizationId || !assetId) return null;
+
+  try {
+    const [
+      { assetRepository },
+      { canonicalFileReadResolver },
+      { storageProviderConfigRepository },
+      { storageRegistry },
+    ] = await Promise.all([
+      import('../services/assets/AssetRepository'),
+      import('../services/storage/CanonicalFileReadResolver'),
+      import('../storage/storageProviderConfig.repo'),
+      import('../services/storage/StorageRegistry'),
+    ]);
+
+    const asset = await assetRepository.getAssetById(organizationId, assetId);
+    if (!asset?.fileRecordId) return null;
+
+    const assetMimeType = cleanText(asset.mimeType).toLowerCase();
+    if (!isInvoiceLogoAcceptedMimeType(assetMimeType)) return null;
+
+    const resolved = await canonicalFileReadResolver.resolveOriginal(String(asset.fileRecordId));
+    if (resolved.status !== 'available' || !resolved.providerConfigId || (!resolved.objectKey && !resolved.localPathRef)) {
+      return null;
+    }
+
+    const providerConfig = await storageProviderConfigRepository.getById(String(resolved.providerConfigId));
+    if (!providerConfig) return null;
+
+    const handle = await storageRegistry.getAdapter(providerConfig.providerType).getDownloadHandle({
+      providerConfig,
+      objectKey: resolved.objectKey ?? null,
+      localPathRef: resolved.localPathRef ?? null,
+    });
+    const buffer = await readBufferFromStorageHandle(handle);
+    if (!buffer.length) return null;
+
+    return `data:${assetMimeType};base64,${buffer.toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
 export async function generateInvoicePdfBytes(invoice: InvoiceLike, theme?: InvoicePdfTheme): Promise<Uint8Array>;
 export async function generateInvoicePdfBytes(params: InvoicePdfParams, theme?: InvoicePdfTheme): Promise<Uint8Array>;
 export async function generateInvoicePdfBytes(
@@ -387,14 +452,17 @@ export async function generateInvoicePdfBytes(
     return { bottomY: cy, linesCount: lines.length };
   };
 
-  const resolveLogoDataUrl = (): string | null => {
+  const resolveLogoDataUrl = async (): Promise<string | null> => {
     const override = (params.overrides?.logoDataUrl || '').trim();
     if (override) return override;
 
     const themeLogo = (theme.header.logo.dataUrl || '').trim();
     if (themeLogo) return themeLogo;
 
-    if (companyDisplay.invoiceLogoUrl.startsWith('data:')) return companyDisplay.invoiceLogoUrl;
+    const assetLogo = await resolveInvoiceLogoAssetDataUrl(companySettings);
+    if (assetLogo) return assetLogo;
+
+    if (isInvoiceLogoDataUrl(companyDisplay.invoiceLogoUrl)) return companyDisplay.invoiceLogoUrl;
 
     return null;
   };
@@ -512,9 +580,9 @@ export async function generateInvoicePdfBytes(
     });
   };
 
-  const drawHeaderLogo = (x: number, topY: number) => {
+  const drawHeaderLogo = async (x: number, topY: number) => {
     const mode = theme.header.logo.mode;
-    const dataUrl = resolveLogoDataUrl();
+    const dataUrl = await resolveLogoDataUrl();
 
     const shouldUseImage =
       mode === 'image' ? !!dataUrl :
@@ -556,7 +624,11 @@ export async function generateInvoicePdfBytes(
     };
 
     // Defer actual embed until awaited by header flow.
-    return drawImage();
+    try {
+      await drawImage();
+    } catch {
+      // Logo embedding should never block invoice generation.
+    }
   };
 
   const drawStatusBadge = (label: string, rightX: number, topY: number) => {
@@ -599,8 +671,7 @@ export async function generateInvoicePdfBytes(
   const dueDate = fmtDate(invoice.dueDate);
 
   const headerTopY = y;
-  const maybeLogoPromise = drawHeaderLogo(margin, headerTopY);
-  if (maybeLogoPromise instanceof Promise) await maybeLogoPromise;
+  await drawHeaderLogo(margin, headerTopY);
 
   const rightX = width - margin;
   const invoiceTitle = invoiceNumber ? `INVOICE #${invoiceNumber}` : 'INVOICE';
