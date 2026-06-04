@@ -6318,6 +6318,28 @@ export const productPlanningComplexityValues = ["small", "medium", "large", "mas
 export const productPlanningPhaseValues = ["go_live", "v1_1", "v1_5", "v2_0", "future", "research"] as const;
 export const productPlanningSourceTypeValues = ["manual", "csv_import", "bug_report"] as const;
 export const productPlanningImportStatusValues = ["pending", "completed", "completed_with_errors", "failed"] as const;
+export const productPlanningDependencyTypeValues = ["blocks", "requires", "relates_to"] as const;
+export const productPlanningReleaseStatusValues = ["planned", "in_progress", "released", "archived"] as const;
+
+export const productPlanningReleases = pgTable("product_planning_releases", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description"),
+  targetDate: date("target_date"),
+  status: text("status").$type<typeof productPlanningReleaseStatusValues[number]>().notNull().default("planned"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+}, (table) => [
+  uniqueIndex("product_planning_releases_org_name_uidx")
+    .on(table.organizationId, sql`lower(${table.name})`)
+    .where(sql`${table.archivedAt} IS NULL`),
+  index("product_planning_releases_org_status_idx").on(table.organizationId, table.status),
+  index("product_planning_releases_org_target_date_idx").on(table.organizationId, table.targetDate),
+]);
 
 export const productPlanningWorkItems = pgTable("product_planning_work_items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -6345,6 +6367,14 @@ export const productPlanningWorkItems = pgTable("product_planning_work_items", {
   ownerUserId: varchar("owner_user_id").references(() => users.id, { onDelete: "set null" }),
   dueDate: date("due_date"),
   releaseTarget: text("release_target"),
+  releaseId: varchar("release_id").references(() => productPlanningReleases.id, { onDelete: "set null" }),
+  userImpact: integer("user_impact"),
+  revenueImpact: integer("revenue_impact"),
+  operationalImpact: integer("operational_impact"),
+  riskReduction: integer("risk_reduction"),
+  confidence: integer("confidence"),
+  priorityScore: integer("priority_score"),
+  priorityScoreExplanation: jsonb("priority_score_explanation").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   notes: text("notes"),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
@@ -6361,6 +6391,8 @@ export const productPlanningWorkItems = pgTable("product_planning_work_items", {
   index("product_planning_work_items_org_type_idx").on(table.organizationId, table.workItemType),
   index("product_planning_work_items_org_phase_idx").on(table.organizationId, table.phase),
   index("product_planning_work_items_source_bug_idx").on(table.sourceBugReportId),
+  index("product_planning_work_items_org_release_idx").on(table.organizationId, table.releaseId),
+  index("product_planning_work_items_org_priority_score_idx").on(table.organizationId, table.priorityScore),
 ]);
 
 export const productPlanningImportBatches = pgTable("product_planning_import_batches", {
@@ -6393,6 +6425,20 @@ export const productPlanningEvents = pgTable("product_planning_events", {
   index("product_planning_events_org_type_created_idx").on(table.organizationId, table.eventType, table.createdAt),
 ]);
 
+export const productPlanningDependencies = pgTable("product_planning_dependencies", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  workItemId: varchar("work_item_id").notNull().references(() => productPlanningWorkItems.id, { onDelete: "cascade" }),
+  dependsOnWorkItemId: varchar("depends_on_work_item_id").notNull().references(() => productPlanningWorkItems.id, { onDelete: "cascade" }),
+  dependencyType: text("dependency_type").$type<typeof productPlanningDependencyTypeValues[number]>().notNull().default("requires"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("product_planning_dependencies_unique_idx").on(table.organizationId, table.workItemId, table.dependsOnWorkItemId, table.dependencyType),
+  index("product_planning_dependencies_org_work_item_idx").on(table.organizationId, table.workItemId),
+  index("product_planning_dependencies_org_depends_on_idx").on(table.organizationId, table.dependsOnWorkItemId),
+]);
+
 export const insertProductPlanningWorkItemSchema = createInsertSchema(productPlanningWorkItems, {
   workItemType: z.enum(productPlanningWorkItemTypeValues),
   planningStatus: z.enum(productPlanningStatusValues),
@@ -6401,12 +6447,29 @@ export const insertProductPlanningWorkItemSchema = createInsertSchema(productPla
   complexity: z.enum(productPlanningComplexityValues).optional().nullable(),
   phase: z.enum(productPlanningPhaseValues).optional().nullable(),
   sourceType: z.enum(productPlanningSourceTypeValues).optional().nullable(),
+  priorityScoreExplanation: z.record(z.string(), z.unknown()).optional(),
 }).omit({
   id: true,
   reference: true,
   createdAt: true,
   updatedAt: true,
   archivedAt: true,
+});
+
+export const insertProductPlanningReleaseSchema = createInsertSchema(productPlanningReleases, {
+  status: z.enum(productPlanningReleaseStatusValues),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  archivedAt: true,
+});
+
+export const insertProductPlanningDependencySchema = createInsertSchema(productPlanningDependencies, {
+  dependencyType: z.enum(productPlanningDependencyTypeValues),
+}).omit({
+  id: true,
+  createdAt: true,
 });
 
 export const updateProductPlanningWorkItemSchema = insertProductPlanningWorkItemSchema.partial().omit({
@@ -6418,6 +6481,10 @@ export const updateProductPlanningWorkItemSchema = insertProductPlanningWorkItem
 
 export type ProductPlanningWorkItem = typeof productPlanningWorkItems.$inferSelect;
 export type InsertProductPlanningWorkItem = typeof productPlanningWorkItems.$inferInsert;
+export type ProductPlanningRelease = typeof productPlanningReleases.$inferSelect;
+export type InsertProductPlanningRelease = typeof productPlanningReleases.$inferInsert;
+export type ProductPlanningDependency = typeof productPlanningDependencies.$inferSelect;
+export type InsertProductPlanningDependency = typeof productPlanningDependencies.$inferInsert;
 export type ProductPlanningImportBatch = typeof productPlanningImportBatches.$inferSelect;
 export type InsertProductPlanningImportBatch = typeof productPlanningImportBatches.$inferInsert;
 export type ProductPlanningEvent = typeof productPlanningEvents.$inferSelect;
