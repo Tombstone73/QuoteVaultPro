@@ -6329,9 +6329,7 @@ export const productPlanningAiSuggestionTypeValues = [
   "work_item_type",
   "parent_epic",
   "duplicate_candidate",
-  "bug_summary",
-  "import_cleanup",
-  "roadmap_grouping",
+  "release_recommendation",
   "implementation_notes",
 ] as const;
 export const productPlanningAiSuggestionStatusValues = ["pending", "accepted", "rejected"] as const;
@@ -6445,15 +6443,21 @@ export const productPlanningAiSuggestions = pgTable("product_planning_ai_suggest
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   workItemId: varchar("work_item_id").references(() => productPlanningWorkItems.id, { onDelete: "cascade" }),
   suggestionType: text("suggestion_type").$type<typeof productPlanningAiSuggestionTypeValues[number]>().notNull(),
-  currentValue: jsonb("current_value").$type<unknown>(),
-  suggestedValue: jsonb("suggested_value").$type<unknown>(),
-  confidence: integer("confidence"),
+  currentValue: text("current_value"),
+  suggestedValue: text("suggested_value"),
+  confidence: decimal("confidence", { precision: 5, scale: 2 }),
   reasoning: text("reasoning"),
   status: text("status").$type<typeof productPlanningAiSuggestionStatusValues[number]>().notNull().default("pending"),
+  createdByAi: boolean("created_by_ai").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
   reviewedByUserId: varchar("reviewed_by_user_id").references(() => users.id, { onDelete: "set null" }),
 }, (table) => [
+  index("product_planning_ai_suggestions_org_idx").on(table.organizationId),
+  index("product_planning_ai_suggestions_work_item_idx").on(table.workItemId),
+  index("product_planning_ai_suggestions_type_idx").on(table.suggestionType),
+  index("product_planning_ai_suggestions_status_idx").on(table.status),
   index("product_planning_ai_suggestions_org_work_item_idx").on(table.organizationId, table.workItemId, table.status, table.createdAt),
   index("product_planning_ai_suggestions_org_type_status_idx").on(table.organizationId, table.suggestionType, table.status, table.createdAt),
 ]);
@@ -6511,6 +6515,7 @@ export const insertProductPlanningAiSuggestionSchema = createInsertSchema(produc
 }).omit({
   id: true,
   createdAt: true,
+  updatedAt: true,
   reviewedAt: true,
 });
 

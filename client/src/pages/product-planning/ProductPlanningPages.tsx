@@ -69,9 +69,7 @@ type AiSuggestionType =
   | "work_item_type"
   | "parent_epic"
   | "duplicate_candidate"
-  | "bug_summary"
-  | "import_cleanup"
-  | "roadmap_grouping"
+  | "release_recommendation"
   | "implementation_notes";
 
 type WorkItemSummary = {
@@ -176,7 +174,7 @@ type ProductPlanningAiSuggestion = {
   suggestionType: AiSuggestionType;
   currentValue: unknown;
   suggestedValue: unknown;
-  confidence: number | null;
+  confidence: number | string | null;
   reasoning: string | null;
   status: AiSuggestionStatus;
   createdAt: string;
@@ -370,7 +368,18 @@ function releaseName(item: WorkItem, releases?: ProductPlanningRelease[]) {
 
 function displayAiValue(value: unknown): string {
   if (value == null || value === "") return "-";
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value).replace(/_/g, " ");
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try {
+        return displayAiValue(JSON.parse(trimmed));
+      } catch {
+        return value.replace(/_/g, " ");
+      }
+    }
+    return value.replace(/_/g, " ");
+  }
+  if (typeof value === "number" || typeof value === "boolean") return String(value).replace(/_/g, " ");
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
     if (typeof record.notes === "string") return record.notes;
@@ -1723,7 +1732,7 @@ export function ProductPlanningWorkItemDetailPage() {
 
   const aiReviewMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/ai-review`, {});
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/ai/analyze`, {});
       return (await res.json()).data as ProductPlanningAiSuggestion[];
     },
     onSuccess: (suggestions) => {
@@ -1735,7 +1744,7 @@ export function ProductPlanningWorkItemDetailPage() {
 
   const findSimilarMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/find-similar`, {});
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/find-duplicates`, {});
       return (await res.json()).data as { suggestions: ProductPlanningAiSuggestion[] };
     },
     onSuccess: (data) => {
@@ -1759,7 +1768,7 @@ export function ProductPlanningWorkItemDetailPage() {
 
   const acceptSuggestionMutation = useMutation({
     mutationFn: async (suggestionId: string) => {
-      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/ai-suggestions/${suggestionId}/accept`, {});
+      const res = await apiRequest("POST", `/api/product-planning/ai-suggestions/${suggestionId}/accept`, {});
       return (await res.json()).data as { suggestion: ProductPlanningAiSuggestion; workItem: WorkItem | null };
     },
     onSuccess: () => {
@@ -1771,7 +1780,7 @@ export function ProductPlanningWorkItemDetailPage() {
 
   const rejectSuggestionMutation = useMutation({
     mutationFn: async (suggestionId: string) => {
-      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/ai-suggestions/${suggestionId}/reject`, {});
+      const res = await apiRequest("POST", `/api/product-planning/ai-suggestions/${suggestionId}/reject`, {});
       return (await res.json()).data as ProductPlanningAiSuggestion;
     },
     onSuccess: () => {
@@ -2091,6 +2100,7 @@ export function ProductPlanningImportsPage() {
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [lastImportResult, setLastImportResult] = useState<ImportCommitResult | null>(null);
   const [importSuggestions, setImportSuggestions] = useState<ProductPlanningAiSuggestion[]>([]);
+  const [bulkImportReviewStatus, setBulkImportReviewStatus] = useState<AiSuggestionStatus | null>(null);
 
   const { data: imports = [] } = useQuery<ImportBatch[]>({
     queryKey: ["/api/product-planning/imports"],
@@ -2136,6 +2146,50 @@ export function ProductPlanningImportsPage() {
     onError: (error: Error) => toast({ title: "Import AI review failed", description: error.message, variant: "destructive" }),
   });
 
+  const updateImportSuggestionStatus = (suggestionId: string, status: AiSuggestionStatus) => {
+    setImportSuggestions((current) => current.map((suggestion) => (
+      suggestion.id === suggestionId
+        ? { ...suggestion, status, reviewedAt: new Date().toISOString() }
+        : suggestion
+    )));
+  };
+
+  const reviewImportSuggestionMutation = useMutation({
+    mutationFn: async ({ suggestionId, status }: { suggestionId: string; status: "accepted" | "rejected" }) => {
+      const action = status === "accepted" ? "accept" : "reject";
+      await apiRequest("POST", `/api/product-planning/ai-suggestions/${suggestionId}/${action}`, {});
+      return { suggestionId, status };
+    },
+    onSuccess: ({ suggestionId, status }) => updateImportSuggestionStatus(suggestionId, status),
+    onError: (error: Error) => toast({ title: "Import suggestion review failed", description: error.message, variant: "destructive" }),
+  });
+
+  async function reviewAllImportSuggestions(status: "accepted" | "rejected") {
+    const pending = importSuggestions.filter((suggestion) => suggestion.status === "pending");
+    if (pending.length === 0) return;
+    setBulkImportReviewStatus(status);
+    try {
+      const action = status === "accepted" ? "accept" : "reject";
+      await Promise.all(pending.map((suggestion) => (
+        apiRequest("POST", `/api/product-planning/ai-suggestions/${suggestion.id}/${action}`, {})
+      )));
+      setImportSuggestions((current) => current.map((suggestion) => (
+        suggestion.status === "pending"
+          ? { ...suggestion, status, reviewedAt: new Date().toISOString() }
+          : suggestion
+      )));
+      toast({ title: "Import suggestions reviewed", description: `${pending.length} suggestion(s) ${status}.` });
+    } catch (error) {
+      toast({
+        title: "Bulk review failed",
+        description: error instanceof Error ? error.message : "Failed to review import suggestions.",
+        variant: "destructive",
+      });
+    } finally {
+      setBulkImportReviewStatus(null);
+    }
+  }
+
   async function handleFile(file: File | null) {
     if (!file) return;
     setFilename(file.name);
@@ -2158,7 +2212,7 @@ export function ProductPlanningImportsPage() {
           <CardContent className="space-y-4">
             <Input type="file" accept=".csv,text/csv" onChange={(event) => handleFile(event.target.files?.[0] ?? null)} />
             {filename && <p className="text-sm text-muted-foreground">{filename}</p>}
-            <Textarea value={csv} onChange={(event) => { setCsv(event.target.value); setPreview(null); }} placeholder="CSV contents" className="min-h-[180px] font-mono text-xs" />
+            <Textarea value={csv} onChange={(event) => { setCsv(event.target.value); setPreview(null); setImportSuggestions([]); }} placeholder="CSV contents" className="min-h-[180px] font-mono text-xs" />
             <div className="flex flex-wrap items-center justify-between gap-3">
               <label className="flex items-center gap-2 text-sm text-muted-foreground">
                 <input type="checkbox" checked={allowDuplicates} onChange={(event) => setAllowDuplicates(event.target.checked)} />
@@ -2202,7 +2256,16 @@ export function ProductPlanningImportsPage() {
               </div>
             )}
             {preview && <ImportPreviewTable preview={preview} />}
-            {importSuggestions.length > 0 && <ImportAiSuggestions suggestions={importSuggestions} />}
+            {importSuggestions.length > 0 && (
+              <ImportAiSuggestions
+                suggestions={importSuggestions}
+                onAccept={(suggestionId) => reviewImportSuggestionMutation.mutate({ suggestionId, status: "accepted" })}
+                onReject={(suggestionId) => reviewImportSuggestionMutation.mutate({ suggestionId, status: "rejected" })}
+                onBulkAccept={() => reviewAllImportSuggestions("accepted")}
+                onBulkReject={() => reviewAllImportSuggestions("rejected")}
+                isReviewing={reviewImportSuggestionMutation.isPending || Boolean(bulkImportReviewStatus)}
+              />
+            )}
           </CardContent>
         </Card>
 
@@ -2276,24 +2339,62 @@ function ImportPreviewTable({ preview }: { preview: ImportPreview }) {
   );
 }
 
-function ImportAiSuggestions({ suggestions }: { suggestions: ProductPlanningAiSuggestion[] }) {
+function ImportAiSuggestions({
+  suggestions,
+  onAccept,
+  onReject,
+  onBulkAccept,
+  onBulkReject,
+  isReviewing,
+}: {
+  suggestions: ProductPlanningAiSuggestion[];
+  onAccept: (suggestionId: string) => void;
+  onReject: (suggestionId: string) => void;
+  onBulkAccept: () => void;
+  onBulkReject: () => void;
+  isReviewing: boolean;
+}) {
+  const pendingCount = suggestions.filter((suggestion) => suggestion.status === "pending").length;
   return (
     <div className="space-y-2 rounded-md border border-border p-3">
-      <div className="flex items-center gap-2 text-sm font-medium">
-        <Brain className="h-4 w-4 text-primary" />
-        AI Import Review
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <Brain className="h-4 w-4 text-primary" />
+          AI Import Review
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={onBulkReject} disabled={pendingCount === 0 || isReviewing}>
+            Bulk Reject
+          </Button>
+          <Button variant="outline" size="sm" onClick={onBulkAccept} disabled={pendingCount === 0 || isReviewing}>
+            Bulk Accept
+          </Button>
+        </div>
       </div>
       <div className="grid gap-2 md:grid-cols-2">
         {suggestions.map((suggestion) => (
           <div key={suggestion.id} className="rounded-md border border-border p-3 text-sm">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <Badge variant="outline">{suggestionTypeLabel(suggestion.suggestionType)}</Badge>
-              <Badge variant="secondary">{suggestion.confidence ?? 0}%</Badge>
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary">{suggestion.confidence ?? 0}%</Badge>
+                <Badge variant={suggestion.status === "pending" ? "outline" : "secondary"}>{suggestion.status}</Badge>
+              </div>
             </div>
             <div className="mt-2 text-xs text-muted-foreground">{suggestion.reasoning}</div>
             <div className="mt-2 text-xs">
               <span className="font-medium">Suggest: </span>{displayAiValue(suggestion.suggestedValue)}
             </div>
+            {suggestion.status === "pending" && (
+              <div className="mt-3 flex justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => onReject(suggestion.id)} disabled={isReviewing}>
+                  Reject
+                </Button>
+                <Button size="sm" onClick={() => onAccept(suggestion.id)} disabled={isReviewing}>
+                  Accept
+                </Button>
+              </div>
+            )}
           </div>
         ))}
       </div>

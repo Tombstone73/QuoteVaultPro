@@ -7,9 +7,7 @@ export type ProductPlanningAiSuggestionType =
   | "work_item_type"
   | "parent_epic"
   | "duplicate_candidate"
-  | "bug_summary"
-  | "import_cleanup"
-  | "roadmap_grouping"
+  | "release_recommendation"
   | "implementation_notes";
 
 export type ProductPlanningAiSuggestionDraft = {
@@ -326,7 +324,7 @@ export function generateRoadmapGroupingSuggestions(items: WorkItemForAi[]): Prod
       if (!phase || item.phase === phase.value) return null;
       return {
         workItemId: item.id,
-        suggestionType: "roadmap_grouping" as const,
+        suggestionType: "phase" as const,
         currentValue: item.phase ?? null,
         suggestedValue: phase.value,
         confidence: phase.confidence,
@@ -348,7 +346,7 @@ export function generateImportCleanupSuggestions(input: {
     if (duplicate) {
       suggestions.push({
         workItemId: null,
-        suggestionType: "import_cleanup",
+        suggestionType: "duplicate_candidate",
         currentValue: { rowNumber: row.rowNumber, title: row.title },
         suggestedValue: { action: "review_duplicate", existingReference: duplicate.existingReference ?? null },
         confidence: 86,
@@ -368,7 +366,7 @@ export function generateImportCleanupSuggestions(input: {
       if (moduleGuess) {
         suggestions.push({
           workItemId: null,
-          suggestionType: "import_cleanup",
+          suggestionType: "module",
           currentValue: { rowNumber: row.rowNumber, field: "module", value: null },
           suggestedValue: { field: "module", value: moduleGuess.value },
           confidence: moduleGuess.confidence,
@@ -379,7 +377,7 @@ export function generateImportCleanupSuggestions(input: {
     if (!row.phase && (row.priority === "critical" || row.priority === "high")) {
       suggestions.push({
         workItemId: null,
-        suggestionType: "import_cleanup",
+        suggestionType: "phase",
         currentValue: { rowNumber: row.rowNumber, field: "phase", value: null },
         suggestedValue: { field: "phase", value: row.priority === "critical" ? "go_live" : "v1_1" },
         confidence: 68,

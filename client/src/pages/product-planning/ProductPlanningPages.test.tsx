@@ -24,7 +24,7 @@ jest.mock("@/hooks/use-toast", () => ({
   useToast: () => ({ toast: toastMock }),
 }));
 
-const mockApiRequest = jest.fn((_method?: string, _url?: string, _data?: unknown) => Promise.resolve({ json: async () => ({ data: { suggestion: { id: "suggestion_1", status: "accepted" }, workItem: null } }) }));
+const mockApiRequest = jest.fn((_method?: string, _url?: string, _data?: unknown): Promise<any> => Promise.resolve({ json: async () => ({ data: { suggestion: { id: "suggestion_1", status: "accepted" }, workItem: null } }) }));
 jest.mock("@/lib/queryClient", () => ({
   apiRequest: (method: string, url: string, data?: unknown) => mockApiRequest(method, url, data),
 }));
@@ -46,6 +46,7 @@ jest.mock("@/components/ui/select", () => ({
 }));
 
 let ProductPlanningWorkItemDetailPage: typeof import("./ProductPlanningPages").ProductPlanningWorkItemDetailPage;
+let ProductPlanningRoadmapPage: typeof import("./ProductPlanningPages").ProductPlanningRoadmapPage;
 let BacklogExpandedRow: typeof import("./ProductPlanningPages").BacklogExpandedRow;
 let DetailDependencies: typeof import("./ProductPlanningPages").DetailDependencies;
 
@@ -53,6 +54,7 @@ beforeAll(async () => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   const module = await import("./ProductPlanningPages");
   ProductPlanningWorkItemDetailPage = module.ProductPlanningWorkItemDetailPage;
+  ProductPlanningRoadmapPage = module.ProductPlanningRoadmapPage;
   BacklogExpandedRow = module.BacklogExpandedRow;
   DetailDependencies = module.DetailDependencies;
 });
@@ -201,6 +203,30 @@ const aiSuggestions = [{
   createdAt: "2026-06-02T12:00:00.000Z",
   reviewedAt: null,
   reviewedByUserId: null,
+}, {
+  id: "suggestion_2",
+  workItemId: "item_1",
+  suggestionType: "duplicate_candidate",
+  currentValue: JSON.stringify({ id: "item_1", reference: "PP-0001", title: "Improve planning details" }),
+  suggestedValue: JSON.stringify({ id: "item_9", reference: "PP-0009", title: "Planning details duplicate", similarity: 91 }),
+  confidence: "91.00",
+  reasoning: "Same workflow and implementation goal.",
+  status: "pending",
+  createdAt: "2026-06-02T12:00:00.000Z",
+  reviewedAt: null,
+  reviewedByUserId: null,
+}, {
+  id: "suggestion_3",
+  workItemId: "item_1",
+  suggestionType: "implementation_notes",
+  currentValue: null,
+  suggestedValue: JSON.stringify({ notes: "Suggested approach:\n- Keep changes additive.\n\nValidation checklist:\n- Run focused tests." }),
+  confidence: "72.00",
+  reasoning: "Generated implementation notes from item context.",
+  status: "pending",
+  createdAt: "2026-06-02T12:00:00.000Z",
+  reviewedAt: null,
+  reviewedByUserId: null,
 }];
 
 describe("Product Planning UX detail surfaces", () => {
@@ -232,12 +258,14 @@ describe("Product Planning UX detail surfaces", () => {
     expect(container.textContent).toContain("Status changed");
     expect(container.textContent).toContain("AI Suggestions");
     expect(container.textContent).toContain("Customer-facing blocker.");
+    expect(container.textContent).toContain("Planning details duplicate");
+    expect(container.textContent).toContain("Suggested approach");
     const acceptButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Accept") as HTMLButtonElement;
     act(() => {
       Simulate.click(acceptButton);
     });
     await flushQueries();
-    expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/work-items/item_1/ai-suggestions/suggestion_1/accept", {});
+    expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/ai-suggestions/suggestion_1/accept", {});
     cleanup(root, container);
   });
 
@@ -271,6 +299,44 @@ describe("Product Planning UX detail surfaces", () => {
     expect(container.textContent).toContain("Blocked By");
     expect(container.textContent).toContain("Related Items");
     expect((container.textContent?.match(/No items linked./g) ?? []).length).toBe(3);
+    cleanup(root, container);
+  });
+
+  test("roadmap assistant renders recommendations after suggestion request", async () => {
+    (global as any).fetch = jest.fn(async (url: string) => {
+      if (String(url).startsWith("/api/product-planning/work-items?")) return responseJson({ success: true, data: [detailItem] });
+      if (url === "/api/product-planning/releases") return responseJson({ success: true, data: [detailItem.release] });
+      return responseJson({ success: false, message: "Not found" }, 404);
+    }) as any;
+    mockApiRequest.mockImplementationOnce(() => Promise.resolve({
+      json: async () => ({
+        data: [{
+          id: "roadmap_suggestion_1",
+          workItemId: "item_1",
+          suggestionType: "phase",
+          currentValue: null,
+          suggestedValue: "v1_1",
+          confidence: "78.00",
+          reasoning: "Customer-facing item should be reviewed for Version 1.1.",
+          status: "pending",
+          createdAt: "2026-06-02T12:00:00.000Z",
+          reviewedAt: null,
+          reviewedByUserId: null,
+        }],
+      }),
+    }));
+
+    const { container, root } = renderWithProviders(<ProductPlanningRoadmapPage />, "/product-planning/roadmap");
+    await flushQueries();
+    const button = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Suggest Grouping")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(button);
+    });
+    await flushQueries();
+
+    expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/roadmap/suggest-grouping", {});
+    expect(container.textContent).toContain("Roadmap Suggestions");
+    expect(container.textContent).toContain("Customer-facing item should be reviewed for Version 1.1.");
     cleanup(root, container);
   });
 });
