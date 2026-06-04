@@ -21,7 +21,8 @@
 import crypto from "crypto";
 import type { Express } from "express";
 import { google } from "googleapis";
-import { auditLogs } from "@shared/schema";
+import { auditLogs, organizations } from "@shared/schema";
+import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
@@ -143,6 +144,14 @@ export function registerEmailRoutes(
           updateCustomerContactForOrganization: storage.updateCustomerContactForOrganization.bind(storage),
           createCustomerContactForOrganization: async (orgId, customerId, data) =>
             storage.createCustomerContactForOrganization(orgId, customerId, data as any),
+          getOrganizationById: async (orgId) => {
+            const [organization] = await db
+              .select()
+              .from(organizations)
+              .where(eq(organizations.id, orgId))
+              .limit(1);
+            return organization as any;
+          },
           sendQuoteEmail: emailService.sendQuoteEmail.bind(emailService),
           createAuditLog: async (entry) => {
             await db.insert(auditLogs).values(entry as any);

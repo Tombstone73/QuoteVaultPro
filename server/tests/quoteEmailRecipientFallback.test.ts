@@ -10,6 +10,7 @@ const getQuoteById = jest.fn<QuoteEmailRecipientDeps["getQuoteById"]>();
 const getCustomerContacts = jest.fn<QuoteEmailRecipientDeps["getCustomerContacts"]>();
 const updateCustomerContactForOrganization = jest.fn<QuoteEmailRecipientDeps["updateCustomerContactForOrganization"]>();
 const createCustomerContactForOrganization = jest.fn<QuoteEmailRecipientDeps["createCustomerContactForOrganization"]>();
+const getOrganizationById = jest.fn<QuoteEmailRecipientDeps["getOrganizationById"]>();
 const sendQuoteEmail = jest.fn<QuoteEmailRecipientDeps["sendQuoteEmail"]>();
 const createAuditLog = jest.fn<QuoteEmailRecipientDeps["createAuditLog"]>();
 
@@ -18,6 +19,7 @@ const deps: QuoteEmailRecipientDeps = {
   getCustomerContacts,
   updateCustomerContactForOrganization,
   createCustomerContactForOrganization,
+  getOrganizationById,
   sendQuoteEmail,
   createAuditLog,
 };
@@ -39,7 +41,19 @@ beforeEach(() => {
     id: "quote_1",
     customerId: "customer_1",
     quoteNumber: 1001,
+    displayNumber: "QT-1001",
+    lineItems: [{
+      id: "line_1",
+      productId: "product_1",
+      productName: "Banner",
+      width: 24,
+      height: 36,
+      quantity: 1,
+      linePrice: 25,
+      status: "active",
+    }],
   });
+  getOrganizationById.mockResolvedValue({ id: "org_1", name: "Test Org", settings: { currency: "USD" } });
   getCustomerContacts.mockResolvedValue([
     { id: "contact_1", firstName: "Old", lastName: "Name", email: null },
   ]);
@@ -60,19 +74,45 @@ beforeEach(() => {
 });
 
 describe("sendQuoteEmailWithRecipientFallback", () => {
-  test("sends to a use-once recipient without mutating contacts", async () => {
+  test("sends to a use-once recipient with quote PDF attached by default", async () => {
     const result = await sendQuoteEmailWithRecipientFallback(
       deps,
       input({ recipientEmail: "once@example.com", saveToCustomerContact: false }),
     );
 
     expect(result.success).toBe(true);
-    expect(sendQuoteEmail).toHaveBeenCalledWith("org_1", "quote_1", "once@example.com", undefined);
+    expect(sendQuoteEmail).toHaveBeenCalledWith("org_1", "quote_1", "once@example.com", undefined, {
+      attachments: [expect.objectContaining({
+        filename: "Quote_QT-1001.pdf",
+        content: expect.any(Buffer),
+        contentType: "application/pdf",
+      })],
+    });
     expect(updateCustomerContactForOrganization).not.toHaveBeenCalled();
     expect(createCustomerContactForOrganization).not.toHaveBeenCalled();
     expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
       actionType: "QUOTE_EMAIL_RECIPIENT",
       description: expect.stringContaining("one-time"),
+    }));
+    expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      actionType: "quote_email_sent",
+      newValues: expect.objectContaining({ attachPdf: true, recipientMode: "use_once" }),
+    }));
+  });
+
+  test("sends without quote PDF when attachPdf is false", async () => {
+    await sendQuoteEmailWithRecipientFallback(
+      deps,
+      input({ recipientEmail: "once@example.com", saveToCustomerContact: false, attachPdf: false }),
+    );
+
+    expect(getOrganizationById).not.toHaveBeenCalled();
+    expect(sendQuoteEmail).toHaveBeenCalledWith("org_1", "quote_1", "once@example.com", undefined, {
+      attachments: undefined,
+    });
+    expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      actionType: "quote_email_sent",
+      newValues: expect.objectContaining({ attachPdf: false, recipientMode: "use_once" }),
     }));
   });
 
@@ -93,7 +133,9 @@ describe("sendQuoteEmailWithRecipientFallback", () => {
       firstName: "Buyer",
       lastName: "Person",
     });
-    expect(sendQuoteEmail).toHaveBeenCalledWith("org_1", "quote_1", "buyer@example.com", undefined);
+    expect(sendQuoteEmail).toHaveBeenCalledWith("org_1", "quote_1", "buyer@example.com", undefined, expect.objectContaining({
+      attachments: expect.any(Array),
+    }));
   });
 
   test("creates a new linked customer contact before sending", async () => {
@@ -113,7 +155,9 @@ describe("sendQuoteEmailWithRecipientFallback", () => {
       email: "new@example.com",
       isPrimary: false,
     });
-    expect(sendQuoteEmail).toHaveBeenCalledWith("org_1", "quote_1", "new@example.com", undefined);
+    expect(sendQuoteEmail).toHaveBeenCalledWith("org_1", "quote_1", "new@example.com", undefined, expect.objectContaining({
+      attachments: expect.any(Array),
+    }));
   });
 
   test("rejects invalid recipient email server-side", async () => {
@@ -128,6 +172,29 @@ describe("sendQuoteEmailWithRecipientFallback", () => {
     } satisfies Partial<QuoteEmailRecipientError>);
 
     expect(sendQuoteEmail).not.toHaveBeenCalled();
+  });
+
+  test("fails clearly when requested PDF generation fails", async () => {
+    getQuoteById.mockResolvedValue({
+      id: "quote_1",
+      customerId: "customer_1",
+      quoteNumber: 1001,
+      lineItems: [],
+    });
+
+    await expect(
+      sendQuoteEmailWithRecipientFallback(
+        deps,
+        input({ recipientEmail: "once@example.com", saveToCustomerContact: false, attachPdf: true }),
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 500,
+      message: expect.stringContaining("Quote PDF attachment failed"),
+    });
+
+    expect(sendQuoteEmail).not.toHaveBeenCalled();
+    expect(updateCustomerContactForOrganization).not.toHaveBeenCalled();
+    expect(createCustomerContactForOrganization).not.toHaveBeenCalled();
   });
 
   test("reports email sent when contact save fails", async () => {
@@ -145,7 +212,9 @@ describe("sendQuoteEmailWithRecipientFallback", () => {
     expect(result.success).toBe(true);
     expect(result.contactSave?.success).toBe(false);
     expect(result.message).toContain("contact was not saved");
-    expect(sendQuoteEmail).toHaveBeenCalledWith("org_1", "quote_1", "buyer@example.com", undefined);
+    expect(sendQuoteEmail).toHaveBeenCalledWith("org_1", "quote_1", "buyer@example.com", undefined, expect.objectContaining({
+      attachments: expect.any(Array),
+    }));
   });
 
   test("reports contact saved when sending fails", async () => {

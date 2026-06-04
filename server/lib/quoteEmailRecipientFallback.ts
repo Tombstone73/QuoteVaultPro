@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { generateQuotePdfBytes } from "./quotePdf";
 
 const emailSchema = z.string().trim().email();
 
@@ -7,6 +8,7 @@ export const quoteEmailRecipientPayloadSchema = z.object({
   recipientName: z.string().trim().max(200).optional().or(z.literal("")),
   saveToCustomerContact: z.boolean().optional().default(false),
   contactId: z.string().trim().nullable().optional(),
+  attachPdf: z.boolean().optional().default(true),
 });
 
 export type QuoteEmailRecipientPayload = z.infer<typeof quoteEmailRecipientPayloadSchema>;
@@ -55,6 +57,13 @@ type QuoteLike = {
   customerId?: string | null;
   quoteNumber?: number | string | null;
   displayNumber?: string | null;
+  lineItems?: unknown[] | null;
+};
+
+type OrganizationLike = {
+  id?: string | null;
+  name?: string | null;
+  settings?: { currency?: string | null } | null;
 };
 
 export type QuoteEmailRecipientDeps = {
@@ -62,7 +71,14 @@ export type QuoteEmailRecipientDeps = {
   getCustomerContacts: (customerId: string) => Promise<ContactLike[]>;
   updateCustomerContactForOrganization: (organizationId: string, contactId: string, data: Record<string, unknown>) => Promise<ContactLike>;
   createCustomerContactForOrganization: (organizationId: string, customerId: string, data: Record<string, unknown>) => Promise<ContactLike>;
-  sendQuoteEmail: (organizationId: string, quoteId: string, recipientEmail: string, userId?: string) => Promise<void>;
+  getOrganizationById: (organizationId: string) => Promise<OrganizationLike | undefined | null>;
+  sendQuoteEmail: (
+    organizationId: string,
+    quoteId: string,
+    recipientEmail: string,
+    userId?: string,
+    options?: { attachments?: Array<{ filename: string; content: Buffer; contentType: string }> },
+  ) => Promise<void>;
   createAuditLog: (entry: {
     organizationId: string;
     userId?: string | null;
@@ -97,6 +113,12 @@ function splitRecipientName(name: string | undefined, email: string): { firstNam
   }
   const [firstName, ...rest] = trimmed.split(/\s+/);
   return { firstName: firstName || trimmed, lastName: rest.join(" ") };
+}
+
+function quotePdfFilename(quote: QuoteLike): string {
+  const display = quote.displayNumber || (quote.quoteNumber ? `QT-${quote.quoteNumber}` : quote.id);
+  const safe = String(display).replace(/[^a-z0-9._-]+/gi, "-");
+  return `Quote_${safe}.pdf`;
 }
 
 async function audit(deps: QuoteEmailRecipientDeps, input: QuoteEmailRecipientInput, entry: AuditLogEntryWithoutRequestContext) {
@@ -134,6 +156,23 @@ export async function sendQuoteEmailWithRecipientFallback(
       ? "existing_contact"
       : "new_contact"
     : "use_once";
+  const recipientMode = mode === "existing_contact" ? "saved_contact" : mode;
+
+  let attachments: Array<{ filename: string; content: Buffer; contentType: string }> | undefined;
+  if (payload.attachPdf) {
+    try {
+      const organization = await deps.getOrganizationById(input.organizationId);
+      const pdfBytes = await generateQuotePdfBytes({ quote: quote as any, organization });
+      attachments = [{
+        filename: quotePdfFilename(quote),
+        content: Buffer.from(pdfBytes),
+        contentType: "application/pdf",
+      }];
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to generate quote PDF.";
+      throw new QuoteEmailRecipientError(`Quote PDF attachment failed: ${message}`, 500);
+    }
+  }
 
   if (payload.saveToCustomerContact && !input.isInternalUser) {
     throw new QuoteEmailRecipientError("Only staff can save quote recipients to customer contacts.", 403);
@@ -212,13 +251,20 @@ export async function sendQuoteEmailWithRecipientFallback(
       recipientName: payload.recipientName || null,
       saveToCustomerContact: payload.saveToCustomerContact,
       contactId: payload.contactId ?? (contactSave?.success ? contactSave.contactId : null),
-      mode,
+      mode: recipientMode,
+      attachPdf: payload.attachPdf,
     },
   });
 
   let sendError: string | null = null;
   try {
-    await deps.sendQuoteEmail(input.organizationId, quote.id, payload.recipientEmail, input.isInternalUser ? undefined : input.userId);
+    await deps.sendQuoteEmail(
+      input.organizationId,
+      quote.id,
+      payload.recipientEmail,
+      input.isInternalUser ? undefined : input.userId,
+      { attachments },
+    );
   } catch (error) {
     sendError = error instanceof Error ? error.message : "Failed to send quote email.";
   }
@@ -235,12 +281,29 @@ export async function sendQuoteEmailWithRecipientFallback(
   }
 
   if (contactSave && !contactSave.success) {
+    await audit(deps, input, {
+      actionType: "quote_email_sent",
+      entityType: "quote",
+      entityId: quote.id,
+      entityName: String(quote.displayNumber ?? quote.quoteNumber ?? quote.id),
+      description: `Quote email sent to ${payload.recipientEmail}.`,
+      newValues: { recipientMode, attachPdf: payload.attachPdf, pdfAttached: payload.attachPdf },
+    });
     return {
       success: true,
       message: `Quote email sent, but contact was not saved: ${contactSave.error}`,
       contactSave,
     };
   }
+
+  await audit(deps, input, {
+    actionType: "quote_email_sent",
+    entityType: "quote",
+    entityId: quote.id,
+    entityName: String(quote.displayNumber ?? quote.quoteNumber ?? quote.id),
+    description: `Quote email sent to ${payload.recipientEmail}.`,
+    newValues: { recipientMode, attachPdf: payload.attachPdf, pdfAttached: payload.attachPdf },
+  });
 
   return {
     success: true,

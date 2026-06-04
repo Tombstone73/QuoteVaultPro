@@ -357,7 +357,13 @@ class EmailService {
   /**
    * Send quote email to recipient
    */
-  async sendQuoteEmail(organizationId: string, quoteId: string, recipientEmail: string, userId?: string): Promise<void> {
+  async sendQuoteEmail(
+    organizationId: string,
+    quoteId: string,
+    recipientEmail: string,
+    userId?: string,
+    options: { attachments?: Array<{ filename: string; content: Buffer; contentType: string }> } = {},
+  ): Promise<void> {
     console.log('[EmailService] [STAGE: load-config] Loading config for quote email:', {
       organizationId,
       quoteId,
@@ -413,6 +419,7 @@ class EmailService {
       subject,
       html: htmlContent,
       replyTo: templates.replyToEmail,
+      attachments: options.attachments,
     });
   }
 

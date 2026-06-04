@@ -43,6 +43,8 @@ import { SummaryCard } from "./components/SummaryCard";
 import { QuoteRecipientFallbackDialog } from "./components/QuoteRecipientFallbackDialog";
 import { getQuoteSendEligibility } from "./quoteActionEligibility";
 import {
+    getContactDisplayName,
+    resolveAttachQuotePdfDefault,
     resolveSelectedContactEmail,
     type QuoteRecipientContactLike,
 } from "./quoteRecipientFallback";
@@ -74,6 +76,10 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const [draftShipToData, setDraftShipToData] = useState<Record<string, string | null>>({});
     const [createOrderSubmitting, setCreateOrderSubmitting] = useState(false);
     const [recipientFallbackOpen, setRecipientFallbackOpen] = useState(false);
+    const [recipientFallbackDefaults, setRecipientFallbackDefaults] = useState<{
+        email: string;
+        name: string;
+    }>({ email: "", name: "" });
     const createOrderSubmitGuardRef = useRef(createInitialOrderSubmitGuardState());
 
     const backPath = createTarget === "order" ? ROUTES.orders.list : ROUTES.quotes.list;
@@ -471,18 +477,12 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
         const contacts = (state.contacts || []) as QuoteRecipientContactLike[];
         const selectedEmail = resolveSelectedContactEmail(contacts, state.selectedContactId);
-        if (sendEligibility.actionState === "needs_recipient" || !selectedEmail) {
-            setRecipientFallbackOpen(true);
-            return;
-        }
-
         const selectedContact = contacts.find((contact) => contact.id === state.selectedContactId);
-        sendQuoteEmailMutation.mutate({
-            recipientEmail: selectedEmail,
-            recipientName: selectedContact ? `${selectedContact.firstName ?? ""} ${selectedContact.lastName ?? ""}`.trim() : undefined,
-            saveToCustomerContact: false,
-            contactId: state.selectedContactId ?? null,
+        setRecipientFallbackDefaults({
+            email: selectedEmail ?? "",
+            name: selectedContact ? getContactDisplayName(selectedContact) : "",
         });
+        setRecipientFallbackOpen(true);
     };
 
     const handlePreviewQuote = async () => {
@@ -1456,6 +1456,9 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 open={recipientFallbackOpen}
                 contacts={(state.contacts || []) as QuoteRecipientContactLike[]}
                 selectedContactId={state.selectedContactId}
+                initialRecipientEmail={recipientFallbackDefaults.email}
+                initialRecipientName={recipientFallbackDefaults.name}
+                attachPdfDefault={resolveAttachQuotePdfDefault(orgPreferences)}
                 isSending={sendQuoteEmailMutation.isPending}
                 onOpenChange={setRecipientFallbackOpen}
                 onSubmit={(payload) => sendQuoteEmailMutation.mutate(payload)}

@@ -185,8 +185,16 @@ export function registerOrganizationRoutes(
         proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences(preferences),
       };
 
+      const rawBasic = (preferences as any)?.basic && typeof (preferences as any).basic === "object"
+        ? (preferences as any).basic
+        : {};
+
       res.json({
         ...(preferences as any),
+        basic: {
+          ...rawBasic,
+          attachQuotePdfByDefault: rawBasic.attachQuotePdfByDefault !== false,
+        },
         quotes: quotePreferences,
         proofing,
         billingInvoiceTriggerPolicy,
