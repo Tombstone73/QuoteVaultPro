@@ -65,6 +65,7 @@ describe("invoice PDF company info and remittance data", () => {
         city: "Dayton",
         state: "OH",
         postalCode: "45402",
+        country: "United States",
       },
       remittanceAddress: {
         enabled: false,
@@ -74,6 +75,7 @@ describe("invoice PDF company info and remittance data", () => {
 
     expect(resolved.paymentAddressLabel).toBe("Payment mailing address");
     expect(resolved.paymentAddress).toContain("1 Physical Way");
+    expect(resolved.paymentAddress).not.toContain("United States");
     expect(resolved.paymentAddress).not.toContain("PO Box 404");
   });
 
@@ -85,6 +87,7 @@ describe("invoice PDF company info and remittance data", () => {
         city: "Dayton",
         state: "OH",
         postalCode: "45402",
+        country: "United States",
       },
       remittanceAddress: {
         enabled: true,
@@ -92,12 +95,14 @@ describe("invoice PDF company info and remittance data", () => {
         city: "Dayton",
         state: "OH",
         postalCode: "45401",
+        country: "United States",
       },
     });
 
     expect(resolved.paymentAddressLabel).toBe("Send payments to");
     expect(resolved.paymentAddress).toContain("PO Box 404");
     expect(resolved.paymentAddress).not.toContain("1 Physical Way");
+    expect(resolved.paymentAddress).not.toContain("United States");
   });
 
   test("missing logo does not break PDF generation", async () => {
@@ -151,6 +156,7 @@ describe("invoice PDF company info and remittance data", () => {
           city: "Dayton",
           state: "OH",
           postalCode: "45402",
+          country: "United States",
         },
         remittanceAddress: {
           enabled: true,
@@ -158,6 +164,7 @@ describe("invoice PDF company info and remittance data", () => {
           city: "Dayton",
           state: "OH",
           postalCode: "45401",
+          country: "United States",
         },
         invoicePaymentInstructions: "WIRE_TEST_123",
         invoiceFooterNote: "FOOTER_TEST_456",
@@ -168,6 +175,7 @@ describe("invoice PDF company info and remittance data", () => {
     const text = extractDecodedPdfContent(bytes);
     expect(text).toContain("Send payments to");
     expect(text).toContain("PO Box 777");
+    expect(text).not.toContain("United States");
     expect(text).toContain("WIRE_TEST_123");
     expect(text).toContain("FOOTER_TEST_456");
     expect(text).toContain("PAY_TO_TEST_LLC");

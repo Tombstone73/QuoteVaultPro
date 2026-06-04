@@ -78,6 +78,7 @@ describe("quote PDF generation", () => {
           city: "Dayton",
           state: "OH",
           postalCode: "45402",
+          country: "United States",
         },
         phone: "555-0100",
         email: "sales@acme.test",
@@ -92,6 +93,7 @@ describe("quote PDF generation", () => {
     expect(text).toContain("Acme Print");
     expect(text).toContain("Acme Print LLC");
     expect(text).toContain("1 Shop Way");
+    expect(text).not.toContain("United States");
     expect(text).toContain("555-0100");
     expect(text).toContain("sales@acme.test");
     expect(text).not.toContain("WIRE_TO_INVOICE_ONLY");
@@ -152,9 +154,40 @@ describe("quote PDF generation", () => {
     expect(text).toContain("123 Market St");
     expect(text).toContain("Suite 400");
     expect(text).toContain("Akron, OH 44308");
-    expect(text).toContain("US");
+    expect(text).not.toContain("US");
     expect(text).toContain("555-1212");
     expect(text).toContain("ap@eye4group.com");
+  });
+
+  test("quote PDF company and Bill To addresses omit United States by default", async () => {
+    const bytes = await generateQuotePdfBytes({
+      quote: {
+        ...validDraftQuote,
+        customerName: "Eye 4 Group",
+        billToCompany: "Eye 4 Group",
+        billToAddress1: "123 Market St",
+        billToCity: "Akron",
+        billToState: "OH",
+        billToPostalCode: "44308",
+        billToCountry: "United States",
+      },
+      organization: { id: "org_1", name: "Fallback Org", settings: { currency: "USD" } },
+      companySettings: {
+        companyDisplayName: "Header Display",
+        physicalAddress: {
+          line1: "7 Compact Way",
+          city: "Dayton",
+          state: "OH",
+          postalCode: "45402",
+          country: "United States",
+        },
+      },
+    });
+
+    const text = extractDecodedPdfContent(bytes);
+    expect(text).toContain("7 Compact Way");
+    expect(text).toContain("123 Market St");
+    expect(text).not.toContain("United States");
   });
 
   test("missing billing address fields do not fall back to customer name", () => {

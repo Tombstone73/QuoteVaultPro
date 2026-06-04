@@ -51,14 +51,16 @@ export function buildDocumentAddressBlock(params: {
   postalCode?: string | null;
   country?: string | null;
   legacy?: string | null;
+  includeCountry?: boolean;
 }): string {
+  const includeCountry = params.includeCountry === true;
   const hasStructured = !!(
     cleanDocumentText(params.line1) ||
     cleanDocumentText(params.line2) ||
     cleanDocumentText(params.city) ||
     cleanDocumentText(params.state) ||
     cleanDocumentText(params.postalCode) ||
-    cleanDocumentText(params.country)
+    (includeCountry && cleanDocumentText(params.country))
   );
 
   if (hasStructured) {
@@ -72,7 +74,12 @@ export function buildDocumentAddressBlock(params: {
       "",
     );
 
-    return joinNonEmptyDocumentValues([params.line1, params.line2, cityStateZip || null, params.country]);
+    return joinNonEmptyDocumentValues([
+      params.line1,
+      params.line2,
+      cityStateZip || null,
+      includeCountry ? params.country : null,
+    ]);
   }
 
   return joinNonEmptyDocumentValues([params.legacy]);
