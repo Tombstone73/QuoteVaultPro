@@ -1,6 +1,11 @@
 import { describe, expect, test } from "@jest/globals";
 import { inflateSync } from "zlib";
-import { generateQuotePdfBytes, getQuotePdfEligibility, resolveQuotePdfCompanyBranding } from "../lib/quotePdf";
+import {
+  buildQuotePdfBillToLines,
+  generateQuotePdfBytes,
+  getQuotePdfEligibility,
+  resolveQuotePdfCompanyBranding,
+} from "../lib/quotePdf";
 
 const validDraftQuote = {
   id: "quote_1",
@@ -42,6 +47,10 @@ function extractDecodedPdfContent(bytes: Uint8Array): string {
   const textOperands = Array.from(decoded.matchAll(/<([0-9A-Fa-f]+)>\s*Tj/g))
     .map((match) => Buffer.from(match[1], "hex").toString("latin1"));
   return `${decoded}\n${textOperands.join("\n")}`;
+}
+
+function countOccurrences(text: string, needle: string): number {
+  return text.split(needle).length - 1;
 }
 
 describe("quote PDF generation", () => {
@@ -104,6 +113,87 @@ describe("quote PDF generation", () => {
 
     expect(branding.companyDisplayName).toBe("Acme Print");
     expect(branding.logoDataUrl).toBe(logoDataUrl);
+  });
+
+  test("renders customer name once in Bill To when no address exists", () => {
+    const lines = buildQuotePdfBillToLines({
+      ...validDraftQuote,
+      customerName: "Eye 4 Group",
+      billToCompany: "Eye 4 Group",
+      billToName: "Eye 4 Group",
+      billToEmail: "ap@eye4group.com",
+    });
+
+    expect(lines).toEqual(["Eye 4 Group", "ap@eye4group.com"]);
+  });
+
+  test("renders real billing address fields in quote PDF", async () => {
+    const bytes = await generateQuotePdfBytes({
+      quote: {
+        ...validDraftQuote,
+        customerName: "Eye 4 Group",
+        billToCompany: "Eye 4 Group",
+        billToName: "Accounts Payable",
+        billToAddress1: "123 Market St",
+        billToAddress2: "Suite 400",
+        billToCity: "Akron",
+        billToState: "OH",
+        billToPostalCode: "44308",
+        billToCountry: "US",
+        billToPhone: "555-1212",
+        billToEmail: "ap@eye4group.com",
+      },
+      organization: { id: "org_1", name: "Fallback Org", settings: { currency: "USD" } },
+    });
+
+    const text = extractDecodedPdfContent(bytes);
+    expect(text).toContain("Eye 4 Group");
+    expect(text).toContain("Accounts Payable");
+    expect(text).toContain("123 Market St");
+    expect(text).toContain("Suite 400");
+    expect(text).toContain("Akron, OH 44308");
+    expect(text).toContain("US");
+    expect(text).toContain("555-1212");
+    expect(text).toContain("ap@eye4group.com");
+  });
+
+  test("missing billing address fields do not fall back to customer name", () => {
+    const lines = buildQuotePdfBillToLines({
+      ...validDraftQuote,
+      customerName: "Eye 4 Group",
+      billToCompany: "Eye 4 Group",
+      billToName: null,
+      billToAddress1: "Eye 4 Group",
+      billToAddress2: "Eye 4 Group",
+      billToCity: null,
+      billToState: null,
+      billToPostalCode: null,
+      billToCountry: null,
+      billToEmail: "ap@eye4group.com",
+    });
+
+    expect(lines).toEqual(["Eye 4 Group", "ap@eye4group.com"]);
+  });
+
+  test("company header renders compact company info without a duplicate large title", async () => {
+    const bytes = await generateQuotePdfBytes({
+      quote: validDraftQuote,
+      organization: { id: "org_1", name: "Fallback Org", settings: { currency: "USD" } },
+      companySettings: {
+        organizationId: "org_1",
+        companyDisplayName: "Header Display",
+        legalCompanyName: "Header Legal LLC",
+        physicalAddress: { line1: "7 Compact Way" },
+        phone: "555-0100",
+        email: "hello@header.test",
+      },
+    });
+
+    const text = extractDecodedPdfContent(bytes);
+    expect(countOccurrences(text, "Header Display")).toBe(1);
+    expect(countOccurrences(text, "Header Legal LLC")).toBe(1);
+    expect(text).toContain("7 Compact Way");
+    expect(text).toContain("555-0100 | hello@header.test");
   });
 
   test("does not require quote status to be sent", () => {
