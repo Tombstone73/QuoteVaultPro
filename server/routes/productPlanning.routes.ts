@@ -1023,6 +1023,20 @@ export function registerProductPlanningRoutes(
       const input = reorderSchema.parse(req.body ?? {});
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) ?? null;
+      const requestedIds = Array.from(new Set(input.items.map((item) => item.id)));
+      const existingRows = await db
+        .select({ id: productPlanningWorkItems.id })
+        .from(productPlanningWorkItems)
+        .where(and(eq(productPlanningWorkItems.organizationId, organizationId), inArray(productPlanningWorkItems.id, requestedIds)));
+      const existingIds = new Set(existingRows.map((row) => row.id));
+      const missingIds = requestedIds.filter((id) => !existingIds.has(id));
+      if (missingIds.length > 0) {
+        return res.status(404).json({
+          success: false,
+          message: "One or more Product Planning work items were not found.",
+          data: { missingIds },
+        });
+      }
 
       const updated = await db.transaction(async (tx) => {
         const rows = [];
@@ -1189,6 +1203,26 @@ export function registerProductPlanningRoutes(
         .orderBy(orderExpression("priority", "asc"), asc(productPlanningWorkItems.createdAt))
         .limit(10);
 
+      const [unresolvedDependencySummary] = await db
+        .select({
+          unresolvedDependencyCount: sql<number>`count(*)::int`,
+        })
+        .from(productPlanningWorkItems)
+        .where(and(
+          openCondition!,
+          sql`EXISTS (
+            SELECT 1
+            FROM product_planning_dependencies dep
+            INNER JOIN product_planning_work_items blocker
+              ON blocker.id = dep.depends_on_work_item_id
+             AND blocker.organization_id = dep.organization_id
+            WHERE dep.organization_id = ${organizationId}
+              AND dep.work_item_id = ${productPlanningWorkItems.id}
+              AND blocker.archived_at IS NULL
+              AND blocker.planning_status <> 'released'
+          )`,
+        ));
+
       const releaseProgress = rowsFromExecute(await db.execute(sql`
         SELECT
           r.id,
@@ -1226,6 +1260,7 @@ export function registerProductPlanningRoutes(
           releaseProgress,
           itemsStalledInValidation,
           itemsWithUnresolvedDependencies,
+          unresolvedDependencyCount: unresolvedDependencySummary?.unresolvedDependencyCount ?? 0,
           byModuleWorkload: byModule,
           byStatus,
           byPhase,
