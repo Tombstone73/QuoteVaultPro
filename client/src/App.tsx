@@ -97,6 +97,8 @@ import {
   ProductPlanningDashboardPage,
   ProductPlanningImportsPage,
   ProductPlanningIndexRedirect,
+  ProductPlanningKanbanPage,
+  ProductPlanningRoadmapPage,
 } from "@/pages/product-planning/ProductPlanningPages";
 import PrivacyPage from "@/pages/privacy";
 import TermsPage from "@/pages/terms";
@@ -256,6 +258,8 @@ function Router() {
         <Route path={ROUTES.productPlanning.root} element={<ProductPlanningIndexRedirect />} />
         <Route path={ROUTES.productPlanning.dashboard} element={<ProductPlanningDashboardPage />} />
         <Route path={ROUTES.productPlanning.backlog} element={<ProductPlanningBacklogPage />} />
+        <Route path={ROUTES.productPlanning.kanban} element={<ProductPlanningKanbanPage />} />
+        <Route path={ROUTES.productPlanning.roadmap} element={<ProductPlanningRoadmapPage />} />
         <Route path={ROUTES.productPlanning.imports} element={<ProductPlanningImportsPage />} />
 
         {/* Inventory / Materials routes */}
