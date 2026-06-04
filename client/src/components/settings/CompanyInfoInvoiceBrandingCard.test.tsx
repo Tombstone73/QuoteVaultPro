@@ -266,4 +266,50 @@ describe("CompanyInfoInvoiceBrandingCard", () => {
 
     cleanup(root, container);
   });
+
+  it("shows resolved logo preview URL on initial settings load", () => {
+    const { container, root } = renderInteractive({
+      id: "settings_1",
+      invoiceLogoAssetId: "asset_1",
+      invoiceLogoUrl: "uploads/private/logo.png",
+      invoiceLogoPreviewUrl: "/objects/uploads/org_1/invoice-logo/logo.png",
+    });
+
+    const preview = container.querySelector("img[alt='Invoice logo preview']") as HTMLImageElement | null;
+    expect(preview?.getAttribute("src")).toBe("/objects/uploads/org_1/invoice-logo/logo.png");
+
+    cleanup(root, container);
+  });
+
+  it("shows a friendly fallback when the saved logo cannot be resolved", () => {
+    const { container, root } = renderInteractive({
+      id: "settings_1",
+      invoiceLogoAssetId: "asset_1",
+      invoiceLogoUrl: "uploads/private/logo.png",
+      invoiceLogoPreviewUrl: null,
+    });
+
+    expect(container.textContent).toContain("Logo could not be loaded");
+    expect(container.querySelector("img[alt='Invoice logo preview']")).toBeNull();
+
+    cleanup(root, container);
+  });
+
+  it("replaces a failed preview image with a friendly fallback", () => {
+    const { container, root } = renderInteractive({
+      id: "settings_1",
+      invoiceLogoAssetId: "asset_1",
+      invoiceLogoPreviewUrl: "/objects/missing-logo.png",
+    });
+
+    const preview = container.querySelector("img[alt='Invoice logo preview']") as HTMLImageElement;
+    act(() => {
+      preview.dispatchEvent(new Event("error", { bubbles: false }));
+    });
+
+    expect(container.textContent).toContain("Logo could not be loaded");
+    expect(container.querySelector("img[alt='Invoice logo preview']")).toBeNull();
+
+    cleanup(root, container);
+  });
 });

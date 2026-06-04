@@ -14,6 +14,7 @@ const createCompanySettings = jest.fn<(...args: any[]) => Promise<any>>();
 const updateCompanySettings = jest.fn<(...args: any[]) => Promise<any>>();
 const finalizeUpload = jest.fn<(...args: any[]) => Promise<any>>();
 const enrichAssetWithUrls = jest.fn<(...args: any[]) => Promise<any>>();
+const getAssetById = jest.fn<(...args: any[]) => Promise<any>>();
 
 jest.unstable_mockModule("../storage", () => ({
   storage: {
@@ -35,6 +36,12 @@ jest.unstable_mockModule("../services/storage/StorageApplicationService", () => 
 
 jest.unstable_mockModule("../services/assets/enrichAssetWithUrls", () => ({
   enrichAssetWithUrls,
+}));
+
+jest.unstable_mockModule("../services/assets/AssetRepository", () => ({
+  assetRepository: {
+    getAssetById,
+  },
 }));
 
 let registerCompanySettingsRoutes: any;
@@ -88,6 +95,8 @@ describe("company settings routes", () => {
       };
       return storedSettings;
     });
+    getAssetById.mockResolvedValue(null);
+    enrichAssetWithUrls.mockImplementation(async (asset: any) => asset);
   });
 
   test("GET returns a safe normalized empty shape when no settings row exists", async () => {
@@ -104,6 +113,39 @@ describe("company settings routes", () => {
       invoicePaymentInstructions: null,
       invoiceFooterNote: null,
       checksPayableTo: null,
+    });
+  });
+
+  test("GET includes displayable logo preview URL when invoice logo asset is saved", async () => {
+    storedSettings = {
+      id: "settings_1",
+      organizationId: "org_1",
+      companyName: "Acme Print",
+      invoiceLogoAssetId: "asset_1",
+      invoiceLogoUrl: "uploads/private/logo.png",
+    };
+    getAssetById.mockResolvedValue({
+      id: "asset_1",
+      organizationId: "org_1",
+      fileName: "logo.png",
+      mimeType: "image/png",
+    });
+    enrichAssetWithUrls.mockResolvedValue({
+      id: "asset_1",
+      previewUrl: "/objects/uploads/org_1/invoice-logo/logo-preview.png",
+      originalUrl: "/objects/uploads/org_1/invoice-logo/logo.png",
+      fileUrl: "/objects/uploads/org_1/invoice-logo/logo.png",
+    });
+
+    const response = await request(buildApp()).get("/api/company-settings");
+
+    expect(response.status).toBe(200);
+    expect(getAssetById).toHaveBeenCalledWith("org_1", "asset_1");
+    expect(response.body).toMatchObject({
+      invoiceLogoAssetId: "asset_1",
+      invoiceLogoUrl: "uploads/private/logo.png",
+      invoiceLogoPreviewUrl: "/objects/uploads/org_1/invoice-logo/logo-preview.png",
+      invoiceLogoDisplayUrl: "/objects/uploads/org_1/invoice-logo/logo-preview.png",
     });
   });
 

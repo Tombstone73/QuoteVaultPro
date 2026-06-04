@@ -76,6 +76,8 @@ export type CompanySettingsDto = CompanyInfoInvoiceBranding & {
   companyName: string;
   address: string | null;
   logoUrl: string | null;
+  invoiceLogoPreviewUrl?: string | null;
+  invoiceLogoDisplayUrl?: string | null;
   taxRate?: string | null;
   defaultMargin?: string | null;
 };
@@ -140,6 +142,8 @@ export function normalizeCompanySettingsDto(raw: unknown): CompanySettingsDto {
     remittanceAddress: parsed.remittanceAddress ?? { enabled: false },
     invoiceLogoUrl: parsed.invoiceLogoUrl ?? null,
     invoiceLogoAssetId: parsed.invoiceLogoAssetId ?? null,
+    invoiceLogoPreviewUrl: isInvoiceLogoDataUrl(record.invoiceLogoPreviewUrl) ? null : asString(record.invoiceLogoPreviewUrl),
+    invoiceLogoDisplayUrl: isInvoiceLogoDataUrl(record.invoiceLogoDisplayUrl) ? null : asString(record.invoiceLogoDisplayUrl),
     invoicePaymentInstructions: parsed.invoicePaymentInstructions ?? null,
     invoiceFooterNote: parsed.invoiceFooterNote ?? null,
     checksPayableTo: parsed.checksPayableTo ?? null,

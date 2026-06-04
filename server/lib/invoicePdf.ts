@@ -1,28 +1,20 @@
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 
 import {
-  isInvoiceLogoAcceptedMimeType,
-  isInvoiceLogoDataUrl,
-  type CompanyAddress,
   type RemittanceAddress,
 } from '@shared/companyInfoInvoiceBranding';
+import {
+  buildDocumentAddressBlock,
+  buildDocumentCompanyBranding,
+  cleanDocumentText,
+  joinNonEmptyDocumentValues,
+  resolveCompanyLogoDataUrl,
+  type CompanyDocumentBrandingInput,
+} from './documentCompanyBranding';
 import { DEFAULT_INVOICE_PDF_THEME, type InvoicePdfTheme, type Rgb } from './invoicePdfTheme';
 
-type CompanySettingsLike = {
-  organizationId?: string | null;
-  companyName?: string | null;
-  companyDisplayName?: string | null;
-  legalCompanyName?: string | null;
-  address?: string | null;
-  physicalAddress?: CompanyAddress | null;
+type CompanySettingsLike = CompanyDocumentBrandingInput & {
   remittanceAddress?: RemittanceAddress | null;
-  phone?: string | null;
-  email?: string | null;
-  website?: string | null;
-  taxId?: string | null;
-  logoUrl?: string | null;
-  invoiceLogoUrl?: string | null;
-  invoiceLogoAssetId?: string | null;
   invoicePaymentInstructions?: string | null;
   invoiceFooterNote?: string | null;
   checksPayableTo?: string | null;
@@ -103,12 +95,7 @@ type InvoicePdfParams = {
 
 const toRgb = (c: Rgb) => rgb(c[0], c[1], c[2]);
 
-const joinNonEmpty = (values: Array<string | null | undefined>, sep = '\n') =>
-  values
-    .map((v) => (v == null ? '' : String(v).trim()))
-    .filter((v) => !!v)
-    .join(sep)
-    .trim();
+const joinNonEmpty = joinNonEmptyDocumentValues;
 
 const toSafeCents = (v: unknown): number => {
   const n = Number(v ?? 0);
@@ -148,59 +135,12 @@ const fmtDate = (d: unknown): string => {
   return fmt.format(dt);
 };
 
-function buildAddressBlock(params: {
-  line1?: string | null;
-  line2?: string | null;
-  city?: string | null;
-  state?: string | null;
-  postalCode?: string | null;
-  country?: string | null;
-  legacy?: string | null;
-}): string {
-  const hasStructured = !!(
-    (params.line1 && String(params.line1).trim()) ||
-    (params.line2 && String(params.line2).trim()) ||
-    (params.city && String(params.city).trim()) ||
-    (params.state && String(params.state).trim()) ||
-    (params.postalCode && String(params.postalCode).trim()) ||
-    (params.country && String(params.country).trim())
-  );
-
-  if (hasStructured) {
-    const cityStateZip = joinNonEmpty(
-      [
-        joinNonEmpty([
-          params.city,
-          [params.state, params.postalCode].filter(Boolean).join(' ').trim() || null,
-        ], ', '),
-      ],
-      ''
-    );
-
-    return joinNonEmpty([params.line1, params.line2, cityStateZip || null, params.country]);
-  }
-
-  return joinNonEmpty([params.legacy]);
-}
-
-const cleanText = (value: unknown): string => String(value ?? '').trim();
+const buildAddressBlock = buildDocumentAddressBlock;
+const cleanText = cleanDocumentText;
 
 export function resolveInvoiceCompanyDisplayData(companySettings: CompanySettingsLike) {
   const settings = companySettings || {};
-  const companyDisplayName =
-    cleanText(settings.companyDisplayName) ||
-    cleanText(settings.companyName) ||
-    cleanText(settings.legalCompanyName);
-  const legalCompanyName = cleanText(settings.legalCompanyName);
-  const physicalAddress = buildAddressBlock({
-    line1: settings.physicalAddress?.line1,
-    line2: settings.physicalAddress?.line2,
-    city: settings.physicalAddress?.city,
-    state: settings.physicalAddress?.state,
-    postalCode: settings.physicalAddress?.postalCode,
-    country: settings.physicalAddress?.country,
-    legacy: settings.address,
-  });
+  const branding = buildDocumentCompanyBranding(settings);
   const remittanceEnabled = settings.remittanceAddress?.enabled === true;
   const explicitRemittanceAddress = buildAddressBlock({
     line1: settings.remittanceAddress?.line1,
@@ -213,24 +153,24 @@ export function resolveInvoiceCompanyDisplayData(companySettings: CompanySetting
   });
   const paymentAddress = remittanceEnabled && explicitRemittanceAddress
     ? explicitRemittanceAddress
-    : physicalAddress;
+    : branding.physicalAddress;
 
   return {
-    companyDisplayName,
-    legalCompanyName,
-    showLegalCompanyName: !!legalCompanyName && legalCompanyName !== companyDisplayName,
-    physicalAddress,
+    companyDisplayName: branding.companyDisplayName,
+    legalCompanyName: branding.legalCompanyName,
+    showLegalCompanyName: branding.showLegalCompanyName,
+    physicalAddress: branding.physicalAddress,
     remittanceEnabled,
     paymentAddress,
     paymentAddressLabel: remittanceEnabled && explicitRemittanceAddress
       ? 'Send payments to'
       : 'Payment mailing address',
-    phone: cleanText(settings.phone),
-    email: cleanText(settings.email),
-    website: cleanText(settings.website),
-    taxId: cleanText(settings.taxId),
-    invoiceLogoUrl: cleanText(settings.invoiceLogoUrl) || cleanText(settings.logoUrl),
-    invoiceLogoAssetId: cleanText(settings.invoiceLogoAssetId),
+    phone: branding.phone,
+    email: branding.email,
+    website: branding.website,
+    taxId: branding.taxId,
+    invoiceLogoUrl: branding.invoiceLogoUrl,
+    invoiceLogoAssetId: branding.invoiceLogoAssetId,
     invoicePaymentInstructions: cleanText(settings.invoicePaymentInstructions),
     invoiceFooterNote: cleanText(settings.invoiceFooterNote),
     checksPayableTo: cleanText(settings.checksPayableTo),
@@ -306,65 +246,6 @@ function tryDecodeDataUrl(dataUrl: string): { mime: 'png' | 'jpeg'; bytes: Uint8
   try {
     const buf = Buffer.from(b64, 'base64');
     return { mime: subtype === 'png' ? 'png' : 'jpeg', bytes: new Uint8Array(buf) };
-  } catch {
-    return null;
-  }
-}
-
-async function readBufferFromStorageHandle(handle: { kind: 'signed_url' | 'local_path'; value: string }): Promise<Buffer> {
-  if (handle.kind === 'local_path') {
-    const { readFile } = await import('fs/promises');
-    return readFile(handle.value);
-  }
-
-  const response = await fetch(handle.value);
-  if (!response.ok) {
-    throw new Error(`Logo storage read failed with ${response.status}`);
-  }
-  return Buffer.from(await response.arrayBuffer());
-}
-
-async function resolveInvoiceLogoAssetDataUrl(companySettings: CompanySettingsLike): Promise<string | null> {
-  const organizationId = cleanText(companySettings?.organizationId);
-  const assetId = cleanText(companySettings?.invoiceLogoAssetId);
-  if (!organizationId || !assetId) return null;
-
-  try {
-    const [
-      { assetRepository },
-      { canonicalFileReadResolver },
-      { storageProviderConfigRepository },
-      { storageRegistry },
-    ] = await Promise.all([
-      import('../services/assets/AssetRepository'),
-      import('../services/storage/CanonicalFileReadResolver'),
-      import('../storage/storageProviderConfig.repo'),
-      import('../services/storage/StorageRegistry'),
-    ]);
-
-    const asset = await assetRepository.getAssetById(organizationId, assetId);
-    if (!asset?.fileRecordId) return null;
-
-    const assetMimeType = cleanText(asset.mimeType).toLowerCase();
-    if (!isInvoiceLogoAcceptedMimeType(assetMimeType)) return null;
-
-    const resolved = await canonicalFileReadResolver.resolveOriginal(String(asset.fileRecordId));
-    if (resolved.status !== 'available' || !resolved.providerConfigId || (!resolved.objectKey && !resolved.localPathRef)) {
-      return null;
-    }
-
-    const providerConfig = await storageProviderConfigRepository.getById(String(resolved.providerConfigId));
-    if (!providerConfig) return null;
-
-    const handle = await storageRegistry.getAdapter(providerConfig.providerType).getDownloadHandle({
-      providerConfig,
-      objectKey: resolved.objectKey ?? null,
-      localPathRef: resolved.localPathRef ?? null,
-    });
-    const buffer = await readBufferFromStorageHandle(handle);
-    if (!buffer.length) return null;
-
-    return `data:${assetMimeType};base64,${buffer.toString('base64')}`;
   } catch {
     return null;
   }
@@ -459,12 +340,7 @@ export async function generateInvoicePdfBytes(
     const themeLogo = (theme.header.logo.dataUrl || '').trim();
     if (themeLogo) return themeLogo;
 
-    const assetLogo = await resolveInvoiceLogoAssetDataUrl(companySettings);
-    if (assetLogo) return assetLogo;
-
-    if (isInvoiceLogoDataUrl(companyDisplay.invoiceLogoUrl)) return companyDisplay.invoiceLogoUrl;
-
-    return null;
+    return resolveCompanyLogoDataUrl(companySettings);
   };
 
   const resolveFooterText = (): string => {

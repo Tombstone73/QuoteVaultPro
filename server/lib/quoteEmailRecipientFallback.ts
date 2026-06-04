@@ -66,12 +66,15 @@ type OrganizationLike = {
   settings?: { currency?: string | null } | null;
 };
 
+type CompanySettingsLike = Record<string, unknown> | undefined | null;
+
 export type QuoteEmailRecipientDeps = {
   getQuoteById: (organizationId: string, quoteId: string, userId?: string) => Promise<QuoteLike | undefined | null>;
   getCustomerContacts: (customerId: string) => Promise<ContactLike[]>;
   updateCustomerContactForOrganization: (organizationId: string, contactId: string, data: Record<string, unknown>) => Promise<ContactLike>;
   createCustomerContactForOrganization: (organizationId: string, customerId: string, data: Record<string, unknown>) => Promise<ContactLike>;
   getOrganizationById: (organizationId: string) => Promise<OrganizationLike | undefined | null>;
+  getCompanySettings?: (organizationId: string) => Promise<CompanySettingsLike>;
   sendQuoteEmail: (
     organizationId: string,
     quoteId: string,
@@ -162,7 +165,8 @@ export async function sendQuoteEmailWithRecipientFallback(
   if (payload.attachPdf) {
     try {
       const organization = await deps.getOrganizationById(input.organizationId);
-      const pdfBytes = await generateQuotePdfBytes({ quote: quote as any, organization });
+      const companySettings = deps.getCompanySettings ? await deps.getCompanySettings(input.organizationId) : null;
+      const pdfBytes = await generateQuotePdfBytes({ quote: quote as any, organization, companySettings: companySettings as any });
       attachments = [{
         filename: quotePdfFilename(quote),
         content: Buffer.from(pdfBytes),
