@@ -1,5 +1,21 @@
 import { z } from "zod";
 
+export const INVOICE_LOGO_MAX_BYTES = 2 * 1024 * 1024;
+export const INVOICE_LOGO_JSON_BODY_LIMIT_BYTES = Math.ceil(INVOICE_LOGO_MAX_BYTES * 4 / 3) + 4096;
+export const INVOICE_LOGO_ACCEPTED_MIME_TYPES = ["image/png", "image/jpeg"] as const;
+export const INVOICE_LOGO_ACCEPT_ATTRIBUTE = INVOICE_LOGO_ACCEPTED_MIME_TYPES.join(",");
+export const INVOICE_LOGO_ACCEPTED_FORMATS_LABEL = "PNG or JPG";
+export const INVOICE_LOGO_MAX_SIZE_LABEL = "2 MB";
+export const INVOICE_LOGO_HELPER_TEXT =
+  `${INVOICE_LOGO_ACCEPTED_FORMATS_LABEL}, max ${INVOICE_LOGO_MAX_SIZE_LABEL}. Large logos should be resized before upload.`;
+export const INVOICE_LOGO_TOO_LARGE_MESSAGE =
+  `Logo file is too large. Please upload a ${INVOICE_LOGO_ACCEPTED_FORMATS_LABEL} under ${INVOICE_LOGO_MAX_SIZE_LABEL}.`;
+export const INVOICE_LOGO_UNSUPPORTED_TYPE_MESSAGE = "Logo must be a PNG or JPG file.";
+
+export function isInvoiceLogoAcceptedMimeType(value: unknown): value is typeof INVOICE_LOGO_ACCEPTED_MIME_TYPES[number] {
+  return typeof value === "string" && (INVOICE_LOGO_ACCEPTED_MIME_TYPES as readonly string[]).includes(value);
+}
+
 const optionalText = (max: number) =>
   z.preprocess(
     (value) => (typeof value === "string" && value.trim() === "" ? null : value),

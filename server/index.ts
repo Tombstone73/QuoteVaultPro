@@ -14,6 +14,10 @@ import { runInvoiceReminderJob } from "./invoiceReminderJob";
 import { runMigrations } from "./runMigrations";
 import { getAllowedCorsOrigins, getRuntimeConfigLogLine } from "./lib/appRuntimeConfig";
 import { getStartupSharedDevDatabaseWarning } from "./lib/runtimeEnvironment";
+import {
+  INVOICE_LOGO_JSON_BODY_LIMIT_BYTES,
+  INVOICE_LOGO_TOO_LARGE_MESSAGE,
+} from "@shared/companyInfoInvoiceBranding";
 
 const app = express();
 const bootstrapModeEnabled = (process.env.BOOTSTRAP_MODE ?? "").trim().toLowerCase() === "true";
@@ -71,6 +75,7 @@ declare module 'http' {
   }
 }
 app.use(express.json({
+  limit: INVOICE_LOGO_JSON_BODY_LIMIT_BYTES,
   verify: (req, _res, buf) => {
     req.rawBody = buf;
   }
@@ -158,11 +163,12 @@ process.on('uncaughtException', (error) => {
       }
     }
 
-    app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+    app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
       const status = err.status || err.statusCode || 500;
-      const message = err.message || "Internal Server Error";
+      const isInvoiceLogoSizeError = status === 413 && req.path === "/api/company-settings/invoice-logo";
+      const message = isInvoiceLogoSizeError ? INVOICE_LOGO_TOO_LARGE_MESSAGE : (err.message || "Internal Server Error");
       console.error('[Server] Error handler:', err);
-      res.status(status).json({ message });
+      res.status(status).json(isInvoiceLogoSizeError ? { success: false, message } : { message });
     });
 
     // Setup Vite in development mode

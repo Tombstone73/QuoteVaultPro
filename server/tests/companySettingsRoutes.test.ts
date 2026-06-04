@@ -1,12 +1,17 @@
 import { jest, beforeAll, beforeEach, describe, expect, test } from "@jest/globals";
 import express from "express";
 import request from "supertest";
+import {
+  INVOICE_LOGO_MAX_BYTES,
+  INVOICE_LOGO_TOO_LARGE_MESSAGE,
+} from "@shared/companyInfoInvoiceBranding";
 
 let storedSettings: any = null;
 
 const getCompanySettings = jest.fn<(...args: any[]) => Promise<any>>();
 const createCompanySettings = jest.fn<(...args: any[]) => Promise<any>>();
 const updateCompanySettings = jest.fn<(...args: any[]) => Promise<any>>();
+const finalizeUpload = jest.fn<(...args: any[]) => Promise<any>>();
 
 jest.unstable_mockModule("../storage", () => ({
   storage: {
@@ -22,7 +27,7 @@ jest.unstable_mockModule("../tenantContext", () => ({
 
 jest.unstable_mockModule("../services/storage/StorageApplicationService", () => ({
   storageApplicationService: {
-    finalizeUpload: jest.fn(),
+    finalizeUpload,
   },
 }));
 
@@ -158,5 +163,21 @@ describe("company settings routes", () => {
     expect(response.status).toBe(403);
     expect(createCompanySettings).not.toHaveBeenCalled();
   });
-});
 
+  test("invoice logo upload returns friendly JSON for oversized files", async () => {
+    const response = await request(buildApp())
+      .post("/api/company-settings/invoice-logo")
+      .send({
+        fileName: "too-large.png",
+        mimeType: "image/png",
+        dataBase64: Buffer.alloc(INVOICE_LOGO_MAX_BYTES + 1).toString("base64"),
+      });
+
+    expect(response.status).toBe(413);
+    expect(response.body).toEqual({
+      success: false,
+      message: INVOICE_LOGO_TOO_LARGE_MESSAGE,
+    });
+    expect(finalizeUpload).not.toHaveBeenCalled();
+  });
+});

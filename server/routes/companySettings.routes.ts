@@ -19,7 +19,11 @@ import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
 import { assets } from "@shared/schema";
 import {
+  INVOICE_LOGO_MAX_BYTES,
+  INVOICE_LOGO_TOO_LARGE_MESSAGE,
+  INVOICE_LOGO_UNSUPPORTED_TYPE_MESSAGE,
   companyInfoInvoiceBrandingSchema,
+  isInvoiceLogoAcceptedMimeType,
   normalizeCompanySettingsDto,
   toCompanySettingsDbPayload,
 } from "@shared/companyInfoInvoiceBranding";
@@ -32,8 +36,8 @@ function getUserId(user: any): string | null {
 
 const logoUploadSchema = z.object({
   fileName: z.string().min(1).max(255),
-  mimeType: z.enum(["image/png", "image/jpeg", "image/jpg"]),
-  dataBase64: z.string().min(1),
+  mimeType: z.string().refine(isInvoiceLogoAcceptedMimeType, INVOICE_LOGO_UNSUPPORTED_TYPE_MESSAGE),
+  dataBase64: z.string().min(1, "Logo file is empty"),
 });
 
 function decodeLogoUpload(body: unknown): { fileName: string; mimeType: string; buffer: Buffer } {
@@ -42,14 +46,20 @@ function decodeLogoUpload(body: unknown): { fileName: string; mimeType: string; 
   if (!buffer.length) {
     throw new Error("Logo file is empty");
   }
-  if (buffer.length > 2 * 1024 * 1024) {
-    throw new Error("Logo file must be 2 MB or smaller");
+  if (buffer.length > INVOICE_LOGO_MAX_BYTES) {
+    const error = new Error(INVOICE_LOGO_TOO_LARGE_MESSAGE) as Error & { statusCode?: number };
+    error.statusCode = 413;
+    throw error;
   }
   return {
     fileName: parsed.fileName,
-    mimeType: parsed.mimeType === "image/jpg" ? "image/jpeg" : parsed.mimeType,
+    mimeType: parsed.mimeType,
     buffer,
   };
+}
+
+function getZodMessage(error: z.ZodError): string {
+  return error.issues[0]?.message || fromZodError(error).message;
 }
 
 export function registerCompanySettingsRoutes(
@@ -161,6 +171,7 @@ export function registerCompanySettingsRoutes(
       const dataUrl = `data:${upload.mimeType};base64,${upload.buffer.toString("base64")}`;
 
       res.json({
+        success: true,
         assetId: asset.id,
         invoiceLogoAssetId: asset.id,
         invoiceLogoUrl: dataUrl,
@@ -170,11 +181,14 @@ export function registerCompanySettingsRoutes(
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: fromZodError(error).message });
+        return res.status(400).json({ success: false, message: getZodMessage(error) });
       }
       const message = error instanceof Error ? error.message : "Failed to upload invoice logo";
-      console.error("Error uploading invoice logo:", error);
-      res.status(400).json({ message });
+      const status = typeof (error as any)?.statusCode === "number" ? (error as any).statusCode : 400;
+      if (status >= 500) {
+        console.error("Error uploading invoice logo:", error);
+      }
+      res.status(status).json({ success: false, message });
     }
   });
 }
