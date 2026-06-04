@@ -31,7 +31,15 @@ const createBugReportSchema = z.object({
   url:           z.string().min(1).max(2000),
   screenWidth:   z.number().int().positive().optional(),
   screenHeight:  z.number().int().positive().optional(),
-  screenshotUrl: z.string().url().max(4000).optional().nullable(),
+  screenshotUrl: z.string().max(4000).optional().nullable(),
+  screenshotUrls: z.array(z.string().max(4000)).max(5).optional(),
+  screenshotAttachments: z.array(z.object({
+    filename: z.string().min(1).max(255),
+    mimeType: z.string().min(1).max(120),
+    size: z.number().int().nonnegative(),
+    storagePath: z.string().min(1).max(4000),
+    displayOrder: z.number().int().min(0),
+  })).max(5).optional(),
   metadata:      z.record(z.unknown()).optional(),
 });
 
@@ -55,10 +63,15 @@ function isOrgAdminOrOwner(orgRole?: string): boolean {
 
 // ─── Inline: screenshot size guard ────────────────────────────────────────────
 
-const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024; // 5 MB
+const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_TOTAL_SCREENSHOT_BYTES = 25 * 1024 * 1024; // 25 MB
 
 function isScreenshotSizeAllowed(sizeBytes: number): boolean {
   return sizeBytes <= MAX_SCREENSHOT_BYTES;
+}
+
+function isTotalScreenshotSizeAllowed(sizeBytes: number): boolean {
+  return sizeBytes <= MAX_TOTAL_SCREENSHOT_BYTES;
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -83,6 +96,13 @@ describe("createBugReportSchema", () => {
       screenWidth:   1920,
       screenHeight:  1080,
       screenshotUrl: "https://cdn.example.com/screenshots/abc.png",
+      screenshotAttachments: [{
+        filename: "abc.png",
+        mimeType: "image/png",
+        size: 1024,
+        storagePath: "org_1/bug-screenshots/temp/abc.png",
+        displayOrder: 0,
+      }],
       metadata:      { session: "tok_123" },
     });
     expect(result.success).toBe(true);
@@ -125,8 +145,22 @@ describe("createBugReportSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  it("rejects an invalid screenshotUrl (not a URL)", () => {
-    const result = createBugReportSchema.safeParse({ ...validPayload, screenshotUrl: "not-a-url" });
+  it("accepts legacy screenshot paths as well as URLs", () => {
+    const result = createBugReportSchema.safeParse({ ...validPayload, screenshotUrl: "local:bug-screenshots/temp/abc.png" });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects more than 5 screenshot metadata entries", () => {
+    const result = createBugReportSchema.safeParse({
+      ...validPayload,
+      screenshotAttachments: Array.from({ length: 6 }, (_, index) => ({
+        filename: `screen-${index}.png`,
+        mimeType: "image/png",
+        size: 1000,
+        storagePath: `local:bug-screenshots/temp/screen-${index}.png`,
+        displayOrder: index,
+      })),
+    });
     expect(result.success).toBe(false);
   });
 });
@@ -237,10 +271,11 @@ describe("isOrgAdminOrOwner()", () => {
 });
 
 describe("isScreenshotSizeAllowed()", () => {
-  it("allows exactly 5 MB",         () => expect(isScreenshotSizeAllowed(5 * 1024 * 1024)).toBe(true));
-  it("allows under 5 MB",           () => expect(isScreenshotSizeAllowed(1 * 1024 * 1024)).toBe(true));
-  it("rejects one byte over 5 MB",  () => expect(isScreenshotSizeAllowed(5 * 1024 * 1024 + 1)).toBe(false));
-  it("rejects 10 MB",               () => expect(isScreenshotSizeAllowed(10 * 1024 * 1024)).toBe(false));
+  it("allows exactly 10 MB",        () => expect(isScreenshotSizeAllowed(10 * 1024 * 1024)).toBe(true));
+  it("allows under 10 MB",          () => expect(isScreenshotSizeAllowed(1 * 1024 * 1024)).toBe(true));
+  it("rejects one byte over 10 MB", () => expect(isScreenshotSizeAllowed(10 * 1024 * 1024 + 1)).toBe(false));
+  it("allows total size exactly 25 MB", () => expect(isTotalScreenshotSizeAllowed(25 * 1024 * 1024)).toBe(true));
+  it("rejects total size over 25 MB", () => expect(isTotalScreenshotSizeAllowed(25 * 1024 * 1024 + 1)).toBe(false));
 });
 
 // ─── Inline: update status schema ─────────────────────────────────────────────
