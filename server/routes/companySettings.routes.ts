@@ -62,6 +62,44 @@ function getZodMessage(error: z.ZodError): string {
   return error.issues[0]?.message || fromZodError(error).message;
 }
 
+async function withInvoiceLogoDisplayUrls(rawSettings: unknown, organizationId: string) {
+  const normalized = normalizeCompanySettingsDto(rawSettings);
+  const assetId = typeof normalized.invoiceLogoAssetId === "string" ? normalized.invoiceLogoAssetId.trim() : "";
+
+  if (assetId) {
+    try {
+      const { assetRepository } = await import("../services/assets/AssetRepository");
+      const assetRecord = await assetRepository.getAssetById(organizationId, assetId);
+      if (assetRecord) {
+        const asset = await enrichAssetWithUrls(assetRecord as any);
+        const displayUrl = asset.previewUrl ?? asset.originalUrl ?? asset.fileUrl ?? null;
+        return {
+          ...normalized,
+          invoiceLogoPreviewUrl: displayUrl,
+          invoiceLogoDisplayUrl: displayUrl,
+        };
+      }
+    } catch {
+      return {
+        ...normalized,
+        invoiceLogoPreviewUrl: null,
+        invoiceLogoDisplayUrl: null,
+      };
+    }
+  }
+
+  const stableUrl = normalized.invoiceLogoUrl || null;
+  const displayUrl = stableUrl && (stableUrl.startsWith("/objects/") || stableUrl.startsWith("http://") || stableUrl.startsWith("https://"))
+    ? stableUrl
+    : null;
+
+  return {
+    ...normalized,
+    invoiceLogoPreviewUrl: displayUrl,
+    invoiceLogoDisplayUrl: displayUrl,
+  };
+}
+
 export function registerCompanySettingsRoutes(
   app: Express,
   middleware: {
@@ -78,7 +116,7 @@ export function registerCompanySettingsRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const settings = await storage.getCompanySettings(organizationId);
-      res.json(normalizeCompanySettingsDto(settings ?? null));
+      res.json(await withInvoiceLogoDisplayUrls(settings ?? null, organizationId));
     } catch (error) {
       console.error("Error fetching company settings:", error);
       res.status(500).json({ message: "Failed to fetch company settings" });
@@ -95,7 +133,7 @@ export function registerCompanySettingsRoutes(
       const settings = existing
         ? await storage.updateCompanySettings(organizationId, existing.id, settingsPayload)
         : await storage.createCompanySettings(organizationId, settingsPayload);
-      res.json(normalizeCompanySettingsDto(settings));
+      res.json(await withInvoiceLogoDisplayUrls(settings, organizationId));
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: getZodMessage(error) });
@@ -119,7 +157,7 @@ export function registerCompanySettingsRoutes(
       const settings = existing
         ? await storage.updateCompanySettings(organizationId, req.params.id, updateData)
         : await storage.createCompanySettings(organizationId, updateData);
-      res.json(normalizeCompanySettingsDto(settings));
+      res.json(await withInvoiceLogoDisplayUrls(settings, organizationId));
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: getZodMessage(error) });

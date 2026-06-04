@@ -157,6 +157,7 @@ export function registerEmailRoutes(
               .limit(1);
             return organization as any;
           },
+          getCompanySettings: storage.getCompanySettings.bind(storage),
           sendQuoteEmail: emailService.sendQuoteEmail.bind(emailService),
           createAuditLog: async (entry) => {
             await db.insert(auditLogs).values(entry as any);

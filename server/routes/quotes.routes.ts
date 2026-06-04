@@ -1241,7 +1241,8 @@ export function registerQuoteRoutes(
         .where(eq(organizations.id, organizationId))
         .limit(1);
 
-      const pdfBytes = await generateQuotePdfBytes({ quote: quote as any, organization });
+      const companySettings = await storage.getCompanySettings(organizationId);
+      const pdfBytes = await generateQuotePdfBytes({ quote: quote as any, organization, companySettings: companySettings as any });
       const quoteNumber = (quote as any).displayNumber || (quote as any).quoteNumber || id;
       const safeQuoteNumber = String(quoteNumber).replace(/[^a-z0-9._-]+/gi, "-");
 

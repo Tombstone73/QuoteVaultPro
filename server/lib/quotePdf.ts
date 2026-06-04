@@ -1,4 +1,10 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
+import {
+  joinNonEmptyDocumentValues,
+  resolveCompanyDocumentBranding,
+  type CompanyDocumentBranding,
+  type CompanyDocumentBrandingInput,
+} from "./documentCompanyBranding";
 
 export class QuotePdfEligibilityError extends Error {
   statusCode: number;
@@ -43,9 +49,11 @@ type QuotePdfInput = {
     lineItems?: QuotePdfLineItem[] | null;
   };
   organization?: {
+    id?: string | null;
     name?: string | null;
     settings?: { currency?: string | null } | null;
   } | null;
+  companySettings?: CompanyDocumentBrandingInput;
 };
 
 type QuotePdfEligibility = {
@@ -147,6 +155,35 @@ function drawRight(page: PDFPage, text: string, rightX: number, y: number, font:
   drawText(page, text, rightX - width, y, font, size);
 }
 
+function tryDecodeLogoDataUrl(dataUrl: string): { mime: "png" | "jpeg"; bytes: Uint8Array } | null {
+  const match = String(dataUrl || "").trim().match(/^data:(image\/(png|jpeg));base64,(.+)$/i);
+  if (!match) return null;
+  try {
+    const subtype = String(match[2] || "").toLowerCase();
+    return {
+      mime: subtype === "png" ? "png" : "jpeg",
+      bytes: new Uint8Array(Buffer.from(match[3] || "", "base64")),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveQuotePdfCompanyBranding(input: QuotePdfInput): Promise<CompanyDocumentBranding> {
+  const companySettings = input.companySettings
+    ? input.companySettings
+    : {
+        organizationId: input.organization?.id ?? null,
+        companyDisplayName: input.organization?.name ?? null,
+        companyName: input.organization?.name ?? null,
+      };
+  const branding = await resolveCompanyDocumentBranding(companySettings);
+  return {
+    ...branding,
+    companyDisplayName: branding.companyDisplayName || input.organization?.name || "Quote",
+  };
+}
+
 export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8Array> {
   const eligibility = getQuotePdfEligibility(input.quote);
   if (!eligibility.eligible) {
@@ -159,12 +196,49 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const currency = String(input.organization?.settings?.currency || "USD").toUpperCase();
   const quoteNumber = input.quote.displayNumber || (input.quote.quoteNumber ? String(input.quote.quoteNumber) : input.quote.id || "quote");
+  const companyBranding = await resolveQuotePdfCompanyBranding(input);
+
+  const drawCompanyLogo = async (x: number, topY: number): Promise<{ width: number; height: number }> => {
+    const decoded = companyBranding.logoDataUrl ? tryDecodeLogoDataUrl(companyBranding.logoDataUrl) : null;
+    if (!decoded) return { width: 0, height: 0 };
+
+    try {
+      const img = decoded.mime === "png"
+        ? await pdfDoc.embedPng(decoded.bytes)
+        : await pdfDoc.embedJpg(decoded.bytes);
+      const maxW = 54;
+      const maxH = 42;
+      const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+      const width = img.width * scale;
+      const height = img.height * scale;
+      page.drawImage(img, { x, y: topY - height, width, height });
+      return { width, height };
+    } catch {
+      return { width: 0, height: 0 };
+    }
+  };
 
   let y = PAGE_HEIGHT - MARGIN;
-  drawText(page, input.organization?.name || "Quote", MARGIN, y, bold, 18);
+  const logo = await drawCompanyLogo(MARGIN, y + 2);
+  const companyTextX = MARGIN + (logo.width > 0 ? logo.width + 14 : 0);
+  drawText(page, companyBranding.companyDisplayName || "Quote", companyTextX, y, bold, 16);
   drawRight(page, `Quote ${quoteNumber}`, PAGE_WIDTH - MARGIN, y, bold, 18);
 
-  y -= 28;
+  let companyY = y - 14;
+  const companyLines = [
+    companyBranding.showLegalCompanyName ? companyBranding.legalCompanyName : null,
+    companyBranding.physicalAddress || null,
+    joinNonEmptyDocumentValues([companyBranding.phone || null, companyBranding.email || null], " | ") || null,
+    companyBranding.website || null,
+  ].filter((value): value is string => hasText(value));
+  for (const line of companyLines.slice(0, 5)) {
+    for (const wrapped of wrapText(line, 245, regular, 8).slice(0, 2)) {
+      drawText(page, wrapped, companyTextX, companyY, regular, 8, rgb(0.35, 0.4, 0.48));
+      companyY -= 10;
+    }
+  }
+
+  y = Math.min(y - 28, companyY - 12);
   drawText(page, `Status: ${String(input.quote.status || "draft")}`, MARGIN, y, regular, 10);
   const validUntil = formatDate(input.quote.validUntil);
   if (validUntil) drawRight(page, `Valid until ${validUntil}`, PAGE_WIDTH - MARGIN, y, regular, 10);
