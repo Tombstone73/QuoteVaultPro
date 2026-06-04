@@ -2084,16 +2084,39 @@ export const orgInvites = pgTable("org_invites", {
 
 export type OrgInvite = typeof orgInvites.$inferSelect;
 
+export type CompanySettingsAddress = {
+  line1?: string | null;
+  line2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+  country?: string | null;
+};
+
+export type CompanySettingsRemittanceAddress = CompanySettingsAddress & {
+  enabled?: boolean | null;
+};
+
 // Company Settings table
 export const companySettings = pgTable("company_settings", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   companyName: varchar("company_name", { length: 255 }).notNull(),
+  companyDisplayName: varchar("company_display_name", { length: 255 }),
+  legalCompanyName: varchar("legal_company_name", { length: 255 }),
   address: text("address"),
+  physicalAddress: jsonb("physical_address").$type<CompanySettingsAddress>(),
+  remittanceAddress: jsonb("remittance_address").$type<CompanySettingsRemittanceAddress>(),
   phone: varchar("phone", { length: 50 }),
   email: varchar("email", { length: 255 }),
   website: varchar("website", { length: 255 }),
+  taxId: varchar("tax_id", { length: 100 }),
   logoUrl: text("logo_url"),
+  invoiceLogoUrl: text("invoice_logo_url"),
+  invoiceLogoAssetId: varchar("invoice_logo_asset_id"),
+  invoicePaymentInstructions: text("invoice_payment_instructions"),
+  invoiceFooterNote: text("invoice_footer_note"),
+  checksPayableTo: varchar("checks_payable_to", { length: 255 }),
   taxRate: decimal("tax_rate", { precision: 5, scale: 2 }).default("0").notNull(),
   defaultMargin: decimal("default_margin", { precision: 5, scale: 2 }).default("0").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),

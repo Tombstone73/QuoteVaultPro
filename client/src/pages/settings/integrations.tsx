@@ -902,6 +902,22 @@ export default function SettingsIntegrations() {
         <p className="text-muted-foreground">Connect external services to Printers Hero</p>
       </div>
 
+      <Card className="mb-6">
+        <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-medium">Invoice branding lives in Company settings.</p>
+            <p className="text-sm text-muted-foreground">
+              Manage company identity, logo, remittance address, and invoice payment copy from the Company tab.
+            </p>
+          </div>
+          <Link href="/settings/company">
+            <Button type="button" variant="outline" size="sm">
+              Open Company Settings
+            </Button>
+          </Link>
+        </CardContent>
+      </Card>
+
       {/* QuickBooks Integration */}
       <Card className="mb-6">
         <CardHeader>

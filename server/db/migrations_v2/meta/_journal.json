@@ -596,6 +596,13 @@
       "when": 1782432000000,
       "tag": "0089_bug_report_screenshot_attachment_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1782518400000,
+      "tag": "0090_company_info_invoice_branding",
+      "breakpoints": true
     }
   ]
 }
