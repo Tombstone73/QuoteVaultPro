@@ -92,6 +92,12 @@ import LabelsPage from "@/pages/labels";
 import ReportsPage from "@/pages/reports";
 import FinancePage from "@/pages/finance";
 import InboundOrdersPage from "@/pages/inbound-orders";
+import {
+  ProductPlanningBacklogPage,
+  ProductPlanningDashboardPage,
+  ProductPlanningImportsPage,
+  ProductPlanningIndexRedirect,
+} from "@/pages/product-planning/ProductPlanningPages";
 import PrivacyPage from "@/pages/privacy";
 import TermsPage from "@/pages/terms";
 import SupportPage from "@/pages/support";
@@ -247,6 +253,10 @@ function Router() {
         <Route path={ROUTES.orders.detail(":id")} element={<OrderDetail />} />
         <Route path={ROUTES.orders.list} element={<Orders />} />
         <Route path={ROUTES.inboundOrders.list} element={<InboundOrdersPage />} />
+        <Route path={ROUTES.productPlanning.root} element={<ProductPlanningIndexRedirect />} />
+        <Route path={ROUTES.productPlanning.dashboard} element={<ProductPlanningDashboardPage />} />
+        <Route path={ROUTES.productPlanning.backlog} element={<ProductPlanningBacklogPage />} />
+        <Route path={ROUTES.productPlanning.imports} element={<ProductPlanningImportsPage />} />
 
         {/* Inventory / Materials routes */}
         <Route path="/materials/:id" element={<MaterialDetailRoute />} />

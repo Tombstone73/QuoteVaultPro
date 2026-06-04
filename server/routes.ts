@@ -241,6 +241,7 @@ import { registerDebugRoutes } from './routes/debug.routes';
 import { registerPricingAuditRoutes } from './routes/pricingAudit.routes';
 import { registerMaterialsImportExportRoutes } from './routes/materialsImportExport.routes';
 import { registerInboundOrderRoutes } from './routes/inboundOrders.routes';
+import { registerProductPlanningRoutes } from './routes/productPlanning.routes';
 import { registerOperationalSummaryRoutes } from './routes/operationalSummary.routes';
 import { registerPbv2OptionGroupTemplateRoutes } from './routes/pbv2OptionGroupTemplates.routes';
 import { registerPortalRoutes } from './routes/portal.routes';
@@ -439,6 +440,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Inbound Orders Review Queue routes extracted to ./routes/inboundOrders.routes.ts (do NOT re-add here)
   registerInboundOrderRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
+
+  // Product Planning routes extracted to ./routes/productPlanning.routes.ts (dev/admin only)
+  registerProductPlanningRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
 
   // Operational summary — single aggregation endpoint for sidebar badges
   registerOperationalSummaryRoutes(app, { isAuthenticated, tenantContext });

@@ -3,6 +3,7 @@ import { relations } from 'drizzle-orm';
 import {
   type AnyPgColumn,
   boolean,
+  date,
   decimal,
   index,
   uniqueIndex,
@@ -6284,6 +6285,143 @@ export const bugReports = pgTable("bug_reports", {
 
 export type BugReport = typeof bugReports.$inferSelect;
 export type InsertBugReport = typeof bugReports.$inferInsert;
+
+// ============================================================
+// PRODUCT PLANNING - dev/admin-only planning backlog
+// ============================================================
+export const productPlanningWorkItemTypeValues = [
+  "bug",
+  "feature",
+  "enhancement",
+  "epic",
+  "task",
+  "technical_debt",
+  "research",
+] as const;
+
+export const productPlanningStatusValues = [
+  "idea",
+  "backlog",
+  "planned",
+  "ready",
+  "in_progress",
+  "testing",
+  "dev_validation",
+  "main_validation",
+  "released",
+  "archived",
+] as const;
+
+export const productPlanningPriorityValues = ["critical", "high", "medium", "low"] as const;
+export const productPlanningBusinessValueValues = ["very_high", "high", "medium", "low"] as const;
+export const productPlanningComplexityValues = ["small", "medium", "large", "massive"] as const;
+export const productPlanningPhaseValues = ["go_live", "v1_1", "v1_5", "v2_0", "future", "research"] as const;
+export const productPlanningSourceTypeValues = ["manual", "csv_import", "bug_report"] as const;
+export const productPlanningImportStatusValues = ["pending", "completed", "completed_with_errors", "failed"] as const;
+
+export const productPlanningWorkItems = pgTable("product_planning_work_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  reference: text("reference").notNull(),
+  title: text("title").notNull(),
+  description: text("description"),
+  workItemType: text("work_item_type").$type<typeof productPlanningWorkItemTypeValues[number]>().notNull().default("feature"),
+  planningStatus: text("planning_status").$type<typeof productPlanningStatusValues[number]>().notNull().default("backlog"),
+  priority: text("priority").$type<typeof productPlanningPriorityValues[number]>().notNull().default("medium"),
+  businessValue: text("business_value").$type<typeof productPlanningBusinessValueValues[number]>(),
+  complexity: text("complexity").$type<typeof productPlanningComplexityValues[number]>(),
+  phase: text("phase").$type<typeof productPlanningPhaseValues[number]>(),
+  module: text("module"),
+  submodule: text("submodule"),
+  tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+  sortOrder: integer("sort_order"),
+  roadmapOrder: integer("roadmap_order"),
+  parentId: varchar("parent_id").references((): AnyPgColumn => productPlanningWorkItems.id, { onDelete: "set null" }),
+  sourceType: text("source_type").$type<typeof productPlanningSourceTypeValues[number]>(),
+  sourceBugReportId: varchar("source_bug_report_id").references(() => bugReports.id, { onDelete: "restrict" }),
+  sourceReference: text("source_reference"),
+  importedBatchId: varchar("imported_batch_id").references((): AnyPgColumn => productPlanningImportBatches.id, { onDelete: "set null" }),
+  requestedBy: text("requested_by"),
+  ownerUserId: varchar("owner_user_id").references(() => users.id, { onDelete: "set null" }),
+  dueDate: date("due_date"),
+  releaseTarget: text("release_target"),
+  notes: text("notes"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+}, (table) => [
+  uniqueIndex("product_planning_work_items_org_reference_uidx").on(table.organizationId, table.reference),
+  uniqueIndex("product_planning_work_items_org_source_bug_uidx")
+    .on(table.organizationId, table.sourceBugReportId)
+    .where(sql`${table.sourceBugReportId} IS NOT NULL`),
+  index("product_planning_work_items_org_status_idx").on(table.organizationId, table.planningStatus),
+  index("product_planning_work_items_org_priority_idx").on(table.organizationId, table.priority),
+  index("product_planning_work_items_org_type_idx").on(table.organizationId, table.workItemType),
+  index("product_planning_work_items_org_phase_idx").on(table.organizationId, table.phase),
+  index("product_planning_work_items_source_bug_idx").on(table.sourceBugReportId),
+]);
+
+export const productPlanningImportBatches = pgTable("product_planning_import_batches", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  filename: text("filename"),
+  rowCount: integer("row_count").notNull().default(0),
+  importedCount: integer("imported_count").notNull().default(0),
+  skippedCount: integer("skipped_count").notNull().default(0),
+  errorCount: integer("error_count").notNull().default(0),
+  status: text("status").$type<typeof productPlanningImportStatusValues[number]>().notNull().default("pending"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("product_planning_import_batches_org_created_idx").on(table.organizationId, table.createdAt),
+  index("product_planning_import_batches_org_status_idx").on(table.organizationId, table.status),
+]);
+
+export const productPlanningEvents = pgTable("product_planning_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  workItemId: varchar("work_item_id").notNull().references(() => productPlanningWorkItems.id, { onDelete: "cascade" }),
+  eventType: text("event_type").notNull(),
+  message: text("message"),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("product_planning_events_org_work_item_idx").on(table.organizationId, table.workItemId, table.createdAt),
+  index("product_planning_events_org_type_created_idx").on(table.organizationId, table.eventType, table.createdAt),
+]);
+
+export const insertProductPlanningWorkItemSchema = createInsertSchema(productPlanningWorkItems, {
+  workItemType: z.enum(productPlanningWorkItemTypeValues),
+  planningStatus: z.enum(productPlanningStatusValues),
+  priority: z.enum(productPlanningPriorityValues),
+  businessValue: z.enum(productPlanningBusinessValueValues).optional().nullable(),
+  complexity: z.enum(productPlanningComplexityValues).optional().nullable(),
+  phase: z.enum(productPlanningPhaseValues).optional().nullable(),
+  sourceType: z.enum(productPlanningSourceTypeValues).optional().nullable(),
+}).omit({
+  id: true,
+  reference: true,
+  createdAt: true,
+  updatedAt: true,
+  archivedAt: true,
+});
+
+export const updateProductPlanningWorkItemSchema = insertProductPlanningWorkItemSchema.partial().omit({
+  organizationId: true,
+  createdByUserId: true,
+  sourceBugReportId: true,
+  importedBatchId: true,
+});
+
+export type ProductPlanningWorkItem = typeof productPlanningWorkItems.$inferSelect;
+export type InsertProductPlanningWorkItem = typeof productPlanningWorkItems.$inferInsert;
+export type ProductPlanningImportBatch = typeof productPlanningImportBatches.$inferSelect;
+export type InsertProductPlanningImportBatch = typeof productPlanningImportBatches.$inferInsert;
+export type ProductPlanningEvent = typeof productPlanningEvents.$inferSelect;
+export type InsertProductPlanningEvent = typeof productPlanningEvents.$inferInsert;
 
 // ============================================================
 // FEEDBACK AI REVIEWS - advisory org-scoped AI review history

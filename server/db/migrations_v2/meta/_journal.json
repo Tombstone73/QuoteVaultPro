@@ -603,6 +603,13 @@
       "when": 1782518400000,
       "tag": "0090_company_info_invoice_branding",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1782604800000,
+      "tag": "0091_product_planning_foundation",
+      "breakpoints": true
     }
   ]
 }

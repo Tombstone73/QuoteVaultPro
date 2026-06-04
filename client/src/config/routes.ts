@@ -127,6 +127,13 @@ export const ROUTES = {
     list: "/inbound-orders",
   },
 
+  productPlanning: {
+    root: "/product-planning",
+    dashboard: "/product-planning/dashboard",
+    backlog: "/product-planning/backlog",
+    imports: "/product-planning/imports",
+  },
+
   // Customers
   customers: {
     list: "/customers",
