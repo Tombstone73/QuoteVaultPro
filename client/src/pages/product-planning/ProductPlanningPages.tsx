@@ -4,11 +4,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
   Archive,
+  ArrowDown,
+  ArrowUp,
   Bug,
   ClipboardList,
   FileUp,
+  Kanban,
   LayoutDashboard,
   ListFilter,
+  Map as MapIcon,
   Pencil,
   Plus,
   RefreshCw,
@@ -35,6 +39,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { canUseProductPlanning } from "@/lib/productPlanningAccess";
+import { movePlanningItem, sortPlanningItems, toSequentialPlanningOrder } from "@/lib/productPlanningBoard";
 import { apiRequest } from "@/lib/queryClient";
 import { ROUTES } from "@/config/routes";
 
@@ -45,6 +50,15 @@ type BusinessValue = "very_high" | "high" | "medium" | "low";
 type Complexity = "small" | "medium" | "large" | "massive";
 type Phase = "go_live" | "v1_1" | "v1_5" | "v2_0" | "future" | "research";
 type SourceType = "manual" | "csv_import" | "bug_report";
+
+type WorkItemSummary = {
+  id: string;
+  reference: string;
+  title: string;
+  workItemType: WorkItemType;
+  planningStatus: PlanningStatus;
+  priority?: Priority;
+};
 
 type WorkItem = {
   id: string;
@@ -60,9 +74,14 @@ type WorkItem = {
   module: string | null;
   submodule: string | null;
   tags: string[];
+  sortOrder: number | null;
+  roadmapOrder: number | null;
   sourceType: SourceType | null;
   sourceBugReportId: string | null;
   sourceReference: string | null;
+  parentId: string | null;
+  parent?: WorkItemSummary | null;
+  children?: WorkItemSummary[];
   requestedBy: string | null;
   ownerUserId: string | null;
   dueDate: string | null;
@@ -154,6 +173,8 @@ const PHASES: Array<{ value: Phase; label: string }> = [
   { value: "research", label: "Research" },
 ];
 
+const KANBAN_STATUSES = STATUSES.filter((status) => status.value !== "archived");
+
 const BUSINESS_VALUES: Array<{ value: BusinessValue; label: string }> = [
   { value: "very_high", label: "Very High" },
   { value: "high", label: "High" },
@@ -204,6 +225,8 @@ function ProductPlanningShell({ children }: { children: React.ReactNode }) {
   const tabs = [
     { path: ROUTES.productPlanning.dashboard, label: "Dashboard", icon: LayoutDashboard },
     { path: ROUTES.productPlanning.backlog, label: "Backlog", icon: ClipboardList },
+    { path: ROUTES.productPlanning.kanban, label: "Kanban", icon: Kanban },
+    { path: ROUTES.productPlanning.roadmap, label: "Roadmap", icon: MapIcon },
     { path: ROUTES.productPlanning.imports, label: "Imports", icon: FileUp },
   ];
 
@@ -347,6 +370,7 @@ type WorkItemFormState = {
   phase: Phase | "";
   module: string;
   submodule: string;
+  parentId: string;
   tags: string;
   requestedBy: string;
   ownerUserId: string;
@@ -366,6 +390,7 @@ const EMPTY_FORM: WorkItemFormState = {
   phase: "",
   module: "",
   submodule: "",
+  parentId: "",
   tags: "",
   requestedBy: "",
   ownerUserId: "",
@@ -387,6 +412,7 @@ function formFromItem(item: WorkItem): WorkItemFormState {
     phase: item.phase ?? "",
     module: item.module ?? "",
     submodule: item.submodule ?? "",
+    parentId: item.parentId ?? "",
     tags: item.tags?.join(", ") ?? "",
     requestedBy: item.requestedBy ?? "",
     ownerUserId: item.ownerUserId ?? "",
@@ -408,6 +434,7 @@ function payloadFromForm(form: WorkItemFormState) {
     phase: form.phase || null,
     module: normalizeOptional(form.module),
     submodule: normalizeOptional(form.submodule),
+    parentId: normalizeOptional(form.parentId),
     tags: form.tags.split(/[;,]/).map((tag) => tag.trim()).filter(Boolean),
     requestedBy: normalizeOptional(form.requestedBy),
     ownerUserId: normalizeOptional(form.ownerUserId),
@@ -447,6 +474,7 @@ export function ProductPlanningBacklogPage() {
     queryKey: ["/api/product-planning/work-items", queryString],
     queryFn: () => fetchJson<WorkItem[]>(`/api/product-planning/work-items?${queryString}`),
   });
+  const parentById = useMemo(() => new Map(rows.map((item) => [item.id, item])), [rows]);
 
   const saveMutation = useMutation({
     mutationFn: async (next: WorkItemFormState) => {
@@ -559,6 +587,7 @@ export function ProductPlanningBacklogPage() {
                 <TableHead>Priority</TableHead>
                 <TableHead>Module</TableHead>
                 <TableHead>Phase</TableHead>
+                <TableHead>Epic</TableHead>
                 <TableHead>Source</TableHead>
                 <TableHead>Updated</TableHead>
                 <TableHead>Owner</TableHead>
@@ -567,9 +596,9 @@ export function ProductPlanningBacklogPage() {
             </TableHeader>
             <TableBody>
               {isLoading ? Array.from({ length: 6 }).map((_, index) => (
-                <TableRow key={index}><TableCell colSpan={11}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+                <TableRow key={index}><TableCell colSpan={12}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
               )) : rows.length === 0 ? (
-                <TableRow><TableCell colSpan={11} className="py-8 text-center text-sm text-muted-foreground">No planning work items found.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={12} className="py-8 text-center text-sm text-muted-foreground">No planning work items found.</TableCell></TableRow>
               ) : rows.map((item) => (
                 <TableRow key={item.id}>
                   <TableCell className="font-mono text-xs font-semibold">{item.reference}</TableCell>
@@ -597,6 +626,9 @@ export function ProductPlanningBacklogPage() {
                   <TableCell>
                     <InlineSelect value={item.phase ?? ""} includeNone options={PHASES} onChange={(value) => quickUpdateMutation.mutate({ id: item.id, patch: { phase: (value || null) as Phase | null } })} />
                   </TableCell>
+                  <TableCell className="max-w-[160px] truncate text-xs text-muted-foreground">
+                    {item.parentId ? (parentById.get(item.parentId)?.reference ?? "Linked epic") : ""}
+                  </TableCell>
                   <TableCell>
                     <Badge variant="secondary">{item.sourceType ? item.sourceType.replace("_", " ") : "manual"}</Badge>
                   </TableCell>
@@ -623,10 +655,265 @@ export function ProductPlanningBacklogPage() {
         open={modalOpen}
         form={form}
         setForm={setForm}
+        availableParents={rows.filter((item) => item.workItemType === "epic" && item.id !== form.id)}
+        children={form.id ? rows.filter((item) => item.parentId === form.id) : []}
         onOpenChange={setModalOpen}
         onSave={() => saveMutation.mutate(form)}
         isSaving={saveMutation.isPending}
       />
+    </ProductPlanningShell>
+  );
+}
+
+function PlanningItemCard({
+  item,
+  compact,
+  children,
+}: {
+  item: WorkItem;
+  compact?: boolean;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-md border border-border bg-background p-3 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-mono text-xs text-muted-foreground">{item.reference}</div>
+          <div className="line-clamp-2 text-sm font-medium">{item.title}</div>
+        </div>
+        <Badge variant={priorityBadge(item.priority)} className="shrink-0 capitalize">{item.priority}</Badge>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1">
+        <Badge variant="outline" className="text-[11px]">{labelFor(WORK_ITEM_TYPES, item.workItemType)}</Badge>
+        {item.module && <Badge variant="secondary" className="text-[11px]">{item.module}</Badge>}
+        {item.phase && <Badge variant="secondary" className="text-[11px]">{labelFor(PHASES, item.phase)}</Badge>}
+        {item.sourceType && item.sourceType !== "manual" && <Badge variant="outline" className="text-[11px]">{item.sourceType.replace("_", " ")}</Badge>}
+      </div>
+      {!compact && children && <div className="mt-3">{children}</div>}
+    </div>
+  );
+}
+
+function sortByBoardOrder(items: WorkItem[]) {
+  return sortPlanningItems(items, "sortOrder");
+}
+
+function sortByRoadmapOrder(items: WorkItem[]) {
+  return sortPlanningItems(items, "roadmapOrder");
+}
+
+export function ProductPlanningKanbanPage() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const { data: rows = [], isLoading } = useQuery<WorkItem[]>({
+    queryKey: ["/api/product-planning/work-items", "kanban"],
+    queryFn: () => fetchJson<WorkItem[]>("/api/product-planning/work-items?sortBy=sortOrder&sortDirection=asc&limit=250"),
+  });
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/product-planning/work-items"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
+  };
+
+  const moveStatusMutation = useMutation({
+    mutationFn: async ({ item, planningStatus }: { item: WorkItem; planningStatus: PlanningStatus }) => {
+      const targetCount = rows.filter((row) => row.planningStatus === planningStatus && row.id !== item.id).length;
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${item.id}/move-status`, {
+        planningStatus,
+        sortOrder: (targetCount + 1) * 10,
+      });
+      return (await res.json()).data as WorkItem;
+    },
+    onSuccess: invalidate,
+    onError: (error: Error) => toast({ title: "Move failed", description: error.message, variant: "destructive" }),
+  });
+
+  const reorderMutation = useMutation({
+    mutationFn: async ({ items }: { items: Array<{ id: string; sortOrder: number; planningStatus: PlanningStatus }> }) => {
+      const res = await apiRequest("POST", "/api/product-planning/work-items/reorder", { items });
+      return (await res.json()).data as WorkItem[];
+    },
+    onSuccess: invalidate,
+    onError: (error: Error) => toast({ title: "Reorder failed", description: error.message, variant: "destructive" }),
+  });
+
+  function moveWithinColumn(status: PlanningStatus, itemId: string, direction: -1 | 1) {
+    const items = sortByBoardOrder(rows.filter((item) => item.planningStatus === status));
+    const index = items.findIndex((item) => item.id === itemId);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= items.length) return;
+    const next = movePlanningItem(items, itemId, direction);
+    reorderMutation.mutate({
+      items: toSequentialPlanningOrder(next, "sortOrder").map((item) => ({
+        ...item,
+        planningStatus: status,
+      })),
+    });
+  }
+
+  return (
+    <ProductPlanningShell>
+      <div className="overflow-x-auto pb-2">
+        <div className="grid min-w-[1320px] grid-cols-9 gap-3">
+          {KANBAN_STATUSES.map((status) => {
+            const items = sortByBoardOrder(rows.filter((item) => item.planningStatus === status.value));
+            return (
+              <section key={status.value} className="min-h-[520px] rounded-md border border-border bg-muted/20">
+                <div className="flex items-center justify-between border-b border-border px-3 py-2">
+                  <h2 className="text-sm font-semibold">{status.label}</h2>
+                  <Badge variant="secondary">{items.length}</Badge>
+                </div>
+                <div className="space-y-2 p-2">
+                  {isLoading ? (
+                    Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-28 w-full" />)
+                  ) : items.length === 0 ? (
+                    <p className="py-6 text-center text-xs text-muted-foreground">No items</p>
+                  ) : items.map((item, index) => (
+                    <PlanningItemCard key={item.id} item={item}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex gap-1">
+                          <Button variant="outline" size="icon" className="h-7 w-7" disabled={index === 0} onClick={() => moveWithinColumn(status.value, item.id, -1)}>
+                            <ArrowUp className="h-3 w-3" />
+                          </Button>
+                          <Button variant="outline" size="icon" className="h-7 w-7" disabled={index === items.length - 1} onClick={() => moveWithinColumn(status.value, item.id, 1)}>
+                            <ArrowDown className="h-3 w-3" />
+                          </Button>
+                        </div>
+                        <Select value={item.planningStatus} onValueChange={(value) => moveStatusMutation.mutate({ item, planningStatus: value as PlanningStatus })}>
+                          <SelectTrigger className="h-7 w-[116px] text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {KANBAN_STATUSES.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </PlanningItemCard>
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      </div>
+    </ProductPlanningShell>
+  );
+}
+
+export function ProductPlanningRoadmapPage() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [filters, setFilters] = useState({
+    workItemType: "all",
+    priority: "all",
+    planningStatus: "all",
+    module: "",
+  });
+  const queryString = useMemo(() => {
+    const params = new URLSearchParams({ sortBy: "roadmapOrder", sortDirection: "asc", limit: "250" });
+    Object.entries(filters).forEach(([key, value]) => {
+      if (!value || value === "all") return;
+      params.set(key, value);
+    });
+    return params.toString();
+  }, [filters]);
+
+  const { data: rows = [], isLoading } = useQuery<WorkItem[]>({
+    queryKey: ["/api/product-planning/work-items", "roadmap", queryString],
+    queryFn: () => fetchJson<WorkItem[]>(`/api/product-planning/work-items?${queryString}`),
+  });
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/product-planning/work-items"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
+  };
+
+  const movePhaseMutation = useMutation({
+    mutationFn: async ({ item, phase }: { item: WorkItem; phase: Phase | null }) => {
+      const targetCount = rows.filter((row) => row.phase === phase && row.id !== item.id).length;
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${item.id}/move-phase`, {
+        phase,
+        roadmapOrder: (targetCount + 1) * 10,
+      });
+      return (await res.json()).data as WorkItem;
+    },
+    onSuccess: invalidate,
+    onError: (error: Error) => toast({ title: "Phase move failed", description: error.message, variant: "destructive" }),
+  });
+
+  const reorderMutation = useMutation({
+    mutationFn: async ({ items }: { items: Array<{ id: string; roadmapOrder: number; phase: Phase | null }> }) => {
+      const res = await apiRequest("POST", "/api/product-planning/work-items/reorder", { items });
+      return (await res.json()).data as WorkItem[];
+    },
+    onSuccess: invalidate,
+    onError: (error: Error) => toast({ title: "Roadmap reorder failed", description: error.message, variant: "destructive" }),
+  });
+
+  function moveWithinPhase(phase: Phase | null, itemId: string, direction: -1 | 1) {
+    const items = sortByRoadmapOrder(rows.filter((item) => item.phase === phase));
+    const index = items.findIndex((item) => item.id === itemId);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= items.length) return;
+    const next = movePlanningItem(items, itemId, direction);
+    reorderMutation.mutate({
+      items: toSequentialPlanningOrder(next, "roadmapOrder").map((item) => ({
+        ...item,
+        phase,
+      })),
+    });
+  }
+
+  const groups: Array<{ value: Phase | null; label: string }> = [...PHASES, { value: null, label: "Unassigned" }];
+
+  return (
+    <ProductPlanningShell>
+      <Card>
+        <CardContent className="grid gap-3 p-4 md:grid-cols-4">
+          <FilterSelect value={filters.workItemType} onChange={(value) => setFilters({ ...filters, workItemType: value })} options={WORK_ITEM_TYPES} placeholder="Type" />
+          <FilterSelect value={filters.priority} onChange={(value) => setFilters({ ...filters, priority: value })} options={PRIORITIES} placeholder="Priority" />
+          <FilterSelect value={filters.planningStatus} onChange={(value) => setFilters({ ...filters, planningStatus: value })} options={STATUSES} placeholder="Status" />
+          <Input value={filters.module} onChange={(event) => setFilters({ ...filters, module: event.target.value })} placeholder="Module" className="h-9" />
+        </CardContent>
+      </Card>
+      <div className="space-y-4">
+        {groups.map((group) => {
+          const items = sortByRoadmapOrder(rows.filter((item) => item.phase === group.value));
+          return (
+            <section key={group.value ?? "unassigned"} className="rounded-md border border-border">
+              <div className="flex items-center justify-between border-b border-border bg-muted/20 px-4 py-3">
+                <h2 className="text-sm font-semibold">{group.label}</h2>
+                <Badge variant="secondary">{items.length}</Badge>
+              </div>
+              <div className="grid gap-3 p-3 md:grid-cols-2 xl:grid-cols-3">
+                {isLoading ? (
+                  Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-32 w-full" />)
+                ) : items.length === 0 ? (
+                  <p className="col-span-full py-4 text-center text-sm text-muted-foreground">No items in this phase.</p>
+                ) : items.map((item, index) => (
+                  <PlanningItemCard key={item.id} item={item}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex gap-1">
+                        <Button variant="outline" size="icon" className="h-7 w-7" disabled={index === 0} onClick={() => moveWithinPhase(group.value, item.id, -1)}>
+                          <ArrowUp className="h-3 w-3" />
+                        </Button>
+                        <Button variant="outline" size="icon" className="h-7 w-7" disabled={index === items.length - 1} onClick={() => moveWithinPhase(group.value, item.id, 1)}>
+                          <ArrowDown className="h-3 w-3" />
+                        </Button>
+                      </div>
+                      <Select value={item.phase ?? "none"} onValueChange={(value) => movePhaseMutation.mutate({ item, phase: value === "none" ? null : value as Phase })}>
+                        <SelectTrigger className="h-7 w-[140px] text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">Unassigned</SelectItem>
+                          {PHASES.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </PlanningItemCard>
+                ))}
+              </div>
+            </section>
+          );
+        })}
+      </div>
     </ProductPlanningShell>
   );
 }
@@ -659,6 +946,8 @@ function WorkItemDialog({
   open,
   form,
   setForm,
+  availableParents,
+  children,
   onOpenChange,
   onSave,
   isSaving,
@@ -666,6 +955,8 @@ function WorkItemDialog({
   open: boolean;
   form: WorkItemFormState;
   setForm: (form: WorkItemFormState) => void;
+  availableParents: WorkItem[];
+  children: WorkItem[];
   onOpenChange: (open: boolean) => void;
   onSave: () => void;
   isSaving: boolean;
@@ -694,6 +985,20 @@ function WorkItemDialog({
           <SelectField label="Phase" value={form.phase || "none"} includeNone options={PHASES} onChange={(value) => update("phase", value === "none" ? "" : value as Phase)} />
           <TextField label="Module" value={form.module} onChange={(value) => update("module", value)} />
           <TextField label="Submodule" value={form.submodule} onChange={(value) => update("submodule", value)} />
+          <div className="space-y-2 md:col-span-2">
+            <Label>Epic Parent</Label>
+            <Select value={form.parentId || "none"} onValueChange={(value) => update("parentId", value === "none" ? "" : value)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None</SelectItem>
+                {availableParents.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {item.reference} - {item.title}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <TextField label="Tags" value={form.tags} onChange={(value) => update("tags", value)} />
           <TextField label="Requested By" value={form.requestedBy} onChange={(value) => update("requestedBy", value)} />
           <TextField label="Owner User ID" value={form.ownerUserId} onChange={(value) => update("ownerUserId", value)} />
@@ -703,6 +1008,22 @@ function WorkItemDialog({
             <Label>Notes</Label>
             <Textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} className="min-h-[90px]" />
           </div>
+          {children.length > 0 && (
+            <div className="space-y-2 md:col-span-2">
+              <Label>Children</Label>
+              <div className="space-y-2 rounded-md border border-border p-3">
+                {children.map((child) => (
+                  <div key={child.id} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="min-w-0 truncate">
+                      <span className="mr-2 font-mono text-xs text-muted-foreground">{child.reference}</span>
+                      {child.title}
+                    </span>
+                    <Badge variant="outline">{labelFor(STATUSES, child.planningStatus)}</Badge>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>

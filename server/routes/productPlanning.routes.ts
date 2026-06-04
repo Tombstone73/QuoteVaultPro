@@ -33,6 +33,7 @@ import {
   parseProductPlanningCsv,
   type ProductPlanningImportMappedRow,
 } from "../services/productPlanningCsv";
+import { validateProductPlanningParent } from "../services/productPlanningHierarchy";
 
 type DbExecutor = typeof db | any;
 
@@ -105,6 +106,26 @@ const csvPreviewSchema = z.object({
 const csvCommitSchema = csvPreviewSchema.extend({
   allowDuplicates: z.boolean().optional().default(false),
   rows: z.array(z.unknown()).optional(),
+});
+
+const moveStatusSchema = z.object({
+  planningStatus: z.enum(productPlanningStatusValues),
+  sortOrder: z.number().int().nullable().optional(),
+});
+
+const movePhaseSchema = z.object({
+  phase: z.enum(productPlanningPhaseValues).nullable(),
+  roadmapOrder: z.number().int().nullable().optional(),
+});
+
+const reorderSchema = z.object({
+  items: z.array(z.object({
+    id: z.string().trim().min(1),
+    sortOrder: z.number().int().nullable().optional(),
+    roadmapOrder: z.number().int().nullable().optional(),
+    planningStatus: z.enum(productPlanningStatusValues).optional(),
+    phase: z.enum(productPlanningPhaseValues).nullable().optional(),
+  })).min(1).max(250),
 });
 
 function getUserId(user: any): string | undefined {
@@ -312,6 +333,26 @@ function orderExpression(sortBy: z.infer<typeof listQuerySchema>["sortBy"], sort
   return sortDirection === "asc" ? asc(column) : desc(column);
 }
 
+async function validateParentForOrg(
+  organizationId: string,
+  workItemId: string,
+  parentId: string | null | undefined,
+  executor: DbExecutor = db,
+) {
+  return validateProductPlanningParent({
+    workItemId,
+    parentId,
+    lookup: async (id) => {
+      const [row] = await executor
+        .select({ id: productPlanningWorkItems.id, parentId: productPlanningWorkItems.parentId })
+        .from(productPlanningWorkItems)
+        .where(and(eq(productPlanningWorkItems.organizationId, organizationId), eq(productPlanningWorkItems.id, id)))
+        .limit(1);
+      return row ?? null;
+    },
+  });
+}
+
 export function registerProductPlanningRoutes(
   app: Express,
   middleware: {
@@ -387,7 +428,39 @@ export function registerProductPlanningRoutes(
         .orderBy(desc(productPlanningEvents.createdAt))
         .limit(50);
 
-      res.json({ success: true, data: { ...item, events } });
+      const parent = item.parentId
+        ? await db
+          .select({
+            id: productPlanningWorkItems.id,
+            reference: productPlanningWorkItems.reference,
+            title: productPlanningWorkItems.title,
+            workItemType: productPlanningWorkItems.workItemType,
+            planningStatus: productPlanningWorkItems.planningStatus,
+          })
+          .from(productPlanningWorkItems)
+          .where(and(eq(productPlanningWorkItems.organizationId, organizationId), eq(productPlanningWorkItems.id, item.parentId)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : null;
+
+      const children = await db
+        .select({
+          id: productPlanningWorkItems.id,
+          reference: productPlanningWorkItems.reference,
+          title: productPlanningWorkItems.title,
+          workItemType: productPlanningWorkItems.workItemType,
+          planningStatus: productPlanningWorkItems.planningStatus,
+          priority: productPlanningWorkItems.priority,
+        })
+        .from(productPlanningWorkItems)
+        .where(and(
+          eq(productPlanningWorkItems.organizationId, organizationId),
+          eq(productPlanningWorkItems.parentId, id),
+          isNull(productPlanningWorkItems.archivedAt),
+        ))
+        .orderBy(asc(productPlanningWorkItems.sortOrder), asc(productPlanningWorkItems.createdAt));
+
+      res.json({ success: true, data: { ...item, parent, children, events } });
     } catch (error) {
       console.error("[ProductPlanning] Detail failed:", error);
       res.status(500).json({ success: false, message: "Failed to fetch Product Planning work item." });
@@ -442,6 +515,13 @@ export function registerProductPlanningRoutes(
         .where(and(eq(productPlanningWorkItems.organizationId, organizationId), eq(productPlanningWorkItems.id, id)))
         .limit(1);
       if (!existing) return res.status(404).json({ success: false, message: "Product Planning work item not found." });
+
+      if (Object.prototype.hasOwnProperty.call(input, "parentId")) {
+        const parentValidation = await validateParentForOrg(organizationId, id, input.parentId, db);
+        if (!parentValidation.valid) {
+          return res.status(400).json({ success: false, message: parentValidation.message });
+        }
+      }
 
       const updateValues = {
         ...input,
@@ -512,6 +592,156 @@ export function registerProductPlanningRoutes(
     } catch (error) {
       console.error("[ProductPlanning] Archive failed:", error);
       res.status(500).json({ success: false, message: "Failed to archive Product Planning work item." });
+    }
+  });
+
+  app.post("/api/product-planning/work-items/:id/move-status", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const input = moveStatusSchema.parse(req.body ?? {});
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const id = String(req.params.id);
+
+      const [existing] = await db
+        .select()
+        .from(productPlanningWorkItems)
+        .where(and(eq(productPlanningWorkItems.organizationId, organizationId), eq(productPlanningWorkItems.id, id)))
+        .limit(1);
+      if (!existing) return res.status(404).json({ success: false, message: "Product Planning work item not found." });
+
+      const [updated] = await db
+        .update(productPlanningWorkItems)
+        .set({
+          planningStatus: input.planningStatus,
+          sortOrder: input.sortOrder ?? existing.sortOrder,
+          archivedAt: input.planningStatus === "archived" ? (existing.archivedAt ?? new Date()) : existing.archivedAt,
+          updatedAt: new Date(),
+          updatedByUserId: actorUserId,
+        })
+        .where(and(eq(productPlanningWorkItems.organizationId, organizationId), eq(productPlanningWorkItems.id, id)))
+        .returning();
+
+      await recordPlanningEvent({
+        organizationId,
+        workItemId: id,
+        eventType: "status_changed",
+        message: `Status changed from ${existing.planningStatus} to ${updated.planningStatus}`,
+        metadata: {
+          previousStatus: existing.planningStatus,
+          nextStatus: updated.planningStatus,
+          previousSortOrder: existing.sortOrder,
+          nextSortOrder: updated.sortOrder,
+        },
+        actorUserId,
+      });
+
+      res.json({ success: true, data: updated, message: "Product Planning status updated." });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      console.error("[ProductPlanning] Move status failed:", error);
+      res.status(500).json({ success: false, message: "Failed to move Product Planning work item status." });
+    }
+  });
+
+  app.post("/api/product-planning/work-items/:id/move-phase", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const input = movePhaseSchema.parse(req.body ?? {});
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const id = String(req.params.id);
+
+      const [existing] = await db
+        .select()
+        .from(productPlanningWorkItems)
+        .where(and(eq(productPlanningWorkItems.organizationId, organizationId), eq(productPlanningWorkItems.id, id)))
+        .limit(1);
+      if (!existing) return res.status(404).json({ success: false, message: "Product Planning work item not found." });
+
+      const [updated] = await db
+        .update(productPlanningWorkItems)
+        .set({
+          phase: input.phase,
+          roadmapOrder: input.roadmapOrder ?? existing.roadmapOrder,
+          updatedAt: new Date(),
+          updatedByUserId: actorUserId,
+        })
+        .where(and(eq(productPlanningWorkItems.organizationId, organizationId), eq(productPlanningWorkItems.id, id)))
+        .returning();
+
+      await recordPlanningEvent({
+        organizationId,
+        workItemId: id,
+        eventType: "phase_changed",
+        message: `Phase changed from ${existing.phase ?? "unassigned"} to ${updated.phase ?? "unassigned"}`,
+        metadata: {
+          previousPhase: existing.phase,
+          nextPhase: updated.phase,
+          previousRoadmapOrder: existing.roadmapOrder,
+          nextRoadmapOrder: updated.roadmapOrder,
+        },
+        actorUserId,
+      });
+
+      res.json({ success: true, data: updated, message: "Product Planning phase updated." });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      console.error("[ProductPlanning] Move phase failed:", error);
+      res.status(500).json({ success: false, message: "Failed to move Product Planning work item phase." });
+    }
+  });
+
+  app.post("/api/product-planning/work-items/reorder", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const input = reorderSchema.parse(req.body ?? {});
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+
+      const updated = await db.transaction(async (tx) => {
+        const rows = [];
+        for (const item of input.items) {
+          const updateValues: Record<string, unknown> = {
+            updatedAt: new Date(),
+            updatedByUserId: actorUserId,
+          };
+          if (Object.prototype.hasOwnProperty.call(item, "sortOrder")) updateValues.sortOrder = item.sortOrder ?? null;
+          if (Object.prototype.hasOwnProperty.call(item, "roadmapOrder")) updateValues.roadmapOrder = item.roadmapOrder ?? null;
+          if (Object.prototype.hasOwnProperty.call(item, "planningStatus")) updateValues.planningStatus = item.planningStatus;
+          if (Object.prototype.hasOwnProperty.call(item, "phase")) updateValues.phase = item.phase ?? null;
+
+          const [row] = await tx
+            .update(productPlanningWorkItems)
+            .set(updateValues)
+            .where(and(eq(productPlanningWorkItems.organizationId, organizationId), eq(productPlanningWorkItems.id, item.id)))
+            .returning();
+          if (row) {
+            rows.push(row);
+            await recordPlanningEvent({
+              organizationId,
+              workItemId: row.id,
+              eventType: "reordered",
+              message: `Reordered ${row.reference}`,
+              metadata: {
+                sortOrder: row.sortOrder,
+                roadmapOrder: row.roadmapOrder,
+                planningStatus: row.planningStatus,
+                phase: row.phase,
+              },
+              actorUserId,
+              executor: tx,
+            });
+          }
+        }
+        return rows;
+      });
+
+      res.json({ success: true, data: updated, message: "Product Planning work items reordered." });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      console.error("[ProductPlanning] Reorder failed:", error);
+      res.status(500).json({ success: false, message: "Failed to reorder Product Planning work items." });
     }
   });
 

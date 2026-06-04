@@ -131,6 +131,8 @@ export const ROUTES = {
     root: "/product-planning",
     dashboard: "/product-planning/dashboard",
     backlog: "/product-planning/backlog",
+    kanban: "/product-planning/kanban",
+    roadmap: "/product-planning/roadmap",
     imports: "/product-planning/imports",
   },
 
