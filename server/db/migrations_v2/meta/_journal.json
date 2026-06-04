@@ -589,6 +589,13 @@
       "when": 1782345600000,
       "tag": "0088_bug_report_reference_numbers",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1782432000000,
+      "tag": "0089_bug_report_screenshot_attachment_metadata",
+      "breakpoints": true
     }
   ]
 }

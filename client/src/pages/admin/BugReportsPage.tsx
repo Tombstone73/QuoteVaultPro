@@ -45,7 +45,21 @@ interface BugReportDetail extends BugReportListItem {
   screenHeight: number | null;
   screenshotUrl: string | null; // DEPRECATED: backward compatibility
   screenshotUrls: string[];
+  screenshotAttachments: BugReportScreenshotAttachment[];
   metadata: Record<string, unknown>;
+}
+
+interface BugReportScreenshotAttachment {
+  filename: string;
+  mimeType: string;
+  size: number;
+  storagePath: string;
+  displayOrder: number;
+}
+
+interface BugReportScreenshotDisplay extends BugReportScreenshotAttachment {
+  path: string;
+  url: string;
 }
 
 interface BugReportNote {
@@ -291,7 +305,7 @@ async function fetchBugReportDetail(id: string): Promise<BugReportDetail> {
   return body.data as BugReportDetail;
 }
 
-async function fetchScreenshotUrls(id: string): Promise<Array<{ path: string; url: string }>> {
+async function fetchScreenshotUrls(id: string): Promise<BugReportScreenshotDisplay[]> {
   const res = await fetch(`/api/bug-reports/${id}/screenshot-urls`, { credentials: "include" });
   if (!res.ok) {
     console.error("Failed to fetch screenshot URLs");
@@ -449,6 +463,43 @@ function safeDownloadFilename(filename: string): string {
   return filename.replace(/[/\\?%*:|"<>]/g, "-") || "printers-hero-ai-triage-brief.pdf";
 }
 
+function formatAttachmentSize(bytes: number): string {
+  if (!bytes) return "Size unavailable";
+  const mb = bytes / (1024 * 1024);
+  return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
+}
+
+export function BugReportScreenshotGallery({ screenshots }: { screenshots: BugReportScreenshotDisplay[] }) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {screenshots.map((item, index) => (
+        <a
+          key={`${item.path}-${index}`}
+          href={item.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="group block overflow-hidden rounded-md border border-border bg-muted/20"
+          title={item.filename}
+        >
+          <img
+            src={item.url}
+            alt={`Screenshot ${index + 1}`}
+            className="h-32 w-full object-cover transition-opacity group-hover:opacity-90"
+            onError={(e) => {
+              console.error("Failed to load screenshot:", item.path);
+              e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='120'%3E%3Crect fill='%23f0f0f0' width='200' height='120'/%3E%3Ctext x='50%25' y='50%25' font-family='Arial' font-size='14' fill='%23666' text-anchor='middle' dy='.3em'%3EImage unavailable%3C/text%3E%3C/svg%3E";
+            }}
+          />
+          <div className="space-y-0.5 px-2 py-1.5">
+            <p className="truncate text-xs font-medium">{item.filename || `Screenshot ${index + 1}`}</p>
+            <p className="text-[11px] text-muted-foreground">{formatAttachmentSize(item.size)}</p>
+          </div>
+        </a>
+      ))}
+    </div>
+  );
+}
+
 export async function downloadAiTriageBriefPdf(briefId: string): Promise<void> {
   const response = await fetch(getAiTriageBriefPdfUrl(briefId), { method: "GET", credentials: "include" });
   if (!response.ok) {
@@ -604,7 +655,7 @@ export default function BugReportsPage() {
     enabled: !!selectedId,
   });
 
-  const { data: screenshotUrls, isLoading: screenshotsLoading } = useQuery<Array<{ path: string; url: string }>>({
+  const { data: screenshotUrls, isLoading: screenshotsLoading } = useQuery<BugReportScreenshotDisplay[]>({
     queryKey: ["/api/bug-reports/screenshots", selectedId],
     queryFn: () => fetchScreenshotUrls(selectedId!),
     enabled: !!selectedId,
@@ -946,28 +997,7 @@ export default function BugReportsPage() {
 
                   return (
                     <DetailSection label={screenshotUrls.length === 1 ? "Screenshot" : `Screenshots (${screenshotUrls.length})`}>
-                      <div className={screenshotUrls.length === 1 ? "" : "grid grid-cols-2 gap-2"}>
-                        {screenshotUrls.map((item, index) => (
-                          <a
-                            key={index}
-                            href={item.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="block"
-                          >
-                            <img
-                              src={item.url}
-                              alt={`Screenshot ${index + 1}`}
-                              className="max-w-full rounded-md border border-border object-contain hover:opacity-90 transition-opacity"
-                              style={{ maxHeight: screenshotUrls.length === 1 ? 320 : 200 }}
-                              onError={(e) => {
-                                console.error("Failed to load screenshot:", item.path);
-                                e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect fill='%23f0f0f0' width='200' height='200'/%3E%3Ctext x='50%25' y='50%25' font-family='Arial' font-size='14' fill='%23666' text-anchor='middle' dy='.3em'%3EImage unavailable%3C/text%3E%3C/svg%3E";
-                              }}
-                            />
-                          </a>
-                        ))}
-                      </div>
+                      <BugReportScreenshotGallery screenshots={screenshotUrls} />
                     </DetailSection>
                   );
                 })()}

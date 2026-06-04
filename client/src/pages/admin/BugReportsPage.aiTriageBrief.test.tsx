@@ -22,6 +22,7 @@ jest.mock("@/components/ui/sheet", () => ({
 
 let AiTriageBriefDetail: typeof import("./BugReportsPage").AiTriageBriefDetail;
 let AiTriageBriefHistoryPanel: typeof import("./BugReportsPage").AiTriageBriefHistoryPanel;
+let BugReportScreenshotGallery: typeof import("./BugReportsPage").BugReportScreenshotGallery;
 let BugReportFiltersBar: typeof import("./BugReportsPage").BugReportFiltersBar;
 let SortableTableHead: typeof import("./BugReportsPage").SortableTableHead;
 let canGenerateAiTriageBrief: typeof import("./BugReportsPage").canGenerateAiTriageBrief;
@@ -36,6 +37,7 @@ beforeAll(async () => {
   const module = await import("./BugReportsPage");
   AiTriageBriefDetail = module.AiTriageBriefDetail;
   AiTriageBriefHistoryPanel = module.AiTriageBriefHistoryPanel;
+  BugReportScreenshotGallery = module.BugReportScreenshotGallery;
   BugReportFiltersBar = module.BugReportFiltersBar;
   SortableTableHead = module.SortableTableHead;
   canGenerateAiTriageBrief = module.canGenerateAiTriageBrief;
@@ -305,6 +307,27 @@ describe("AI Triage Brief UI", () => {
     ];
 
     expect(sortBugReportsForDisplay(searchResults, { key: "referenceNumber", direction: "asc" }).map((item) => item.id)).toEqual(["b2", "b10"]);
+  });
+
+  test("older single-screenshot bug reports still render as a clickable thumbnail", () => {
+    const html = renderToStaticMarkup(
+      <BugReportScreenshotGallery
+        screenshots={[{
+          filename: "legacy.png",
+          mimeType: "image/*",
+          size: 0,
+          storagePath: "https://cdn.example.test/legacy.png",
+          displayOrder: 0,
+          path: "https://cdn.example.test/legacy.png",
+          url: "https://cdn.example.test/legacy.png",
+        }]}
+      />,
+    );
+
+    expect(html).toContain("legacy.png");
+    expect(html).toContain("href=\"https://cdn.example.test/legacy.png\"");
+    expect(html).toContain("alt=\"Screenshot 1\"");
+    expect(html).toContain("Size unavailable");
   });
 
 

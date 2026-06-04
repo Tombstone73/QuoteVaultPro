@@ -6223,6 +6223,14 @@ export const assetLinksRelations = relations(assetLinks, ({ one }) => ({
 // ============================================================
 // BUG REPORTS — org-scoped user-submitted bug reports
 // ============================================================
+export type BugReportScreenshotAttachment = {
+  filename: string;
+  mimeType: string;
+  size: number;
+  storagePath: string;
+  displayOrder: number;
+};
+
 export const bugReports = pgTable("bug_reports", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
@@ -6239,6 +6247,7 @@ export const bugReports = pgTable("bug_reports", {
   screenHeight: integer("screen_height"),
   screenshotUrl: text("screenshot_url"), // DEPRECATED: use screenshotUrls instead
   screenshotUrls: text("screenshot_urls").array().notNull().default(sql`'{}'::text[]`),
+  screenshotAttachments: jsonb("screenshot_attachments").$type<BugReportScreenshotAttachment[]>().notNull().default(sql`'[]'::jsonb`),
   status: text("status").notNull().default('open'), // 'open' | 'in_review' | 'resolved' | 'closed'
   metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
