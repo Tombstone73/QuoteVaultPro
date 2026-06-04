@@ -1,7 +1,7 @@
 import type { StorageProviderConfig } from "@shared/schema";
 
 export type TitanManagedStorageTarget = "supabase" | "local_dev" | "s3";
-export type StorageResourceType = "quote" | "order" | "customer" | "job";
+export type StorageResourceType = "quote" | "order" | "customer" | "job" | "organization";
 
 export type StorageResourceContext = {
   organizationId: string;

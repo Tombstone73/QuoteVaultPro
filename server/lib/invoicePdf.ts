@@ -1,14 +1,25 @@
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 
+import type { CompanyAddress, RemittanceAddress } from '@shared/companyInfoInvoiceBranding';
 import { DEFAULT_INVOICE_PDF_THEME, type InvoicePdfTheme, type Rgb } from './invoicePdfTheme';
 
 type CompanySettingsLike = {
   companyName?: string | null;
+  companyDisplayName?: string | null;
+  legalCompanyName?: string | null;
   address?: string | null;
+  physicalAddress?: CompanyAddress | null;
+  remittanceAddress?: RemittanceAddress | null;
   phone?: string | null;
   email?: string | null;
   website?: string | null;
+  taxId?: string | null;
   logoUrl?: string | null;
+  invoiceLogoUrl?: string | null;
+  invoiceLogoAssetId?: string | null;
+  invoicePaymentInstructions?: string | null;
+  invoiceFooterNote?: string | null;
+  checksPayableTo?: string | null;
 } | null;
 
 type CustomerLike = {
@@ -166,6 +177,60 @@ function buildAddressBlock(params: {
   return joinNonEmpty([params.legacy]);
 }
 
+const cleanText = (value: unknown): string => String(value ?? '').trim();
+
+export function resolveInvoiceCompanyDisplayData(companySettings: CompanySettingsLike) {
+  const settings = companySettings || {};
+  const companyDisplayName =
+    cleanText(settings.companyDisplayName) ||
+    cleanText(settings.companyName) ||
+    cleanText(settings.legalCompanyName);
+  const legalCompanyName = cleanText(settings.legalCompanyName);
+  const physicalAddress = buildAddressBlock({
+    line1: settings.physicalAddress?.line1,
+    line2: settings.physicalAddress?.line2,
+    city: settings.physicalAddress?.city,
+    state: settings.physicalAddress?.state,
+    postalCode: settings.physicalAddress?.postalCode,
+    country: settings.physicalAddress?.country,
+    legacy: settings.address,
+  });
+  const remittanceEnabled = settings.remittanceAddress?.enabled === true;
+  const explicitRemittanceAddress = buildAddressBlock({
+    line1: settings.remittanceAddress?.line1,
+    line2: settings.remittanceAddress?.line2,
+    city: settings.remittanceAddress?.city,
+    state: settings.remittanceAddress?.state,
+    postalCode: settings.remittanceAddress?.postalCode,
+    country: settings.remittanceAddress?.country,
+    legacy: null,
+  });
+  const paymentAddress = remittanceEnabled && explicitRemittanceAddress
+    ? explicitRemittanceAddress
+    : physicalAddress;
+
+  return {
+    companyDisplayName,
+    legalCompanyName,
+    showLegalCompanyName: !!legalCompanyName && legalCompanyName !== companyDisplayName,
+    physicalAddress,
+    remittanceEnabled,
+    paymentAddress,
+    paymentAddressLabel: remittanceEnabled && explicitRemittanceAddress
+      ? 'Send payments to'
+      : 'Payment mailing address',
+    phone: cleanText(settings.phone),
+    email: cleanText(settings.email),
+    website: cleanText(settings.website),
+    taxId: cleanText(settings.taxId),
+    invoiceLogoUrl: cleanText(settings.invoiceLogoUrl) || cleanText(settings.logoUrl),
+    invoiceLogoAssetId: cleanText(settings.invoiceLogoAssetId),
+    invoicePaymentInstructions: cleanText(settings.invoicePaymentInstructions),
+    invoiceFooterNote: cleanText(settings.invoiceFooterNote),
+    checksPayableTo: cleanText(settings.checksPayableTo),
+  };
+}
+
 function wrapText(params: {
   text: string;
   maxWidth: number;
@@ -264,6 +329,7 @@ export async function generateInvoicePdfBytes(
   const invoice = params.invoice || {};
   const customer = params.customer || {};
   const companySettings = params.companySettings || null;
+  const companyDisplay = resolveInvoiceCompanyDisplayData(companySettings);
 
   const currency = String(invoice.currency || 'USD').toUpperCase();
 
@@ -328,8 +394,7 @@ export async function generateInvoicePdfBytes(
     const themeLogo = (theme.header.logo.dataUrl || '').trim();
     if (themeLogo) return themeLogo;
 
-    const csLogo = String(companySettings?.logoUrl || '').trim();
-    if (csLogo.startsWith('data:')) return csLogo;
+    if (companyDisplay.invoiceLogoUrl.startsWith('data:')) return companyDisplay.invoiceLogoUrl;
 
     return null;
   };
@@ -337,6 +402,7 @@ export async function generateInvoicePdfBytes(
   const resolveFooterText = (): string => {
     const override = params.overrides?.footerText;
     if (override != null) return String(override).trim();
+    if (companyDisplay.invoiceFooterNote) return companyDisplay.invoiceFooterNote;
     return String(theme.footer.text || '').trim();
   };
 
@@ -458,16 +524,15 @@ export async function generateInvoicePdfBytes(
 
     if (mode === 'none') return;
 
-    if (!shouldUseImage) {
+    if (mode === 'titan') {
       drawTitanLogo(x, topY);
       return;
     }
 
+    if (!shouldUseImage) return;
     if (!dataUrl) return;
     const decoded = tryDecodeDataUrl(dataUrl);
     if (!decoded) {
-      // Fallback to TITAN if the override isn't a supported data URL
-      drawTitanLogo(x, topY);
       return;
     }
 
@@ -563,15 +628,16 @@ export async function generateInvoicePdfBytes(
   // -----------------
   // FROM / BILL TO / SHIP TO blocks
   // -----------------
-  const companyName = (companySettings?.companyName || '').trim();
   const fromBlock = joinNonEmpty([
-    companyName || null,
-    (companySettings?.address || '').trim() || null,
+    companyDisplay.companyDisplayName || null,
+    companyDisplay.showLegalCompanyName ? `Legal: ${companyDisplay.legalCompanyName}` : null,
+    companyDisplay.physicalAddress || null,
     joinNonEmpty([
-      (companySettings?.phone || '').trim() || null,
-      (companySettings?.email || '').trim() || null,
+      companyDisplay.phone || null,
+      companyDisplay.email || null,
     ], ' • ') || null,
-    (companySettings?.website || '').trim() || null,
+    companyDisplay.website || null,
+    companyDisplay.taxId ? `Tax ID: ${companyDisplay.taxId}` : null,
   ]);
 
   const billToBlock = joinNonEmpty([
@@ -861,6 +927,41 @@ export async function generateInvoicePdfBytes(
       size: theme.fontSizes.body,
       lineHeight: 13,
       color: theme.colors.mutedText,
+    });
+    y = r.bottomY;
+  }
+
+  // -----------------
+  // Payment / remittance instructions
+  // -----------------
+  const paymentBlock = joinNonEmpty([
+    companyDisplay.checksPayableTo ? `Checks payable to: ${companyDisplay.checksPayableTo}` : null,
+    companyDisplay.invoicePaymentInstructions || null,
+    companyDisplay.paymentAddress
+      ? `${companyDisplay.paymentAddressLabel}\n${companyDisplay.paymentAddress}`
+      : null,
+    companyDisplay.invoiceFooterNote || null,
+  ], '\n\n');
+
+  if (paymentBlock) {
+    const needed = 95;
+    if (y < bottomSafeY + needed) newPage();
+
+    y -= 12;
+    drawDivider();
+    y -= 14;
+
+    drawText('Payment', { x: margin, y, size: theme.fontSizes.h2, bold: true });
+    y -= 14;
+
+    const r = drawWrapped(paymentBlock, {
+      x: margin,
+      y,
+      width: width - margin * 2,
+      size: theme.fontSizes.body,
+      lineHeight: 13,
+      color: theme.colors.mutedText,
+      maxLines: 16,
     });
     y = r.bottomY;
   }

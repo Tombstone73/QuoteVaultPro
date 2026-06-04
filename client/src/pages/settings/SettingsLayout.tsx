@@ -57,6 +57,7 @@ import {
 import { StationStepEditor } from "@/components/production/StationStepEditor";
 import { JobStatusSettings } from "@/components/job-status-settings";
 import { InvoiceRemindersTab } from "@/components/admin-settings";
+import { CompanyInfoInvoiceBrandingCard } from "@/components/settings/CompanyInfoInvoiceBrandingCard";
 import {
   useOrderWorkflow,
   usePublishOrderWorkflow,
@@ -281,27 +282,20 @@ export function SettingsLayout() {
   );
 }
 
-// Placeholder components for settings sub-pages
 export function CompanySettings() {
   return (
-    <TitanCard className="p-6">
-      <div className="space-y-6">
+    <div className="space-y-6">
+      <TitanCard className="p-6">
         <div>
           <h2 className="text-titan-lg font-semibold text-titan-text-primary">Company Settings</h2>
           <p className="text-titan-sm text-titan-text-secondary mt-1">
-            Configure your company information, defaults, and general preferences
+            Configure organization identity, invoice branding, and payment display details
           </p>
         </div>
-        
-        <div className="h-px bg-titan-border-subtle" />
-        
-        <div className="space-y-4">
-          <p className="text-titan-sm text-titan-text-muted">
-            Company settings UI will be implemented here
-          </p>
-        </div>
-      </div>
-    </TitanCard>
+      </TitanCard>
+
+      <CompanyInfoInvoiceBrandingCard />
+    </div>
   );
 }
 

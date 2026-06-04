@@ -85,7 +85,7 @@ export function generateRelativePath(options: {
   orderNumber?: string;
   lineItemId?: string;
   storedFilename: string;
-  resourceType?: 'quote' | 'order' | 'customer' | 'job';
+  resourceType?: 'quote' | 'order' | 'customer' | 'job' | 'organization';
   resourceId?: string;
 }): string {
   const {
@@ -250,7 +250,7 @@ export async function processUploadedFile(options: {
   organizationId: string;
   orderNumber?: string;
   lineItemId?: string;
-  resourceType?: 'quote' | 'order' | 'customer' | 'job';
+  resourceType?: 'quote' | 'order' | 'customer' | 'job' | 'organization';
   resourceId?: string;
 }): Promise<{
   originalFilename: string;

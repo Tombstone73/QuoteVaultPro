@@ -17,7 +17,40 @@ import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
-import { insertCompanySettingsSchema, updateCompanySettingsSchema } from "@shared/schema";
+import { assets } from "@shared/schema";
+import {
+  companyInfoInvoiceBrandingSchema,
+  normalizeCompanySettingsDto,
+  toCompanySettingsDbPayload,
+} from "@shared/companyInfoInvoiceBranding";
+import { storageApplicationService } from "../services/storage/StorageApplicationService";
+import { enrichAssetWithUrls } from "../services/assets/enrichAssetWithUrls";
+
+function getUserId(user: any): string | null {
+  return user?.claims?.sub || user?.id || null;
+}
+
+const logoUploadSchema = z.object({
+  fileName: z.string().min(1).max(255),
+  mimeType: z.enum(["image/png", "image/jpeg", "image/jpg"]),
+  dataBase64: z.string().min(1),
+});
+
+function decodeLogoUpload(body: unknown): { fileName: string; mimeType: string; buffer: Buffer } {
+  const parsed = logoUploadSchema.parse(body);
+  const buffer = Buffer.from(parsed.dataBase64, "base64");
+  if (!buffer.length) {
+    throw new Error("Logo file is empty");
+  }
+  if (buffer.length > 2 * 1024 * 1024) {
+    throw new Error("Logo file must be 2 MB or smaller");
+  }
+  return {
+    fileName: parsed.fileName,
+    mimeType: parsed.mimeType === "image/jpg" ? "image/jpeg" : parsed.mimeType,
+    buffer,
+  };
+}
 
 export function registerCompanySettingsRoutes(
   app: Express,
@@ -35,10 +68,7 @@ export function registerCompanySettingsRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const settings = await storage.getCompanySettings(organizationId);
-      if (!settings) {
-        return res.status(404).json({ message: "Company settings not found" });
-      }
-      res.json(settings);
+      res.json(normalizeCompanySettingsDto(settings ?? null));
     } catch (error) {
       console.error("Error fetching company settings:", error);
       res.status(500).json({ message: "Failed to fetch company settings" });
@@ -49,11 +79,13 @@ export function registerCompanySettingsRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const settingsData = insertCompanySettingsSchema.parse(req.body);
-      const { organizationId: _orgId, ...settingsWithoutOrgId } =
-        settingsData as typeof settingsData & { organizationId?: string };
-      const settings = await storage.createCompanySettings(organizationId, settingsWithoutOrgId);
-      res.json(settings);
+      const settingsData = companyInfoInvoiceBrandingSchema.parse(req.body);
+      const settingsPayload = toCompanySettingsDbPayload(settingsData);
+      const existing = await storage.getCompanySettings(organizationId);
+      const settings = existing
+        ? await storage.updateCompanySettings(organizationId, existing.id, settingsPayload)
+        : await storage.createCompanySettings(organizationId, settingsPayload);
+      res.json(normalizeCompanySettingsDto(settings));
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
@@ -67,17 +99,82 @@ export function registerCompanySettingsRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const settingsData = updateCompanySettingsSchema.parse(req.body);
-      const { organizationId: _orgId, ...updateData } =
-        settingsData as typeof settingsData & { organizationId?: string };
-      const settings = await storage.updateCompanySettings(organizationId, req.params.id, updateData);
-      res.json(settings);
+      const settingsData = companyInfoInvoiceBrandingSchema.partial().parse(req.body);
+      const existing = await storage.getCompanySettings(organizationId);
+      const merged = companyInfoInvoiceBrandingSchema.parse({
+        ...normalizeCompanySettingsDto(existing ?? null),
+        ...settingsData,
+      });
+      const updateData = toCompanySettingsDbPayload(merged);
+      const settings = existing
+        ? await storage.updateCompanySettings(organizationId, req.params.id, updateData)
+        : await storage.createCompanySettings(organizationId, updateData);
+      res.json(normalizeCompanySettingsDto(settings));
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
       console.error("Error updating company settings:", error);
       res.status(500).json({ message: "Failed to update company settings" });
+    }
+  });
+
+  app.post("/api/company-settings/invoice-logo", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const upload = decodeLogoUpload(req.body);
+      const finalized = await storageApplicationService.finalizeUpload({
+        organizationId,
+        createdByUserId: getUserId(req.user),
+        resource: {
+          organizationId,
+          resourceType: "organization",
+          resourceId: organizationId,
+        },
+        source: {
+          kind: "buffer",
+          buffer: upload.buffer,
+          originalFilename: upload.fileName,
+          mimeType: upload.mimeType,
+        },
+        persistLink: async (tx, stored) => {
+          const [created] = await tx.insert(assets).values({
+            organizationId,
+            fileRecordId: stored.fileRecord.id,
+            fileKey: stored.storedObject.objectKey ?? stored.storedObject.localPathRef ?? null,
+            fileName: stored.storedObject.originalFilename,
+            mimeType: stored.storedObject.mimeType,
+            sizeBytes: stored.storedObject.sizeBytes,
+            sha256: stored.storedObject.checksum,
+            status: "uploaded",
+            previewStatus: "pending",
+          }).returning();
+
+          if (!created) throw new Error("Failed to create invoice logo asset");
+          return created;
+        },
+      });
+
+      const asset = await enrichAssetWithUrls(finalized.linkedRecord as any);
+      const dataUrl = `data:${upload.mimeType};base64,${upload.buffer.toString("base64")}`;
+
+      res.json({
+        assetId: asset.id,
+        invoiceLogoAssetId: asset.id,
+        invoiceLogoUrl: dataUrl,
+        previewUrl: asset.originalUrl ?? asset.fileUrl ?? dataUrl,
+        fileName: asset.fileName,
+        mimeType: asset.mimeType,
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      const message = error instanceof Error ? error.message : "Failed to upload invoice logo";
+      console.error("Error uploading invoice logo:", error);
+      res.status(400).json({ message });
     }
   });
 }
