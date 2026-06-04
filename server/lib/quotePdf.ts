@@ -39,6 +39,13 @@ type QuotePdfInput = {
     customerName?: string | null;
     billToName?: string | null;
     billToCompany?: string | null;
+    billToAddress1?: string | null;
+    billToAddress2?: string | null;
+    billToCity?: string | null;
+    billToState?: string | null;
+    billToPostalCode?: string | null;
+    billToCountry?: string | null;
+    billToPhone?: string | null;
     billToEmail?: string | null;
     requestedDueDate?: string | Date | null;
     validUntil?: string | Date | null;
@@ -68,6 +75,16 @@ const MARGIN = 54;
 
 function hasText(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function cleanText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function sameText(a: unknown, b: unknown): boolean {
+  const left = cleanText(a).toLowerCase();
+  const right = cleanText(b).toLowerCase();
+  return !!left && left === right;
 }
 
 function toNumber(value: unknown): number {
@@ -155,6 +172,49 @@ function drawRight(page: PDFPage, text: string, rightX: number, y: number, font:
   drawText(page, text, rightX - width, y, font, size);
 }
 
+function pushUnique(lines: string[], value: unknown) {
+  const text = cleanText(value);
+  if (!text) return;
+  if (lines.some((line) => sameText(line, text))) return;
+  lines.push(text);
+}
+
+function cityStatePostalLine(quote: QuotePdfInput["quote"]): string {
+  const city = cleanText(quote.billToCity);
+  const statePostal = [cleanText(quote.billToState), cleanText(quote.billToPostalCode)].filter(Boolean).join(" ");
+  return [city, statePostal].filter(Boolean).join(", ");
+}
+
+export function buildQuotePdfBillToLines(quote: QuotePdfInput["quote"]): string[] {
+  const lines: string[] = [];
+  const company = cleanText(quote.billToCompany) || cleanText(quote.customerName);
+  const contactName = cleanText(quote.billToName);
+
+  pushUnique(lines, company || contactName || "Customer");
+  if (contactName && !sameText(contactName, company)) {
+    pushUnique(lines, contactName);
+  }
+
+  const nameValues = [company, contactName, quote.customerName].filter(Boolean);
+  const addressCandidates = [
+    cleanText(quote.billToAddress1),
+    cleanText(quote.billToAddress2),
+    cityStatePostalLine(quote),
+    cleanText(quote.billToCountry),
+  ];
+
+  for (const addressLine of addressCandidates) {
+    if (!addressLine) continue;
+    if (nameValues.some((name) => sameText(addressLine, name))) continue;
+    pushUnique(lines, addressLine);
+  }
+
+  pushUnique(lines, quote.billToPhone);
+  pushUnique(lines, quote.billToEmail);
+
+  return lines;
+}
+
 function tryDecodeLogoDataUrl(dataUrl: string): { mime: "png" | "jpeg"; bytes: Uint8Array } | null {
   const match = String(dataUrl || "").trim().match(/^data:(image\/(png|jpeg));base64,(.+)$/i);
   if (!match) return null;
@@ -221,19 +281,20 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
   let y = PAGE_HEIGHT - MARGIN;
   const logo = await drawCompanyLogo(MARGIN, y + 2);
   const companyTextX = MARGIN + (logo.width > 0 ? logo.width + 14 : 0);
-  drawText(page, companyBranding.companyDisplayName || "Quote", companyTextX, y, bold, 16);
   drawRight(page, `Quote ${quoteNumber}`, PAGE_WIDTH - MARGIN, y, bold, 18);
 
-  let companyY = y - 14;
+  let companyY = y - 2;
   const companyLines = [
+    companyBranding.companyDisplayName || null,
     companyBranding.showLegalCompanyName ? companyBranding.legalCompanyName : null,
     companyBranding.physicalAddress || null,
     joinNonEmptyDocumentValues([companyBranding.phone || null, companyBranding.email || null], " | ") || null,
     companyBranding.website || null,
   ].filter((value): value is string => hasText(value));
-  for (const line of companyLines.slice(0, 5)) {
+  for (let lineIndex = 0; lineIndex < companyLines.slice(0, 5).length; lineIndex += 1) {
+    const line = companyLines[lineIndex];
     for (const wrapped of wrapText(line, 245, regular, 8).slice(0, 2)) {
-      drawText(page, wrapped, companyTextX, companyY, regular, 8, rgb(0.35, 0.4, 0.48));
+      drawText(page, wrapped, companyTextX, companyY, lineIndex === 0 ? bold : regular, 8, rgb(0.35, 0.4, 0.48));
       companyY -= 10;
     }
   }
@@ -246,13 +307,7 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
   y -= 34;
   drawText(page, "Bill To", MARGIN, y, bold, 11);
   y -= 16;
-  const billToLines = [
-    input.quote.billToCompany,
-    input.quote.billToName,
-    input.quote.customerName,
-    input.quote.billToEmail,
-  ].filter((value): value is string => hasText(value));
-  for (const line of billToLines.length ? billToLines : ["Customer"]) {
+  for (const line of buildQuotePdfBillToLines(input.quote)) {
     drawText(page, line, MARGIN, y, regular, 10);
     y -= 13;
   }
