@@ -32,6 +32,30 @@ export async function openAuthenticatedPdfPreview(
     revokeDelayMs?: number;
   } = {},
 ): Promise<void> {
+  const objectUrl = await fetchAuthenticatedPdfObjectUrl(url);
+
+  try {
+    const opened = window.open(
+      objectUrl,
+      options.target ?? "_blank",
+      options.features ?? DEFAULT_PREVIEW_FEATURES,
+    );
+
+    if (!opened) {
+      throw new Error("PDF preview was blocked by the browser.");
+    }
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    throw error;
+  }
+
+  window.setTimeout(
+    () => URL.revokeObjectURL(objectUrl),
+    options.revokeDelayMs ?? DEFAULT_BLOB_REVOKE_DELAY_MS,
+  );
+}
+
+async function fetchAuthenticatedPdfObjectUrl(url: string): Promise<string> {
   const response = await apiFetch(url, {
     method: "GET",
     credentials: "include",
@@ -52,7 +76,34 @@ export async function openAuthenticatedPdfPreview(
 
   const blob = await response.blob();
   const pdfBlob = blob.type === "application/pdf" ? blob : new Blob([blob], { type: "application/pdf" });
-  const objectUrl = URL.createObjectURL(pdfBlob);
+  return URL.createObjectURL(pdfBlob);
+}
+
+export async function downloadAuthenticatedPdf(url: string, filename: string): Promise<void> {
+  const objectUrl = await fetchAuthenticatedPdfObjectUrl(url);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  link.rel = "noopener noreferrer";
+  document.body.appendChild(link);
+  try {
+    link.click();
+  } finally {
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+export async function openAuthenticatedPdfForPrint(
+  url: string,
+  options: {
+    target?: string;
+    features?: string;
+    revokeDelayMs?: number;
+    printDelayMs?: number;
+  } = {},
+): Promise<void> {
+  const objectUrl = await fetchAuthenticatedPdfObjectUrl(url);
 
   try {
     const opened = window.open(
@@ -64,6 +115,15 @@ export async function openAuthenticatedPdfPreview(
     if (!opened) {
       throw new Error("PDF preview was blocked by the browser.");
     }
+
+    window.setTimeout(() => {
+      try {
+        opened.focus?.();
+        opened.print?.();
+      } catch {
+        // Some browsers disallow printing Blob tabs. The preview tab remains usable.
+      }
+    }, options.printDelayMs ?? 750);
   } catch (error) {
     URL.revokeObjectURL(objectUrl);
     throw error;

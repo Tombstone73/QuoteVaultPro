@@ -6,6 +6,7 @@
  * Send routes:
  *   POST   /api/email/test              — send test email via connected Gmail account
  *   POST   /api/quotes/:id/email        — send quote email to recipient
+ *   POST   /api/orders/:id/email        — send order email to recipient
  *
  * Platform OAuth routes:
  *   GET    /api/email/google/start      — generate OAuth URL, redirect user to Google
@@ -31,6 +32,10 @@ import {
   QuoteEmailRecipientError,
   sendQuoteEmailWithRecipientFallback,
 } from "../lib/quoteEmailRecipientFallback";
+import {
+  OrderEmailRecipientError,
+  sendOrderEmailWithRecipientFallback,
+} from "../lib/orderEmailRecipientFallback";
 
 // ---------------------------------------------------------------------------
 // OAuth state helpers — same pattern as quickbooksService.ts
@@ -181,6 +186,63 @@ export function registerEmailRoutes(
       res.status(500).json({
         success: false,
         message: error instanceof Error ? error.message : "Failed to process email request"
+      });
+    }
+  });
+
+  app.post("/api/orders/:id/email", isAuthenticated, tenantContext, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      const userRole = req.user.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
+
+      const result = await sendOrderEmailWithRecipientFallback(
+        {
+          getOrderById: storage.getOrderById.bind(storage),
+          getCustomerContacts: storage.getCustomerContacts.bind(storage),
+          updateCustomerContactForOrganization: storage.updateCustomerContactForOrganization.bind(storage),
+          createCustomerContactForOrganization: async (orgId, customerId, data) =>
+            storage.createCustomerContactForOrganization(orgId, customerId, data as any),
+          getOrganizationById: async (orgId) => {
+            const [organization] = await db
+              .select()
+              .from(organizations)
+              .where(eq(organizations.id, orgId))
+              .limit(1);
+            return organization as any;
+          },
+          sendOrderEmail: emailService.sendOrderEmail.bind(emailService),
+          createAuditLog: async (entry) => {
+            await db.insert(auditLogs).values(entry as any);
+          },
+        },
+        {
+          organizationId,
+          orderId: id,
+          userId,
+          userName: req.user?.email || req.user?.username || req.user?.name || null,
+          isInternalUser,
+          payload: req.body,
+          ipAddress: req.ip,
+          userAgent: req.get?.("user-agent") ?? null,
+        },
+      );
+
+      res.json(result);
+    } catch (error) {
+      console.error(`[ORDER_EMAIL] Error in email endpoint for order ${id}:`, error);
+      if (error instanceof OrderEmailRecipientError) {
+        return res.status(error.statusCode).json(error.result ?? {
+          success: false,
+          message: error.message,
+        });
+      }
+      res.status(500).json({
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to send order email",
       });
     }
   });

@@ -14,6 +14,7 @@ export interface OrgPreferences {
 
   basic?: {
     attachQuotePdfByDefault?: boolean;
+    attachOrderPdfByDefault?: boolean;
   };
 
   fileUploadNaming?: {
