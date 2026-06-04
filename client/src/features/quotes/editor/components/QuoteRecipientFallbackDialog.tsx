@@ -26,6 +26,9 @@ type QuoteRecipientFallbackDialogProps = {
   open: boolean;
   contacts: QuoteRecipientContactLike[];
   selectedContactId?: string | null;
+  initialRecipientEmail?: string | null;
+  initialRecipientName?: string | null;
+  attachPdfDefault?: boolean;
   isSending?: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (payload: ReturnType<typeof buildQuoteRecipientFallbackPayload>) => void;
@@ -35,6 +38,9 @@ export function QuoteRecipientFallbackDialog({
   open,
   contacts,
   selectedContactId,
+  initialRecipientEmail,
+  initialRecipientName,
+  attachPdfDefault = true,
   isSending = false,
   onOpenChange,
   onSubmit,
@@ -47,16 +53,18 @@ export function QuoteRecipientFallbackDialog({
   const [recipientName, setRecipientName] = useState("");
   const [saveToCustomerContact, setSaveToCustomerContact] = useState(true);
   const [contactChoice, setContactChoice] = useState(initialContactChoice);
+  const [attachPdf, setAttachPdf] = useState(attachPdfDefault);
   const [emailError, setEmailError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    setRecipientEmail("");
-    setRecipientName("");
+    setRecipientEmail(initialRecipientEmail ?? "");
+    setRecipientName(initialRecipientName ?? "");
     setSaveToCustomerContact(true);
     setContactChoice(initialContactChoice);
+    setAttachPdf(attachPdfDefault);
     setEmailError(null);
-  }, [initialContactChoice, open]);
+  }, [attachPdfDefault, initialContactChoice, initialRecipientEmail, initialRecipientName, open]);
 
   const submit = () => {
     if (!isValidRecipientEmail(recipientEmail)) {
@@ -70,6 +78,7 @@ export function QuoteRecipientFallbackDialog({
         recipientName,
         saveToCustomerContact,
         contactChoice,
+        attachPdf,
       }),
     );
   };
@@ -125,6 +134,17 @@ export function QuoteRecipientFallbackDialog({
             />
             <Label htmlFor="quote-save-recipient" className="text-sm font-normal">
               Save to customer contact
+            </Label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="quote-attach-pdf"
+              checked={attachPdf}
+              onCheckedChange={(checked) => setAttachPdf(checked === true)}
+            />
+            <Label htmlFor="quote-attach-pdf" className="text-sm font-normal">
+              Attach quote PDF
             </Label>
           </div>
 

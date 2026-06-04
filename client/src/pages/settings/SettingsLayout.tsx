@@ -1840,6 +1840,16 @@ export function PreferencesSettings() {
       },
     });
   };
+
+  const handleBasicToggle = async (key: string, value: boolean) => {
+    await updatePreferences({
+      ...preferences,
+      basic: {
+        ...preferences?.basic,
+        [key]: value,
+      },
+    });
+  };
   
   const handleOrderToggle = async (key: string, value: boolean) => {
     await updatePreferences({
@@ -1964,6 +1974,22 @@ export function PreferencesSettings() {
                 id="quotes-visible-by-default"
                 checked={preferences?.quotes?.savedQuotesVisibleInPortalByDefault ?? false}
                 onCheckedChange={(checked) => handleQuoteToggle('savedQuotesVisibleInPortalByDefault', checked)}
+                disabled={isUpdating}
+              />
+            </div>
+            <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="attach-quote-pdf-by-default" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
+                  Attach quote PDF by default
+                </Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  When enabled, staff quote emails include the generated quote PDF unless staff turns it off while sending.
+                </p>
+              </div>
+              <Switch
+                id="attach-quote-pdf-by-default"
+                checked={preferences?.basic?.attachQuotePdfByDefault ?? true}
+                onCheckedChange={(checked) => handleBasicToggle('attachQuotePdfByDefault', checked)}
                 disabled={isUpdating}
               />
             </div>

@@ -12,6 +12,10 @@ import type { BillingInvoiceTriggerPolicy } from "@shared/billingInvoicePolicy";
 export interface OrgPreferences {
   prepressDefaultEnabled?: boolean;
 
+  basic?: {
+    attachQuotePdfByDefault?: boolean;
+  };
+
   fileUploadNaming?: {
     fileUploadJobPrefixMode?: "none" | "numeric_only" | "full_job_number";
     prepressFileLabelMode?: "optional" | "required";

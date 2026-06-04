@@ -5,6 +5,7 @@ import {
   CREATE_NEW_CONTACT_CHOICE,
   getInitialRecipientContactChoice,
   isValidRecipientEmail,
+  resolveAttachQuotePdfDefault,
   resolveSelectedContactEmail,
 } from "./quoteRecipientFallback";
 
@@ -22,12 +23,14 @@ describe("quote recipient fallback helpers", () => {
         recipientName: " Buyer ",
         saveToCustomerContact: false,
         contactChoice: "contact_1",
+        attachPdf: true,
       }),
     ).toEqual({
       recipientEmail: "customer@example.com",
       recipientName: "Buyer",
       saveToCustomerContact: false,
       contactId: null,
+      attachPdf: true,
     });
   });
 
@@ -37,12 +40,14 @@ describe("quote recipient fallback helpers", () => {
         recipientEmail: "buyer@example.com",
         saveToCustomerContact: true,
         contactChoice: "contact_1",
+        attachPdf: false,
       }),
     ).toEqual({
       recipientEmail: "buyer@example.com",
       recipientName: undefined,
       saveToCustomerContact: true,
       contactId: "contact_1",
+      attachPdf: false,
     });
 
     expect(
@@ -50,6 +55,7 @@ describe("quote recipient fallback helpers", () => {
         recipientEmail: "new@example.com",
         saveToCustomerContact: true,
         contactChoice: CREATE_NEW_CONTACT_CHOICE,
+        attachPdf: true,
       }).contactId,
     ).toBeNull();
   });
@@ -64,5 +70,11 @@ describe("quote recipient fallback helpers", () => {
     expect(getInitialRecipientContactChoice([], null)).toBe(CREATE_NEW_CONTACT_CHOICE);
     expect(resolveSelectedContactEmail(contacts, "contact_1")).toBeNull();
     expect(resolveSelectedContactEmail(contacts, "contact_2")).toBe("good@example.com");
+  });
+
+  test("defaults attach PDF checkbox from org basic settings", () => {
+    expect(resolveAttachQuotePdfDefault(undefined)).toBe(true);
+    expect(resolveAttachQuotePdfDefault({ basic: {} })).toBe(true);
+    expect(resolveAttachQuotePdfDefault({ basic: { attachQuotePdfByDefault: false } })).toBe(false);
   });
 });

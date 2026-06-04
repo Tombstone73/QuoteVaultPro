@@ -10,6 +10,7 @@ export type QuoteRecipientFallbackValues = {
   recipientName?: string;
   saveToCustomerContact: boolean;
   contactChoice: string;
+  attachPdf: boolean;
 };
 
 export const CREATE_NEW_CONTACT_CHOICE = "__create_new_contact__";
@@ -47,6 +48,7 @@ export function buildQuoteRecipientFallbackPayload(values: QuoteRecipientFallbac
     recipientName,
     saveToCustomerContact,
     contactId,
+    attachPdf: values.attachPdf,
   };
 }
 
@@ -57,4 +59,8 @@ export function resolveSelectedContactEmail(
   const selected = contacts.find((contact) => contact.id === selectedContactId);
   const email = selected?.email?.trim();
   return email && isValidRecipientEmail(email) ? email : null;
+}
+
+export function resolveAttachQuotePdfDefault(preferences: { basic?: { attachQuotePdfByDefault?: boolean } } | null | undefined): boolean {
+  return preferences?.basic?.attachQuotePdfByDefault ?? true;
 }
