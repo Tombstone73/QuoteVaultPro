@@ -64,14 +64,14 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
     return this.generateJson(request);
   }
 
-  private async generateJson(request: AiProviderRequest): Promise<AiProviderResponse> {
+  async generateJson(request: AiProviderRequest): Promise<AiProviderResponse> {
     const config = request.providerConfig ?? await aiProviderResolver.resolveProvider({
       orgId: request.orgId,
       feature: request.feature,
     });
 
     if (!config.enabled || !config.endpoint || !config.apiKey || !config.model || !config.provider) {
-      throw new AiProviderUnavailableError("AI bug review provider is not configured.");
+      throw new AiProviderUnavailableError("AI provider is not configured.");
     }
     if (config.provider !== "openai" && config.provider !== "openai_compatible") {
       throw new AiProviderUnavailableError(`AI provider ${config.provider} is not supported by the current adapter.`);

@@ -60,6 +60,7 @@ type SourceType = "manual" | "csv_import" | "bug_report";
 type DependencyType = "blocks" | "requires" | "relates_to";
 type ReleaseStatus = "planned" | "in_progress" | "released" | "archived";
 type AiSuggestionStatus = "pending" | "accepted" | "rejected";
+type ProductPlanningAiSource = "live_ai" | "rule_based_fallback";
 type AiSuggestionType =
   | "priority"
   | "business_value"
@@ -180,6 +181,8 @@ type ProductPlanningAiSuggestion = {
   createdAt: string;
   reviewedAt: string | null;
   reviewedByUserId: string | null;
+  source?: ProductPlanningAiSource;
+  fallbackReason?: string | null;
 };
 
 type WorkItemDetail = WorkItem & {
@@ -214,6 +217,9 @@ type DashboardData = {
 };
 
 type ProductPlanningBacklogAnalysis = {
+  source?: ProductPlanningAiSource;
+  fallbackReason?: string | null;
+  executiveSummary?: string;
   counts: {
     totalItems: number;
     missingModules: number;
@@ -236,10 +242,47 @@ type ProductPlanningBacklogAnalysis = {
   };
   epicGroups: Array<{ epicName: string; module: string; relatedItems: WorkItem[]; confidence: number; reasoning: string }>;
   suggestions: ProductPlanningAiSuggestion[];
+  liveAi?: {
+    goLiveBlockers?: Array<{ title: string; reasoning: string; relatedItemReferences: string[] }>;
+    topNextActions?: Array<{ title: string; reasoning: string; priority: Priority }>;
+    quickWins?: Array<{ title: string; reasoning: string }>;
+    futureItems?: Array<{ title: string; reasoning: string }>;
+    healthFindings?: Array<{ label: string; count: number; severity: "low" | "medium" | "high"; recommendation: string }>;
+  };
 };
 
 type ProductPlanningRoadmapAnalysis = {
+  source?: ProductPlanningAiSource;
+  fallbackReason?: string | null;
+  summary?: string;
+  overloadedPhases?: Array<{ phase: string; reasoning: string }>;
+  moveRecommendations?: Array<{ reference: string; currentPhase: string | null; recommendedPhase: Phase; confidence: number; reasoning: string }>;
+  sequenceRecommendations?: Array<{ title: string; reasoning: string }>;
   recommendations: Array<{ phase: string; action: string; count: number; reasoning: string }>;
+  suggestions: ProductPlanningAiSuggestion[];
+};
+
+type ProductPlanningWorkItemAiAnalysis = {
+  summary: string;
+  concerns: Array<{ label: string; severity: "low" | "medium" | "high"; reasoning: string }>;
+  suggestions: ProductPlanningAiSuggestion[];
+  nextActions: string[];
+  source?: ProductPlanningAiSource;
+  fallbackReason?: string | null;
+};
+
+type ProductPlanningEpicAnalysis = {
+  source?: ProductPlanningAiSource;
+  fallbackReason?: string | null;
+  epics: Array<{
+    name: string;
+    description: string;
+    confidence: number;
+    businessValue: BusinessValue;
+    recommendedPhase: Phase;
+    relatedItemReferences: string[];
+    reasoning: string;
+  }>;
   suggestions: ProductPlanningAiSuggestion[];
 };
 
@@ -592,8 +635,19 @@ function CleanupOpportunitiesList({ opportunities }: { opportunities: DashboardD
   );
 }
 
+function AiSourceIndicator({ source, fallbackReason }: { source?: ProductPlanningAiSource; fallbackReason?: string | null }) {
+  if (!source) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <Badge variant={source === "live_ai" ? "secondary" : "outline"}>{source === "live_ai" ? "Live AI" : "Rule-based fallback"}</Badge>
+      {fallbackReason && <span>{fallbackReason}</span>}
+    </div>
+  );
+}
+
 function BacklogAiAnalysisPanel({ analysis }: { analysis: ProductPlanningBacklogAnalysis }) {
   const readiness = analysis.goLiveReadiness;
+  const live = analysis.liveAi;
   return (
     <div className="grid gap-4 lg:grid-cols-3">
       <Card>
@@ -604,10 +658,12 @@ function BacklogAiAnalysisPanel({ analysis }: { analysis: ProductPlanningBacklog
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
+          <AiSourceIndicator source={analysis.source} fallbackReason={analysis.fallbackReason} />
+          {analysis.executiveSummary && <p className="text-sm text-muted-foreground">{analysis.executiveSummary}</p>}
           <div className="text-3xl font-semibold">{analysis.healthScore}</div>
-          {analysis.issues.length === 0 ? (
+          {(live?.healthFindings ?? analysis.issues).length === 0 ? (
             <p className="text-sm text-muted-foreground">No major backlog health issues found.</p>
-          ) : analysis.issues.slice(0, 6).map((issue) => (
+          ) : (live?.healthFindings ?? analysis.issues).slice(0, 6).map((issue) => (
             <div key={issue.label} className="flex items-center justify-between rounded-md border border-border p-2 text-sm">
               <span>{issue.label}</span>
               <Badge variant={issue.severity === "high" ? "destructive" : "secondary"}>{issue.count}</Badge>
@@ -620,7 +676,15 @@ function BacklogAiAnalysisPanel({ analysis }: { analysis: ProductPlanningBacklog
           <CardTitle className="text-sm">Recommended Next Actions</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {analysis.nextActions.length === 0 ? (
+          {(live?.topNextActions ?? []).length > 0 ? live!.topNextActions!.slice(0, 8).map((action) => (
+            <div key={action.title} className="rounded-md border border-border p-2 text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium">{action.title}</span>
+                <Badge variant={priorityBadge(action.priority)}>{action.priority}</Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">{action.reasoning}</p>
+            </div>
+          )) : analysis.nextActions.length === 0 ? (
             <p className="text-sm text-muted-foreground">No immediate cleanup actions detected.</p>
           ) : analysis.nextActions.map((action) => (
             <div key={action} className="rounded-md border border-border p-2 text-sm">{action}</div>
@@ -650,12 +714,28 @@ function BacklogAiAnalysisPanel({ analysis }: { analysis: ProductPlanningBacklog
           <CardTitle className="text-sm">Go-Live Readiness</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-4">
-          <MiniReadinessList title="Blocking Go Live" items={readiness.blockers} />
+          {live?.goLiveBlockers?.length ? (
+            <MiniNarrativeList title="Blocking Go Live" items={live.goLiveBlockers.map((item) => ({ title: item.title, reasoning: item.reasoning }))} />
+          ) : <MiniReadinessList title="Blocking Go Live" items={readiness.blockers} />}
           <MiniReadinessList title="High Value Features" items={readiness.highValueFeatures} />
-          <MiniReadinessList title="Quick Wins" items={readiness.quickWins} />
-          <MiniReadinessList title="Future Items" items={readiness.futureItems} />
+          {live?.quickWins?.length ? <MiniNarrativeList title="Quick Wins" items={live.quickWins} /> : <MiniReadinessList title="Quick Wins" items={readiness.quickWins} />}
+          {live?.futureItems?.length ? <MiniNarrativeList title="Future Items" items={live.futureItems} /> : <MiniReadinessList title="Future Items" items={readiness.futureItems} />}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function MiniNarrativeList({ title, items }: { title: string; items: Array<{ title: string; reasoning: string }> }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-xs font-medium uppercase text-muted-foreground">{title}</div>
+      {items.slice(0, 5).map((item) => (
+        <div key={item.title} className="rounded-md border border-border p-2 text-xs">
+          <div className="font-medium">{item.title}</div>
+          <p className="mt-1 text-muted-foreground">{item.reasoning}</p>
+        </div>
+      ))}
     </div>
   );
 }
@@ -676,9 +756,49 @@ function MiniReadinessList({ title, items }: { title: string; items: WorkItem[] 
   );
 }
 
+function SuggestedEpicCards({ analysis, onDismiss }: { analysis: ProductPlanningEpicAnalysis; onDismiss: () => void }) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center justify-between gap-3 text-sm">
+          <span>Suggested Epics</span>
+          <AiSourceIndicator source={analysis.source} fallbackReason={analysis.fallbackReason} />
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {analysis.epics.slice(0, 9).map((epic) => (
+          <div key={epic.name} className="space-y-2 rounded-md border border-border p-3 text-sm">
+            <div className="flex items-start justify-between gap-2">
+              <div className="font-medium">{epic.name}</div>
+              <Badge variant="secondary">{epic.relatedItemReferences.length}</Badge>
+            </div>
+            <p className="text-xs text-muted-foreground">{epic.description}</p>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline">{labelFor(BUSINESS_VALUES, epic.businessValue)}</Badge>
+              <Badge variant="secondary">{labelFor(PHASES, epic.recommendedPhase)}</Badge>
+              <Badge variant="secondary">{epic.confidence}%</Badge>
+            </div>
+            <p className="text-xs text-muted-foreground">{epic.reasoning}</p>
+            {epic.relatedItemReferences.length > 0 && (
+              <div className="text-xs text-muted-foreground">Refs: {epic.relatedItemReferences.slice(0, 6).join(", ")}</div>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={onDismiss}>Dismiss</Button>
+              <Button variant="outline" size="sm" onClick={() => window.confirm(`Create epic draft for ${epic.name}?`)}>
+                Create Epic Draft
+              </Button>
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ProductPlanningDashboardPage() {
   const { toast } = useToast();
   const [backlogAnalysis, setBacklogAnalysis] = useState<ProductPlanningBacklogAnalysis | null>(null);
+  const [epicAnalysis, setEpicAnalysis] = useState<ProductPlanningEpicAnalysis | null>(null);
   const { data, isLoading, refetch, isRefetching } = useQuery<DashboardData>({
     queryKey: ["/api/product-planning/dashboard"],
     queryFn: () => fetchJson<DashboardData>("/api/product-planning/dashboard"),
@@ -697,9 +817,12 @@ export function ProductPlanningDashboardPage() {
   const suggestEpicsMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/product-planning/ai/suggest-epics", {});
-      return (await res.json()).data as { suggestions: ProductPlanningAiSuggestion[] };
+      return (await res.json()).data as ProductPlanningEpicAnalysis;
     },
-    onSuccess: (data) => toast({ title: "Epic suggestions ready", description: `${data.suggestions.length} epic suggestion(s) stored.` }),
+    onSuccess: (data) => {
+      setEpicAnalysis(data);
+      toast({ title: "Epic suggestions ready", description: `${data.suggestions.length} epic suggestion(s) stored.` });
+    },
     onError: (error: Error) => toast({ title: "Epic suggestions failed", description: error.message, variant: "destructive" }),
   });
 
@@ -734,6 +857,7 @@ export function ProductPlanningDashboardPage() {
             <StatCard title="MAIN validation" value={data.itemsInMainValidation} />
           </div>
           {backlogAnalysis && <BacklogAiAnalysisPanel analysis={backlogAnalysis} />}
+          {epicAnalysis && <SuggestedEpicCards analysis={epicAnalysis} onDismiss={() => setEpicAnalysis(null)} />}
           <div className="grid gap-4 lg:grid-cols-2">
             <CompactItemList title="Major Bugs" items={data.majorBugs} icon={<Bug className="h-4 w-4 text-destructive" />} emptyMessage="No prioritized bugs yet." actionLabel="Push Bug Reports" actionTo={ROUTES.admin.bugReports} />
             <CompactItemList title="Prioritized Features" items={data.topPrioritizedFeatures} icon={<ClipboardList className="h-4 w-4 text-primary" />} emptyMessage="No prioritized features yet." actionLabel="Create Work Item" actionTo={ROUTES.productPlanning.backlog} />
@@ -1492,17 +1616,47 @@ export function ProductPlanningRoadmapPage() {
       </Card>
       {roadmapAnalysis && (
         <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm">Roadmap Analysis</CardTitle></CardHeader>
-          <CardContent className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-            {roadmapAnalysis.recommendations.map((recommendation) => (
-              <div key={recommendation.phase} className="rounded-md border border-border p-3 text-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">{labelFor(PHASES, recommendation.phase as Phase) || recommendation.phase}</span>
-                  <Badge variant={recommendation.action === "Balanced" ? "secondary" : "outline"}>{recommendation.action}</Badge>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center justify-between gap-3 text-sm">
+              <span>Roadmap Analysis</span>
+              <AiSourceIndicator source={roadmapAnalysis.source} fallbackReason={roadmapAnalysis.fallbackReason} />
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {roadmapAnalysis.summary && <p className="text-sm text-muted-foreground">{roadmapAnalysis.summary}</p>}
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {roadmapAnalysis.recommendations.map((recommendation) => (
+                <div key={recommendation.phase} className="rounded-md border border-border p-3 text-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">{labelFor(PHASES, recommendation.phase as Phase) || recommendation.phase}</span>
+                    <Badge variant={recommendation.action === "Balanced" ? "secondary" : "outline"}>{recommendation.action}</Badge>
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">{recommendation.reasoning}</p>
                 </div>
-                <p className="mt-2 text-xs text-muted-foreground">{recommendation.reasoning}</p>
+              ))}
+            </div>
+            {(roadmapAnalysis.moveRecommendations?.length ?? 0) > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-medium uppercase text-muted-foreground">What Should Move</div>
+                {roadmapAnalysis.moveRecommendations!.slice(0, 8).map((move) => (
+                  <div key={`${move.reference}-${move.recommendedPhase}`} className="rounded-md border border-border p-3 text-sm">
+                    <div className="font-medium">{move.reference}: {labelFor(PHASES, move.currentPhase as Phase | null) || "Unassigned"} {"->"} {labelFor(PHASES, move.recommendedPhase)}</div>
+                    <p className="mt-1 text-xs text-muted-foreground">{move.reasoning}</p>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
+            {(roadmapAnalysis.sequenceRecommendations?.length ?? 0) > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-medium uppercase text-muted-foreground">What Should Happen First</div>
+                {roadmapAnalysis.sequenceRecommendations!.slice(0, 6).map((sequence) => (
+                  <div key={sequence.title} className="rounded-md border border-border p-3 text-sm">
+                    <div className="font-medium">{sequence.title}</div>
+                    <p className="mt-1 text-xs text-muted-foreground">{sequence.reasoning}</p>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -1837,6 +1991,7 @@ export function ProductPlanningWorkItemDetailPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
+  const [workItemAnalysis, setWorkItemAnalysis] = useState<ProductPlanningWorkItemAiAnalysis | null>(null);
 
   const { data: item, isLoading } = useQuery<WorkItemDetail>({
     queryKey: ["/api/product-planning/work-items", id, "detail"],
@@ -1911,11 +2066,12 @@ export function ProductPlanningWorkItemDetailPage() {
   const aiReviewMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/ai/analyze`, {});
-      return (await res.json()).data as ProductPlanningAiSuggestion[];
+      return (await res.json()).data as ProductPlanningWorkItemAiAnalysis;
     },
-    onSuccess: (suggestions) => {
+    onSuccess: (analysis) => {
+      setWorkItemAnalysis(analysis);
       invalidate();
-      toast({ title: "AI review complete", description: `${suggestions.length} suggestion(s) ready for review.` });
+      toast({ title: "AI review complete", description: `${analysis.suggestions.length} suggestion(s) ready for review.` });
     },
     onError: (error: Error) => toast({ title: "AI review failed", description: error.message, variant: "destructive" }),
   });
@@ -2060,6 +2216,7 @@ export function ProductPlanningWorkItemDetailPage() {
         <div className="space-y-4">
           <AiSuggestionsPanel
             suggestions={aiSuggestions}
+            analysis={workItemAnalysis}
             onReview={() => aiReviewMutation.mutate()}
             onFindSimilar={() => findSimilarMutation.mutate()}
             onGenerateNotes={() => implementationNotesMutation.mutate()}
@@ -2093,6 +2250,7 @@ export function ProductPlanningWorkItemDetailPage() {
 
 function AiSuggestionsPanel({
   suggestions,
+  analysis,
   onReview,
   onFindSimilar,
   onGenerateNotes,
@@ -2103,6 +2261,7 @@ function AiSuggestionsPanel({
   isBusy,
 }: {
   suggestions: ProductPlanningAiSuggestion[];
+  analysis: ProductPlanningWorkItemAiAnalysis | null;
   onReview: () => void;
   onFindSimilar: () => void;
   onGenerateNotes: () => void;
@@ -2123,6 +2282,18 @@ function AiSuggestionsPanel({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {analysis && (
+          <div className="space-y-2 rounded-md border border-border p-3 text-sm">
+            <AiSourceIndicator source={analysis.source} fallbackReason={analysis.fallbackReason} />
+            <p>{analysis.summary}</p>
+            {analysis.nextActions.length > 0 && (
+              <div className="space-y-1">
+                <div className="text-xs font-medium uppercase text-muted-foreground">Next Actions</div>
+                {analysis.nextActions.slice(0, 5).map((action) => <div key={action} className="text-xs text-muted-foreground">{action}</div>)}
+              </div>
+            )}
+          </div>
+        )}
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={onReview} disabled={isBusy}>Analyze Work Item</Button>
           <Button variant="outline" size="sm" onClick={onFindSimilar} disabled={isBusy}>Find Similar Items</Button>
@@ -2133,6 +2304,7 @@ function AiSuggestionsPanel({
         {pending.length === 0 ? (
           <div className="space-y-2 rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">
             <div>No pending AI suggestions.</div>
+            <div>AI suggestions require review before anything changes.</div>
             <div>Run an analysis action above to generate priority, module, phase, epic, duplicate, release, or implementation-note suggestions for review.</div>
           </div>
         ) : pending.map((suggestion) => (
@@ -2314,6 +2486,7 @@ export function ProductPlanningImportsPage() {
   const [lastImportResult, setLastImportResult] = useState<ImportCommitResult | null>(null);
   const [importSuggestions, setImportSuggestions] = useState<ProductPlanningAiSuggestion[]>([]);
   const [importAnalysis, setImportAnalysis] = useState<ProductPlanningBacklogAnalysis | null>(null);
+  const [importReviewSource, setImportReviewSource] = useState<{ source?: ProductPlanningAiSource; fallbackReason?: string | null; summary?: string } | null>(null);
   const [bulkImportReviewStatus, setBulkImportReviewStatus] = useState<AiSuggestionStatus | null>(null);
 
   const { data: imports = [] } = useQuery<ImportBatch[]>({
@@ -2342,6 +2515,7 @@ export function ProductPlanningImportsPage() {
       toast({ title: "Import completed", description: `${data.importedItems?.length ?? 0} rows imported.` });
       setLastImportResult(data);
       setImportAnalysis(null);
+      setImportReviewSource(null);
       setPreview(null);
       setCsv("");
       setFilename(null);
@@ -2352,10 +2526,11 @@ export function ProductPlanningImportsPage() {
   const importAiReviewMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/product-planning/import/csv/ai-review", { csv, filename });
-      return (await res.json()).data as { suggestions: ProductPlanningAiSuggestion[] };
+      return (await res.json()).data as { suggestions: ProductPlanningAiSuggestion[]; source?: ProductPlanningAiSource; fallbackReason?: string | null; summary?: string };
     },
     onSuccess: (data) => {
       setImportSuggestions(data.suggestions);
+      setImportReviewSource({ source: data.source, fallbackReason: data.fallbackReason, summary: data.summary });
       toast({ title: "Import AI review complete", description: `${data.suggestions.length} suggestion(s) ready.` });
     },
     onError: (error: Error) => toast({ title: "Import AI review failed", description: error.message, variant: "destructive" }),
@@ -2426,6 +2601,7 @@ export function ProductPlanningImportsPage() {
     setLastImportResult(null);
     setImportSuggestions([]);
     setImportAnalysis(null);
+    setImportReviewSource(null);
   }
 
   return (
@@ -2502,6 +2678,9 @@ export function ProductPlanningImportsPage() {
                 onBulkAccept={() => reviewAllImportSuggestions("accepted")}
                 onBulkReject={() => reviewAllImportSuggestions("rejected")}
                 isReviewing={reviewImportSuggestionMutation.isPending || Boolean(bulkImportReviewStatus)}
+                source={importReviewSource?.source}
+                fallbackReason={importReviewSource?.fallbackReason}
+                summary={importReviewSource?.summary}
               />
             )}
           </CardContent>
@@ -2584,6 +2763,9 @@ function ImportAiSuggestions({
   onBulkAccept,
   onBulkReject,
   isReviewing,
+  source,
+  fallbackReason,
+  summary,
 }: {
   suggestions: ProductPlanningAiSuggestion[];
   onAccept: (suggestionId: string) => void;
@@ -2591,6 +2773,9 @@ function ImportAiSuggestions({
   onBulkAccept: () => void;
   onBulkReject: () => void;
   isReviewing: boolean;
+  source?: ProductPlanningAiSource;
+  fallbackReason?: string | null;
+  summary?: string;
 }) {
   const pendingCount = suggestions.filter((suggestion) => suggestion.status === "pending").length;
   return (
@@ -2609,6 +2794,8 @@ function ImportAiSuggestions({
           </Button>
         </div>
       </div>
+      <AiSourceIndicator source={source} fallbackReason={fallbackReason} />
+      {summary && <p className="text-xs text-muted-foreground">{summary}</p>}
       <div className="grid gap-2 md:grid-cols-2">
         {suggestions.map((suggestion) => (
           <div key={suggestion.id} className="rounded-md border border-border p-3 text-sm">

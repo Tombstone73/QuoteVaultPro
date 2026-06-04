@@ -46,18 +46,13 @@ import { validateProductPlanningParent } from "../services/productPlanningHierar
 import { calculateProductPlanningPriorityScore } from "../services/productPlanningPriority";
 import {
   findSimilarProductPlanningItems,
-  generateBacklogAnalysis,
-  generateBugPlanningSummary,
-  generateEpicDiscoverySuggestions,
-  generateImplementationNotesSuggestion,
-  generateImportCleanupSuggestions,
-  generateProductPlanningAiReviewSuggestions,
-  generateRoadmapAnalysis,
+  ProductPlanningAiAssistant,
   generateRoadmapGroupingSuggestions,
   type ProductPlanningAiSuggestionDraft,
 } from "../services/productPlanningAi";
 
 type DbExecutor = typeof db | any;
+const productPlanningAiAssistant = new ProductPlanningAiAssistant();
 
 const listQuerySchema = z.object({
   search: z.string().trim().max(255).optional(),
@@ -938,19 +933,19 @@ export function registerProductPlanningRoutes(
       const item = await getWorkItemAiContext(organizationId, id);
       if (!item) return res.status(404).json({ success: false, message: "Product Planning work item not found." });
       const candidates = await listAiCandidateWorkItems(organizationId);
-      const drafts = generateProductPlanningAiReviewSuggestions(item, candidates);
-      const suggestions = await persistAiSuggestions(organizationId, drafts);
+      const analysis = await productPlanningAiAssistant.analyzeWorkItem(organizationId, item, candidates);
+      const suggestions = await persistAiSuggestions(organizationId, analysis.data.suggestions);
       for (const suggestion of suggestions) {
         await recordPlanningEvent({
           organizationId,
           workItemId: id,
           eventType: "ai_suggestion_created",
           message: `AI suggested ${suggestion.suggestionType.replace(/_/g, " ")} for ${item.reference}`,
-          metadata: { suggestionId: suggestion.id, confidence: suggestion.confidence },
+          metadata: { suggestionId: suggestion.id, confidence: suggestion.confidence, source: analysis.source, fallbackReason: analysis.fallbackReason },
           actorUserId: getUserId(req.user) ?? null,
         });
       }
-      res.status(201).json({ success: true, data: suggestions, message: "AI review suggestions generated." });
+      res.status(201).json({ success: true, data: { ...analysis.data, suggestions, source: analysis.source, fallbackReason: analysis.fallbackReason }, message: "AI review suggestions generated." });
     } catch (error) {
       console.error("[ProductPlanning] AI review failed:", error);
       res.status(500).json({ success: false, message: "Failed to generate Product Planning AI review." });
@@ -1001,16 +996,17 @@ export function registerProductPlanningRoutes(
       const id = String(req.params.id);
       const item = await getWorkItemForOrg(organizationId, id);
       if (!item) return res.status(404).json({ success: false, message: "Product Planning work item not found." });
-      const [suggestion] = await persistAiSuggestions(organizationId, [generateImplementationNotesSuggestion(item)]);
+      const analysis = await productPlanningAiAssistant.generateImplementationNotes(organizationId, item);
+      const [suggestion] = await persistAiSuggestions(organizationId, [analysis.data]);
       await recordPlanningEvent({
         organizationId,
         workItemId: id,
         eventType: "ai_implementation_notes_generated",
         message: `AI generated implementation notes for ${item.reference}`,
-        metadata: { suggestionId: suggestion.id },
+        metadata: { suggestionId: suggestion.id, source: analysis.source, fallbackReason: analysis.fallbackReason },
         actorUserId: getUserId(req.user) ?? null,
       });
-      res.status(201).json({ success: true, data: suggestion, message: "Implementation notes suggestion generated." });
+      res.status(201).json({ success: true, data: { ...suggestion, source: analysis.source, fallbackReason: analysis.fallbackReason }, message: "Implementation notes suggestion generated." });
     } catch (error) {
       console.error("[ProductPlanning] Implementation notes generation failed:", error);
       res.status(500).json({ success: false, message: "Failed to generate implementation notes." });
@@ -1026,40 +1022,21 @@ export function registerProductPlanningRoutes(
       const item = await getWorkItemForOrg(organizationId, id);
       if (!item) return res.status(404).json({ success: false, message: "Product Planning work item not found." });
       const candidates = await listAiCandidateWorkItems(organizationId);
-      const existingEpic = candidates.find((candidate) =>
-        candidate.workItemType === "epic" &&
-        candidate.id !== id &&
-        candidate.module &&
-        item.module &&
-        candidate.module.toLowerCase() === item.module.toLowerCase());
-      const analysis = generateBacklogAnalysis(candidates);
-      const suggestedGroup = analysis.epicGroups.find((group) =>
-        group.relatedItems.some((related) => related.id === id));
-      const drafts: ProductPlanningAiSuggestionDraft[] = [{
-        workItemId: id,
-        suggestionType: "parent_epic",
-        currentValue: item.parentId ?? null,
-        suggestedValue: existingEpic
-          ? { id: existingEpic.id, reference: existingEpic.reference, title: existingEpic.title }
-          : {
-              epicName: suggestedGroup?.epicName ?? `${item.module || "Planning"} Improvements`,
-              relatedItems: suggestedGroup?.relatedItems.map((related) => ({ id: related.id, reference: related.reference, title: related.title })) ?? [{ id: item.id, reference: item.reference, title: item.title }],
-            },
-        confidence: existingEpic ? 76 : suggestedGroup?.confidence ?? 62,
-        reasoning: existingEpic
-          ? `Found an existing epic in the same module: ${existingEpic.reference}.`
-          : "Suggested a possible epic grouping from nearby backlog items. Review before creating or assigning an epic.",
-      }];
+      const analysis = await productPlanningAiAssistant.suggestEpics(organizationId, candidates);
+      const drafts = analysis.data.suggestions.map((suggestion) => ({
+        ...suggestion,
+        workItemId: suggestion.workItemId ?? id,
+      })).slice(0, 5);
       const suggestions = await persistAiSuggestions(organizationId, drafts);
       await recordPlanningEvent({
         organizationId,
         workItemId: id,
         eventType: "ai_suggestion_created",
         message: `AI suggested epic placement for ${item.reference}`,
-        metadata: { suggestionId: suggestions[0]?.id ?? null },
+        metadata: { suggestionIds: suggestions.map((suggestion) => suggestion.id), source: analysis.source, fallbackReason: analysis.fallbackReason },
         actorUserId,
       });
-      res.status(201).json({ success: true, data: suggestions, message: "Epic suggestion generated." });
+      res.status(201).json({ success: true, data: { ...analysis.data, suggestions, source: analysis.source, fallbackReason: analysis.fallbackReason }, message: "Epic suggestion generated." });
     } catch (error) {
       console.error("[ProductPlanning] Epic suggestion failed:", error);
       res.status(500).json({ success: false, message: "Failed to generate epic suggestion." });
@@ -1982,8 +1959,8 @@ export function registerProductPlanningRoutes(
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) ?? null;
       const items = await listAiCandidateWorkItems(organizationId);
-      const analysis = generateBacklogAnalysis(items);
-      const suggestions = await persistAiSuggestions(organizationId, analysis.suggestions);
+      const analysis = await productPlanningAiAssistant.analyzeBacklog(organizationId, items);
+      const suggestions = await persistAiSuggestions(organizationId, analysis.data.suggestions);
       await recordProductPlanningAudit({
         organizationId,
         actorUserId,
@@ -1991,15 +1968,17 @@ export function registerProductPlanningRoutes(
         entityType: "product_planning_backlog",
         description: "AI backlog analysis generated for Product Planning.",
         newValues: {
-          counts: analysis.counts,
-          healthScore: analysis.healthScore,
+          counts: analysis.data.counts,
+          healthScore: analysis.data.healthScore,
           suggestionCount: suggestions.length,
-          nextActions: analysis.nextActions,
+          nextActions: analysis.data.nextActions,
+          source: analysis.source,
+          fallbackReason: analysis.fallbackReason,
         },
       });
       res.status(201).json({
         success: true,
-        data: { ...analysis, suggestions },
+        data: { ...analysis.data, suggestions, source: analysis.source, fallbackReason: analysis.fallbackReason },
         message: "Backlog analysis generated.",
       });
     } catch (error) {
@@ -2014,17 +1993,17 @@ export function registerProductPlanningRoutes(
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) ?? null;
       const items = await listAiCandidateWorkItems(organizationId);
-      const drafts = generateEpicDiscoverySuggestions(items);
-      const suggestions = await persistAiSuggestions(organizationId, drafts);
+      const analysis = await productPlanningAiAssistant.suggestEpics(organizationId, items);
+      const suggestions = await persistAiSuggestions(organizationId, analysis.data.suggestions);
       await recordProductPlanningAudit({
         organizationId,
         actorUserId,
         actionType: "ai_epic_suggestions_generated",
         entityType: "product_planning_backlog",
         description: "AI epic discovery suggestions generated for Product Planning.",
-        newValues: { suggestionCount: suggestions.length },
+        newValues: { suggestionCount: suggestions.length, source: analysis.source, fallbackReason: analysis.fallbackReason },
       });
-      res.status(201).json({ success: true, data: { suggestions }, message: "Epic suggestions generated." });
+      res.status(201).json({ success: true, data: { ...analysis.data, suggestions, source: analysis.source, fallbackReason: analysis.fallbackReason }, message: "Epic suggestions generated." });
     } catch (error) {
       console.error("[ProductPlanning] Epic discovery failed:", error);
       res.status(500).json({ success: false, message: "Failed to generate epic suggestions." });
@@ -2036,16 +2015,16 @@ export function registerProductPlanningRoutes(
       if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) ?? null;
-      const analysis = generateBacklogAnalysis(await listAiCandidateWorkItems(organizationId));
+      const analysis = await productPlanningAiAssistant.analyzeBacklog(organizationId, await listAiCandidateWorkItems(organizationId));
       await recordProductPlanningAudit({
         organizationId,
         actorUserId,
         actionType: "ai_go_live_readiness_generated",
         entityType: "product_planning_backlog",
         description: "AI go-live readiness analysis generated for Product Planning.",
-        newValues: analysis.goLiveReadiness,
+        newValues: { ...analysis.data.goLiveReadiness, liveAi: analysis.data.liveAi, source: analysis.source, fallbackReason: analysis.fallbackReason },
       });
-      res.status(201).json({ success: true, data: analysis.goLiveReadiness, message: "Go-live readiness generated." });
+      res.status(201).json({ success: true, data: { ...analysis.data.goLiveReadiness, liveAi: analysis.data.liveAi, source: analysis.source, fallbackReason: analysis.fallbackReason }, message: "Go-live readiness generated." });
     } catch (error) {
       console.error("[ProductPlanning] Go-live readiness failed:", error);
       res.status(500).json({ success: false, message: "Failed to generate go-live readiness." });
@@ -2057,8 +2036,8 @@ export function registerProductPlanningRoutes(
       if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) ?? null;
-      const analysis = generateBacklogAnalysis(await listAiCandidateWorkItems(organizationId));
-      const data = { healthScore: analysis.healthScore, issues: analysis.issues, suggestedFixes: analysis.nextActions, counts: analysis.counts };
+      const analysis = await productPlanningAiAssistant.analyzeBacklog(organizationId, await listAiCandidateWorkItems(organizationId));
+      const data = { healthScore: analysis.data.healthScore, issues: analysis.data.issues, suggestedFixes: analysis.data.nextActions, counts: analysis.data.counts, source: analysis.source, fallbackReason: analysis.fallbackReason };
       await recordProductPlanningAudit({
         organizationId,
         actorUserId,
@@ -2079,17 +2058,17 @@ export function registerProductPlanningRoutes(
       if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) ?? null;
-      const analysis = generateRoadmapAnalysis(await listAiCandidateWorkItems(organizationId));
-      const suggestions = await persistAiSuggestions(organizationId, analysis.suggestions);
+      const analysis = await productPlanningAiAssistant.analyzeRoadmap(organizationId, await listAiCandidateWorkItems(organizationId));
+      const suggestions = await persistAiSuggestions(organizationId, analysis.data.suggestions);
       await recordProductPlanningAudit({
         organizationId,
         actorUserId,
         actionType: "ai_roadmap_analysis_generated",
         entityType: "product_planning_roadmap",
         description: "AI roadmap analysis generated for Product Planning.",
-        newValues: { recommendations: analysis.recommendations, suggestionCount: suggestions.length },
+        newValues: { recommendations: analysis.data.recommendations, suggestionCount: suggestions.length, source: analysis.source, fallbackReason: analysis.fallbackReason },
       });
-      res.status(201).json({ success: true, data: { recommendations: analysis.recommendations, suggestions }, message: "Roadmap analysis generated." });
+      res.status(201).json({ success: true, data: { ...analysis.data, suggestions, source: analysis.source, fallbackReason: analysis.fallbackReason }, message: "Roadmap analysis generated." });
     } catch (error) {
       console.error("[ProductPlanning] Roadmap analysis failed:", error);
       res.status(500).json({ success: false, message: "Failed to generate roadmap analysis." });
@@ -2145,8 +2124,8 @@ export function registerProductPlanningRoutes(
         }
       }
 
-      const drafts = generateImportCleanupSuggestions({ mappedRows: preview.mappedRows, duplicateWarnings });
-      const suggestions = await persistAiSuggestions(organizationId, drafts);
+      const analysis = await productPlanningAiAssistant.analyzeImportCleanup(organizationId, { mappedRows: preview.mappedRows, duplicateWarnings });
+      const suggestions = await persistAiSuggestions(organizationId, analysis.data.suggestions);
       await recordProductPlanningAudit({
         organizationId,
         actorUserId,
@@ -2157,11 +2136,13 @@ export function registerProductPlanningRoutes(
           suggestionCount: suggestions.length,
           duplicateWarningCount: duplicateWarnings.length,
           parsedRowCount: preview.counts.parsed,
+          source: analysis.source,
+          fallbackReason: analysis.fallbackReason,
         },
       });
       res.status(201).json({
         success: true,
-        data: { suggestions, counts: { suggestions: suggestions.length, duplicateWarnings: duplicateWarnings.length } },
+        data: { ...analysis.data, suggestions, counts: { suggestions: suggestions.length, duplicateWarnings: duplicateWarnings.length }, source: analysis.source, fallbackReason: analysis.fallbackReason },
         message: "Import cleanup suggestions generated.",
       });
     } catch (error) {
@@ -2194,7 +2175,7 @@ export function registerProductPlanningRoutes(
         .limit(250);
       const allItems = await listAiCandidateWorkItems(organizationId);
       const importedIds = new Set(importedItems.map((item) => item.id));
-      const analysis = generateBacklogAnalysis(importedItems);
+      const analysis = await productPlanningAiAssistant.analyzeBacklog(organizationId, importedItems);
       const duplicateSuggestions = importedItems.flatMap((item) =>
         findSimilarProductPlanningItems(item, allItems.filter((candidate) => !importedIds.has(candidate.id)), 2).map((candidate) => ({
           workItemId: item.id,
@@ -2210,7 +2191,7 @@ export function registerProductPlanningRoutes(
           reasoning: candidate.reasoning,
         }))
       );
-      const suggestions = await persistAiSuggestions(organizationId, [...analysis.suggestions, ...duplicateSuggestions].slice(0, 100));
+      const suggestions = await persistAiSuggestions(organizationId, [...analysis.data.suggestions, ...duplicateSuggestions].slice(0, 100));
       await recordProductPlanningAudit({
         organizationId,
         actorUserId,
@@ -2219,9 +2200,9 @@ export function registerProductPlanningRoutes(
         entityId: batchId,
         entityName: batch.filename ?? "CSV import",
         description: "AI imported backlog analysis generated for Product Planning.",
-        newValues: { counts: analysis.counts, suggestionCount: suggestions.length },
+        newValues: { counts: analysis.data.counts, suggestionCount: suggestions.length, source: analysis.source, fallbackReason: analysis.fallbackReason },
       });
-      res.status(201).json({ success: true, data: { ...analysis, suggestions }, message: "Imported backlog analysis generated." });
+      res.status(201).json({ success: true, data: { ...analysis.data, suggestions, source: analysis.source, fallbackReason: analysis.fallbackReason }, message: "Imported backlog analysis generated." });
     } catch (error) {
       console.error("[ProductPlanning] Import batch analysis failed:", error);
       res.status(500).json({ success: false, message: "Failed to analyze imported backlog." });
@@ -2341,7 +2322,8 @@ export function registerProductPlanningRoutes(
         .limit(1);
       if (!bugReport) return res.status(404).json({ success: false, message: "Bug report not found." });
 
-      const summary = generateBugPlanningSummary(bugReport);
+      const analysis = await productPlanningAiAssistant.summarizeBugPlanning(organizationId, bugReport);
+      const summary = analysis.data;
       const [suggestion] = await persistAiSuggestions(organizationId, [{
         workItemId: null,
         suggestionType: "implementation_notes",
@@ -2352,11 +2334,11 @@ export function registerProductPlanningRoutes(
           severity: bugReport.severity,
         },
         suggestedValue: summary,
-        confidence: 74,
+        confidence: analysis.source === "live_ai" ? 84 : 74,
         reasoning: summary.reasoning,
       }]);
 
-      res.status(201).json({ success: true, data: { summary, suggestion }, message: "Planning summary generated for review." });
+      res.status(201).json({ success: true, data: { summary: { ...summary, source: analysis.source, fallbackReason: analysis.fallbackReason }, suggestion: { ...suggestion, source: analysis.source, fallbackReason: analysis.fallbackReason }, source: analysis.source, fallbackReason: analysis.fallbackReason }, message: "Planning summary generated for review." });
     } catch (error) {
       console.error("[ProductPlanning] Bug summary generation failed:", error);
       res.status(500).json({ success: false, message: "Failed to generate Product Planning summary." });

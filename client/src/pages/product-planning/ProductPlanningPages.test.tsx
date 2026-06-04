@@ -254,6 +254,9 @@ const dashboardData = {
 };
 
 const backlogAnalysis = {
+  source: "live_ai",
+  fallbackReason: null,
+  executiveSummary: "Product catalog completion is the operational go-live bottleneck.",
   counts: {
     totalItems: 3,
     missingModules: 1,
@@ -280,6 +283,28 @@ const backlogAnalysis = {
     relatedItems: [detailItem],
     confidence: 80,
     reasoning: "Planning items belong together.",
+  }],
+  suggestions: [aiSuggestions[0]],
+  liveAi: {
+    goLiveBlockers: [{ title: "Product Catalog Completion", reasoning: "Blocks quote/order validation.", relatedItemReferences: ["PP-0001"] }],
+    topNextActions: [{ title: "Create Product Catalog Completion Epic", reasoning: "It is the clearest go-live blocker.", priority: "critical" }],
+    quickWins: [{ title: "Assign missing modules", reasoning: "Improves backlog clarity quickly." }],
+    futureItems: [{ title: "SaaS polish", reasoning: "Can wait until Titan Graphics is operational." }],
+    healthFindings: [{ label: "Missing modules", count: 1, severity: "high", recommendation: "Assign modules before sequencing." }],
+  },
+};
+
+const epicAnalysis = {
+  source: "live_ai",
+  fallbackReason: null,
+  epics: [{
+    name: "Product Catalog Completion",
+    description: "Complete catalog setup for Titan Graphics operational readiness.",
+    confidence: 92,
+    businessValue: "very_high",
+    recommendedPhase: "go_live",
+    relatedItemReferences: ["PP-0001", "PP-0002"],
+    reasoning: "These items are required before quote/order validation.",
   }],
   suggestions: [aiSuggestions[0]],
 };
@@ -333,7 +358,20 @@ describe("Product Planning UX detail surfaces", () => {
       return responseJson({ success: false, message: "Not found" }, 404);
     }) as any;
     mockApiRequest.mockImplementation((method, url) => Promise.resolve({
-      json: async () => ({ data: url?.includes("find-duplicates") ? { suggestions: [] } : [] }),
+      json: async () => ({
+        data: url?.includes("find-duplicates")
+          ? { suggestions: [] }
+          : url?.includes("ai/analyze")
+            ? {
+                summary: "Live AI says product catalog completion matters.",
+                concerns: [],
+                suggestions: [],
+                nextActions: ["Review catalog go-live blockers."],
+                source: "live_ai",
+                fallbackReason: null,
+              }
+            : { suggestions: [], epics: [], source: "rule_based_fallback", fallbackReason: "Live AI unavailable. Showing rule-based suggestions." },
+      }),
     }));
 
     const { container, root } = renderWithProviders(<ProductPlanningWorkItemDetailPage />);
@@ -343,6 +381,7 @@ describe("Product Planning UX detail surfaces", () => {
     expect(container.textContent).toContain("Analyze Work Item");
     expect(container.textContent).toContain("Suggest Epic");
     expect(container.textContent).toContain("Suggest Roadmap Placement");
+    expect(container.textContent).toContain("AI suggestions require review before anything changes.");
 
     const clickByText = async (label: string) => {
       const button = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes(label)) as HTMLButtonElement;
@@ -381,10 +420,40 @@ describe("Product Planning UX detail surfaces", () => {
     await flushQueries();
 
     expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/ai/analyze-backlog", {});
+    expect(container.textContent).toContain("Live AI");
+    expect(container.textContent).toContain("Product catalog completion is the operational go-live bottleneck.");
     expect(container.textContent).toContain("Backlog Health Score");
     expect(container.textContent).toContain("Recommended Next Actions");
+    expect(container.textContent).toContain("Create Product Catalog Completion Epic");
+    expect(container.textContent).toContain("Product Catalog Completion");
     expect(container.textContent).toContain("Go-Live Readiness");
     expect(container.textContent).toContain("Planning Improvements");
+    cleanup(root, container);
+  });
+
+  test("dashboard renders suggested epic cards", async () => {
+    (global as any).fetch = jest.fn(async (url: string) => {
+      if (url === "/api/product-planning/dashboard") return responseJson({ success: true, data: dashboardData });
+      return responseJson({ success: false, message: "Not found" }, 404);
+    }) as any;
+    mockApiRequest.mockImplementationOnce(() => Promise.resolve({
+      json: async () => ({ data: epicAnalysis }),
+    }));
+
+    const { container, root } = renderWithProviders(<ProductPlanningDashboardPage />, "/product-planning");
+    await flushQueries();
+
+    const button = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Suggest Epics")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(button);
+    });
+    await flushQueries();
+
+    expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/ai/suggest-epics", {});
+    expect(container.textContent).toContain("Suggested Epics");
+    expect(container.textContent).toContain("Product Catalog Completion");
+    expect(container.textContent).toContain("Create Epic Draft");
+    expect(container.textContent).toContain("Live AI");
     cleanup(root, container);
   });
 
@@ -468,6 +537,12 @@ describe("Product Planning UX detail surfaces", () => {
     mockApiRequest.mockImplementationOnce(() => Promise.resolve({
       json: async () => ({
         data: {
+          source: "live_ai",
+          fallbackReason: null,
+          summary: "Roadmap is overloaded around go-live validation.",
+          overloadedPhases: [{ phase: "go_live", reasoning: "Too many items are competing for launch." }],
+          moveRecommendations: [{ reference: "PP-0001", currentPhase: "future", recommendedPhase: "go_live", confidence: 80, reasoning: "Catalog work belongs before launch." }],
+          sequenceRecommendations: [{ title: "Do Product Catalog Completion before portal polish", reasoning: "Catalog enables quote and order validation." }],
           recommendations: [{ phase: "go_live", action: "Overloaded", count: 14, reasoning: "Go Live has 14 items." }],
           suggestions: [{
             id: "roadmap_suggestion_2",
@@ -496,7 +571,11 @@ describe("Product Planning UX detail surfaces", () => {
 
     expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/roadmap/analyze", {});
     expect(container.textContent).toContain("Roadmap Analysis");
+    expect(container.textContent).toContain("Live AI");
+    expect(container.textContent).toContain("Roadmap is overloaded around go-live validation.");
     expect(container.textContent).toContain("Go Live has 14 items.");
+    expect(container.textContent).toContain("What Should Move");
+    expect(container.textContent).toContain("Do Product Catalog Completion before portal polish");
     cleanup(root, container);
   });
 });
