@@ -7,6 +7,7 @@ import {
   desc,
   eq,
   ilike,
+  inArray,
   isNotNull,
   isNull,
   ne,
@@ -20,10 +21,14 @@ import {
   bugReports,
   productPlanningBusinessValueValues,
   productPlanningComplexityValues,
+  productPlanningDependencies,
+  productPlanningDependencyTypeValues,
   productPlanningEvents,
   productPlanningImportBatches,
   productPlanningPhaseValues,
   productPlanningPriorityValues,
+  productPlanningReleases,
+  productPlanningReleaseStatusValues,
   productPlanningSourceTypeValues,
   productPlanningStatusValues,
   productPlanningWorkItems,
@@ -33,7 +38,9 @@ import {
   parseProductPlanningCsv,
   type ProductPlanningImportMappedRow,
 } from "../services/productPlanningCsv";
+import { wouldCreateProductPlanningDependencyCycle } from "../services/productPlanningDependencies";
 import { validateProductPlanningParent } from "../services/productPlanningHierarchy";
+import { calculateProductPlanningPriorityScore } from "../services/productPlanningPriority";
 
 type DbExecutor = typeof db | any;
 
@@ -46,8 +53,9 @@ const listQuerySchema = z.object({
   phase: z.enum(productPlanningPhaseValues).optional(),
   sourceType: z.enum(productPlanningSourceTypeValues).optional(),
   ownerUserId: z.string().trim().max(255).optional(),
+  releaseId: z.string().trim().max(255).optional(),
   includeArchived: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
-  sortBy: z.enum(["createdAt", "updatedAt", "priority", "reference", "module", "phase", "roadmapOrder", "sortOrder"]).default("updatedAt"),
+  sortBy: z.enum(["createdAt", "updatedAt", "priority", "priorityScore", "reference", "module", "phase", "roadmapOrder", "sortOrder"]).default("updatedAt"),
   sortDirection: z.enum(["asc", "desc"]).default("desc"),
   limit: z.coerce.number().int().min(1).max(250).default(100),
 });
@@ -72,6 +80,14 @@ const tagsSchema = z.preprocess(
   z.array(z.string().trim().min(1).max(80)).max(20),
 );
 
+const scoreMetricSchema = z.preprocess(
+  (value) => {
+    if (value == null || value === "") return null;
+    return Number(value);
+  },
+  z.number().int().min(1).max(5).nullable(),
+);
+
 const createWorkItemSchema = z.object({
   title: z.string().trim().min(1).max(500),
   description: nullableString.optional(),
@@ -93,6 +109,12 @@ const createWorkItemSchema = z.object({
   ownerUserId: nullableString.optional(),
   dueDate: nullableString.optional(),
   releaseTarget: nullableString.optional(),
+  releaseId: nullableString.optional(),
+  userImpact: scoreMetricSchema.optional(),
+  revenueImpact: scoreMetricSchema.optional(),
+  operationalImpact: scoreMetricSchema.optional(),
+  riskReduction: scoreMetricSchema.optional(),
+  confidence: scoreMetricSchema.optional(),
   notes: nullableString.optional(),
 });
 
@@ -126,6 +148,20 @@ const reorderSchema = z.object({
     planningStatus: z.enum(productPlanningStatusValues).optional(),
     phase: z.enum(productPlanningPhaseValues).nullable().optional(),
   })).min(1).max(250),
+});
+
+const createReleaseSchema = z.object({
+  name: z.string().trim().min(1).max(255),
+  description: nullableString.optional(),
+  targetDate: nullableString.optional(),
+  status: z.enum(productPlanningReleaseStatusValues).default("planned"),
+});
+
+const updateReleaseSchema = createReleaseSchema.partial();
+
+const createDependencySchema = z.object({
+  dependsOnWorkItemId: z.string().trim().min(1),
+  dependencyType: z.enum(productPlanningDependencyTypeValues).default("requires"),
 });
 
 function getUserId(user: any): string | undefined {
@@ -218,6 +254,7 @@ async function recordPlanningEvent(params: {
 }
 
 function toWorkItemInsert(input: z.infer<typeof createWorkItemSchema>, organizationId: string, actorUserId: string | null, reference: string) {
+  const score = calculateProductPlanningPriorityScore(input);
   return {
     organizationId,
     reference,
@@ -241,6 +278,14 @@ function toWorkItemInsert(input: z.infer<typeof createWorkItemSchema>, organizat
     ownerUserId: input.ownerUserId ?? null,
     dueDate: input.dueDate ?? null,
     releaseTarget: input.releaseTarget ?? null,
+    releaseId: input.releaseId ?? null,
+    userImpact: input.userImpact ?? null,
+    revenueImpact: input.revenueImpact ?? null,
+    operationalImpact: input.operationalImpact ?? null,
+    riskReduction: input.riskReduction ?? null,
+    confidence: input.confidence ?? null,
+    priorityScore: score.priorityScore,
+    priorityScoreExplanation: score.priorityScoreExplanation,
     notes: input.notes ?? null,
     createdByUserId: actorUserId,
     updatedByUserId: actorUserId,
@@ -326,11 +371,39 @@ function orderExpression(sortBy: z.infer<typeof listQuerySchema>["sortBy"], sort
     reference: productPlanningWorkItems.reference,
     module: productPlanningWorkItems.module,
     phase: productPlanningWorkItems.phase,
+    priorityScore: productPlanningWorkItems.priorityScore,
     roadmapOrder: productPlanningWorkItems.roadmapOrder,
     sortOrder: productPlanningWorkItems.sortOrder,
   }[sortBy];
 
   return sortDirection === "asc" ? asc(column) : desc(column);
+}
+
+async function validateReleaseForOrg(organizationId: string, releaseId: string | null | undefined, executor: DbExecutor = db) {
+  if (!releaseId) return true;
+  const [release] = await executor
+    .select({ id: productPlanningReleases.id })
+    .from(productPlanningReleases)
+    .where(and(
+      eq(productPlanningReleases.organizationId, organizationId),
+      eq(productPlanningReleases.id, releaseId),
+      isNull(productPlanningReleases.archivedAt),
+    ))
+    .limit(1);
+  return Boolean(release);
+}
+
+function shouldRecalculatePriorityScore(input: Record<string, unknown>) {
+  return ["businessValue", "complexity", "userImpact", "revenueImpact", "operationalImpact", "riskReduction", "confidence"]
+    .some((key) => Object.prototype.hasOwnProperty.call(input, key));
+}
+
+function patchedValue<T extends Record<string, unknown>, K extends keyof T>(patch: Partial<T>, existing: T, key: K) {
+  return Object.prototype.hasOwnProperty.call(patch, key) ? patch[key] : existing[key];
+}
+
+function rowsFromExecute<T = any>(result: unknown): T[] {
+  return Array.isArray(result) ? result as T[] : ((result as any)?.rows ?? []);
 }
 
 async function validateParentForOrg(
@@ -363,6 +436,92 @@ export function registerProductPlanningRoutes(
 ): void {
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
 
+  app.get("/api/product-planning/releases", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const includeArchived = req.query.includeArchived === "true";
+      const conditions = [eq(productPlanningReleases.organizationId, organizationId)];
+      if (!includeArchived) conditions.push(isNull(productPlanningReleases.archivedAt));
+
+      const rows = await db
+        .select()
+        .from(productPlanningReleases)
+        .where(and(...conditions))
+        .orderBy(asc(productPlanningReleases.targetDate), asc(productPlanningReleases.createdAt))
+        .limit(100);
+
+      res.json({ success: true, data: rows });
+    } catch (error) {
+      console.error("[ProductPlanning] Release list failed:", error);
+      res.status(500).json({ success: false, message: "Failed to list Product Planning releases." });
+    }
+  });
+
+  app.post("/api/product-planning/releases", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const input = createReleaseSchema.parse(req.body ?? {});
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+
+      const [release] = await db
+        .insert(productPlanningReleases)
+        .values({
+          organizationId,
+          name: input.name,
+          description: input.description ?? null,
+          targetDate: input.targetDate ?? null,
+          status: input.status,
+          createdByUserId: actorUserId,
+          updatedByUserId: actorUserId,
+        })
+        .returning();
+
+      res.status(201).json({ success: true, data: release, message: "Product Planning release created." });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      const err = error as any;
+      if (err?.code === "23505") return res.status(409).json({ success: false, message: "A release with this name already exists." });
+      console.error("[ProductPlanning] Release create failed:", error);
+      res.status(500).json({ success: false, message: "Failed to create Product Planning release." });
+    }
+  });
+
+  app.patch("/api/product-planning/releases/:id", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const input = updateReleaseSchema.parse(req.body ?? {});
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const id = String(req.params.id);
+      const updateValues = {
+        ...input,
+        archivedAt: input.status === "archived" ? new Date() : undefined,
+        updatedByUserId: actorUserId,
+        updatedAt: new Date(),
+      };
+      Object.keys(updateValues).forEach((key) => {
+        if ((updateValues as any)[key] === undefined) delete (updateValues as any)[key];
+      });
+
+      const [release] = await db
+        .update(productPlanningReleases)
+        .set(updateValues)
+        .where(and(eq(productPlanningReleases.organizationId, organizationId), eq(productPlanningReleases.id, id)))
+        .returning();
+
+      if (!release) return res.status(404).json({ success: false, message: "Product Planning release not found." });
+      res.json({ success: true, data: release, message: "Product Planning release updated." });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      const err = error as any;
+      if (err?.code === "23505") return res.status(409).json({ success: false, message: "A release with this name already exists." });
+      console.error("[ProductPlanning] Release update failed:", error);
+      res.status(500).json({ success: false, message: "Failed to update Product Planning release." });
+    }
+  });
+
   app.get("/api/product-planning/work-items", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
     try {
       if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
@@ -382,6 +541,7 @@ export function registerProductPlanningRoutes(
       if (query.phase) conditions.push(eq(productPlanningWorkItems.phase, query.phase));
       if (query.sourceType) conditions.push(eq(productPlanningWorkItems.sourceType, query.sourceType));
       if (query.ownerUserId) conditions.push(eq(productPlanningWorkItems.ownerUserId, query.ownerUserId));
+      if (query.releaseId) conditions.push(eq(productPlanningWorkItems.releaseId, query.releaseId));
       if (query.search) {
         const pattern = `%${query.search.replace(/[%_]/g, "\\$&")}%`;
         conditions.push(or(
@@ -467,12 +627,158 @@ export function registerProductPlanningRoutes(
     }
   });
 
+  app.get("/api/product-planning/work-items/:id/dependencies", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const id = String(req.params.id);
+
+      const deps = await db
+        .select()
+        .from(productPlanningDependencies)
+        .where(and(eq(productPlanningDependencies.organizationId, organizationId), eq(productPlanningDependencies.workItemId, id)))
+        .orderBy(desc(productPlanningDependencies.createdAt));
+
+      const itemIds = Array.from(new Set(deps.flatMap((dep) => [dep.workItemId, dep.dependsOnWorkItemId])));
+      const items = itemIds.length
+        ? await db
+          .select({
+            id: productPlanningWorkItems.id,
+            reference: productPlanningWorkItems.reference,
+            title: productPlanningWorkItems.title,
+            workItemType: productPlanningWorkItems.workItemType,
+            planningStatus: productPlanningWorkItems.planningStatus,
+            priority: productPlanningWorkItems.priority,
+          })
+          .from(productPlanningWorkItems)
+          .where(and(eq(productPlanningWorkItems.organizationId, organizationId), inArray(productPlanningWorkItems.id, itemIds)))
+        : [];
+      const itemById = new Map(items.map((item) => [item.id, item]));
+
+      res.json({
+        success: true,
+        data: deps.map((dep) => ({
+          ...dep,
+          workItem: itemById.get(dep.workItemId) ?? null,
+          dependsOnWorkItem: itemById.get(dep.dependsOnWorkItemId) ?? null,
+        })),
+      });
+    } catch (error) {
+      console.error("[ProductPlanning] Dependency list failed:", error);
+      res.status(500).json({ success: false, message: "Failed to list Product Planning dependencies." });
+    }
+  });
+
+  app.post("/api/product-planning/work-items/:id/dependencies", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const input = createDependencySchema.parse(req.body ?? {});
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const id = String(req.params.id);
+
+      if (id === input.dependsOnWorkItemId) {
+        return res.status(400).json({ success: false, message: "A work item cannot depend on itself." });
+      }
+
+      const targetRows = await db
+        .select({ id: productPlanningWorkItems.id })
+        .from(productPlanningWorkItems)
+        .where(and(eq(productPlanningWorkItems.organizationId, organizationId), inArray(productPlanningWorkItems.id, [id, input.dependsOnWorkItemId])));
+      if (targetRows.length !== 2) {
+        return res.status(404).json({ success: false, message: "Both Product Planning work items must exist in this organization." });
+      }
+
+      const createsCycle = await wouldCreateProductPlanningDependencyCycle({
+        workItemId: id,
+        dependsOnWorkItemId: input.dependsOnWorkItemId,
+        lookupDependsOnIds: async (workItemId) => {
+          const rows = await db
+            .select({ dependsOnWorkItemId: productPlanningDependencies.dependsOnWorkItemId })
+            .from(productPlanningDependencies)
+            .where(and(eq(productPlanningDependencies.organizationId, organizationId), eq(productPlanningDependencies.workItemId, workItemId)));
+          return rows.map((row) => row.dependsOnWorkItemId);
+        },
+      });
+      if (createsCycle) {
+        return res.status(400).json({ success: false, message: "Dependency would create a circular dependency chain." });
+      }
+
+      const [dependency] = await db
+        .insert(productPlanningDependencies)
+        .values({
+          organizationId,
+          workItemId: id,
+          dependsOnWorkItemId: input.dependsOnWorkItemId,
+          dependencyType: input.dependencyType,
+          createdByUserId: actorUserId,
+        })
+        .returning();
+
+      await recordPlanningEvent({
+        organizationId,
+        workItemId: id,
+        eventType: "dependency_added",
+        message: `Added ${input.dependencyType} dependency`,
+        metadata: { dependsOnWorkItemId: input.dependsOnWorkItemId, dependencyType: input.dependencyType },
+        actorUserId,
+      });
+
+      res.status(201).json({ success: true, data: dependency, message: "Product Planning dependency created." });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      const err = error as any;
+      if (err?.code === "23505") return res.status(409).json({ success: false, message: "This dependency already exists." });
+      console.error("[ProductPlanning] Dependency create failed:", error);
+      res.status(500).json({ success: false, message: "Failed to create Product Planning dependency." });
+    }
+  });
+
+  app.delete("/api/product-planning/work-items/:id/dependencies/:dependencyId", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const id = String(req.params.id);
+      const dependencyId = String(req.params.dependencyId);
+
+      const [deleted] = await db
+        .delete(productPlanningDependencies)
+        .where(and(
+          eq(productPlanningDependencies.organizationId, organizationId),
+          eq(productPlanningDependencies.workItemId, id),
+          eq(productPlanningDependencies.id, dependencyId),
+        ))
+        .returning();
+
+      if (!deleted) return res.status(404).json({ success: false, message: "Product Planning dependency not found." });
+
+      await recordPlanningEvent({
+        organizationId,
+        workItemId: id,
+        eventType: "dependency_removed",
+        message: "Removed dependency",
+        metadata: { dependsOnWorkItemId: deleted.dependsOnWorkItemId, dependencyType: deleted.dependencyType },
+        actorUserId,
+      });
+
+      res.json({ success: true, data: deleted, message: "Product Planning dependency removed." });
+    } catch (error) {
+      console.error("[ProductPlanning] Dependency delete failed:", error);
+      res.status(500).json({ success: false, message: "Failed to remove Product Planning dependency." });
+    }
+  });
+
   app.post("/api/product-planning/work-items", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
     try {
       if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
       const input = createWorkItemSchema.parse(req.body ?? {});
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) ?? null;
+
+      if (input.releaseId && !(await validateReleaseForOrg(organizationId, input.releaseId))) {
+        return res.status(400).json({ success: false, message: "Product Planning release not found." });
+      }
 
       const created = await db.transaction(async (tx) => {
         const reference = await allocateProductPlanningReference(organizationId, tx);
@@ -523,12 +829,31 @@ export function registerProductPlanningRoutes(
         }
       }
 
+      if (Object.prototype.hasOwnProperty.call(input, "releaseId") && input.releaseId && !(await validateReleaseForOrg(organizationId, input.releaseId))) {
+        return res.status(400).json({ success: false, message: "Product Planning release not found." });
+      }
+
       const updateValues = {
         ...input,
         tags: input.tags,
         updatedByUserId: actorUserId,
         updatedAt: new Date(),
       };
+      if (shouldRecalculatePriorityScore(input)) {
+        const score = calculateProductPlanningPriorityScore({
+          businessValue: patchedValue(input, existing, "businessValue") as any,
+          complexity: patchedValue(input, existing, "complexity") as any,
+          userImpact: patchedValue(input, existing, "userImpact") as number | null,
+          revenueImpact: patchedValue(input, existing, "revenueImpact") as number | null,
+          operationalImpact: patchedValue(input, existing, "operationalImpact") as number | null,
+          riskReduction: patchedValue(input, existing, "riskReduction") as number | null,
+          confidence: patchedValue(input, existing, "confidence") as number | null,
+        });
+        Object.assign(updateValues, {
+          priorityScore: score.priorityScore,
+          priorityScoreExplanation: score.priorityScoreExplanation,
+        });
+      }
       Object.keys(updateValues).forEach((key) => {
         if ((updateValues as any)[key] === undefined) delete (updateValues as any)[key];
       });
@@ -809,6 +1134,81 @@ export function registerProductPlanningRoutes(
         .orderBy(orderExpression("priority", "asc"), asc(productPlanningWorkItems.createdAt))
         .limit(8);
 
+      const topPriorityScoreFeatures = await db
+        .select()
+        .from(productPlanningWorkItems)
+        .where(and(
+          openCondition!,
+          isNotNull(productPlanningWorkItems.priorityScore),
+          or(eq(productPlanningWorkItems.workItemType, "feature"), eq(productPlanningWorkItems.workItemType, "enhancement"), eq(productPlanningWorkItems.workItemType, "epic"))!,
+        ))
+        .orderBy(desc(productPlanningWorkItems.priorityScore), orderExpression("priority", "asc"), asc(productPlanningWorkItems.createdAt))
+        .limit(10);
+
+      const majorBugsBlockingGoLive = await db
+        .select()
+        .from(productPlanningWorkItems)
+        .where(and(
+          openCondition!,
+          eq(productPlanningWorkItems.workItemType, "bug"),
+          eq(productPlanningWorkItems.phase, "go_live"),
+          or(eq(productPlanningWorkItems.priority, "critical"), eq(productPlanningWorkItems.priority, "high"))!,
+        ))
+        .orderBy(orderExpression("priority", "asc"), asc(productPlanningWorkItems.createdAt))
+        .limit(10);
+
+      const stalledSince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const itemsStalledInValidation = await db
+        .select()
+        .from(productPlanningWorkItems)
+        .where(and(
+          openCondition!,
+          inArray(productPlanningWorkItems.planningStatus, ["testing", "dev_validation", "main_validation"]),
+          sql`${productPlanningWorkItems.updatedAt} < ${stalledSince}`,
+        ))
+        .orderBy(asc(productPlanningWorkItems.updatedAt))
+        .limit(10);
+
+      const itemsWithUnresolvedDependencies = await db
+        .select()
+        .from(productPlanningWorkItems)
+        .where(and(
+          openCondition!,
+          sql`EXISTS (
+            SELECT 1
+            FROM product_planning_dependencies dep
+            INNER JOIN product_planning_work_items blocker
+              ON blocker.id = dep.depends_on_work_item_id
+             AND blocker.organization_id = dep.organization_id
+            WHERE dep.organization_id = ${organizationId}
+              AND dep.work_item_id = ${productPlanningWorkItems.id}
+              AND blocker.archived_at IS NULL
+              AND blocker.planning_status <> 'released'
+          )`,
+        ))
+        .orderBy(orderExpression("priority", "asc"), asc(productPlanningWorkItems.createdAt))
+        .limit(10);
+
+      const releaseProgress = rowsFromExecute(await db.execute(sql`
+        SELECT
+          r.id,
+          r.name,
+          r.status,
+          r.target_date AS "targetDate",
+          count(w.id)::int AS "totalCount",
+          count(w.id) FILTER (WHERE w.planning_status = 'released')::int AS "releasedCount",
+          count(w.id) FILTER (WHERE w.id IS NOT NULL AND w.archived_at IS NULL AND w.planning_status <> 'released')::int AS "openCount"
+        FROM product_planning_releases r
+        LEFT JOIN product_planning_work_items w
+          ON w.release_id = r.id
+         AND w.organization_id = r.organization_id
+        WHERE r.organization_id = ${organizationId}
+          AND r.archived_at IS NULL
+        GROUP BY r.id, r.name, r.status, r.target_date, r.created_at
+        ORDER BY r.target_date NULLS LAST, r.created_at
+        LIMIT 8
+      `));
+
       res.json({
         success: true,
         data: {
@@ -821,6 +1221,12 @@ export function registerProductPlanningRoutes(
           itemsInMainValidation: summary?.itemsInMainValidation ?? 0,
           topPrioritizedFeatures,
           majorBugs,
+          topPriorityScoreFeatures,
+          majorBugsBlockingGoLive,
+          releaseProgress,
+          itemsStalledInValidation,
+          itemsWithUnresolvedDependencies,
+          byModuleWorkload: byModule,
           byStatus,
           byPhase,
           byModule,

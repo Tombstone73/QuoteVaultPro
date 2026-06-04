@@ -11,12 +11,14 @@ import {
   FileUp,
   Kanban,
   LayoutDashboard,
+  Link2,
   ListFilter,
   Map as MapIcon,
   Pencil,
   Plus,
   RefreshCw,
   Save,
+  Trash2,
   Upload,
 } from "lucide-react";
 
@@ -50,6 +52,8 @@ type BusinessValue = "very_high" | "high" | "medium" | "low";
 type Complexity = "small" | "medium" | "large" | "massive";
 type Phase = "go_live" | "v1_1" | "v1_5" | "v2_0" | "future" | "research";
 type SourceType = "manual" | "csv_import" | "bug_report";
+type DependencyType = "blocks" | "requires" | "relates_to";
+type ReleaseStatus = "planned" | "in_progress" | "released" | "archived";
 
 type WorkItemSummary = {
   id: string;
@@ -86,10 +90,38 @@ type WorkItem = {
   ownerUserId: string | null;
   dueDate: string | null;
   releaseTarget: string | null;
+  releaseId: string | null;
+  userImpact: number | null;
+  revenueImpact: number | null;
+  operationalImpact: number | null;
+  riskReduction: number | null;
+  confidence: number | null;
+  priorityScore: number | null;
+  priorityScoreExplanation: Record<string, unknown>;
   notes: string | null;
   updatedAt: string;
   createdAt: string;
   archivedAt: string | null;
+};
+
+type ProductPlanningRelease = {
+  id: string;
+  name: string;
+  description: string | null;
+  targetDate: string | null;
+  status: ReleaseStatus;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+};
+
+type ProductPlanningDependency = {
+  id: string;
+  workItemId: string;
+  dependsOnWorkItemId: string;
+  dependencyType: DependencyType;
+  dependsOnWorkItem: WorkItemSummary | null;
+  createdAt: string;
 };
 
 type DashboardData = {
@@ -102,6 +134,12 @@ type DashboardData = {
   itemsInMainValidation: number;
   topPrioritizedFeatures: WorkItem[];
   majorBugs: WorkItem[];
+  topPriorityScoreFeatures: WorkItem[];
+  majorBugsBlockingGoLive: WorkItem[];
+  releaseProgress: Array<{ id: string; name: string; status: ReleaseStatus; targetDate: string | null; totalCount: number; releasedCount: number; openCount: number }>;
+  itemsStalledInValidation: WorkItem[];
+  itemsWithUnresolvedDependencies: WorkItem[];
+  byModuleWorkload: Array<{ key: string | null; count: number }>;
   byStatus: Array<{ key: string; count: number }>;
   byPhase: Array<{ key: string | null; count: number }>;
   byModule: Array<{ key: string | null; count: number }>;
@@ -189,6 +227,27 @@ const COMPLEXITIES: Array<{ value: Complexity; label: string }> = [
   { value: "massive", label: "Massive" },
 ];
 
+const DEPENDENCY_TYPES: Array<{ value: DependencyType; label: string }> = [
+  { value: "requires", label: "Requires" },
+  { value: "blocks", label: "Blocks" },
+  { value: "relates_to", label: "Relates To" },
+];
+
+const RELEASE_STATUSES: Array<{ value: ReleaseStatus; label: string }> = [
+  { value: "planned", label: "Planned" },
+  { value: "in_progress", label: "In Progress" },
+  { value: "released", label: "Released" },
+  { value: "archived", label: "Archived" },
+];
+
+const SCORE_OPTIONS = [
+  { value: "1", label: "1" },
+  { value: "2", label: "2" },
+  { value: "3", label: "3" },
+  { value: "4", label: "4" },
+  { value: "5", label: "5" },
+];
+
 async function fetchJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { credentials: "include" });
   const json = await res.json();
@@ -204,6 +263,14 @@ function labelFor<T extends string>(options: Array<{ value: T; label: string }>,
 function normalizeOptional(value: string): string | null {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function metricToString(value: number | null | undefined): string {
+  return value == null ? "" : String(value);
+}
+
+function parseMetric(value: string): number | null {
+  return value ? Number(value) : null;
 }
 
 function priorityBadge(priority: Priority) {
@@ -290,8 +357,41 @@ function CompactItemList({ title, items, icon }: { title: string; items: WorkIte
               </div>
               <Badge variant={priorityBadge(item.priority)} className="shrink-0 capitalize">{item.priority}</Badge>
             </div>
+            {item.priorityScore != null && <div className="mt-2 text-xs text-muted-foreground">Score {item.priorityScore}</div>}
           </Link>
         ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ReleaseProgressList({ releases }: { releases: DashboardData["releaseProgress"] }) {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm">Release Progress</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {releases.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No releases planned.</p>
+        ) : releases.map((release) => {
+          const percent = release.totalCount > 0 ? Math.round((release.releasedCount / release.totalCount) * 100) : 0;
+          return (
+            <div key={release.id} className="rounded-md border border-border p-3">
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="font-medium">{release.name}</span>
+                <Badge variant="secondary">{labelFor(RELEASE_STATUSES, release.status)}</Badge>
+              </div>
+              <div className="mt-2 h-2 rounded-full bg-muted">
+                <div className="h-2 rounded-full bg-primary" style={{ width: `${percent}%` }} />
+              </div>
+              <div className="mt-2 flex justify-between text-xs text-muted-foreground">
+                <span>{release.releasedCount}/{release.totalCount} released</span>
+                <span>{release.targetDate ? format(new Date(release.targetDate), "MMM d, yyyy") : "No target date"}</span>
+              </div>
+            </div>
+          );
+        })}
       </CardContent>
     </Card>
   );
@@ -329,10 +429,19 @@ export function ProductPlanningDashboardPage() {
             <CompactItemList title="Major Bugs" items={data.majorBugs} icon={<Bug className="h-4 w-4 text-destructive" />} />
             <CompactItemList title="Prioritized Features" items={data.topPrioritizedFeatures} icon={<ClipboardList className="h-4 w-4 text-primary" />} />
           </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <CompactItemList title="Top Score Features" items={data.topPriorityScoreFeatures} icon={<ClipboardList className="h-4 w-4 text-primary" />} />
+            <CompactItemList title="Go-Live Bug Blockers" items={data.majorBugsBlockingGoLive} icon={<Bug className="h-4 w-4 text-destructive" />} />
+          </div>
+          <div className="grid gap-4 lg:grid-cols-3">
+            <ReleaseProgressList releases={data.releaseProgress} />
+            <CompactItemList title="Stalled Validation" items={data.itemsStalledInValidation} icon={<RefreshCw className="h-4 w-4 text-muted-foreground" />} />
+            <CompactItemList title="Unresolved Dependencies" items={data.itemsWithUnresolvedDependencies} icon={<Link2 className="h-4 w-4 text-muted-foreground" />} />
+          </div>
           <div className="grid gap-4 lg:grid-cols-3">
             <SummaryBreakdown title="By Status" rows={data.byStatus} />
             <SummaryBreakdown title="By Phase" rows={data.byPhase.map((row) => ({ ...row, key: labelFor(PHASES, row.key as Phase | null) || "Unassigned" }))} />
-            <SummaryBreakdown title="By Module" rows={data.byModule.map((row) => ({ ...row, key: row.key || "Unassigned" }))} />
+            <SummaryBreakdown title="By Module Workload" rows={(data.byModuleWorkload ?? data.byModule).map((row) => ({ ...row, key: row.key || "Unassigned" }))} />
           </div>
         </>
       )}
@@ -376,6 +485,12 @@ type WorkItemFormState = {
   ownerUserId: string;
   dueDate: string;
   releaseTarget: string;
+  releaseId: string;
+  userImpact: string;
+  revenueImpact: string;
+  operationalImpact: string;
+  riskReduction: string;
+  confidence: string;
   notes: string;
 };
 
@@ -396,6 +511,12 @@ const EMPTY_FORM: WorkItemFormState = {
   ownerUserId: "",
   dueDate: "",
   releaseTarget: "",
+  releaseId: "",
+  userImpact: "",
+  revenueImpact: "",
+  operationalImpact: "",
+  riskReduction: "",
+  confidence: "",
   notes: "",
 };
 
@@ -418,6 +539,12 @@ function formFromItem(item: WorkItem): WorkItemFormState {
     ownerUserId: item.ownerUserId ?? "",
     dueDate: item.dueDate ?? "",
     releaseTarget: item.releaseTarget ?? "",
+    releaseId: item.releaseId ?? "",
+    userImpact: metricToString(item.userImpact),
+    revenueImpact: metricToString(item.revenueImpact),
+    operationalImpact: metricToString(item.operationalImpact),
+    riskReduction: metricToString(item.riskReduction),
+    confidence: metricToString(item.confidence),
     notes: item.notes ?? "",
   };
 }
@@ -440,6 +567,12 @@ function payloadFromForm(form: WorkItemFormState) {
     ownerUserId: normalizeOptional(form.ownerUserId),
     dueDate: normalizeOptional(form.dueDate),
     releaseTarget: normalizeOptional(form.releaseTarget),
+    releaseId: normalizeOptional(form.releaseId),
+    userImpact: parseMetric(form.userImpact),
+    revenueImpact: parseMetric(form.revenueImpact),
+    operationalImpact: parseMetric(form.operationalImpact),
+    riskReduction: parseMetric(form.riskReduction),
+    confidence: parseMetric(form.confidence),
     notes: normalizeOptional(form.notes),
   };
 }
@@ -460,6 +593,7 @@ export function ProductPlanningBacklogPage() {
   });
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState<WorkItemFormState>(EMPTY_FORM);
+  const [releaseDraft, setReleaseDraft] = useState({ name: "", targetDate: "" });
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams();
@@ -474,7 +608,30 @@ export function ProductPlanningBacklogPage() {
     queryKey: ["/api/product-planning/work-items", queryString],
     queryFn: () => fetchJson<WorkItem[]>(`/api/product-planning/work-items?${queryString}`),
   });
+  const { data: releases = [] } = useQuery<ProductPlanningRelease[]>({
+    queryKey: ["/api/product-planning/releases"],
+    queryFn: () => fetchJson<ProductPlanningRelease[]>("/api/product-planning/releases"),
+  });
   const parentById = useMemo(() => new Map(rows.map((item) => [item.id, item])), [rows]);
+  const releaseById = useMemo(() => new Map(releases.map((release) => [release.id, release])), [releases]);
+
+  const createReleaseMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/product-planning/releases", {
+        name: releaseDraft.name,
+        targetDate: normalizeOptional(releaseDraft.targetDate),
+        status: "planned",
+      });
+      return (await res.json()).data as ProductPlanningRelease;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/releases"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
+      setReleaseDraft({ name: "", targetDate: "" });
+      toast({ title: "Release created" });
+    },
+    onError: (error: Error) => toast({ title: "Release create failed", description: error.message, variant: "destructive" }),
+  });
 
   const saveMutation = useMutation({
     mutationFn: async (next: WorkItemFormState) => {
@@ -524,6 +681,28 @@ export function ProductPlanningBacklogPage() {
   return (
     <ProductPlanningShell>
       <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Release Planning</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px_auto]">
+          <Input value={releaseDraft.name} onChange={(event) => setReleaseDraft({ ...releaseDraft, name: event.target.value })} placeholder="Release name" className="h-9" />
+          <Input type="date" value={releaseDraft.targetDate} onChange={(event) => setReleaseDraft({ ...releaseDraft, targetDate: event.target.value })} className="h-9" />
+          <Button size="sm" disabled={!releaseDraft.name.trim() || createReleaseMutation.isPending} onClick={() => createReleaseMutation.mutate()}>
+            Create Release
+          </Button>
+          {releases.length > 0 && (
+            <div className="flex flex-wrap gap-2 md:col-span-3">
+              {releases.slice(0, 8).map((release) => (
+                <Badge key={release.id} variant="secondary">
+                  {release.name}{release.targetDate ? ` - ${format(new Date(release.targetDate), "MMM d")}` : ""}
+                </Badge>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardContent className="space-y-3 p-4">
           <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
             <ListFilter className="h-4 w-4" />
@@ -553,6 +732,7 @@ export function ProductPlanningBacklogPage() {
                 <SelectContent>
                   <SelectItem value="reference">Reference</SelectItem>
                   <SelectItem value="priority">Priority</SelectItem>
+                  <SelectItem value="priorityScore">Priority score</SelectItem>
                   <SelectItem value="createdAt">Created date</SelectItem>
                   <SelectItem value="updatedAt">Updated date</SelectItem>
                   <SelectItem value="module">Module</SelectItem>
@@ -585,8 +765,10 @@ export function ProductPlanningBacklogPage() {
                 <TableHead>Type</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Priority</TableHead>
+                <TableHead>Score</TableHead>
                 <TableHead>Module</TableHead>
                 <TableHead>Phase</TableHead>
+                <TableHead>Release</TableHead>
                 <TableHead>Epic</TableHead>
                 <TableHead>Source</TableHead>
                 <TableHead>Updated</TableHead>
@@ -596,9 +778,9 @@ export function ProductPlanningBacklogPage() {
             </TableHeader>
             <TableBody>
               {isLoading ? Array.from({ length: 6 }).map((_, index) => (
-                <TableRow key={index}><TableCell colSpan={12}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+                <TableRow key={index}><TableCell colSpan={14}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
               )) : rows.length === 0 ? (
-                <TableRow><TableCell colSpan={12} className="py-8 text-center text-sm text-muted-foreground">No planning work items found.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={14} className="py-8 text-center text-sm text-muted-foreground">No planning work items found.</TableCell></TableRow>
               ) : rows.map((item) => (
                 <TableRow key={item.id}>
                   <TableCell className="font-mono text-xs font-semibold">{item.reference}</TableCell>
@@ -613,6 +795,7 @@ export function ProductPlanningBacklogPage() {
                   <TableCell>
                     <InlineSelect value={item.priority} options={PRIORITIES} onChange={(value) => quickUpdateMutation.mutate({ id: item.id, patch: { priority: value as Priority } })} />
                   </TableCell>
+                  <TableCell>{item.priorityScore == null ? "" : <Badge variant="outline">{item.priorityScore}</Badge>}</TableCell>
                   <TableCell>
                     <Input
                       defaultValue={item.module ?? ""}
@@ -625,6 +808,9 @@ export function ProductPlanningBacklogPage() {
                   </TableCell>
                   <TableCell>
                     <InlineSelect value={item.phase ?? ""} includeNone options={PHASES} onChange={(value) => quickUpdateMutation.mutate({ id: item.id, patch: { phase: (value || null) as Phase | null } })} />
+                  </TableCell>
+                  <TableCell className="max-w-[160px] truncate text-xs text-muted-foreground">
+                    {item.releaseId ? (releaseById.get(item.releaseId)?.name ?? "Linked release") : ""}
                   </TableCell>
                   <TableCell className="max-w-[160px] truncate text-xs text-muted-foreground">
                     {item.parentId ? (parentById.get(item.parentId)?.reference ?? "Linked epic") : ""}
@@ -656,6 +842,9 @@ export function ProductPlanningBacklogPage() {
         form={form}
         setForm={setForm}
         availableParents={rows.filter((item) => item.workItemType === "epic" && item.id !== form.id)}
+        releases={releases}
+        workItems={rows}
+        currentItem={form.id ? rows.find((item) => item.id === form.id) : undefined}
         children={form.id ? rows.filter((item) => item.parentId === form.id) : []}
         onOpenChange={setModalOpen}
         onSave={() => saveMutation.mutate(form)}
@@ -947,6 +1136,9 @@ function WorkItemDialog({
   form,
   setForm,
   availableParents,
+  releases,
+  workItems,
+  currentItem,
   children,
   onOpenChange,
   onSave,
@@ -956,12 +1148,55 @@ function WorkItemDialog({
   form: WorkItemFormState;
   setForm: (form: WorkItemFormState) => void;
   availableParents: WorkItem[];
+  releases: ProductPlanningRelease[];
+  workItems: WorkItem[];
+  currentItem?: WorkItem;
   children: WorkItem[];
   onOpenChange: (open: boolean) => void;
   onSave: () => void;
   isSaving: boolean;
 }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [dependencyTarget, setDependencyTarget] = useState("");
+  const [dependencyType, setDependencyType] = useState<DependencyType>("requires");
   const update = <K extends keyof WorkItemFormState>(key: K, value: WorkItemFormState[K]) => setForm({ ...form, [key]: value });
+  const scoreComponents = (currentItem?.priorityScoreExplanation?.components ?? {}) as Record<string, number>;
+  const dependencyQueryKey = ["/api/product-planning/work-items", form.id, "dependencies"];
+  const { data: dependencies = [] } = useQuery<ProductPlanningDependency[]>({
+    queryKey: dependencyQueryKey,
+    queryFn: () => fetchJson<ProductPlanningDependency[]>(`/api/product-planning/work-items/${form.id}/dependencies`),
+    enabled: open && Boolean(form.id),
+  });
+  const addDependencyMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${form.id}/dependencies`, {
+        dependsOnWorkItemId: dependencyTarget,
+        dependencyType,
+      });
+      return (await res.json()).data as ProductPlanningDependency;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: dependencyQueryKey });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
+      setDependencyTarget("");
+      toast({ title: "Dependency added" });
+    },
+    onError: (error: Error) => toast({ title: "Dependency failed", description: error.message, variant: "destructive" }),
+  });
+  const removeDependencyMutation = useMutation({
+    mutationFn: async (dependencyId: string) => {
+      const res = await apiRequest("DELETE", `/api/product-planning/work-items/${form.id}/dependencies/${dependencyId}`, {});
+      return (await res.json()).data as ProductPlanningDependency;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: dependencyQueryKey });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
+      toast({ title: "Dependency removed" });
+    },
+    onError: (error: Error) => toast({ title: "Dependency remove failed", description: error.message, variant: "destructive" }),
+  });
+  const availableDependencies = workItems.filter((item) => item.id !== form.id);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
@@ -1004,10 +1239,86 @@ function WorkItemDialog({
           <TextField label="Owner User ID" value={form.ownerUserId} onChange={(value) => update("ownerUserId", value)} />
           <TextField label="Due Date" value={form.dueDate} onChange={(value) => update("dueDate", value)} type="date" />
           <TextField label="Release Target" value={form.releaseTarget} onChange={(value) => update("releaseTarget", value)} />
+          <div className="space-y-2">
+            <Label>Release</Label>
+            <Select value={form.releaseId || "none"} onValueChange={(value) => update("releaseId", value === "none" ? "" : value)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None</SelectItem>
+                {releases.map((release) => (
+                  <SelectItem key={release.id} value={release.id}>{release.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2 md:col-span-2">
+            <Label>Priority Score</Label>
+            <div className="rounded-md border border-border p-3">
+              <div className="grid gap-3 md:grid-cols-5">
+                <SelectField label="User Impact" value={form.userImpact || "none"} includeNone options={SCORE_OPTIONS} onChange={(value) => update("userImpact", value === "none" ? "" : value)} />
+                <SelectField label="Revenue" value={form.revenueImpact || "none"} includeNone options={SCORE_OPTIONS} onChange={(value) => update("revenueImpact", value === "none" ? "" : value)} />
+                <SelectField label="Operations" value={form.operationalImpact || "none"} includeNone options={SCORE_OPTIONS} onChange={(value) => update("operationalImpact", value === "none" ? "" : value)} />
+                <SelectField label="Risk Reduction" value={form.riskReduction || "none"} includeNone options={SCORE_OPTIONS} onChange={(value) => update("riskReduction", value === "none" ? "" : value)} />
+                <SelectField label="Confidence" value={form.confidence || "none"} includeNone options={SCORE_OPTIONS} onChange={(value) => update("confidence", value === "none" ? "" : value)} />
+              </div>
+              {currentItem?.priorityScore != null && (
+                <div className="mt-3 rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">
+                  <div className="font-medium text-foreground">Score {currentItem.priorityScore}</div>
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                    {Object.entries(scoreComponents).map(([key, value]) => (
+                      <span key={key}>{key}: {value}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
           <div className="space-y-2 md:col-span-2">
             <Label>Notes</Label>
             <Textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} className="min-h-[90px]" />
           </div>
+          {form.id && (
+            <div className="space-y-2 md:col-span-2">
+              <Label>Dependencies</Label>
+              <div className="space-y-3 rounded-md border border-border p-3">
+                <div className="grid gap-2 md:grid-cols-[150px_minmax(0,1fr)_auto]">
+                  <Select value={dependencyType} onValueChange={(value) => setDependencyType(value as DependencyType)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {DEPENDENCY_TYPES.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Select value={dependencyTarget || "none"} onValueChange={(value) => setDependencyTarget(value === "none" ? "" : value)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Select work item</SelectItem>
+                      {availableDependencies.map((item) => (
+                        <SelectItem key={item.id} value={item.id}>{item.reference} - {item.title}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button size="sm" disabled={!dependencyTarget || addDependencyMutation.isPending} onClick={() => addDependencyMutation.mutate()} className="gap-2">
+                    <Link2 className="h-4 w-4" />
+                    Add
+                  </Button>
+                </div>
+                {dependencies.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No dependencies linked.</p>
+                ) : dependencies.map((dependency) => (
+                  <div key={dependency.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/30 px-3 py-2 text-sm">
+                    <div className="min-w-0 truncate">
+                      <Badge variant="outline" className="mr-2">{labelFor(DEPENDENCY_TYPES, dependency.dependencyType)}</Badge>
+                      <span className="font-mono text-xs text-muted-foreground">{dependency.dependsOnWorkItem?.reference}</span>
+                      <span className="ml-2">{dependency.dependsOnWorkItem?.title ?? dependency.dependsOnWorkItemId}</span>
+                    </div>
+                    <Button variant="ghost" size="icon" onClick={() => removeDependencyMutation.mutate(dependency.id)}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {children.length > 0 && (
             <div className="space-y-2 md:col-span-2">
               <Label>Children</Label>
