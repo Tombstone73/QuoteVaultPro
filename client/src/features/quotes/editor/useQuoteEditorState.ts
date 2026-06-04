@@ -1704,17 +1704,27 @@ export function useQuoteEditorState() {
     // ============================================================================
 
     const handleDuplicateLineItem = (itemId: string) => {
-        const item = lineItems.find(i => (i.tempId || i.id) === itemId);
+        const sourceIndex = lineItems.findIndex(i => (i.tempId || i.id) === itemId);
+        const item = sourceIndex >= 0 ? lineItems[sourceIndex] : undefined;
         if (!item) return;
 
         const duplicatedItem: QuoteLineItemDraft = {
             ...item,
             tempId: `temp-${Date.now()}`,
             id: undefined,
-            displayOrder: lineItems.length,
+            displayOrder: sourceIndex + 1,
         };
 
-        setLineItems([...lineItems, duplicatedItem]);
+        const nextLineItems = [
+            ...lineItems.slice(0, sourceIndex + 1),
+            duplicatedItem,
+            ...lineItems.slice(sourceIndex + 1),
+        ].map((lineItem, index) => ({
+            ...lineItem,
+            displayOrder: index,
+        }));
+
+        setLineItems(nextLineItems);
         toast({
             title: "Line Item Duplicated",
             description: "Item duplicated successfully",
