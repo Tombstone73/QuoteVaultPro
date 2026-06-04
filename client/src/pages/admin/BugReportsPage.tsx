@@ -76,6 +76,15 @@ interface BugReportNote {
   createdAt: string;
 }
 
+type ProductPlanningSummary = {
+  title: string;
+  description: string;
+  workItemType: "bug";
+  priority: "critical" | "high" | "medium" | "low";
+  module: string | null;
+  reasoning: string;
+};
+
 class AiReviewApiError extends Error {
   status: number;
   code: string | null;
@@ -342,6 +351,34 @@ async function pushBugReportToProductPlanning(id: string): Promise<{ id: string;
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((body as { message?: string }).message ?? "Failed to push bug report to Product Planning");
+  return (body as { data: { id: string; reference: string } }).data;
+}
+
+async function generateProductPlanningSummary(id: string): Promise<ProductPlanningSummary> {
+  const res = await fetch(`/api/bug-reports/${id}/product-planning-summary`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { message?: string }).message ?? "Failed to generate Product Planning summary");
+  return (body as { data: { summary: ProductPlanningSummary } }).data.summary;
+}
+
+async function createProductPlanningFromSummary(id: string, summary: ProductPlanningSummary): Promise<{ id: string; reference: string }> {
+  const res = await fetch(`/api/bug-reports/${id}/create-product-planning-from-summary`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({
+      title: summary.title,
+      description: summary.description,
+      priority: summary.priority,
+      module: summary.module,
+    }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { message?: string }).message ?? "Failed to create Product Planning item from summary");
   return (body as { data: { id: string; reference: string } }).data;
 }
 
@@ -641,6 +678,7 @@ export default function BugReportsPage() {
   const [selectedId, setSelectedId]         = useState<string | null>(null);
   const [selectedBriefId, setSelectedBriefId] = useState<string | null>(null);
   const [noteText, setNoteText]             = useState("");
+  const [planningSummary, setPlanningSummary] = useState<ProductPlanningSummary | null>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
 
   const isAdminOrOwner = user?.role === "admin" || user?.role === "owner";
@@ -663,6 +701,10 @@ export default function BugReportsPage() {
   useEffect(() => {
     writeSessionPreference(TRIAGE_HISTORY_EXPANDED_STORAGE_KEY, String(isTriageHistoryExpanded));
   }, [isTriageHistoryExpanded]);
+
+  useEffect(() => {
+    setPlanningSummary(null);
+  }, [selectedId]);
 
   const { data: detail, isLoading: detailLoading } = useQuery<BugReportDetail>({
     queryKey: ["/api/bug-reports/detail", selectedId],
@@ -752,6 +794,46 @@ export default function BugReportsPage() {
     },
     onError: (err: Error) => {
       toast({ title: "Push failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const generatePlanningSummaryMutation = useMutation({
+    mutationFn: (id: string) => generateProductPlanningSummary(id),
+    onSuccess: (summary) => {
+      setPlanningSummary(summary);
+      toast({ title: "Planning summary generated" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Summary failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const createFromSummaryMutation = useMutation({
+    mutationFn: ({ id, summary }: { id: string; summary: ProductPlanningSummary }) => createProductPlanningFromSummary(id, summary),
+    onSuccess: (result, variables) => {
+      queryClient.setQueryData<BugReportDetail>(
+        ["/api/bug-reports/detail", selectedId],
+        (old) => old && old.id === variables.id ? {
+          ...old,
+          productPlanningWorkItemId: result.id,
+          productPlanningReference: result.reference,
+        } : old,
+      );
+      queryClient.setQueryData<BugReportListItem[]>(
+        ["/api/bug-reports", statusFilter, severityFilter, typeFilter, searchFilter],
+        (old) => old?.map((r) => r.id === variables.id ? {
+          ...r,
+          productPlanningWorkItemId: result.id,
+          productPlanningReference: result.reference,
+        } : r),
+      );
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/work-items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
+      setPlanningSummary(null);
+      toast({ title: "Created Product Planning item", description: result.reference });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Create failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -1023,16 +1105,50 @@ export default function BugReportsPage() {
                       </Badge>
                     </Link>
                   ) : (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="gap-2"
-                      onClick={() => pushToPlanningMutation.mutate(detail.id)}
-                      disabled={pushToPlanningMutation.isPending}
-                    >
-                      <ClipboardList className="h-4 w-4" />
-                      {pushToPlanningMutation.isPending ? "Pushing..." : "Push to Product Planning"}
-                    </Button>
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-2"
+                          onClick={() => pushToPlanningMutation.mutate(detail.id)}
+                          disabled={pushToPlanningMutation.isPending || createFromSummaryMutation.isPending}
+                        >
+                          <ClipboardList className="h-4 w-4" />
+                          {pushToPlanningMutation.isPending ? "Pushing..." : "Push to Product Planning"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-2"
+                          onClick={() => generatePlanningSummaryMutation.mutate(detail.id)}
+                          disabled={generatePlanningSummaryMutation.isPending}
+                        >
+                          <Brain className="h-4 w-4" />
+                          {generatePlanningSummaryMutation.isPending ? "Generating..." : "Generate Planning Summary"}
+                        </Button>
+                      </div>
+                      {planningSummary && (
+                        <div className="space-y-2 rounded-md border border-border p-3">
+                          <div className="flex flex-wrap gap-2">
+                            <Badge variant="outline">{planningSummary.priority}</Badge>
+                            {planningSummary.module && <Badge variant="secondary">{planningSummary.module}</Badge>}
+                          </div>
+                          <div className="text-sm font-medium">{planningSummary.title}</div>
+                          <p className="whitespace-pre-wrap text-xs text-muted-foreground">{planningSummary.description}</p>
+                          <p className="text-xs text-muted-foreground">{planningSummary.reasoning}</p>
+                          <Button
+                            size="sm"
+                            className="gap-2"
+                            onClick={() => createFromSummaryMutation.mutate({ id: detail.id, summary: planningSummary })}
+                            disabled={createFromSummaryMutation.isPending}
+                          >
+                            <ClipboardList className="h-4 w-4" />
+                            {createFromSummaryMutation.isPending ? "Creating..." : "Create Product Planning Item"}
+                          </Button>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </DetailSection>
 

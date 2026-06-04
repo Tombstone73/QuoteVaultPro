@@ -6320,6 +6320,21 @@ export const productPlanningSourceTypeValues = ["manual", "csv_import", "bug_rep
 export const productPlanningImportStatusValues = ["pending", "completed", "completed_with_errors", "failed"] as const;
 export const productPlanningDependencyTypeValues = ["blocks", "requires", "relates_to"] as const;
 export const productPlanningReleaseStatusValues = ["planned", "in_progress", "released", "archived"] as const;
+export const productPlanningAiSuggestionTypeValues = [
+  "priority",
+  "business_value",
+  "complexity",
+  "phase",
+  "module",
+  "work_item_type",
+  "parent_epic",
+  "duplicate_candidate",
+  "bug_summary",
+  "import_cleanup",
+  "roadmap_grouping",
+  "implementation_notes",
+] as const;
+export const productPlanningAiSuggestionStatusValues = ["pending", "accepted", "rejected"] as const;
 
 export const productPlanningReleases = pgTable("product_planning_releases", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -6425,6 +6440,24 @@ export const productPlanningEvents = pgTable("product_planning_events", {
   index("product_planning_events_org_type_created_idx").on(table.organizationId, table.eventType, table.createdAt),
 ]);
 
+export const productPlanningAiSuggestions = pgTable("product_planning_ai_suggestions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  workItemId: varchar("work_item_id").references(() => productPlanningWorkItems.id, { onDelete: "cascade" }),
+  suggestionType: text("suggestion_type").$type<typeof productPlanningAiSuggestionTypeValues[number]>().notNull(),
+  currentValue: jsonb("current_value").$type<unknown>(),
+  suggestedValue: jsonb("suggested_value").$type<unknown>(),
+  confidence: integer("confidence"),
+  reasoning: text("reasoning"),
+  status: text("status").$type<typeof productPlanningAiSuggestionStatusValues[number]>().notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  reviewedByUserId: varchar("reviewed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+}, (table) => [
+  index("product_planning_ai_suggestions_org_work_item_idx").on(table.organizationId, table.workItemId, table.status, table.createdAt),
+  index("product_planning_ai_suggestions_org_type_status_idx").on(table.organizationId, table.suggestionType, table.status, table.createdAt),
+]);
+
 export const productPlanningDependencies = pgTable("product_planning_dependencies", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -6472,6 +6505,15 @@ export const insertProductPlanningDependencySchema = createInsertSchema(productP
   createdAt: true,
 });
 
+export const insertProductPlanningAiSuggestionSchema = createInsertSchema(productPlanningAiSuggestions, {
+  suggestionType: z.enum(productPlanningAiSuggestionTypeValues),
+  status: z.enum(productPlanningAiSuggestionStatusValues),
+}).omit({
+  id: true,
+  createdAt: true,
+  reviewedAt: true,
+});
+
 export const updateProductPlanningWorkItemSchema = insertProductPlanningWorkItemSchema.partial().omit({
   organizationId: true,
   createdByUserId: true,
@@ -6485,6 +6527,8 @@ export type ProductPlanningRelease = typeof productPlanningReleases.$inferSelect
 export type InsertProductPlanningRelease = typeof productPlanningReleases.$inferInsert;
 export type ProductPlanningDependency = typeof productPlanningDependencies.$inferSelect;
 export type InsertProductPlanningDependency = typeof productPlanningDependencies.$inferInsert;
+export type ProductPlanningAiSuggestion = typeof productPlanningAiSuggestions.$inferSelect;
+export type InsertProductPlanningAiSuggestion = typeof productPlanningAiSuggestions.$inferInsert;
 export type ProductPlanningImportBatch = typeof productPlanningImportBatches.$inferSelect;
 export type InsertProductPlanningImportBatch = typeof productPlanningImportBatches.$inferInsert;
 export type ProductPlanningEvent = typeof productPlanningEvents.$inferSelect;

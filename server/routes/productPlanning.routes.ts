@@ -19,6 +19,8 @@ import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
 import {
   bugReports,
+  productPlanningAiSuggestions,
+  productPlanningAiSuggestionTypeValues,
   productPlanningBusinessValueValues,
   productPlanningComplexityValues,
   productPlanningDependencies,
@@ -41,6 +43,15 @@ import {
 import { wouldCreateProductPlanningDependencyCycle } from "../services/productPlanningDependencies";
 import { validateProductPlanningParent } from "../services/productPlanningHierarchy";
 import { calculateProductPlanningPriorityScore } from "../services/productPlanningPriority";
+import {
+  findSimilarProductPlanningItems,
+  generateBugPlanningSummary,
+  generateImplementationNotesSuggestion,
+  generateImportCleanupSuggestions,
+  generateProductPlanningAiReviewSuggestions,
+  generateRoadmapGroupingSuggestions,
+  type ProductPlanningAiSuggestionDraft,
+} from "../services/productPlanningAi";
 
 type DbExecutor = typeof db | any;
 
@@ -163,6 +174,22 @@ const updateReleaseSchema = createReleaseSchema.partial();
 const createDependencySchema = z.object({
   dependsOnWorkItemId: z.string().trim().min(1),
   dependencyType: z.enum(productPlanningDependencyTypeValues).default("requires"),
+});
+
+const createAiSuggestionSchema = z.object({
+  workItemId: z.string().trim().min(1).nullable().optional(),
+  suggestionType: z.enum(productPlanningAiSuggestionTypeValues),
+  currentValue: z.unknown().optional(),
+  suggestedValue: z.unknown().optional(),
+  confidence: z.coerce.number().int().min(0).max(100).nullable().optional(),
+  reasoning: z.string().trim().max(10000).nullable().optional(),
+});
+
+const createFromBugSummarySchema = z.object({
+  title: z.string().trim().min(1).max(500),
+  description: z.string().trim().min(1).max(10000),
+  priority: z.enum(productPlanningPriorityValues),
+  module: nullableString.optional(),
 });
 
 function getUserId(user: any): string | undefined {
@@ -425,6 +452,85 @@ async function validateParentForOrg(
       return row ?? null;
     },
   });
+}
+
+async function getWorkItemForOrg(organizationId: string, id: string) {
+  const [item] = await db
+    .select()
+    .from(productPlanningWorkItems)
+    .where(and(eq(productPlanningWorkItems.organizationId, organizationId), eq(productPlanningWorkItems.id, id)))
+    .limit(1);
+  return item ?? null;
+}
+
+async function listAiCandidateWorkItems(organizationId: string) {
+  return db
+    .select()
+    .from(productPlanningWorkItems)
+    .where(and(
+      eq(productPlanningWorkItems.organizationId, organizationId),
+      isNull(productPlanningWorkItems.archivedAt),
+      ne(productPlanningWorkItems.planningStatus, "archived"),
+    ))
+    .orderBy(desc(productPlanningWorkItems.updatedAt))
+    .limit(250);
+}
+
+async function persistAiSuggestions(
+  organizationId: string,
+  suggestions: ProductPlanningAiSuggestionDraft[],
+): Promise<Array<typeof productPlanningAiSuggestions.$inferSelect>> {
+  if (suggestions.length === 0) return [];
+  return db
+    .insert(productPlanningAiSuggestions)
+    .values(suggestions.map((suggestion) => ({
+      organizationId,
+      workItemId: suggestion.workItemId ?? null,
+      suggestionType: suggestion.suggestionType,
+      currentValue: suggestion.currentValue ?? null,
+      suggestedValue: suggestion.suggestedValue ?? null,
+      confidence: suggestion.confidence,
+      reasoning: suggestion.reasoning,
+      status: "pending" as const,
+    })))
+    .returning();
+}
+
+function scalarSuggestedValue(value: unknown): unknown {
+  if (value && typeof value === "object" && !Array.isArray(value) && "value" in value) {
+    return (value as any).value;
+  }
+  return value;
+}
+
+async function patchForAcceptedSuggestion(
+  organizationId: string,
+  workItemId: string | null,
+  suggestion: typeof productPlanningAiSuggestions.$inferSelect,
+): Promise<Record<string, unknown> | null> {
+  if (!workItemId) return null;
+  const suggested = scalarSuggestedValue(suggestion.suggestedValue);
+
+  if (suggestion.suggestionType === "priority") return { priority: suggested };
+  if (suggestion.suggestionType === "business_value") return { businessValue: suggested };
+  if (suggestion.suggestionType === "complexity") return { complexity: suggested };
+  if (suggestion.suggestionType === "phase") return { phase: suggested };
+  if (suggestion.suggestionType === "module") return { module: suggested };
+  if (suggestion.suggestionType === "work_item_type") return { workItemType: suggested };
+
+  if (suggestion.suggestionType === "parent_epic") {
+    const parentId = suggestion.suggestedValue && typeof suggestion.suggestedValue === "object"
+      ? (suggestion.suggestedValue as any).id
+      : null;
+    if (!parentId || typeof parentId !== "string") return null;
+    const validation = await validateParentForOrg(organizationId, workItemId, parentId);
+    if (!validation.valid) {
+      throw new Error(validation.message || "Suggested parent epic is not valid.");
+    }
+    return { parentId };
+  }
+
+  return null;
 }
 
 export function registerProductPlanningRoutes(
@@ -709,6 +815,261 @@ export function registerProductPlanningRoutes(
     } catch (error) {
       console.error("[ProductPlanning] Detail failed:", error);
       res.status(500).json({ success: false, message: "Failed to fetch Product Planning work item." });
+    }
+  });
+
+  app.get("/api/product-planning/work-items/:id/ai-suggestions", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const id = String(req.params.id);
+      const rows = await db
+        .select()
+        .from(productPlanningAiSuggestions)
+        .where(and(eq(productPlanningAiSuggestions.organizationId, organizationId), eq(productPlanningAiSuggestions.workItemId, id)))
+        .orderBy(desc(productPlanningAiSuggestions.createdAt))
+        .limit(100);
+      res.json({ success: true, data: rows });
+    } catch (error) {
+      console.error("[ProductPlanning] AI suggestion list failed:", error);
+      res.status(500).json({ success: false, message: "Failed to list Product Planning AI suggestions." });
+    }
+  });
+
+  app.post("/api/product-planning/work-items/:id/ai-suggestions", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const id = String(req.params.id);
+      const item = await getWorkItemForOrg(organizationId, id);
+      if (!item) return res.status(404).json({ success: false, message: "Product Planning work item not found." });
+      const input = createAiSuggestionSchema.parse({ ...(req.body ?? {}), workItemId: id });
+      const [suggestion] = await persistAiSuggestions(organizationId, [{
+        workItemId: id,
+        suggestionType: input.suggestionType,
+        currentValue: input.currentValue ?? null,
+        suggestedValue: input.suggestedValue ?? null,
+        confidence: input.confidence ?? 50,
+        reasoning: input.reasoning ?? "Manual AI suggestion created for review.",
+      }]);
+      await recordPlanningEvent({
+        organizationId,
+        workItemId: id,
+        eventType: "ai_suggestion_created",
+        message: `AI suggestion created for ${item.reference}`,
+        metadata: { suggestionId: suggestion.id, suggestionType: suggestion.suggestionType },
+        actorUserId: getUserId(req.user) ?? null,
+      });
+      res.status(201).json({ success: true, data: suggestion, message: "AI suggestion created." });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      console.error("[ProductPlanning] AI suggestion create failed:", error);
+      res.status(500).json({ success: false, message: "Failed to create Product Planning AI suggestion." });
+    }
+  });
+
+  app.post("/api/product-planning/work-items/:id/ai-review", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const id = String(req.params.id);
+      const item = await getWorkItemForOrg(organizationId, id);
+      if (!item) return res.status(404).json({ success: false, message: "Product Planning work item not found." });
+      const candidates = await listAiCandidateWorkItems(organizationId);
+      const drafts = generateProductPlanningAiReviewSuggestions(item, candidates);
+      const suggestions = await persistAiSuggestions(organizationId, drafts);
+      for (const suggestion of suggestions) {
+        await recordPlanningEvent({
+          organizationId,
+          workItemId: id,
+          eventType: "ai_suggestion_created",
+          message: `AI suggested ${suggestion.suggestionType.replace(/_/g, " ")} for ${item.reference}`,
+          metadata: { suggestionId: suggestion.id, confidence: suggestion.confidence },
+          actorUserId: getUserId(req.user) ?? null,
+        });
+      }
+      res.status(201).json({ success: true, data: suggestions, message: "AI review suggestions generated." });
+    } catch (error) {
+      console.error("[ProductPlanning] AI review failed:", error);
+      res.status(500).json({ success: false, message: "Failed to generate Product Planning AI review." });
+    }
+  });
+
+  app.post("/api/product-planning/work-items/:id/find-similar", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const id = String(req.params.id);
+      const item = await getWorkItemForOrg(organizationId, id);
+      if (!item) return res.status(404).json({ success: false, message: "Product Planning work item not found." });
+      const candidates = await listAiCandidateWorkItems(organizationId);
+      const similar = findSimilarProductPlanningItems(item, candidates, 8);
+      const suggestions = await persistAiSuggestions(organizationId, similar.map((candidate) => ({
+        workItemId: id,
+        suggestionType: "duplicate_candidate",
+        currentValue: { id: item.id, reference: item.reference, title: item.title },
+        suggestedValue: {
+          id: candidate.item.id,
+          reference: candidate.item.reference,
+          title: candidate.item.title,
+          similarity: candidate.similarity,
+        },
+        confidence: candidate.similarity,
+        reasoning: candidate.reasoning,
+      })));
+      await recordPlanningEvent({
+        organizationId,
+        workItemId: id,
+        eventType: "ai_duplicate_reviewed",
+        message: `AI reviewed possible duplicates for ${item.reference}`,
+        metadata: { count: similar.length },
+        actorUserId: getUserId(req.user) ?? null,
+      });
+      res.status(201).json({ success: true, data: { possibleDuplicates: similar, suggestions }, message: "Possible duplicates generated for review." });
+    } catch (error) {
+      console.error("[ProductPlanning] Similar item review failed:", error);
+      res.status(500).json({ success: false, message: "Failed to find similar Product Planning items." });
+    }
+  });
+
+  app.post("/api/product-planning/work-items/:id/generate-implementation-notes", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const id = String(req.params.id);
+      const item = await getWorkItemForOrg(organizationId, id);
+      if (!item) return res.status(404).json({ success: false, message: "Product Planning work item not found." });
+      const [suggestion] = await persistAiSuggestions(organizationId, [generateImplementationNotesSuggestion(item)]);
+      await recordPlanningEvent({
+        organizationId,
+        workItemId: id,
+        eventType: "ai_suggestion_created",
+        message: `AI generated implementation notes for ${item.reference}`,
+        metadata: { suggestionId: suggestion.id },
+        actorUserId: getUserId(req.user) ?? null,
+      });
+      res.status(201).json({ success: true, data: suggestion, message: "Implementation notes suggestion generated." });
+    } catch (error) {
+      console.error("[ProductPlanning] Implementation notes generation failed:", error);
+      res.status(500).json({ success: false, message: "Failed to generate implementation notes." });
+    }
+  });
+
+  app.post("/api/product-planning/work-items/:id/ai-suggestions/:suggestionId/accept", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const id = String(req.params.id);
+      const suggestionId = String(req.params.suggestionId);
+
+      const [suggestion] = await db
+        .select()
+        .from(productPlanningAiSuggestions)
+        .where(and(
+          eq(productPlanningAiSuggestions.organizationId, organizationId),
+          eq(productPlanningAiSuggestions.workItemId, id),
+          eq(productPlanningAiSuggestions.id, suggestionId),
+          eq(productPlanningAiSuggestions.status, "pending"),
+        ))
+        .limit(1);
+      if (!suggestion) return res.status(404).json({ success: false, message: "Pending AI suggestion not found." });
+
+      const patch = await patchForAcceptedSuggestion(organizationId, id, suggestion);
+      const result = await db.transaction(async (tx) => {
+        let updatedItem = null;
+        if (patch) {
+          const [currentItem] = await tx
+            .select()
+            .from(productPlanningWorkItems)
+            .where(and(eq(productPlanningWorkItems.organizationId, organizationId), eq(productPlanningWorkItems.id, id)))
+            .limit(1);
+          if (!currentItem) throw new Error("Product Planning work item not found.");
+          const updateValues: Record<string, unknown> = {
+            ...patch,
+            updatedByUserId: actorUserId,
+            updatedAt: new Date(),
+          };
+          if (shouldRecalculatePriorityScore(updateValues)) {
+            const scoreInput = {
+              ...currentItem,
+              ...updateValues,
+              businessValue: patchedValue(updateValues, currentItem, "businessValue"),
+              complexity: patchedValue(updateValues, currentItem, "complexity"),
+              userImpact: patchedValue(updateValues, currentItem, "userImpact"),
+              revenueImpact: patchedValue(updateValues, currentItem, "revenueImpact"),
+              operationalImpact: patchedValue(updateValues, currentItem, "operationalImpact"),
+              riskReduction: patchedValue(updateValues, currentItem, "riskReduction"),
+              confidence: patchedValue(updateValues, currentItem, "confidence"),
+            };
+            const score = calculateProductPlanningPriorityScore(scoreInput);
+            updateValues.priorityScore = score.priorityScore;
+            updateValues.priorityScoreExplanation = score.priorityScoreExplanation;
+          }
+          const [row] = await tx
+            .update(productPlanningWorkItems)
+            .set(updateValues)
+            .where(and(eq(productPlanningWorkItems.organizationId, organizationId), eq(productPlanningWorkItems.id, id)))
+            .returning();
+          updatedItem = row ?? null;
+        }
+
+        const [updatedSuggestion] = await tx
+          .update(productPlanningAiSuggestions)
+          .set({ status: "accepted", reviewedAt: new Date(), reviewedByUserId: actorUserId })
+          .where(and(eq(productPlanningAiSuggestions.organizationId, organizationId), eq(productPlanningAiSuggestions.id, suggestionId)))
+          .returning();
+
+        await recordPlanningEvent({
+          organizationId,
+          workItemId: id,
+          eventType: "ai_suggestion_accepted",
+          message: `Accepted AI suggestion: ${suggestion.suggestionType.replace(/_/g, " ")}`,
+          metadata: { suggestionId, appliedPatch: patch ?? null },
+          actorUserId,
+          executor: tx,
+        });
+
+        return { suggestion: updatedSuggestion, workItem: updatedItem };
+      });
+
+      res.json({ success: true, data: result, message: patch ? "AI suggestion accepted and applied." : "AI suggestion accepted for history." });
+    } catch (error) {
+      console.error("[ProductPlanning] AI suggestion accept failed:", error);
+      res.status(500).json({ success: false, message: error instanceof Error ? error.message : "Failed to accept AI suggestion." });
+    }
+  });
+
+  app.post("/api/product-planning/work-items/:id/ai-suggestions/:suggestionId/reject", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const id = String(req.params.id);
+      const suggestionId = String(req.params.suggestionId);
+      const [suggestion] = await db
+        .update(productPlanningAiSuggestions)
+        .set({ status: "rejected", reviewedAt: new Date(), reviewedByUserId: actorUserId })
+        .where(and(
+          eq(productPlanningAiSuggestions.organizationId, organizationId),
+          eq(productPlanningAiSuggestions.workItemId, id),
+          eq(productPlanningAiSuggestions.id, suggestionId),
+          eq(productPlanningAiSuggestions.status, "pending"),
+        ))
+        .returning();
+      if (!suggestion) return res.status(404).json({ success: false, message: "Pending AI suggestion not found." });
+      await recordPlanningEvent({
+        organizationId,
+        workItemId: id,
+        eventType: "ai_suggestion_rejected",
+        message: `Rejected AI suggestion: ${suggestion.suggestionType.replace(/_/g, " ")}`,
+        metadata: { suggestionId },
+        actorUserId,
+      });
+      res.json({ success: true, data: suggestion, message: "AI suggestion rejected." });
+    } catch (error) {
+      console.error("[ProductPlanning] AI suggestion reject failed:", error);
+      res.status(500).json({ success: false, message: "Failed to reject AI suggestion." });
     }
   });
 
@@ -1328,6 +1689,76 @@ export function registerProductPlanningRoutes(
         LIMIT 8
       `));
 
+      const [cleanupSummary] = rowsFromExecute<{
+        missingModuleCount: number;
+        missingPhaseCount: number;
+        missingPriorityCount: number;
+        orphanedEpicCount: number;
+      }>(await db.execute(sql`
+        SELECT
+          count(*) FILTER (WHERE module IS NULL OR btrim(module) = '')::int AS "missingModuleCount",
+          count(*) FILTER (WHERE phase IS NULL)::int AS "missingPhaseCount",
+          count(*) FILTER (WHERE priority IS NULL)::int AS "missingPriorityCount",
+          count(*) FILTER (
+            WHERE work_item_type = 'epic'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM product_planning_work_items child
+                WHERE child.organization_id = product_planning_work_items.organization_id
+                  AND child.parent_id = product_planning_work_items.id
+                  AND child.archived_at IS NULL
+              )
+          )::int AS "orphanedEpicCount"
+        FROM product_planning_work_items
+        WHERE organization_id = ${organizationId}
+          AND archived_at IS NULL
+          AND planning_status <> 'archived'
+      `));
+      const [duplicateSummary] = rowsFromExecute<{ possibleDuplicateCount: number }>(await db.execute(sql`
+        SELECT coalesce(sum(group_count), 0)::int AS "possibleDuplicateCount"
+        FROM (
+          SELECT count(*)::int AS group_count
+          FROM product_planning_work_items
+          WHERE organization_id = ${organizationId}
+            AND archived_at IS NULL
+            AND planning_status <> 'archived'
+          GROUP BY lower(title), lower(coalesce(module, ''))
+          HAVING count(*) > 1
+        ) duplicate_groups
+      `));
+      const cleanupOpportunities = [
+        {
+          key: "possible_duplicates",
+          label: "Possible duplicates",
+          count: duplicateSummary?.possibleDuplicateCount ?? 0,
+          href: "/product-planning/backlog?sortBy=updatedAt",
+        },
+        {
+          key: "missing_modules",
+          label: "Items missing modules",
+          count: cleanupSummary?.missingModuleCount ?? 0,
+          href: "/product-planning/backlog?module=",
+        },
+        {
+          key: "missing_phases",
+          label: "Items missing phases",
+          count: cleanupSummary?.missingPhaseCount ?? 0,
+          href: "/product-planning/backlog?sortBy=updatedAt",
+        },
+        {
+          key: "missing_priorities",
+          label: "Items missing priorities",
+          count: cleanupSummary?.missingPriorityCount ?? 0,
+          href: "/product-planning/backlog?sortBy=priority",
+        },
+        {
+          key: "orphaned_epics",
+          label: "Orphaned epics",
+          count: cleanupSummary?.orphanedEpicCount ?? 0,
+          href: "/product-planning/backlog?workItemType=epic",
+        },
+      ];
+
       res.json({
         success: true,
         data: {
@@ -1347,6 +1778,7 @@ export function registerProductPlanningRoutes(
           itemsWithUnresolvedDependencies,
           unresolvedDependencyCount: unresolvedDependencySummary?.unresolvedDependencyCount ?? 0,
           byModuleWorkload: byModule,
+          cleanupOpportunities,
           byStatus,
           byPhase,
           byModule,
@@ -1355,6 +1787,32 @@ export function registerProductPlanningRoutes(
     } catch (error) {
       console.error("[ProductPlanning] Dashboard failed:", error);
       res.status(500).json({ success: false, message: "Failed to load Product Planning dashboard." });
+    }
+  });
+
+  app.post("/api/product-planning/roadmap/suggest-grouping", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const rows = await listAiCandidateWorkItems(organizationId);
+      const drafts = generateRoadmapGroupingSuggestions(rows);
+      const suggestions = await persistAiSuggestions(organizationId, drafts);
+      for (const suggestion of suggestions) {
+        if (!suggestion.workItemId) continue;
+        await recordPlanningEvent({
+          organizationId,
+          workItemId: suggestion.workItemId,
+          eventType: "ai_suggestion_created",
+          message: "AI suggested roadmap grouping",
+          metadata: { suggestionId: suggestion.id, suggestedValue: suggestion.suggestedValue },
+          actorUserId,
+        });
+      }
+      res.status(201).json({ success: true, data: suggestions, message: "Roadmap grouping suggestions generated." });
+    } catch (error) {
+      console.error("[ProductPlanning] Roadmap AI grouping failed:", error);
+      res.status(500).json({ success: false, message: "Failed to generate roadmap suggestions." });
     }
   });
 
@@ -1383,6 +1841,40 @@ export function registerProductPlanningRoutes(
       if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
       console.error("[ProductPlanning] CSV preview failed:", error);
       res.status(500).json({ success: false, message: "Failed to preview Product Planning CSV." });
+    }
+  });
+
+  app.post("/api/product-planning/import/csv/ai-review", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const { csv } = csvPreviewSchema.parse(req.body ?? {});
+      const organizationId = getRequestOrganizationId(req);
+      const preview = parseProductPlanningCsv(csv);
+      const duplicateWarnings = [];
+
+      for (const row of preview.validRows) {
+        const duplicate = await findDuplicateByTitleModule(organizationId, row.title, row.module);
+        if (duplicate) {
+          duplicateWarnings.push({
+            rowNumber: row.rowNumber,
+            message: `Possible duplicate of ${duplicate.reference}: ${duplicate.title}`,
+            existingWorkItemId: duplicate.id,
+            existingReference: duplicate.reference,
+          });
+        }
+      }
+
+      const drafts = generateImportCleanupSuggestions({ mappedRows: preview.mappedRows, duplicateWarnings });
+      const suggestions = await persistAiSuggestions(organizationId, drafts);
+      res.status(201).json({
+        success: true,
+        data: { suggestions, counts: { suggestions: suggestions.length, duplicateWarnings: duplicateWarnings.length } },
+        message: "Import cleanup suggestions generated.",
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      console.error("[ProductPlanning] Import AI review failed:", error);
+      res.status(500).json({ success: false, message: "Failed to generate import cleanup suggestions." });
     }
   });
 
@@ -1484,6 +1976,119 @@ export function registerProductPlanningRoutes(
     } catch (error) {
       console.error("[ProductPlanning] Import history failed:", error);
       res.status(500).json({ success: false, message: "Failed to load Product Planning imports." });
+    }
+  });
+
+  app.post("/api/bug-reports/:id/product-planning-summary", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const id = String(req.params.id);
+      const [bugReport] = await db
+        .select()
+        .from(bugReports)
+        .where(and(eq(bugReports.orgId, organizationId), eq(bugReports.id, id)))
+        .limit(1);
+      if (!bugReport) return res.status(404).json({ success: false, message: "Bug report not found." });
+
+      const summary = generateBugPlanningSummary(bugReport);
+      const [suggestion] = await persistAiSuggestions(organizationId, [{
+        workItemId: null,
+        suggestionType: "bug_summary",
+        currentValue: {
+          bugReportId: bugReport.id,
+          referenceNumber: bugReport.referenceNumber,
+          title: bugReport.title,
+          severity: bugReport.severity,
+        },
+        suggestedValue: summary,
+        confidence: 74,
+        reasoning: summary.reasoning,
+      }]);
+
+      res.status(201).json({ success: true, data: { summary, suggestion }, message: "Planning summary generated for review." });
+    } catch (error) {
+      console.error("[ProductPlanning] Bug summary generation failed:", error);
+      res.status(500).json({ success: false, message: "Failed to generate Product Planning summary." });
+    }
+  });
+
+  app.post("/api/bug-reports/:id/create-product-planning-from-summary", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const input = createFromBugSummarySchema.parse(req.body ?? {});
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const id = String(req.params.id);
+      const [bugReport] = await db
+        .select()
+        .from(bugReports)
+        .where(and(eq(bugReports.orgId, organizationId), eq(bugReports.id, id)))
+        .limit(1);
+      if (!bugReport) return res.status(404).json({ success: false, message: "Bug report not found." });
+
+      const [existing] = await db
+        .select()
+        .from(productPlanningWorkItems)
+        .where(and(eq(productPlanningWorkItems.organizationId, organizationId), eq(productPlanningWorkItems.sourceBugReportId, id)))
+        .limit(1);
+      if (existing) {
+        return res.status(409).json({
+          success: false,
+          code: "BUG_REPORT_ALREADY_PUSHED",
+          message: "This bug report is already in Product Planning.",
+          data: existing,
+        });
+      }
+
+      const created = await db.transaction(async (tx) => {
+        const reference = await allocateProductPlanningReference(organizationId, tx);
+        const [item] = await tx
+          .insert(productPlanningWorkItems)
+          .values({
+            organizationId,
+            reference,
+            title: input.title,
+            description: input.description,
+            workItemType: "bug",
+            planningStatus: "backlog",
+            priority: input.priority,
+            module: input.module ?? null,
+            sourceType: "bug_report",
+            sourceBugReportId: bugReport.id,
+            sourceReference: bugReport.referenceNumber,
+            requestedBy: bugReport.createdByEmail,
+            notes: bugReport.url ? `Source page: ${bugReport.url}` : null,
+            createdByUserId: actorUserId,
+            updatedByUserId: actorUserId,
+          })
+          .returning();
+        await recordPlanningEvent({
+          organizationId,
+          workItemId: item.id,
+          eventType: "ai_summary_generated",
+          message: `Created ${item.reference} from reviewed AI bug summary`,
+          metadata: { bugReportId: bugReport.id, sourceReference: bugReport.referenceNumber },
+          actorUserId,
+          executor: tx,
+        });
+        await recordPlanningEvent({
+          organizationId,
+          workItemId: item.id,
+          eventType: "pushed_from_bug_report",
+          message: `Pushed from bug report ${bugReport.referenceNumber}`,
+          metadata: { bugReportId: bugReport.id },
+          actorUserId,
+          executor: tx,
+        });
+        return item;
+      });
+
+      res.status(201).json({ success: true, data: created, message: "Product Planning item created from reviewed summary." });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      console.error("[ProductPlanning] Create from bug summary failed:", error);
+      res.status(500).json({ success: false, message: "Failed to create Product Planning item from summary." });
     }
   });
 
