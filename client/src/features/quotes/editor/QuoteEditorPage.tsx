@@ -40,6 +40,12 @@ import { QuoteHeader } from "./components/QuoteHeader";
 import { CustomerCard, type CustomerCardRef } from "./components/CustomerCard";
 import { LineItemsSection } from "./components/LineItemsSection";
 import { SummaryCard } from "./components/SummaryCard";
+import { QuoteRecipientFallbackDialog } from "./components/QuoteRecipientFallbackDialog";
+import { getQuoteSendEligibility } from "./quoteActionEligibility";
+import {
+    resolveSelectedContactEmail,
+    type QuoteRecipientContactLike,
+} from "./quoteRecipientFallback";
 import { VoidQuoteDialog } from "@/components/VoidQuoteDialog";
 import { getPendingExpandedLineItemId, clearPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 import { getPendingScrollPosition, clearPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
@@ -67,6 +73,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const state = useQuoteEditorState();
     const [draftShipToData, setDraftShipToData] = useState<Record<string, string | null>>({});
     const [createOrderSubmitting, setCreateOrderSubmitting] = useState(false);
+    const [recipientFallbackOpen, setRecipientFallbackOpen] = useState(false);
     const createOrderSubmitGuardRef = useRef(createInitialOrderSubmitGuardState());
 
     const backPath = createTarget === "order" ? ROUTES.orders.list : ROUTES.quotes.list;
@@ -395,6 +402,87 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const handleRequestApproval = () => {
         if (!state.quoteId) return;
         requestApprovalMutation.mutate(state.quoteId);
+    };
+
+    const sendQuoteEmailMutation = useMutation({
+        mutationFn: async (payload: {
+            recipientEmail: string;
+            recipientName?: string;
+            saveToCustomerContact?: boolean;
+            contactId?: string | null;
+        }) => {
+            if (!state.quoteId) throw new Error("Save the quote before sending.");
+            const res = await apiRequest("POST", `/api/quotes/${state.quoteId}/email`, payload);
+            return res.json();
+        },
+        onSuccess: (result: any) => {
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
+            queryClient.invalidateQueries({ queryKey: ["/api/timeline"] });
+            queryClient.invalidateQueries({ queryKey: ["customers"] });
+            if (state.selectedCustomerId) {
+                queryClient.invalidateQueries({ queryKey: ["/api/customers", state.selectedCustomerId] });
+                queryClient.invalidateQueries({ queryKey: [`/api/customers/${state.selectedCustomerId}/contacts`] });
+            }
+
+            setRecipientFallbackOpen(false);
+            if (result?.contactSave && result.contactSave.success === false) {
+                toast({
+                    title: "Quote sent",
+                    description: result.message || "Email sent, but the contact was not saved.",
+                    variant: "destructive",
+                });
+                return;
+            }
+
+            toast({
+                title: "Quote sent",
+                description: "Quote email sent successfully.",
+            });
+        },
+        onError: (error: Error) => {
+            toast({
+                title: "Send failed",
+                description: error.message || "Failed to send quote email.",
+                variant: "destructive",
+            });
+        },
+    });
+
+    const handleSendQuote = () => {
+        const sendEligibility = getQuoteSendEligibility({
+            quoteId: state.quoteId,
+            isSaving: state.isSaving || createOrderSubmitting,
+            lineItems: state.lineItems,
+            selectedCustomer: state.selectedCustomer,
+            selectedContactId: state.selectedContactId,
+            workflowState,
+            requireApproval: orgPreferences?.quotes?.requireApproval || false,
+        });
+
+        if (sendEligibility.actionState === "blocked") {
+            toast({
+                title: "Cannot send quote",
+                description: sendEligibility.reason ?? "This quote is not ready to send.",
+                variant: "destructive",
+            });
+            return;
+        }
+
+        const contacts = (state.contacts || []) as QuoteRecipientContactLike[];
+        const selectedEmail = resolveSelectedContactEmail(contacts, state.selectedContactId);
+        if (sendEligibility.actionState === "needs_recipient" || !selectedEmail) {
+            setRecipientFallbackOpen(true);
+            return;
+        }
+
+        const selectedContact = contacts.find((contact) => contact.id === state.selectedContactId);
+        sendQuoteEmailMutation.mutate({
+            recipientEmail: selectedEmail,
+            recipientName: selectedContact ? `${selectedContact.firstName ?? ""} ${selectedContact.lastName ?? ""}`.trim() : undefined,
+            saveToCustomerContact: false,
+            contactId: state.selectedContactId ?? null,
+        });
     };
 
     const handlePreviewQuote = async () => {
@@ -1225,6 +1313,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             requireApproval={orgPreferences?.quotes?.requireApproval || false}
                             isInternalUser={user ? ['owner', 'admin', 'manager', 'employee'].includes((user.role || '').toLowerCase()) : false}
                             onPreviewQuote={handlePreviewQuote}
+                            onSendQuote={handleSendQuote}
                             onApprove={handleApprove}
                             onApproveAndSend={handleApproveAndSend}
                             onRequestApproval={handleRequestApproval}
@@ -1361,6 +1450,15 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 onOpenChange={setShowConvertDialog}
                 isLoading={state.convertToOrderHook?.isPending}
                 onSubmit={state.handlers.convertToOrder}
+            />
+
+            <QuoteRecipientFallbackDialog
+                open={recipientFallbackOpen}
+                contacts={(state.contacts || []) as QuoteRecipientContactLike[]}
+                selectedContactId={state.selectedContactId}
+                isSending={sendQuoteEmailMutation.isPending}
+                onOpenChange={setRecipientFallbackOpen}
+                onSubmit={(payload) => sendQuoteEmailMutation.mutate(payload)}
             />
 
             <AlertDialog open={showDuplicateDialog} onOpenChange={setShowDuplicateDialog}>

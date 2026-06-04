@@ -119,7 +119,7 @@ export function SummaryCard({
     isApproving = false,
     isApprovingAndSending = false,
     isRequestingApproval = false,
-    emailConfigured = false,
+    emailConfigured,
 }: SummaryCardProps) {
     const [showTaxOverride, setShowTaxOverride] = useState(false);
     const safeDiscount = Number.isFinite(discountAmount) ? Math.max(0, discountAmount) : 0;
@@ -168,7 +168,7 @@ export function SummaryCard({
     const previewDisabledReason = !onPreviewQuote
         ? "Quote PDF preview is unavailable."
         : previewEligibility.reason;
-    const sendDisabled = !sendEligibility.enabled || !onSendQuote;
+    const sendDisabled = sendEligibility.actionState === "blocked" || !sendEligibility.enabled || !onSendQuote;
     const sendDisabledReason = !onSendQuote
         ? sendEligibility.reason ?? "Quote email sending is not configured."
         : sendEligibility.reason;

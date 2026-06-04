@@ -32,7 +32,7 @@ describe("quote action eligibility", () => {
     ).toEqual({ enabled: true, reason: null });
   });
 
-  test("keeps Send disabled when customer email requirements are missing", () => {
+  test("routes Send through recipient fallback when customer email requirements are missing", () => {
     const result = getQuoteSendEligibility({
       quoteId: "quote_1",
       isSaving: false,
@@ -43,8 +43,23 @@ describe("quote action eligibility", () => {
       requireApproval: false,
     });
 
+    expect(result.enabled).toBe(true);
+    expect(result.actionState).toBe("needs_recipient");
+    expect(result.reason).toContain("recipient");
+  });
+
+  test("keeps Send blocked for invalid quote state instead of opening recipient fallback", () => {
+    const result = getQuoteSendEligibility({
+      quoteId: null,
+      isSaving: false,
+      lineItems: [validLineItem],
+      selectedCustomer: { id: "customer_1", contacts: [] } as any,
+      workflowState: "draft",
+      requireApproval: false,
+    });
+
     expect(result.enabled).toBe(false);
-    expect(result.reason).toContain("email");
+    expect(result.actionState).toBe("blocked");
   });
 
   test("Preview does not require the quote to be sent", () => {
