@@ -257,6 +257,39 @@ const backlogAnalysis = {
   source: "live_ai",
   fallbackReason: null,
   executiveSummary: "Product catalog completion is the operational go-live bottleneck.",
+  recommendedGoLiveFocus: ["Product Catalog Completion", "Product Import Automation", "Workflow Validation"],
+  goLiveBlockers: [{ title: "Product Catalog Completion", reasoning: "Blocks quote/order validation.", relatedItemReferences: ["PP-0001"] }],
+  topNextActions: [{ title: "Create Product Catalog Completion Epic", reasoning: "It is the clearest go-live blocker.", priority: "critical" }],
+  quickWins: [{ title: "Assign missing modules", reasoning: "Improves backlog clarity quickly." }],
+  futureCandidates: [{ title: "SaaS polish", reasoning: "Can wait until Titan Graphics is operational." }],
+  highestRoiFeatures: [{ title: "PP-0001: Product Import MVP", reasoning: "Unlocks catalog-based quote and order validation.", priority: "critical", relatedItemReferences: ["PP-0001"] }],
+  lowestPriorityFeatures: [{ title: "Mobile Visual Search", reasoning: "Useful later, but not required for Titan Graphics go-live.", priority: "low" }],
+  suggestedEpics: [{
+    name: "Product Catalog Completion",
+    description: "Complete catalog setup for Titan Graphics operational readiness.",
+    confidence: 92,
+    businessValue: "very_high",
+    recommendedPhase: "go_live",
+    relatedItemReferences: ["PP-0001", "PP-0002"],
+    relatedItems: [{
+      reference: "PP-0001",
+      title: "Product Import MVP",
+      priority: "critical",
+      phase: "go_live",
+      module: "Catalog",
+      reasonIncluded: "This item loads product data needed for quote and order validation.",
+    }],
+    reasoning: "Catalog work belongs together because it gates operations.",
+  }],
+  missingWork: [{ title: "Core Workflow Validation", reasoning: "Explicit validation is needed for quote to payment.", priority: "critical" }],
+  riskAreas: [{ title: "Catalog data incomplete", severity: "high", reasoning: "Pricing and routing cannot be fully validated." }],
+  readinessAssessment: {
+    readinessScore: 43,
+    criticalBlockers: ["Product Catalog Completion", "Workflow Validation"],
+    highPriorityActions: ["Build Product Import MVP and load first 25 products"],
+    recommendedSequence: ["Complete catalog MVP", "Validate quote creation", "Validate order creation"],
+    recommendedNextStep: "Build Product Import MVP and load first 25 products.",
+  },
   counts: {
     totalItems: 3,
     missingModules: 1,
@@ -291,6 +324,17 @@ const backlogAnalysis = {
     quickWins: [{ title: "Assign missing modules", reasoning: "Improves backlog clarity quickly." }],
     futureItems: [{ title: "SaaS polish", reasoning: "Can wait until Titan Graphics is operational." }],
     healthFindings: [{ label: "Missing modules", count: 1, severity: "high", recommendation: "Assign modules before sequencing." }],
+    highestRoiFeatures: [{ title: "PP-0001: Product Import MVP", reasoning: "Unlocks catalog-based quote and order validation.", priority: "critical", relatedItemReferences: ["PP-0001"] }],
+    lowestPriorityFeatures: [{ title: "Mobile Visual Search", reasoning: "Useful later, but not required for Titan Graphics go-live.", priority: "low" }],
+    missingWork: [{ title: "Core Workflow Validation", reasoning: "Explicit validation is needed for quote to payment.", priority: "critical" }],
+    riskAreas: [{ title: "Catalog data incomplete", severity: "high", reasoning: "Pricing and routing cannot be fully validated." }],
+    readinessAssessment: {
+      readinessScore: 43,
+      criticalBlockers: ["Product Catalog Completion", "Workflow Validation"],
+      highPriorityActions: ["Build Product Import MVP and load first 25 products"],
+      recommendedSequence: ["Complete catalog MVP", "Validate quote creation", "Validate order creation"],
+      recommendedNextStep: "Build Product Import MVP and load first 25 products.",
+    },
   },
 };
 
@@ -304,6 +348,21 @@ const epicAnalysis = {
     businessValue: "very_high",
     recommendedPhase: "go_live",
     relatedItemReferences: ["PP-0001", "PP-0002"],
+    relatedItems: [{
+      reference: "PP-0001",
+      title: "Product Import MVP",
+      priority: "critical",
+      phase: "go_live",
+      module: "Catalog",
+      reasonIncluded: "This item loads product data needed for quote and order validation.",
+    }, {
+      reference: "PP-0002",
+      title: "Pricing validation",
+      priority: "high",
+      phase: "go_live",
+      module: "Catalog",
+      reasonIncluded: "This item validates pricing accuracy from catalog data.",
+    }],
     reasoning: "These items are required before quote/order validation.",
   }],
   suggestions: [aiSuggestions[0]],
@@ -423,11 +482,17 @@ describe("Product Planning UX detail surfaces", () => {
     expect(container.textContent).toContain("Live AI");
     expect(container.textContent).toContain("Product catalog completion is the operational go-live bottleneck.");
     expect(container.textContent).toContain("Backlog Health Score");
-    expect(container.textContent).toContain("Recommended Next Actions");
+    expect(container.textContent).toContain("Top Next Actions");
     expect(container.textContent).toContain("Create Product Catalog Completion Epic");
     expect(container.textContent).toContain("Product Catalog Completion");
-    expect(container.textContent).toContain("Go-Live Readiness");
-    expect(container.textContent).toContain("Planning Improvements");
+    expect(container.textContent).toContain("Go-Live Readiness Assessment");
+    expect(container.textContent).toContain("43%");
+    expect(container.textContent).toContain("Build Product Import MVP and load first 25 products.");
+    expect(container.textContent).toContain("Highest ROI Features");
+    expect(container.textContent).toContain("Lowest Priority Features");
+    expect(container.textContent).toContain("Missing Work");
+    expect(container.textContent).toContain("Risk Areas");
+    expect(container.textContent).toContain("Product Import MVP");
     cleanup(root, container);
   });
 
@@ -453,7 +518,18 @@ describe("Product Planning UX detail surfaces", () => {
     expect(container.textContent).toContain("Suggested Epics");
     expect(container.textContent).toContain("Product Catalog Completion");
     expect(container.textContent).toContain("Create Epic Draft");
+    expect(container.textContent).toContain("View Items");
     expect(container.textContent).toContain("Live AI");
+
+    const viewItemsButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("View Items")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(viewItemsButton);
+    });
+    await flushQueries();
+
+    expect(container.textContent).toContain("Included Items");
+    expect(container.textContent).toContain("Product Import MVP");
+    expect(container.textContent).toContain("This item loads product data needed for quote and order validation.");
     cleanup(root, container);
   });
 
@@ -542,6 +618,7 @@ describe("Product Planning UX detail surfaces", () => {
           summary: "Roadmap is overloaded around go-live validation.",
           overloadedPhases: [{ phase: "go_live", reasoning: "Too many items are competing for launch." }],
           moveRecommendations: [{ reference: "PP-0001", currentPhase: "future", recommendedPhase: "go_live", confidence: 80, reasoning: "Catalog work belongs before launch." }],
+          deferRecommendations: [{ reference: "PP-0044", currentPhase: "go_live", recommendedPhase: "future", confidence: 87, reasoning: "SaaS-only enhancement can wait." }],
           sequenceRecommendations: [{ title: "Do Product Catalog Completion before portal polish", reasoning: "Catalog enables quote and order validation." }],
           recommendations: [{ phase: "go_live", action: "Overloaded", count: 14, reasoning: "Go Live has 14 items." }],
           suggestions: [{
@@ -575,6 +652,9 @@ describe("Product Planning UX detail surfaces", () => {
     expect(container.textContent).toContain("Roadmap is overloaded around go-live validation.");
     expect(container.textContent).toContain("Go Live has 14 items.");
     expect(container.textContent).toContain("What Should Move");
+    expect(container.textContent).toContain("What Should Wait");
+    expect(container.textContent).toContain("PP-0044");
+    expect(container.textContent).toContain("SaaS-only enhancement can wait.");
     expect(container.textContent).toContain("Do Product Catalog Completion before portal polish");
     cleanup(root, container);
   });

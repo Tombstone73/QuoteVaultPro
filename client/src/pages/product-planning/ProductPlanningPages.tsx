@@ -220,6 +220,23 @@ type ProductPlanningBacklogAnalysis = {
   source?: ProductPlanningAiSource;
   fallbackReason?: string | null;
   executiveSummary?: string;
+  recommendedGoLiveFocus?: string[];
+  goLiveBlockers?: Array<{ title: string; reasoning: string; priority?: Priority; relatedItemReferences?: string[] }>;
+  topNextActions?: Array<{ title: string; reasoning: string; priority?: Priority; relatedItemReferences?: string[] }>;
+  quickWins?: Array<{ title: string; reasoning: string; priority?: Priority; relatedItemReferences?: string[] }>;
+  futureCandidates?: Array<{ title: string; reasoning: string; priority?: Priority; relatedItemReferences?: string[] }>;
+  highestRoiFeatures?: Array<{ title: string; reasoning: string; priority?: Priority; relatedItemReferences?: string[] }>;
+  lowestPriorityFeatures?: Array<{ title: string; reasoning: string; priority?: Priority; relatedItemReferences?: string[] }>;
+  suggestedEpics?: ProductPlanningEpicAnalysis["epics"];
+  missingWork?: Array<{ title: string; reasoning: string; priority?: Priority; relatedItemReferences?: string[] }>;
+  riskAreas?: Array<{ title: string; severity: "low" | "medium" | "high"; reasoning: string }>;
+  readinessAssessment?: {
+    readinessScore: number;
+    criticalBlockers: string[];
+    highPriorityActions: string[];
+    recommendedSequence: string[];
+    recommendedNextStep: string;
+  };
   counts: {
     totalItems: number;
     missingModules: number;
@@ -248,6 +265,18 @@ type ProductPlanningBacklogAnalysis = {
     quickWins?: Array<{ title: string; reasoning: string }>;
     futureItems?: Array<{ title: string; reasoning: string }>;
     healthFindings?: Array<{ label: string; count: number; severity: "low" | "medium" | "high"; recommendation: string }>;
+    highestRoiFeatures?: Array<{ title: string; reasoning: string; priority?: Priority; relatedItemReferences?: string[] }>;
+    lowestPriorityFeatures?: Array<{ title: string; reasoning: string; priority?: Priority; relatedItemReferences?: string[] }>;
+    suggestedEpics?: ProductPlanningEpicAnalysis["epics"];
+    missingWork?: Array<{ title: string; reasoning: string; priority?: Priority; relatedItemReferences?: string[] }>;
+    riskAreas?: Array<{ title: string; severity: "low" | "medium" | "high"; reasoning: string }>;
+    readinessAssessment?: {
+      readinessScore: number;
+      criticalBlockers: string[];
+      highPriorityActions: string[];
+      recommendedSequence: string[];
+      recommendedNextStep: string;
+    };
   };
 };
 
@@ -257,6 +286,7 @@ type ProductPlanningRoadmapAnalysis = {
   summary?: string;
   overloadedPhases?: Array<{ phase: string; reasoning: string }>;
   moveRecommendations?: Array<{ reference: string; currentPhase: string | null; recommendedPhase: Phase; confidence: number; reasoning: string }>;
+  deferRecommendations?: Array<{ reference: string; currentPhase: string | null; recommendedPhase: Phase; confidence: number; reasoning: string }>;
   sequenceRecommendations?: Array<{ title: string; reasoning: string }>;
   recommendations: Array<{ phase: string; action: string; count: number; reasoning: string }>;
   suggestions: ProductPlanningAiSuggestion[];
@@ -281,6 +311,7 @@ type ProductPlanningEpicAnalysis = {
     businessValue: BusinessValue;
     recommendedPhase: Phase;
     relatedItemReferences: string[];
+    relatedItems?: Array<{ reference: string; title: string; priority?: Priority | null; phase?: Phase | null; module?: string | null; reasonIncluded: string }>;
     reasoning: string;
   }>;
   suggestions: ProductPlanningAiSuggestion[];
@@ -648,6 +679,16 @@ function AiSourceIndicator({ source, fallbackReason }: { source?: ProductPlannin
 function BacklogAiAnalysisPanel({ analysis }: { analysis: ProductPlanningBacklogAnalysis }) {
   const readiness = analysis.goLiveReadiness;
   const live = analysis.liveAi;
+  const readinessAssessment = analysis.readinessAssessment ?? live?.readinessAssessment;
+  const topNextActions = analysis.topNextActions ?? live?.topNextActions ?? [];
+  const goLiveBlockers = analysis.goLiveBlockers ?? live?.goLiveBlockers ?? [];
+  const quickWins = analysis.quickWins ?? live?.quickWins ?? [];
+  const futureCandidates = analysis.futureCandidates ?? live?.futureItems ?? [];
+  const highestRoi = analysis.highestRoiFeatures ?? live?.highestRoiFeatures ?? [];
+  const lowestPriority = analysis.lowestPriorityFeatures ?? live?.lowestPriorityFeatures ?? [];
+  const suggestedEpics = analysis.suggestedEpics ?? live?.suggestedEpics ?? [];
+  const missingWork = analysis.missingWork ?? live?.missingWork ?? [];
+  const riskAreas = analysis.riskAreas ?? live?.riskAreas ?? [];
   return (
     <div className="grid gap-4 lg:grid-cols-3">
       <Card>
@@ -661,6 +702,14 @@ function BacklogAiAnalysisPanel({ analysis }: { analysis: ProductPlanningBacklog
           <AiSourceIndicator source={analysis.source} fallbackReason={analysis.fallbackReason} />
           {analysis.executiveSummary && <p className="text-sm text-muted-foreground">{analysis.executiveSummary}</p>}
           <div className="text-3xl font-semibold">{analysis.healthScore}</div>
+          {(analysis.recommendedGoLiveFocus?.length ?? 0) > 0 && (
+            <div className="space-y-1">
+              <div className="text-xs font-medium uppercase text-muted-foreground">Recommended Go-Live Focus</div>
+              <ol className="list-inside list-decimal space-y-1 text-xs">
+                {analysis.recommendedGoLiveFocus!.slice(0, 5).map((focus) => <li key={focus}>{focus}</li>)}
+              </ol>
+            </div>
+          )}
           {(live?.healthFindings ?? analysis.issues).length === 0 ? (
             <p className="text-sm text-muted-foreground">No major backlog health issues found.</p>
           ) : (live?.healthFindings ?? analysis.issues).slice(0, 6).map((issue) => (
@@ -673,14 +722,14 @@ function BacklogAiAnalysisPanel({ analysis }: { analysis: ProductPlanningBacklog
       </Card>
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Recommended Next Actions</CardTitle>
+          <CardTitle className="text-sm">Top Next Actions</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {(live?.topNextActions ?? []).length > 0 ? live!.topNextActions!.slice(0, 8).map((action) => (
+          {topNextActions.length > 0 ? topNextActions.slice(0, 10).map((action) => (
             <div key={action.title} className="rounded-md border border-border p-2 text-sm">
               <div className="flex items-center justify-between gap-2">
                 <span className="font-medium">{action.title}</span>
-                <Badge variant={priorityBadge(action.priority)}>{action.priority}</Badge>
+                {action.priority && <Badge variant={priorityBadge(action.priority)}>{action.priority}</Badge>}
               </div>
               <p className="mt-1 text-xs text-muted-foreground">{action.reasoning}</p>
             </div>
@@ -696,7 +745,15 @@ function BacklogAiAnalysisPanel({ analysis }: { analysis: ProductPlanningBacklog
           <CardTitle className="text-sm">Suggested Epics</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {analysis.epicGroups.length === 0 ? (
+          {suggestedEpics.length > 0 ? suggestedEpics.slice(0, 5).map((epic) => (
+            <div key={epic.name} className="rounded-md border border-border p-2 text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium">{epic.name}</span>
+                <Badge variant="secondary">{epic.relatedItemReferences.length}</Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">{epic.reasoning}</p>
+            </div>
+          )) : analysis.epicGroups.length === 0 ? (
             <p className="text-sm text-muted-foreground">No epic groupings found yet.</p>
           ) : analysis.epicGroups.slice(0, 5).map((group) => (
             <div key={`${group.epicName}-${group.module}`} className="rounded-md border border-border p-2 text-sm">
@@ -711,17 +768,49 @@ function BacklogAiAnalysisPanel({ analysis }: { analysis: ProductPlanningBacklog
       </Card>
       <Card className="lg:col-span-3">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Go-Live Readiness</CardTitle>
+          <CardTitle className="text-sm">Go-Live Readiness Assessment</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-4">
-          {live?.goLiveBlockers?.length ? (
-            <MiniNarrativeList title="Blocking Go Live" items={live.goLiveBlockers.map((item) => ({ title: item.title, reasoning: item.reasoning }))} />
-          ) : <MiniReadinessList title="Blocking Go Live" items={readiness.blockers} />}
-          <MiniReadinessList title="High Value Features" items={readiness.highValueFeatures} />
-          {live?.quickWins?.length ? <MiniNarrativeList title="Quick Wins" items={live.quickWins} /> : <MiniReadinessList title="Quick Wins" items={readiness.quickWins} />}
-          {live?.futureItems?.length ? <MiniNarrativeList title="Future Items" items={live.futureItems} /> : <MiniReadinessList title="Future Items" items={readiness.futureItems} />}
+        <CardContent className="space-y-4">
+          {readinessAssessment ? (
+            <div className="grid gap-3 md:grid-cols-[140px_1fr_1fr]">
+              <div className="rounded-md border border-border p-3">
+                <div className="text-xs uppercase text-muted-foreground">Current Readiness</div>
+                <div className="mt-1 text-3xl font-semibold">{readinessAssessment.readinessScore}%</div>
+              </div>
+              <MiniTextList title="Critical Blockers" items={readinessAssessment.criticalBlockers} />
+              <MiniTextList title="Recommended Sequence" items={readinessAssessment.recommendedSequence} />
+              <div className="rounded-md border border-border p-3 text-sm md:col-span-3">
+                <div className="text-xs font-medium uppercase text-muted-foreground">Recommended Next Step</div>
+                <p className="mt-1">{readinessAssessment.recommendedNextStep}</p>
+              </div>
+            </div>
+          ) : null}
+          <div className="grid gap-3 md:grid-cols-3">
+            {goLiveBlockers.length ? <MiniNarrativeList title="Go-Live Blockers" items={goLiveBlockers} /> : <MiniReadinessList title="Go-Live Blockers" items={readiness.blockers} />}
+            {highestRoi.length ? <MiniNarrativeList title="Highest ROI Features" items={highestRoi} /> : <MiniReadinessList title="High Value Features" items={readiness.highValueFeatures} />}
+            {quickWins.length ? <MiniNarrativeList title="Quick Wins" items={quickWins} /> : <MiniReadinessList title="Quick Wins" items={readiness.quickWins} />}
+            {futureCandidates.length ? <MiniNarrativeList title="Future / Defer Candidates" items={futureCandidates} /> : <MiniReadinessList title="Future / Defer Candidates" items={readiness.futureItems} />}
+            {lowestPriority.length ? <MiniNarrativeList title="Lowest Priority Features" items={lowestPriority} /> : null}
+            {missingWork.length ? <MiniNarrativeList title="Missing Work" items={missingWork} /> : null}
+            {riskAreas.length ? <MiniNarrativeList title="Risk Areas" items={riskAreas.map((risk) => ({ title: risk.title, reasoning: risk.reasoning }))} /> : null}
+          </div>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function MiniTextList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="rounded-md border border-border p-3">
+      <div className="text-xs font-medium uppercase text-muted-foreground">{title}</div>
+      {items.length === 0 ? (
+        <p className="mt-2 text-xs text-muted-foreground">No items found.</p>
+      ) : (
+        <ol className="mt-2 list-inside list-decimal space-y-1 text-xs">
+          {items.slice(0, 6).map((item) => <li key={item}>{item}</li>)}
+        </ol>
+      )}
     </div>
   );
 }
@@ -757,6 +846,7 @@ function MiniReadinessList({ title, items }: { title: string; items: WorkItem[] 
 }
 
 function SuggestedEpicCards({ analysis, onDismiss }: { analysis: ProductPlanningEpicAnalysis; onDismiss: () => void }) {
+  const [expandedEpic, setExpandedEpic] = useState<string | null>(null);
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -766,8 +856,18 @@ function SuggestedEpicCards({ analysis, onDismiss }: { analysis: ProductPlanning
         </CardTitle>
       </CardHeader>
       <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {analysis.epics.slice(0, 9).map((epic) => (
-          <div key={epic.name} className="space-y-2 rounded-md border border-border p-3 text-sm">
+        {analysis.epics.slice(0, 9).map((epic) => {
+          const isExpanded = expandedEpic === epic.name;
+          const relatedItems = epic.relatedItems ?? epic.relatedItemReferences.map((reference) => ({
+            reference,
+            title: "Planning item",
+            priority: null,
+            phase: null,
+            module: null,
+            reasonIncluded: epic.reasoning,
+          }));
+          return (
+            <div key={epic.name} className="space-y-2 rounded-md border border-border p-3 text-sm">
             <div className="flex items-start justify-between gap-2">
               <div className="font-medium">{epic.name}</div>
               <Badge variant="secondary">{epic.relatedItemReferences.length}</Badge>
@@ -782,14 +882,35 @@ function SuggestedEpicCards({ analysis, onDismiss }: { analysis: ProductPlanning
             {epic.relatedItemReferences.length > 0 && (
               <div className="text-xs text-muted-foreground">Refs: {epic.relatedItemReferences.slice(0, 6).join(", ")}</div>
             )}
+            {isExpanded && (
+              <div className="space-y-2 rounded-md bg-muted/30 p-2">
+                <div className="text-xs font-medium uppercase text-muted-foreground">Included Items</div>
+                {relatedItems.map((item) => (
+                  <div key={item.reference} className="rounded-md border border-border bg-background p-2 text-xs">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-muted-foreground">{item.reference}</span>
+                      <span className="font-medium">{item.title}</span>
+                      {item.priority && <Badge variant={priorityBadge(item.priority)}>{item.priority}</Badge>}
+                      {item.phase && <Badge variant="secondary">{labelFor(PHASES, item.phase)}</Badge>}
+                      {item.module && <Badge variant="outline">{item.module}</Badge>}
+                    </div>
+                    <p className="mt-1 text-muted-foreground">{item.reasonIncluded}</p>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setExpandedEpic(isExpanded ? null : epic.name)}>
+                {isExpanded ? "Hide Items" : "View Items"}
+              </Button>
               <Button variant="outline" size="sm" onClick={onDismiss}>Dismiss</Button>
               <Button variant="outline" size="sm" onClick={() => window.confirm(`Create epic draft for ${epic.name}?`)}>
                 Create Epic Draft
               </Button>
             </div>
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </CardContent>
     </Card>
   );
@@ -1640,7 +1761,24 @@ export function ProductPlanningRoadmapPage() {
                 <div className="text-xs font-medium uppercase text-muted-foreground">What Should Move</div>
                 {roadmapAnalysis.moveRecommendations!.slice(0, 8).map((move) => (
                   <div key={`${move.reference}-${move.recommendedPhase}`} className="rounded-md border border-border p-3 text-sm">
-                    <div className="font-medium">{move.reference}: {labelFor(PHASES, move.currentPhase as Phase | null) || "Unassigned"} {"->"} {labelFor(PHASES, move.recommendedPhase)}</div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">{move.reference}: {labelFor(PHASES, move.currentPhase as Phase | null) || "Unassigned"} {"->"} {labelFor(PHASES, move.recommendedPhase)}</span>
+                      <Badge variant="secondary">{move.confidence}%</Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">{move.reasoning}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+            {(roadmapAnalysis.deferRecommendations?.length ?? 0) > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-medium uppercase text-muted-foreground">What Should Wait</div>
+                {roadmapAnalysis.deferRecommendations!.slice(0, 8).map((move) => (
+                  <div key={`${move.reference}-${move.recommendedPhase}-defer`} className="rounded-md border border-border p-3 text-sm">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">{move.reference}: {labelFor(PHASES, move.currentPhase as Phase | null) || "Unassigned"} {"->"} {labelFor(PHASES, move.recommendedPhase)}</span>
+                      <Badge variant="outline">{move.confidence}%</Badge>
+                    </div>
                     <p className="mt-1 text-xs text-muted-foreground">{move.reasoning}</p>
                   </div>
                 ))}

@@ -48,10 +48,56 @@ export type WorkItemForAi = {
   blockedByCount?: number;
 };
 
+type OperationalNarrativeItem = {
+  title: string;
+  reasoning: string;
+  priority?: string;
+  relatedItemReferences?: string[];
+};
+
+type ReadinessAssessment = {
+  readinessScore: number;
+  criticalBlockers: string[];
+  highPriorityActions: string[];
+  recommendedSequence: string[];
+  recommendedNextStep: string;
+};
+
+type SuggestedEpicItem = {
+  reference: string;
+  title: string;
+  priority?: string | null;
+  phase?: string | null;
+  module?: string | null;
+  reasonIncluded: string;
+};
+
+type SuggestedOperationalEpic = {
+  name: string;
+  description: string;
+  confidence: number;
+  businessValue: string;
+  recommendedPhase: string;
+  relatedItemReferences: string[];
+  relatedItems?: SuggestedEpicItem[];
+  reasoning: string;
+};
+
 export type ProductPlanningBacklogAnalysis = {
   source?: ProductPlanningAiResultSource;
   fallbackReason?: string | null;
   executiveSummary?: string;
+  recommendedGoLiveFocus?: string[];
+  goLiveBlockers?: OperationalNarrativeItem[];
+  topNextActions?: OperationalNarrativeItem[];
+  quickWins?: OperationalNarrativeItem[];
+  futureCandidates?: OperationalNarrativeItem[];
+  highestRoiFeatures?: OperationalNarrativeItem[];
+  lowestPriorityFeatures?: OperationalNarrativeItem[];
+  suggestedEpics?: SuggestedOperationalEpic[];
+  missingWork?: OperationalNarrativeItem[];
+  riskAreas?: Array<{ title: string; severity: "low" | "medium" | "high"; reasoning: string }>;
+  readinessAssessment?: ReadinessAssessment;
   counts: {
     totalItems: number;
     missingModules: number;
@@ -80,6 +126,12 @@ export type ProductPlanningBacklogAnalysis = {
     quickWins?: Array<{ title: string; reasoning: string }>;
     futureItems?: Array<{ title: string; reasoning: string }>;
     healthFindings?: Array<{ label: string; count: number; severity: string; recommendation: string }>;
+    highestRoiFeatures?: OperationalNarrativeItem[];
+    lowestPriorityFeatures?: OperationalNarrativeItem[];
+    suggestedEpics?: SuggestedOperationalEpic[];
+    missingWork?: OperationalNarrativeItem[];
+    riskAreas?: Array<{ title: string; severity: "low" | "medium" | "high"; reasoning: string }>;
+    readinessAssessment?: ReadinessAssessment;
   };
 };
 
@@ -112,6 +164,13 @@ export type ProductPlanningRoadmapNarrativeAnalysis = {
     confidence: number;
     reasoning: string;
   }>;
+  deferRecommendations?: Array<{
+    reference: string;
+    currentPhase: string | null;
+    recommendedPhase: string;
+    confidence: number;
+    reasoning: string;
+  }>;
   sequenceRecommendations: Array<{ title: string; reasoning: string }>;
   recommendations: Array<{ phase: string; action: string; count: number; reasoning: string }>;
   suggestions: ProductPlanningAiSuggestionDraft[];
@@ -120,15 +179,7 @@ export type ProductPlanningRoadmapNarrativeAnalysis = {
 export type ProductPlanningEpicAnalysis = {
   source?: ProductPlanningAiResultSource;
   fallbackReason?: string | null;
-  epics: Array<{
-    name: string;
-    description: string;
-    confidence: number;
-    businessValue: string;
-    recommendedPhase: string;
-    relatedItemReferences: string[];
-    reasoning: string;
-  }>;
+  epics: SuggestedOperationalEpic[];
   suggestions: ProductPlanningAiSuggestionDraft[];
 };
 
@@ -203,26 +254,62 @@ const workItemAnalysisSchema = z.object({
   nextActions: z.array(z.string().min(1).max(300)).max(10),
 });
 
+const operationalNarrativeItemSchema = z.object({
+  title: z.string().min(1).max(260),
+  reasoning: z.string().min(1).max(1400),
+  priority: prioritySchema.optional(),
+  relatedItemReferences: z.array(z.string().min(1).max(40)).max(25).optional(),
+});
+
+const suggestedEpicItemSchema = z.object({
+  reference: z.string().min(1).max(40),
+  title: z.string().min(1).max(260),
+  priority: prioritySchema.nullable().optional(),
+  phase: phaseSchema.nullable().optional(),
+  module: z.string().max(160).nullable().optional(),
+  reasonIncluded: z.string().min(1).max(1000),
+});
+
+const suggestedOperationalEpicSchema = z.object({
+  name: z.string().min(1).max(180),
+  description: z.string().min(1).max(1400),
+  confidence: z.number().min(0).max(1),
+  businessValue: businessValueSchema,
+  recommendedPhase: phaseSchema,
+  relatedItemReferences: z.array(z.string().min(1).max(40)).max(40),
+  relatedItems: z.array(suggestedEpicItemSchema).max(40).optional(),
+  reasoning: z.string().min(1).max(1400),
+});
+
+const readinessAssessmentSchema = z.object({
+  readinessScore: z.number().min(0).max(100),
+  criticalBlockers: z.array(z.string().min(1).max(260)).max(10),
+  highPriorityActions: z.array(z.string().min(1).max(260)).max(10),
+  recommendedSequence: z.array(z.string().min(1).max(260)).max(10),
+  recommendedNextStep: z.string().min(1).max(500),
+});
+
 const backlogAnalysisSchema = z.object({
   executiveSummary: z.string().min(1).max(3000),
+  recommendedGoLiveFocus: z.array(z.string().min(1).max(220)).max(10),
   goLiveBlockers: z.array(z.object({
     title: z.string().min(1).max(220),
     reasoning: z.string().min(1).max(1200),
     relatedItemReferences: z.array(z.string().min(1).max(40)).max(20),
   })).max(10),
-  topNextActions: z.array(z.object({
+  topNextActions: z.array(operationalNarrativeItemSchema.extend({ priority: prioritySchema })).max(10),
+  quickWins: z.array(operationalNarrativeItemSchema).max(10),
+  futureItems: z.array(operationalNarrativeItemSchema).max(10),
+  highestRoiFeatures: z.array(operationalNarrativeItemSchema).max(10),
+  lowestPriorityFeatures: z.array(operationalNarrativeItemSchema).max(10),
+  suggestedEpics: z.array(suggestedOperationalEpicSchema).max(10),
+  missingWork: z.array(operationalNarrativeItemSchema).max(10),
+  riskAreas: z.array(z.object({
     title: z.string().min(1).max(220),
-    reasoning: z.string().min(1).max(1200),
-    priority: prioritySchema,
-  })).max(10),
-  quickWins: z.array(z.object({
-    title: z.string().min(1).max(220),
+    severity: severitySchema,
     reasoning: z.string().min(1).max(1200),
   })).max(10),
-  futureItems: z.array(z.object({
-    title: z.string().min(1).max(220),
-    reasoning: z.string().min(1).max(1200),
-  })).max(10),
+  readinessAssessment: readinessAssessmentSchema,
   healthFindings: z.array(z.object({
     label: z.string().min(1).max(160),
     count: z.number().int().min(0),
@@ -232,15 +319,7 @@ const backlogAnalysisSchema = z.object({
 });
 
 const epicSuggestionSchema = z.object({
-  epics: z.array(z.object({
-    name: z.string().min(1).max(180),
-    description: z.string().min(1).max(1200),
-    confidence: z.number().min(0).max(1),
-    businessValue: businessValueSchema,
-    recommendedPhase: phaseSchema,
-    relatedItemReferences: z.array(z.string().min(1).max(40)).max(40),
-    reasoning: z.string().min(1).max(1200),
-  })).max(10),
+  epics: z.array(suggestedOperationalEpicSchema).max(10),
 });
 
 const roadmapAnalysisSchema = z.object({
@@ -256,6 +335,13 @@ const roadmapAnalysisSchema = z.object({
     confidence: z.number().min(0).max(1),
     reasoning: z.string().min(1).max(1200),
   })).max(12),
+  deferRecommendations: z.array(z.object({
+    reference: z.string().min(1).max(40),
+    currentPhase: z.string().nullable(),
+    recommendedPhase: phaseSchema,
+    confidence: z.number().min(0).max(1),
+    reasoning: z.string().min(1).max(1200),
+  })).max(12).optional(),
   sequenceRecommendations: z.array(z.object({
     title: z.string().min(1).max(220),
     reasoning: z.string().min(1).max(1200),
@@ -321,6 +407,9 @@ function productPlanningSystemPrompt(): string {
     "Immediate business priority: get Titan Graphics operational inside TitanOS.",
     "Known current bottleneck: Product Catalog Completion. Without a loaded product catalog, TitanOS cannot be fully validated for quote creation, order creation, pricing accuracy, routing, production workflow, customer portal workflow, or invoicing.",
     "Items that help operational go-live and catalog completion should generally rank higher than future SaaS/R&D ideas.",
+    "Optimize every recommendation toward Titan Graphics operational readiness, workflow validation, catalog completion, production usage, and customer usage.",
+    "Avoid generic observations such as phase counts or overloaded buckets unless they lead to a concrete action, item movement, epic, or defer recommendation.",
+    "Name the next human action whenever possible: create an epic, assign items, move an item, create a release, validate a workflow, or defer low-ROI work.",
     "You may analyze, summarize, suggest, classify, rank, recommend, and group.",
     "You may not auto-update work items, create epics, delete, merge, close, change priorities, change phases, or assign releases.",
     "All output is advisory and must require human review.",
@@ -391,6 +480,51 @@ function referencesToItems(items: WorkItemForAi[]): Map<string, WorkItemForAi> {
   return new Map(items.map((item) => [item.reference, item]));
 }
 
+function relatedEpicItemsFromValue(value: any, items: WorkItemForAi[], fallbackReason: string): SuggestedEpicItem[] {
+  const byReference = referencesToItems(items);
+  return (value?.relatedItems ?? [])
+    .map((entry: any) => {
+      const reference = String(entry?.reference ?? "");
+      if (!reference) return null;
+      const item = byReference.get(reference);
+      return {
+        reference,
+        title: String(entry?.title ?? item?.title ?? "Planning item"),
+        priority: entry?.priority ?? item?.priority ?? null,
+        phase: entry?.phase ?? item?.phase ?? null,
+        module: entry?.module ?? item?.module ?? null,
+        reasonIncluded: String(entry?.reasonIncluded ?? fallbackReason),
+      };
+    })
+    .filter(Boolean) as SuggestedEpicItem[];
+}
+
+function normalizeSuggestedEpics(epics: SuggestedOperationalEpic[], items: WorkItemForAi[]): SuggestedOperationalEpic[] {
+  const byReference = referencesToItems(items);
+  return epics.map((epic) => {
+    const relatedReferences = epic.relatedItemReferences.filter(Boolean);
+    const liveRelatedItems = epic.relatedItems ?? [];
+    const relatedItems = relatedReferences.map((reference) => {
+      const liveItem = liveRelatedItems.find((candidate) => candidate.reference === reference);
+      const item = byReference.get(reference);
+      return {
+        reference,
+        title: liveItem?.title ?? item?.title ?? "Planning item",
+        priority: liveItem?.priority ?? item?.priority ?? null,
+        phase: liveItem?.phase ?? item?.phase ?? null,
+        module: liveItem?.module ?? item?.module ?? null,
+        reasonIncluded: liveItem?.reasonIncluded ?? epic.reasoning,
+      };
+    });
+    return {
+      ...epic,
+      confidence: suggestionConfidence(epic.confidence),
+      relatedItemReferences: relatedReferences,
+      relatedItems,
+    };
+  });
+}
+
 function mapLiveSuggestion(item: WorkItemForAi, suggestion: z.infer<typeof aiSuggestionOutputSchema>): ProductPlanningAiSuggestionDraft {
   return {
     workItemId: item.id,
@@ -438,17 +572,40 @@ function backlogAnalysisPrompt(items: WorkItemForAi[]) {
     promptVersion: `${PRODUCT_PLANNING_PROMPT_VERSION}:backlog`,
     system: productPlanningSystemPrompt(),
     user: [
-      "Analyze the Product Planning backlog as a product leader.",
-      "Answer what matters most, what blocks go-live, what should wait, what is missing, and the next 5-10 actions.",
-      "Do not just group by existing fields. Infer product planning importance from TitanOS operational readiness context.",
+      "Analyze the Product Planning backlog as an operational product leader.",
+      "The business question is: what gets Titan Graphics fully operational inside TitanOS fastest?",
+      "Answer what matters most, what blocks go-live, what should wait, what is missing, what has the highest ROI, what is noise, and the top 10 next actions.",
+      "Do not just group by existing fields or report that a phase is overloaded. Infer item-level planning importance from TitanOS operational readiness context.",
       "",
       "Required JSON shape:",
       JSON.stringify({
         executiveSummary: "clear summary of what the backlog says",
+        recommendedGoLiveFocus: ["Product Catalog Completion", "Product Import Automation", "Workflow Validation"],
         goLiveBlockers: [{ title: "Product Catalog Completion", reasoning: "why this blocks operational use", relatedItemReferences: ["PP-0001"] }],
         topNextActions: [{ title: "Create Product Catalog Completion Epic", reasoning: "why this should happen next", priority: "critical|high|medium|low" }],
         quickWins: [{ title: "item or action", reasoning: "why it is quick/high value" }],
         futureItems: [{ title: "item or action", reasoning: "why it should wait" }],
+        highestRoiFeatures: [{ title: "item or action", reasoning: "why it has high ROI", relatedItemReferences: ["PP-0001"] }],
+        lowestPriorityFeatures: [{ title: "item or action", reasoning: "why it is low ROI for Titan Graphics go-live", relatedItemReferences: ["PP-0009"] }],
+        suggestedEpics: [{
+          name: "Product Catalog Completion",
+          description: "why this epic matters",
+          confidence: 0.0,
+          businessValue: "very_high|high|medium|low",
+          recommendedPhase: "go_live|v1_1|v1_5|v2_0|future|research",
+          relatedItemReferences: ["PP-0001", "PP-0002"],
+          relatedItems: [{ reference: "PP-0001", title: "item title", priority: "critical|high|medium|low", phase: "go_live|v1_1|v1_5|v2_0|future|research|null", module: "module or null", reasonIncluded: "why this item belongs in the epic" }],
+          reasoning: "why these items belong together",
+        }],
+        missingWork: [{ title: "missing work item or planning gap", reasoning: "why this must exist for operational readiness" }],
+        riskAreas: [{ title: "risk area", severity: "low|medium|high", reasoning: "why this threatens go-live" }],
+        readinessAssessment: {
+          readinessScore: 43,
+          criticalBlockers: ["Product Catalog Completion"],
+          highPriorityActions: ["Build Product Import MVP and load first 25 products"],
+          recommendedSequence: ["Complete catalog MVP", "Validate quote creation", "Validate order creation"],
+          recommendedNextStep: "Build Product Import MVP and load first 25 products.",
+        },
         healthFindings: [{ label: "Missing modules", count: 14, severity: "low|medium|high", recommendation: "what to do" }],
       }, null, 2),
       "",
@@ -465,6 +622,7 @@ function epicSuggestionPrompt(items: WorkItemForAi[]) {
     user: [
       "Suggest high-value Product Planning epics from the backlog.",
       "Prefer epics that reduce go-live risk, complete the product catalog, or make Titan Graphics operational in TitanOS.",
+      "For each epic, include item-level reasons so a human can inspect why the group exists.",
       "",
       "Required JSON shape:",
       JSON.stringify({
@@ -475,6 +633,7 @@ function epicSuggestionPrompt(items: WorkItemForAi[]) {
           businessValue: "very_high|high|medium|low",
           recommendedPhase: "go_live|v1_1|v1_5|v2_0|future|research",
           relatedItemReferences: ["PP-0001", "PP-0002"],
+          relatedItems: [{ reference: "PP-0001", title: "item title", priority: "critical|high|medium|low", phase: "go_live|v1_1|v1_5|v2_0|future|research|null", module: "module or null", reasonIncluded: "why this item belongs in the epic" }],
           reasoning: "why these items belong together",
         }],
       }, null, 2),
@@ -490,14 +649,16 @@ function roadmapAnalysisPrompt(items: WorkItemForAi[]) {
     promptVersion: `${PRODUCT_PLANNING_PROMPT_VERSION}:roadmap`,
     system: productPlanningSystemPrompt(),
     user: [
-      "Analyze the roadmap and recommend what should move, what should happen first, what is overloaded, and what should wait.",
+      "Analyze the roadmap and recommend exact item-level movement toward Titan Graphics operational go-live.",
       "Use Titan Graphics operational readiness and Product Catalog Completion as the near-term lens.",
+      "Do not stop at saying phases are overloaded or under-populated. Name what should move, what should happen first, and what should wait.",
       "",
       "Required JSON shape:",
       JSON.stringify({
-        summary: "roadmap health summary",
-        overloadedPhases: [{ phase: "future", reasoning: "why this phase is overloaded" }],
+        summary: "operational roadmap health summary",
+        overloadedPhases: [{ phase: "future", reasoning: "why this overload affects operational readiness, if it does" }],
         moveRecommendations: [{ reference: "PP-0001", currentPhase: "future", recommendedPhase: "go_live", confidence: 0.0, reasoning: "why" }],
+        deferRecommendations: [{ reference: "PP-0044", currentPhase: "go_live", recommendedPhase: "future", confidence: 0.0, reasoning: "why this should wait" }],
         sequenceRecommendations: [{ title: "Do Product Catalog Completion before Customer Portal polish", reasoning: "why this order matters" }],
       }, null, 2),
       "",
@@ -742,6 +903,7 @@ export class ProductPlanningAiAssistant {
     const fallbackData = generateBacklogAnalysis(items);
     const live = await this.runLiveJson(orgId, backlogAnalysisPrompt(items), backlogAnalysisSchema, { action: "backlog_analysis", itemCount: items.length });
     if (!live) return this.fallback({ ...fallbackData, source: "rule_based_fallback", fallbackReason: "Live AI unavailable. Showing rule-based suggestions." });
+    const liveEpics = normalizeSuggestedEpics(live.data.suggestedEpics, items);
     return {
       ...live,
       data: {
@@ -749,12 +911,29 @@ export class ProductPlanningAiAssistant {
         source: "live_ai",
         fallbackReason: null,
         executiveSummary: live.data.executiveSummary,
+        recommendedGoLiveFocus: live.data.recommendedGoLiveFocus,
+        goLiveBlockers: live.data.goLiveBlockers,
+        topNextActions: live.data.topNextActions,
+        quickWins: live.data.quickWins,
+        futureCandidates: live.data.futureItems,
+        highestRoiFeatures: live.data.highestRoiFeatures,
+        lowestPriorityFeatures: live.data.lowestPriorityFeatures,
+        suggestedEpics: liveEpics,
+        missingWork: live.data.missingWork,
+        riskAreas: live.data.riskAreas,
+        readinessAssessment: live.data.readinessAssessment,
         liveAi: {
           goLiveBlockers: live.data.goLiveBlockers,
           topNextActions: live.data.topNextActions,
           quickWins: live.data.quickWins,
           futureItems: live.data.futureItems,
           healthFindings: live.data.healthFindings,
+          highestRoiFeatures: live.data.highestRoiFeatures,
+          lowestPriorityFeatures: live.data.lowestPriorityFeatures,
+          suggestedEpics: liveEpics,
+          missingWork: live.data.missingWork,
+          riskAreas: live.data.riskAreas,
+          readinessAssessment: live.data.readinessAssessment,
         },
         nextActions: live.data.topNextActions.map((action) => `${action.title}: ${action.reasoning}`),
         issues: live.data.healthFindings.map((finding) => ({ label: finding.label, count: finding.count, severity: finding.severity })),
@@ -769,13 +948,15 @@ export class ProductPlanningAiAssistant {
       fallbackReason: "Live AI unavailable. Showing rule-based suggestions.",
       epics: fallbackSuggestions.map((suggestion) => {
         const value = suggestion.suggestedValue as any;
+        const relatedItems = relatedEpicItemsFromValue(value, items, suggestion.reasoning);
         return {
           name: value?.epicName ?? "Planning Epic",
           description: suggestion.reasoning,
           confidence: suggestion.confidence,
           businessValue: "high",
           recommendedPhase: "v1_1",
-          relatedItemReferences: (value?.relatedItems ?? []).map((item: any) => item.reference).filter(Boolean),
+          relatedItemReferences: relatedItems.map((item) => item.reference),
+          relatedItems,
           reasoning: suggestion.reasoning,
         };
       }),
@@ -784,7 +965,8 @@ export class ProductPlanningAiAssistant {
     const live = await this.runLiveJson(orgId, epicSuggestionPrompt(items), epicSuggestionSchema, { action: "epic_suggestions", itemCount: items.length });
     if (!live) return this.fallback(fallbackData);
     const itemByReference = referencesToItems(items);
-    const suggestions = live.data.epics.map((epic) => ({
+    const liveEpics = normalizeSuggestedEpics(live.data.epics, items);
+    const suggestions = liveEpics.map((epic) => ({
       workItemId: null,
       suggestionType: "parent_epic" as const,
       currentValue: null,
@@ -795,13 +977,16 @@ export class ProductPlanningAiAssistant {
         recommendedPhase: epic.recommendedPhase,
         relatedItems: epic.relatedItemReferences.map((reference) => {
           const item = itemByReference.get(reference);
-          return item ? { id: item.id, reference: item.reference, title: item.title } : { reference };
+          const related = epic.relatedItems?.find((candidate) => candidate.reference === reference);
+          return item
+            ? { id: item.id, reference: item.reference, title: item.title, reasonIncluded: related?.reasonIncluded ?? epic.reasoning }
+            : { reference, reasonIncluded: related?.reasonIncluded ?? epic.reasoning };
         }),
       },
       confidence: suggestionConfidence(epic.confidence),
       reasoning: epic.reasoning,
     }));
-    return { ...live, data: { source: "live_ai", fallbackReason: null, epics: live.data.epics.map((epic) => ({ ...epic, confidence: suggestionConfidence(epic.confidence) })), suggestions } };
+    return { ...live, data: { source: "live_ai", fallbackReason: null, epics: liveEpics, suggestions } };
   }
 
   async analyzeRoadmap(orgId: string, items: WorkItemForAi[]): Promise<ProductPlanningAiRunResult<ProductPlanningRoadmapNarrativeAnalysis>> {
@@ -821,6 +1006,16 @@ export class ProductPlanningAiAssistant {
           reasoning: suggestion.reasoning,
         };
       }),
+      deferRecommendations: fallback.suggestions.map((suggestion) => {
+        const item = items.find((candidate) => candidate.id === suggestion.workItemId);
+        return {
+          reference: item?.reference ?? "Unknown",
+          currentPhase: String(suggestion.currentValue ?? ""),
+          recommendedPhase: String(suggestion.suggestedValue ?? ""),
+          confidence: suggestion.confidence,
+          reasoning: suggestion.reasoning,
+        };
+      }).filter((move) => move.recommendedPhase === "future"),
       sequenceRecommendations: [],
       recommendations: fallback.recommendations,
       suggestions: fallback.suggestions,
@@ -847,6 +1042,7 @@ export class ProductPlanningAiAssistant {
         summary: live.data.summary,
         overloadedPhases: live.data.overloadedPhases,
         moveRecommendations: live.data.moveRecommendations.map((move) => ({ ...move, confidence: suggestionConfidence(move.confidence) })),
+        deferRecommendations: (live.data.deferRecommendations ?? []).map((move) => ({ ...move, confidence: suggestionConfidence(move.confidence) })),
         sequenceRecommendations: live.data.sequenceRecommendations,
         recommendations: fallback.recommendations,
         suggestions,
@@ -1158,6 +1354,49 @@ function itemWeight(item: WorkItemForAi): number {
     + (complexityWeight[item.complexity ?? ""] ?? 1)
     + (item.phase === "go_live" ? 2 : 0)
     + (item.blockedByCount ?? 0);
+}
+
+function operationalReadinessScore(item: WorkItemForAi): number {
+  const text = textFor(item);
+  let score = itemWeight(item);
+  if (/\b(product catalog|catalog|product import|product setup|sku|pricing|price|routing|product option|product data)\b/.test(text)) score += 8;
+  if (/\b(quote|order|production|fulfillment|invoice|payment|customer portal|workflow validation|operational readiness)\b/.test(text)) score += 4;
+  if (/\b(go live|launch|blocker|blocks|cannot validate|validation)\b/.test(text)) score += 3;
+  if (/\b(saas|onboarding|mobile|visual search|r&d|research|future|nice to have)\b/.test(text)) score -= 4;
+  if (item.phase === "future" && (item.priority === "critical" || item.priority === "high")) score += 2;
+  if (item.complexity === "small" && score > 4) score += 1;
+  return score;
+}
+
+function isCatalogCompletionItem(item: WorkItemForAi): boolean {
+  return /\b(product catalog|catalog|product import|product setup|sku|pricing|price table|product option|routing)\b/.test(textFor(item));
+}
+
+function isFutureLeanItem(item: WorkItemForAi): boolean {
+  return /\b(saas|tenant onboarding|mobile|visual search|r&d|research|future|nice to have|polish)\b/.test(textFor(item))
+    || item.phase === "future"
+    || item.phase === "research"
+    || item.priority === "low";
+}
+
+function narrativeFromItem(item: WorkItemForAi, reasoning: string, priority?: string): OperationalNarrativeItem {
+  return {
+    title: `${item.reference}: ${item.title}`,
+    reasoning,
+    priority,
+    relatedItemReferences: [item.reference],
+  };
+}
+
+function epicRelatedItems(items: WorkItemForAi[], reason: string): SuggestedEpicItem[] {
+  return items.slice(0, 20).map((item) => ({
+    reference: item.reference,
+    title: item.title,
+    priority: item.priority,
+    phase: item.phase ?? null,
+    module: item.module ?? null,
+    reasonIncluded: reason,
+  }));
 }
 
 function groupItemsByPlanningTheme(items: WorkItemForAi[]) {
@@ -1563,31 +1802,138 @@ export function generateBacklogAnalysis(items: WorkItemForAi[]): ProductPlanning
   ].filter((issue) => issue.count > 0);
 
   const blockers = activeItems
-    .filter((item) => item.phase === "go_live" || item.priority === "critical" || item.workItemType === "bug")
-    .sort((a, b) => itemWeight(b) - itemWeight(a))
+    .filter((item) => item.phase === "go_live" || item.priority === "critical" || item.workItemType === "bug" || isCatalogCompletionItem(item))
+    .sort((a, b) => operationalReadinessScore(b) - operationalReadinessScore(a))
     .slice(0, 10);
   const highValueFeatures = activeItems
     .filter((item) => item.workItemType !== "bug" && (item.businessValue === "very_high" || item.businessValue === "high" || item.priority === "high"))
-    .sort((a, b) => itemWeight(b) - itemWeight(a))
+    .sort((a, b) => operationalReadinessScore(b) - operationalReadinessScore(a))
     .slice(0, 10);
   const quickWins = activeItems
     .filter((item) => item.complexity === "small" && (item.priority === "high" || item.businessValue === "high" || item.businessValue === "very_high"))
-    .sort((a, b) => itemWeight(b) - itemWeight(a))
+    .sort((a, b) => operationalReadinessScore(b) - operationalReadinessScore(a))
     .slice(0, 10);
   const futureItems = activeItems
-    .filter((item) => item.phase === "future" || item.priority === "low" || item.complexity === "massive")
-    .sort((a, b) => itemWeight(b) - itemWeight(a))
+    .filter((item) => isFutureLeanItem(item) || item.complexity === "massive")
+    .sort((a, b) => operationalReadinessScore(a) - operationalReadinessScore(b))
     .slice(0, 10);
+  const highestRoiItems = activeItems
+    .filter((item) => !isFutureLeanItem(item))
+    .sort((a, b) => operationalReadinessScore(b) - operationalReadinessScore(a))
+    .slice(0, 10);
+  const lowestPriorityItems = activeItems
+    .filter((item) => isFutureLeanItem(item) || operationalReadinessScore(item) <= 2)
+    .sort((a, b) => operationalReadinessScore(a) - operationalReadinessScore(b))
+    .slice(0, 10);
+  const catalogItems = activeItems.filter(isCatalogCompletionItem).sort((a, b) => operationalReadinessScore(b) - operationalReadinessScore(a));
+  const workflowValidationItems = activeItems.filter((item) => /\b(workflow validation|production validation|quote|order|production|fulfillment|invoice|payment|customer portal)\b/.test(textFor(item)));
+  const readinessScore = activeItems.length === 0
+    ? 0
+    : Math.max(0, Math.min(100, healthScore - (catalogItems.length === 0 ? 18 : 0) - Math.min(20, counts.missingPhases + counts.missingModules)));
+  const suggestedEpics: SuggestedOperationalEpic[] = [
+    catalogItems.length > 0 ? {
+      name: "Product Catalog Completion",
+      description: "Complete catalog data, import mechanics, pricing, routing, and product setup needed before Titan Graphics can validate the core Quote to Payment workflow.",
+      confidence: Math.min(96, 76 + catalogItems.length * 3),
+      businessValue: "very_high",
+      recommendedPhase: "go_live",
+      relatedItemReferences: catalogItems.slice(0, 20).map((item) => item.reference),
+      relatedItems: epicRelatedItems(catalogItems, "This item affects catalog completion, pricing, routing, product setup, or import readiness."),
+      reasoning: "Product catalog completion is the known operational go-live bottleneck and enables quote, order, production, portal, invoice, and payment validation.",
+    } : null,
+    workflowValidationItems.length >= 2 ? {
+      name: "Operational Workflow Validation",
+      description: "Validate the Quote to Order to Production to Fulfillment to Invoice/Payment path with Titan Graphics data.",
+      confidence: Math.min(92, 70 + workflowValidationItems.length * 3),
+      businessValue: "very_high",
+      recommendedPhase: "go_live",
+      relatedItemReferences: workflowValidationItems.slice(0, 20).map((item) => item.reference),
+      relatedItems: epicRelatedItems(workflowValidationItems, "This item touches a core operational workflow that must be validated before go-live."),
+      reasoning: "Titan Graphics cannot be considered operational until the main MIS/ERP workflow is validated end to end.",
+    } : null,
+  ].filter(Boolean) as SuggestedOperationalEpic[];
 
   const nextActions = [
-    counts.potentialEpicGroups > 0 ? `Review ${counts.potentialEpicGroups} possible epic grouping(s).` : null,
-    counts.missingModules > 0 ? `Assign modules to ${counts.missingModules} item(s).` : null,
+    catalogItems.length > 0 ? `Create or confirm a Product Catalog Completion epic and attach ${catalogItems.length} catalog-related item(s).` : "Create Product Catalog Completion work if it is not already represented in the backlog.",
+    "Create an Operational Readiness release if one does not already exist.",
+    workflowValidationItems.length > 0 ? `Sequence ${workflowValidationItems.length} workflow validation item(s) after catalog MVP completion.` : "Add explicit workflow validation items for quote, order, production, portal, invoice, and payment.",
+    counts.missingModules > 0 ? `Assign modules to ${counts.missingModules} item(s) so go-live sequencing is easier.` : null,
     counts.potentialDuplicates > 0 ? `Review ${counts.potentialDuplicates} duplicate candidate(s).` : null,
     counts.missingReleases > 0 ? `Review ${counts.missingReleases} unassigned release target(s).` : null,
-    blockers.length > 0 ? `Review ${blockers.length} go-live blocker candidate(s).` : null,
   ].filter(Boolean) as string[];
+  const topNextActions = nextActions.slice(0, 10).map((action, index) => ({
+    title: action.replace(/\.$/, ""),
+    reasoning: index === 0
+      ? "This is the shortest path toward Titan Graphics operational readiness."
+      : "This turns backlog cleanup into an operational go-live decision.",
+    priority: index <= 1 ? "critical" : "high",
+  }));
+  const goLiveBlockers = blockers.slice(0, 10).map((item) => narrativeFromItem(
+    item,
+    isCatalogCompletionItem(item)
+      ? "Catalog completion blocks quote creation, order creation, pricing, routing, production workflow, customer portal validation, and invoicing."
+      : "This item has critical, bug, go-live, or blocker signals that can prevent operational readiness.",
+    item.priority,
+  ));
+  const highestRoiFeatures = highestRoiItems.map((item) => narrativeFromItem(
+    item,
+    isCatalogCompletionItem(item)
+      ? "High ROI because catalog completion unlocks validation across the entire Quote to Payment workflow."
+      : "High ROI because it supports Titan Graphics operational readiness or core workflow validation.",
+    item.priority,
+  ));
+  const lowestPriorityFeatures = lowestPriorityItems.map((item) => narrativeFromItem(
+    item,
+    "Lower near-term ROI because it appears SaaS/R&D/future-facing or does not directly unblock Titan Graphics operational go-live.",
+    item.priority,
+  ));
+  const missingWork: OperationalNarrativeItem[] = [
+    catalogItems.length === 0 ? { title: "Product Catalog Completion", reasoning: "The known go-live bottleneck is not clearly represented in the backlog.", priority: "critical" } : null,
+    workflowValidationItems.length === 0 ? { title: "Core Workflow Validation", reasoning: "Add explicit validation work for Quote -> Order -> Production -> Fulfillment -> Invoice -> Payment.", priority: "critical" } : null,
+    counts.missingReleases > 0 ? { title: "Operational Readiness Release", reasoning: "High-priority and go-live items need a visible release target for launch sequencing.", priority: "high" } : null,
+  ].filter(Boolean) as OperationalNarrativeItem[];
+  const riskAreas = [
+    catalogItems.length === 0 ? { title: "Product Catalog Completion is missing", severity: "high" as const, reasoning: "The known bottleneck is absent or not discoverable, which makes AI sequencing less reliable." } : null,
+    counts.missingPhases > 0 ? { title: "Missing phases", severity: "high" as const, reasoning: `${counts.missingPhases} item(s) cannot be reliably sequenced for operational go-live.` } : null,
+    counts.potentialDuplicates > 0 ? { title: "Duplicate backlog noise", severity: "medium" as const, reasoning: `${counts.potentialDuplicates} duplicate candidate(s) may hide the true owner or next action.` } : null,
+    lowestPriorityItems.length > highestRoiItems.length ? { title: "Future work crowding the near-term plan", severity: "medium" as const, reasoning: "Future or R&D items may distract from catalog and workflow validation work." } : null,
+  ].filter(Boolean) as Array<{ title: string; severity: "low" | "medium" | "high"; reasoning: string }>;
 
   return {
+    executiveSummary: catalogItems.length > 0
+      ? "Product Catalog Completion is the most important operational readiness theme. Without catalog data and import/setup validation, quote creation, order creation, pricing, routing, production workflow, customer portal workflow, and invoicing cannot be fully validated."
+      : "The backlog needs clearer Product Catalog Completion work. Titan Graphics operational readiness depends on catalog data, product import/setup, pricing, routing, and end-to-end workflow validation.",
+    recommendedGoLiveFocus: [
+      "Product Catalog Completion",
+      "Product Import Automation",
+      "Workflow Validation",
+      "Production Validation",
+      "Customer Portal Validation",
+    ],
+    goLiveBlockers,
+    topNextActions,
+    quickWins: quickWins.map((item) => narrativeFromItem(item, "Small or high-value work that can improve operational readiness quickly.", item.priority)),
+    futureCandidates: futureItems.map((item) => narrativeFromItem(item, "Can likely wait until Titan Graphics is operational because it is future, SaaS/R&D, low-priority, or high-complexity work.", item.priority)),
+    highestRoiFeatures,
+    lowestPriorityFeatures,
+    suggestedEpics,
+    missingWork,
+    riskAreas,
+    readinessAssessment: {
+      readinessScore,
+      criticalBlockers: goLiveBlockers.slice(0, 5).map((item) => item.title),
+      highPriorityActions: topNextActions.slice(0, 5).map((item) => item.title),
+      recommendedSequence: [
+        "Complete Product Catalog MVP and load representative Titan Graphics products.",
+        "Validate quote creation and pricing accuracy from catalog data.",
+        "Validate order creation, routing, and production workflow.",
+        "Validate customer portal workflow.",
+        "Validate invoicing, payment, and archive path.",
+      ],
+      recommendedNextStep: catalogItems.length > 0
+        ? "Create the Product Catalog Completion epic and assign all catalog, import, pricing, and routing items to it."
+        : "Add a Product Catalog Completion epic and the first product import/setup work items.",
+    },
     counts,
     healthScore,
     issues,

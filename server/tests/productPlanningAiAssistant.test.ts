@@ -128,6 +128,56 @@ describe("ProductPlanningAiAssistant", () => {
     expect(result.source).toBe("rule_based_fallback");
     expect(result.fallbackReason).toContain("Live AI unavailable");
     expect(result.data.healthScore).toEqual(expect.any(Number));
+    expect(result.data.readinessAssessment?.recommendedNextStep).toContain("Product Catalog");
+  });
+
+  test("live backlog analysis returns operational readiness sections", async () => {
+    const repo = usageRepo();
+    const assistant = new ProductPlanningAiAssistant(provider(JSON.stringify({
+      executiveSummary: "Product Catalog Completion blocks Titan Graphics operational go-live.",
+      recommendedGoLiveFocus: ["Product Catalog Completion", "Product Import Automation", "Workflow Validation"],
+      goLiveBlockers: [{ title: "Product Catalog Completion", reasoning: "Catalog data gates quote and order validation.", relatedItemReferences: ["PP-0001"] }],
+      topNextActions: [{ title: "Create Product Catalog Completion Epic", reasoning: "This is the known go-live bottleneck.", priority: "critical" }],
+      quickWins: [{ title: "Load first 25 products", reasoning: "Enables representative quote validation." }],
+      futureItems: [{ title: "Mobile visual search", reasoning: "Does not unblock Titan Graphics operational readiness." }],
+      highestRoiFeatures: [{ title: "PP-0001: Product Catalog Completion", reasoning: "Unlocks the Quote to Payment validation path.", priority: "critical", relatedItemReferences: ["PP-0001"] }],
+      lowestPriorityFeatures: [{ title: "SaaS onboarding polish", reasoning: "Future SaaS work can wait until Titan Graphics is live.", priority: "low" }],
+      suggestedEpics: [{
+        name: "Product Catalog Completion",
+        description: "Complete catalog data and import mechanics.",
+        confidence: 0.94,
+        businessValue: "very_high",
+        recommendedPhase: "go_live",
+        relatedItemReferences: ["PP-0001"],
+        relatedItems: [{ reference: "PP-0001", title: "Product Catalog Completion", priority: "critical", phase: "go_live", module: "Catalog", reasonIncluded: "Known go-live bottleneck." }],
+        reasoning: "Catalog items belong together because they gate operational validation.",
+      }],
+      missingWork: [{ title: "Operational Readiness release", reasoning: "Needed to sequence go-live work.", priority: "high" }],
+      riskAreas: [{ title: "Catalog data incomplete", severity: "high", reasoning: "Pricing and routing cannot be validated." }],
+      readinessAssessment: {
+        readinessScore: 43,
+        criticalBlockers: ["Product Catalog Completion"],
+        highPriorityActions: ["Load first 25 products"],
+        recommendedSequence: ["Complete catalog MVP", "Validate quote creation"],
+        recommendedNextStep: "Build Product Import MVP and load first 25 products.",
+      },
+      healthFindings: [{ label: "Missing modules", count: 1, severity: "high", recommendation: "Assign catalog module." }],
+    })), repo as any, liveResolver as any);
+
+    const result = await assistant.analyzeBacklog("org_1", [item]);
+
+    expect(result.source).toBe("live_ai");
+    expect(result.data.executiveSummary).toContain("Product Catalog Completion");
+    expect(result.data.goLiveBlockers?.[0].title).toBe("Product Catalog Completion");
+    expect(result.data.topNextActions?.[0].title).toBe("Create Product Catalog Completion Epic");
+    expect(result.data.futureCandidates?.[0].title).toBe("Mobile visual search");
+    expect(result.data.highestRoiFeatures?.[0].title).toContain("PP-0001");
+    expect(result.data.suggestedEpics?.[0].relatedItems?.[0]).toEqual(expect.objectContaining({
+      reference: "PP-0001",
+      reasonIncluded: "Known go-live bottleneck.",
+    }));
+    expect(result.data.readinessAssessment?.readinessScore).toBe(43);
+    expect(repo.recordUsage).toHaveBeenCalled();
   });
 
   test("provider unavailable returns deterministic fallback with indicator", async () => {
