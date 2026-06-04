@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { Brain, Bug, Download, ExternalLink, FileText, RefreshCw, Send } from "lucide-react";
+import { Brain, Bug, ClipboardList, Download, ExternalLink, FileText, RefreshCw, Send } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +20,7 @@ import {
 } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { ROUTES } from "@/config/routes";
 import { AiReviewPanel } from "@/components/bug-report/AiReviewPanel";
 import { getAiReviewPollingInterval } from "@/components/bug-report/aiReviewPolling";
 import type { CurrentBugAiReviewResponse } from "@shared/aiReviewContracts";
@@ -36,6 +38,8 @@ export interface BugReportListItem {
   createdAt: string;
   createdByEmail: string;
   url: string;
+  productPlanningWorkItemId?: string | null;
+  productPlanningReference?: string | null;
 }
 
 interface BugReportDetail extends BugReportListItem {
@@ -328,6 +332,17 @@ async function patchBugReportStatus(id: string, status: string): Promise<{ id: s
   }
   const body = await res.json();
   return (body.data ?? {}) as { id: string; status: string };
+}
+
+async function pushBugReportToProductPlanning(id: string): Promise<{ id: string; reference: string }> {
+  const res = await fetch(`/api/bug-reports/${id}/push-to-product-planning`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { message?: string }).message ?? "Failed to push bug report to Product Planning");
+  return (body as { data: { id: string; reference: string } }).data;
 }
 
 async function fetchNotes(bugReportId: string): Promise<BugReportNote[]> {
@@ -712,6 +727,34 @@ export default function BugReportsPage() {
     },
   });
 
+  const pushToPlanningMutation = useMutation({
+    mutationFn: (id: string) => pushBugReportToProductPlanning(id),
+    onSuccess: (result, bugReportId) => {
+      queryClient.setQueryData<BugReportDetail>(
+        ["/api/bug-reports/detail", selectedId],
+        (old) => old && old.id === bugReportId ? {
+          ...old,
+          productPlanningWorkItemId: result.id,
+          productPlanningReference: result.reference,
+        } : old,
+      );
+      queryClient.setQueryData<BugReportListItem[]>(
+        ["/api/bug-reports", statusFilter, severityFilter, typeFilter, searchFilter],
+        (old) => old?.map((r) => r.id === bugReportId ? {
+          ...r,
+          productPlanningWorkItemId: result.id,
+          productPlanningReference: result.reference,
+        } : r),
+      );
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/work-items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
+      toast({ title: "Pushed to Product Planning", description: result.reference });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Push failed", description: err.message, variant: "destructive" });
+    },
+  });
+
   const noteMutation = useMutation({
     mutationFn: (note: string) => postNote(selectedId!, note),
     onSuccess: () => {
@@ -838,20 +881,21 @@ export default function BugReportsPage() {
                 <SortableTableHead label="Title" sortKey="title" sortState={tableSort} onSort={handleTableSort} className="w-full" />
                 <SortableTableHead label="Submitted by" sortKey="createdByEmail" sortState={tableSort} onSort={handleTableSort} />
                 <SortableTableHead label="Status" sortKey="status" sortState={tableSort} onSort={handleTableSort} />
+                <TableHead>Planning</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <TableRow key={i}>
-                    {Array.from({ length: 7 }).map((__, j) => (
+                    {Array.from({ length: 8 }).map((__, j) => (
                       <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
                     ))}
                   </TableRow>
                 ))
               ) : sortedReports.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
                     No feedback items found matching current filters.
                   </TableCell>
                 </TableRow>
@@ -888,6 +932,27 @@ export default function BugReportsPage() {
                       <Badge variant={STATUS_VARIANT[r.status] ?? "outline"} className="capitalize text-xs">
                         {r.status.replace("_", " ")}
                       </Badge>
+                    </TableCell>
+                    <TableCell onClick={(event) => event.stopPropagation()}>
+                      {r.productPlanningWorkItemId ? (
+                        <Link to={ROUTES.productPlanning.backlog}>
+                          <Badge variant="secondary" className="gap-1 text-xs">
+                            <ClipboardList className="h-3 w-3" />
+                            {r.productPlanningReference ?? "In Product Planning"}
+                          </Badge>
+                        </Link>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 gap-1 text-xs"
+                          onClick={() => pushToPlanningMutation.mutate(r.id)}
+                          disabled={pushToPlanningMutation.isPending}
+                        >
+                          <ClipboardList className="h-3 w-3" />
+                          Push
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))
@@ -947,6 +1012,28 @@ export default function BugReportsPage() {
                 {/* Meta */}
                 <DetailSection label="Reference">
                   <p className="font-mono text-sm font-semibold">{detail.referenceNumber}</p>
+                </DetailSection>
+
+                <DetailSection label="Product Planning">
+                  {detail.productPlanningWorkItemId ? (
+                    <Link to={ROUTES.productPlanning.backlog} className="inline-flex">
+                      <Badge variant="secondary" className="gap-1">
+                        <ClipboardList className="h-3 w-3" />
+                        In Product Planning {detail.productPlanningReference ? `(${detail.productPlanningReference})` : ""}
+                      </Badge>
+                    </Link>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-2"
+                      onClick={() => pushToPlanningMutation.mutate(detail.id)}
+                      disabled={pushToPlanningMutation.isPending}
+                    >
+                      <ClipboardList className="h-4 w-4" />
+                      {pushToPlanningMutation.isPending ? "Pushing..." : "Push to Product Planning"}
+                    </Button>
+                  )}
                 </DetailSection>
 
                 {/* Meta */}

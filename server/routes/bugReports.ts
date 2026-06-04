@@ -21,7 +21,7 @@ import { promises as fs } from "fs";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { db } from "../db";
-import { bugReports, bugReportNotes, auditLogs, organizations, type BugReportScreenshotAttachment } from "@shared/schema";
+import { bugReports, bugReportNotes, auditLogs, organizations, productPlanningWorkItems, type BugReportScreenshotAttachment } from "@shared/schema";
 import { eq, and, desc, asc, or, sql } from "drizzle-orm";
 import { getRequestOrganizationId } from "../tenantContext";
 import { isSupabaseConfigured } from "../supabaseStorage";
@@ -596,6 +596,22 @@ export function registerBugReportRoutes(
           createdAt:        bugReports.createdAt,
           createdByEmail:   bugReports.createdByEmail,
           url:              bugReports.url,
+          productPlanningWorkItemId: sql<string | null>`(
+            SELECT ppwi.id
+            FROM ${productPlanningWorkItems} ppwi
+            WHERE ppwi.organization_id = ${orgId}
+              AND ppwi.source_bug_report_id = ${bugReports.id}
+            ORDER BY ppwi.created_at DESC
+            LIMIT 1
+          )`,
+          productPlanningReference: sql<string | null>`(
+            SELECT ppwi.reference
+            FROM ${productPlanningWorkItems} ppwi
+            WHERE ppwi.organization_id = ${orgId}
+              AND ppwi.source_bug_report_id = ${bugReports.id}
+            ORDER BY ppwi.created_at DESC
+            LIMIT 1
+          )`,
         })
         .from(bugReports)
         .where(and(...conditions))
@@ -620,7 +636,43 @@ export function registerBugReportRoutes(
 
     try {
       const [row] = await db
-        .select()
+        .select({
+          id: bugReports.id,
+          orgId: bugReports.orgId,
+          referenceNumber: bugReports.referenceNumber,
+          createdByUserId: bugReports.createdByUserId,
+          createdByEmail: bugReports.createdByEmail,
+          type: bugReports.type,
+          title: bugReports.title,
+          description: bugReports.description,
+          severity: bugReports.severity,
+          url: bugReports.url,
+          userAgent: bugReports.userAgent,
+          screenWidth: bugReports.screenWidth,
+          screenHeight: bugReports.screenHeight,
+          screenshotUrl: bugReports.screenshotUrl,
+          screenshotUrls: bugReports.screenshotUrls,
+          screenshotAttachments: bugReports.screenshotAttachments,
+          status: bugReports.status,
+          metadata: bugReports.metadata,
+          createdAt: bugReports.createdAt,
+          productPlanningWorkItemId: sql<string | null>`(
+            SELECT ppwi.id
+            FROM ${productPlanningWorkItems} ppwi
+            WHERE ppwi.organization_id = ${orgId}
+              AND ppwi.source_bug_report_id = ${bugReports.id}
+            ORDER BY ppwi.created_at DESC
+            LIMIT 1
+          )`,
+          productPlanningReference: sql<string | null>`(
+            SELECT ppwi.reference
+            FROM ${productPlanningWorkItems} ppwi
+            WHERE ppwi.organization_id = ${orgId}
+              AND ppwi.source_bug_report_id = ${bugReports.id}
+            ORDER BY ppwi.created_at DESC
+            LIMIT 1
+          )`,
+        })
         .from(bugReports)
         .where(and(eq(bugReports.orgId, orgId), eq(bugReports.id, id)))
         .limit(1);

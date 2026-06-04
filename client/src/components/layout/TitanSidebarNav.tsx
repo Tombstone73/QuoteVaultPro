@@ -39,6 +39,7 @@ import { Badge } from "@/components/ui/badge";
 import { ROUTES } from "@/config/routes";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import { SHIELD_LOGO_SRC } from "@/lib/branding";
+import { canUseProductPlanning } from "@/lib/productPlanningAccess";
 
 // ============================================================
 // NAV CONFIG - AUTHORITATIVE TITANOS NAVIGATION
@@ -53,6 +54,7 @@ export type NavItemConfig = {
   badge?: boolean; // If true, show operational badge from summary
   badgeQuery?: string; // Legacy single-item query key (kept for approvals)
   platformAdminOnly?: boolean; // Only shown to platform admins (isPlatformAdmin=true)
+  developerOrAdminOnly?: boolean; // Only shown to platform developers/admins or org admins/owners
   conditional?: {
     requireApproval?: boolean; // Only show if org preference requireApproval=true
     approverOnly?: boolean; // Only show for internal users
@@ -142,6 +144,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
       { id: "settings", name: "Settings", icon: Settings, path: ROUTES.settings.root, roles: ["admin", "owner"] },
       { id: "users", name: "Users", icon: UserCog, path: ROUTES.users.list, roles: ["admin", "owner"] },
       { id: "bug-reports", name: "Bug Reports", icon: Bug, path: ROUTES.admin.bugReports, roles: ["admin", "owner"] },
+      { id: "product-planning", name: "Product Planning", icon: ClipboardList, path: ROUTES.productPlanning.dashboard, developerOrAdminOnly: true },
     ],
   },
   {
@@ -154,14 +157,16 @@ export const NAV_CONFIG: NavSectionConfig[] = [
 ];
 
 // Filter nav items by user role and conditional visibility
-function filterNavByRole(
+export function filterNavByRole(
   sections: NavSectionConfig[],
   role?: string | null,
   orgPreferences?: { quotes?: { requireApproval?: boolean } },
-  isPlatformAdmin?: boolean
+  isPlatformAdmin?: boolean,
+  isPlatformDeveloper?: boolean,
 ): NavSectionConfig[] {
   const userRole = (role || "").toLowerCase();
   const isOwner = userRole === "owner";
+  const isAdmin = userRole === "admin";
   const isApprover = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
   const requireApproval = orgPreferences?.quotes?.requireApproval || false;
 
@@ -171,6 +176,7 @@ function filterNavByRole(
       items: section.items.filter((item) => {
         // Platform-admin-only items
         if (item.platformAdminOnly && !isPlatformAdmin) return false;
+        if (item.developerOrAdminOnly && !canUseProductPlanning({ role: userRole, isPlatformAdmin, isPlatformDeveloper })) return false;
 
         // Check role-based visibility
         if (!item.roles) {
@@ -413,7 +419,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
   const location = useLocation();
   const { guardedNavigate } = useNavigationGuard();
   const role = user?.role ?? null;
-  const filteredSections = filterNavByRole(NAV_CONFIG, role, preferences, user?.isPlatformAdmin ?? false);
+  const filteredSections = filterNavByRole(NAV_CONFIG, role, preferences, user?.isPlatformAdmin ?? false, user?.isPlatformDeveloper ?? false);
 
   const roleLower = String(role || '').toLowerCase();
   const isApprover = ['owner', 'admin', 'manager', 'employee'].includes(roleLower);
