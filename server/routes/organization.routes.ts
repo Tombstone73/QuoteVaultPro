@@ -194,6 +194,7 @@ export function registerOrganizationRoutes(
         basic: {
           ...rawBasic,
           attachQuotePdfByDefault: rawBasic.attachQuotePdfByDefault !== false,
+          attachOrderPdfByDefault: rawBasic.attachOrderPdfByDefault !== false,
         },
         quotes: quotePreferences,
         proofing,

@@ -424,6 +424,63 @@ class EmailService {
   }
 
   /**
+   * Send order confirmation/work order email to recipient
+   */
+  async sendOrderEmail(
+    organizationId: string,
+    orderId: string,
+    recipientEmail: string,
+    options: { attachments?: Array<{ filename: string; content: Buffer; contentType: string }> } = {},
+  ): Promise<void> {
+    console.log('[EmailService] [STAGE: load-config] Loading config for order email:', {
+      organizationId,
+      orderId,
+      recipientEmail,
+    });
+
+    const config = await this.getEmailConfig(organizationId);
+    if (!config) {
+      throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
+    }
+
+    if (config.provider !== 'gmail' || !config.refreshToken) {
+      throw new Error('Gmail is not connected. Please connect your Gmail account in Settings → Email.');
+    }
+    if (!config.clientId || !config.clientSecret) {
+      throw new Error('Gmail OAuth app is not configured. Please contact your platform administrator.');
+    }
+
+    const order = await storage.getOrderById(organizationId, orderId);
+    if (!order) {
+      throw new Error("Order not found");
+    }
+
+    const templates = await this.getEmailTemplates(organizationId);
+    const orderDisplayNumber = (order as any).displayNumber || (order as any).orderNumber;
+    const variables = {
+      orderNumber: orderDisplayNumber,
+      quoteNumber: orderDisplayNumber,
+      companyName: config.fromName,
+      customerName: (order as any).customer?.companyName || (order as any).customer?.name || (order as any).billToName || 'Customer',
+    };
+
+    const subjectTemplate = (templates as any).orderEmailSubject || 'Order #{orderNumber} from {companyName}';
+    const bodyTemplate = (templates as any).orderEmailBody || 'Hello,\n\nPlease find your order confirmation for #{orderNumber} below.\n\nThank you for your business!';
+    const subject = this.replaceTemplateVariables(subjectTemplate, variables);
+    const bodyText = this.replaceTemplateVariables(bodyTemplate, variables);
+    const bodyHtml = bodyText.split('\n').map(line => line || '<br>').join('<br>');
+    const htmlContent = this.generateOrderEmailHTML(order, bodyHtml);
+
+    await this.sendOrMarkRevoked(organizationId, config, {
+      to: recipientEmail,
+      subject,
+      html: htmlContent,
+      replyTo: templates.replyToEmail,
+      attachments: options.attachments,
+    });
+  }
+
+  /**
    * Send generic email with custom content
    */
   async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string; replyTo?: string; attachments?: any[] }): Promise<string> {
@@ -634,6 +691,86 @@ class EmailService {
         <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #dee2e6; color: #666; font-size: 14px;">
           <p>Thank you for your business!</p>
           <p style="margin: 0;">If you have any questions about this quote, please don't hesitate to contact us.</p>
+        </div>
+      </body>
+      </html>
+    `;
+  }
+
+  private generateOrderEmailHTML(order: any, customBodyHtml?: string): string {
+    const lineItemsHTML = (order.lineItems || [])
+      .map((item: any) => {
+        const variantInfo = item.productVariant?.name ? ` - ${this.escapeHtml(item.productVariant.name)}` : "";
+        const description = item.description && typeof item.description === 'string' && item.description.trim()
+          ? item.description.trim()
+          : null;
+        const descriptionHTML = description
+          ? `<br><span style="color: #666; font-size: 13px; font-style: italic;">${this.escapeHtml(description)}</span>`
+          : "";
+        const total = Number.parseFloat(String(item.totalPrice || "0"));
+        return `
+          <tr>
+            <td style="padding: 12px; border-bottom: 1px solid #eee;">
+              <strong>${this.escapeHtml(item.product?.name || item.description || "Line item")}${variantInfo}</strong><br>
+              <span style="color: #666; font-size: 14px;">
+                ${item.width || "—"}" × ${item.height || "—"}" × ${item.quantity || 0} qty
+              </span>${descriptionHTML}
+            </td>
+            <td style="padding: 12px; border-bottom: 1px solid #eee; text-align: right;">
+              $${Number.isFinite(total) ? total.toFixed(2) : "0.00"}
+            </td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    const subtotal = Number.parseFloat(String(order.subtotal || "0"));
+    const tax = Number.parseFloat(String(order.taxAmount ?? order.tax ?? "0"));
+    const shipping = Number(order.shippingCents || 0) / 100;
+    const total = Number.parseFloat(String(order.total || "0"));
+    const orderDisplayNumber = order.displayNumber || order.orderNumber;
+    const customerName = order.customer?.companyName || order.customer?.name || order.billToName || "Customer";
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Order ${this.escapeHtml(orderDisplayNumber)}</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px;">
+        ${customBodyHtml ? `
+        <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+          ${customBodyHtml}
+        </div>
+        ` : ''}
+
+        <div style="background-color: #f8f9fa; padding: 30px; border-radius: 8px; margin-bottom: 30px;">
+          <h1 style="margin: 0 0 10px 0; color: #2563eb;">Order ${this.escapeHtml(orderDisplayNumber)}</h1>
+          <p style="margin: 0; color: #666;">
+            Date: ${new Date(order.createdAt).toLocaleDateString()}<br>
+            Customer: ${this.escapeHtml(customerName)}
+          </p>
+        </div>
+
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 30px;">
+          <thead>
+            <tr style="background-color: #f8f9fa;">
+              <th style="padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6;">Item</th>
+              <th style="padding: 12px; text-align: right; border-bottom: 2px solid #dee2e6;">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${lineItemsHTML}
+          </tbody>
+        </table>
+
+        <div style="text-align: right; margin-bottom: 30px;">
+          <p style="margin: 5px 0;">Subtotal: $${Number.isFinite(subtotal) ? subtotal.toFixed(2) : "0.00"}</p>
+          ${shipping > 0 ? `<p style="margin: 5px 0;">Shipping: $${shipping.toFixed(2)}</p>` : ""}
+          <p style="margin: 5px 0;">Tax: $${Number.isFinite(tax) ? tax.toFixed(2) : "0.00"}</p>
+          <p style="margin: 10px 0; font-size: 18px; font-weight: bold;">Total: $${Number.isFinite(total) ? total.toFixed(2) : "0.00"}</p>
         </div>
       </body>
       </html>

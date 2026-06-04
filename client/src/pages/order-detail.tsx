@@ -28,7 +28,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { AlertTriangle, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown } from "lucide-react";
+import { AlertTriangle, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown, Download, Printer } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
@@ -84,6 +84,14 @@ import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus } from "@shared/orderProofStatus";
 import { isCanceledOrder } from "@shared/operationalState";
 import { ROUTES } from "@/config/routes";
+import { downloadAuthenticatedPdf, openAuthenticatedPdfForPrint, openAuthenticatedPdfPreview } from "@/lib/authenticatedPdfPreview";
+import { apiFetch } from "@/lib/queryClient";
+import { OrderRecipientFallbackDialog } from "@/features/orders/components/OrderRecipientFallbackDialog";
+import {
+  resolveAttachOrderPdfDefault,
+  resolveSelectedOrderContactEmail,
+  type OrderRecipientContactLike,
+} from "@/features/orders/orderRecipientFallback";
 import {
   orderCancellationReasonLabels,
   orderCancellationReasonValues,
@@ -245,6 +253,8 @@ export default function OrderDetail() {
   const [showPackingSlipModal, setShowPackingSlipModal] = useState(false);
   const [packingSlipHtml, setPackingSlipHtml] = useState<string | null>(null);
   const [shipmentToDelete, setShipmentToDelete] = useState<string | null>(null);
+  const [showOrderEmailDialog, setShowOrderEmailDialog] = useState(false);
+  const [isOrderPdfBusy, setIsOrderPdfBusy] = useState<"preview" | "download" | "print" | null>(null);
   
   // Status transition confirmation state
   const [pendingStatusTransition, setPendingStatusTransition] = useState<{ toStatus: string; requiresReason: boolean } | null>(null);
@@ -682,6 +692,27 @@ export default function OrderDetail() {
     order.status !== "completed" &&
     order.canonicalState !== "completed",
   );
+  const orderPdfEligibleLineItems = useMemo(() => {
+    return (order?.lineItems ?? []).filter((lineItem: any) => {
+      const status = String(lineItem?.status || "").toLowerCase();
+      return (
+        lineItem?.id &&
+        lineItem?.productId &&
+        Number(lineItem?.quantity ?? 0) > 0 &&
+        Number.isFinite(Number(lineItem?.totalPrice ?? 0)) &&
+        status !== "draft" &&
+        status !== "canceled"
+      );
+    });
+  }, [order?.lineItems]);
+  const canUseOrderPdf = Boolean(order?.id && orderPdfEligibleLineItems.length > 0 && !hasDirtyLineItem);
+  const orderPdfUnavailableReason = !order?.id
+    ? "Save the order before generating an order PDF."
+    : hasDirtyLineItem
+      ? "Save the open line item before generating an order PDF."
+      : orderPdfEligibleLineItems.length === 0
+        ? "Add at least one valid saved line item before generating an order PDF."
+        : null;
   // Single canonical dirty value: staged order-level edits OR an unsaved line
   // item. This same value drives the Save Order button.
   const hasStagedOrderChanges = hasAnyStagedChanges(pendingOrderPatch);
@@ -925,6 +956,40 @@ export default function OrderDetail() {
       return customer.contacts || [];
     },
     enabled: !!order?.customerId,
+  });
+
+  const sendOrderEmailMutation = useMutation({
+    mutationFn: async (payload: {
+      recipientEmail: string;
+      recipientName?: string;
+      saveToCustomerContact: boolean;
+      contactId: string | null;
+      attachPdf: boolean;
+    }) => {
+      if (!orderId) throw new Error("Save the order before sending email.");
+      const response = await apiFetch(`/api/orders/${encodeURIComponent(orderId)}/email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(result.message || result.error || "Failed to send order email.");
+      }
+      return result as { success: boolean; message?: string };
+    },
+    onSuccess: async (result) => {
+      setShowOrderEmailDialog(false);
+      await queryClient.invalidateQueries({ queryKey: ["/api/customers", order?.customerId, "contacts"] });
+      toast({
+        title: "Order email sent",
+        description: result.message || "The order email was sent successfully.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Order email failed", description: error.message, variant: "destructive" });
+    },
   });
 
   const { data: shipToAutofillCustomers = [], isLoading: isShipToAutofillCustomersLoading } = useQuery<CustomerWithContacts[]>({
@@ -1549,6 +1614,60 @@ export default function OrderDetail() {
         variant: "destructive" 
       });
     }
+  };
+
+  const getOrderPdfUrl = (disposition?: "preview" | "download" | "print") => {
+    const base = `/api/orders/${encodeURIComponent(orderId || "")}/pdf`;
+    return disposition ? `${base}?disposition=${encodeURIComponent(disposition)}` : base;
+  };
+
+  const getOrderPdfFilename = () => {
+    const display = String((order as any)?.displayNumber || order?.orderNumber || orderId || "order").replace(/[^a-z0-9._-]+/gi, "-");
+    return `Order_${display}.pdf`;
+  };
+
+  const handleOrderPdfAction = async (action: "preview" | "download" | "print") => {
+    if (!canUseOrderPdf) {
+      toast({
+        title: "Order PDF unavailable",
+        description: orderPdfUnavailableReason || "This order is not ready for PDF generation.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsOrderPdfBusy(action);
+    try {
+      if (action === "download") {
+        await downloadAuthenticatedPdf(getOrderPdfUrl("download"), getOrderPdfFilename());
+        return;
+      }
+      if (action === "print") {
+        await openAuthenticatedPdfForPrint(getOrderPdfUrl("print"));
+        return;
+      }
+      await openAuthenticatedPdfPreview(getOrderPdfUrl("preview"));
+    } catch (error: any) {
+      toast({
+        title: action === "download" ? "Download failed" : action === "print" ? "Print preview failed" : "Preview failed",
+        description: error?.message || "Could not open the order PDF.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsOrderPdfBusy(null);
+    }
+  };
+
+  const handleOpenOrderEmailDialog = () => {
+    if (!canUseOrderPdf) {
+      toast({
+        title: "Order email unavailable",
+        description: orderPdfUnavailableReason || "This order is not ready to email.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setShowOrderEmailDialog(true);
   };
 
   const handleFulfillmentStatusChange = async (newStatus: "pending" | "packed" | "shipped" | "delivered") => {
@@ -2915,6 +3034,54 @@ export default function OrderDetail() {
                         </div>
                       )}
 
+                      {/* Customer-facing order document actions */}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-sm font-medium">Order PDF</span>
+                          {orderPdfUnavailableReason ? (
+                            <span className="text-xs text-muted-foreground text-right">{orderPdfUnavailableReason}</span>
+                          ) : null}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void handleOrderPdfAction("preview")}
+                            disabled={!canUseOrderPdf || isOrderPdfBusy !== null}
+                          >
+                            <FileText className="h-4 w-4 mr-2" />
+                            {isOrderPdfBusy === "preview" ? "Opening..." : "Preview Order"}
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void handleOrderPdfAction("download")}
+                            disabled={!canUseOrderPdf || isOrderPdfBusy !== null}
+                          >
+                            <Download className="h-4 w-4 mr-2" />
+                            {isOrderPdfBusy === "download" ? "Downloading..." : "Download PDF"}
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleOpenOrderEmailDialog}
+                            disabled={!canUseOrderPdf || sendOrderEmailMutation.isPending}
+                          >
+                            <Mail className="h-4 w-4 mr-2" />
+                            {sendOrderEmailMutation.isPending ? "Sending..." : "Email Order"}
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void handleOrderPdfAction("print")}
+                            disabled={!canUseOrderPdf || isOrderPdfBusy !== null}
+                          >
+                            <Printer className="h-4 w-4 mr-2" />
+                            {isOrderPdfBusy === "print" ? "Opening..." : "Print Order"}
+                          </Button>
+                        </div>
+                      </div>
+
                       {/* Packing Slip */}
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-medium">Packing Slip</span>
@@ -3714,6 +3881,21 @@ export default function OrderDetail() {
           packingSlipHtml={packingSlipHtml}
         />
       )}
+
+      <OrderRecipientFallbackDialog
+        open={showOrderEmailDialog}
+        onOpenChange={setShowOrderEmailDialog}
+        contacts={customerContacts as OrderRecipientContactLike[]}
+        selectedContactId={order.contact?.id ?? null}
+        initialRecipientEmail={
+          resolveSelectedOrderContactEmail(customerContacts as OrderRecipientContactLike[], order.contact?.id ?? null)
+          || email
+        }
+        initialRecipientName={contactNameFromContact}
+        attachPdfDefault={resolveAttachOrderPdfDefault(preferences)}
+        isSending={sendOrderEmailMutation.isPending}
+        onSubmit={(payload) => sendOrderEmailMutation.mutate(payload)}
+      />
 
       {/* Delete Shipment Confirmation Dialog */}
       <AlertDialog open={!!shipmentToDelete} onOpenChange={() => setShipmentToDelete(null)}>

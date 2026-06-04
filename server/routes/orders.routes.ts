@@ -134,6 +134,7 @@ import {
 import { generatePackingSlipHtmlForOrder } from "../services/packingSlipService";
 import { getFileUploadNamingPolicy } from "../prepressFileService";
 import { withOrderOriginalArtworkDisplayFilename } from "../services/originalArtworkFiles";
+import { generateOrderPdfBytes, orderPdfFilename, OrderPdfEligibilityError } from "../lib/orderPdf";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -1528,6 +1529,49 @@ export async function registerOrderRoutes(
         } catch (error) {
             console.error("Error fetching order:", error);
             res.status(500).json({ message: "Failed to fetch order" });
+        }
+    });
+
+    app.get("/api/orders/:id/pdf", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            if (!assertInternalStaffUser(req, res)) return;
+
+            const order = await storage.getOrderById(organizationId, req.params.id);
+            if (!order) {
+                return res.status(404).json({ message: "Order not found" });
+            }
+
+            const [organization] = await db
+                .select()
+                .from(organizations)
+                .where(eq(organizations.id, organizationId))
+                .limit(1);
+
+            const pdfBytes = await generateOrderPdfBytes({ order: order as any, organization });
+            await db.insert(auditLogs).values({
+                organizationId,
+                userId: getUserId(req.user) ?? null,
+                userName: req.user?.email || req.user?.username || req.user?.name || null,
+                actionType: req.query?.disposition === "download" ? "order_pdf_downloaded" : "order_pdf_previewed",
+                entityType: "order",
+                entityId: order.id,
+                entityName: (order as any).displayNumber || order.orderNumber,
+                description: req.query?.disposition === "download"
+                    ? `Downloaded order PDF for ${(order as any).displayNumber || order.orderNumber}.`
+                    : `Previewed order PDF for ${(order as any).displayNumber || order.orderNumber}.`,
+            });
+
+            res.setHeader("Content-Type", "application/pdf");
+            res.setHeader("Content-Disposition", `inline; filename="${orderPdfFilename(order)}"`);
+            return res.status(200).send(Buffer.from(pdfBytes));
+        } catch (error) {
+            if (error instanceof OrderPdfEligibilityError) {
+                return res.status(error.statusCode).json({ message: error.message });
+            }
+            console.error("Error generating order PDF:", error);
+            return res.status(500).json({ message: "Failed to generate order PDF" });
         }
     });
 
