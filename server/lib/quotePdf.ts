@@ -280,7 +280,6 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
   const companyTextX = MARGIN + (logo.width > 0 ? logo.width + 14 : 0);
   drawRight(page, `Quote ${quoteNumber}`, PAGE_WIDTH - MARGIN, y, bold, 18);
 
-  let companyY = y - 2;
   const companyLines = [
     companyBranding.companyDisplayName || null,
     companyBranding.showLegalCompanyName ? companyBranding.legalCompanyName : null,
@@ -288,15 +287,23 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
     joinNonEmptyDocumentValues([companyBranding.phone || null, companyBranding.email || null], " | ") || null,
     companyBranding.website || null,
   ].filter((value): value is string => hasText(value));
+  const companyLineHeight = 10;
+  const wrappedCompanyLines: Array<{ text: string; bold: boolean }> = [];
   for (let lineIndex = 0; lineIndex < companyLines.slice(0, 5).length; lineIndex += 1) {
     const line = companyLines[lineIndex];
     for (const wrapped of wrapText(line, 245, regular, 8).slice(0, 2)) {
-      drawText(page, wrapped, companyTextX, companyY, lineIndex === 0 ? bold : regular, 8, rgb(0.35, 0.4, 0.48));
-      companyY -= 10;
+      wrappedCompanyLines.push({ text: wrapped, bold: lineIndex === 0 });
     }
   }
+  const companyTextHeight = Math.max(companyLineHeight, wrappedCompanyLines.length * companyLineHeight);
+  const companyBlockHeight = Math.max(logo.height, companyTextHeight);
+  let companyY = y - Math.max(0, (companyBlockHeight - companyTextHeight) / 2);
+  for (const line of wrappedCompanyLines) {
+    drawText(page, line.text, companyTextX, companyY, line.bold ? bold : regular, 8, rgb(0.35, 0.4, 0.48));
+    companyY -= companyLineHeight;
+  }
 
-  y = Math.min(y - 28, companyY - 12);
+  y = Math.min(y - companyBlockHeight - 16, companyY - 12);
   drawText(page, `Status: ${String(input.quote.status || "draft")}`, MARGIN, y, regular, 10);
   const validUntil = formatDate(input.quote.validUntil);
   if (validUntil) drawRight(page, `Valid until ${validUntil}`, PAGE_WIDTH - MARGIN, y, regular, 10);

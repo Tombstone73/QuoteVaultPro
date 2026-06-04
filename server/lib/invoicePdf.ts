@@ -436,7 +436,7 @@ export async function generateInvoicePdfBytes(
     });
   };
 
-  const drawTitanLogo = (x: number, topY: number) => {
+  const drawTitanLogo = (x: number, topY: number): { width: number; height: number } => {
     const markSize = theme.header.titanMarkSize;
     const markY = topY - markSize;
 
@@ -454,9 +454,12 @@ export async function generateInvoicePdfBytes(
       size: theme.header.titanWordmarkFontSize,
       bold: true,
     });
+
+    const wordmarkWidth = fontBold.widthOfTextAtSize('TITAN', theme.header.titanWordmarkFontSize);
+    return { width: markSize + theme.header.titanWordmarkGap + wordmarkWidth, height: markSize };
   };
 
-  const drawHeaderLogo = async (x: number, topY: number) => {
+  const drawHeaderLogo = async (x: number, topY: number): Promise<{ width: number; height: number }> => {
     const mode = theme.header.logo.mode;
     const dataUrl = await resolveLogoDataUrl();
 
@@ -466,24 +469,23 @@ export async function generateInvoicePdfBytes(
       mode === 'none' ? false :
       !!dataUrl;
 
-    if (mode === 'none') return;
+    if (mode === 'none') return { width: 0, height: 0 };
 
     if (mode === 'titan') {
-      drawTitanLogo(x, topY);
-      return;
+      return drawTitanLogo(x, topY);
     }
 
-    if (!shouldUseImage) return;
-    if (!dataUrl) return;
+    if (!shouldUseImage) return { width: 0, height: 0 };
+    if (!dataUrl) return { width: 0, height: 0 };
     const decoded = tryDecodeDataUrl(dataUrl);
     if (!decoded) {
-      return;
+      return { width: 0, height: 0 };
     }
 
-    const maxW = theme.header.logo.maxWidth;
-    const maxH = theme.header.logo.maxHeight;
+    const maxW = Math.min(theme.header.logo.maxWidth, 88);
+    const maxH = Math.min(theme.header.logo.maxHeight, 44);
 
-    const drawImage = async () => {
+    try {
       const img = decoded.mime === 'png'
         ? await pdfDoc.embedPng(decoded.bytes)
         : await pdfDoc.embedJpg(decoded.bytes);
@@ -497,13 +499,10 @@ export async function generateInvoicePdfBytes(
         width: drawW,
         height: drawH,
       });
-    };
-
-    // Defer actual embed until awaited by header flow.
-    try {
-      await drawImage();
+      return { width: drawW, height: drawH };
     } catch {
       // Logo embedding should never block invoice generation.
+      return { width: 0, height: 0 };
     }
   };
 
@@ -547,7 +546,42 @@ export async function generateInvoicePdfBytes(
   const dueDate = fmtDate(invoice.dueDate);
 
   const headerTopY = y;
-  await drawHeaderLogo(margin, headerTopY);
+  const logo = await drawHeaderLogo(margin, headerTopY + 2);
+  const brandGap = logo.width > 0 ? 14 : 0;
+  const brandTextX = margin + logo.width + brandGap;
+  const brandTextMaxWidth = Math.max(190, width - margin * 2 - logo.width - brandGap - 220);
+  const brandLines = [
+    companyDisplay.companyDisplayName || null,
+    companyDisplay.showLegalCompanyName ? companyDisplay.legalCompanyName : null,
+    companyDisplay.physicalAddress || null,
+    joinNonEmpty([
+      companyDisplay.phone || null,
+      companyDisplay.email || null,
+    ], ' | ') || null,
+    companyDisplay.website || null,
+  ].filter((value): value is string => !!value && String(value).trim().length > 0);
+  const brandFontSize = theme.fontSizes.small;
+  const brandLineHeight = 10;
+  const wrappedBrandLines: Array<{ text: string; bold: boolean }> = [];
+  brandLines.slice(0, 5).forEach((line, lineIndex) => {
+    const usedFont = lineIndex === 0 ? fontBold : font;
+    wrapText({ text: line, maxWidth: brandTextMaxWidth, font: usedFont, fontSize: brandFontSize, maxLines: lineIndex === 0 ? 2 : 3 })
+      .slice(0, lineIndex === 0 ? 2 : 3)
+      .forEach((text) => wrappedBrandLines.push({ text, bold: lineIndex === 0 }));
+  });
+  const brandTextHeight = Math.max(brandLineHeight, wrappedBrandLines.length * brandLineHeight);
+  const brandBlockHeight = Math.max(logo.height, brandTextHeight);
+  let brandY = headerTopY - Math.max(0, (brandBlockHeight - brandTextHeight) / 2);
+  for (const line of wrappedBrandLines) {
+    drawText(line.text, {
+      x: brandTextX,
+      y: brandY,
+      size: brandFontSize,
+      bold: line.bold,
+      color: theme.colors.mutedText,
+    });
+    brandY -= brandLineHeight;
+  }
 
   const rightX = width - margin;
   const invoiceTitle = invoiceNumber ? `INVOICE #${invoiceNumber}` : 'INVOICE';
@@ -568,9 +602,7 @@ export async function generateInvoicePdfBytes(
     metaY -= theme.header.metaLineHeight;
   }
 
-  y = Math.min(headerTopY - 48, metaY) - 10;
-  drawDivider();
-  y -= theme.header.dividerGap;
+  y = Math.min(headerTopY - brandBlockHeight - 16, metaY - 8);
 
   // -----------------
   // FROM / BILL TO / SHIP TO blocks
@@ -614,13 +646,15 @@ export async function generateInvoicePdfBytes(
   const effectiveShowShipTo =
     theme.flags.showShipTo && !theme.flags.showBlindShip && !!shipToAddr && shipToAddr.trim().length > 0;
 
-  const threeColsGap = 18;
-  const colW = (width - margin * 2 - threeColsGap * 2) / 3;
+  const addressColsGap = 28;
+  const addressColW = effectiveShowShipTo
+    ? (width - margin * 2 - addressColsGap) / 2
+    : (width - margin * 2);
 
   // TODO: Add configurable document block positioning for printed/window-envelope invoice layouts.
   const blockTopY = y;
   const drawAddressCol = (label: string, text: string, colIndex: number) => {
-    const x = margin + colIndex * (colW + threeColsGap);
+    const x = margin + colIndex * (addressColW + addressColsGap);
     drawText(label, { x, y: blockTopY, size: theme.fontSizes.h2, bold: true });
 
     const contentY = blockTopY - 14;
@@ -629,7 +663,7 @@ export async function generateInvoicePdfBytes(
     const r = drawWrapped(text, {
       x,
       y: contentY,
-      width: colW,
+      width: addressColW,
       size: theme.fontSizes.body,
       lineHeight: 13,
       color: theme.colors.text,
@@ -637,11 +671,10 @@ export async function generateInvoicePdfBytes(
     return r.bottomY;
   };
 
-  const fromBottom = drawAddressCol('FROM', fromBlock, 0);
-  const billBottom = drawAddressCol('BILL TO', billToBlock, 1);
-  const shipBottom = effectiveShowShipTo ? drawAddressCol('SHIP TO', shipToAddr, 2) : blockTopY - 14;
+  const billBottom = drawAddressCol('BILL TO', billToBlock, 0);
+  const shipBottom = effectiveShowShipTo ? drawAddressCol('SHIP TO', shipToAddr, 1) : blockTopY - 14;
 
-  y = Math.min(fromBottom, billBottom, shipBottom) - 14;
+  y = Math.min(billBottom, shipBottom) - 14;
 
   // -----------------
   // PO / JOB bar
