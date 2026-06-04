@@ -118,6 +118,30 @@ describe("invoice PDF company info and remittance data", () => {
     expect(extractDecodedPdfContent(bytes)).toContain("No Logo Print");
   });
 
+  test("renders company branding in header without legacy FROM heading", async () => {
+    const bytes = await generateInvoicePdfBytes({
+      ...baseInvoiceParams,
+      companySettings: {
+        companyDisplayName: "Header Only Print",
+        physicalAddress: {
+          line1: "1 Header Way",
+          city: "Dayton",
+          state: "OH",
+          postalCode: "45402",
+        },
+        phone: "555-0100",
+        email: "hello@header.test",
+        website: "https://header.test",
+      },
+    } as any);
+
+    const text = extractDecodedPdfContent(bytes);
+    expect(text.split("Header Only Print").length - 1).toBe(1);
+    expect(text).toContain("1 Header Way");
+    expect(text).toContain("555-0100 | hello@header.test");
+    expect(text).not.toContain("FROM");
+  });
+
   test("stable uploaded logo reference safely falls back when asset content is unavailable", async () => {
     const bytes = await generateInvoicePdfBytes({
       ...baseInvoiceParams,
