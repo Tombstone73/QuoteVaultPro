@@ -388,11 +388,16 @@ describe("Product Planning AI suggestion routes", () => {
       .send({});
 
     expect(response.status).toBe(201);
-    expect(response.body.data).toEqual(expect.arrayContaining([
+    expect(response.body.data.source).toBe("rule_based_fallback");
+    expect(response.body.data.fallbackReason).toContain("Live AI unavailable");
+    expect(response.body.data.suggestions).toEqual(expect.arrayContaining([
       expect.objectContaining({ suggestionType: "priority", status: "pending" }),
       expect.objectContaining({ suggestionType: "implementation_notes", status: "pending" }),
       expect.objectContaining({ suggestionType: "release_recommendation", status: "pending" }),
     ]));
+    const [unchanged] = await db.select().from(productPlanningWorkItems).where(eq(productPlanningWorkItems.id, item.id)).limit(1);
+    expect(unchanged.priority).toBe("medium");
+    expect(unchanged.phase).toBeNull();
   });
 
   test("analyze backlog returns health, go-live readiness, next actions, and stored suggestions", async () => {

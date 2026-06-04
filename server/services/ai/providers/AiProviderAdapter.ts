@@ -1,6 +1,8 @@
+import type { AiFeature } from "@shared/aiFoundationContracts";
+
 export interface AiProviderRequest {
   orgId: string;
-  feature: "bug_review" | "triage_brief";
+  feature: AiFeature;
   system: string;
   user: string;
   promptVersion: string;
@@ -24,6 +26,7 @@ export interface AiProviderResponse {
 }
 
 export interface AiProviderAdapter {
+  generateJson(request: AiProviderRequest): Promise<AiProviderResponse>;
   generateBugReview(request: AiProviderRequest): Promise<AiProviderResponse>;
   generateTriageBrief(request: AiProviderRequest): Promise<AiProviderResponse>;
 }
