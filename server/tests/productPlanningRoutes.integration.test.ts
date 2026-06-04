@@ -400,11 +400,12 @@ describe("Product Planning AI suggestion routes", () => {
     expect(unchanged.phase).toBeNull();
   });
 
-  test("analyze backlog returns health, go-live readiness, next actions, and stored suggestions", async () => {
+  test("analyze backlog returns operational readiness intelligence and stored suggestions", async () => {
     const { org, app } = await createFixture();
-    await createWorkItem(org.id, { title: "Customer portal login blocker", module: null, phase: null, priority: "critical", description: null, releaseTarget: null });
+    await createWorkItem(org.id, { title: "Product Catalog Completion", module: null, phase: null, priority: "critical", description: null, releaseTarget: null });
     await createWorkItem(org.id, { title: "Customer portal login failure", module: "Customer Portal", phase: "go_live", priority: "high", description: "Related duplicate candidate", releaseTarget: null });
     await createWorkItem(org.id, { title: "Inventory purchasing automation", module: "Inventory", phase: null, priority: "high", businessValue: "high", complexity: "small" });
+    await createWorkItem(org.id, { title: "Mobile visual search", module: "SaaS", phase: "future", priority: "low", description: "Future SaaS enhancement" });
 
     const response = await request(app)
       .post("/api/product-planning/ai/analyze-backlog")
@@ -413,6 +414,19 @@ describe("Product Planning AI suggestion routes", () => {
     expect(response.status).toBe(201);
     expect(response.body.data.healthScore).toEqual(expect.any(Number));
     expect(response.body.data.nextActions.length).toBeGreaterThan(0);
+    expect(response.body.data.executiveSummary).toContain("Product Catalog Completion");
+    expect(response.body.data.goLiveBlockers.length).toBeGreaterThan(0);
+    expect(response.body.data.topNextActions.length).toBeGreaterThan(0);
+    expect(response.body.data.quickWins).toEqual(expect.any(Array));
+    expect(response.body.data.futureCandidates.length).toBeGreaterThan(0);
+    expect(response.body.data.highestRoiFeatures.length).toBeGreaterThan(0);
+    expect(response.body.data.lowestPriorityFeatures.length).toBeGreaterThan(0);
+    expect(response.body.data.missingWork).toEqual(expect.any(Array));
+    expect(response.body.data.riskAreas).toEqual(expect.any(Array));
+    expect(response.body.data.readinessAssessment).toEqual(expect.objectContaining({
+      readinessScore: expect.any(Number),
+      recommendedNextStep: expect.any(String),
+    }));
     expect(response.body.data.goLiveReadiness.blockers.length).toBeGreaterThan(0);
     expect(response.body.data.suggestions.length).toBeGreaterThan(0);
   });
@@ -431,6 +445,11 @@ describe("Product Planning AI suggestion routes", () => {
     expect(response.body.data.suggestions).toEqual(expect.arrayContaining([
       expect.objectContaining({ suggestionType: "parent_epic", status: "pending" }),
     ]));
+    expect(response.body.data.epics[0].relatedItems.length).toBeGreaterThan(0);
+    expect(response.body.data.epics[0].relatedItems[0]).toEqual(expect.objectContaining({
+      reference: expect.any(String),
+      reasonIncluded: expect.any(String),
+    }));
   });
 
   test("go-live readiness and backlog health routes return actionable summaries", async () => {
@@ -485,6 +504,9 @@ describe("Product Planning AI suggestion routes", () => {
 
     expect(response.status).toBe(201);
     expect(response.body.data.recommendations.length).toBeGreaterThan(0);
+    expect(response.body.data.moveRecommendations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reference: expect.any(String), reasoning: expect.any(String) }),
+    ]));
     expect(response.body.data.suggestions).toEqual(expect.arrayContaining([
       expect.objectContaining({ suggestionType: "phase", status: "pending" }),
     ]));
