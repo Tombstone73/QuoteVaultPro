@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   ArrowDown,
   ArrowUp,
+  Brain,
   Bug,
   ChevronDown,
   ClipboardList,
@@ -58,6 +59,20 @@ type Phase = "go_live" | "v1_1" | "v1_5" | "v2_0" | "future" | "research";
 type SourceType = "manual" | "csv_import" | "bug_report";
 type DependencyType = "blocks" | "requires" | "relates_to";
 type ReleaseStatus = "planned" | "in_progress" | "released" | "archived";
+type AiSuggestionStatus = "pending" | "accepted" | "rejected";
+type AiSuggestionType =
+  | "priority"
+  | "business_value"
+  | "complexity"
+  | "phase"
+  | "module"
+  | "work_item_type"
+  | "parent_epic"
+  | "duplicate_candidate"
+  | "bug_summary"
+  | "import_cleanup"
+  | "roadmap_grouping"
+  | "implementation_notes";
 
 type WorkItemSummary = {
   id: string;
@@ -155,6 +170,20 @@ type ProductPlanningBlockedBy = {
   createdAt: string;
 };
 
+type ProductPlanningAiSuggestion = {
+  id: string;
+  workItemId: string | null;
+  suggestionType: AiSuggestionType;
+  currentValue: unknown;
+  suggestedValue: unknown;
+  confidence: number | null;
+  reasoning: string | null;
+  status: AiSuggestionStatus;
+  createdAt: string;
+  reviewedAt: string | null;
+  reviewedByUserId: string | null;
+};
+
 type WorkItemDetail = WorkItem & {
   release?: ProductPlanningRelease | null;
   sourceBugReport?: ProductPlanningSourceBugReport | null;
@@ -180,6 +209,7 @@ type DashboardData = {
   itemsStalledInValidation: WorkItem[];
   itemsWithUnresolvedDependencies: WorkItem[];
   byModuleWorkload: Array<{ key: string | null; count: number }>;
+  cleanupOpportunities: Array<{ key: string; label: string; count: number; href: string }>;
   byStatus: Array<{ key: string; count: number }>;
   byPhase: Array<{ key: string | null; count: number }>;
   byModule: Array<{ key: string | null; count: number }>;
@@ -338,6 +368,24 @@ function releaseName(item: WorkItem, releases?: ProductPlanningRelease[]) {
   return (item as WorkItemDetail).release?.name ?? releases?.find((release) => release.id === item.releaseId)?.name ?? item.releaseTarget ?? "";
 }
 
+function displayAiValue(value: unknown): string {
+  if (value == null || value === "") return "-";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value).replace(/_/g, " ");
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (typeof record.notes === "string") return record.notes;
+    if (typeof record.reference === "string" && typeof record.title === "string") return `${record.reference}: ${record.title}`;
+    if (typeof record.value === "string") return record.value.replace(/_/g, " ");
+    if (typeof record.field === "string" && typeof record.value === "string") return `${record.field}: ${record.value}`;
+    if (typeof record.action === "string") return record.action.replace(/_/g, " ");
+  }
+  return JSON.stringify(value);
+}
+
+function suggestionTypeLabel(type: AiSuggestionType) {
+  return type.replace(/_/g, " ");
+}
+
 function ProductPlanningShell({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
   const location = useLocation();
@@ -482,6 +530,29 @@ function ReleaseProgressList({ releases }: { releases: DashboardData["releasePro
   );
 }
 
+function CleanupOpportunitiesList({ opportunities }: { opportunities: DashboardData["cleanupOpportunities"] }) {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Brain className="h-4 w-4 text-primary" />
+          Backlog Cleanup Opportunities
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {opportunities.length === 0 || opportunities.every((opportunity) => opportunity.count === 0) ? (
+          <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">No cleanup opportunities detected yet.</div>
+        ) : opportunities.map((opportunity) => (
+          <Link key={opportunity.key} to={opportunity.href} className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-muted/40">
+            <span className="text-sm">{opportunity.label}</span>
+            <Badge variant={opportunity.count > 0 ? "default" : "secondary"}>{opportunity.count}</Badge>
+          </Link>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ProductPlanningDashboardPage() {
   const { data, isLoading, refetch, isRefetching } = useQuery<DashboardData>({
     queryKey: ["/api/product-planning/dashboard"],
@@ -523,6 +594,7 @@ export function ProductPlanningDashboardPage() {
             <CompactItemList title="Stalled Validation" items={data.itemsStalledInValidation} icon={<RefreshCw className="h-4 w-4 text-muted-foreground" />} emptyMessage="No validation items look stalled." actionLabel="Open Kanban" actionTo={ROUTES.productPlanning.kanban} />
             <CompactItemList title="Unresolved Dependencies" items={data.itemsWithUnresolvedDependencies} icon={<Link2 className="h-4 w-4 text-muted-foreground" />} emptyMessage="No unresolved dependencies." actionLabel="Open Backlog" actionTo={ROUTES.productPlanning.backlog} />
           </div>
+          <CleanupOpportunitiesList opportunities={data.cleanupOpportunities ?? []} />
           <div className="grid gap-4 lg:grid-cols-3">
             <SummaryBreakdown title="By Status" rows={data.byStatus} />
             <SummaryBreakdown title="By Phase" rows={data.byPhase.map((row) => ({ ...row, key: labelFor(PHASES, row.key as Phase | null) || "Unassigned" }))} />
@@ -1159,6 +1231,7 @@ export function ProductPlanningRoadmapPage() {
     planningStatus: "all",
     module: "",
   });
+  const [roadmapSuggestions, setRoadmapSuggestions] = useState<ProductPlanningAiSuggestion[]>([]);
   const queryString = useMemo(() => {
     const params = new URLSearchParams({ sortBy: "roadmapOrder", sortDirection: "asc", limit: "250" });
     Object.entries(filters).forEach(([key, value]) => {
@@ -1204,6 +1277,18 @@ export function ProductPlanningRoadmapPage() {
     onError: (error: Error) => toast({ title: "Roadmap reorder failed", description: error.message, variant: "destructive" }),
   });
 
+  const roadmapSuggestionMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/product-planning/roadmap/suggest-grouping", {});
+      return (await res.json()).data as ProductPlanningAiSuggestion[];
+    },
+    onSuccess: (suggestions) => {
+      setRoadmapSuggestions(suggestions);
+      toast({ title: "Roadmap suggestions ready", description: `${suggestions.length} recommendation(s) generated.` });
+    },
+    onError: (error: Error) => toast({ title: "Roadmap suggestions failed", description: error.message, variant: "destructive" }),
+  });
+
   function moveWithinPhase(phase: Phase | null, itemId: string, direction: -1 | 1) {
     const items = sortByRoadmapOrder(rows.filter((item) => item.phase === phase));
     const index = items.findIndex((item) => item.id === itemId);
@@ -1223,13 +1308,33 @@ export function ProductPlanningRoadmapPage() {
   return (
     <ProductPlanningShell>
       <Card>
-        <CardContent className="grid gap-3 p-4 md:grid-cols-4">
+        <CardContent className="grid gap-3 p-4 md:grid-cols-[repeat(4,minmax(0,1fr))_auto]">
           <FilterSelect value={filters.workItemType} onChange={(value) => setFilters({ ...filters, workItemType: value })} options={WORK_ITEM_TYPES} placeholder="Type" />
           <FilterSelect value={filters.priority} onChange={(value) => setFilters({ ...filters, priority: value })} options={PRIORITIES} placeholder="Priority" />
           <FilterSelect value={filters.planningStatus} onChange={(value) => setFilters({ ...filters, planningStatus: value })} options={STATUSES} placeholder="Status" />
           <Input value={filters.module} onChange={(event) => setFilters({ ...filters, module: event.target.value })} placeholder="Module" className="h-9" />
+          <Button variant="outline" size="sm" onClick={() => roadmapSuggestionMutation.mutate()} disabled={roadmapSuggestionMutation.isPending} className="gap-2">
+            <Brain className="h-4 w-4" />
+            Suggest Grouping
+          </Button>
         </CardContent>
       </Card>
+      {roadmapSuggestions.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm">Roadmap Suggestions</CardTitle></CardHeader>
+          <CardContent className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {roadmapSuggestions.slice(0, 9).map((suggestion) => (
+              <div key={suggestion.id} className="rounded-md border border-border p-3 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <Badge variant="outline">{suggestion.confidence ?? 0}%</Badge>
+                  <Badge variant="secondary">{displayAiValue(suggestion.suggestedValue)}</Badge>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">{suggestion.reasoning}</p>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
       <div className="space-y-4">
         {groups.map((group) => {
           const items = sortByRoadmapOrder(rows.filter((item) => item.phase === group.value));
@@ -1559,12 +1664,18 @@ export function ProductPlanningWorkItemDetailPage() {
     queryKey: ["/api/product-planning/work-items", "detail-parent-options"],
     queryFn: () => fetchJson<WorkItem[]>("/api/product-planning/work-items?limit=250"),
   });
+  const { data: aiSuggestions = [] } = useQuery<ProductPlanningAiSuggestion[]>({
+    queryKey: ["/api/product-planning/work-items", id, "ai-suggestions"],
+    queryFn: () => fetchJson<ProductPlanningAiSuggestion[]>(`/api/product-planning/work-items/${id}/ai-suggestions`),
+    enabled: Boolean(id),
+  });
   const [form, setForm] = useState<WorkItemFormState>(EMPTY_FORM);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/product-planning/work-items"] });
     queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
     if (id) queryClient.invalidateQueries({ queryKey: ["/api/product-planning/work-items", id, "detail"] });
+    if (id) queryClient.invalidateQueries({ queryKey: ["/api/product-planning/work-items", id, "ai-suggestions"] });
   };
 
   const saveMutation = useMutation({
@@ -1608,6 +1719,66 @@ export function ProductPlanningWorkItemDetailPage() {
     },
     onSuccess: invalidate,
     onError: (error: Error) => toast({ title: "Phase move failed", description: error.message, variant: "destructive" }),
+  });
+
+  const aiReviewMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/ai-review`, {});
+      return (await res.json()).data as ProductPlanningAiSuggestion[];
+    },
+    onSuccess: (suggestions) => {
+      invalidate();
+      toast({ title: "AI review complete", description: `${suggestions.length} suggestion(s) ready for review.` });
+    },
+    onError: (error: Error) => toast({ title: "AI review failed", description: error.message, variant: "destructive" }),
+  });
+
+  const findSimilarMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/find-similar`, {});
+      return (await res.json()).data as { suggestions: ProductPlanningAiSuggestion[] };
+    },
+    onSuccess: (data) => {
+      invalidate();
+      toast({ title: "Duplicate review complete", description: `${data.suggestions.length} possible duplicate(s) stored.` });
+    },
+    onError: (error: Error) => toast({ title: "Duplicate review failed", description: error.message, variant: "destructive" }),
+  });
+
+  const implementationNotesMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/generate-implementation-notes`, {});
+      return (await res.json()).data as ProductPlanningAiSuggestion;
+    },
+    onSuccess: () => {
+      invalidate();
+      toast({ title: "Implementation notes suggestion ready" });
+    },
+    onError: (error: Error) => toast({ title: "Notes generation failed", description: error.message, variant: "destructive" }),
+  });
+
+  const acceptSuggestionMutation = useMutation({
+    mutationFn: async (suggestionId: string) => {
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/ai-suggestions/${suggestionId}/accept`, {});
+      return (await res.json()).data as { suggestion: ProductPlanningAiSuggestion; workItem: WorkItem | null };
+    },
+    onSuccess: () => {
+      invalidate();
+      toast({ title: "AI suggestion accepted" });
+    },
+    onError: (error: Error) => toast({ title: "Accept failed", description: error.message, variant: "destructive" }),
+  });
+
+  const rejectSuggestionMutation = useMutation({
+    mutationFn: async (suggestionId: string) => {
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/ai-suggestions/${suggestionId}/reject`, {});
+      return (await res.json()).data as ProductPlanningAiSuggestion;
+    },
+    onSuccess: () => {
+      invalidate();
+      toast({ title: "AI suggestion rejected" });
+    },
+    onError: (error: Error) => toast({ title: "Reject failed", description: error.message, variant: "destructive" }),
   });
 
   if (isLoading || !item) {
@@ -1676,6 +1847,15 @@ export function ProductPlanningWorkItemDetailPage() {
           <DetailTimeline events={item.events ?? []} />
         </div>
         <div className="space-y-4">
+          <AiSuggestionsPanel
+            suggestions={aiSuggestions}
+            onReview={() => aiReviewMutation.mutate()}
+            onFindSimilar={() => findSimilarMutation.mutate()}
+            onGenerateNotes={() => implementationNotesMutation.mutate()}
+            onAccept={(suggestionId) => acceptSuggestionMutation.mutate(suggestionId)}
+            onReject={(suggestionId) => rejectSuggestionMutation.mutate(suggestionId)}
+            isBusy={aiReviewMutation.isPending || findSimilarMutation.isPending || implementationNotesMutation.isPending || acceptSuggestionMutation.isPending || rejectSuggestionMutation.isPending}
+          />
           <DetailGrid item={item} />
           <DetailSource item={item} />
         </div>
@@ -1695,6 +1875,80 @@ export function ProductPlanningWorkItemDetailPage() {
         isSaving={saveMutation.isPending}
       />
     </ProductPlanningShell>
+  );
+}
+
+function AiSuggestionsPanel({
+  suggestions,
+  onReview,
+  onFindSimilar,
+  onGenerateNotes,
+  onAccept,
+  onReject,
+  isBusy,
+}: {
+  suggestions: ProductPlanningAiSuggestion[];
+  onReview: () => void;
+  onFindSimilar: () => void;
+  onGenerateNotes: () => void;
+  onAccept: (suggestionId: string) => void;
+  onReject: (suggestionId: string) => void;
+  isBusy: boolean;
+}) {
+  const pending = suggestions.filter((suggestion) => suggestion.status === "pending");
+  const history = suggestions.filter((suggestion) => suggestion.status !== "pending").slice(0, 5);
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Brain className="h-4 w-4 text-primary" />
+          AI Suggestions
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={onReview} disabled={isBusy}>Review & Triage</Button>
+          <Button variant="outline" size="sm" onClick={onFindSimilar} disabled={isBusy}>Find Similar Items</Button>
+          <Button variant="outline" size="sm" onClick={onGenerateNotes} disabled={isBusy}>Implementation Notes</Button>
+        </div>
+        {pending.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">No pending AI suggestions.</div>
+        ) : pending.map((suggestion) => (
+          <div key={suggestion.id} className="space-y-2 rounded-md border border-border p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Badge variant="outline" className="capitalize">{suggestionTypeLabel(suggestion.suggestionType)}</Badge>
+              <Badge variant="secondary">{suggestion.confidence ?? 0}% confidence</Badge>
+            </div>
+            <div className="grid gap-2 text-xs sm:grid-cols-2">
+              <div>
+                <div className="font-medium uppercase text-muted-foreground">Current</div>
+                <div className="mt-1 whitespace-pre-wrap text-sm">{displayAiValue(suggestion.currentValue)}</div>
+              </div>
+              <div>
+                <div className="font-medium uppercase text-muted-foreground">Suggested</div>
+                <div className="mt-1 whitespace-pre-wrap text-sm">{displayAiValue(suggestion.suggestedValue)}</div>
+              </div>
+            </div>
+            {suggestion.reasoning && <p className="text-xs text-muted-foreground">{suggestion.reasoning}</p>}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => onReject(suggestion.id)} disabled={isBusy}>Reject</Button>
+              <Button size="sm" onClick={() => onAccept(suggestion.id)} disabled={isBusy}>Accept</Button>
+            </div>
+          </div>
+        ))}
+        {history.length > 0 && (
+          <div className="space-y-1 border-t border-border pt-3">
+            <div className="text-xs font-medium uppercase text-muted-foreground">Reviewed</div>
+            {history.map((suggestion) => (
+              <div key={suggestion.id} className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span className="capitalize">{suggestionTypeLabel(suggestion.suggestionType)}</span>
+                <Badge variant="secondary">{suggestion.status}</Badge>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1836,6 +2090,7 @@ export function ProductPlanningImportsPage() {
   const [allowDuplicates, setAllowDuplicates] = useState(false);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [lastImportResult, setLastImportResult] = useState<ImportCommitResult | null>(null);
+  const [importSuggestions, setImportSuggestions] = useState<ProductPlanningAiSuggestion[]>([]);
 
   const { data: imports = [] } = useQuery<ImportBatch[]>({
     queryKey: ["/api/product-planning/imports"],
@@ -1869,12 +2124,25 @@ export function ProductPlanningImportsPage() {
     onError: (error: Error) => toast({ title: "Import failed", description: error.message, variant: "destructive" }),
   });
 
+  const importAiReviewMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/product-planning/import/csv/ai-review", { csv, filename });
+      return (await res.json()).data as { suggestions: ProductPlanningAiSuggestion[] };
+    },
+    onSuccess: (data) => {
+      setImportSuggestions(data.suggestions);
+      toast({ title: "Import AI review complete", description: `${data.suggestions.length} suggestion(s) ready.` });
+    },
+    onError: (error: Error) => toast({ title: "Import AI review failed", description: error.message, variant: "destructive" }),
+  });
+
   async function handleFile(file: File | null) {
     if (!file) return;
     setFilename(file.name);
     setCsv(await file.text());
     setPreview(null);
     setLastImportResult(null);
+    setImportSuggestions([]);
   }
 
   return (
@@ -1899,6 +2167,9 @@ export function ProductPlanningImportsPage() {
               <div className="flex gap-2">
                 <Button variant="outline" onClick={() => previewMutation.mutate()} disabled={!csv.trim() || previewMutation.isPending}>
                   {previewMutation.isPending ? "Previewing..." : "Preview"}
+                </Button>
+                <Button variant="outline" onClick={() => importAiReviewMutation.mutate()} disabled={!preview || importAiReviewMutation.isPending}>
+                  {importAiReviewMutation.isPending ? "Reviewing..." : "AI Review Import"}
                 </Button>
                 <Button onClick={() => commitMutation.mutate()} disabled={!preview || preview.counts.valid === 0 || commitMutation.isPending}>
                   {commitMutation.isPending ? "Importing..." : "Confirm Import"}
@@ -1931,6 +2202,7 @@ export function ProductPlanningImportsPage() {
               </div>
             )}
             {preview && <ImportPreviewTable preview={preview} />}
+            {importSuggestions.length > 0 && <ImportAiSuggestions suggestions={importSuggestions} />}
           </CardContent>
         </Card>
 
@@ -1999,6 +2271,31 @@ function ImportPreviewTable({ preview }: { preview: ImportPreview }) {
             })}
           </TableBody>
         </Table>
+      </div>
+    </div>
+  );
+}
+
+function ImportAiSuggestions({ suggestions }: { suggestions: ProductPlanningAiSuggestion[] }) {
+  return (
+    <div className="space-y-2 rounded-md border border-border p-3">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <Brain className="h-4 w-4 text-primary" />
+        AI Import Review
+      </div>
+      <div className="grid gap-2 md:grid-cols-2">
+        {suggestions.map((suggestion) => (
+          <div key={suggestion.id} className="rounded-md border border-border p-3 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Badge variant="outline">{suggestionTypeLabel(suggestion.suggestionType)}</Badge>
+              <Badge variant="secondary">{suggestion.confidence ?? 0}%</Badge>
+            </div>
+            <div className="mt-2 text-xs text-muted-foreground">{suggestion.reasoning}</div>
+            <div className="mt-2 text-xs">
+              <span className="font-medium">Suggest: </span>{displayAiValue(suggestion.suggestedValue)}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

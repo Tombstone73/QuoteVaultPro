@@ -617,6 +617,13 @@
       "when": 1782691200000,
       "tag": "0092_product_planning_phase3",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1782777600000,
+      "tag": "0093_product_planning_ai_suggestions",
+      "breakpoints": true
     }
   ]
 }

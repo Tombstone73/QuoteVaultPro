@@ -9,6 +9,7 @@ import { registerProductPlanningRoutes } from "../routes/productPlanning.routes"
 import {
   bugReports,
   organizations,
+  productPlanningAiSuggestions,
   productPlanningDependencies,
   productPlanningEvents,
   productPlanningImportBatches,
@@ -233,6 +234,121 @@ describe("Product Planning detail route", () => {
       }),
     ]));
     expect(response.body.data.events.map((event: { message: string }) => event.message)).toEqual(["Updated second", "Created first"]);
+  });
+});
+
+describe("Product Planning AI suggestion routes", () => {
+  test("creates and accepts a suggestion with an event and explicit work item update", async () => {
+    const { org, app } = await createFixture();
+    const item = await createWorkItem(org.id, { priority: "medium" });
+
+    const createRes = await request(app)
+      .post(`/api/product-planning/work-items/${item.id}/ai-suggestions`)
+      .send({
+        suggestionType: "priority",
+        currentValue: "medium",
+        suggestedValue: "high",
+        confidence: 82,
+        reasoning: "Customer-facing blocker.",
+      });
+
+    expect(createRes.status).toBe(201);
+    expect(createRes.body.data.status).toBe("pending");
+
+    const acceptRes = await request(app)
+      .post(`/api/product-planning/work-items/${item.id}/ai-suggestions/${createRes.body.data.id}/accept`)
+      .send({});
+
+    expect(acceptRes.status).toBe(200);
+    expect(acceptRes.body.data.suggestion.status).toBe("accepted");
+    expect(acceptRes.body.data.workItem.priority).toBe("high");
+
+    const [event] = await db
+      .select()
+      .from(productPlanningEvents)
+      .where(and(eq(productPlanningEvents.organizationId, org.id), eq(productPlanningEvents.workItemId, item.id), eq(productPlanningEvents.eventType, "ai_suggestion_accepted")))
+      .limit(1);
+    expect(event).toBeTruthy();
+  });
+
+  test("rejects a suggestion without changing the work item", async () => {
+    const { org, app } = await createFixture();
+    const item = await createWorkItem(org.id, { module: "Quotes" });
+    const [suggestion] = await db.insert(productPlanningAiSuggestions).values({
+      organizationId: org.id,
+      workItemId: item.id,
+      suggestionType: "module",
+      currentValue: "Quotes",
+      suggestedValue: "Invoices",
+      confidence: 70,
+      reasoning: "Looks billing related.",
+    }).returning();
+
+    const rejectRes = await request(app)
+      .post(`/api/product-planning/work-items/${item.id}/ai-suggestions/${suggestion.id}/reject`)
+      .send({});
+
+    expect(rejectRes.status).toBe(200);
+    expect(rejectRes.body.data.status).toBe("rejected");
+
+    const [unchanged] = await db
+      .select()
+      .from(productPlanningWorkItems)
+      .where(eq(productPlanningWorkItems.id, item.id))
+      .limit(1);
+    expect(unchanged.module).toBe("Quotes");
+  });
+
+  test("find-similar stores duplicate candidate suggestions", async () => {
+    const { org, app } = await createFixture();
+    const item = await createWorkItem(org.id, { title: "Customer portal upload fails", module: "Customer Portal", workItemType: "bug" });
+    await createWorkItem(org.id, { title: "Customer portal file upload fails", module: "Customer Portal", workItemType: "bug" });
+
+    const response = await request(app)
+      .post(`/api/product-planning/work-items/${item.id}/find-similar`)
+      .send({});
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ suggestionType: "duplicate_candidate", status: "pending" }),
+    ]));
+  });
+
+  test("import AI review generates cleanup suggestions", async () => {
+    const { org, app } = await createFixture();
+    await createWorkItem(org.id, { title: "Customer portal upload fails", module: "Customer Portal" });
+
+    const response = await request(app)
+      .post("/api/product-planning/import/csv/ai-review")
+      .send({
+        csv: [
+          "Title,Priority,Phase,Module",
+          "Customer portal upload fails,High,,Customer Portal",
+          "Invoice payment issue,High,,",
+        ].join("\n"),
+        filename: "ai-import.csv",
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.suggestions.length).toBeGreaterThan(0);
+    expect(response.body.data.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ suggestionType: "import_cleanup", status: "pending" }),
+    ]));
+  });
+
+  test("unauthorized and non-dev users are blocked from AI suggestions", async () => {
+    const { org } = await createFixture();
+    const item = await createWorkItem(org.id);
+
+    const unauthenticated = await request(buildApp({ orgId: org.id, authenticated: false }))
+      .post(`/api/product-planning/work-items/${item.id}/ai-review`)
+      .send({});
+    expect(unauthenticated.status).toBe(401);
+
+    const nonDev = await request(buildApp({ orgId: org.id, orgRole: "member", userRole: "member" }))
+      .post(`/api/product-planning/work-items/${item.id}/ai-review`)
+      .send({});
+    expect(nonDev.status).toBe(403);
   });
 });
 

@@ -1,4 +1,5 @@
 import React, { act } from "react";
+import { Simulate } from "react-dom/test-utils";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globals";
@@ -23,8 +24,9 @@ jest.mock("@/hooks/use-toast", () => ({
   useToast: () => ({ toast: toastMock }),
 }));
 
+const mockApiRequest = jest.fn((_method?: string, _url?: string, _data?: unknown) => Promise.resolve({ json: async () => ({ data: { suggestion: { id: "suggestion_1", status: "accepted" }, workItem: null } }) }));
 jest.mock("@/lib/queryClient", () => ({
-  apiRequest: () => Promise.resolve({ json: async () => ({ data: null }) }),
+  apiRequest: (method: string, url: string, data?: unknown) => mockApiRequest(method, url, data),
 }));
 
 jest.mock("@/components/ui/dialog", () => ({
@@ -57,6 +59,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   toastMock.mockClear();
+  mockApiRequest.mockClear();
 });
 
 afterEach(() => {
@@ -89,6 +92,8 @@ function renderWithProviders(children: React.ReactNode, initialPath = "/product-
 
 async function flushQueries() {
   await act(async () => {
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await Promise.resolve();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
@@ -184,12 +189,27 @@ const detailItem = {
   ],
 };
 
+const aiSuggestions = [{
+  id: "suggestion_1",
+  workItemId: "item_1",
+  suggestionType: "priority",
+  currentValue: "medium",
+  suggestedValue: "high",
+  confidence: 82,
+  reasoning: "Customer-facing blocker.",
+  status: "pending",
+  createdAt: "2026-06-02T12:00:00.000Z",
+  reviewedAt: null,
+  reviewedByUserId: null,
+}];
+
 describe("Product Planning UX detail surfaces", () => {
   test("detail page renders readable planning sections, hierarchy, dependencies, and timeline", async () => {
     (global as any).fetch = jest.fn(async (url: string) => {
       if (url === "/api/product-planning/work-items/item_1") return responseJson({ success: true, data: detailItem });
       if (url === "/api/product-planning/releases") return responseJson({ success: true, data: [detailItem.release] });
       if (url === "/api/product-planning/work-items?limit=250") return responseJson({ success: true, data: [detailItem] });
+      if (url === "/api/product-planning/work-items/item_1/ai-suggestions") return responseJson({ success: true, data: aiSuggestions });
       return responseJson({ success: false, message: "Not found" }, 404);
     }) as any;
 
@@ -210,6 +230,14 @@ describe("Product Planning UX detail surfaces", () => {
     expect(container.textContent).toContain("Child task");
     expect(container.textContent).toContain("Activity Timeline");
     expect(container.textContent).toContain("Status changed");
+    expect(container.textContent).toContain("AI Suggestions");
+    expect(container.textContent).toContain("Customer-facing blocker.");
+    const acceptButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Accept") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(acceptButton);
+    });
+    await flushQueries();
+    expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/work-items/item_1/ai-suggestions/suggestion_1/accept", {});
     cleanup(root, container);
   });
 
