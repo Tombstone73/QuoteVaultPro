@@ -31,6 +31,12 @@ export type QuoteActionEligibility = {
   reason: string | null;
 };
 
+export type QuoteSendActionState = "can_send" | "needs_recipient" | "blocked";
+
+export type QuoteSendEligibility = QuoteActionEligibility & {
+  actionState: QuoteSendActionState;
+};
+
 function hasText(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -76,25 +82,25 @@ function selectedContactHasEmail(input: QuoteSendEligibilityInput): boolean {
   return hasText(selectedContact?.email);
 }
 
-export function getQuoteSendEligibility(input: QuoteSendEligibilityInput): QuoteActionEligibility {
+export function getQuoteSendEligibility(input: QuoteSendEligibilityInput): QuoteSendEligibility {
   const previewEligibility = getQuotePreviewEligibility(input);
-  if (!previewEligibility.enabled) return previewEligibility;
+  if (!previewEligibility.enabled) return { ...previewEligibility, actionState: "blocked" };
 
   if (!input.selectedCustomer?.id) {
-    return { enabled: false, reason: "Select a customer before sending the quote." };
+    return { enabled: false, reason: "Select a customer before sending the quote.", actionState: "blocked" };
   }
   if (!input.selectedContactId || !selectedContactHasEmail(input)) {
-    return { enabled: false, reason: "Select a customer contact with an email address before sending." };
+    return { enabled: true, reason: "Add a recipient email before sending.", actionState: "needs_recipient" };
   }
   if (input.requireApproval && input.workflowState === "draft") {
-    return { enabled: false, reason: "Request or complete approval before sending this quote." };
+    return { enabled: false, reason: "Request or complete approval before sending this quote.", actionState: "blocked" };
   }
   if (input.workflowState === "converted" || input.workflowState === "rejected" || input.workflowState === "expired") {
-    return { enabled: false, reason: "This quote status is not eligible for sending." };
+    return { enabled: false, reason: "This quote status is not eligible for sending.", actionState: "blocked" };
   }
   if (input.emailConfigured === false) {
-    return { enabled: false, reason: "Quote email sending is not configured." };
+    return { enabled: false, reason: "Quote email sending is not configured.", actionState: "blocked" };
   }
 
-  return { enabled: true, reason: null };
+  return { enabled: true, reason: null, actionState: "can_send" };
 }

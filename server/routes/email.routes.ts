@@ -21,9 +21,15 @@
 import crypto from "crypto";
 import type { Express } from "express";
 import { google } from "googleapis";
+import { auditLogs } from "@shared/schema";
+import { db } from "../db";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
 import { emailService } from "../emailService";
+import {
+  QuoteEmailRecipientError,
+  sendQuoteEmailWithRecipientFallback,
+} from "../lib/quoteEmailRecipientFallback";
 
 // ---------------------------------------------------------------------------
 // OAuth state helpers — same pattern as quickbooksService.ts
@@ -126,43 +132,43 @@ export function registerEmailRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const { recipientEmail } = req.body;
-
-      if (!recipientEmail) {
-        return res.status(400).json({ message: "Recipient email is required" });
-      }
-
-      // Verify user has access to this quote
       const userId = getUserId(req.user);
       const userRole = req.user.role || 'customer';
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
-      const quote = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
 
-      if (!quote) {
-        return res.status(404).json({ message: "Quote not found" });
-      }
-
-      // Wrap email sending in try-catch to prevent quote operations from failing
-      try {
-        await emailService.sendQuoteEmail(organizationId, id, recipientEmail, isInternalUser ? undefined : userId);
-        res.json({ success: true, message: "Quote email sent successfully" });
-      } catch (emailError) {
-        console.error(`[QUOTE_EMAIL] Failed to send email for quote ${id}:`, {
-          quoteId: id,
+      const result = await sendQuoteEmailWithRecipientFallback(
+        {
+          getQuoteById: storage.getQuoteById.bind(storage),
+          getCustomerContacts: storage.getCustomerContacts.bind(storage),
+          updateCustomerContactForOrganization: storage.updateCustomerContactForOrganization.bind(storage),
+          createCustomerContactForOrganization: async (orgId, customerId, data) =>
+            storage.createCustomerContactForOrganization(orgId, customerId, data as any),
+          sendQuoteEmail: emailService.sendQuoteEmail.bind(emailService),
+          createAuditLog: async (entry) => {
+            await db.insert(auditLogs).values(entry as any);
+          },
+        },
+        {
           organizationId,
+          quoteId: id,
           userId,
-          recipientEmail,
-          error: emailError instanceof Error ? emailError.message : String(emailError),
-          stack: emailError instanceof Error ? emailError.stack : undefined
-        });
-        // Return error indicating email failed
-        res.status(500).json({
-          success: false,
-          message: emailError instanceof Error ? emailError.message : "Failed to send quote email. Please try again or contact support."
-        });
-      }
+          userName: req.user?.email || req.user?.username || req.user?.name || null,
+          isInternalUser,
+          payload: req.body,
+          ipAddress: req.ip,
+          userAgent: req.get?.("user-agent") ?? null,
+        },
+      );
+
+      res.json(result);
     } catch (error) {
       console.error(`[QUOTE_EMAIL] Error in email endpoint for quote ${id}:`, error);
+      if (error instanceof QuoteEmailRecipientError) {
+        return res.status(error.statusCode).json(error.result ?? {
+          success: false,
+          message: error.message,
+        });
+      }
       res.status(500).json({
         success: false,
         message: error instanceof Error ? error.message : "Failed to process email request"
