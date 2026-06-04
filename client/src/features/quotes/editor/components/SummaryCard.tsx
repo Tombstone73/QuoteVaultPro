@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { Save, X, ArrowLeft, Ban, Mail, CheckCircle, Loader2 } from "lucide-react";
+import { Save, X, ArrowLeft, Ban, Mail, CheckCircle, Loader2, Eye } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { QuoteWorkflowState } from "@shared/quoteWorkflow";
@@ -18,6 +18,7 @@ import type { Product } from "@shared/schema";
 import type { QuoteLineItemDraft } from "../types";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
 import type { AfterSaveNavigation } from "@/hooks/useUserPreferences";
+import { getQuotePreviewEligibility, getQuoteSendEligibility } from "../quoteActionEligibility";
 
 type SummaryCardProps = {
     lineItems: QuoteLineItemDraft[];
@@ -40,6 +41,7 @@ type SummaryCardProps = {
     readOnly?: boolean;
     showConvertToOrder?: boolean;
     showDiscard?: boolean;
+    quoteId?: string | null;
     quoteNumber?: number | null;
     quoteStatus?: string | null;
     onSave: () => void;
@@ -48,6 +50,8 @@ type SummaryCardProps = {
     primaryActionLabel?: string;
     primaryActionSavingLabel?: string;
     onConvertToOrder: () => void;
+    onPreviewQuote?: () => void;
+    onSendQuote?: () => void;
     onDiscard: () => void;
     onCancelQuote?: () => void;
     onDiscountAmountChange: (next: number) => void;
@@ -64,6 +68,7 @@ type SummaryCardProps = {
     isApproving?: boolean;
     isApprovingAndSending?: boolean;
     isRequestingApproval?: boolean;
+    emailConfigured?: boolean;
 };
 
 export function SummaryCard({
@@ -87,6 +92,7 @@ export function SummaryCard({
     readOnly = false,
     showConvertToOrder = true,
     showDiscard = true,
+    quoteId,
     quoteNumber,
     quoteStatus,
     onSave,
@@ -95,6 +101,8 @@ export function SummaryCard({
     primaryActionLabel,
     primaryActionSavingLabel,
     onConvertToOrder,
+    onPreviewQuote,
+    onSendQuote,
     onDiscard,
     onCancelQuote,
     onDiscountAmountChange,
@@ -111,6 +119,7 @@ export function SummaryCard({
     isApproving = false,
     isApprovingAndSending = false,
     isRequestingApproval = false,
+    emailConfigured = false,
 }: SummaryCardProps) {
     const [showTaxOverride, setShowTaxOverride] = useState(false);
     const safeDiscount = Number.isFinite(discountAmount) ? Math.max(0, discountAmount) : 0;
@@ -144,6 +153,25 @@ export function SummaryCard({
     
     // Hide Email Quote in draft/pending_approval when approval required
     const hideEmailInDraft = requireApproval && (isDraft || isPendingApproval);
+    const previewEligibility = getQuotePreviewEligibility({ quoteId, isSaving, lineItems });
+    const sendEligibility = getQuoteSendEligibility({
+        quoteId,
+        isSaving,
+        lineItems,
+        selectedCustomer,
+        selectedContactId,
+        workflowState,
+        requireApproval,
+        emailConfigured,
+    });
+    const previewDisabled = !previewEligibility.enabled || !onPreviewQuote;
+    const previewDisabledReason = !onPreviewQuote
+        ? "Quote PDF preview is unavailable."
+        : previewEligibility.reason;
+    const sendDisabled = !sendEligibility.enabled || !onSendQuote;
+    const sendDisabledReason = !onSendQuote
+        ? sendEligibility.reason ?? "Quote email sending is not configured."
+        : sendEligibility.reason;
     
     return (
         <Card className="rounded-lg border border-border/40 bg-card/50">
@@ -381,15 +409,33 @@ export function SummaryCard({
                                 ⏳ <strong>Pending Approval</strong> — Waiting for an authorized user to approve this quote.
                             </div>
                         ) : !hideEmailInDraft ? (
-                            // Email Quote button (for sent/approved states or when approval not required)
-                            <Button
-                                variant="outline"
-                                className="w-full h-10"
-                                disabled
-                            >
-                                <Mail className="w-4 h-4 mr-2" />
-                                Email Quote
-                            </Button>
+                            <div className="w-full space-y-1">
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <span className="block w-full">
+                                                <Button
+                                                    variant="outline"
+                                                    className="w-full h-10"
+                                                    onClick={onSendQuote}
+                                                    disabled={sendDisabled}
+                                                >
+                                                    <Mail className="w-4 h-4 mr-2" />
+                                                    Send Quote
+                                                </Button>
+                                            </span>
+                                        </TooltipTrigger>
+                                        {sendDisabledReason && (
+                                            <TooltipContent>
+                                                <p className="text-xs">{sendDisabledReason}</p>
+                                            </TooltipContent>
+                                        )}
+                                    </Tooltip>
+                                </TooltipProvider>
+                                {sendDisabledReason && (
+                                    <p className="text-xs text-muted-foreground">{sendDisabledReason}</p>
+                                )}
+                            </div>
                         ) : null}
 
                         {/* Row 4: Cancel Quote (conditional, shown for quotes with numbers) */}
@@ -431,13 +477,33 @@ export function SummaryCard({
                                     </Tooltip>
                                 </TooltipProvider>
                             )}
-                            <Button
-                                variant="outline"
-                                className={`${!showDiscard ? "col-span-2" : ""} w-full`}
-                                disabled
-                            >
-                                Preview
-                            </Button>
+                            <div className={`${!showDiscard ? "col-span-2" : ""} w-full space-y-1`}>
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <span className="block w-full">
+                                                <Button
+                                                    variant="outline"
+                                                    className="w-full"
+                                                    onClick={onPreviewQuote}
+                                                    disabled={previewDisabled}
+                                                >
+                                                    <Eye className="w-4 h-4 mr-2" />
+                                                    Preview Quote
+                                                </Button>
+                                            </span>
+                                        </TooltipTrigger>
+                                        {previewDisabledReason && (
+                                            <TooltipContent>
+                                                <p className="text-xs">{previewDisabledReason}</p>
+                                            </TooltipContent>
+                                        )}
+                                    </Tooltip>
+                                </TooltipProvider>
+                                {previewDisabledReason && (
+                                    <p className="text-xs text-muted-foreground">{previewDisabledReason}</p>
+                                )}
+                            </div>
                         </div>
 
                         {/* Row 6: Convert to Order (conditional) */}
@@ -457,13 +523,46 @@ export function SummaryCard({
                         {/* VIEW MODE */}
                         {/* Row 1: Small button row - Email Quote + Preview */}
                         <div className="grid grid-cols-2 gap-2 w-full">
-                            <Button variant="outline" className="w-full" disabled>
-                                <Mail className="w-4 h-4 mr-2" />
-                                Email Quote
-                            </Button>
-                            <Button variant="outline" className="w-full" disabled>
-                                Preview
-                            </Button>
+                            <div className="w-full space-y-1">
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <span className="block w-full">
+                                                <Button variant="outline" className="w-full" onClick={onSendQuote} disabled={sendDisabled}>
+                                                    <Mail className="w-4 h-4 mr-2" />
+                                                    Send Quote
+                                                </Button>
+                                            </span>
+                                        </TooltipTrigger>
+                                        {sendDisabledReason && (
+                                            <TooltipContent>
+                                                <p className="text-xs">{sendDisabledReason}</p>
+                                            </TooltipContent>
+                                        )}
+                                    </Tooltip>
+                                </TooltipProvider>
+                                {sendDisabledReason && <p className="text-xs text-muted-foreground">{sendDisabledReason}</p>}
+                            </div>
+                            <div className="w-full space-y-1">
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <span className="block w-full">
+                                                <Button variant="outline" className="w-full" onClick={onPreviewQuote} disabled={previewDisabled}>
+                                                    <Eye className="w-4 h-4 mr-2" />
+                                                    Preview Quote
+                                                </Button>
+                                            </span>
+                                        </TooltipTrigger>
+                                        {previewDisabledReason && (
+                                            <TooltipContent>
+                                                <p className="text-xs">{previewDisabledReason}</p>
+                                            </TooltipContent>
+                                        )}
+                                    </Tooltip>
+                                </TooltipProvider>
+                                {previewDisabledReason && <p className="text-xs text-muted-foreground">{previewDisabledReason}</p>}
+                            </div>
                         </div>
 
                         {/* Row 2: Convert to Order (primary action, full-width) */}

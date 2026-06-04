@@ -9,6 +9,7 @@
  *   GET    /api/quotes/pending-approvals
  *   GET    /api/quotes
  *   GET    /api/quotes/export.csv
+ *   GET    /api/quotes/:id/pdf
  *   GET    /api/quotes/:id
  *   PATCH  /api/quotes/:id
  *   DELETE /api/quotes/:id
@@ -83,6 +84,7 @@ import {
   haveLineItemPricingDriversChanged,
   LineItemPriceOverrideValidationError,
 } from "../lib/lineItemPricingPersistence";
+import { generateQuotePdfBytes, QuotePdfEligibilityError } from "../lib/quotePdf";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -1213,6 +1215,45 @@ export function registerQuoteRoutes(
     } catch (error) {
       console.error("Error exporting quotes CSV:", error);
       return res.status(500).json({ message: "Failed to export quotes" });
+    }
+  });
+
+  app.get("/api/quotes/:id/pdf", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const userRole = req.user.role || "customer";
+      const isInternalUser = ["owner", "admin", "manager", "employee"].includes(String(userRole).toLowerCase());
+      if (!isInternalUser) {
+        return res.status(403).json({ message: "Quote PDF preview is available to staff only." });
+      }
+
+      const { id } = req.params;
+      const quote = await storage.getQuoteById(organizationId, id);
+      if (!quote) {
+        return res.status(404).json({ message: "Quote not found" });
+      }
+
+      const [organization] = await db
+        .select()
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      const pdfBytes = await generateQuotePdfBytes({ quote: quote as any, organization });
+      const quoteNumber = (quote as any).displayNumber || (quote as any).quoteNumber || id;
+      const safeQuoteNumber = String(quoteNumber).replace(/[^a-z0-9._-]+/gi, "-");
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="quote-${safeQuoteNumber}.pdf"`);
+      return res.status(200).send(Buffer.from(pdfBytes));
+    } catch (error) {
+      if (error instanceof QuotePdfEligibilityError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+      console.error("Error generating quote PDF:", error);
+      return res.status(500).json({ message: "Failed to generate quote PDF" });
     }
   });
 
