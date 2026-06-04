@@ -10,6 +10,14 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import {
+  INVOICE_LOGO_ACCEPT_ATTRIBUTE,
+  INVOICE_LOGO_HELPER_TEXT,
+  INVOICE_LOGO_MAX_BYTES,
+  INVOICE_LOGO_TOO_LARGE_MESSAGE,
+  INVOICE_LOGO_UNSUPPORTED_TYPE_MESSAGE,
+  isInvoiceLogoAcceptedMimeType,
+} from "@shared/companyInfoInvoiceBranding";
 
 type Address = {
   line1?: string | null;
@@ -96,6 +104,31 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
+export function validateInvoiceLogoFileForUpload(file: Pick<File, "size" | "type">): string | null {
+  if (!isInvoiceLogoAcceptedMimeType(file.type)) {
+    return INVOICE_LOGO_UNSUPPORTED_TYPE_MESSAGE;
+  }
+  if (file.size > INVOICE_LOGO_MAX_BYTES) {
+    return INVOICE_LOGO_TOO_LARGE_MESSAGE;
+  }
+  return null;
+}
+
+function extractUploadErrorMessage(error: Error): string {
+  const jsonStart = error.message.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(error.message.slice(jsonStart));
+      if (typeof parsed?.message === "string" && parsed.message.trim()) {
+        return parsed.message;
+      }
+    } catch {
+      // Fall through to the raw error message.
+    }
+  }
+  return error.message;
+}
+
 export function CompanyInfoInvoiceBrandingCard() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -147,11 +180,9 @@ export function CompanyInfoInvoiceBrandingCard() {
 
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
-      if (!["image/png", "image/jpeg"].includes(file.type)) {
-        throw new Error("Use a PNG or JPG logo.");
-      }
-      if (file.size > 2 * 1024 * 1024) {
-        throw new Error("Logo must be 2 MB or smaller.");
+      const validationMessage = validateInvoiceLogoFileForUpload(file);
+      if (validationMessage) {
+        throw new Error(validationMessage);
       }
       const dataBase64 = await fileToBase64(file);
       const response = await apiRequest("POST", "/api/company-settings/invoice-logo", {
@@ -170,7 +201,7 @@ export function CompanyInfoInvoiceBrandingCard() {
       toast({ title: "Logo uploaded", description: "Save settings to use this logo on invoices." });
     },
     onError: (error: Error) => {
-      toast({ title: "Logo upload failed", description: error.message, variant: "destructive" });
+      toast({ title: "Logo upload failed", description: extractUploadErrorMessage(error), variant: "destructive" });
     },
   });
 
@@ -261,13 +292,21 @@ export function CompanyInfoInvoiceBrandingCard() {
                   ref={fileInputRef}
                   className="hidden"
                   type="file"
-                  accept="image/png,image/jpeg"
+                  accept={INVOICE_LOGO_ACCEPT_ATTRIBUTE}
                   onChange={(event) => {
                     const file = event.target.files?.[0];
-                    if (file) uploadMutation.mutate(file);
+                    if (file) {
+                      const validationMessage = validateInvoiceLogoFileForUpload(file);
+                      if (validationMessage) {
+                        toast({ title: "Logo upload rejected", description: validationMessage, variant: "destructive" });
+                      } else {
+                        uploadMutation.mutate(file);
+                      }
+                    }
                     event.currentTarget.value = "";
                   }}
                 />
+                <p className="text-xs text-muted-foreground">{INVOICE_LOGO_HELPER_TEXT}</p>
                 <div className="flex flex-wrap gap-2">
                   <Button type="button" variant="outline" onClick={() => fileInputRef.current?.click()} disabled={uploadMutation.isPending}>
                     {uploadMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ImageUp className="mr-2 h-4 w-4" />}
