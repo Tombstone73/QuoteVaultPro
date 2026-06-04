@@ -396,6 +396,11 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         requestApprovalMutation.mutate(state.quoteId);
     };
 
+    const handlePreviewQuote = () => {
+        if (!state.quoteId) return;
+        window.open(`/api/quotes/${encodeURIComponent(state.quoteId)}/pdf`, "_blank", "noopener,noreferrer");
+    };
+
     // Quote update mutation for shipTo fields (like orders)
     const updateQuote = useMutation({
         mutationFn: async (updates: Record<string, any>) => {
@@ -1199,6 +1204,9 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             convertToOrderPending={state.convertToOrderHook?.isPending}
                             showConvertToOrder={createTarget === "order" ? false : (!editMode && !!state.quoteId)}
                             onDiscard={handleDiscard}
+                            quoteId={state.quoteId}
+                            quoteNumber={(state.quote as any)?.quoteNumber ?? null}
+                            quoteStatus={(state.quote as any)?.status ?? null}
                             onDiscountAmountChange={state.handlers.setDiscountAmount}
                             quoteTaxExempt={state.quoteTaxExempt}
                             quoteTaxRateOverride={state.quoteTaxRateOverride}
@@ -1207,6 +1215,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             workflowState={workflowState || undefined}
                             requireApproval={orgPreferences?.quotes?.requireApproval || false}
                             isInternalUser={user ? ['owner', 'admin', 'manager', 'employee'].includes((user.role || '').toLowerCase()) : false}
+                            onPreviewQuote={handlePreviewQuote}
                             onApprove={handleApprove}
                             onApproveAndSend={handleApproveAndSend}
                             onRequestApproval={handleRequestApproval}
