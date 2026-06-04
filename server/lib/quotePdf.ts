@@ -1,5 +1,6 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
 import {
+  buildDocumentAddressBlock,
   joinNonEmptyDocumentValues,
   resolveCompanyDocumentBranding,
   type CompanyDocumentBranding,
@@ -179,12 +180,6 @@ function pushUnique(lines: string[], value: unknown) {
   lines.push(text);
 }
 
-function cityStatePostalLine(quote: QuotePdfInput["quote"]): string {
-  const city = cleanText(quote.billToCity);
-  const statePostal = [cleanText(quote.billToState), cleanText(quote.billToPostalCode)].filter(Boolean).join(" ");
-  return [city, statePostal].filter(Boolean).join(", ");
-}
-
 export function buildQuotePdfBillToLines(quote: QuotePdfInput["quote"]): string[] {
   const lines: string[] = [];
   const company = cleanText(quote.billToCompany) || cleanText(quote.customerName);
@@ -196,12 +191,14 @@ export function buildQuotePdfBillToLines(quote: QuotePdfInput["quote"]): string[
   }
 
   const nameValues = [company, contactName, quote.customerName].filter(Boolean);
-  const addressCandidates = [
-    cleanText(quote.billToAddress1),
-    cleanText(quote.billToAddress2),
-    cityStatePostalLine(quote),
-    cleanText(quote.billToCountry),
-  ];
+  const addressCandidates = buildDocumentAddressBlock({
+    line1: quote.billToAddress1,
+    line2: quote.billToAddress2,
+    city: quote.billToCity,
+    state: quote.billToState,
+    postalCode: quote.billToPostalCode,
+    country: quote.billToCountry,
+  }).split("\n");
 
   for (const addressLine of addressCandidates) {
     if (!addressLine) continue;

@@ -617,6 +617,7 @@ export async function generateInvoicePdfBytes(
   const threeColsGap = 18;
   const colW = (width - margin * 2 - threeColsGap * 2) / 3;
 
+  // TODO: Add configurable document block positioning for printed/window-envelope invoice layouts.
   const blockTopY = y;
   const drawAddressCol = (label: string, text: string, colIndex: number) => {
     const x = margin + colIndex * (colW + threeColsGap);
