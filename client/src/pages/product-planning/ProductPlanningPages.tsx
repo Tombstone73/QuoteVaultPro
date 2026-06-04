@@ -1,14 +1,18 @@
-import { useMemo, useState } from "react";
-import { Link, Navigate, useLocation } from "react-router-dom";
+import { Fragment, useMemo, useState } from "react";
+import { Link, Navigate, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
   Archive,
+  ArrowLeft,
   ArrowDown,
   ArrowUp,
   Bug,
+  ChevronDown,
   ClipboardList,
+  Eye,
   FileUp,
+  History,
   Kanban,
   LayoutDashboard,
   Link2,
@@ -64,6 +68,23 @@ type WorkItemSummary = {
   priority?: Priority;
 };
 
+type ProductPlanningEvent = {
+  id: string;
+  eventType: string;
+  message: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+  createdByUserId: string | null;
+};
+
+type ProductPlanningSourceBugReport = {
+  id: string;
+  referenceNumber: string | null;
+  title: string;
+  status: string;
+  severity: string;
+};
+
 type WorkItem = {
   id: string;
   reference: string;
@@ -83,6 +104,7 @@ type WorkItem = {
   sourceType: SourceType | null;
   sourceBugReportId: string | null;
   sourceReference: string | null;
+  importedBatchId: string | null;
   parentId: string | null;
   parent?: WorkItemSummary | null;
   children?: WorkItemSummary[];
@@ -122,6 +144,24 @@ type ProductPlanningDependency = {
   dependencyType: DependencyType;
   dependsOnWorkItem: WorkItemSummary | null;
   createdAt: string;
+};
+
+type ProductPlanningBlockedBy = {
+  id: string;
+  workItemId: string;
+  dependsOnWorkItemId: string;
+  dependencyType: DependencyType;
+  workItem: WorkItemSummary | null;
+  createdAt: string;
+};
+
+type WorkItemDetail = WorkItem & {
+  release?: ProductPlanningRelease | null;
+  sourceBugReport?: ProductPlanningSourceBugReport | null;
+  importBatch?: ImportBatch | null;
+  dependencies?: ProductPlanningDependency[];
+  blockedBy?: ProductPlanningBlockedBy[];
+  events?: ProductPlanningEvent[];
 };
 
 type DashboardData = {
@@ -170,6 +210,12 @@ type ImportBatch = {
   errorCount: number;
   status: string;
   createdAt: string;
+};
+
+type ImportCommitResult = {
+  batch: ImportBatch;
+  importedItems: WorkItem[];
+  skippedRows: Array<{ rowNumber: number; title: string | null; reason: string }>;
 };
 
 const WORK_ITEM_TYPES: Array<{ value: WorkItemType; label: string }> = [
@@ -279,6 +325,19 @@ function priorityBadge(priority: Priority) {
   return "secondary";
 }
 
+function workItemPath(itemOrId: Pick<WorkItem, "id"> | string) {
+  return ROUTES.productPlanning.workItemDetail(typeof itemOrId === "string" ? itemOrId : itemOrId.id);
+}
+
+function displayDate(value: string | null | undefined, includeTime = false) {
+  if (!value) return "-";
+  return format(new Date(value), includeTime ? "MMM d, yyyy HH:mm" : "MMM d, yyyy");
+}
+
+function releaseName(item: WorkItem, releases?: ProductPlanningRelease[]) {
+  return (item as WorkItemDetail).release?.name ?? releases?.find((release) => release.id === item.releaseId)?.name ?? item.releaseTarget ?? "";
+}
+
 function ProductPlanningShell({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
   const location = useLocation();
@@ -307,7 +366,7 @@ function ProductPlanningShell({ children }: { children: React.ReactNode }) {
         <div className="flex items-center gap-2">
           {tabs.map((tab) => {
             const Icon = tab.icon;
-            const active = activePath === tab.path;
+            const active = activePath === tab.path || (activePath.startsWith("/product-planning/work-items/") && tab.path === ROUTES.productPlanning.backlog);
             return (
               <Link key={tab.path} to={tab.path}>
                 <Button variant={active ? "default" : "outline"} size="sm" className="gap-2">
@@ -335,7 +394,21 @@ function StatCard({ title, value }: { title: string; value: number }) {
   );
 }
 
-function CompactItemList({ title, items, icon }: { title: string; items: WorkItem[]; icon: React.ReactNode }) {
+function CompactItemList({
+  title,
+  items,
+  icon,
+  emptyMessage,
+  actionLabel,
+  actionTo,
+}: {
+  title: string;
+  items: WorkItem[];
+  icon: React.ReactNode;
+  emptyMessage?: string;
+  actionLabel?: string;
+  actionTo?: string;
+}) {
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -346,9 +419,16 @@ function CompactItemList({ title, items, icon }: { title: string; items: WorkIte
       </CardHeader>
       <CardContent className="space-y-2">
         {items.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No items yet.</p>
+          <div className="space-y-3 rounded-md border border-dashed border-border p-4">
+            <p className="text-sm text-muted-foreground">{emptyMessage ?? "No items yet."}</p>
+            {actionLabel && actionTo && (
+              <Link to={actionTo}>
+                <Button variant="outline" size="sm">{actionLabel}</Button>
+              </Link>
+            )}
+          </div>
         ) : items.map((item) => (
-          <Link key={item.id} to={ROUTES.productPlanning.backlog} className="block rounded-md border border-border p-3 hover:bg-muted/40">
+          <Link key={item.id} to={workItemPath(item)} className="block rounded-md border border-border p-3 hover:bg-muted/40">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="font-mono text-xs text-muted-foreground">{item.reference}</div>
@@ -373,7 +453,12 @@ function ReleaseProgressList({ releases }: { releases: DashboardData["releasePro
       </CardHeader>
       <CardContent className="space-y-3">
         {releases.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No releases planned.</p>
+          <div className="space-y-3 rounded-md border border-dashed border-border p-4">
+            <p className="text-sm text-muted-foreground">No releases planned.</p>
+            <Link to={ROUTES.productPlanning.backlog}>
+              <Button variant="outline" size="sm">Create Release</Button>
+            </Link>
+          </div>
         ) : releases.map((release) => {
           const percent = release.totalCount > 0 ? Math.round((release.releasedCount / release.totalCount) * 100) : 0;
           return (
@@ -426,17 +511,17 @@ export function ProductPlanningDashboardPage() {
             <StatCard title="MAIN validation" value={data.itemsInMainValidation} />
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
-            <CompactItemList title="Major Bugs" items={data.majorBugs} icon={<Bug className="h-4 w-4 text-destructive" />} />
-            <CompactItemList title="Prioritized Features" items={data.topPrioritizedFeatures} icon={<ClipboardList className="h-4 w-4 text-primary" />} />
+            <CompactItemList title="Major Bugs" items={data.majorBugs} icon={<Bug className="h-4 w-4 text-destructive" />} emptyMessage="No prioritized bugs yet." actionLabel="Push Bug Reports" actionTo={ROUTES.admin.bugReports} />
+            <CompactItemList title="Prioritized Features" items={data.topPrioritizedFeatures} icon={<ClipboardList className="h-4 w-4 text-primary" />} emptyMessage="No prioritized features yet." actionLabel="Create Work Item" actionTo={ROUTES.productPlanning.backlog} />
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
-            <CompactItemList title="Top Score Features" items={data.topPriorityScoreFeatures} icon={<ClipboardList className="h-4 w-4 text-primary" />} />
-            <CompactItemList title="Go-Live Bug Blockers" items={data.majorBugsBlockingGoLive} icon={<Bug className="h-4 w-4 text-destructive" />} />
+            <CompactItemList title="Top Score Features" items={data.topPriorityScoreFeatures} icon={<ClipboardList className="h-4 w-4 text-primary" />} emptyMessage="No scored features yet." actionLabel="Import Backlog" actionTo={ROUTES.productPlanning.imports} />
+            <CompactItemList title="Go-Live Bug Blockers" items={data.majorBugsBlockingGoLive} icon={<Bug className="h-4 w-4 text-destructive" />} emptyMessage="No go-live bug blockers yet." actionLabel="Push Bug Reports" actionTo={ROUTES.admin.bugReports} />
           </div>
           <div className="grid gap-4 lg:grid-cols-3">
             <ReleaseProgressList releases={data.releaseProgress} />
-            <CompactItemList title="Stalled Validation" items={data.itemsStalledInValidation} icon={<RefreshCw className="h-4 w-4 text-muted-foreground" />} />
-            <CompactItemList title="Unresolved Dependencies" items={data.itemsWithUnresolvedDependencies} icon={<Link2 className="h-4 w-4 text-muted-foreground" />} />
+            <CompactItemList title="Stalled Validation" items={data.itemsStalledInValidation} icon={<RefreshCw className="h-4 w-4 text-muted-foreground" />} emptyMessage="No validation items look stalled." actionLabel="Open Kanban" actionTo={ROUTES.productPlanning.kanban} />
+            <CompactItemList title="Unresolved Dependencies" items={data.itemsWithUnresolvedDependencies} icon={<Link2 className="h-4 w-4 text-muted-foreground" />} emptyMessage="No unresolved dependencies." actionLabel="Open Backlog" actionTo={ROUTES.productPlanning.backlog} />
           </div>
           <div className="grid gap-4 lg:grid-cols-3">
             <SummaryBreakdown title="By Status" rows={data.byStatus} />
@@ -580,6 +665,7 @@ function payloadFromForm(form: WorkItemFormState) {
 export function ProductPlanningBacklogPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
   const [filters, setFilters] = useState({
     search: "",
     workItemType: "all",
@@ -588,12 +674,14 @@ export function ProductPlanningBacklogPage() {
     module: "",
     phase: "all",
     sourceType: "all",
+    importedBatchId: searchParams.get("importedBatchId") ?? "",
     sortBy: "updatedAt",
     sortDirection: "desc",
   });
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState<WorkItemFormState>(EMPTY_FORM);
   const [releaseDraft, setReleaseDraft] = useState({ name: "", targetDate: "" });
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams();
@@ -724,6 +812,11 @@ export function ProductPlanningBacklogPage() {
                 <SelectItem value="bug_report">Bug Report</SelectItem>
               </SelectContent>
             </Select>
+            {filters.importedBatchId && (
+              <Button variant="outline" size="sm" onClick={() => setFilters({ ...filters, importedBatchId: "" })}>
+                Clear Import Filter
+              </Button>
+            )}
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -782,55 +875,74 @@ export function ProductPlanningBacklogPage() {
               )) : rows.length === 0 ? (
                 <TableRow><TableCell colSpan={14} className="py-8 text-center text-sm text-muted-foreground">No planning work items found.</TableCell></TableRow>
               ) : rows.map((item) => (
-                <TableRow key={item.id}>
-                  <TableCell className="font-mono text-xs font-semibold">{item.reference}</TableCell>
-                  <TableCell>
-                    <div className="max-w-[360px] truncate text-sm font-medium">{item.title}</div>
-                    {item.sourceReference && <div className="text-xs text-muted-foreground">{item.sourceReference}</div>}
-                  </TableCell>
-                  <TableCell><Badge variant="outline">{labelFor(WORK_ITEM_TYPES, item.workItemType)}</Badge></TableCell>
-                  <TableCell>
-                    <InlineSelect value={item.planningStatus} options={STATUSES} onChange={(value) => quickUpdateMutation.mutate({ id: item.id, patch: { planningStatus: value as PlanningStatus } })} />
-                  </TableCell>
-                  <TableCell>
-                    <InlineSelect value={item.priority} options={PRIORITIES} onChange={(value) => quickUpdateMutation.mutate({ id: item.id, patch: { priority: value as Priority } })} />
-                  </TableCell>
-                  <TableCell>{item.priorityScore == null ? "" : <Badge variant="outline">{item.priorityScore}</Badge>}</TableCell>
-                  <TableCell>
-                    <Input
-                      defaultValue={item.module ?? ""}
-                      onBlur={(event) => {
-                        const next = normalizeOptional(event.target.value);
-                        if (next !== item.module) quickUpdateMutation.mutate({ id: item.id, patch: { module: next } });
-                      }}
-                      className="h-8 w-[140px]"
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <InlineSelect value={item.phase ?? ""} includeNone options={PHASES} onChange={(value) => quickUpdateMutation.mutate({ id: item.id, patch: { phase: (value || null) as Phase | null } })} />
-                  </TableCell>
-                  <TableCell className="max-w-[160px] truncate text-xs text-muted-foreground">
-                    {item.releaseId ? (releaseById.get(item.releaseId)?.name ?? "Linked release") : ""}
-                  </TableCell>
-                  <TableCell className="max-w-[160px] truncate text-xs text-muted-foreground">
-                    {item.parentId ? (parentById.get(item.parentId)?.reference ?? "Linked epic") : ""}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="secondary">{item.sourceType ? item.sourceType.replace("_", " ") : "manual"}</Badge>
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{format(new Date(item.updatedAt), "MMM d, yyyy")}</TableCell>
-                  <TableCell className="max-w-[120px] truncate text-xs text-muted-foreground">{item.ownerUserId || ""}</TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
-                      <Button variant="ghost" size="icon" title="Edit" onClick={() => { setForm(formFromItem(item)); setModalOpen(true); }}>
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" size="icon" title="Archive" onClick={() => archiveMutation.mutate(item.id)}>
-                        <Archive className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
+                <Fragment key={item.id}>
+                  <TableRow>
+                    <TableCell className="font-mono text-xs font-semibold">
+                      <Link to={workItemPath(item)} className="text-primary hover:underline">{item.reference}</Link>
+                    </TableCell>
+                    <TableCell>
+                      <Link to={workItemPath(item)} className="block max-w-[360px] truncate text-sm font-medium text-primary hover:underline">{item.title}</Link>
+                      {item.sourceReference && <div className="text-xs text-muted-foreground">{item.sourceReference}</div>}
+                    </TableCell>
+                    <TableCell><Badge variant="outline">{labelFor(WORK_ITEM_TYPES, item.workItemType)}</Badge></TableCell>
+                    <TableCell>
+                      <InlineSelect value={item.planningStatus} options={STATUSES} onChange={(value) => quickUpdateMutation.mutate({ id: item.id, patch: { planningStatus: value as PlanningStatus } })} />
+                    </TableCell>
+                    <TableCell>
+                      <InlineSelect value={item.priority} options={PRIORITIES} onChange={(value) => quickUpdateMutation.mutate({ id: item.id, patch: { priority: value as Priority } })} />
+                    </TableCell>
+                    <TableCell>{item.priorityScore == null ? "" : <Badge variant="outline">{item.priorityScore}</Badge>}</TableCell>
+                    <TableCell>
+                      <Input
+                        defaultValue={item.module ?? ""}
+                        onBlur={(event) => {
+                          const next = normalizeOptional(event.target.value);
+                          if (next !== item.module) quickUpdateMutation.mutate({ id: item.id, patch: { module: next } });
+                        }}
+                        className="h-8 w-[140px]"
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <InlineSelect value={item.phase ?? ""} includeNone options={PHASES} onChange={(value) => quickUpdateMutation.mutate({ id: item.id, patch: { phase: (value || null) as Phase | null } })} />
+                    </TableCell>
+                    <TableCell className="max-w-[160px] truncate text-xs text-muted-foreground">
+                      {releaseName(item, releases) && <Badge variant="secondary">{releaseName(item, releases)}</Badge>}
+                    </TableCell>
+                    <TableCell className="max-w-[160px] truncate text-xs text-muted-foreground">
+                      {item.parentId ? (parentById.get(item.parentId)?.reference ?? "Linked epic") : ""}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="secondary">{item.sourceType ? item.sourceType.replace("_", " ") : "manual"}</Badge>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{format(new Date(item.updatedAt), "MMM d, yyyy")}</TableCell>
+                    <TableCell className="max-w-[120px] truncate text-xs text-muted-foreground">{item.ownerUserId || ""}</TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-1">
+                        <Link to={workItemPath(item)}>
+                          <Button variant="ghost" size="icon" title="Quick view">
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                        </Link>
+                        <Button variant="ghost" size="icon" title="Expand" onClick={() => setExpandedId(expandedId === item.id ? null : item.id)}>
+                          <ChevronDown className={`h-4 w-4 transition-transform ${expandedId === item.id ? "rotate-180" : ""}`} />
+                        </Button>
+                        <Button variant="ghost" size="icon" title="Edit" onClick={() => { setForm(formFromItem(item)); setModalOpen(true); }}>
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" title="Archive" onClick={() => archiveMutation.mutate(item.id)}>
+                          <Archive className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                  {expandedId === item.id && (
+                    <TableRow>
+                      <TableCell colSpan={14} className="bg-muted/20 p-0">
+                        <BacklogExpandedRow item={item} release={releaseById.get(item.releaseId ?? "") ?? null} />
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </Fragment>
               ))}
             </TableBody>
           </Table>
@@ -854,30 +966,77 @@ export function ProductPlanningBacklogPage() {
   );
 }
 
+export function BacklogExpandedRow({ item, release }: { item: WorkItem; release: ProductPlanningRelease | null }) {
+  const { data: dependencies = [], isLoading } = useQuery<ProductPlanningDependency[]>({
+    queryKey: ["/api/product-planning/work-items", item.id, "dependencies", "backlog-row"],
+    queryFn: () => fetchJson<ProductPlanningDependency[]>(`/api/product-planning/work-items/${item.id}/dependencies`),
+  });
+
+  return (
+    <div className="grid gap-4 p-4 text-sm md:grid-cols-2 xl:grid-cols-4">
+      <div>
+        <div className="text-xs font-medium uppercase text-muted-foreground">Description</div>
+        <p className="mt-1 whitespace-pre-wrap text-sm">{item.description || "No description yet."}</p>
+      </div>
+      <div>
+        <div className="text-xs font-medium uppercase text-muted-foreground">Notes</div>
+        <p className="mt-1 whitespace-pre-wrap text-sm">{item.notes || "No notes yet."}</p>
+      </div>
+      <div>
+        <div className="text-xs font-medium uppercase text-muted-foreground">Dependencies</div>
+        <div className="mt-1 space-y-1">
+          {isLoading ? <Skeleton className="h-5 w-32" /> : dependencies.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No dependencies linked.</p>
+          ) : dependencies.slice(0, 4).map((dependency) => (
+            <Link key={dependency.id} to={dependency.dependsOnWorkItem ? workItemPath(dependency.dependsOnWorkItem.id) : "#"} className="block truncate text-primary hover:underline">
+              {labelFor(DEPENDENCY_TYPES, dependency.dependencyType)} {dependency.dependsOnWorkItem?.reference ?? dependency.dependsOnWorkItemId}
+            </Link>
+          ))}
+        </div>
+      </div>
+      <div>
+        <div className="text-xs font-medium uppercase text-muted-foreground">Source & Release</div>
+        <div className="mt-1 space-y-1 text-sm">
+          <div>Release: {release?.name ?? item.releaseTarget ?? "Unassigned"}</div>
+          <div>Source: {item.sourceType ? item.sourceType.replace("_", " ") : "Manual"}</div>
+          {item.sourceReference && <div>Source ref: {item.sourceReference}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PlanningItemCard({
   item,
+  releases,
   compact,
   children,
 }: {
   item: WorkItem;
+  releases?: ProductPlanningRelease[];
   compact?: boolean;
   children?: React.ReactNode;
 }) {
+  const itemReleaseName = releaseName(item, releases);
   return (
     <div className="rounded-md border border-border bg-background p-3 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="font-mono text-xs text-muted-foreground">{item.reference}</div>
-          <div className="line-clamp-2 text-sm font-medium">{item.title}</div>
+      <Link to={workItemPath(item)} className="block">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-mono text-xs text-primary">{item.reference}</div>
+            <div className="line-clamp-2 text-sm font-medium hover:underline">{item.title}</div>
+          </div>
+          <Badge variant={priorityBadge(item.priority)} className="shrink-0 capitalize">{item.priority}</Badge>
         </div>
-        <Badge variant={priorityBadge(item.priority)} className="shrink-0 capitalize">{item.priority}</Badge>
-      </div>
-      <div className="mt-2 flex flex-wrap gap-1">
-        <Badge variant="outline" className="text-[11px]">{labelFor(WORK_ITEM_TYPES, item.workItemType)}</Badge>
-        {item.module && <Badge variant="secondary" className="text-[11px]">{item.module}</Badge>}
-        {item.phase && <Badge variant="secondary" className="text-[11px]">{labelFor(PHASES, item.phase)}</Badge>}
-        {item.sourceType && item.sourceType !== "manual" && <Badge variant="outline" className="text-[11px]">{item.sourceType.replace("_", " ")}</Badge>}
-      </div>
+        <div className="mt-2 flex flex-wrap gap-1">
+          <Badge variant="outline" className="text-[11px]">{labelFor(WORK_ITEM_TYPES, item.workItemType)}</Badge>
+          <Badge variant="secondary" className="text-[11px]">{labelFor(STATUSES, item.planningStatus)}</Badge>
+          {item.module && <Badge variant="secondary" className="text-[11px]">{item.module}</Badge>}
+          {item.phase && <Badge variant="secondary" className="text-[11px]">{labelFor(PHASES, item.phase)}</Badge>}
+          {itemReleaseName && <Badge variant="secondary" className="text-[11px]">{itemReleaseName}</Badge>}
+          {item.sourceType && item.sourceType !== "manual" && <Badge variant="outline" className="text-[11px]">{item.sourceType.replace("_", " ")}</Badge>}
+        </div>
+      </Link>
       {!compact && children && <div className="mt-3">{children}</div>}
     </div>
   );
@@ -897,6 +1056,10 @@ export function ProductPlanningKanbanPage() {
   const { data: rows = [], isLoading } = useQuery<WorkItem[]>({
     queryKey: ["/api/product-planning/work-items", "kanban"],
     queryFn: () => fetchJson<WorkItem[]>("/api/product-planning/work-items?sortBy=sortOrder&sortDirection=asc&limit=250"),
+  });
+  const { data: releases = [] } = useQuery<ProductPlanningRelease[]>({
+    queryKey: ["/api/product-planning/releases"],
+    queryFn: () => fetchJson<ProductPlanningRelease[]>("/api/product-planning/releases"),
   });
 
   const invalidate = () => {
@@ -958,7 +1121,7 @@ export function ProductPlanningKanbanPage() {
                   ) : items.length === 0 ? (
                     <p className="py-6 text-center text-xs text-muted-foreground">No items</p>
                   ) : items.map((item, index) => (
-                    <PlanningItemCard key={item.id} item={item}>
+                    <PlanningItemCard key={item.id} item={item} releases={releases}>
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex gap-1">
                           <Button variant="outline" size="icon" className="h-7 w-7" disabled={index === 0} onClick={() => moveWithinColumn(status.value, item.id, -1)}>
@@ -1008,6 +1171,10 @@ export function ProductPlanningRoadmapPage() {
   const { data: rows = [], isLoading } = useQuery<WorkItem[]>({
     queryKey: ["/api/product-planning/work-items", "roadmap", queryString],
     queryFn: () => fetchJson<WorkItem[]>(`/api/product-planning/work-items?${queryString}`),
+  });
+  const { data: releases = [] } = useQuery<ProductPlanningRelease[]>({
+    queryKey: ["/api/product-planning/releases"],
+    queryFn: () => fetchJson<ProductPlanningRelease[]>("/api/product-planning/releases"),
   });
 
   const invalidate = () => {
@@ -1078,7 +1245,7 @@ export function ProductPlanningRoadmapPage() {
                 ) : items.length === 0 ? (
                   <p className="col-span-full py-4 text-center text-sm text-muted-foreground">No items in this phase.</p>
                 ) : items.map((item, index) => (
-                  <PlanningItemCard key={item.id} item={item}>
+                  <PlanningItemCard key={item.id} item={item} releases={releases}>
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex gap-1">
                         <Button variant="outline" size="icon" className="h-7 w-7" disabled={index === 0} onClick={() => moveWithinPhase(group.value, item.id, -1)}>
@@ -1151,7 +1318,7 @@ function WorkItemDialog({
   releases: ProductPlanningRelease[];
   workItems: WorkItem[];
   currentItem?: WorkItem;
-  children: WorkItem[];
+  children: WorkItemSummary[];
   onOpenChange: (open: boolean) => void;
   onSave: () => void;
   isSaving: boolean;
@@ -1372,6 +1539,295 @@ function SelectField<T extends string>({ label, value, options, onChange, includ
   );
 }
 
+export function ProductPlanningWorkItemDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [modalOpen, setModalOpen] = useState(false);
+
+  const { data: item, isLoading } = useQuery<WorkItemDetail>({
+    queryKey: ["/api/product-planning/work-items", id, "detail"],
+    queryFn: () => fetchJson<WorkItemDetail>(`/api/product-planning/work-items/${id}`),
+    enabled: Boolean(id),
+  });
+  const { data: releases = [] } = useQuery<ProductPlanningRelease[]>({
+    queryKey: ["/api/product-planning/releases"],
+    queryFn: () => fetchJson<ProductPlanningRelease[]>("/api/product-planning/releases"),
+  });
+  const { data: workItems = [] } = useQuery<WorkItem[]>({
+    queryKey: ["/api/product-planning/work-items", "detail-parent-options"],
+    queryFn: () => fetchJson<WorkItem[]>("/api/product-planning/work-items?limit=250"),
+  });
+  const [form, setForm] = useState<WorkItemFormState>(EMPTY_FORM);
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/product-planning/work-items"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
+    if (id) queryClient.invalidateQueries({ queryKey: ["/api/product-planning/work-items", id, "detail"] });
+  };
+
+  const saveMutation = useMutation({
+    mutationFn: async (next: WorkItemFormState) => {
+      const res = await apiRequest("PATCH", `/api/product-planning/work-items/${next.id}`, payloadFromForm(next));
+      return (await res.json()).data as WorkItem;
+    },
+    onSuccess: () => {
+      invalidate();
+      setModalOpen(false);
+      toast({ title: "Work item saved" });
+    },
+    onError: (error: Error) => toast({ title: "Save failed", description: error.message, variant: "destructive" }),
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/archive`, {});
+      return (await res.json()).data as WorkItem;
+    },
+    onSuccess: () => {
+      invalidate();
+      toast({ title: "Work item archived" });
+    },
+    onError: (error: Error) => toast({ title: "Archive failed", description: error.message, variant: "destructive" }),
+  });
+
+  const moveStatusMutation = useMutation({
+    mutationFn: async (planningStatus: PlanningStatus) => {
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/move-status`, { planningStatus });
+      return (await res.json()).data as WorkItem;
+    },
+    onSuccess: invalidate,
+    onError: (error: Error) => toast({ title: "Status move failed", description: error.message, variant: "destructive" }),
+  });
+
+  const movePhaseMutation = useMutation({
+    mutationFn: async (phase: Phase | null) => {
+      const res = await apiRequest("POST", `/api/product-planning/work-items/${id}/move-phase`, { phase });
+      return (await res.json()).data as WorkItem;
+    },
+    onSuccess: invalidate,
+    onError: (error: Error) => toast({ title: "Phase move failed", description: error.message, variant: "destructive" }),
+  });
+
+  if (isLoading || !item) {
+    return (
+      <ProductPlanningShell>
+        <Skeleton className="h-28 w-full" />
+        <Skeleton className="h-64 w-full" />
+      </ProductPlanningShell>
+    );
+  }
+
+  const relatedDependencies = [
+    ...(item.dependencies ?? []).filter((dependency) => dependency.dependencyType === "relates_to").map((dependency) => dependency.dependsOnWorkItem),
+    ...(item.blockedBy ?? []).filter((dependency) => dependency.dependencyType === "relates_to").map((dependency) => dependency.workItem),
+  ].filter(Boolean) as WorkItemSummary[];
+  const dependsOn = (item.dependencies ?? []).filter((dependency) => dependency.dependencyType !== "relates_to");
+  const blockedBy = (item.blockedBy ?? []).filter((dependency) => dependency.dependencyType !== "relates_to");
+
+  return (
+    <ProductPlanningShell>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Button variant="outline" size="sm" onClick={() => navigate(ROUTES.productPlanning.backlog)} className="gap-2">
+          <ArrowLeft className="h-4 w-4" />
+          Backlog
+        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={() => { setForm(formFromItem(item)); setModalOpen(true); }} className="gap-2">
+            <Pencil className="h-4 w-4" />
+            Edit
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => archiveMutation.mutate()} className="gap-2">
+            <Archive className="h-4 w-4" />
+            Archive
+          </Button>
+          <InlineSelect value={item.planningStatus} options={STATUSES} onChange={(value) => moveStatusMutation.mutate(value as PlanningStatus)} />
+          <InlineSelect value={item.phase ?? ""} includeNone options={PHASES} onChange={(value) => movePhaseMutation.mutate((value || null) as Phase | null)} />
+        </div>
+      </div>
+
+      <Card>
+        <CardContent className="space-y-4 p-5">
+          <div className="font-mono text-sm font-semibold text-primary">{item.reference}</div>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <h2 className="max-w-4xl text-2xl font-semibold">{item.title}</h2>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="secondary">{labelFor(STATUSES, item.planningStatus)}</Badge>
+              <Badge variant={priorityBadge(item.priority)}>{item.priority}</Badge>
+              <Badge variant="outline">{labelFor(WORK_ITEM_TYPES, item.workItemType)}</Badge>
+              {item.phase && <Badge variant="secondary">{labelFor(PHASES, item.phase)}</Badge>}
+              {releaseName(item) && <Badge variant="secondary">{releaseName(item)}</Badge>}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
+        <div className="space-y-4">
+          <ReadOnlySection title="Description" emptyText="No description has been added.">
+            {item.description}
+          </ReadOnlySection>
+          <ReadOnlySection title="Notes" emptyText="No notes have been added.">
+            {item.notes}
+          </ReadOnlySection>
+          <DetailDependencies dependsOn={dependsOn} blockedBy={blockedBy} related={relatedDependencies} />
+          <DetailHierarchy parent={item.parent ?? null} children={item.children ?? []} />
+          <DetailTimeline events={item.events ?? []} />
+        </div>
+        <div className="space-y-4">
+          <DetailGrid item={item} />
+          <DetailSource item={item} />
+        </div>
+      </div>
+
+      <WorkItemDialog
+        open={modalOpen}
+        form={form}
+        setForm={setForm}
+        availableParents={workItems.filter((candidate) => candidate.workItemType === "epic" && candidate.id !== item.id)}
+        releases={releases}
+        workItems={workItems}
+        currentItem={item}
+        children={item.children ?? []}
+        onOpenChange={setModalOpen}
+        onSave={() => saveMutation.mutate(form)}
+        isSaving={saveMutation.isPending}
+      />
+    </ProductPlanningShell>
+  );
+}
+
+function ReadOnlySection({ title, emptyText, children }: { title: string; emptyText: string; children?: string | null }) {
+  return (
+    <Card>
+      <CardHeader className="pb-2"><CardTitle className="text-sm">{title}</CardTitle></CardHeader>
+      <CardContent>
+        <p className="whitespace-pre-wrap text-sm text-foreground">{children || <span className="text-muted-foreground">{emptyText}</span>}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function DetailGrid({ item }: { item: WorkItemDetail }) {
+  const rows = [
+    ["Priority", item.priority],
+    ["Business Value", labelFor(BUSINESS_VALUES, item.businessValue)],
+    ["Complexity", labelFor(COMPLEXITIES, item.complexity)],
+    ["Priority Score", item.priorityScore == null ? "-" : String(item.priorityScore)],
+    ["Phase", labelFor(PHASES, item.phase) || "-"],
+    ["Release", releaseName(item) || "-"],
+    ["Module", item.module || "-"],
+    ["Submodule", item.submodule || "-"],
+    ["Owner", item.ownerUserId || "-"],
+    ["Requested By", item.requestedBy || "-"],
+    ["Due Date", displayDate(item.dueDate)],
+    ["Created", displayDate(item.createdAt)],
+    ["Updated", displayDate(item.updatedAt)],
+  ];
+  return (
+    <Card>
+      <CardHeader className="pb-2"><CardTitle className="text-sm">Planning Details</CardTitle></CardHeader>
+      <CardContent className="grid gap-2 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="rounded-md border border-border p-3">
+            <div className="text-xs font-medium uppercase text-muted-foreground">{label}</div>
+            <div className="mt-1 text-sm">{value}</div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function DetailSource({ item }: { item: WorkItemDetail }) {
+  return (
+    <Card>
+      <CardHeader className="pb-2"><CardTitle className="text-sm">Source</CardTitle></CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        <div>Source Type: <Badge variant="secondary">{item.sourceType ? item.sourceType.replace("_", " ") : "Manual"}</Badge></div>
+        {item.sourceBugReport && (
+          <div className="rounded-md border border-border p-3">
+            <div className="font-mono text-xs text-muted-foreground">{item.sourceBugReport.referenceNumber}</div>
+            <div className="mt-1 font-medium">{item.sourceBugReport.title}</div>
+            <Link to={ROUTES.admin.bugReports} className="mt-2 inline-block text-xs text-primary hover:underline">Open Bug Reports</Link>
+          </div>
+        )}
+        {item.importBatch && (
+          <div className="rounded-md border border-border p-3">
+            <div className="font-medium">{item.importBatch.filename || "CSV import"}</div>
+            <div className="mt-1 text-xs text-muted-foreground">{item.importBatch.importedCount} imported, {item.importBatch.skippedCount} skipped</div>
+          </div>
+        )}
+        {item.sourceReference && <div>Original Reference: {item.sourceReference}</div>}
+      </CardContent>
+    </Card>
+  );
+}
+
+export function DetailDependencies({ dependsOn, blockedBy, related }: { dependsOn: ProductPlanningDependency[]; blockedBy: ProductPlanningBlockedBy[]; related: WorkItemSummary[] }) {
+  return (
+    <Card>
+      <CardHeader className="pb-2"><CardTitle className="text-sm">Dependencies</CardTitle></CardHeader>
+      <CardContent className="grid gap-4 md:grid-cols-3">
+        <DependencyList title="Depends On" items={dependsOn.map((dependency) => dependency.dependsOnWorkItem).filter(Boolean) as WorkItemSummary[]} />
+        <DependencyList title="Blocked By" items={blockedBy.map((dependency) => dependency.workItem).filter(Boolean) as WorkItemSummary[]} />
+        <DependencyList title="Related Items" items={related} />
+      </CardContent>
+    </Card>
+  );
+}
+
+function DependencyList({ title, items }: { title: string; items: WorkItemSummary[] }) {
+  return (
+    <div>
+      <div className="text-xs font-medium uppercase text-muted-foreground">{title}</div>
+      <div className="mt-2 space-y-2">
+        {items.length === 0 ? <p className="text-sm text-muted-foreground">No items linked.</p> : items.map((item) => (
+          <Link key={item.id} to={workItemPath(item.id)} className="block rounded-md border border-border p-2 text-sm hover:bg-muted/40">
+            <span className="mr-2 font-mono text-xs text-muted-foreground">{item.reference}</span>
+            {item.title}
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function DetailHierarchy({ parent, children }: { parent: WorkItemSummary | null; children: WorkItemSummary[] }) {
+  if (!parent && children.length === 0) return null;
+  return (
+    <Card>
+      <CardHeader className="pb-2"><CardTitle className="text-sm">Epic / Hierarchy</CardTitle></CardHeader>
+      <CardContent className="space-y-4">
+        {parent && <DependencyList title="Parent Epic" items={[parent]} />}
+        {children.length > 0 && <DependencyList title="Child Items" items={children} />}
+      </CardContent>
+    </Card>
+  );
+}
+
+export function DetailTimeline({ events }: { events: ProductPlanningEvent[] }) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <History className="h-4 w-4" />
+          Activity Timeline
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {events.length === 0 ? <p className="text-sm text-muted-foreground">No activity recorded yet.</p> : events.map((event) => (
+          <div key={event.id} className="border-l-2 border-border pl-3">
+            <div className="text-sm font-medium">{event.message || event.eventType.replace(/_/g, " ")}</div>
+            <div className="text-xs text-muted-foreground">{displayDate(event.createdAt, true)}</div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ProductPlanningImportsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -1379,6 +1835,7 @@ export function ProductPlanningImportsPage() {
   const [csv, setCsv] = useState("");
   const [allowDuplicates, setAllowDuplicates] = useState(false);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [lastImportResult, setLastImportResult] = useState<ImportCommitResult | null>(null);
 
   const { data: imports = [] } = useQuery<ImportBatch[]>({
     queryKey: ["/api/product-planning/imports"],
@@ -1397,13 +1854,14 @@ export function ProductPlanningImportsPage() {
   const commitMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/product-planning/import/csv/commit", { csv, filename, allowDuplicates });
-      return (await res.json()).data;
+      return (await res.json()).data as ImportCommitResult;
     },
-    onSuccess: (data: any) => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/product-planning/imports"] });
       queryClient.invalidateQueries({ queryKey: ["/api/product-planning/work-items"] });
       queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
       toast({ title: "Import completed", description: `${data.importedItems?.length ?? 0} rows imported.` });
+      setLastImportResult(data);
       setPreview(null);
       setCsv("");
       setFilename(null);
@@ -1416,6 +1874,7 @@ export function ProductPlanningImportsPage() {
     setFilename(file.name);
     setCsv(await file.text());
     setPreview(null);
+    setLastImportResult(null);
   }
 
   return (
@@ -1446,6 +1905,31 @@ export function ProductPlanningImportsPage() {
                 </Button>
               </div>
             </div>
+            {lastImportResult && (
+              <div className="rounded-md border border-border bg-muted/20 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium">Import result</div>
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      <Badge variant="secondary">{lastImportResult.batch.importedCount} imported</Badge>
+                      <Badge variant={lastImportResult.batch.skippedCount > 0 ? "outline" : "secondary"}>{lastImportResult.batch.skippedCount} skipped</Badge>
+                      <Badge variant={lastImportResult.skippedRows.length > 0 ? "outline" : "secondary"}>{lastImportResult.skippedRows.length} warnings</Badge>
+                      <Badge variant={allowDuplicates ? "outline" : "secondary"}>{allowDuplicates ? "Duplicates allowed" : "Duplicates skipped"}</Badge>
+                    </div>
+                  </div>
+                  <Link to={`${ROUTES.productPlanning.backlog}?importedBatchId=${lastImportResult.batch.id}`}>
+                    <Button variant="outline" size="sm">View Imported Items</Button>
+                  </Link>
+                </div>
+                {lastImportResult.skippedRows.length > 0 && (
+                  <div className="mt-3 max-h-28 overflow-auto text-xs text-muted-foreground">
+                    {lastImportResult.skippedRows.slice(0, 5).map((row) => (
+                      <div key={row.rowNumber}>Row {row.rowNumber}: {row.reason}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             {preview && <ImportPreviewTable preview={preview} />}
           </CardContent>
         </Card>
