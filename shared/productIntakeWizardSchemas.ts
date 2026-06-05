@@ -4,6 +4,9 @@ import { catalogMigrationLabAnalyzerRequestSchema, catalogMigrationLabAnalyzerRe
 export const productIntakeSourceTypeValues = ["uploaded_json", "pasted_json", "text_description"] as const;
 export const productIntakeWorkflowStateValues = ["SOURCE_UPLOADED", "AI_ANALYZED", "REVIEW_READY"] as const;
 export const productIntakeBriefSourceValues = ["live_ai", "rule_based_fallback"] as const;
+export const productIntakeSessionSourceTypeValues = ["json_upload", "json_paste", "text_description"] as const;
+export const productIntakeSessionStatusValues = ["analyzed", "needs_answers", "ready_for_draft", "draft_created", "abandoned"] as const;
+export const productIntakeQuestionTypeValues = ["select", "multiselect", "text", "number", "boolean"] as const;
 
 export const productIntakeConfidenceSchema = z.number().min(0).max(100);
 
@@ -123,6 +126,112 @@ export const productIntakeBriefSchema = z.object({
   overallConfidence: productIntakeConfidenceSchema,
 });
 
+export const productIntakeQuestionOptionSchema = z.object({
+  label: z.string().min(1),
+  value: z.union([z.string(), z.number(), z.boolean()]),
+});
+
+export const productIntakeQuestionSchema = z.object({
+  id: z.string().min(1),
+  organizationId: z.string().min(1),
+  sessionId: z.string().min(1),
+  questionKey: z.string().min(1),
+  questionType: z.enum(productIntakeQuestionTypeValues),
+  label: z.string().min(1),
+  helpText: z.string().nullable(),
+  required: z.boolean(),
+  options: z.array(productIntakeQuestionOptionSchema).nullable(),
+  defaultValue: z.unknown().nullable(),
+  sourcePath: z.string().nullable(),
+  confidence: productIntakeConfidenceSchema.nullable(),
+  sortOrder: z.number().int(),
+  createdAt: z.string(),
+});
+
+export const productIntakeAnswerSchema = z.object({
+  id: z.string().min(1),
+  organizationId: z.string().min(1),
+  sessionId: z.string().min(1),
+  questionId: z.string().min(1),
+  questionKey: z.string().min(1),
+  answer: z.unknown().nullable(),
+  answeredByUserId: z.string().nullable(),
+  answeredAt: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const productIntakeSessionSchema = z.object({
+  id: z.string().min(1),
+  organizationId: z.string().min(1),
+  sourceType: z.enum(productIntakeSessionSourceTypeValues),
+  sourceFingerprint: z.string().nullable(),
+  brief: productIntakeBriefSchema,
+  confidence: z.record(z.unknown()).nullable(),
+  missingDecisions: z.array(productIntakeMissingDecisionSchema).nullable(),
+  status: z.enum(productIntakeSessionStatusValues),
+  createdProductId: z.string().nullable(),
+  createdPbv2TreeVersionId: z.string().nullable(),
+  createdByUserId: z.string().nullable(),
+  updatedByUserId: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  abandonedAt: z.string().nullable(),
+});
+
+export const productIntakeReadinessSchema = z.object({
+  unansweredRequiredCount: z.number().int().min(0),
+  answeredCount: z.number().int().min(0),
+  canCreateDraft: z.literal(false),
+  status: z.enum(productIntakeSessionStatusValues),
+});
+
+export const productIntakeSessionDetailSchema = z.object({
+  session: productIntakeSessionSchema,
+  brief: productIntakeBriefSchema,
+  questions: z.array(productIntakeQuestionSchema),
+  answers: z.array(productIntakeAnswerSchema),
+  readiness: productIntakeReadinessSchema,
+});
+
+export const productIntakeAnswerPatchItemSchema = z.object({
+  questionId: z.string().min(1).optional(),
+  questionKey: z.string().min(1).optional(),
+  answer: z.unknown().nullable(),
+}).superRefine((value, ctx) => {
+  if (!value.questionId && !value.questionKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Provide questionId or questionKey.",
+      path: ["questionKey"],
+    });
+  }
+});
+
+export const productIntakeAnswersPatchRequestSchema = z.object({
+  answers: z.array(productIntakeAnswerPatchItemSchema).min(1),
+});
+
+export const productIntakeSessionListQuerySchema = z.object({
+  status: z.enum(productIntakeSessionStatusValues).optional(),
+  sourceType: z.enum(productIntakeSessionSourceTypeValues).optional(),
+  search: z.string().trim().max(200).optional(),
+  createdFrom: z.string().trim().optional(),
+  createdTo: z.string().trim().optional(),
+});
+
+export const productIntakeSessionListResponseSchema = z.object({
+  success: z.literal(true),
+  data: z.object({
+    sessions: z.array(productIntakeSessionSchema),
+  }),
+});
+
+export const productIntakeSessionDetailResponseSchema = z.object({
+  success: z.literal(true),
+  data: productIntakeSessionDetailSchema,
+});
+
 export const productIntakeWizardAnalyzeRequestSchema = z.object({
   sourceType: z.enum(productIntakeSourceTypeValues),
   fileName: z.string().trim().max(255).optional(),
@@ -165,6 +274,12 @@ export const productIntakeWizardAnalyzeResponseSchema = z.union([
       }),
       analyzer: catalogMigrationLabAnalyzerResultSchema.nullable(),
       brief: productIntakeBriefSchema,
+      sessionId: z.string().optional(),
+      status: z.enum(productIntakeSessionStatusValues).optional(),
+      session: productIntakeSessionSchema.optional(),
+      questions: z.array(productIntakeQuestionSchema).optional(),
+      answers: z.array(productIntakeAnswerSchema).optional(),
+      readiness: productIntakeReadinessSchema.optional(),
     }),
   }),
   z.object({
@@ -178,5 +293,14 @@ export type ProductIntakeSourceType = z.infer<typeof productIntakeWizardAnalyzeR
 export type ProductIntakeEvidence = z.infer<typeof productIntakeEvidenceSchema>;
 export type ProductIntakeTemplateMatch = z.infer<typeof productIntakeTemplateMatchSchema>;
 export type ProductIntakeBrief = z.infer<typeof productIntakeBriefSchema>;
+export type ProductIntakeQuestion = z.infer<typeof productIntakeQuestionSchema>;
+export type ProductIntakeAnswer = z.infer<typeof productIntakeAnswerSchema>;
+export type ProductIntakeSession = z.infer<typeof productIntakeSessionSchema>;
+export type ProductIntakeReadiness = z.infer<typeof productIntakeReadinessSchema>;
+export type ProductIntakeSessionDetail = z.infer<typeof productIntakeSessionDetailSchema>;
+export type ProductIntakeAnswerPatchItem = z.infer<typeof productIntakeAnswerPatchItemSchema>;
+export type ProductIntakeAnswersPatchRequest = z.infer<typeof productIntakeAnswersPatchRequestSchema>;
+export type ProductIntakeSessionStatus = z.infer<typeof productIntakeSessionSchema>["status"];
+export type ProductIntakeQuestionType = z.infer<typeof productIntakeQuestionSchema>["questionType"];
 export type ProductIntakeWizardAnalyzeRequest = z.infer<typeof productIntakeWizardAnalyzeRequestSchema>;
 export type ProductIntakeWizardAnalyzeResponse = z.infer<typeof productIntakeWizardAnalyzeResponseSchema>;

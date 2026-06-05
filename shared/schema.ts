@@ -854,6 +854,81 @@ export type InsertPbv2TreeVersion = z.infer<typeof insertPbv2TreeVersionSchema>;
 export type UpdatePbv2TreeVersion = z.infer<typeof updatePbv2TreeVersionSchema>;
 export type Pbv2TreeVersion = typeof pbv2TreeVersions.$inferSelect;
 
+export const productIntakeSessionSourceTypeValues = ["json_upload", "json_paste", "text_description"] as const;
+export const productIntakeSessionStatusValues = ["analyzed", "needs_answers", "ready_for_draft", "draft_created", "abandoned"] as const;
+export const productIntakeQuestionTypeValues = ["select", "multiselect", "text", "number", "boolean"] as const;
+
+export const productIntakeSessions = pgTable("product_intake_sessions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  sourceType: text("source_type").$type<typeof productIntakeSessionSourceTypeValues[number]>().notNull(),
+  sourceJson: jsonb("source_json").$type<unknown>(),
+  sourceText: text("source_text"),
+  sourceFingerprint: text("source_fingerprint"),
+  aiBriefJson: jsonb("ai_brief_json").$type<Record<string, unknown>>().notNull(),
+  confidenceJson: jsonb("confidence_json").$type<Record<string, unknown>>(),
+  missingDecisionsJson: jsonb("missing_decisions_json").$type<unknown[]>(),
+  status: text("status").$type<typeof productIntakeSessionStatusValues[number]>().notNull().default("analyzed"),
+  createdProductId: varchar("created_product_id").references(() => products.id, { onDelete: "set null" }),
+  createdPbv2TreeVersionId: varchar("created_pbv2_tree_version_id").references(() => pbv2TreeVersions.id, { onDelete: "set null" }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  abandonedAt: timestamp("abandoned_at", { withTimezone: true }),
+}, (table) => [
+  index("product_intake_sessions_org_status_idx").on(table.organizationId, table.status),
+  index("product_intake_sessions_org_created_idx").on(table.organizationId, table.createdAt),
+  index("product_intake_sessions_source_fingerprint_idx").on(table.sourceFingerprint),
+  index("product_intake_sessions_created_product_idx").on(table.createdProductId),
+  index("product_intake_sessions_created_pbv2_tree_idx").on(table.createdPbv2TreeVersionId),
+]);
+
+export const productIntakeQuestions = pgTable("product_intake_questions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  sessionId: varchar("session_id").notNull().references(() => productIntakeSessions.id, { onDelete: "cascade" }),
+  questionKey: text("question_key").notNull(),
+  questionType: text("question_type").$type<typeof productIntakeQuestionTypeValues[number]>().notNull(),
+  label: text("label").notNull(),
+  helpText: text("help_text"),
+  required: boolean("required").notNull().default(false),
+  optionsJson: jsonb("options_json").$type<unknown[]>(),
+  defaultValueJson: jsonb("default_value_json").$type<unknown>(),
+  sourcePath: text("source_path"),
+  confidence: decimal("confidence", { precision: 5, scale: 2 }),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("product_intake_questions_session_idx").on(table.sessionId),
+  index("product_intake_questions_org_session_idx").on(table.organizationId, table.sessionId),
+  uniqueIndex("product_intake_questions_session_key_uidx").on(table.sessionId, table.questionKey),
+]);
+
+export const productIntakeAnswers = pgTable("product_intake_answers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  sessionId: varchar("session_id").notNull().references(() => productIntakeSessions.id, { onDelete: "cascade" }),
+  questionId: varchar("question_id").notNull().references(() => productIntakeQuestions.id, { onDelete: "cascade" }),
+  questionKey: text("question_key").notNull(),
+  answerJson: jsonb("answer_json").$type<unknown>(),
+  answeredByUserId: varchar("answered_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  answeredAt: timestamp("answered_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("product_intake_answers_session_idx").on(table.sessionId),
+  index("product_intake_answers_question_idx").on(table.questionId),
+  uniqueIndex("product_intake_answers_session_key_uidx").on(table.sessionId, table.questionKey),
+]);
+
+export type ProductIntakeSessionRow = typeof productIntakeSessions.$inferSelect;
+export type InsertProductIntakeSessionRow = typeof productIntakeSessions.$inferInsert;
+export type ProductIntakeQuestionRow = typeof productIntakeQuestions.$inferSelect;
+export type InsertProductIntakeQuestionRow = typeof productIntakeQuestions.$inferInsert;
+export type ProductIntakeAnswerRow = typeof productIntakeAnswers.$inferSelect;
+export type InsertProductIntakeAnswerRow = typeof productIntakeAnswers.$inferInsert;
+
 export const pbv2OptionGroupTemplateStateValues = ["active", "archived"] as const;
 
 export const pbv2OptionGroupTemplates = pgTable(
