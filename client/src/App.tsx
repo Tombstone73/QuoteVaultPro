@@ -74,6 +74,7 @@ import PrepressPage from "@/pages/prepress";
 import DesignProductionPage from "@/pages/DesignProductionPage";
 import PrepressProductionPageV2 from "@/pages/PrepressProductionPageV2";
 import ProductBuilderV2Page from "@/pages/product-builder-v2";
+import PlatformDeveloperToolsPage from "@/pages/platform/PlatformDeveloperToolsPage";
 import PlatformOrgCreatePage from "@/pages/platform/PlatformOrgCreatePage";
 import AcceptInvitePage from "@/pages/accept-invite";
 import SelectOrgPage from "@/pages/SelectOrgPage";
@@ -230,7 +231,7 @@ function Router() {
         <Route path="/admin/products" element={<Navigate to="/settings/products" replace />} />
         <Route path="/admin/product-types" element={<Navigate to="/settings/product-types" replace />} />
         <Route path="/admin/bug-reports" element={<BugReportsPage />} />
-        <Route path="/admin/catalog-migration-lab" element={<CatalogMigrationLab />} />
+        <Route path={ROUTES.admin.catalogMigrationLab} element={<CatalogMigrationLab />} />
         <Route path="/admin/products/import-export" element={<ProductImportExport />} />
         <Route path="/admin/pricing-audit" element={<PricingAuditPage />} />
         <Route path="/admin/materials/import-export" element={<MaterialsImportExport />} />
@@ -335,7 +336,8 @@ function Router() {
         <Route path="/debug-user" element={<DebugUser />} />
 
         {/* Platform admin */}
-        <Route path="/platform/orgs/new" element={<PlatformOrgCreatePage />} />
+        <Route path={ROUTES.platform.tools} element={<PlatformDeveloperToolsPage />} />
+        <Route path={ROUTES.platform.orgsNew} element={<PlatformOrgCreatePage />} />
 
         {/* Org picker (multi-org users) */}
         <Route path="/select-org" element={<SelectOrgPage />} />

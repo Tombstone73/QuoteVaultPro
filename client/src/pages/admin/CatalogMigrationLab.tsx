@@ -11,7 +11,10 @@ import {
 import type { CatalogMigrationLabAnalyzerResult } from "@shared/catalogMigrationLabSchemas";
 import { CATALOG_MIGRATION_LAB_MAX_UPLOAD_BYTES } from "@shared/catalogMigrationLabSchemas";
 import { apiRequest } from "@/lib/queryClient";
+import { useAuth } from "@/hooks/useAuth";
+import { canUsePlatformTools } from "@/lib/platformAccess";
 import { useToast } from "@/hooks/use-toast";
+import NotFound from "@/pages/not-found";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -67,9 +70,11 @@ function SummaryCard({ label, value, hint }: { label: string; value: string | nu
 
 export default function CatalogMigrationLab() {
   const { toast } = useToast();
+  const { user, isLoading } = useAuth();
   const [jsonText, setJsonText] = useState("");
   const [fileName, setFileName] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<CatalogMigrationLabAnalyzerResult | null>(null);
+  const canAccessPlatformTools = canUsePlatformTools(user);
 
   const sourceBytes = useMemo(() => new Blob([jsonText]).size, [jsonText]);
   const oversized = sourceBytes > CATALOG_MIGRATION_LAB_MAX_UPLOAD_BYTES;
@@ -118,6 +123,14 @@ export default function CatalogMigrationLab() {
   };
 
   const canAnalyze = jsonText.trim().length > 0 && !oversized && !analyzeMutation.isPending;
+
+  if (isLoading) {
+    return <div className="p-6 text-sm text-muted-foreground">Loading...</div>;
+  }
+
+  if (!canAccessPlatformTools) {
+    return <NotFound />;
+  }
 
   return (
     <div className="space-y-6 p-6">
