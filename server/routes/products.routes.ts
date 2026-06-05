@@ -635,7 +635,11 @@ export function registerProductRoutes(
       res.json(exportData);
     } catch (error: any) {
       console.error("[Product Export] Error:", error);
-      res.status(500).json({ error: error.message || "Failed to export products" });
+      res.status(500).json({
+        error: error.message || "Failed to export products",
+        ...(error.code ? { code: error.code } : {}),
+        ...(error.metadata ? { metadata: error.metadata } : {}),
+      });
     }
   });
 

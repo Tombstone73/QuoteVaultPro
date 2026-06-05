@@ -98,6 +98,30 @@ const installationRuntimeTree = {
             ],
             edges: { children: [{ toNodeId: "install-location" }] },
           },
+          {
+            id: "installation-access",
+            component: "RADIO_GROUP",
+            label: "Access Type",
+            key: "installation.access",
+            options: [
+              { value: "standard", label: "Standard Access" },
+              {
+                value: "ladder",
+                label: "Ladder Access",
+                pricing: { mode: "addFlat", amountCents: 3500 },
+                children: [
+                  {
+                    id: "installation-ladder-height",
+                    component: "NUMBER_INPUT",
+                    label: "Ladder Height",
+                    key: "installation.ladderHeight",
+                    defaultValue: 8,
+                    routing: { requires: "ladder" },
+                  },
+                ],
+              },
+            ],
+          },
         ],
       },
     ],
@@ -237,9 +261,9 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
 
     const exported = result.products[0];
     expect(exported.optionTreeJson).toEqual(installationRuntimeTree);
-    expect(exported.optionGroupCount).toBe(3);
-    expect(exported.optionCount).toBe(3);
-    expect(exported.choiceCount).toBe(6);
+    expect(exported.optionGroupCount).toBe(4);
+    expect(exported.optionCount).toBe(5);
+    expect(exported.choiceCount).toBe(8);
     expect(exported.pricingConfigPresent).toBe(true);
   });
 
@@ -248,10 +272,10 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
 
     expect(normalized.diagnostics).toMatchObject({
       rootKeys: ["children", "id", "label", "type"],
-      totalTraversedNodes: 6,
-      detectedOptionLikeNodes: 3,
-      optionGroupCount: 3,
-      choiceCount: 6,
+      totalTraversedNodes: 10,
+      detectedOptionLikeNodes: 5,
+      optionGroupCount: 4,
+      choiceCount: 8,
     });
     expect(normalized.options).toEqual([
       expect.objectContaining({
@@ -283,6 +307,24 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
           expect.objectContaining({ value: "premium", label: "Premium Hardware", pricing: 1500 }),
         ],
         routing: expect.objectContaining({ edges: { children: [{ toNodeId: "install-location" }] } }),
+      }),
+      expect.objectContaining({
+        id: "installation-access",
+        label: "Access Type",
+        key: "installation.access",
+        type: "radio_group",
+        choices: [
+          expect.objectContaining({ value: "standard", label: "Standard Access" }),
+          expect.objectContaining({ value: "ladder", label: "Ladder Access", pricing: { mode: "addFlat", amountCents: 3500 } }),
+        ],
+      }),
+      expect.objectContaining({
+        id: "installation-ladder-height",
+        label: "Ladder Height",
+        key: "installation.ladderHeight",
+        type: "number_input",
+        default: 8,
+        routing: { routing: { requires: "ladder" } },
       }),
     ]);
   });
