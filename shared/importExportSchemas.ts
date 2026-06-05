@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { optionTreeV2Schema } from "./optionTreeV2";
+import { normalizePbv2ExportOptions, type NormalizedPbv2ExportOption } from "./pbv2ExportOptionNormalizer";
 
 // ============================================================
 // Product Import/Export Schema V2 (PBV2-aware)
@@ -313,24 +314,16 @@ function countTiers(value: unknown, key = ""): number {
   );
 }
 
-function hasChoicePricing(nodes: Array<Record<string, any>>): boolean {
-  return nodes.some((node) =>
-    Array.isArray(node.choices) &&
-    node.choices.some((choice: any) =>
-      choice && typeof choice === "object" && (
-        choice.pricingImpact ||
-        choice.priceImpact ||
-        choice.priceDelta ||
-        choice.priceDeltaCents ||
-        choice.pricingOverride
-      ),
-    ),
+function hasChoicePricing(options: NormalizedPbv2ExportOption[]): boolean {
+  return options.some((option) =>
+    Boolean(option.pricing) ||
+    option.choices.some((choice) => Boolean(choice.pricing)),
   );
 }
 
 function hasPricingConfig(product: Pick<ProductExportV2Item, "pricingFormula" | "pricingProfileConfig" | "pricingProfileKey">, treeJson: unknown): boolean {
-  const nodes = getTreeNodes(treeJson);
-  if (product.pricingFormula || product.pricingProfileConfig || product.pricingProfileKey || hasChoicePricing(nodes)) return true;
+  const normalized = normalizePbv2ExportOptions(treeJson);
+  if (product.pricingFormula || product.pricingProfileConfig || product.pricingProfileKey || hasChoicePricing(normalized.options)) return true;
   if (!treeJson || typeof treeJson !== "object") return false;
   const tree = treeJson as Record<string, any>;
   return Boolean(
@@ -348,15 +341,11 @@ function hasPricingConfig(product: Pick<ProductExportV2Item, "pricingFormula" | 
 export function summarizeProductExportItem(item: ProductExportV2Item): ProductImportExportSummary {
   const activeTreeJson = item.pbv2?.activeTree?.treeJson ?? item.optionTreeJson;
   const nodes = getTreeNodes(activeTreeJson);
+  const normalized = normalizePbv2ExportOptions(activeTreeJson);
   const optionGroupCount = nodes.filter((node) => node.kind === "group" || node.type === "GROUP").length;
-  const optionCount = nodes.filter((node) =>
-    node.kind === "question" ||
-    node.type === "INPUT" ||
-    node.type === "OPTION" ||
-    node.type === "SELECT" ||
-    Boolean(node.input),
-  ).length;
-  const choiceCount = nodes.reduce((count, node) => count + (Array.isArray(node.choices) ? node.choices.length : 0), 0);
+  const normalizedOptionGroupCount = Math.max(optionGroupCount, normalized.diagnostics.optionGroupCount);
+  const optionCount = normalized.options.length;
+  const choiceCount = normalized.diagnostics.choiceCount;
   const matrixCount = countMatrices(activeTreeJson);
   const tierCount = countTiers(activeTreeJson) +
     (Array.isArray(item.priceBreaks?.tiers) ? item.priceBreaks.tiers.length : 0) +
@@ -365,7 +354,7 @@ export function summarizeProductExportItem(item: ProductExportV2Item): ProductIm
   return {
     hasPbv2: Boolean(item.pbv2?.activeTree || item.optionTreeJson),
     hasActiveTree: Boolean(item.pbv2?.activeTree),
-    optionGroupCount,
+    optionGroupCount: normalizedOptionGroupCount,
     optionCount,
     choiceCount,
     ruleCount: countRules(activeTreeJson),
