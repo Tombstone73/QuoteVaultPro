@@ -1,7 +1,8 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, jest, test } from "@jest/globals";
 import { exportProducts } from "../pbv2ExportMapper";
 import { buildImportPlan, buildPbv2ImportProductValues } from "../pbv2ImportMapper";
 import { createPbv2BannerProductTreeJson } from "../../../shared/pbv2/starterTree";
+import { normalizePbv2ExportOptions } from "../../../shared/pbv2ExportOptionNormalizer";
 
 const activePriceBreaks = {
   enabled: true,
@@ -45,6 +46,69 @@ const activePbv2Tree = {
   },
 };
 
+const installationRuntimeTree = {
+  schemaVersion: 2,
+  root: {
+    id: "installation-root",
+    type: "GROUP",
+    label: "Installation",
+    children: [
+      {
+        id: "install-location-group",
+        kind: "group",
+        label: "Location",
+        questions: [
+          {
+            id: "install-location",
+            component: "SELECT",
+            label: "Installation Location",
+            key: "installation.location",
+            defaultValue: "indoor",
+            options: [
+              { value: "indoor", label: "Indoor" },
+              { value: "outdoor", label: "Outdoor", pricingImpact: [{ mode: "addFlat", amountCents: 2500 }] },
+            ],
+            visibilityRules: [{ type: "truthy", selectionKey: "installation.required" }],
+          },
+        ],
+      },
+      {
+        id: "install-requirements",
+        type: "GROUP",
+        label: "Requirements",
+        options: [
+          {
+            id: "installation-required",
+            type: "INPUT",
+            label: "Installation Required",
+            input: { type: "boolean", selectionKey: "installation.required", defaultValue: true },
+            choices: [
+              { value: "yes", label: "Yes" },
+              { value: "no", label: "No" },
+            ],
+          },
+          {
+            id: "installation-hardware",
+            kind: "question",
+            label: "Hardware",
+            input: { type: "radio", selectionKey: "installation.hardware" },
+            choices: [
+              { value: "standard", label: "Standard Hardware" },
+              { value: "premium", label: "Premium Hardware", priceDeltaCents: 1500 },
+            ],
+            edges: { children: [{ toNodeId: "install-location" }] },
+          },
+        ],
+      },
+    ],
+  },
+  meta: {
+    pricingV2: {
+      base: { perPieceCents: 10000 },
+    },
+  },
+};
+
 describe("PBV2 import/export legacy priceBreaks cleanup", () => {
   test("PBV2 export omits legacy priceBreaks", async () => {
     const result = await exportProducts(
@@ -54,9 +118,9 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
         name: "PBV2 Banner",
         description: "Desc",
         priceBreaks: activePriceBreaks,
-        optionTreeJson: { schemaVersion: 2, nodes: {}, rootNodeIds: [] },
+        optionTreeJson: activePbv2Tree,
       }],
-      new Map([["prod_1", { active: { schemaVersion: 2, treeJson: { meta: { pricingV2: { qtyTiers: [] } } } } }]]),
+      new Map([["prod_1", { active: { schemaVersion: 2, treeJson: activePbv2Tree } }]]),
       [],
       [],
     );
@@ -145,6 +209,127 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
     expect(exported.choiceCount).toBeGreaterThan(0);
     expect(exported.ruleCount).toBeGreaterThan(0);
     expect(exported.pricingConfigPresent).toBe(true);
+  });
+
+  test("PBV2 export extracts Installation options from nested runtime tree shapes", async () => {
+    const result = await exportProducts(
+      { db: {} as any, organizationId: "org_1" },
+      [{
+        id: "prod_install",
+        name: "Installation",
+        description: "Desc",
+        priceBreaks: activePriceBreaks,
+        optionTreeJson: null,
+      }],
+      new Map([[
+        "prod_install",
+        {
+          active: {
+            schemaVersion: 2,
+            treeJson: installationRuntimeTree,
+            publishedAt: new Date("2026-01-01T00:00:00.000Z"),
+          },
+        },
+      ]]),
+      [],
+      [],
+    );
+
+    const exported = result.products[0];
+    expect(exported.optionTreeJson).toEqual(installationRuntimeTree);
+    expect(exported.optionGroupCount).toBe(3);
+    expect(exported.optionCount).toBe(3);
+    expect(exported.choiceCount).toBe(6);
+    expect(exported.pricingConfigPresent).toBe(true);
+  });
+
+  test("PBV2 option export normalization preserves Installation option metadata", () => {
+    const normalized = normalizePbv2ExportOptions(installationRuntimeTree);
+
+    expect(normalized.diagnostics).toMatchObject({
+      rootKeys: ["children", "id", "label", "type"],
+      totalTraversedNodes: 6,
+      detectedOptionLikeNodes: 3,
+      optionGroupCount: 3,
+      choiceCount: 6,
+    });
+    expect(normalized.options).toEqual([
+      expect.objectContaining({
+        id: "install-location",
+        label: "Installation Location",
+        key: "installation.location",
+        type: "select",
+        default: "indoor",
+        choices: [
+          expect.objectContaining({ value: "indoor", label: "Indoor" }),
+          expect.objectContaining({ value: "outdoor", label: "Outdoor", pricing: [{ mode: "addFlat", amountCents: 2500 }] }),
+        ],
+        routing: expect.objectContaining({ visibilityRules: [{ type: "truthy", selectionKey: "installation.required" }] }),
+      }),
+      expect.objectContaining({
+        id: "installation-required",
+        label: "Installation Required",
+        key: "installation.required",
+        type: "checkbox",
+        default: true,
+      }),
+      expect.objectContaining({
+        id: "installation-hardware",
+        label: "Hardware",
+        key: "installation.hardware",
+        type: "radio",
+        choices: [
+          expect.objectContaining({ value: "standard", label: "Standard Hardware" }),
+          expect.objectContaining({ value: "premium", label: "Premium Hardware", pricing: 1500 }),
+        ],
+        routing: expect.objectContaining({ edges: { children: [{ toNodeId: "install-location" }] } }),
+      }),
+    ]);
+  });
+
+  test("PBV2 export still aborts truly empty active PBV2 trees", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    await expect(exportProducts(
+      { db: {} as any, organizationId: "org_1" },
+      [{
+        id: "prod_empty",
+        name: "Empty PBV2",
+        description: "Desc",
+        optionTreeJson: null,
+      }],
+      new Map([[
+        "prod_empty",
+        {
+          active: {
+            schemaVersion: 2,
+            treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: [] },
+            publishedAt: new Date("2026-01-01T00:00:00.000Z"),
+          },
+        },
+      ]]),
+      [],
+      [],
+    )).rejects.toMatchObject({
+      message: expect.stringContaining("no exportable PBV2 options"),
+      code: "PBV2_EXPORT_ZERO_OPTIONS",
+      metadata: expect.objectContaining({
+        productId: "prod_empty",
+        productName: "Empty PBV2",
+        totalTraversedNodes: 0,
+        detectedOptionLikeNodes: 0,
+      }),
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "[PBV2 Export] Zero-option runtime tree",
+      expect.objectContaining({
+        productId: "prod_empty",
+        productName: "Empty PBV2",
+        rootKeys: ["nodes", "rootNodeIds", "schemaVersion"],
+        totalTraversedNodes: 0,
+        detectedOptionLikeNodes: 0,
+      }),
+    );
+    consoleError.mockRestore();
   });
 
   test("non-PBV2 export keeps legacy priceBreaks", async () => {

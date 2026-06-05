@@ -12,6 +12,7 @@
  */
 
 import { summarizeProductExportItem, type ProductExportV2, type ProductExportV2Item } from "@shared/importExportSchemas";
+import { normalizePbv2ExportOptions } from "@shared/pbv2ExportOptionNormalizer";
 import type { db as DbType } from "../db";
 import { isPbv2ProductPayloadLike } from "@shared/pbv2/legacyPriceBreaks";
 
@@ -125,10 +126,25 @@ export async function exportProducts(
     const summary = summarizeProductExportItem(exportItem);
     Object.assign(exportItem, summary);
 
-    if (isPbv2Product && treeHasNodes(activeTreeJson) && summary.optionCount === 0) {
-      throw new Error(
-        `PBV2 export for "${product.name}" produced zero options from a populated runtime tree. Export aborted to avoid creating a shell product.`,
+    if (isPbv2Product && activeTreeJson && summary.optionCount === 0) {
+      const normalization = normalizePbv2ExportOptions(activeTreeJson);
+      const metadata = {
+        productId: product.id,
+        productName: product.name,
+        rootKeys: normalization.diagnostics.rootKeys,
+        totalTraversedNodes: normalization.diagnostics.totalTraversedNodes,
+        detectedOptionLikeNodes: normalization.diagnostics.detectedOptionLikeNodes,
+        skippedReasons: normalization.diagnostics.skippedReasons,
+      };
+      console.error("[PBV2 Export] Zero-option runtime tree", metadata);
+      const error = new Error(
+        normalization.diagnostics.totalTraversedNodes > 0
+          ? `PBV2 export for "${product.name}" produced zero options from a populated runtime tree. Export aborted to avoid creating a shell product.`
+          : `PBV2 export for "${product.name}" has no exportable PBV2 options. Export aborted to avoid creating a shell product.`,
       );
+      (error as any).code = "PBV2_EXPORT_ZERO_OPTIONS";
+      (error as any).metadata = metadata;
+      throw error;
     }
     
     exportedProducts.push(exportItem);
@@ -168,11 +184,4 @@ function generateSlugFromName(name: string): string {
     .replace(/\s+/g, '-') // Spaces to hyphens
     .replace(/-+/g, '-') // Collapse multiple hyphens
     .replace(/^-|-$/g, ''); // Trim hyphens
-}
-
-function treeHasNodes(treeJson: unknown): boolean {
-  if (!treeJson || typeof treeJson !== "object") return false;
-  const nodes = (treeJson as Record<string, any>).nodes;
-  if (Array.isArray(nodes)) return nodes.length > 0;
-  return Boolean(nodes && typeof nodes === "object" && Object.keys(nodes).length > 0);
 }
