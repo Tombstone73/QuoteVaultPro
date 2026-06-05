@@ -7,6 +7,7 @@ const infoFloFixture = {
   products: [
     {
       productName: "13oz Banner",
+      product_type: "modal_configurable",
       sku: "BNR-13",
       categoryName: "Banners",
       active: true,
@@ -16,6 +17,50 @@ const infoFloFixture = {
         { name: "Size", choices: ["Custom"] },
         { name: "Finishing", choices: ["Hem", "Grommets"] },
       ],
+      form_fields: [
+        {
+          field_id: "unnamed",
+          field_label: "Size",
+          field_type: "select",
+          required: true,
+          options: [
+            { option_text: "Standard 3x5", option_value: "3x5" },
+            {
+              option_text: "Custom Size",
+              option_value: "custom",
+              reveal_fields: [
+                { field_id: "unnamed", field_label: "Width", field_type: "number", input_type: "decimal", required: true },
+                { field_id: "unnamed", field_label: "Height", field_type: "number", input_type: "decimal", required: true },
+              ],
+            },
+          ],
+        },
+        {
+          field_id: "unnamed",
+          field_label: "Finishing",
+          field_type: "checkbox",
+          options: [
+            { option_text: "Hems", option_value: "hems" },
+            { option_text: "Grommets", option_value: "grommets" },
+          ],
+        },
+        {
+          field_id: "unnamed",
+          field_label: "Material",
+          field_type: "select",
+          options: [
+            { option_text: "13oz Scrim Banner", option_value: "13oz" },
+            { option_text: "18oz Blockout Banner", option_value: "18oz" },
+          ],
+        },
+      ],
+      conditional_fields_map: {
+        unnamed: {
+          grommets: [
+            { field_id: "unnamed", field_label: "Grommet Spacing", field_type: "select", options: ["Every 2 ft", "Corners only"] },
+          ],
+        },
+      },
       infoFloInternalId: "if-100",
     },
     {
@@ -48,10 +93,24 @@ describe("InfoFlo catalog migration adapter", () => {
       name: "13oz Banner",
       sku: "BNR-13",
       category: "Banners",
+      productType: "modal_configurable",
       status: "active",
-      optionNames: ["Finishing", "Size"],
       materialReferences: ["13oz Scrim Banner"],
     });
+    expect(parsed.products[0].optionNames).toEqual(expect.arrayContaining(["Finishing", "Grommet Spacing", "Height", "Material", "Size", "Width"]));
+    expect(parsed.products[0].sourceFields.length).toBeGreaterThanOrEqual(10);
+    expect(parsed.products[0].sourceFields.every((field) => !field.analyzerId.includes("unnamed"))).toBe(true);
+    expect(parsed.products[0].sourceFields.find((field) => field.fieldLabel === "Width")).toMatchObject({
+      parentField: "Size",
+      parentOption: "Custom Size",
+      level: 1,
+      conditional: true,
+    });
+    expect(parsed.conditionalLogic).toEqual(expect.arrayContaining([
+      expect.objectContaining({ productName: "13oz Banner", parentField: "Size", parentOption: "Custom Size", childField: "Width" }),
+      expect.objectContaining({ productName: "13oz Banner", parentOption: "grommets", childField: "Grommet Spacing" }),
+    ]));
+    expect(parsed.warnings.map((warning) => warning.code)).toContain("UNNAMED_FIELD_ID");
     expect(parsed.products[1].pricingFields.map((field) => field.fieldName)).toEqual(
       expect.arrayContaining(["height", "priceBreaks", "width"]),
     );
@@ -101,8 +160,27 @@ describe("Catalog Migration Lab analyzer", () => {
     expect(result.pricingPatterns.map((pattern) => pattern.bucket)).toEqual(
       expect.arrayContaining(["flat_price", "tiered_pricing", "missing_pricing"]),
     );
+    expect(result.productStructures[0]).toMatchObject({
+      productName: "13oz Banner",
+      productType: "modal_configurable",
+      quantityFieldDetected: false,
+      detectedConditionalLogic: true,
+    });
+    expect(result.productStructures[0].sizeFieldsDetected).toEqual(expect.arrayContaining(["Height", "Size", "Width"]));
+    expect(result.productStructures[0].finishingOptionsDetected).toEqual(expect.arrayContaining(["Grommets", "Hems"]));
+    expect(result.productStructures[0].materialsDetected).toEqual(expect.arrayContaining(["13oz Scrim Banner", "18oz Blockout Banner"]));
+    expect(result.conditionalLogic.map((logic) => logic.childField)).toEqual(expect.arrayContaining(["Width", "Height", "Grommet Spacing"]));
+    expect(result.optionPatterns.find((option) => option.optionName === "Size")?.sampleValues).toEqual(
+      expect.arrayContaining(["Standard 3x5", "Custom Size"]),
+    );
+    expect(result.migrationWorksheets.productSummary).toContain("product_name,product_type,suggested_category");
+    expect(result.migrationWorksheets.productSummary).toContain("13oz Banner,modal_configurable,Banners");
+    expect(result.migrationWorksheets.productFields).toContain("product_name,field_label,field_type,required,option_text");
+    expect(result.migrationWorksheets.productFields).toContain("13oz Banner,Size,select,yes,Custom Size,custom");
+    expect(result.migrationWorksheets.optionGroupDiscovery).toContain("option_group_name,usage_count,products_using_group,sample_values");
+    expect(result.migrationWorksheets.optionGroupDiscovery).toContain("Size");
     expect(result.warnings.map((warning) => warning.code)).toEqual(
-      expect.arrayContaining(["MISSING_PRICING", "MISSING_OPTIONS", "DUPLICATE_PRODUCT_NAME"]),
+      expect.arrayContaining(["MISSING_PRICING", "MISSING_OPTIONS", "DUPLICATE_PRODUCT_NAME", "UNNAMED_FIELD_ID"]),
     );
   });
 });
