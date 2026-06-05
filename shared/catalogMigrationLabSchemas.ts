@@ -20,7 +20,7 @@ export const catalogMigrationLabWarningCodeValues = [
   "CONDITIONAL_FIELD_UNRESOLVED",
 ] as const;
 
-export const catalogMigrationLabWarningSeverityValues = ["info", "warning", "error"] as const;
+export const catalogMigrationLabWarningSeverityValues = ["blocker", "warning", "info"] as const;
 
 export const catalogMigrationLabWarningCodeSchema = z.enum(catalogMigrationLabWarningCodeValues);
 export const catalogMigrationLabWarningSeveritySchema = z.enum(catalogMigrationLabWarningSeverityValues);
@@ -62,6 +62,11 @@ export const catalogMigrationLabSourceFieldSchema = z.object({
   level: z.number().int().min(0),
   conditional: z.boolean(),
   suggestedOptionGroup: z.string().nullable(),
+  normalizedFieldLabel: z.string(),
+  normalizedGroup: z.string(),
+  isQuantityCandidate: z.boolean(),
+  isCustomerMetadata: z.boolean(),
+  isPricingSignal: z.boolean(),
   inputType: z.string().nullable(),
   sourcePath: z.string(),
 });
@@ -148,6 +153,7 @@ export const productStructureSummarySchema = z.object({
   productName: z.string(),
   productType: z.string().nullable(),
   suggestedCategory: z.string().nullable(),
+  categoryConfidence: z.enum(["source", "high", "medium", "low", "unknown"]),
   fieldCount: z.number().int().min(0),
   optionGroupCount: z.number().int().min(0),
   conditionalFieldCount: z.number().int().min(0),
@@ -160,6 +166,10 @@ export const productStructureSummarySchema = z.object({
   detectedConditionalLogic: z.boolean(),
   complexityScore: z.number().int().min(0),
   warnings: z.array(z.string()),
+  blockerCount: z.number().int().min(0),
+  warningCount: z.number().int().min(0),
+  infoCount: z.number().int().min(0),
+  pricingSourceStatus: z.enum(["source_pricing_detected", "definition_only_no_pricing", "missing_pricing"]),
 });
 
 export const conditionalLogicSummarySchema = z.object({
@@ -185,8 +195,17 @@ export const catalogMigrationLabWarningSchema = z.object({
   message: z.string(),
   productIndex: z.number().int().min(0).optional(),
   productName: z.string().optional(),
+  fieldLabel: z.string().optional(),
   path: z.string().optional(),
   count: z.number().int().min(0).optional(),
+  occurrences: z.number().int().min(1).optional(),
+});
+
+export const catalogMigrationLabWarningCountsSchema = z.object({
+  blockers: z.number().int().min(0),
+  warnings: z.number().int().min(0),
+  info: z.number().int().min(0),
+  actionable: z.number().int().min(0),
 });
 
 export const catalogMigrationLabAnalyzerResultSchema = z.object({
@@ -212,6 +231,7 @@ export const catalogMigrationLabAnalyzerResultSchema = z.object({
   conditionalLogic: z.array(conditionalLogicSummarySchema),
   migrationWorksheets: migrationWorksheetCsvSchema,
   unsupportedFields: z.array(unsupportedFieldSummarySchema),
+  warningCounts: catalogMigrationLabWarningCountsSchema,
   warnings: z.array(catalogMigrationLabWarningSchema),
 });
 
@@ -241,6 +261,7 @@ export type ProductStructureSummary = z.infer<typeof productStructureSummarySche
 export type ConditionalLogicSummary = z.infer<typeof conditionalLogicSummarySchema>;
 export type MigrationWorksheetCsv = z.infer<typeof migrationWorksheetCsvSchema>;
 export type CatalogMigrationLabWarning = z.infer<typeof catalogMigrationLabWarningSchema>;
+export type CatalogMigrationLabWarningCounts = z.infer<typeof catalogMigrationLabWarningCountsSchema>;
 export type CatalogMigrationLabWarningCode = z.infer<typeof catalogMigrationLabWarningCodeSchema>;
 export type CatalogMigrationLabAnalyzerResult = z.infer<typeof catalogMigrationLabAnalyzerResultSchema>;
 export type CatalogMigrationLabAnalyzeResponse = z.infer<typeof catalogMigrationLabAnalyzeResponseSchema>;

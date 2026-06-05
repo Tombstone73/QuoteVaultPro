@@ -306,6 +306,17 @@ function fieldLabelFromRecord(record: Record<string, unknown>, fallback: string)
   ])) ?? fallback;
 }
 
+function numberConstraintFromRecord(record: Record<string, unknown>, key: "min" | "step"): number | null {
+  const direct = findValue(record, [key, key === "min" ? "minimum" : "increment"]);
+  const input = findValue(record, ["input"]);
+  const validation = findValue(record, ["validation", "rules", "constraints"]);
+  const nested = isRecord(input) ? findValue(input, [key, key === "min" ? "minimum" : "increment"]) : undefined;
+  const validationNested = isRecord(validation) ? findValue(validation, [key, key === "min" ? "minimum" : "increment"]) : undefined;
+  const value = direct ?? nested ?? validationNested;
+  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
 function fieldTypeFromRecord(record: Record<string, unknown>): string {
   return stringFromValue(findValue(record, [
     "field_type",
@@ -341,12 +352,39 @@ function requiredFromRecord(record: Record<string, unknown>): boolean {
 
 function suggestedOptionGroupFor(label: string, fieldType: string, optionText?: string | null): string | null {
   const text = `${label} ${fieldType} ${optionText ?? ""}`.toLowerCase();
+  if (/(bill\s*to|email|e-mail|customer|contact|phone|address|company)/.test(text)) return "Customer Metadata";
+  if (/(special instructions?|notes?|comments?|message)/.test(text)) return "Notes / Instructions";
+  if (/(square footage|sq ?ft|area)/.test(text)) return "Size / Pricing Signal";
   if (/(width|height|size|dimension|sq ?ft|length)/.test(text)) return "Size";
   if (/(qty|quantity|copies|pieces|count)/.test(text)) return "Quantity";
   if (/(material|substrate|stock|media|paper|vinyl|banner|coroplast|foam)/.test(text)) return "Materials";
   if (/(finish|finishing|hem|grommet|laminat|mount|pole|pocket|cut|drill|hardware)/.test(text)) return "Finishing";
   if (/(color|colour|ink|print|side)/.test(text)) return "Print Options";
-  return label.trim() || null;
+  return "Other Product Field";
+}
+
+function normalizeFieldLabel(label: string, group: string, isQuantityCandidate: boolean): string {
+  if (isQuantityCandidate) return "Quantity candidate";
+  if (/^field \d+$/i.test(label.trim()) && group !== "Other Product Field") return group;
+  return label.trim() || group;
+}
+
+function isCustomerMetadataField(label: string, fieldType: string, optionText?: string | null): boolean {
+  return /(bill\s*to|email|e-mail|customer|contact|phone|address|company)/.test(`${label} ${fieldType} ${optionText ?? ""}`.toLowerCase());
+}
+
+function isPricingSignalField(label: string, fieldType: string, optionText?: string | null): boolean {
+  return /(square footage|sq ?ft|\barea\b|price|rate|cost|tier|break)/.test(`${label} ${fieldType} ${optionText ?? ""}`.toLowerCase());
+}
+
+function isQuantityCandidateField(record: Record<string, unknown>, label: string, fieldType: string, inputType: string | null): boolean {
+  const text = `${label} ${fieldType} ${inputType ?? ""}`.toLowerCase();
+  if (/(qty|quantity|copies|pieces|count)/.test(text)) return true;
+  return isUnnamedFieldId(record) &&
+    fieldType.toLowerCase() === "input" &&
+    String(inputType ?? "").toLowerCase() === "number" &&
+    numberConstraintFromRecord(record, "min") === 1 &&
+    numberConstraintFromRecord(record, "step") === 1;
 }
 
 function analyzerIdFor(input: {
@@ -472,12 +510,17 @@ function pushFieldRow(
   position: number,
   option: ParsedInfoFloOption | null,
 ): CatalogMigrationLabSourceField {
-  const fieldLabel = fieldLabelFromRecord(rawField, `Field ${position + 1}`);
   const fieldType = fieldTypeFromRecord(rawField);
+  const inputType = fieldInputTypeFromRecord(rawField);
+  const initialLabel = fieldLabelFromRecord(rawField, `Field ${position + 1}`);
+  const quantityCandidate = isQuantityCandidateField(rawField, initialLabel, fieldType, inputType);
+  const fieldLabel = quantityCandidate && /^field \d+$/i.test(initialLabel) ? "Quantity candidate" : initialLabel;
   const optionValue = option?.value ?? null;
+  const normalizedGroup = suggestedOptionGroupFor(fieldLabel, fieldType, option?.text) ?? "Other Product Field";
+  const normalizedFieldLabel = normalizeFieldLabel(fieldLabel, normalizedGroup, quantityCandidate);
   const analyzerId = analyzerIdFor({
     productName: ctx.productName,
-    fieldLabel,
+    fieldLabel: normalizedFieldLabel,
     fieldType,
     optionValue,
     level: parent.level,
@@ -499,8 +542,13 @@ function pushFieldRow(
     parentOption: parent.parentOption,
     level: parent.level,
     conditional: parent.conditional,
-    suggestedOptionGroup: suggestedOptionGroupFor(fieldLabel, fieldType, option?.text),
-    inputType: fieldInputTypeFromRecord(rawField),
+    suggestedOptionGroup: normalizedGroup,
+    normalizedFieldLabel,
+    normalizedGroup,
+    isQuantityCandidate: quantityCandidate,
+    isCustomerMetadata: isCustomerMetadataField(fieldLabel, fieldType, option?.text),
+    isPricingSignal: isPricingSignalField(fieldLabel, fieldType, option?.text),
+    inputType,
     sourcePath,
   };
 
@@ -529,6 +577,7 @@ function parseFieldRecord(
 ): void {
   if (!looksLikeFieldRecord(rawField)) return;
   const record = rawField;
+  const currentFieldLabel = fieldLabelFromRecord(record, `Field ${position + 1}`);
   if (isUnnamedFieldId(record)) {
     ctx.warnings.push({
       code: "UNNAMED_FIELD_ID",
@@ -536,6 +585,7 @@ function parseFieldRecord(
       message: `InfoFlo field_id "unnamed" ignored for stable analyzer ID generation in "${ctx.productName}".`,
       productIndex: ctx.productIndex,
       productName: ctx.productName,
+      fieldLabel: currentFieldLabel,
       path: sourcePath,
     });
   }
@@ -776,8 +826,10 @@ function normalizeProduct(raw: unknown, index: number, sourcePath: string): {
   if (pricingFields.length === 0) {
     warnings.push({
       code: "MISSING_PRICING",
-      severity: "warning",
-      message: `Product "${name ?? `#${index + 1}`}" has no recognizable pricing fields.`,
+      severity: structure.fields.length > 0 ? "info" : "warning",
+      message: structure.fields.length > 0
+        ? `Product "${name ?? `#${index + 1}`}" appears to be a product-definition export with no recognizable pricing fields.`
+        : `Product "${name ?? `#${index + 1}`}" has no recognizable pricing fields.`,
       productIndex: index,
       productName: name ?? undefined,
       path: sourcePath,
@@ -851,7 +903,7 @@ export function parseInfoFloJsonSource(sourceJson: unknown): InfoFloAdapterParse
       conditionalLogic: [],
       warnings: [{
         code: "EMPTY_SOURCE",
-        severity: "error",
+        severity: "blocker",
         message: "The uploaded JSON is empty.",
       }],
     };
@@ -882,7 +934,7 @@ export function parseInfoFloJsonSource(sourceJson: unknown): InfoFloAdapterParse
   if (rawProducts.length === 0) {
     warnings.push({
       code: "NO_PRODUCTS_FOUND",
-      severity: "error",
+      severity: "blocker",
       message: "No product-like records were found in the uploaded JSON.",
     });
     warnings.push({
