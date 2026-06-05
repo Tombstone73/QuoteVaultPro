@@ -10,6 +10,7 @@ import {
   auditLogs,
   bugReports,
   globalVariables,
+  organizationAiSettings,
   organizations,
   productPlanningAiSuggestions,
   productPlanningDependencies,
@@ -133,6 +134,64 @@ async function createRelease(organizationId: string, attrs: Partial<typeof produ
   }).returning();
   return release;
 }
+
+describe("Product Planning AI readiness route", () => {
+  test("reports missing org AI settings without exposing secrets", async () => {
+    const { app } = await createFixture();
+
+    const response = await request(app).get("/api/product-planning/ai/readiness");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe("missing_org_ai_settings");
+    expect(response.body.data.label).toBe("Missing org AI settings");
+    expect(response.body.data.feature).toBe("feature_review");
+    expect(JSON.stringify(response.body)).not.toContain("sk-");
+  });
+
+  test("reports feature_review disabled when org AI settings exist but Product Planning is off", async () => {
+    const { org, app } = await createFixture();
+    await db.insert(organizationAiSettings).values({
+      orgId: org.id,
+      mode: "bring_your_own",
+      provider: "openai",
+      model: "gpt-test",
+      isEnabled: true,
+      featureReviewEnabled: false,
+    });
+
+    const response = await request(app).get("/api/product-planning/ai/readiness");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe("feature_review_disabled");
+    expect(response.body.data.message).toContain("Feature Review");
+  });
+
+  test("reports missing encrypted API key for incomplete bring-your-own Product Planning settings", async () => {
+    const { org, app } = await createFixture();
+    await db.insert(organizationAiSettings).values({
+      orgId: org.id,
+      mode: "bring_your_own",
+      provider: "openai",
+      model: "gpt-test",
+      isEnabled: true,
+      featureReviewEnabled: true,
+    });
+
+    const response = await request(app).get("/api/product-planning/ai/readiness");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe("missing_encrypted_api_key");
+    expect(response.body.data.hasEncryptedApiKey).toBe(false);
+  });
+
+  test("blocks non-dev/non-admin users from AI readiness", async () => {
+    const { org, user } = await createFixture();
+    const response = await request(buildApp({ orgId: org.id, userId: user.id, orgRole: "staff" }))
+      .get("/api/product-planning/ai/readiness");
+
+    expect(response.status).toBe(403);
+  });
+});
 
 describe("Product Planning detail route", () => {
   test("returns hierarchy, release, source, import, dependencies, blocked-by, and activity", async () => {

@@ -235,7 +235,7 @@ export default function AiSettingsPage() {
               onChange={(checked) => setDraft((current) => ({ ...current, triageBriefEnabled: checked }))}
             />
             <FeatureToggle
-              label="Feature Review"
+              label="Product Planning / Feature Review"
               checked={draft.featureReviewEnabled}
               disabled={disabled}
               onChange={(checked) => setDraft((current) => ({ ...current, featureReviewEnabled: checked }))}

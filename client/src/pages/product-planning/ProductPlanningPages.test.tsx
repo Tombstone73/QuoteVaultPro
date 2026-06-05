@@ -255,6 +255,24 @@ const dashboardData = {
   byModule: [{ key: "Planning", count: 2 }],
 };
 
+const aiReadiness = {
+  status: "missing_org_ai_settings",
+  label: "Missing org AI settings",
+  message: "Product Planning is using rule-based fallback because this organization has no AI settings row.",
+  mode: "disabled",
+  provider: null,
+  model: null,
+  settingsPresent: false,
+  featureReviewEnabled: false,
+  hasEncryptedApiKey: false,
+  managedProviderEnv: {
+    configured: false,
+    endpointPresent: false,
+    apiKeyPresent: false,
+    modelPresent: false,
+  },
+};
+
 const backlogAnalysis = {
   source: "live_ai",
   fallbackReason: null,
@@ -465,6 +483,7 @@ describe("Product Planning UX detail surfaces", () => {
   test("dashboard analyzes backlog and renders assistant panels", async () => {
     (global as any).fetch = jest.fn(async (url: string) => {
       if (url === "/api/product-planning/dashboard") return responseJson({ success: true, data: dashboardData });
+      if (url === "/api/product-planning/ai/readiness") return responseJson({ success: true, data: aiReadiness });
       return responseJson({ success: false, message: "Not found" }, 404);
     }) as any;
     mockApiRequest.mockImplementationOnce(() => Promise.resolve({
@@ -482,6 +501,8 @@ describe("Product Planning UX detail surfaces", () => {
 
     expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/ai/analyze-backlog", {});
     expect(container.textContent).toContain("Live AI");
+    expect(container.textContent).toContain("Product Planning AI");
+    expect(container.textContent).toContain("Missing org AI settings");
     expect(container.textContent).toContain("Product catalog completion is the operational go-live bottleneck.");
     expect(container.textContent).toContain("Backlog Health Score");
     expect(container.textContent).toContain("Top Next Actions");
@@ -501,6 +522,7 @@ describe("Product Planning UX detail surfaces", () => {
   test("dashboard renders suggested epic cards", async () => {
     (global as any).fetch = jest.fn(async (url: string) => {
       if (url === "/api/product-planning/dashboard") return responseJson({ success: true, data: dashboardData });
+      if (url === "/api/product-planning/ai/readiness") return responseJson({ success: true, data: aiReadiness });
       return responseJson({ success: false, message: "Not found" }, 404);
     }) as any;
     mockApiRequest.mockImplementationOnce(() => Promise.resolve({

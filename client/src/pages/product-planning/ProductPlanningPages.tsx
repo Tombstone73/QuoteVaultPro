@@ -363,6 +363,30 @@ type ProductPlanningResetResult = {
   referenceCounterReset: boolean;
 };
 
+type ProductPlanningAiReadiness = {
+  status:
+    | "live_ai_configured"
+    | "rule_based_fallback"
+    | "missing_org_ai_settings"
+    | "missing_provider_env"
+    | "missing_encrypted_api_key"
+    | "feature_review_disabled";
+  label: string;
+  message: string;
+  mode: "disabled" | "printershero_managed" | "bring_your_own";
+  provider: string | null;
+  model: string | null;
+  settingsPresent: boolean;
+  featureReviewEnabled: boolean;
+  hasEncryptedApiKey: boolean;
+  managedProviderEnv: {
+    configured: boolean;
+    endpointPresent: boolean;
+    apiKeyPresent: boolean;
+    modelPresent: boolean;
+  };
+};
+
 const WORK_ITEM_TYPES: Array<{ value: WorkItemType; label: string }> = [
   { value: "bug", label: "Bug" },
   { value: "feature", label: "Feature" },
@@ -710,6 +734,35 @@ function AiSourceIndicator({ source, fallbackReason }: { source?: ProductPlannin
   );
 }
 
+function ProductPlanningAiReadinessCard({ readiness, isLoading }: { readiness?: ProductPlanningAiReadiness; isLoading: boolean }) {
+  const isLive = readiness?.status === "live_ai_configured";
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Brain className="h-4 w-4 text-primary" />
+            <span className="text-sm font-medium">Product Planning AI</span>
+            <Badge variant={isLive ? "default" : "outline"}>
+              {isLoading ? "Checking..." : readiness?.label ?? "Rule-based fallback"}
+            </Badge>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {isLoading ? "Checking provider readiness." : readiness?.message ?? "Live AI readiness could not be checked."}
+          </p>
+        </div>
+        {readiness ? (
+          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+            <Badge variant="secondary">{readiness.mode.replace(/_/g, " ")}</Badge>
+            {readiness.provider ? <Badge variant="secondary">{readiness.provider}</Badge> : null}
+            {readiness.model ? <Badge variant="secondary">{readiness.model}</Badge> : null}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 function BacklogAiAnalysisPanel({ analysis }: { analysis: ProductPlanningBacklogAnalysis }) {
   const readiness = analysis.goLiveReadiness;
   const live = analysis.liveAi;
@@ -958,6 +1011,10 @@ export function ProductPlanningDashboardPage() {
     queryKey: ["/api/product-planning/dashboard"],
     queryFn: () => fetchJson<DashboardData>("/api/product-planning/dashboard"),
   });
+  const { data: aiReadiness, isLoading: aiReadinessLoading } = useQuery<ProductPlanningAiReadiness>({
+    queryKey: ["/api/product-planning/ai/readiness"],
+    queryFn: () => fetchJson<ProductPlanningAiReadiness>("/api/product-planning/ai/readiness"),
+  });
   const analyzeBacklogMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/product-planning/ai/analyze-backlog", {});
@@ -997,6 +1054,7 @@ export function ProductPlanningDashboardPage() {
           Refresh
         </Button>
       </div>
+      <ProductPlanningAiReadinessCard readiness={aiReadiness} isLoading={aiReadinessLoading} />
       {isLoading || !data ? (
         <div className="grid gap-3 md:grid-cols-3">
           {Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="h-24" />)}
