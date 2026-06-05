@@ -350,6 +350,19 @@ type ImportCommitResult = {
   skippedRows: Array<{ rowNumber: number; title: string | null; reason: string }>;
 };
 
+type ProductPlanningResetResult = {
+  counts: {
+    productPlanningAiSuggestions: number;
+    productPlanningEvents: number;
+    productPlanningDependencies: number;
+    productPlanningWorkItems: number;
+    productPlanningImportBatches: number;
+    productPlanningReleases: number;
+    productPlanningReferenceCounters: number;
+  };
+  referenceCounterReset: boolean;
+};
+
 const WORK_ITEM_TYPES: Array<{ value: WorkItemType; label: string }> = [
   { value: "bug", label: "Bug" },
   { value: "feature", label: "Feature" },
@@ -396,6 +409,27 @@ const BUSINESS_VALUES: Array<{ value: BusinessValue; label: string }> = [
   { value: "high", label: "High" },
   { value: "medium", label: "Medium" },
   { value: "low", label: "Low" },
+];
+
+const PRODUCT_PLANNING_RESET_CONFIRMATION = "RESET PRODUCT PLANNING";
+const PRODUCT_PLANNING_TEMPLATE_COLUMNS = [
+  "External ID",
+  "Module",
+  "Submodule",
+  "Work Item Type",
+  "Title",
+  "Rich Description",
+  "Business Value",
+  "Priority",
+  "Complexity",
+  "Phase",
+  "Planning Status",
+  "Requested By",
+  "Dependencies",
+  "Suggested Epic",
+  "Release Target",
+  "Rich Notes",
+  "Tags",
 ];
 
 const COMPLEXITIES: Array<{ value: Complexity; label: string }> = [
@@ -2626,6 +2660,9 @@ export function ProductPlanningImportsPage() {
   const [importAnalysis, setImportAnalysis] = useState<ProductPlanningBacklogAnalysis | null>(null);
   const [importReviewSource, setImportReviewSource] = useState<{ source?: ProductPlanningAiSource; fallbackReason?: string | null; summary?: string } | null>(null);
   const [bulkImportReviewStatus, setBulkImportReviewStatus] = useState<AiSuggestionStatus | null>(null);
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [resetConfirmation, setResetConfirmation] = useState("");
+  const [resetResult, setResetResult] = useState<ProductPlanningResetResult | null>(null);
 
   const { data: imports = [] } = useQuery<ImportBatch[]>({
     queryKey: ["/api/product-planning/imports"],
@@ -2687,6 +2724,28 @@ export function ProductPlanningImportsPage() {
     onError: (error: Error) => toast({ title: "Imported backlog analysis failed", description: error.message, variant: "destructive" }),
   });
 
+  const resetMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/product-planning/admin/reset", { confirmation: resetConfirmation });
+      return (await res.json()).data as ProductPlanningResetResult;
+    },
+    onSuccess: (data) => {
+      setResetResult(data);
+      setResetDialogOpen(false);
+      setResetConfirmation("");
+      setPreview(null);
+      setLastImportResult(null);
+      setImportSuggestions([]);
+      setImportAnalysis(null);
+      setImportReviewSource(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/imports"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/work-items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
+      toast({ title: "Product Planning reset complete", description: `${data.counts.productPlanningWorkItems} work item(s) deleted.` });
+    },
+    onError: (error: Error) => toast({ title: "Reset failed", description: error.message, variant: "destructive" }),
+  });
+
   const updateImportSuggestionStatus = (suggestionId: string, status: AiSuggestionStatus) => {
     setImportSuggestions((current) => current.map((suggestion) => (
       suggestion.id === suggestionId
@@ -2742,6 +2801,17 @@ export function ProductPlanningImportsPage() {
     setImportReviewSource(null);
   }
 
+  function downloadTemplate() {
+    const csvTemplate = `${PRODUCT_PLANNING_TEMPLATE_COLUMNS.join(",")}\n`;
+    const blob = new Blob([csvTemplate], { type: "text/csv;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "product-planning-template.csv";
+    link.click();
+    window.URL.revokeObjectURL(url);
+  }
+
   return (
     <ProductPlanningShell>
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -2753,6 +2823,20 @@ export function ProductPlanningImportsPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="rounded-md border border-border bg-muted/20 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium">Seed CSV Template</div>
+                  <p className="mt-1 text-xs text-muted-foreground">Use richer planning context so AI can reason about operational readiness, not just categorize rows.</p>
+                </div>
+                <Button variant="outline" size="sm" onClick={downloadTemplate}>Download Template</Button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {PRODUCT_PLANNING_TEMPLATE_COLUMNS.map((column) => (
+                  <Badge key={column} variant="outline">{column}</Badge>
+                ))}
+              </div>
+            </div>
             <Input type="file" accept=".csv,text/csv" onChange={(event) => handleFile(event.target.files?.[0] ?? null)} />
             {filename && <p className="text-sm text-muted-foreground">{filename}</p>}
             <Textarea value={csv} onChange={(event) => { setCsv(event.target.value); setPreview(null); setImportSuggestions([]); }} placeholder="CSV contents" className="min-h-[180px] font-mono text-xs" />
@@ -2843,8 +2927,84 @@ export function ProductPlanningImportsPage() {
             ))}
           </CardContent>
         </Card>
+
+        <Card className="border-destructive/40 lg:col-span-2">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm text-destructive">
+              <Trash2 className="h-4 w-4" />
+              Danger Zone
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              This will clear Product Planning work items, AI suggestions, planning events, import batches, releases, and dependencies for the current organization only. It will not delete Bug Reports or operational app data.
+            </p>
+            <Button variant="outline" onClick={() => setResetDialogOpen(true)} className="border-destructive/50 text-destructive hover:text-destructive">
+              Reset Product Planning Data
+            </Button>
+            {resetResult && (
+              <div className="rounded-md border border-border p-3 text-sm">
+                <div className="font-medium">Reset completed</div>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  <ResetCount label="Work items" value={resetResult.counts.productPlanningWorkItems} />
+                  <ResetCount label="AI suggestions" value={resetResult.counts.productPlanningAiSuggestions} />
+                  <ResetCount label="Events" value={resetResult.counts.productPlanningEvents} />
+                  <ResetCount label="Dependencies" value={resetResult.counts.productPlanningDependencies} />
+                  <ResetCount label="Import batches" value={resetResult.counts.productPlanningImportBatches} />
+                  <ResetCount label="Releases" value={resetResult.counts.productPlanningReleases} />
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Reference counter reset: {resetResult.referenceCounterReset ? "Yes" : "No existing counter found"}. Re-import a clean CSV when ready.
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
+      <Dialog open={resetDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reset Product Planning Data</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              This will clear Product Planning work items, AI suggestions, planning events, import batches, releases, and dependencies for the current organization only. It will not delete Bug Reports or operational app data.
+            </p>
+            <div className="space-y-2">
+              <Label htmlFor="product-planning-reset-confirmation">Type {PRODUCT_PLANNING_RESET_CONFIRMATION} to confirm</Label>
+              <Input
+                id="product-planning-reset-confirmation"
+                value={resetConfirmation}
+                onChange={(event) => setResetConfirmation(event.target.value)}
+                placeholder={PRODUCT_PLANNING_RESET_CONFIRMATION}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setResetDialogOpen(false); setResetConfirmation(""); }} disabled={resetMutation.isPending}>
+              Cancel
+            </Button>
+            <Button
+              variant="outline"
+              className="border-destructive/50 text-destructive hover:text-destructive"
+              onClick={() => resetMutation.mutate()}
+              disabled={resetConfirmation !== PRODUCT_PLANNING_RESET_CONFIRMATION || resetMutation.isPending}
+            >
+              {resetMutation.isPending ? "Resetting..." : "Reset Product Planning Data"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </ProductPlanningShell>
+  );
+}
+
+function ResetCount({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-md bg-muted/30 px-3 py-2">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <Badge variant="secondary">{value}</Badge>
+    </div>
   );
 }
 

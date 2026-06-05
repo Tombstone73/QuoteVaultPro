@@ -48,6 +48,7 @@ jest.mock("@/components/ui/select", () => ({
 let ProductPlanningWorkItemDetailPage: typeof import("./ProductPlanningPages").ProductPlanningWorkItemDetailPage;
 let ProductPlanningDashboardPage: typeof import("./ProductPlanningPages").ProductPlanningDashboardPage;
 let ProductPlanningRoadmapPage: typeof import("./ProductPlanningPages").ProductPlanningRoadmapPage;
+let ProductPlanningImportsPage: typeof import("./ProductPlanningPages").ProductPlanningImportsPage;
 let BacklogExpandedRow: typeof import("./ProductPlanningPages").BacklogExpandedRow;
 let DetailDependencies: typeof import("./ProductPlanningPages").DetailDependencies;
 
@@ -57,6 +58,7 @@ beforeAll(async () => {
   ProductPlanningWorkItemDetailPage = module.ProductPlanningWorkItemDetailPage;
   ProductPlanningDashboardPage = module.ProductPlanningDashboardPage;
   ProductPlanningRoadmapPage = module.ProductPlanningRoadmapPage;
+  ProductPlanningImportsPage = module.ProductPlanningImportsPage;
   BacklogExpandedRow = module.BacklogExpandedRow;
   DetailDependencies = module.DetailDependencies;
 });
@@ -656,6 +658,66 @@ describe("Product Planning UX detail surfaces", () => {
     expect(container.textContent).toContain("PP-0044");
     expect(container.textContent).toContain("SaaS-only enhancement can wait.");
     expect(container.textContent).toContain("Do Product Catalog Completion before portal polish");
+    cleanup(root, container);
+  });
+
+  test("imports page shows seed template guidance and requires reset confirmation", async () => {
+    (global as any).fetch = jest.fn(async (url: string) => {
+      if (url === "/api/product-planning/imports") return responseJson({ success: true, data: [] });
+      return responseJson({ success: false, message: "Not found" }, 404);
+    }) as any;
+    mockApiRequest.mockImplementationOnce(() => Promise.resolve({
+      json: async () => ({
+        data: {
+          counts: {
+            productPlanningAiSuggestions: 2,
+            productPlanningEvents: 3,
+            productPlanningDependencies: 1,
+            productPlanningWorkItems: 4,
+            productPlanningImportBatches: 1,
+            productPlanningReleases: 1,
+            productPlanningReferenceCounters: 1,
+          },
+          referenceCounterReset: true,
+        },
+      }),
+    }));
+
+    const { container, root } = renderWithProviders(<ProductPlanningImportsPage />, "/product-planning/imports");
+    await flushQueries();
+
+    expect(container.textContent).toContain("Seed CSV Template");
+    expect(container.textContent).toContain("External ID");
+    expect(container.textContent).toContain("Suggested Epic");
+    expect(container.textContent).toContain("Release Target");
+    expect(container.textContent).toContain("Danger Zone");
+
+    const openResetButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Reset Product Planning Data")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(openResetButton);
+    });
+    await flushQueries();
+
+    const resetButtons = Array.from(container.querySelectorAll("button")).filter((node) => node.textContent?.includes("Reset Product Planning Data")) as HTMLButtonElement[];
+    const confirmResetButton = resetButtons[resetButtons.length - 1];
+    expect(confirmResetButton.disabled).toBe(true);
+
+    const input = container.querySelector("#product-planning-reset-confirmation") as HTMLInputElement;
+    act(() => {
+      Simulate.change(input, { target: { value: "RESET PRODUCT PLANNING" } } as any);
+    });
+    await flushQueries();
+    expect(confirmResetButton.disabled).toBe(false);
+
+    act(() => {
+      Simulate.click(confirmResetButton);
+    });
+    await flushQueries();
+
+    expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/admin/reset", { confirmation: "RESET PRODUCT PLANNING" });
+    expect(container.textContent).toContain("Reset completed");
+    expect(container.textContent).toContain("Work items");
+    expect(container.textContent).toContain("Reference counter reset: Yes");
     cleanup(root, container);
   });
 });
