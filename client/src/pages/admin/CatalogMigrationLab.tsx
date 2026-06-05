@@ -87,6 +87,7 @@ export default function CatalogMigrationLab() {
   const [warningSeverityFilter, setWarningSeverityFilter] = useState<"all" | "blocker" | "warning" | "info">("all");
   const [warningProductFilter, setWarningProductFilter] = useState("all");
   const [warningCodeFilter, setWarningCodeFilter] = useState("all");
+  const [migrationSort, setMigrationSort] = useState<"confidence" | "category" | "template" | "routing" | "complexity">("confidence");
   const canAccessPlatformTools = canUsePlatformTools(user);
 
   const sourceBytes = useMemo(() => new Blob([jsonText]).size, [jsonText]);
@@ -112,6 +113,21 @@ export default function CatalogMigrationLab() {
     () => Array.from(new Set((analysis?.warnings ?? []).map((warning) => warning.code))).sort((a, b) => a.localeCompare(b)),
     [analysis],
   );
+  const sortedMigrationReadiness = useMemo(() => {
+    const rows = [...(analysis?.migrationReadiness ?? [])];
+    return rows.sort((a, b) => {
+      if (migrationSort === "confidence") return b.migrationConfidence - a.migrationConfidence || a.sourceProductName.localeCompare(b.sourceProductName);
+      if (migrationSort === "complexity") return b.complexityScore - a.complexityScore || a.sourceProductName.localeCompare(b.sourceProductName);
+      if (migrationSort === "category") return String(a.suggestedCategory ?? "").localeCompare(String(b.suggestedCategory ?? "")) || a.sourceProductName.localeCompare(b.sourceProductName);
+      if (migrationSort === "template") return String(a.suggestedProductTemplate ?? "").localeCompare(String(b.suggestedProductTemplate ?? "")) || a.sourceProductName.localeCompare(b.sourceProductName);
+      return String(a.suggestedRoutingTemplate ?? "").localeCompare(String(b.suggestedRoutingTemplate ?? "")) || a.sourceProductName.localeCompare(b.sourceProductName);
+    });
+  }, [analysis, migrationSort]);
+  const readinessCounts = useMemo(() => {
+    const counts = { Ready: 0, "Needs Review": 0, Complex: 0, "Manual Build Recommended": 0 };
+    for (const row of analysis?.migrationReadiness ?? []) counts[row.readyForImport] += 1;
+    return counts;
+  }, [analysis]);
 
   const analyzeMutation = useMutation({
     mutationFn: async () => {
@@ -129,6 +145,7 @@ export default function CatalogMigrationLab() {
       setWarningSeverityFilter("all");
       setWarningProductFilter("all");
       setWarningCodeFilter("all");
+      setMigrationSort("confidence");
       toast({
         title: "Analysis complete",
         description: `${result.counts.totalProducts} product(s) discovered. No catalog changes were made.`,
@@ -265,6 +282,7 @@ export default function CatalogMigrationLab() {
           <Tabs defaultValue="overview" className="space-y-4">
             <TabsList className="flex h-auto flex-wrap justify-start">
               <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="migration-planning">Migration Planning</TabsTrigger>
               <TabsTrigger value="structures">Product Structures</TabsTrigger>
               <TabsTrigger value="conditional">Conditional Logic</TabsTrigger>
               <TabsTrigger value="worksheets">Migration Worksheets</TabsTrigger>
@@ -288,6 +306,17 @@ export default function CatalogMigrationLab() {
                   ) : analysis.source.detectedRootKeys.map((key) => (
                     <Badge key={key} variant="outline">{key}</Badge>
                   ))}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-medium uppercase text-muted-foreground">Product Definition Metadata</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Badge variant="outline">product_index: {analysis.source.productDefinitionMetadata.productIndexFieldCount}</Badge>
+                  <Badge variant="outline">dropdowns: {analysis.source.productDefinitionMetadata.dropdownCount}</Badge>
+                  <Badge variant="outline">conditional dropdowns: {analysis.source.productDefinitionMetadata.conditionalDropdownCount}</Badge>
+                  <Badge variant="outline">total fields: {analysis.source.productDefinitionMetadata.totalFields}</Badge>
+                  <Badge variant="outline">conditional fields: {analysis.source.productDefinitionMetadata.totalConditionalFields}</Badge>
+                  <Badge variant="outline">has conditionals: {analysis.source.productDefinitionMetadata.hasConditionalFields ? "yes" : "no"}</Badge>
                 </div>
               </div>
             </CardContent>
@@ -494,6 +523,97 @@ export default function CatalogMigrationLab() {
           </Card>
             </TabsContent>
 
+            <TabsContent value="migration-planning" className="space-y-6">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+                <SummaryCard label="Products" value={analysis.migrationReadiness.length} />
+                <SummaryCard label="Ready" value={readinessCounts.Ready} />
+                <SummaryCard label="Needs Review" value={readinessCounts["Needs Review"]} />
+                <SummaryCard label="Complex" value={readinessCounts.Complex} />
+                <SummaryCard label="Manual Build" value={readinessCounts["Manual Build Recommended"]} />
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <CardTitle className="text-base">Migration Planning</CardTitle>
+                      <CardDescription>
+                        Product-level worksheet suggestions for human review. Read-only; no mappings or products are created.
+                      </CardDescription>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        value={migrationSort}
+                        onChange={(event) => setMigrationSort(event.target.value as any)}
+                        className="h-9 rounded-md border bg-background px-3 text-sm"
+                        aria-label="Sort migration planning rows"
+                      >
+                        <option value="confidence">Migration Confidence</option>
+                        <option value="category">Category</option>
+                        <option value="template">Template</option>
+                        <option value="routing">Routing</option>
+                        <option value="complexity">Complexity</option>
+                      </select>
+                      <Button
+                        variant="outline"
+                        className="gap-2"
+                        onClick={() => downloadText(analysis.migrationWorksheets.catalogMigrationWorksheet, "Catalog Migration Worksheet.csv")}
+                      >
+                        <Download className="h-4 w-4" />
+                        Export Worksheet
+                      </Button>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="overflow-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Product</TableHead>
+                        <TableHead>Category</TableHead>
+                        <TableHead>Template</TableHead>
+                        <TableHead>Routing</TableHead>
+                        <TableHead>Material</TableHead>
+                        <TableHead>Options</TableHead>
+                        <TableHead>Complexity</TableHead>
+                        <TableHead>Confidence</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Notes</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {sortedMigrationReadiness.length === 0 ? <EmptyRow colSpan={10} text="No migration planning rows found." /> : sortedMigrationReadiness.map((row) => (
+                        <TableRow key={`${row.sourceProductName}-${row.suggestedProductTemplate ?? "template"}`}>
+                          <TableCell className="font-medium">{row.sourceProductName}</TableCell>
+                          <TableCell>
+                            <div>{row.suggestedCategory ?? "-"}</div>
+                            <div className="text-xs text-muted-foreground">{row.categoryConfidence}</div>
+                          </TableCell>
+                          <TableCell>
+                            <div>{row.suggestedProductTemplate ?? "-"}</div>
+                            <div className="text-xs text-muted-foreground">{row.templateConfidence}</div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="max-w-xs truncate">{row.suggestedRoutingTemplate ?? "-"}</div>
+                            <div className="text-xs text-muted-foreground">{row.routingConfidence}</div>
+                          </TableCell>
+                          <TableCell>
+                            <div>{row.suggestedMaterial ?? "-"}</div>
+                            <div className="text-xs text-muted-foreground">{row.materialMatchConfidence}</div>
+                          </TableCell>
+                          <TableCell className="max-w-xs truncate">{row.detectedOptionGroups.join(", ") || "-"}</TableCell>
+                          <TableCell>{row.complexityScore}</TableCell>
+                          <TableCell>{row.migrationConfidence}</TableCell>
+                          <TableCell><Badge variant={row.readyForImport === "Ready" ? "default" : "outline"}>{row.readyForImport}</Badge></TableCell>
+                          <TableCell className="max-w-md truncate">{row.migrationNotes || "-"}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
             <TabsContent value="structures" className="space-y-6">
               <Card>
                 <CardHeader>
@@ -638,7 +758,15 @@ export default function CatalogMigrationLab() {
                     Editable CSV outputs for future migration planning. These downloads do not import or create catalog records.
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="grid gap-4 md:grid-cols-3">
+                <CardContent className="grid gap-4 md:grid-cols-4">
+                  <Button
+                    variant="outline"
+                    className="justify-start gap-2"
+                    onClick={() => downloadText(analysis.migrationWorksheets.catalogMigrationWorksheet, "Catalog Migration Worksheet.csv")}
+                  >
+                    <Download className="h-4 w-4" />
+                    Catalog Migration Worksheet
+                  </Button>
                   <Button
                     variant="outline"
                     className="justify-start gap-2"

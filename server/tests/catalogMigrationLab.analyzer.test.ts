@@ -11,6 +11,12 @@ const infoFloFixture = {
       sku: "BNR-13",
       categoryName: "Banners",
       active: true,
+      product_index: 0,
+      dropdown_count: 3,
+      conditional_dropdown_count: 1,
+      total_fields: 10,
+      total_conditional_fields: 3,
+      has_conditional_fields: true,
       basePrice: 45,
       materials: [{ name: "13oz Scrim Banner" }],
       optionGroups: [
@@ -159,6 +165,17 @@ describe("InfoFlo catalog migration adapter", () => {
     expect(parsed.unsupportedFields.map((field) => field.fieldName)).toEqual(
       expect.arrayContaining(["infoFloInternalId"]),
     );
+    expect(parsed.unsupportedFields.map((field) => field.fieldName)).not.toEqual(
+      expect.arrayContaining(["product_index", "dropdown_count", "conditional_dropdown_count", "total_fields", "total_conditional_fields", "has_conditional_fields"]),
+    );
+    expect(parsed.productDefinitionMetadata).toMatchObject({
+      productIndexFieldCount: 1,
+      dropdownCount: expect.any(Number),
+      conditionalDropdownCount: expect.any(Number),
+      totalFields: expect.any(Number),
+      totalConditionalFields: expect.any(Number),
+      hasConditionalFields: true,
+    });
   });
 
   test("fails safely for an unknown source shape", () => {
@@ -219,6 +236,10 @@ describe("Catalog Migration Lab analyzer", () => {
     expect(result.optionPatterns.find((option) => option.optionName === "Size")?.sampleValues).toEqual(
       expect.arrayContaining(["Standard 3x5", "Custom Size"]),
     );
+    expect(result.source.productDefinitionMetadata).toMatchObject({
+      productIndexFieldCount: 1,
+      hasConditionalFields: true,
+    });
     const acrylic = result.productStructures.find((product) => product.productName === "Acrylic Panel");
     const coro = result.productStructures.find((product) => product.productName === "Coro Yard Sign");
     const meshBanner = result.productStructures.find((product) => product.productName === "Mesh Banner");
@@ -248,6 +269,41 @@ describe("Catalog Migration Lab analyzer", () => {
     expect(result.migrationWorksheets.productFields).toContain("Acrylic Panel,Quantity candidate,Quantity candidate,input,no,,,,,0,no,Quantity,Quantity,yes,no,no");
     expect(result.migrationWorksheets.optionGroupDiscovery).toContain("option_group_name,usage_count,products_using_group,sample_values");
     expect(result.migrationWorksheets.optionGroupDiscovery).toContain("Size");
+    const bannerReadiness = result.migrationReadiness.find((product) => product.sourceProductName === "13oz Banner");
+    const acrylicReadiness = result.migrationReadiness.find((product) => product.sourceProductName === "Acrylic Panel");
+    const coroReadiness = result.migrationReadiness.find((product) => product.sourceProductName === "Coro Yard Sign");
+    const meshReadiness = result.migrationReadiness.find((product) => product.sourceProductName === "Mesh Banner");
+    expect(bannerReadiness).toMatchObject({
+      suggestedProductTemplate: "Banner Product",
+      templateConfidence: "high",
+      suggestedRoutingTemplate: "Prepress -> Roll Print -> Finishing",
+      routingConfidence: "high",
+      suggestedMaterial: "13oz Scrim Banner",
+      matchedMaterial: expect.objectContaining({ id: "mat-banner" }),
+      materialMatchConfidence: "high",
+    });
+    expect(typeof bannerReadiness?.migrationConfidence).toBe("number");
+    expect(bannerReadiness?.migrationConfidence).toBeGreaterThan(0);
+    expect(acrylicReadiness).toMatchObject({
+      suggestedProductTemplate: "Rigid Sheet Product",
+      suggestedRoutingTemplate: "Prepress -> Flatbed -> Finishing",
+    });
+    expect(coroReadiness).toMatchObject({
+      suggestedProductTemplate: "Rigid Sheet Product",
+      suggestedRoutingTemplate: "Prepress -> Flatbed -> Finishing",
+    });
+    expect(meshReadiness).toMatchObject({
+      suggestedProductTemplate: "Banner Product",
+      suggestedRoutingTemplate: "Prepress -> Roll Print -> Finishing",
+    });
+    expect(result.migrationReadiness.every((product) => product.migrationConfidence >= 0 && product.migrationConfidence <= 100)).toBe(true);
+    expect(result.migrationReadiness.every((product) =>
+      ["Ready", "Needs Review", "Complex", "Manual Build Recommended"].includes(product.readyForImport),
+    )).toBe(true);
+    expect(result.migrationWorksheets.catalogMigrationWorksheet).toContain(
+      "Source Product Name,Suggested TitanOS Product Name,Suggested Category,Category Confidence,Suggested Product Template,Suggested Routing Template,Suggested Material,Detected Materials,Detected Option Groups,Detected Size Fields,Detected Quantity Field,Conditional Logic Present,Complexity Score,Migration Confidence,Ready For Import,Migration Notes",
+    );
+    expect(result.migrationWorksheets.catalogMigrationWorksheet).toContain("Acrylic Panel,Acrylic Panel,Acrylic / Rigid Sheet,high,Rigid Sheet Product,Prepress -> Flatbed -> Finishing");
     expect(result.warnings.map((warning) => warning.code)).toEqual(
       expect.arrayContaining(["MISSING_PRICING", "MISSING_OPTIONS", "DUPLICATE_PRODUCT_NAME", "UNNAMED_FIELD_ID"]),
     );

@@ -18,6 +18,14 @@ export type InfoFloAdapterParseResult = {
   detectedProductPath: string | null;
   sourceShape: "array" | "object" | "single-product" | "unknown";
   detectedRootKeys: string[];
+  productDefinitionMetadata: {
+    productIndexFieldCount: number;
+    dropdownCount: number;
+    conditionalDropdownCount: number;
+    totalFields: number;
+    totalConditionalFields: number;
+    hasConditionalFields: boolean;
+  };
   unsupportedFields: UnsupportedFieldSummary[];
   warnings: CatalogMigrationLabWarning[];
   conditionalLogic: ConditionalLogicSummary[];
@@ -33,6 +41,20 @@ const OPTION_CONTAINER_KEYS = ["options", "optionGroups", "option_groups", "attr
 const FORM_FIELD_CONTAINER_KEYS = ["form_fields", "formFields", "fields", "customFields", "custom_fields", "input_fields", "inputFields"];
 const MODAL_CONFIGURABLE_KEYS = ["modal_configurable", "modalConfigurable", "modal_config", "modalConfig", "configurable_modal", "configurableModal"];
 const CONDITIONAL_MAP_KEYS = ["conditional_fields_map", "conditionalFieldsMap", "conditional_fields", "conditionalFields", "reveal_logic", "revealLogic"];
+const PRODUCT_DEFINITION_METADATA_KEYS = [
+  "product_index",
+  "productIndex",
+  "dropdown_count",
+  "dropdownCount",
+  "conditional_dropdown_count",
+  "conditionalDropdownCount",
+  "total_fields",
+  "totalFields",
+  "total_conditional_fields",
+  "totalConditionalFields",
+  "has_conditional_fields",
+  "hasConditionalFields",
+];
 const MATERIAL_KEYS = ["material", "materials", "substrate", "media", "stock", "stockName", "stock_name", "paper", "vendorMaterial"];
 const PRICING_KEYS = [
   "price",
@@ -71,6 +93,7 @@ const RECOGNIZED_FIELD_KEYS = new Set(
     ...FORM_FIELD_CONTAINER_KEYS,
     ...MODAL_CONFIGURABLE_KEYS,
     ...CONDITIONAL_MAP_KEYS,
+    ...PRODUCT_DEFINITION_METADATA_KEYS,
     ...MATERIAL_KEYS,
     ...PRICING_KEYS,
     "id",
@@ -138,6 +161,15 @@ function booleanFromValue(value: unknown): boolean {
     return ["true", "yes", "y", "1", "required", "mandatory"].includes(normalized);
   }
   return false;
+}
+
+function numberFromValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function productLikeScore(value: unknown): number {
@@ -789,6 +821,7 @@ function normalizeProduct(raw: unknown, index: number, sourcePath: string): {
   unsupported: Array<{ fieldName: string; value: unknown }>;
   warnings: CatalogMigrationLabWarning[];
   conditionalLogic: ConditionalLogicSummary[];
+  metadata: InfoFloAdapterParseResult["productDefinitionMetadata"];
 } {
   const warnings: CatalogMigrationLabWarning[] = [];
   const record = isRecord(raw) ? raw : {};
@@ -886,6 +919,44 @@ function normalizeProduct(raw: unknown, index: number, sourcePath: string): {
     unsupported,
     warnings,
     conditionalLogic: structure.conditionalLogic,
+    metadata: {
+      productIndexFieldCount: findValue(record, ["product_index", "productIndex"]) !== undefined ? 1 : 0,
+      dropdownCount: numberFromValue(findValue(record, ["dropdown_count", "dropdownCount"])) ??
+        structure.fields.filter((field) => /select|dropdown/i.test(`${field.fieldType} ${field.inputType ?? ""}`)).length,
+      conditionalDropdownCount: numberFromValue(findValue(record, ["conditional_dropdown_count", "conditionalDropdownCount"])) ??
+        structure.fields.filter((field) => field.conditional && /select|dropdown/i.test(`${field.fieldType} ${field.inputType ?? ""}`)).length,
+      totalFields: numberFromValue(findValue(record, ["total_fields", "totalFields"])) ?? structure.fields.length,
+      totalConditionalFields: numberFromValue(findValue(record, ["total_conditional_fields", "totalConditionalFields"])) ??
+        structure.fields.filter((field) => field.conditional).length,
+      hasConditionalFields: findValue(record, ["has_conditional_fields", "hasConditionalFields"]) !== undefined
+        ? booleanFromValue(findValue(record, ["has_conditional_fields", "hasConditionalFields"]))
+        : structure.fields.some((field) => field.conditional),
+    },
+  };
+}
+
+function emptyProductDefinitionMetadata(): InfoFloAdapterParseResult["productDefinitionMetadata"] {
+  return {
+    productIndexFieldCount: 0,
+    dropdownCount: 0,
+    conditionalDropdownCount: 0,
+    totalFields: 0,
+    totalConditionalFields: 0,
+    hasConditionalFields: false,
+  };
+}
+
+function addProductDefinitionMetadata(
+  current: InfoFloAdapterParseResult["productDefinitionMetadata"],
+  next: InfoFloAdapterParseResult["productDefinitionMetadata"],
+): InfoFloAdapterParseResult["productDefinitionMetadata"] {
+  return {
+    productIndexFieldCount: current.productIndexFieldCount + next.productIndexFieldCount,
+    dropdownCount: current.dropdownCount + next.dropdownCount,
+    conditionalDropdownCount: current.conditionalDropdownCount + next.conditionalDropdownCount,
+    totalFields: current.totalFields + next.totalFields,
+    totalConditionalFields: current.totalConditionalFields + next.totalConditionalFields,
+    hasConditionalFields: current.hasConditionalFields || next.hasConditionalFields,
   };
 }
 
@@ -899,6 +970,7 @@ export function parseInfoFloJsonSource(sourceJson: unknown): InfoFloAdapterParse
       detectedProductPath: null,
       sourceShape: "unknown",
       detectedRootKeys,
+      productDefinitionMetadata: emptyProductDefinitionMetadata(),
       unsupportedFields: [],
       conditionalLogic: [],
       warnings: [{
@@ -947,6 +1019,7 @@ export function parseInfoFloJsonSource(sourceJson: unknown): InfoFloAdapterParse
   const products: NormalizedSourceProduct[] = [];
   const unsupportedEntries: Array<{ fieldName: string; value: unknown }> = [];
   const conditionalLogic: ConditionalLogicSummary[] = [];
+  let productDefinitionMetadata = emptyProductDefinitionMetadata();
 
   rawProducts.forEach((raw, index) => {
     const productPath = detectedProductPath ? `${detectedProductPath}[${index}]` : `$[${index}]`;
@@ -955,6 +1028,7 @@ export function parseInfoFloJsonSource(sourceJson: unknown): InfoFloAdapterParse
     unsupportedEntries.push(...normalized.unsupported);
     warnings.push(...normalized.warnings);
     conditionalLogic.push(...normalized.conditionalLogic);
+    productDefinitionMetadata = addProductDefinitionMetadata(productDefinitionMetadata, normalized.metadata);
   });
 
   const names = new Map<string, { count: number; sampleName: string }>();
@@ -980,6 +1054,7 @@ export function parseInfoFloJsonSource(sourceJson: unknown): InfoFloAdapterParse
     detectedProductPath,
     sourceShape,
     detectedRootKeys,
+    productDefinitionMetadata,
     unsupportedFields: summarizeUnsupportedFields(unsupportedEntries),
     conditionalLogic,
     warnings,

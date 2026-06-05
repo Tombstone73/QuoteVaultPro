@@ -96,6 +96,14 @@ export const catalogMigrationLabSourceMetadataSchema = z.object({
   detectedProductPath: z.string().nullable(),
   detectedRootKeys: z.array(z.string()),
   sourceShape: z.enum(["array", "object", "single-product", "unknown"]),
+  productDefinitionMetadata: z.object({
+    productIndexFieldCount: z.number().int().min(0),
+    dropdownCount: z.number().int().min(0),
+    conditionalDropdownCount: z.number().int().min(0),
+    totalFields: z.number().int().min(0),
+    totalConditionalFields: z.number().int().min(0),
+    hasConditionalFields: z.boolean(),
+  }),
 });
 
 export const categorySummarySchema = z.object({
@@ -184,9 +192,40 @@ export const conditionalLogicSummarySchema = z.object({
 });
 
 export const migrationWorksheetCsvSchema = z.object({
+  catalogMigrationWorksheet: z.string(),
   productSummary: z.string(),
   productFields: z.string(),
   optionGroupDiscovery: z.string(),
+});
+
+export const migrationConfidenceLevelSchema = z.enum(["high", "medium", "low", "unknown"]);
+export const migrationReadinessStatusSchema = z.enum(["Ready", "Needs Review", "Complex", "Manual Build Recommended"]);
+
+export const migrationReadinessProductSchema = z.object({
+  sourceProductName: z.string(),
+  suggestedTitanosProductName: z.string(),
+  suggestedCategory: z.string().nullable(),
+  categoryConfidence: productStructureSummarySchema.shape.categoryConfidence,
+  suggestedProductTemplate: z.string().nullable(),
+  templateConfidence: migrationConfidenceLevelSchema,
+  suggestedRoutingTemplate: z.string().nullable(),
+  routingConfidence: migrationConfidenceLevelSchema,
+  suggestedMaterial: z.string().nullable(),
+  matchedMaterial: z.object({
+    id: z.string(),
+    sku: z.string().nullable(),
+    name: z.string(),
+  }).nullable(),
+  materialMatchConfidence: migrationConfidenceLevelSchema,
+  detectedMaterials: z.array(z.string()),
+  detectedOptionGroups: z.array(z.string()),
+  detectedSizeFields: z.array(z.string()),
+  detectedQuantityField: z.boolean(),
+  conditionalLogicPresent: z.boolean(),
+  complexityScore: z.number().int().min(0),
+  migrationConfidence: z.number().int().min(0).max(100),
+  readyForImport: migrationReadinessStatusSchema,
+  migrationNotes: z.string(),
 });
 
 export const catalogMigrationLabWarningSchema = z.object({
@@ -228,6 +267,7 @@ export const catalogMigrationLabAnalyzerResultSchema = z.object({
     sampleProducts: z.array(z.string()),
   })),
   productStructures: z.array(productStructureSummarySchema),
+  migrationReadiness: z.array(migrationReadinessProductSchema),
   conditionalLogic: z.array(conditionalLogicSummarySchema),
   migrationWorksheets: migrationWorksheetCsvSchema,
   unsupportedFields: z.array(unsupportedFieldSummarySchema),
@@ -260,6 +300,9 @@ export type UnsupportedFieldSummary = z.infer<typeof unsupportedFieldSummarySche
 export type ProductStructureSummary = z.infer<typeof productStructureSummarySchema>;
 export type ConditionalLogicSummary = z.infer<typeof conditionalLogicSummarySchema>;
 export type MigrationWorksheetCsv = z.infer<typeof migrationWorksheetCsvSchema>;
+export type MigrationReadinessProduct = z.infer<typeof migrationReadinessProductSchema>;
+export type MigrationReadinessStatus = z.infer<typeof migrationReadinessStatusSchema>;
+export type MigrationConfidenceLevel = z.infer<typeof migrationConfidenceLevelSchema>;
 export type CatalogMigrationLabWarning = z.infer<typeof catalogMigrationLabWarningSchema>;
 export type CatalogMigrationLabWarningCounts = z.infer<typeof catalogMigrationLabWarningCountsSchema>;
 export type CatalogMigrationLabWarningCode = z.infer<typeof catalogMigrationLabWarningCodeSchema>;
