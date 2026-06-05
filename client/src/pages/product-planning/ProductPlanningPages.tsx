@@ -2908,58 +2908,60 @@ export function ProductPlanningImportsPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">Import History</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {imports.length === 0 ? <p className="text-sm text-muted-foreground">No imports yet.</p> : imports.map((batch) => (
-              <div key={batch.id} className="rounded-md border border-border p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="truncate text-sm font-medium">{batch.filename || "CSV import"}</div>
-                  <Badge variant={batch.status === "completed" ? "secondary" : "outline"}>{batch.status.replace(/_/g, " ")}</Badge>
+        <div className="space-y-4">
+          <Card className="border-destructive/40">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm text-destructive">
+                <Trash2 className="h-4 w-4" />
+                Danger Zone
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                This will clear Product Planning work items, AI suggestions, planning events, import batches, releases, and dependencies for the current organization only. It will not delete Bug Reports or operational app data.
+              </p>
+              <Button variant="outline" onClick={() => setResetDialogOpen(true)} className="border-destructive/50 text-destructive hover:text-destructive">
+                Reset Product Planning Data
+              </Button>
+              {resetResult && (
+                <div className="rounded-md border border-border p-3 text-sm">
+                  <div className="font-medium">Reset completed</div>
+                  <div className="mt-2 grid gap-2">
+                    <ResetCount label="Work items" value={resetResult.counts.productPlanningWorkItems} />
+                    <ResetCount label="AI suggestions" value={resetResult.counts.productPlanningAiSuggestions} />
+                    <ResetCount label="Events" value={resetResult.counts.productPlanningEvents} />
+                    <ResetCount label="Dependencies" value={resetResult.counts.productPlanningDependencies} />
+                    <ResetCount label="Import batches" value={resetResult.counts.productPlanningImportBatches} />
+                    <ResetCount label="Releases" value={resetResult.counts.productPlanningReleases} />
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Reference counter reset: {resetResult.referenceCounterReset ? "Yes" : "No existing counter found"}. Re-import a clean CSV when ready.
+                  </p>
                 </div>
-                <div className="mt-2 text-xs text-muted-foreground">
-                  {batch.importedCount} imported, {batch.skippedCount} skipped, {batch.errorCount} errors
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">{format(new Date(batch.createdAt), "MMM d, yyyy HH:mm")}</div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
+              )}
+            </CardContent>
+          </Card>
 
-        <Card className="border-destructive/40 lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-sm text-destructive">
-              <Trash2 className="h-4 w-4" />
-              Danger Zone
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <p className="text-sm text-muted-foreground">
-              This will clear Product Planning work items, AI suggestions, planning events, import batches, releases, and dependencies for the current organization only. It will not delete Bug Reports or operational app data.
-            </p>
-            <Button variant="outline" onClick={() => setResetDialogOpen(true)} className="border-destructive/50 text-destructive hover:text-destructive">
-              Reset Product Planning Data
-            </Button>
-            {resetResult && (
-              <div className="rounded-md border border-border p-3 text-sm">
-                <div className="font-medium">Reset completed</div>
-                <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                  <ResetCount label="Work items" value={resetResult.counts.productPlanningWorkItems} />
-                  <ResetCount label="AI suggestions" value={resetResult.counts.productPlanningAiSuggestions} />
-                  <ResetCount label="Events" value={resetResult.counts.productPlanningEvents} />
-                  <ResetCount label="Dependencies" value={resetResult.counts.productPlanningDependencies} />
-                  <ResetCount label="Import batches" value={resetResult.counts.productPlanningImportBatches} />
-                  <ResetCount label="Releases" value={resetResult.counts.productPlanningReleases} />
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Import History</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {imports.length === 0 ? <p className="text-sm text-muted-foreground">No imports yet.</p> : imports.map((batch) => (
+                <div key={batch.id} className="rounded-md border border-border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="truncate text-sm font-medium">{batch.filename || "CSV import"}</div>
+                    <Badge variant={batch.status === "completed" ? "secondary" : "outline"}>{batch.status.replace(/_/g, " ")}</Badge>
+                  </div>
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    {batch.importedCount} imported, {batch.skippedCount} skipped, {batch.errorCount} errors
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">{format(new Date(batch.createdAt), "MMM d, yyyy HH:mm")}</div>
                 </div>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Reference counter reset: {resetResult.referenceCounterReset ? "Yes" : "No existing counter found"}. Re-import a clean CSV when ready.
-                </p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
       </div>
       <Dialog open={resetDialogOpen}>
         <DialogContent>
