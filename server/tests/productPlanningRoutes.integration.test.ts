@@ -7,7 +7,9 @@ import { db } from "../db";
 import { runMigrations } from "../runMigrations";
 import { registerProductPlanningRoutes } from "../routes/productPlanning.routes";
 import {
+  auditLogs,
   bugReports,
+  globalVariables,
   organizations,
   productPlanningAiSuggestions,
   productPlanningDependencies,
@@ -510,6 +512,128 @@ describe("Product Planning AI suggestion routes", () => {
     expect(response.body.data.suggestions).toEqual(expect.arrayContaining([
       expect.objectContaining({ suggestionType: "phase", status: "pending" }),
     ]));
+  });
+});
+
+describe("Product Planning admin reset", () => {
+  test("blocks non-dev users and requires exact confirmation", async () => {
+    const { org, app } = await createFixture();
+
+    const wrongConfirmation = await request(app)
+      .post("/api/product-planning/admin/reset")
+      .send({ confirmation: "reset" });
+    expect(wrongConfirmation.status).toBe(400);
+    expect(wrongConfirmation.body.message).toContain("RESET PRODUCT PLANNING");
+
+    const nonDev = await request(buildApp({ orgId: org.id, orgRole: "member", userRole: "member" }))
+      .post("/api/product-planning/admin/reset")
+      .send({ confirmation: "RESET PRODUCT PLANNING" });
+    expect(nonDev.status).toBe(403);
+  });
+
+  test("deletes only current tenant Product Planning data, preserves bug reports, and resets reference counter", async () => {
+    const { org, user, app } = await createFixture();
+    const other = await createFixture();
+    const release = await createRelease(org.id, { name: "Operational Readiness" });
+    const otherRelease = await createRelease(other.org.id, { name: "Other Org Release" });
+    const [batch] = await db.insert(productPlanningImportBatches).values({
+      organizationId: org.id,
+      filename: "reset-test.csv",
+      rowCount: 1,
+      importedCount: 1,
+      status: "completed",
+      createdByUserId: user.id,
+    }).returning();
+    const item = await createWorkItem(org.id, {
+      title: "Reset target item",
+      releaseId: release.id,
+      importedBatchId: batch.id,
+    });
+    const dependencyTarget = await createWorkItem(org.id, { title: "Reset dependency target" });
+    const otherItem = await createWorkItem(other.org.id, {
+      title: "Other org planning item",
+      releaseId: otherRelease.id,
+    });
+    await db.insert(productPlanningDependencies).values({
+      organizationId: org.id,
+      workItemId: item.id,
+      dependsOnWorkItemId: dependencyTarget.id,
+      dependencyType: "requires",
+      createdByUserId: user.id,
+    });
+    await db.insert(productPlanningEvents).values({
+      organizationId: org.id,
+      workItemId: item.id,
+      eventType: "created",
+      message: "Created for reset test",
+      createdByUserId: user.id,
+    });
+    await db.insert(productPlanningAiSuggestions).values({
+      organizationId: org.id,
+      workItemId: item.id,
+      suggestionType: "priority",
+      currentValue: "medium",
+      suggestedValue: "critical",
+      confidence: "90",
+      reasoning: "Reset test suggestion",
+    });
+    await db.insert(globalVariables).values({
+      organizationId: org.id,
+      name: "product_planning_next_reference",
+      value: "42",
+      category: "numbering",
+      description: "Next Product Planning reference number",
+    });
+    const [bugReport] = await db.insert(bugReports).values({
+      orgId: org.id,
+      referenceNumber: `B-${String(Math.floor(Math.random() * 1000000)).padStart(6, "0")}`,
+      createdByUserId: user.id,
+      createdByEmail: user.email ?? "reset@example.test",
+      title: "Bug report must survive reset",
+      description: "Do not delete this bug report.",
+      severity: "high",
+      url: "https://example.test/reset",
+      userAgent: "jest",
+      status: "open",
+    }).returning();
+
+    const response = await request(app)
+      .post("/api/product-planning/admin/reset")
+      .send({ confirmation: "RESET PRODUCT PLANNING" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.counts).toEqual(expect.objectContaining({
+      productPlanningAiSuggestions: 1,
+      productPlanningEvents: 1,
+      productPlanningDependencies: 1,
+      productPlanningWorkItems: 2,
+      productPlanningImportBatches: 1,
+      productPlanningReleases: 1,
+      productPlanningReferenceCounters: 1,
+    }));
+    expect(response.body.data.referenceCounterReset).toBe(true);
+
+    const currentOrgItems = await db.select().from(productPlanningWorkItems).where(eq(productPlanningWorkItems.organizationId, org.id));
+    const currentOrgBatches = await db.select().from(productPlanningImportBatches).where(eq(productPlanningImportBatches.organizationId, org.id));
+    const currentOrgReleases = await db.select().from(productPlanningReleases).where(eq(productPlanningReleases.organizationId, org.id));
+    const currentOrgCounters = await db.select().from(globalVariables).where(and(eq(globalVariables.organizationId, org.id), eq(globalVariables.name, "product_planning_next_reference")));
+    const survivingBugReports = await db.select().from(bugReports).where(eq(bugReports.id, bugReport.id));
+    const otherOrgItems = await db.select().from(productPlanningWorkItems).where(eq(productPlanningWorkItems.id, otherItem.id));
+    const auditRows = await db.select().from(auditLogs).where(and(eq(auditLogs.organizationId, org.id), eq(auditLogs.actionType, "product_planning_reset")));
+
+    expect(currentOrgItems).toHaveLength(0);
+    expect(currentOrgBatches).toHaveLength(0);
+    expect(currentOrgReleases).toHaveLength(0);
+    expect(currentOrgCounters).toHaveLength(0);
+    expect(survivingBugReports).toHaveLength(1);
+    expect(otherOrgItems).toHaveLength(1);
+    expect(auditRows.length).toBeGreaterThan(0);
+
+    const createAfterReset = await request(app)
+      .post("/api/product-planning/work-items")
+      .send({ title: "First item after reset", priority: "high" });
+    expect(createAfterReset.status).toBe(201);
+    expect(createAfterReset.body.data.reference).toBe("PP-0001");
   });
 });
 

@@ -20,6 +20,7 @@ import { getRequestOrganizationId } from "../tenantContext";
 import {
   auditLogs,
   bugReports,
+  globalVariables,
   productPlanningAiSuggestions,
   productPlanningAiSuggestionTypeValues,
   productPlanningBusinessValueValues,
@@ -53,6 +54,7 @@ import {
 
 type DbExecutor = typeof db | any;
 const productPlanningAiAssistant = new ProductPlanningAiAssistant();
+const PRODUCT_PLANNING_RESET_CONFIRMATION = "RESET PRODUCT PLANNING";
 
 const listQuerySchema = z.object({
   search: z.string().trim().max(255).optional(),
@@ -139,6 +141,10 @@ const csvPreviewSchema = z.object({
 const csvCommitSchema = csvPreviewSchema.extend({
   allowDuplicates: z.boolean().optional().default(false),
   rows: z.array(z.unknown()).optional(),
+});
+
+const productPlanningResetSchema = z.object({
+  confirmation: z.literal(PRODUCT_PLANNING_RESET_CONFIRMATION),
 });
 
 const moveStatusSchema = z.object({
@@ -367,6 +373,7 @@ function workItemValuesFromCsvRow(
     sourceReference: row.sourceReference,
     importedBatchId: batchId,
     requestedBy: row.requestedBy,
+    releaseTarget: row.releaseTarget,
     notes: [row.notes, warningNote].filter(Boolean).join("\n\n") || null,
     createdByUserId: actorUserId,
     updatedByUserId: actorUserId,
@@ -2072,6 +2079,96 @@ export function registerProductPlanningRoutes(
     } catch (error) {
       console.error("[ProductPlanning] Roadmap analysis failed:", error);
       res.status(500).json({ success: false, message: "Failed to generate roadmap analysis." });
+    }
+  });
+
+  app.post("/api/product-planning/admin/reset", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const input = productPlanningResetSchema.parse(req.body ?? {});
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+
+      const result = await db.transaction(async (tx) => {
+        const deletedAiSuggestions = await tx
+          .delete(productPlanningAiSuggestions)
+          .where(eq(productPlanningAiSuggestions.organizationId, organizationId))
+          .returning({ id: productPlanningAiSuggestions.id });
+        const deletedEvents = await tx
+          .delete(productPlanningEvents)
+          .where(eq(productPlanningEvents.organizationId, organizationId))
+          .returning({ id: productPlanningEvents.id });
+        const deletedDependencies = await tx
+          .delete(productPlanningDependencies)
+          .where(eq(productPlanningDependencies.organizationId, organizationId))
+          .returning({ id: productPlanningDependencies.id });
+        const deletedWorkItems = await tx
+          .delete(productPlanningWorkItems)
+          .where(eq(productPlanningWorkItems.organizationId, organizationId))
+          .returning({ id: productPlanningWorkItems.id });
+        const deletedImportBatches = await tx
+          .delete(productPlanningImportBatches)
+          .where(eq(productPlanningImportBatches.organizationId, organizationId))
+          .returning({ id: productPlanningImportBatches.id });
+        const deletedReleases = await tx
+          .delete(productPlanningReleases)
+          .where(eq(productPlanningReleases.organizationId, organizationId))
+          .returning({ id: productPlanningReleases.id });
+        const deletedReferenceCounters = await tx
+          .delete(globalVariables)
+          .where(and(
+            eq(globalVariables.organizationId, organizationId),
+            eq(globalVariables.name, "product_planning_next_reference"),
+          ))
+          .returning({ id: globalVariables.id });
+
+        return {
+          counts: {
+            productPlanningAiSuggestions: deletedAiSuggestions.length,
+            productPlanningEvents: deletedEvents.length,
+            productPlanningDependencies: deletedDependencies.length,
+            productPlanningWorkItems: deletedWorkItems.length,
+            productPlanningImportBatches: deletedImportBatches.length,
+            productPlanningReleases: deletedReleases.length,
+            productPlanningReferenceCounters: deletedReferenceCounters.length,
+          },
+          referenceCounterReset: deletedReferenceCounters.length > 0,
+          confirmation: input.confirmation,
+        };
+      });
+
+      await recordProductPlanningAudit({
+        organizationId,
+        actorUserId,
+        actionType: "product_planning_reset",
+        entityType: "product_planning_admin",
+        description: "Product Planning data reset for current organization.",
+        newValues: {
+          counts: result.counts,
+          referenceCounterReset: result.referenceCounterReset,
+        },
+      });
+      console.warn("[ProductPlanning] Product Planning data reset completed.", {
+        organizationId,
+        actorUserId,
+        counts: result.counts,
+        referenceCounterReset: result.referenceCounterReset,
+      });
+
+      res.status(200).json({
+        success: true,
+        data: result,
+        message: "Product Planning data reset completed for the current organization.",
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          success: false,
+          message: `Confirmation must exactly match "${PRODUCT_PLANNING_RESET_CONFIRMATION}".`,
+        });
+      }
+      console.error("[ProductPlanning] Reset failed:", error);
+      res.status(500).json({ success: false, message: "Failed to reset Product Planning data." });
     }
   });
 

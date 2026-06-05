@@ -31,6 +31,7 @@ export type ProductPlanningImportMappedRow = {
   tags: string[];
   sourceReference: string | null;
   requestedBy: string | null;
+  releaseTarget: string | null;
   notes: string | null;
   raw: Record<string, string>;
   warnings: string[];
@@ -178,16 +179,21 @@ export function mapProductPlanningCsvRow(
   }
 
   const dependencies = firstValue(rawRow, ["Dependencies"]);
-  const notes = firstValue(rawRow, ["Notes"]);
-  const combinedNotes = [notes, dependencies ? `Dependencies: ${dependencies}` : ""].filter(Boolean).join("\n\n") || null;
+  const suggestedEpic = firstValue(rawRow, ["Suggested Epic", "Epic"]);
+  const notes = firstValue(rawRow, ["Rich Notes", "Notes"]);
+  const combinedNotes = [
+    notes,
+    dependencies ? `Dependencies: ${dependencies}` : "",
+    suggestedEpic ? `Suggested Epic: ${suggestedEpic}` : "",
+  ].filter(Boolean).join("\n\n") || null;
   const categoryOrModule = firstValue(rawRow, ["Module", "Category"]);
 
   return {
     rowNumber,
     title,
-    description: firstValue(rawRow, ["Description"]) || null,
+    description: firstValue(rawRow, ["Rich Description", "Description"]) || null,
     workItemType: normalizeEnum(firstValue(rawRow, ["Type", "Work Item Type"]), TYPE_ALIASES, "feature", "work item type", warnings) ?? "feature",
-    planningStatus: normalizeEnum(firstValue(rawRow, ["Status"]), STATUS_ALIASES, "backlog", "status", warnings) ?? "backlog",
+    planningStatus: normalizeEnum(firstValue(rawRow, ["Planning Status", "Status"]), STATUS_ALIASES, "backlog", "status", warnings) ?? "backlog",
     priority: normalizeEnum(firstValue(rawRow, ["Priority"]), PRIORITY_ALIASES, "medium", "priority", warnings) ?? "medium",
     businessValue: normalizeEnum(firstValue(rawRow, ["Business Value"]), BUSINESS_VALUE_ALIASES, null, "business value", warnings),
     complexity: normalizeEnum(firstValue(rawRow, ["Complexity"]), COMPLEXITY_ALIASES, null, "complexity", warnings),
@@ -195,8 +201,9 @@ export function mapProductPlanningCsvRow(
     module: categoryOrModule || null,
     submodule: firstValue(rawRow, ["Submodule"]) || null,
     tags: parseTags(firstValue(rawRow, ["Tags"])),
-    sourceReference: firstValue(rawRow, ["Feature ID", "ID", "Reference"]) || null,
+    sourceReference: firstValue(rawRow, ["External ID", "Feature ID", "ID", "Reference"]) || null,
     requestedBy: firstValue(rawRow, ["Requested By"]) || null,
+    releaseTarget: firstValue(rawRow, ["Release Target"]) || null,
     notes: combinedNotes,
     raw: rawRow,
     warnings,
