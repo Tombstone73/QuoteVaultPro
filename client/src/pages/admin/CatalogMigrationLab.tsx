@@ -84,10 +84,34 @@ export default function CatalogMigrationLab() {
   const [jsonText, setJsonText] = useState("");
   const [fileName, setFileName] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<CatalogMigrationLabAnalyzerResult | null>(null);
+  const [warningSeverityFilter, setWarningSeverityFilter] = useState<"all" | "blocker" | "warning" | "info">("all");
+  const [warningProductFilter, setWarningProductFilter] = useState("all");
+  const [warningCodeFilter, setWarningCodeFilter] = useState("all");
   const canAccessPlatformTools = canUsePlatformTools(user);
 
   const sourceBytes = useMemo(() => new Blob([jsonText]).size, [jsonText]);
   const oversized = sourceBytes > CATALOG_MIGRATION_LAB_MAX_UPLOAD_BYTES;
+  const parsedFieldCount = useMemo(
+    () => analysis?.products.reduce((count, product) => count + product.sourceFields.length, 0) ?? 0,
+    [analysis],
+  );
+  const filteredWarnings = useMemo(() => {
+    if (!analysis) return [];
+    return analysis.warnings.filter((warning) => {
+      if (warningSeverityFilter !== "all" && warning.severity !== warningSeverityFilter) return false;
+      if (warningProductFilter !== "all" && (warning.productName ?? "-") !== warningProductFilter) return false;
+      if (warningCodeFilter !== "all" && warning.code !== warningCodeFilter) return false;
+      return true;
+    });
+  }, [analysis, warningCodeFilter, warningProductFilter, warningSeverityFilter]);
+  const warningProducts = useMemo(
+    () => Array.from(new Set((analysis?.warnings ?? []).map((warning) => warning.productName ?? "-"))).sort((a, b) => a.localeCompare(b)),
+    [analysis],
+  );
+  const warningCodes = useMemo(
+    () => Array.from(new Set((analysis?.warnings ?? []).map((warning) => warning.code))).sort((a, b) => a.localeCompare(b)),
+    [analysis],
+  );
 
   const analyzeMutation = useMutation({
     mutationFn: async () => {
@@ -102,6 +126,9 @@ export default function CatalogMigrationLab() {
     },
     onSuccess: (result) => {
       setAnalysis(result);
+      setWarningSeverityFilter("all");
+      setWarningProductFilter("all");
+      setWarningCodeFilter("all");
       toast({
         title: "Analysis complete",
         description: `${result.counts.totalProducts} product(s) discovered. No catalog changes were made.`,
@@ -223,9 +250,16 @@ export default function CatalogMigrationLab() {
         <div className="space-y-6">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <SummaryCard label="Products" value={analysis.counts.totalProducts} hint="Detected source records" />
+            <SummaryCard label="Parsed Fields" value={parsedFieldCount} hint="InfoFlo structure rows" />
+            <SummaryCard label="Warning Count" value={analysis.warningCounts.actionable} hint="Blockers + warnings only" />
+            <SummaryCard label="Blockers" value={analysis.warningCounts.blockers} />
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <SummaryCard label="Info Notices" value={analysis.warningCounts.info} hint="Visible below, not counted as problems" />
             <SummaryCard label="Active" value={analysis.counts.activeProducts} />
             <SummaryCard label="Inactive" value={analysis.counts.inactiveProducts} />
-            <SummaryCard label="Warnings" value={analysis.warnings.length} hint={analysis.source.fingerprint.slice(0, 12)} />
+            <SummaryCard label="Fingerprint" value={analysis.source.fingerprint.slice(0, 12)} />
           </div>
 
           <Tabs defaultValue="overview" className="space-y-4">
@@ -370,23 +404,61 @@ export default function CatalogMigrationLab() {
           </div>
 
           <Card>
-            <CardHeader><CardTitle className="text-base">Warnings</CardTitle></CardHeader>
+            <CardHeader>
+              <CardTitle className="text-base">Warnings And Info Notices</CardTitle>
+              <CardDescription>
+                Blockers and warnings count as actionable problems. Info notices are retained separately for migration review.
+              </CardDescription>
+            </CardHeader>
             <CardContent className="overflow-auto">
+              <div className="mb-4 grid gap-3 md:grid-cols-3">
+                <select
+                  value={warningSeverityFilter}
+                  onChange={(event) => setWarningSeverityFilter(event.target.value as any)}
+                  className="h-9 rounded-md border bg-background px-3 text-sm"
+                  aria-label="Filter warnings by severity"
+                >
+                  <option value="all">All severities</option>
+                  <option value="blocker">Blockers</option>
+                  <option value="warning">Warnings</option>
+                  <option value="info">Info</option>
+                </select>
+                <select
+                  value={warningProductFilter}
+                  onChange={(event) => setWarningProductFilter(event.target.value)}
+                  className="h-9 rounded-md border bg-background px-3 text-sm"
+                  aria-label="Filter warnings by product"
+                >
+                  <option value="all">All products</option>
+                  {warningProducts.map((product) => <option key={product} value={product}>{product}</option>)}
+                </select>
+                <select
+                  value={warningCodeFilter}
+                  onChange={(event) => setWarningCodeFilter(event.target.value)}
+                  className="h-9 rounded-md border bg-background px-3 text-sm"
+                  aria-label="Filter warnings by code"
+                >
+                  <option value="all">All codes</option>
+                  {warningCodes.map((code) => <option key={code} value={code}>{code}</option>)}
+                </select>
+              </div>
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Severity</TableHead>
                     <TableHead>Code</TableHead>
                     <TableHead>Product</TableHead>
+                    <TableHead>Occurrences</TableHead>
                     <TableHead>Message</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {analysis.warnings.length === 0 ? <EmptyRow colSpan={4} text="No warnings." /> : analysis.warnings.map((warning, index) => (
+                  {filteredWarnings.length === 0 ? <EmptyRow colSpan={5} text="No warnings match the current filters." /> : filteredWarnings.map((warning, index) => (
                     <TableRow key={`${warning.code}-${index}`}>
-                      <TableCell><Badge variant={warning.severity === "error" ? "destructive" : "outline"}>{warning.severity}</Badge></TableCell>
+                      <TableCell><Badge variant={warning.severity === "blocker" ? "destructive" : "outline"}>{warning.severity}</Badge></TableCell>
                       <TableCell className="font-mono text-xs">{warning.code}</TableCell>
                       <TableCell>{warning.productName ?? "-"}</TableCell>
+                      <TableCell>{warning.occurrences ?? warning.count ?? 1}</TableCell>
                       <TableCell>{warning.message}</TableCell>
                     </TableRow>
                   ))}
@@ -436,6 +508,8 @@ export default function CatalogMigrationLab() {
                       <TableRow>
                         <TableHead>Product</TableHead>
                         <TableHead>Type</TableHead>
+                        <TableHead>Suggested Category</TableHead>
+                        <TableHead>Confidence</TableHead>
                         <TableHead>Fields</TableHead>
                         <TableHead>Groups</TableHead>
                         <TableHead>Conditional</TableHead>
@@ -447,10 +521,12 @@ export default function CatalogMigrationLab() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {analysis.productStructures.length === 0 ? <EmptyRow colSpan={10} text="No product structures found." /> : analysis.productStructures.map((product) => (
+                      {analysis.productStructures.length === 0 ? <EmptyRow colSpan={12} text="No product structures found." /> : analysis.productStructures.map((product) => (
                         <TableRow key={product.productName}>
                           <TableCell className="font-medium">{product.productName}</TableCell>
                           <TableCell>{product.productType ?? "-"}</TableCell>
+                          <TableCell>{product.suggestedCategory ?? "-"}</TableCell>
+                          <TableCell>{product.categoryConfidence}</TableCell>
                           <TableCell>{product.fieldCount}</TableCell>
                           <TableCell className="max-w-xs truncate">{product.detectedOptionGroups.join(", ") || "-"}</TableCell>
                           <TableCell>{product.conditionalFieldCount}</TableCell>
@@ -474,25 +550,34 @@ export default function CatalogMigrationLab() {
                       <TableRow>
                         <TableHead>Product</TableHead>
                         <TableHead>Field</TableHead>
+                        <TableHead>Normalized</TableHead>
                         <TableHead>Type</TableHead>
                         <TableHead>Required</TableHead>
                         <TableHead>Option</TableHead>
                         <TableHead>Parent</TableHead>
                         <TableHead>Level</TableHead>
-                        <TableHead>Suggested Group</TableHead>
+                        <TableHead>Group</TableHead>
+                        <TableHead>Signals</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {analysis.products.flatMap((product) => product.sourceFields).length === 0 ? <EmptyRow colSpan={8} text="No InfoFlo form fields found." /> : analysis.products.flatMap((product) => product.sourceFields).map((field) => (
+                      {analysis.products.flatMap((product) => product.sourceFields).length === 0 ? <EmptyRow colSpan={10} text="No InfoFlo form fields found." /> : analysis.products.flatMap((product) => product.sourceFields).map((field) => (
                         <TableRow key={field.analyzerId}>
                           <TableCell className="font-medium">{field.productName}</TableCell>
                           <TableCell>{field.fieldLabel}</TableCell>
+                          <TableCell>{field.normalizedFieldLabel}</TableCell>
                           <TableCell>{field.fieldType}</TableCell>
                           <TableCell>{field.required ? "Yes" : "No"}</TableCell>
                           <TableCell>{field.optionText ?? "-"}</TableCell>
                           <TableCell>{field.parentField ? `${field.parentField}${field.parentOption ? `: ${field.parentOption}` : ""}` : "-"}</TableCell>
                           <TableCell>{field.level}</TableCell>
-                          <TableCell>{field.suggestedOptionGroup ?? "-"}</TableCell>
+                          <TableCell>{field.normalizedGroup}</TableCell>
+                          <TableCell className="space-x-1">
+                            {field.isQuantityCandidate && <Badge variant="outline">Quantity</Badge>}
+                            {field.isCustomerMetadata && <Badge variant="outline">Customer</Badge>}
+                            {field.isPricingSignal && <Badge variant="outline">Pricing</Badge>}
+                            {!field.isQuantityCandidate && !field.isCustomerMetadata && !field.isPricingSignal ? "-" : null}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>

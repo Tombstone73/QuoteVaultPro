@@ -3,6 +3,8 @@ import type {
   CatalogMigrationLabAnalyzerRequest,
   CatalogMigrationLabAnalyzerResult,
   CatalogMigrationLabSourceField,
+  CatalogMigrationLabWarning,
+  CatalogMigrationLabWarningCounts,
   CategorySummary,
   MaterialCandidateSummary,
   NormalizedSourceProduct,
@@ -76,7 +78,13 @@ function summarizeCategories(products: NormalizedSourceProduct[]): CategorySumma
 function summarizeOptions(products: NormalizedSourceProduct[]): OptionPatternSummary[] {
   const byOption = new Map<string, OptionPatternSummary>();
   for (const product of products) {
-    for (const optionName of product.optionNames) {
+    const sourceFieldGroups = product.sourceFields.length > 0
+      ? uniqueSorted(product.sourceFields
+        .filter((field) => !field.isCustomerMetadata && field.normalizedGroup !== "Other Product Field")
+        .map((field) => field.normalizedGroup))
+      : product.optionNames;
+
+    for (const optionName of sourceFieldGroups) {
       const key = optionName.trim().toLowerCase();
       const current = byOption.get(key) ?? {
         optionName,
@@ -89,7 +97,7 @@ function summarizeOptions(products: NormalizedSourceProduct[]): OptionPatternSum
       current.frequency++;
       current.productCount++;
       samplePush(current.sampleProducts, productLabel(product));
-      for (const field of product.sourceFields.filter((field) => field.fieldLabel === optionName)) {
+      for (const field of product.sourceFields.filter((field) => field.normalizedGroup === optionName)) {
         if (field.optionText) samplePush(current.sampleValues, field.optionText, 10);
       }
       byOption.set(key, current);
@@ -110,30 +118,131 @@ function uniqueSorted(values: Array<string | null | undefined>): string[] {
 }
 
 function fieldMatches(field: CatalogMigrationLabSourceField, pattern: RegExp): boolean {
-  return pattern.test(`${field.fieldLabel} ${field.fieldType} ${field.inputType ?? ""} ${field.optionText ?? ""}`.toLowerCase());
+  return pattern.test(`${field.fieldLabel} ${field.normalizedFieldLabel} ${field.normalizedGroup} ${field.fieldType} ${field.inputType ?? ""} ${field.optionText ?? ""}`.toLowerCase());
 }
 
-function warningStringsForProduct(product: NormalizedSourceProduct): string[] {
+function inferenceTextForProduct(product: NormalizedSourceProduct): string {
+  return [
+    productLabel(product),
+    product.productType,
+    product.category,
+    ...product.optionNames,
+    ...product.sourceFields.flatMap((field) => [field.fieldLabel, field.normalizedFieldLabel, field.normalizedGroup, field.optionText]),
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function inferCategory(product: NormalizedSourceProduct): { category: string | null; confidence: ProductStructureSummary["categoryConfidence"] } {
+  if (product.category) return { category: product.category, confidence: "source" };
+  const text = inferenceTextForProduct(product);
+  const rules: Array<{ category: string; confidence: ProductStructureSummary["categoryConfidence"]; pattern: RegExp }> = [
+    { category: "Acrylic / Rigid Sheet", confidence: "high", pattern: /\bacrylic\b|plexi|plexiglass/ },
+    { category: "Coroplast / Yard Signs", confidence: "high", pattern: /\bcoro\b|coroplast|yard sign/ },
+    { category: "Foam Board", confidence: "high", pattern: /foam\s*board|foamcore|foam core/ },
+    { category: "Banners", confidence: "high", pattern: /mesh\s*banner|\bbanner\b|scrim/ },
+    { category: "ACM", confidence: "high", pattern: /\bacm\b|polymetal|poly metal|dibond/ },
+    { category: "Stickers", confidence: "high", pattern: /sticker|decal|label/ },
+    { category: "Window Graphics", confidence: "high", pattern: /window\s*perf|window graphic|perforated window/ },
+    { category: "Vinyl / Roll Media", confidence: "medium", pattern: /\bvinyl\b|\bij\b|substance|avery|roll media/ },
+  ];
+  const match = rules.find((rule) => rule.pattern.test(text));
+  return match ? { category: match.category, confidence: match.confidence } : { category: null, confidence: "unknown" };
+}
+
+function aggregateWarnings(rawWarnings: CatalogMigrationLabWarning[]): CatalogMigrationLabWarning[] {
+  const byKey = new Map<string, CatalogMigrationLabWarning>();
+  for (const warning of rawWarnings) {
+    const key = [
+      warning.productName ?? "",
+      warning.code,
+      warning.fieldLabel ?? "",
+      warning.severity,
+    ].join("\u0000");
+    const current = byKey.get(key);
+    if (!current) {
+      byKey.set(key, { ...warning, occurrences: warning.occurrences ?? warning.count ?? 1 });
+      continue;
+    }
+    const nextOccurrences = (current.occurrences ?? current.count ?? 1) + (warning.occurrences ?? warning.count ?? 1);
+    current.occurrences = nextOccurrences;
+    current.count = Math.max(current.count ?? 0, warning.count ?? 0, nextOccurrences);
+    if (warning.path && !current.path) current.path = warning.path;
+  }
+
+  return Array.from(byKey.values())
+    .map((warning) => {
+      if (warning.occurrences && warning.occurrences > 1) {
+        const product = warning.productName ? `Product "${warning.productName}"` : "Source";
+        const field = warning.fieldLabel ? ` for "${warning.fieldLabel}"` : "";
+        return {
+          ...warning,
+          message: `${product} has ${warning.occurrences} ${warning.code.toLowerCase().replace(/_/g, " ")} notice(s)${field}.`,
+        };
+      }
+      return warning;
+    })
+    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity) || (b.occurrences ?? 1) - (a.occurrences ?? 1) || a.code.localeCompare(b.code));
+}
+
+function severityRank(severity: CatalogMigrationLabWarning["severity"]): number {
+  if (severity === "blocker") return 0;
+  if (severity === "warning") return 1;
+  return 2;
+}
+
+function countWarnings(warnings: CatalogMigrationLabWarning[]): CatalogMigrationLabWarningCounts {
+  const blockers = warnings.filter((warning) => warning.severity === "blocker").length;
+  const warningCount = warnings.filter((warning) => warning.severity === "warning").length;
+  const info = warnings.filter((warning) => warning.severity === "info").length;
+  return {
+    blockers,
+    warnings: warningCount,
+    info,
+    actionable: blockers + warningCount,
+  };
+}
+
+function warningCountsByProduct(warnings: CatalogMigrationLabWarning[]): Map<string, CatalogMigrationLabWarningCounts> {
+  const byProduct = new Map<string, CatalogMigrationLabWarningCounts>();
+  for (const warning of warnings) {
+    const product = warning.productName ?? "";
+    const current = byProduct.get(product) ?? { blockers: 0, warnings: 0, info: 0, actionable: 0 };
+    if (warning.severity === "blocker") current.blockers++;
+    else if (warning.severity === "warning") current.warnings++;
+    else current.info++;
+    current.actionable = current.blockers + current.warnings;
+    byProduct.set(product, current);
+  }
+  return byProduct;
+}
+
+function pricingSourceStatus(product: NormalizedSourceProduct): ProductStructureSummary["pricingSourceStatus"] {
+  if (product.pricingFields.length > 0) return "source_pricing_detected";
+  if (product.sourceFields.length > 0) return "definition_only_no_pricing";
+  return "missing_pricing";
+}
+
+function warningStringsForProduct(product: NormalizedSourceProduct, suggestedCategory: string | null): string[] {
   const warnings: string[] = [];
   if (!product.name) warnings.push("missing product_name");
-  if (!product.category) warnings.push("missing suggested category");
-  if (product.pricingFields.length === 0) warnings.push("missing recognizable pricing");
+  if (!product.category && !suggestedCategory) warnings.push("missing suggested category");
+  if (pricingSourceStatus(product) === "missing_pricing") warnings.push("missing recognizable pricing");
   if (product.sourceFields.length === 0) warnings.push("missing form_fields");
-  if (product.sourceFields.some((field) => field.fieldLabel.toLowerCase().startsWith("field "))) warnings.push("generic field labels detected");
   if (product.sourceFields.some((field) => field.conditional && !field.parentField)) warnings.push("conditional parent could not be resolved");
   return warnings;
 }
 
-function summarizeProductStructures(products: NormalizedSourceProduct[]): ProductStructureSummary[] {
+function summarizeProductStructures(products: NormalizedSourceProduct[], warningsByProduct: Map<string, CatalogMigrationLabWarningCounts>): ProductStructureSummary[] {
   return products.map((product) => {
     const fields = product.sourceFields;
     const fieldLabels = uniqueSorted(fields.map((field) => field.fieldLabel));
-    const optionGroups = uniqueSorted(fields.map((field) => field.suggestedOptionGroup));
-    const sizeFields = uniqueSorted(fields.filter((field) => fieldMatches(field, /(width|height|size|dimension|sq ?ft|length)/)).map((field) => field.fieldLabel));
-    const quantityFields = fields.filter((field) => fieldMatches(field, /(qty|quantity|copies|pieces|count)/));
+    const optionGroups = uniqueSorted(fields.filter((field) => !field.isCustomerMetadata && field.normalizedGroup !== "Other Product Field").map((field) => field.normalizedGroup));
+    const sizeFields = uniqueSorted(fields.filter((field) => field.normalizedGroup === "Size" || field.normalizedGroup === "Size / Pricing Signal").map((field) => field.normalizedFieldLabel));
+    const quantityFields = fields.filter((field) => field.isQuantityCandidate);
     const finishingOptions = uniqueSorted(fields.filter((field) => fieldMatches(field, /(finish|finishing|hem|grommet|laminat|mount|pole|pocket|drill|hardware)/)).map((field) => field.optionText ?? field.fieldLabel));
-    const materialSelectors = uniqueSorted(fields.filter((field) => fieldMatches(field, /(material|substrate|stock|media|paper|vinyl|banner|coroplast|foam)/)).map((field) => field.fieldLabel));
+    const materialSelectors = uniqueSorted(fields.filter((field) => field.normalizedGroup === "Materials").map((field) => field.normalizedFieldLabel));
     const conditionalFieldCount = fields.filter((field) => field.conditional).length;
+    const category = inferCategory(product);
+    const productWarningCounts = warningsByProduct.get(productLabel(product)) ?? { blockers: 0, warnings: 0, info: 0, actionable: 0 };
     const complexityScore = Math.min(
       100,
       fieldLabels.length +
@@ -147,7 +256,8 @@ function summarizeProductStructures(products: NormalizedSourceProduct[]): Produc
     return {
       productName: productLabel(product),
       productType: product.productType,
-      suggestedCategory: product.category,
+      suggestedCategory: category.category,
+      categoryConfidence: category.confidence,
       fieldCount: fieldLabels.length,
       optionGroupCount: optionGroups.length,
       conditionalFieldCount,
@@ -159,7 +269,11 @@ function summarizeProductStructures(products: NormalizedSourceProduct[]): Produc
       detectedOptionGroups: optionGroups,
       detectedConditionalLogic: conditionalFieldCount > 0,
       complexityScore,
-      warnings: warningStringsForProduct(product),
+      warnings: warningStringsForProduct(product, category.category),
+      blockerCount: productWarningCounts.blockers,
+      warningCount: productWarningCounts.warnings,
+      infoCount: productWarningCounts.info,
+      pricingSourceStatus: pricingSourceStatus(product),
     };
   });
 }
@@ -181,26 +295,36 @@ function buildProductSummaryCsv(productStructures: ProductStructureSummary[]): s
   const headers = [
     "product_name",
     "product_type",
+    "blocker_count",
+    "warning_count",
+    "info_count",
     "suggested_category",
+    "category_confidence",
     "field_count",
     "option_group_count",
     "conditional_field_count",
     "size_fields_detected",
     "quantity_field_detected",
     "materials_detected",
+    "pricing_source_status",
     "complexity_score",
     "warnings",
   ];
   return toCsv(headers, productStructures.map((product) => ({
     product_name: product.productName,
     product_type: product.productType,
+    blocker_count: product.blockerCount,
+    warning_count: product.warningCount,
+    info_count: product.infoCount,
     suggested_category: product.suggestedCategory,
+    category_confidence: product.categoryConfidence,
     field_count: product.fieldCount,
     option_group_count: product.optionGroupCount,
     conditional_field_count: product.conditionalFieldCount,
     size_fields_detected: product.sizeFieldsDetected,
     quantity_field_detected: product.quantityFieldDetected ? "yes" : "no",
     materials_detected: product.materialsDetected,
+    pricing_source_status: product.pricingSourceStatus,
     complexity_score: product.complexityScore,
     warnings: product.warnings,
   })));
@@ -210,6 +334,7 @@ function buildProductFieldsCsv(products: NormalizedSourceProduct[]): string {
   const headers = [
     "product_name",
     "field_label",
+    "normalized_field_label",
     "field_type",
     "required",
     "option_text",
@@ -219,10 +344,15 @@ function buildProductFieldsCsv(products: NormalizedSourceProduct[]): string {
     "level",
     "conditional",
     "suggested_option_group",
+    "normalized_group",
+    "is_quantity_candidate",
+    "is_customer_metadata",
+    "is_pricing_signal",
   ];
   const rows = products.flatMap((product) => product.sourceFields.map((field) => ({
     product_name: field.productName,
     field_label: field.fieldLabel,
+    normalized_field_label: field.normalizedFieldLabel,
     field_type: field.fieldType,
     required: field.required ? "yes" : "no",
     option_text: field.optionText,
@@ -232,6 +362,10 @@ function buildProductFieldsCsv(products: NormalizedSourceProduct[]): string {
     level: field.level,
     conditional: field.conditional ? "yes" : "no",
     suggested_option_group: field.suggestedOptionGroup,
+    normalized_group: field.normalizedGroup,
+    is_quantity_candidate: field.isQuantityCandidate ? "yes" : "no",
+    is_customer_metadata: field.isCustomerMetadata ? "yes" : "no",
+    is_pricing_signal: field.isPricingSignal ? "yes" : "no",
   })));
   return toCsv(headers, rows);
 }
@@ -346,7 +480,9 @@ export function analyzeCatalogMigrationSource(
   const adapterResult = parseInfoFloJsonSource(sourceJson);
   const products = adapterResult.products;
   const optionPatterns = summarizeOptions(products);
-  const productStructures = summarizeProductStructures(products);
+  const warnings = aggregateWarnings(adapterResult.warnings);
+  const warningCounts = countWarnings(warnings);
+  const productStructures = summarizeProductStructures(products, warningCountsByProduct(warnings));
 
   return {
     source: {
@@ -376,6 +512,7 @@ export function analyzeCatalogMigrationSource(
     conditionalLogic: adapterResult.conditionalLogic,
     migrationWorksheets: buildMigrationWorksheets(products, productStructures, optionPatterns),
     unsupportedFields: adapterResult.unsupportedFields,
-    warnings: adapterResult.warnings,
+    warningCounts,
+    warnings,
   };
 }
