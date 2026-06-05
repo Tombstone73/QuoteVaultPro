@@ -1,0 +1,127 @@
+import type { Express, Request, Response, NextFunction } from "express";
+import { z } from "zod";
+import { eq } from "drizzle-orm";
+import { catalogMigrationLabAnalyzerRequestSchema, type CatalogMigrationLabAnalyzerRequest } from "@shared/catalogMigrationLabSchemas";
+import { materials } from "@shared/schema";
+import { db } from "../db";
+import { getRequestOrganizationId } from "../tenantContext";
+import {
+  analyzeCatalogMigrationSource,
+  CATALOG_MIGRATION_LAB_MAX_SOURCE_BYTES,
+  type CatalogMigrationLabReferenceData,
+} from "../services/catalogMigrationLab/analyzer";
+
+type RouteMiddleware = {
+  isAuthenticated: (req: Request, res: Response, next: NextFunction) => void;
+  tenantContext: (req: Request, res: Response, next: NextFunction) => void;
+  assertInternalUser: (req: Request, res: Response) => boolean;
+  getReferenceData?: (organizationId: string) => Promise<CatalogMigrationLabReferenceData>;
+};
+
+function byteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+function canAccessCatalogMigrationLab(req: Request): boolean {
+  const user = req.user as any;
+  if (user?.isPlatformAdmin || user?.isPlatformDeveloper) return true;
+  const role = String((req as any).orgRole ?? (req as any).actorOrgRole ?? user?.role ?? "").toLowerCase();
+  return role === "owner" || role === "admin";
+}
+
+function requireCatalogMigrationLabAccess(req: Request, res: Response): boolean {
+  if (!canAccessCatalogMigrationLab(req)) {
+    res.status(403).json({
+      success: false,
+      message: "Access denied. Catalog Migration Lab requires admin or platform access.",
+    });
+    return false;
+  }
+  return true;
+}
+
+function requestPayloadSize(input: CatalogMigrationLabAnalyzerRequest): number {
+  if (typeof input.jsonText === "string") return byteLength(input.jsonText);
+  return byteLength(JSON.stringify(input.sourceJson) ?? "null");
+}
+
+async function loadReferenceData(organizationId: string): Promise<CatalogMigrationLabReferenceData> {
+  const rows = await db
+    .select({
+      id: materials.id,
+      sku: materials.sku,
+      name: materials.name,
+    })
+    .from(materials)
+    .where(eq(materials.organizationId, organizationId));
+
+  return { materials: rows };
+}
+
+export function registerCatalogMigrationLabRoutes(app: Express, middleware: RouteMiddleware) {
+  const getReferenceData = middleware.getReferenceData ?? loadReferenceData;
+
+  app.post(
+    "/api/admin/catalog-migration-lab/analyze",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) {
+          return res.status(400).json({
+            success: false,
+            message: "Missing organization context.",
+            errorCode: "UNKNOWN_SOURCE_SHAPE",
+          });
+        }
+
+        const parsed = catalogMigrationLabAnalyzerRequestSchema.parse(req.body ?? {});
+        const payloadSize = requestPayloadSize(parsed);
+        if (payloadSize > CATALOG_MIGRATION_LAB_MAX_SOURCE_BYTES) {
+          return res.status(413).json({
+            success: false,
+            message: "Catalog source JSON is too large for Phase 1 analyzer.",
+            errorCode: "SOURCE_TOO_LARGE",
+          });
+        }
+
+        const referenceData = await getReferenceData(organizationId);
+        const data = analyzeCatalogMigrationSource(parsed, referenceData);
+
+        return res.json({ success: true, data });
+      } catch (error: any) {
+        if (error instanceof SyntaxError) {
+          return res.status(400).json({
+            success: false,
+            message: "Uploaded content is not valid JSON.",
+            errorCode: "MALFORMED_JSON",
+          });
+        }
+        if (error instanceof z.ZodError) {
+          return res.status(400).json({
+            success: false,
+            message: error.errors[0]?.message ?? "Invalid analyzer request.",
+            errorCode: "UNKNOWN_SOURCE_SHAPE",
+          });
+        }
+        if (error?.code === "SOURCE_TOO_LARGE") {
+          return res.status(error.statusCode ?? 413).json({
+            success: false,
+            message: error.message,
+            errorCode: "SOURCE_TOO_LARGE",
+          });
+        }
+
+        console.error("[CatalogMigrationLab] Analysis failed:", error);
+        return res.status(500).json({
+          success: false,
+          message: "Failed to analyze catalog source.",
+          errorCode: "UNKNOWN_SOURCE_SHAPE",
+        });
+      }
+    },
+  );
+}

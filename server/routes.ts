@@ -241,6 +241,7 @@ import { registerDebugRoutes } from './routes/debug.routes';
 import { registerPricingAuditRoutes } from './routes/pricingAudit.routes';
 import { registerMaterialsImportExportRoutes } from './routes/materialsImportExport.routes';
 import { registerInboundOrderRoutes } from './routes/inboundOrders.routes';
+import { registerCatalogMigrationLabRoutes } from './routes/catalogMigrationLab.routes';
 import { registerProductPlanningRoutes } from './routes/productPlanning.routes';
 import { registerOperationalSummaryRoutes } from './routes/operationalSummary.routes';
 import { registerPbv2OptionGroupTemplateRoutes } from './routes/pbv2OptionGroupTemplates.routes';
@@ -443,6 +444,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Product Planning routes extracted to ./routes/productPlanning.routes.ts (dev/admin only)
   registerProductPlanningRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
+
+  // Catalog Migration Lab routes (hidden experimental analyzer, admin/platform only, read-only)
+  registerCatalogMigrationLabRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
 
   // Operational summary — single aggregation endpoint for sidebar badges
   registerOperationalSummaryRoutes(app, { isAuthenticated, tenantContext });
