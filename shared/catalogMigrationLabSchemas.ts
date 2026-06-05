@@ -15,6 +15,9 @@ export const catalogMigrationLabWarningCodeValues = [
   "DUPLICATE_PRODUCT_NAME",
   "UNRECOGNIZED_PRODUCT_FIELDS",
   "UNSUPPORTED_FIELD_SHAPE",
+  "MISSING_FORM_FIELDS",
+  "UNNAMED_FIELD_ID",
+  "CONDITIONAL_FIELD_UNRESOLVED",
 ] as const;
 
 export const catalogMigrationLabWarningSeverityValues = ["info", "warning", "error"] as const;
@@ -45,17 +48,37 @@ export const catalogMigrationLabPricingFieldSchema = z.object({
   sampleValue: z.string().optional(),
 });
 
+export const catalogMigrationLabSourceFieldSchema = z.object({
+  analyzerId: z.string(),
+  productName: z.string(),
+  productType: z.string().nullable(),
+  fieldLabel: z.string(),
+  fieldType: z.string(),
+  required: z.boolean(),
+  optionText: z.string().nullable(),
+  optionValue: z.string().nullable(),
+  parentField: z.string().nullable(),
+  parentOption: z.string().nullable(),
+  level: z.number().int().min(0),
+  conditional: z.boolean(),
+  suggestedOptionGroup: z.string().nullable(),
+  inputType: z.string().nullable(),
+  sourcePath: z.string(),
+});
+
 export const normalizedSourceProductSchema = z.object({
   sourceIndex: z.number().int().min(0),
   sourcePath: z.string(),
   name: z.string().nullable(),
   sku: z.string().nullable(),
+  productType: z.string().nullable(),
   status: z.enum(["active", "inactive", "unknown"]),
   category: z.string().nullable(),
   description: z.string().nullable(),
   optionNames: z.array(z.string()),
   materialReferences: z.array(z.string()),
   pricingFields: z.array(catalogMigrationLabPricingFieldSchema),
+  sourceFields: z.array(catalogMigrationLabSourceFieldSchema),
   unsupportedFieldNames: z.array(z.string()),
 });
 
@@ -121,6 +144,41 @@ export const unsupportedFieldSummarySchema = z.object({
   sampleValues: z.array(z.string()),
 });
 
+export const productStructureSummarySchema = z.object({
+  productName: z.string(),
+  productType: z.string().nullable(),
+  suggestedCategory: z.string().nullable(),
+  fieldCount: z.number().int().min(0),
+  optionGroupCount: z.number().int().min(0),
+  conditionalFieldCount: z.number().int().min(0),
+  sizeFieldsDetected: z.array(z.string()),
+  quantityFieldDetected: z.boolean(),
+  finishingOptionsDetected: z.array(z.string()),
+  materialSelectorsDetected: z.array(z.string()),
+  materialsDetected: z.array(z.string()),
+  detectedOptionGroups: z.array(z.string()),
+  detectedConditionalLogic: z.boolean(),
+  complexityScore: z.number().int().min(0),
+  warnings: z.array(z.string()),
+});
+
+export const conditionalLogicSummarySchema = z.object({
+  productName: z.string(),
+  parentField: z.string().nullable(),
+  parentOption: z.string().nullable(),
+  childField: z.string(),
+  childFieldType: z.string(),
+  level: z.number().int().min(0),
+  relationshipType: z.string(),
+  sourcePath: z.string(),
+});
+
+export const migrationWorksheetCsvSchema = z.object({
+  productSummary: z.string(),
+  productFields: z.string(),
+  optionGroupDiscovery: z.string(),
+});
+
 export const catalogMigrationLabWarningSchema = z.object({
   code: catalogMigrationLabWarningCodeSchema,
   severity: catalogMigrationLabWarningSeveritySchema,
@@ -150,6 +208,9 @@ export const catalogMigrationLabAnalyzerResultSchema = z.object({
     frequency: z.number().int().min(0),
     sampleProducts: z.array(z.string()),
   })),
+  productStructures: z.array(productStructureSummarySchema),
+  conditionalLogic: z.array(conditionalLogicSummarySchema),
+  migrationWorksheets: migrationWorksheetCsvSchema,
   unsupportedFields: z.array(unsupportedFieldSummarySchema),
   warnings: z.array(catalogMigrationLabWarningSchema),
 });
@@ -168,6 +229,7 @@ export const catalogMigrationLabAnalyzeResponseSchema = z.union([
 
 export type CatalogMigrationLabAnalyzerRequest = z.infer<typeof catalogMigrationLabAnalyzerRequestSchema>;
 export type CatalogMigrationLabPricingField = z.infer<typeof catalogMigrationLabPricingFieldSchema>;
+export type CatalogMigrationLabSourceField = z.infer<typeof catalogMigrationLabSourceFieldSchema>;
 export type NormalizedSourceProduct = z.infer<typeof normalizedSourceProductSchema>;
 export type CatalogMigrationLabSourceMetadata = z.infer<typeof catalogMigrationLabSourceMetadataSchema>;
 export type CategorySummary = z.infer<typeof categorySummarySchema>;
@@ -175,6 +237,9 @@ export type OptionPatternSummary = z.infer<typeof optionPatternSummarySchema>;
 export type MaterialCandidateSummary = z.infer<typeof materialCandidateSummarySchema>;
 export type PricingPatternSummary = z.infer<typeof pricingPatternSummarySchema>;
 export type UnsupportedFieldSummary = z.infer<typeof unsupportedFieldSummarySchema>;
+export type ProductStructureSummary = z.infer<typeof productStructureSummarySchema>;
+export type ConditionalLogicSummary = z.infer<typeof conditionalLogicSummarySchema>;
+export type MigrationWorksheetCsv = z.infer<typeof migrationWorksheetCsvSchema>;
 export type CatalogMigrationLabWarning = z.infer<typeof catalogMigrationLabWarningSchema>;
 export type CatalogMigrationLabWarningCode = z.infer<typeof catalogMigrationLabWarningCodeSchema>;
 export type CatalogMigrationLabAnalyzerResult = z.infer<typeof catalogMigrationLabAnalyzerResultSchema>;

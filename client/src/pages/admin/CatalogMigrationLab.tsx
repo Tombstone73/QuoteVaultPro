@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Download,
+  FileSpreadsheet,
   FlaskConical,
   Loader2,
   ShieldCheck,
@@ -27,6 +28,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -36,6 +38,14 @@ function formatBytes(bytes: number) {
 
 function downloadJson(data: unknown, fileName: string) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  downloadBlob(blob, fileName);
+}
+
+function downloadText(text: string, fileName: string, type = "text/csv;charset=utf-8") {
+  downloadBlob(new Blob([text], { type }), fileName);
+}
+
+function downloadBlob(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -218,6 +228,15 @@ export default function CatalogMigrationLab() {
             <SummaryCard label="Warnings" value={analysis.warnings.length} hint={analysis.source.fingerprint.slice(0, 12)} />
           </div>
 
+          <Tabs defaultValue="overview" className="space-y-4">
+            <TabsList className="flex h-auto flex-wrap justify-start">
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="structures">Product Structures</TabsTrigger>
+              <TabsTrigger value="conditional">Conditional Logic</TabsTrigger>
+              <TabsTrigger value="worksheets">Migration Worksheets</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="overview" className="space-y-6">
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Source Structure</CardTitle>
@@ -401,6 +420,180 @@ export default function CatalogMigrationLab() {
               </Table>
             </CardContent>
           </Card>
+            </TabsContent>
+
+            <TabsContent value="structures" className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Product Structures</CardTitle>
+                  <CardDescription>
+                    Deterministic InfoFlo form-field analysis. Read-only worksheet intelligence only.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="overflow-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Product</TableHead>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Fields</TableHead>
+                        <TableHead>Groups</TableHead>
+                        <TableHead>Conditional</TableHead>
+                        <TableHead>Size</TableHead>
+                        <TableHead>Quantity</TableHead>
+                        <TableHead>Materials</TableHead>
+                        <TableHead>Complexity</TableHead>
+                        <TableHead>Warnings</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {analysis.productStructures.length === 0 ? <EmptyRow colSpan={10} text="No product structures found." /> : analysis.productStructures.map((product) => (
+                        <TableRow key={product.productName}>
+                          <TableCell className="font-medium">{product.productName}</TableCell>
+                          <TableCell>{product.productType ?? "-"}</TableCell>
+                          <TableCell>{product.fieldCount}</TableCell>
+                          <TableCell className="max-w-xs truncate">{product.detectedOptionGroups.join(", ") || "-"}</TableCell>
+                          <TableCell>{product.conditionalFieldCount}</TableCell>
+                          <TableCell className="max-w-xs truncate">{product.sizeFieldsDetected.join(", ") || "-"}</TableCell>
+                          <TableCell>{product.quantityFieldDetected ? <Badge>Detected</Badge> : <Badge variant="outline">No</Badge>}</TableCell>
+                          <TableCell className="max-w-xs truncate">{product.materialsDetected.join(", ") || "-"}</TableCell>
+                          <TableCell>{product.complexityScore}</TableCell>
+                          <TableCell className="max-w-xs truncate">{product.warnings.join(", ") || "-"}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader><CardTitle className="text-base">Parsed Product Fields</CardTitle></CardHeader>
+                <CardContent className="overflow-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Product</TableHead>
+                        <TableHead>Field</TableHead>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Required</TableHead>
+                        <TableHead>Option</TableHead>
+                        <TableHead>Parent</TableHead>
+                        <TableHead>Level</TableHead>
+                        <TableHead>Suggested Group</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {analysis.products.flatMap((product) => product.sourceFields).length === 0 ? <EmptyRow colSpan={8} text="No InfoFlo form fields found." /> : analysis.products.flatMap((product) => product.sourceFields).map((field) => (
+                        <TableRow key={field.analyzerId}>
+                          <TableCell className="font-medium">{field.productName}</TableCell>
+                          <TableCell>{field.fieldLabel}</TableCell>
+                          <TableCell>{field.fieldType}</TableCell>
+                          <TableCell>{field.required ? "Yes" : "No"}</TableCell>
+                          <TableCell>{field.optionText ?? "-"}</TableCell>
+                          <TableCell>{field.parentField ? `${field.parentField}${field.parentOption ? `: ${field.parentOption}` : ""}` : "-"}</TableCell>
+                          <TableCell>{field.level}</TableCell>
+                          <TableCell>{field.suggestedOptionGroup ?? "-"}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="conditional" className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Conditional Logic</CardTitle>
+                  <CardDescription>
+                    Reveal chains and conditional field relationships found in InfoFlo form structures.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="overflow-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Product</TableHead>
+                        <TableHead>Parent Field</TableHead>
+                        <TableHead>Parent Option</TableHead>
+                        <TableHead>Child Field</TableHead>
+                        <TableHead>Child Type</TableHead>
+                        <TableHead>Level</TableHead>
+                        <TableHead>Relationship</TableHead>
+                        <TableHead>Source</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {analysis.conditionalLogic.length === 0 ? <EmptyRow colSpan={8} text="No conditional logic found." /> : analysis.conditionalLogic.map((logic, index) => (
+                        <TableRow key={`${logic.productName}-${logic.childField}-${index}`}>
+                          <TableCell className="font-medium">{logic.productName}</TableCell>
+                          <TableCell>{logic.parentField ?? "-"}</TableCell>
+                          <TableCell>{logic.parentOption ?? "-"}</TableCell>
+                          <TableCell>{logic.childField}</TableCell>
+                          <TableCell>{logic.childFieldType}</TableCell>
+                          <TableCell>{logic.level}</TableCell>
+                          <TableCell>{logic.relationshipType}</TableCell>
+                          <TableCell className="font-mono text-xs">{logic.sourcePath}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="worksheets" className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <FileSpreadsheet className="h-4 w-4" />
+                    Migration Worksheets
+                  </CardTitle>
+                  <CardDescription>
+                    Editable CSV outputs for future migration planning. These downloads do not import or create catalog records.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4 md:grid-cols-3">
+                  <Button
+                    variant="outline"
+                    className="justify-start gap-2"
+                    onClick={() => downloadText(analysis.migrationWorksheets.productSummary, "catalog-migration-product-summary.csv")}
+                  >
+                    <Download className="h-4 w-4" />
+                    Product Summary CSV
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="justify-start gap-2"
+                    onClick={() => downloadText(analysis.migrationWorksheets.productFields, "catalog-migration-product-fields.csv")}
+                  >
+                    <Download className="h-4 w-4" />
+                    Product Fields CSV
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="justify-start gap-2"
+                    onClick={() => downloadText(analysis.migrationWorksheets.optionGroupDiscovery, "catalog-migration-option-groups.csv")}
+                  >
+                    <Download className="h-4 w-4" />
+                    Option Groups CSV
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader><CardTitle className="text-base">Worksheet Preview</CardTitle></CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <div className="mb-2 text-xs font-medium uppercase text-muted-foreground">Product Fields CSV</div>
+                    <pre className="max-h-80 overflow-auto rounded border bg-muted p-3 text-xs">
+                      {analysis.migrationWorksheets.productFields.split("\n").slice(0, 20).join("\n")}
+                    </pre>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
         </div>
       )}
     </div>
