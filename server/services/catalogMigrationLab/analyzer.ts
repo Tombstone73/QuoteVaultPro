@@ -7,6 +7,9 @@ import type {
   CatalogMigrationLabWarningCounts,
   CategorySummary,
   MaterialCandidateSummary,
+  MigrationConfidenceLevel,
+  MigrationReadinessProduct,
+  MigrationReadinessStatus,
   NormalizedSourceProduct,
   OptionPatternSummary,
   ProductStructureSummary,
@@ -221,6 +224,149 @@ function pricingSourceStatus(product: NormalizedSourceProduct): ProductStructure
   return "missing_pricing";
 }
 
+function confidenceScore(confidence: "source" | MigrationConfidenceLevel): number {
+  if (confidence === "source" || confidence === "high") return 100;
+  if (confidence === "medium") return 70;
+  if (confidence === "low") return 40;
+  return 0;
+}
+
+function templateSuggestionFor(product: NormalizedSourceProduct, structure: ProductStructureSummary): {
+  template: string | null;
+  confidence: MigrationConfidenceLevel;
+} {
+  const text = [
+    structure.suggestedCategory,
+    structure.productName,
+    product.productType,
+    ...structure.detectedOptionGroups,
+    ...structure.materialsDetected,
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  if (/\bbanner\b|mesh\s*banner|scrim/.test(text)) return { template: "Banner Product", confidence: "high" };
+  if (/window\s*perf|window graphics?/.test(text)) return { template: "Roll Media Product", confidence: "high" };
+  if (/sticker|decal/.test(text)) return { template: "Sticker Product", confidence: "high" };
+  if (/acrylic|coroplast|\bcoro\b|foam\s*board|\bacm\b|polymetal|poly metal|\bpvc\b|rigid sheet|yard sign/.test(text)) {
+    return { template: "Rigid Sheet Product", confidence: "high" };
+  }
+  if (/vinyl|roll media|avery|\bij\b|substance/.test(text)) return { template: "Roll Media Product", confidence: "medium" };
+  return { template: null, confidence: "unknown" };
+}
+
+function routingSuggestionFor(template: string | null): { routing: string | null; confidence: MigrationConfidenceLevel } {
+  if (template === "Rigid Sheet Product") return { routing: "Prepress -> Flatbed -> Finishing", confidence: "high" };
+  if (template === "Banner Product") return { routing: "Prepress -> Roll Print -> Finishing", confidence: "high" };
+  if (template === "Sticker Product") return { routing: "Prepress -> Roll Print -> Cutter -> Finishing", confidence: "high" };
+  if (template === "Roll Media Product") return { routing: "Prepress -> Roll Print -> Finishing", confidence: "high" };
+  return { routing: null, confidence: "unknown" };
+}
+
+function materialSuggestionFor(
+  product: NormalizedSourceProduct,
+  materialCandidates: MaterialCandidateSummary[],
+): Pick<MigrationReadinessProduct, "suggestedMaterial" | "matchedMaterial" | "materialMatchConfidence"> {
+  const refs = uniqueSorted([
+    ...product.materialReferences,
+    ...product.sourceFields.filter((field) => field.normalizedGroup === "Materials").map((field) => field.optionText),
+  ]);
+  for (const reference of refs) {
+    const candidate = materialCandidates.find((material) =>
+      material.reference.toLowerCase() === reference.toLowerCase() &&
+      material.sampleProducts.includes(productLabel(product)),
+    );
+    if (candidate?.matchedMaterial) {
+      return {
+        suggestedMaterial: candidate.matchedMaterial.name,
+        matchedMaterial: candidate.matchedMaterial,
+        materialMatchConfidence: "high",
+      };
+    }
+  }
+  if (refs[0]) {
+    return { suggestedMaterial: refs[0], matchedMaterial: null, materialMatchConfidence: "medium" };
+  }
+  return { suggestedMaterial: null, matchedMaterial: null, materialMatchConfidence: "unknown" };
+}
+
+function readinessStatusFor(score: number, complexityScore: number, conditionalLogicPresent: boolean): MigrationReadinessStatus {
+  if (complexityScore >= 45 || (conditionalLogicPresent && score < 72)) return "Manual Build Recommended";
+  if (score >= 82) return "Ready";
+  if (score >= 60) return "Needs Review";
+  return "Complex";
+}
+
+function buildMigrationNotes(input: {
+  structure: ProductStructureSummary;
+  templateConfidence: MigrationConfidenceLevel;
+  routingConfidence: MigrationConfidenceLevel;
+  materialMatchConfidence: MigrationConfidenceLevel;
+}): string {
+  const notes: string[] = [];
+  if (input.structure.categoryConfidence === "unknown") notes.push("Confirm category");
+  if (input.templateConfidence === "unknown") notes.push("Choose product template");
+  if (input.routingConfidence === "unknown") notes.push("Choose routing");
+  if (input.materialMatchConfidence === "unknown") notes.push("Select material");
+  else if (input.materialMatchConfidence === "medium") notes.push("Confirm material match");
+  if (!input.structure.quantityFieldDetected) notes.push("Confirm quantity handling");
+  if (input.structure.detectedConditionalLogic) notes.push("Review conditional logic");
+  if (input.structure.warnings.length > 0) notes.push(input.structure.warnings.join("; "));
+  return notes.join("; ");
+}
+
+function buildMigrationReadiness(
+  products: NormalizedSourceProduct[],
+  productStructures: ProductStructureSummary[],
+  materialCandidates: MaterialCandidateSummary[],
+): MigrationReadinessProduct[] {
+  return productStructures.map((structure, index) => {
+    const product = products[index] ?? products.find((candidate) => productLabel(candidate) === structure.productName)!;
+    const template = templateSuggestionFor(product, structure);
+    const routing = routingSuggestionFor(template.template);
+    const material = materialSuggestionFor(product, materialCandidates);
+    const fieldQuality = Math.min(100, 35 + structure.fieldCount * 8 + (structure.quantityFieldDetected ? 15 : 0) + (structure.sizeFieldsDetected.length > 0 ? 15 : 0));
+    const optionQuality = Math.min(100, 35 + structure.detectedOptionGroups.length * 12 + (structure.detectedConditionalLogic ? 8 : 0));
+    const materialQuality = confidenceScore(material.materialMatchConfidence);
+    const score = Math.max(0, Math.min(100, Math.round(
+      confidenceScore(structure.categoryConfidence) * 0.2 +
+      confidenceScore(template.confidence) * 0.2 +
+      confidenceScore(routing.confidence) * 0.15 +
+      fieldQuality * 0.2 +
+      optionQuality * 0.15 +
+      materialQuality * 0.1 -
+      Math.min(20, structure.complexityScore / 5),
+    )));
+    const readyForImport = readinessStatusFor(score, structure.complexityScore, structure.detectedConditionalLogic);
+
+    return {
+      sourceProductName: structure.productName,
+      suggestedTitanosProductName: structure.productName,
+      suggestedCategory: structure.suggestedCategory,
+      categoryConfidence: structure.categoryConfidence,
+      suggestedProductTemplate: template.template,
+      templateConfidence: template.confidence,
+      suggestedRoutingTemplate: routing.routing,
+      routingConfidence: routing.confidence,
+      suggestedMaterial: material.suggestedMaterial,
+      matchedMaterial: material.matchedMaterial,
+      materialMatchConfidence: material.materialMatchConfidence,
+      detectedMaterials: structure.materialsDetected,
+      detectedOptionGroups: structure.detectedOptionGroups,
+      detectedSizeFields: structure.sizeFieldsDetected,
+      detectedQuantityField: structure.quantityFieldDetected,
+      conditionalLogicPresent: structure.detectedConditionalLogic,
+      complexityScore: structure.complexityScore,
+      migrationConfidence: score,
+      readyForImport,
+      migrationNotes: buildMigrationNotes({
+        structure,
+        templateConfidence: template.confidence,
+        routingConfidence: routing.confidence,
+        materialMatchConfidence: material.materialMatchConfidence,
+      }),
+    };
+  });
+}
+
 function warningStringsForProduct(product: NormalizedSourceProduct, suggestedCategory: string | null): string[] {
   const warnings: string[] = [];
   if (!product.name) warnings.push("missing product_name");
@@ -380,8 +526,53 @@ function buildOptionGroupDiscoveryCsv(optionPatterns: OptionPatternSummary[]): s
   })));
 }
 
-function buildMigrationWorksheets(products: NormalizedSourceProduct[], productStructures: ProductStructureSummary[], optionPatterns: OptionPatternSummary[]) {
+function buildCatalogMigrationWorksheetCsv(rows: MigrationReadinessProduct[]): string {
+  const headers = [
+    "Source Product Name",
+    "Suggested TitanOS Product Name",
+    "Suggested Category",
+    "Category Confidence",
+    "Suggested Product Template",
+    "Suggested Routing Template",
+    "Suggested Material",
+    "Detected Materials",
+    "Detected Option Groups",
+    "Detected Size Fields",
+    "Detected Quantity Field",
+    "Conditional Logic Present",
+    "Complexity Score",
+    "Migration Confidence",
+    "Ready For Import",
+    "Migration Notes",
+  ];
+  return toCsv(headers, rows.map((row) => ({
+    "Source Product Name": row.sourceProductName,
+    "Suggested TitanOS Product Name": row.suggestedTitanosProductName,
+    "Suggested Category": row.suggestedCategory,
+    "Category Confidence": row.categoryConfidence,
+    "Suggested Product Template": row.suggestedProductTemplate,
+    "Suggested Routing Template": row.suggestedRoutingTemplate,
+    "Suggested Material": row.suggestedMaterial,
+    "Detected Materials": row.detectedMaterials,
+    "Detected Option Groups": row.detectedOptionGroups,
+    "Detected Size Fields": row.detectedSizeFields,
+    "Detected Quantity Field": row.detectedQuantityField ? "yes" : "no",
+    "Conditional Logic Present": row.conditionalLogicPresent ? "yes" : "no",
+    "Complexity Score": row.complexityScore,
+    "Migration Confidence": row.migrationConfidence,
+    "Ready For Import": row.readyForImport,
+    "Migration Notes": row.migrationNotes,
+  })));
+}
+
+function buildMigrationWorksheets(
+  products: NormalizedSourceProduct[],
+  productStructures: ProductStructureSummary[],
+  optionPatterns: OptionPatternSummary[],
+  migrationReadiness: MigrationReadinessProduct[],
+) {
   return {
+    catalogMigrationWorksheet: buildCatalogMigrationWorksheetCsv(migrationReadiness),
     productSummary: buildProductSummaryCsv(productStructures),
     productFields: buildProductFieldsCsv(products),
     optionGroupDiscovery: buildOptionGroupDiscoveryCsv(optionPatterns),
@@ -483,6 +674,8 @@ export function analyzeCatalogMigrationSource(
   const warnings = aggregateWarnings(adapterResult.warnings);
   const warningCounts = countWarnings(warnings);
   const productStructures = summarizeProductStructures(products, warningCountsByProduct(warnings));
+  const materialCandidates = summarizeMaterials(products, referenceData);
+  const migrationReadiness = buildMigrationReadiness(products, productStructures, materialCandidates);
 
   return {
     source: {
@@ -494,6 +687,7 @@ export function analyzeCatalogMigrationSource(
       detectedProductPath: adapterResult.detectedProductPath,
       detectedRootKeys: adapterResult.detectedRootKeys,
       sourceShape: adapterResult.sourceShape,
+      productDefinitionMetadata: adapterResult.productDefinitionMetadata,
     },
     counts: {
       totalProducts: products.length,
@@ -505,12 +699,13 @@ export function analyzeCatalogMigrationSource(
     categories: summarizeCategories(products),
     optionPatterns,
     likelyReusableOptionGroups: optionPatterns.filter((option) => option.likelyReusableGroup),
-    materialCandidates: summarizeMaterials(products, referenceData),
+    materialCandidates,
     pricingPatterns: summarizePricingPatterns(products),
     pricingFieldsDiscovered: summarizePricingFields(products),
     productStructures,
+    migrationReadiness,
     conditionalLogic: adapterResult.conditionalLogic,
-    migrationWorksheets: buildMigrationWorksheets(products, productStructures, optionPatterns),
+    migrationWorksheets: buildMigrationWorksheets(products, productStructures, optionPatterns, migrationReadiness),
     unsupportedFields: adapterResult.unsupportedFields,
     warningCounts,
     warnings,
