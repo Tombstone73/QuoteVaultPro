@@ -484,6 +484,8 @@ describe("Product Planning UX detail surfaces", () => {
     (global as any).fetch = jest.fn(async (url: string) => {
       if (url === "/api/product-planning/dashboard") return responseJson({ success: true, data: dashboardData });
       if (url === "/api/product-planning/ai/readiness") return responseJson({ success: true, data: aiReadiness });
+      if (url === "/api/product-planning/ai/analyses/latest?analysisType=backlog_analysis") return responseJson({ success: true, data: null });
+      if (url === "/api/product-planning/ai/analyses/latest?analysisType=epic_suggestions") return responseJson({ success: true, data: null });
       return responseJson({ success: false, message: "Not found" }, 404);
     }) as any;
     mockApiRequest.mockImplementationOnce(() => Promise.resolve({
@@ -493,7 +495,8 @@ describe("Product Planning UX detail surfaces", () => {
     const { container, root } = renderWithProviders(<ProductPlanningDashboardPage />, "/product-planning");
     await flushQueries();
 
-    const analyzeButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Analyze Backlog")) as HTMLButtonElement;
+    expect(container.textContent).toContain("Last Analyzed: Never");
+    const analyzeButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Refresh Analysis")) as HTMLButtonElement;
     act(() => {
       Simulate.click(analyzeButton);
     });
@@ -523,11 +526,19 @@ describe("Product Planning UX detail surfaces", () => {
     (global as any).fetch = jest.fn(async (url: string) => {
       if (url === "/api/product-planning/dashboard") return responseJson({ success: true, data: dashboardData });
       if (url === "/api/product-planning/ai/readiness") return responseJson({ success: true, data: aiReadiness });
+      if (url === "/api/product-planning/ai/analyses/latest?analysisType=backlog_analysis") return responseJson({ success: true, data: null });
+      if (url === "/api/product-planning/ai/analyses/latest?analysisType=epic_suggestions") return responseJson({ success: true, data: null });
+      if (url === "/api/product-planning/work-items?limit=250&sortBy=reference&sortDirection=asc") return responseJson({ success: true, data: [detailItem] });
       return responseJson({ success: false, message: "Not found" }, 404);
     }) as any;
-    mockApiRequest.mockImplementationOnce(() => Promise.resolve({
-      json: async () => ({ data: epicAnalysis }),
-    }));
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    mockApiRequest
+      .mockImplementationOnce(() => Promise.resolve({
+        json: async () => ({ data: epicAnalysis }),
+      }))
+      .mockImplementationOnce(() => Promise.resolve({
+        json: async () => ({ data: { epic: detailItem, linkedChildren: [detailItem] } }),
+      }));
 
     const { container, root } = renderWithProviders(<ProductPlanningDashboardPage />, "/product-planning");
     await flushQueries();
@@ -554,6 +565,18 @@ describe("Product Planning UX detail surfaces", () => {
     expect(container.textContent).toContain("Included Items");
     expect(container.textContent).toContain("Product Import MVP");
     expect(container.textContent).toContain("This item loads product data needed for quote and order validation.");
+
+    const createEpicButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Create Epic Draft")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(createEpicButton);
+    });
+    await flushQueries();
+
+    expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/product-planning/ai/epic-drafts", expect.objectContaining({
+      name: "Product Catalog Completion",
+      relatedItemReferences: ["PP-0001", "PP-0002"],
+    }));
+    confirmSpy.mockRestore();
     cleanup(root, container);
   });
 

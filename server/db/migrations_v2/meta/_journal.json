@@ -631,6 +631,13 @@
       "when": 1782864000000,
       "tag": "0094_product_planning_ai_suggestions_contract_repair",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1782950400000,
+      "tag": "0095_product_planning_ai_analyses",
+      "breakpoints": true
     }
   ]
 }

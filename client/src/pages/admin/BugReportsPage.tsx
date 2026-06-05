@@ -354,6 +354,22 @@ async function pushBugReportToProductPlanning(id: string): Promise<{ id: string;
   return (body as { data: { id: string; reference: string } }).data;
 }
 
+async function bulkPushBugReportsToProductPlanning(input: {
+  mode: "selected" | "all_high_severity" | "all_open" | "current_filter";
+  ids?: string[];
+  filters?: { status: string; severity: string; type: string; search: string };
+}): Promise<{ created: Array<{ id: string; reference: string }>; matchedCount: number; skippedCount: number }> {
+  const res = await fetch("/api/bug-reports/push-to-product-planning/bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(input),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { message?: string }).message ?? "Failed to bulk push bug reports to Product Planning");
+  return (body as { data: { created: Array<{ id: string; reference: string }>; matchedCount: number; skippedCount: number } }).data;
+}
+
 async function generateProductPlanningSummary(id: string): Promise<ProductPlanningSummary> {
   const res = await fetch(`/api/bug-reports/${id}/product-planning-summary`, {
     method: "POST",
@@ -676,6 +692,7 @@ export default function BugReportsPage() {
   const [tableSort, setTableSort]           = useState<BugReportSortState>(() => readSortSessionPreference());
   const [isTriageHistoryExpanded, setIsTriageHistoryExpanded] = useState(() => readBooleanSessionPreference(TRIAGE_HISTORY_EXPANDED_STORAGE_KEY, false));
   const [selectedId, setSelectedId]         = useState<string | null>(null);
+  const [selectedReportIds, setSelectedReportIds] = useState<Set<string>>(new Set());
   const [selectedBriefId, setSelectedBriefId] = useState<string | null>(null);
   const [noteText, setNoteText]             = useState("");
   const [planningSummary, setPlanningSummary] = useState<ProductPlanningSummary | null>(null);
@@ -693,6 +710,10 @@ export default function BugReportsPage() {
     () => sortBugReportsForDisplay(reports ?? [], tableSort),
     [reports, tableSort],
   );
+  const eligibleReports = useMemo(
+    () => sortedReports.filter((report) => !report.productPlanningWorkItemId),
+    [sortedReports],
+  );
 
   useEffect(() => {
     writeSessionPreference(BUG_REPORT_SORT_STORAGE_KEY, JSON.stringify(tableSort));
@@ -705,6 +726,11 @@ export default function BugReportsPage() {
   useEffect(() => {
     setPlanningSummary(null);
   }, [selectedId]);
+
+  useEffect(() => {
+    const visibleIds = new Set((reports ?? []).map((report) => report.id));
+    setSelectedReportIds((current) => new Set(Array.from(current).filter((id) => visibleIds.has(id))));
+  }, [reports]);
 
   const { data: detail, isLoading: detailLoading } = useQuery<BugReportDetail>({
     queryKey: ["/api/bug-reports/detail", selectedId],
@@ -794,6 +820,20 @@ export default function BugReportsPage() {
     },
     onError: (err: Error) => {
       toast({ title: "Push failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const bulkPushToPlanningMutation = useMutation({
+    mutationFn: (input: Parameters<typeof bulkPushBugReportsToProductPlanning>[0]) => bulkPushBugReportsToProductPlanning(input),
+    onSuccess: (result) => {
+      setSelectedReportIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ["/api/bug-reports"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/work-items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
+      toast({ title: "Bulk push complete", description: `Created ${result.created.length} Product Planning item(s).` });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Bulk push failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -950,12 +990,78 @@ export default function BugReportsPage() {
         onToggleExpanded={() => setIsTriageHistoryExpanded((expanded) => !expanded)}
       />
 
+      <Card>
+        <CardContent className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="text-sm font-medium">Product Planning Bulk Push</div>
+            <p className="text-xs text-muted-foreground">
+              Push eligible bug reports into Product Planning while preserving the original bug reports and source references.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={selectedReportIds.size === 0 || bulkPushToPlanningMutation.isPending}
+              onClick={() => bulkPushToPlanningMutation.mutate({ mode: "selected", ids: Array.from(selectedReportIds) })}
+            >
+              Push Selected ({selectedReportIds.size})
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={bulkPushToPlanningMutation.isPending}
+              onClick={() => bulkPushToPlanningMutation.mutate({ mode: "all_high_severity" })}
+            >
+              Push All High Severity
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={bulkPushToPlanningMutation.isPending}
+              onClick={() => bulkPushToPlanningMutation.mutate({ mode: "all_open" })}
+            >
+              Push All Open
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={bulkPushToPlanningMutation.isPending}
+              onClick={() => bulkPushToPlanningMutation.mutate({
+                mode: "current_filter",
+                filters: { status: statusFilter, severity: severityFilter, type: typeFilter, search: searchFilter },
+              })}
+            >
+              Push Matching Filter
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Table */}
       <Card>
         <CardContent className="p-0">
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-[40px]">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all visible eligible bug reports"
+                    checked={eligibleReports.length > 0 && eligibleReports.every((report) => selectedReportIds.has(report.id))}
+                    onChange={(event) => {
+                      setSelectedReportIds((current) => {
+                        const next = new Set(current);
+                        if (event.target.checked) {
+                          eligibleReports.forEach((report) => next.add(report.id));
+                        } else {
+                          eligibleReports.forEach((report) => next.delete(report.id));
+                        }
+                        return next;
+                      });
+                    }}
+                  />
+                </TableHead>
                 <SortableTableHead label="Reference" sortKey="referenceNumber" sortState={tableSort} onSort={handleTableSort} />
                 <SortableTableHead label="Created" sortKey="createdAt" sortState={tableSort} onSort={handleTableSort} />
                 <SortableTableHead label="Type" sortKey="type" sortState={tableSort} onSort={handleTableSort} />
@@ -970,14 +1076,14 @@ export default function BugReportsPage() {
               {isLoading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <TableRow key={i}>
-                    {Array.from({ length: 8 }).map((__, j) => (
+                    {Array.from({ length: 9 }).map((__, j) => (
                       <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
                     ))}
                   </TableRow>
                 ))
               ) : sortedReports.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={9} className="py-8 text-center text-sm text-muted-foreground">
                     No feedback items found matching current filters.
                   </TableCell>
                 </TableRow>
@@ -988,6 +1094,23 @@ export default function BugReportsPage() {
                     className="cursor-pointer hover:bg-muted/50"
                     onClick={() => setSelectedId(r.id)}
                   >
+                    <TableCell onClick={(event) => event.stopPropagation()}>
+                      {!r.productPlanningWorkItemId && (
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${r.referenceNumber}`}
+                          checked={selectedReportIds.has(r.id)}
+                          onChange={(event) => {
+                            setSelectedReportIds((current) => {
+                              const next = new Set(current);
+                              if (event.target.checked) next.add(r.id);
+                              else next.delete(r.id);
+                              return next;
+                            });
+                          }}
+                        />
+                      )}
+                    </TableCell>
                     <TableCell className="whitespace-nowrap text-xs font-semibold">
                       {r.referenceNumber}
                     </TableCell>
