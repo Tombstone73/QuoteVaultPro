@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Brain,
@@ -12,7 +12,14 @@ import {
 } from "lucide-react";
 import type { CatalogMigrationLabAnalyzerResult } from "@shared/catalogMigrationLabSchemas";
 import { CATALOG_MIGRATION_LAB_MAX_UPLOAD_BYTES } from "@shared/catalogMigrationLabSchemas";
-import type { ProductIntakeBrief } from "@shared/productIntakeWizardSchemas";
+import type {
+  ProductIntakeAnswer,
+  ProductIntakeBrief,
+  ProductIntakeQuestion,
+  ProductIntakeReadiness,
+  ProductIntakeSession,
+  ProductIntakeSessionDetail,
+} from "@shared/productIntakeWizardSchemas";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/useAuth";
 import { canUsePlatformTools } from "@/lib/platformAccess";
@@ -88,6 +95,260 @@ function SummaryCard({ label, value, hint }: { label: string; value: string | nu
 function ConfidenceBadge({ value }: { value: number }) {
   const variant = value >= 75 ? "default" : value >= 45 ? "outline" : "secondary";
   return <Badge variant={variant}>{value}%</Badge>;
+}
+
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function productNameForSession(session: ProductIntakeSession) {
+  return session.brief.productIdentity.likelyProductName.value ?? "Untitled product";
+}
+
+function statusVariant(status: ProductIntakeSession["status"]): "default" | "secondary" | "outline" | "destructive" {
+  if (status === "ready_for_draft") return "default";
+  if (status === "needs_answers") return "outline";
+  if (status === "abandoned") return "secondary";
+  return "outline";
+}
+
+function answerDraftsFromDetail(detail: ProductIntakeSessionDetail | null): Record<string, unknown> {
+  if (!detail) return {};
+  const byKey = new Map(detail.answers.map((answer) => [answer.questionKey, answer.answer]));
+  return Object.fromEntries(detail.questions.map((question) => [
+    question.questionKey,
+    byKey.has(question.questionKey) ? byKey.get(question.questionKey) : question.defaultValue,
+  ]));
+}
+
+export function ProductIntakeSessionSummary({ session, readiness }: { session: ProductIntakeSession; readiness: ProductIntakeReadiness }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">Session Summary</CardTitle>
+            <CardDescription>{session.id}</CardDescription>
+          </div>
+          <Badge variant={statusVariant(session.status)}>{session.status.replace(/_/g, " ")}</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-4 text-sm md:grid-cols-2 lg:grid-cols-5">
+        <div>
+          <div className="text-xs font-medium uppercase text-muted-foreground">Source</div>
+          <div className="mt-1 font-medium">{session.sourceType.replace(/_/g, " ")}</div>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase text-muted-foreground">Created</div>
+          <div className="mt-1 font-medium">{formatDateTime(session.createdAt)}</div>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase text-muted-foreground">Confidence</div>
+          <div className="mt-1"><ConfidenceBadge value={session.brief.overallConfidence} /></div>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase text-muted-foreground">Required Open</div>
+          <div className="mt-1 font-medium">{readiness.unansweredRequiredCount}</div>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase text-muted-foreground">Answered</div>
+          <div className="mt-1 font-medium">{readiness.answeredCount}</div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function renderQuestionInput(args: {
+  question: ProductIntakeQuestion;
+  value: unknown;
+  onChange: (value: unknown) => void;
+}) {
+  const { question, value, onChange } = args;
+  if (question.questionType === "boolean") {
+    return (
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={Boolean(value)}
+          onChange={(event) => onChange(event.target.checked)}
+        />
+        Yes
+      </label>
+    );
+  }
+  if (question.questionType === "number") {
+    return (
+      <input
+        type="number"
+        className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+        value={typeof value === "number" ? value : ""}
+        onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))}
+      />
+    );
+  }
+  if (question.questionType === "select") {
+    return (
+      <select
+        className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+        value={typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : ""}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">Select...</option>
+        {(question.options ?? []).map((choice) => (
+          <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>
+        ))}
+      </select>
+    );
+  }
+  if (question.questionType === "multiselect") {
+    const selected = Array.isArray(value) ? value.map(String) : [];
+    return (
+      <select
+        multiple
+        className="min-h-24 w-full rounded-md border bg-background px-3 py-2 text-sm"
+        value={selected}
+        onChange={(event) => onChange(Array.from(event.target.selectedOptions).map((option) => option.value))}
+      >
+        {(question.options ?? []).map((choice) => (
+          <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>
+        ))}
+      </select>
+    );
+  }
+  return (
+    <Textarea
+      rows={3}
+      value={typeof value === "string" ? value : ""}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  );
+}
+
+export function ProductIntakeQuestionsWizard({
+  questions,
+  answers,
+  readiness,
+  answerDrafts,
+  onAnswerChange,
+  onSave,
+  onAbandon,
+  isSaving = false,
+  isAbandoning = false,
+}: {
+  questions: ProductIntakeQuestion[];
+  answers: ProductIntakeAnswer[];
+  readiness: ProductIntakeReadiness;
+  answerDrafts: Record<string, unknown>;
+  onAnswerChange: (questionKey: string, value: unknown) => void;
+  onSave: () => void;
+  onAbandon: () => void;
+  isSaving?: boolean;
+  isAbandoning?: boolean;
+}) {
+  const answeredKeys = new Set(answers.filter((answer) => answer.answer != null).map((answer) => answer.questionKey));
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">Missing Decisions Wizard</CardTitle>
+            <CardDescription>{readiness.unansweredRequiredCount} required unanswered; {readiness.answeredCount} answered.</CardDescription>
+          </div>
+          <Badge variant={statusVariant(readiness.status)}>{readiness.status.replace(/_/g, " ")}</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {questions.length === 0 ? (
+          <div className="text-sm text-muted-foreground">No follow-up questions were generated.</div>
+        ) : questions.map((question) => (
+          <div key={question.id} className="rounded border p-4 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="font-medium">{question.label}</div>
+              <div className="flex flex-wrap items-center gap-2">
+                {question.required && <Badge variant="outline">Required</Badge>}
+                {answeredKeys.has(question.questionKey) && <Badge variant="secondary">Saved</Badge>}
+                {question.confidence != null && <ConfidenceBadge value={question.confidence} />}
+              </div>
+            </div>
+            {question.helpText && <div className="mt-1 text-xs text-muted-foreground">{question.helpText}</div>}
+            {question.sourcePath && <div className="mt-2 font-mono text-xs text-muted-foreground">{question.sourcePath}</div>}
+            <div className="mt-3">{renderQuestionInput({
+              question,
+              value: answerDrafts[question.questionKey],
+              onChange: (value) => onAnswerChange(question.questionKey, value),
+            })}</div>
+          </div>
+        ))}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+          <div className="text-sm text-muted-foreground">
+            {readiness.status === "ready_for_draft" ? "Ready for Phase 3 draft generation." : "Answer required questions to reach draft readiness."}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {readiness.status === "ready_for_draft" && (
+              <Button type="button" variant="outline" disabled>Create TEMP Draft Coming in Phase 3</Button>
+            )}
+            <Button type="button" variant="outline" onClick={onAbandon} disabled={isAbandoning}>
+              {isAbandoning ? "Marking..." : "Mark Abandoned"}
+            </Button>
+            <Button type="button" onClick={onSave} disabled={questions.length === 0 || isSaving}>
+              {isSaving ? "Saving..." : "Save Answers"}
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function ProductIntakeSessionsList({
+  sessions,
+  onOpen,
+  isLoading = false,
+}: {
+  sessions: ProductIntakeSession[];
+  onOpen: (sessionId: string) => void;
+  isLoading?: boolean;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Recent Intake Sessions</CardTitle>
+        <CardDescription>Review saved Product Intake Brief sessions for this organization.</CardDescription>
+      </CardHeader>
+      <CardContent className="overflow-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Product</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Source</TableHead>
+              <TableHead>Confidence</TableHead>
+              <TableHead>Created</TableHead>
+              <TableHead></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? <EmptyRow colSpan={6} text="Loading intake sessions..." /> : sessions.length === 0 ? <EmptyRow colSpan={6} text="No intake sessions yet." /> : sessions.map((session) => (
+              <TableRow key={session.id}>
+                <TableCell className="font-medium">{productNameForSession(session)}</TableCell>
+                <TableCell><Badge variant={statusVariant(session.status)}>{session.status.replace(/_/g, " ")}</Badge></TableCell>
+                <TableCell>{session.sourceType.replace(/_/g, " ")}</TableCell>
+                <TableCell><ConfidenceBadge value={session.brief.overallConfidence} /></TableCell>
+                <TableCell>{formatDateTime(session.createdAt)}</TableCell>
+                <TableCell className="text-right">
+                  <Button type="button" variant="outline" size="sm" onClick={() => onOpen(session.id)}>Open</Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
 }
 
 function EvidenceList({ evidence }: { evidence: ProductIntakeBrief["sourceEvidence"] }) {
@@ -322,6 +583,8 @@ export default function CatalogMigrationLab() {
   const [analysis, setAnalysis] = useState<CatalogMigrationLabAnalyzerResult | null>(null);
   const [productDescription, setProductDescription] = useState("");
   const [intakeBrief, setIntakeBrief] = useState<ProductIntakeBrief | null>(null);
+  const [intakeSessionDetail, setIntakeSessionDetail] = useState<ProductIntakeSessionDetail | null>(null);
+  const [answerDrafts, setAnswerDrafts] = useState<Record<string, unknown>>({});
   const [warningSeverityFilter, setWarningSeverityFilter] = useState<"all" | "blocker" | "warning" | "info">("all");
   const [warningProductFilter, setWarningProductFilter] = useState("all");
   const [warningCodeFilter, setWarningCodeFilter] = useState("all");
@@ -371,6 +634,20 @@ export default function CatalogMigrationLab() {
     for (const row of analysis?.migrationReadiness ?? []) counts[row.readyForImport] += 1;
     return counts;
   }, [analysis]);
+  const sessionsQuery = useQuery({
+    queryKey: ["/api/admin/product-intake-wizard/sessions"],
+    enabled: canAccessPlatformTools && !isLoading,
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/admin/product-intake-wizard/sessions");
+      const json = await response.json();
+      if (!json?.success) throw new Error(json?.message ?? "Failed to load intake sessions");
+      return json.data.sessions as ProductIntakeSession[];
+    },
+  });
+
+  useEffect(() => {
+    setAnswerDrafts(answerDraftsFromDetail(intakeSessionDetail));
+  }, [intakeSessionDetail]);
 
   const analyzeMutation = useMutation({
     mutationFn: async () => {
@@ -417,10 +694,27 @@ export default function CatalogMigrationLab() {
       });
       const json = await response.json();
       if (!json?.success) throw new Error(json?.message ?? "Product Intake Brief failed");
-      return json.data as { analyzer: CatalogMigrationLabAnalyzerResult | null; brief: ProductIntakeBrief };
+      return json.data as {
+        analyzer: CatalogMigrationLabAnalyzerResult | null;
+        brief: ProductIntakeBrief;
+        session?: ProductIntakeSession;
+        questions?: ProductIntakeQuestion[];
+        answers?: ProductIntakeAnswer[];
+        readiness?: ProductIntakeReadiness;
+      };
     },
     onSuccess: (result) => {
       setIntakeBrief(result.brief);
+      if (result.session && result.questions && result.answers && result.readiness) {
+        setIntakeSessionDetail({
+          session: result.session,
+          brief: result.brief,
+          questions: result.questions,
+          answers: result.answers,
+          readiness: result.readiness,
+        });
+        void sessionsQuery.refetch();
+      }
       if (result.analyzer) {
         setAnalysis(result.analyzer);
         setWarningSeverityFilter("all");
@@ -442,6 +736,88 @@ export default function CatalogMigrationLab() {
     },
   });
 
+  const openSessionMutation = useMutation({
+    mutationFn: async (sessionId: string) => {
+      const response = await apiRequest("GET", `/api/admin/product-intake-wizard/sessions/${sessionId}`);
+      const json = await response.json();
+      if (!json?.success) throw new Error(json?.message ?? "Failed to open intake session");
+      return json.data as ProductIntakeSessionDetail;
+    },
+    onSuccess: (detail) => {
+      setIntakeSessionDetail(detail);
+      setIntakeBrief(detail.brief);
+      toast({
+        title: "Product Intake session opened",
+        description: `${detail.questions.length} follow-up question(s) loaded.`,
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Session open failed",
+        description: error?.message ?? "The intake session could not be opened.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const saveAnswersMutation = useMutation({
+    mutationFn: async () => {
+      if (!intakeSessionDetail) throw new Error("No intake session is selected.");
+      const response = await apiRequest("PATCH", `/api/admin/product-intake-wizard/sessions/${intakeSessionDetail.session.id}/answers`, {
+        answers: intakeSessionDetail.questions.map((question) => ({
+          questionId: question.id,
+          questionKey: question.questionKey,
+          answer: answerDrafts[question.questionKey] ?? null,
+        })),
+      });
+      const json = await response.json();
+      if (!json?.success) throw new Error(json?.message ?? "Failed to save answers");
+      return json.data as ProductIntakeSessionDetail;
+    },
+    onSuccess: (detail) => {
+      setIntakeSessionDetail(detail);
+      setIntakeBrief(detail.brief);
+      void sessionsQuery.refetch();
+      toast({
+        title: "Answers saved",
+        description: detail.readiness.status === "ready_for_draft" ? "Session is ready for Phase 3 draft generation." : "Required follow-up answers are still open.",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Answer save failed",
+        description: error?.message ?? "Product Intake answers could not be saved.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const abandonSessionMutation = useMutation({
+    mutationFn: async () => {
+      if (!intakeSessionDetail) throw new Error("No intake session is selected.");
+      const response = await apiRequest("POST", `/api/admin/product-intake-wizard/sessions/${intakeSessionDetail.session.id}/abandon`);
+      const json = await response.json();
+      if (!json?.success) throw new Error(json?.message ?? "Failed to abandon session");
+      return json.data as ProductIntakeSessionDetail;
+    },
+    onSuccess: (detail) => {
+      setIntakeSessionDetail(detail);
+      setIntakeBrief(detail.brief);
+      void sessionsQuery.refetch();
+      toast({
+        title: "Session abandoned",
+        description: "No products, PBV2 trees, or catalog records were changed.",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Abandon failed",
+        description: error?.message ?? "The intake session could not be abandoned.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -457,6 +833,8 @@ export default function CatalogMigrationLab() {
     setUploadedJsonText(await file.text());
     setActiveSource("upload");
     setAnalysis(null);
+    setIntakeSessionDetail(null);
+    setIntakeBrief(null);
   };
 
   const canAnalyze = analyzerSource.text.trim().length > 0 && !oversized && !analyzeMutation.isPending;
@@ -607,7 +985,7 @@ export default function CatalogMigrationLab() {
             Product Intake Brief
           </CardTitle>
           <CardDescription>
-            Converts the active JSON source or a short product description into a review-ready brief. Phase 1 stops before draft creation.
+            Converts the active JSON source or a short product description into a saved review session with follow-up questions.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -623,13 +1001,37 @@ export default function CatalogMigrationLab() {
               {intakeMutation.isPending ? "Generating..." : "Generate Intake Brief"}
             </Button>
             <Badge variant="outline">Read-only</Badge>
-            <Badge variant="secondary">Review-ready only</Badge>
+            <Badge variant="secondary">Questions only</Badge>
           </div>
         </CardContent>
       </Card>
 
+      <ProductIntakeSessionsList
+        sessions={sessionsQuery.data ?? []}
+        isLoading={sessionsQuery.isLoading || openSessionMutation.isPending}
+        onOpen={(sessionId) => openSessionMutation.mutate(sessionId)}
+      />
+
       {intakeBrief && !analysis && (
-        <IntakeBriefView brief={intakeBrief} />
+        <div className="space-y-6">
+          {intakeSessionDetail && (
+            <>
+              <ProductIntakeSessionSummary session={intakeSessionDetail.session} readiness={intakeSessionDetail.readiness} />
+              <ProductIntakeQuestionsWizard
+                questions={intakeSessionDetail.questions}
+                answers={intakeSessionDetail.answers}
+                readiness={intakeSessionDetail.readiness}
+                answerDrafts={answerDrafts}
+                onAnswerChange={(questionKey, value) => setAnswerDrafts((current) => ({ ...current, [questionKey]: value }))}
+                onSave={() => saveAnswersMutation.mutate()}
+                onAbandon={() => abandonSessionMutation.mutate()}
+                isSaving={saveAnswersMutation.isPending}
+                isAbandoning={abandonSessionMutation.isPending}
+              />
+            </>
+          )}
+          <IntakeBriefView brief={intakeBrief} />
+        </div>
       )}
 
       {analysis && (
@@ -895,6 +1297,22 @@ export default function CatalogMigrationLab() {
 
             {intakeBrief && (
               <TabsContent value="intake-brief" className="space-y-6">
+                {intakeSessionDetail && (
+                  <>
+                    <ProductIntakeSessionSummary session={intakeSessionDetail.session} readiness={intakeSessionDetail.readiness} />
+                    <ProductIntakeQuestionsWizard
+                      questions={intakeSessionDetail.questions}
+                      answers={intakeSessionDetail.answers}
+                      readiness={intakeSessionDetail.readiness}
+                      answerDrafts={answerDrafts}
+                      onAnswerChange={(questionKey, value) => setAnswerDrafts((current) => ({ ...current, [questionKey]: value }))}
+                      onSave={() => saveAnswersMutation.mutate()}
+                      onAbandon={() => abandonSessionMutation.mutate()}
+                      isSaving={saveAnswersMutation.isPending}
+                      isAbandoning={abandonSessionMutation.isPending}
+                    />
+                  </>
+                )}
                 <IntakeBriefView brief={intakeBrief} />
               </TabsContent>
             )}

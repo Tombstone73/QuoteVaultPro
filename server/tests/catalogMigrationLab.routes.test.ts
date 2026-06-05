@@ -3,7 +3,21 @@ import express, { type NextFunction, type Response } from "express";
 import { readFileSync } from "fs";
 import path from "path";
 import request from "supertest";
+import type {
+  ProductIntakeAnswer,
+  ProductIntakeBrief,
+  ProductIntakeQuestion,
+  ProductIntakeSession,
+  ProductIntakeSessionDetail,
+  ProductIntakeSessionStatus,
+} from "../../shared/productIntakeWizardSchemas";
 import { registerCatalogMigrationLabRoutes } from "../routes/catalogMigrationLab.routes";
+import {
+  computeProductIntakeReadiness,
+  generateProductIntakeQuestions,
+  resolveProductIntakeSessionStatus,
+  type ProductIntakeSessionStore,
+} from "../services/productIntakeWizard/productIntakeSessionService";
 
 type AppOptions = {
   authenticated?: boolean;
@@ -11,9 +25,121 @@ type AppOptions = {
   userRole?: string;
   isPlatformAdmin?: boolean;
   isPlatformDeveloper?: boolean;
+  organizationId?: string;
 };
 
-function buildApp(options: AppOptions = {}) {
+function makeMemoryProductIntakeSessionStore(): ProductIntakeSessionStore {
+  const details: ProductIntakeSessionDetail[] = [];
+  let sessionSeq = 0;
+  let questionSeq = 0;
+  let answerSeq = 0;
+
+  const refreshReadiness = (detail: ProductIntakeSessionDetail) => {
+    detail.readiness = computeProductIntakeReadiness({
+      session: detail.session,
+      questions: detail.questions,
+      answers: detail.answers,
+    });
+    detail.session.status = detail.readiness.status as ProductIntakeSessionStatus;
+    return detail;
+  };
+
+  return {
+    async createFromAnalysis(input) {
+      const now = new Date().toISOString();
+      const questions = generateProductIntakeQuestions(input.brief).map((question) => ({
+        ...question,
+        id: `q_${++questionSeq}`,
+        organizationId: input.organizationId,
+        sessionId: `sess_${sessionSeq + 1}`,
+        createdAt: now,
+      })) as ProductIntakeQuestion[];
+      const session: ProductIntakeSession = {
+        id: `sess_${++sessionSeq}`,
+        organizationId: input.organizationId,
+        sourceType: input.request.sourceType === "text_description" ? "text_description" : input.request.sourceType === "uploaded_json" ? "json_upload" : "json_paste",
+        sourceFingerprint: input.analyzer?.source.fingerprint ?? "fingerprint",
+        brief: input.brief,
+        confidence: { overallConfidence: input.brief.overallConfidence },
+        missingDecisions: input.brief.missingDecisions,
+        status: resolveProductIntakeSessionStatus(input.brief, questions),
+        createdProductId: null,
+        createdPbv2TreeVersionId: null,
+        createdByUserId: input.userId,
+        updatedByUserId: input.userId,
+        createdAt: now,
+        updatedAt: now,
+        abandonedAt: null,
+      };
+      const detail: ProductIntakeSessionDetail = {
+        session,
+        brief: input.brief,
+        questions: questions.map((question) => ({ ...question, sessionId: session.id })),
+        answers: [],
+        readiness: {
+          unansweredRequiredCount: 0,
+          answeredCount: 0,
+          canCreateDraft: false,
+          status: session.status,
+        },
+      };
+      details.push(refreshReadiness(detail));
+      return detail;
+    },
+    async listSessions(organizationId, filters = {}) {
+      return details
+        .map((detail) => detail.session)
+        .filter((session) => session.organizationId === organizationId)
+        .filter((session) => !filters.status || session.status === filters.status)
+        .filter((session) => !filters.sourceType || session.sourceType === filters.sourceType);
+    },
+    async getSessionDetail(organizationId, sessionId) {
+      return details.find((detail) => detail.session.organizationId === organizationId && detail.session.id === sessionId) ?? null;
+    },
+    async upsertAnswers({ organizationId, sessionId, userId, answers }) {
+      const detail = details.find((row) => row.session.organizationId === organizationId && row.session.id === sessionId);
+      if (!detail) return null;
+      const now = new Date().toISOString();
+      for (const incoming of answers) {
+        const question = detail.questions.find((candidate) =>
+          (incoming.questionId && candidate.id === incoming.questionId) || (incoming.questionKey && candidate.questionKey === incoming.questionKey),
+        );
+        if (!question) continue;
+        const existing = detail.answers.find((answer) => answer.questionKey === question.questionKey);
+        const answerRow: ProductIntakeAnswer = {
+          id: existing?.id ?? `a_${++answerSeq}`,
+          organizationId,
+          sessionId,
+          questionId: question.id,
+          questionKey: question.questionKey,
+          answer: incoming.answer ?? null,
+          answeredByUserId: userId,
+          answeredAt: incoming.answer == null ? null : now,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        };
+        if (existing) Object.assign(existing, answerRow);
+        else detail.answers.push(answerRow);
+      }
+      detail.session.updatedAt = now;
+      detail.session.updatedByUserId = userId;
+      return refreshReadiness(detail);
+    },
+    async abandonSession({ organizationId, sessionId, userId }) {
+      const detail = details.find((row) => row.session.organizationId === organizationId && row.session.id === sessionId);
+      if (!detail) return null;
+      const now = new Date().toISOString();
+      detail.session.status = "abandoned";
+      detail.session.abandonedAt = now;
+      detail.session.updatedAt = now;
+      detail.session.updatedByUserId = userId;
+      detail.readiness = computeProductIntakeReadiness({ session: detail.session, questions: detail.questions, answers: detail.answers });
+      return detail;
+    },
+  };
+}
+
+function buildApp(options: AppOptions = {}, productIntakeSessionStore = makeMemoryProductIntakeSessionStore()) {
   const app = express();
   app.use(express.json({ limit: "3mb" }));
 
@@ -31,7 +157,7 @@ function buildApp(options: AppOptions = {}) {
   };
 
   const tenantContext = (req: any, _res: Response, next: NextFunction) => {
-    req.organizationId = "org_1";
+    req.organizationId = options.organizationId ?? "org_1";
     req.orgRole = options.orgRole ?? "admin";
     return next();
   };
@@ -66,6 +192,7 @@ function buildApp(options: AppOptions = {}) {
       }],
     }),
     productIntakeAiProvider: null,
+    productIntakeSessionStore,
   });
 
   return app;
@@ -176,6 +303,9 @@ describe("Catalog Migration Lab routes", () => {
     expect(response.body.data.brief.productIdentity.likelyProductName.value).toBe("Coroplast Yard Sign");
     expect(response.body.data.brief.materialAnalysis.likelyMaterialMatches[0].materialId).toBe("mat_1");
     expect(response.body.data.brief.templateMatches.some((match: any) => match.templateId === "tpl_grommets")).toBe(true);
+    expect(response.body.data.sessionId).toBeTruthy();
+    expect(response.body.data.session.status).toMatch(/needs_answers|ready_for_draft|analyzed/);
+    expect(response.body.data.readiness.canCreateDraft).toBe(false);
   });
 
   test("product intake route supports a short text description without running JSON import", async () => {
@@ -192,6 +322,53 @@ describe("Catalog Migration Lab routes", () => {
     expect(response.body.data.brief.workflowState).toBe("REVIEW_READY");
     expect(response.body.data.brief.productIdentity.category.value).toBe("Foam Board");
     expect(response.body.data.workflow.catalogMutationAllowed).toBe(false);
+    expect(response.body.data.session.sourceType).toBe("text_description");
+    expect(response.body.data.questions.some((question: any) => question.questionKey === "select-material")).toBe(true);
+    expect(response.body.data.session.status).toBe("needs_answers");
+  });
+
+  test("product intake sessions can be listed, opened, answered, and abandoned", async () => {
+    const store = makeMemoryProductIntakeSessionStore();
+    const app = buildApp({}, store);
+    const created = await request(app)
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({
+        sourceType: "text_description",
+        description: "Foam board signs with optional grommets",
+      });
+    const sessionId = created.body.data.sessionId;
+    const question = created.body.data.questions.find((row: any) => row.required);
+
+    const list = await request(app).get("/api/admin/product-intake-wizard/sessions");
+    expect(list.status).toBe(200);
+    expect(list.body.data.sessions.some((session: any) => session.id === sessionId)).toBe(true);
+
+    const detail = await request(app).get(`/api/admin/product-intake-wizard/sessions/${sessionId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.data.readiness.canCreateDraft).toBe(false);
+
+    const answered = await request(app)
+      .patch(`/api/admin/product-intake-wizard/sessions/${sessionId}/answers`)
+      .send({ answers: [{ questionId: question.id, answer: "3/16 White Foam Board" }] });
+    expect(answered.status).toBe(200);
+    expect(answered.body.data.answers[0].answer).toBe("3/16 White Foam Board");
+
+    const abandoned = await request(app).post(`/api/admin/product-intake-wizard/sessions/${sessionId}/abandon`);
+    expect(abandoned.status).toBe(200);
+    expect(abandoned.body.data.session.status).toBe("abandoned");
+  });
+
+  test("product intake answers cannot target another organization session", async () => {
+    const store = makeMemoryProductIntakeSessionStore();
+    const created = await request(buildApp({ organizationId: "org_1" }, store))
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({ sourceType: "text_description", description: "Foam board signs with optional grommets" });
+
+    const response = await request(buildApp({ organizationId: "org_2" }, store))
+      .patch(`/api/admin/product-intake-wizard/sessions/${created.body.data.sessionId}/answers`)
+      .send({ answers: [{ questionKey: "select-material", answer: "Other org material" }] });
+
+    expect(response.status).toBe(404);
   });
 
   test("catalog migration lab server files contain no database write calls", () => {
@@ -200,12 +377,15 @@ describe("Catalog Migration Lab routes", () => {
       "server/services/catalogMigrationLab/analyzer.ts",
       "server/services/catalogMigrationLab/adapters/infoFloJsonAdapter.ts",
       "server/services/productIntakeWizard/productIntakeBriefService.ts",
+      "server/services/productIntakeWizard/productIntakeSessionService.ts",
     ];
     const combined = files
       .map((file) => readFileSync(path.resolve(process.cwd(), file), "utf8"))
       .join("\n");
 
-    expect(combined).not.toMatch(/\b(?:db|tx)\s*\.\s*(?:insert|update|delete)\s*\(/);
+    expect(combined).not.toMatch(/\b(?:db|tx)\s*\.\s*(?:insert|update|delete)\s*\(\s*(?:products|pbv2TreeVersions)\b/);
+    expect(combined).not.toMatch(/\b(?:db|tx)\s*\.\s*insert\s*\(\s*pbv2_tree_versions\b/);
+    expect(combined).not.toMatch(/\b(?:db|tx)\s*\.\s*insert\s*\(\s*products\b/);
     expect(combined).not.toMatch(/\/api\/pbv2\/tree-versions\/:id\/publish/);
     expect(combined).not.toMatch(/\bstorage\s*\.\s*createProduct\b/);
   });

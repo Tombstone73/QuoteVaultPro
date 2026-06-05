@@ -2,7 +2,12 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { catalogMigrationLabAnalyzerRequestSchema, type CatalogMigrationLabAnalyzerRequest } from "@shared/catalogMigrationLabSchemas";
-import { productIntakeWizardAnalyzeRequestSchema, type ProductIntakeWizardAnalyzeRequest } from "@shared/productIntakeWizardSchemas";
+import {
+  productIntakeAnswersPatchRequestSchema,
+  productIntakeSessionListQuerySchema,
+  productIntakeWizardAnalyzeRequestSchema,
+  type ProductIntakeWizardAnalyzeRequest,
+} from "@shared/productIntakeWizardSchemas";
 import { materials, pbv2OptionGroupTemplates } from "@shared/schema";
 import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
@@ -15,6 +20,11 @@ import {
   generateProductIntakeBrief,
   type ProductIntakeTemplateReference,
 } from "../services/productIntakeWizard/productIntakeBriefService";
+import {
+  createDbProductIntakeSessionStore,
+  ProductIntakeSessionError,
+  type ProductIntakeSessionStore,
+} from "../services/productIntakeWizard/productIntakeSessionService";
 import type { AiProviderAdapter } from "../services/ai/providers/AiProviderAdapter";
 
 type RouteMiddleware = {
@@ -23,6 +33,7 @@ type RouteMiddleware = {
   assertInternalUser: (req: Request, res: Response) => boolean;
   getReferenceData?: (organizationId: string) => Promise<ProductIntakeReferenceData>;
   productIntakeAiProvider?: AiProviderAdapter | null;
+  productIntakeSessionStore?: ProductIntakeSessionStore;
 };
 
 type ProductIntakeReferenceData = CatalogMigrationLabReferenceData & {
@@ -61,6 +72,36 @@ function intakePayloadSize(input: ProductIntakeWizardAnalyzeRequest): number {
   if (input.analyzerRequest) return requestPayloadSize(input.analyzerRequest);
   if (typeof input.jsonText === "string") return byteLength(input.jsonText);
   return byteLength(JSON.stringify(input.sourceJson) ?? "null");
+}
+
+function requestUserId(req: Request): string | null {
+  const user = req.user as any;
+  return user?.id ?? user?.claims?.sub ?? null;
+}
+
+function handleProductIntakeRouteError(error: any, res: Response, fallbackMessage: string) {
+  if (error instanceof SyntaxError) {
+    return res.status(400).json({
+      success: false,
+      message: "Uploaded content is not valid JSON.",
+      errorCode: "MALFORMED_JSON",
+    });
+  }
+  if (error instanceof z.ZodError) {
+    return res.status(400).json({
+      success: false,
+      message: error.errors[0]?.message ?? fallbackMessage,
+      errorCode: "UNKNOWN_SOURCE_SHAPE",
+    });
+  }
+  if (error instanceof ProductIntakeSessionError) {
+    return res.status(error.statusCode).json({
+      success: false,
+      message: error.message,
+      errorCode: error.errorCode,
+    });
+  }
+  return null;
 }
 
 async function loadReferenceData(organizationId: string): Promise<ProductIntakeReferenceData> {
@@ -102,6 +143,7 @@ async function loadReferenceData(organizationId: string): Promise<ProductIntakeR
 
 export function registerCatalogMigrationLabRoutes(app: Express, middleware: RouteMiddleware) {
   const getReferenceData = middleware.getReferenceData ?? loadReferenceData;
+  const intakeSessionStore = middleware.productIntakeSessionStore ?? createDbProductIntakeSessionStore();
 
   app.post(
     "/api/admin/catalog-migration-lab/analyze",
@@ -213,6 +255,13 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
           templates: referenceData.templates ?? [],
           provider: middleware.productIntakeAiProvider,
         });
+        const intakeSession = await intakeSessionStore.createFromAnalysis({
+          organizationId,
+          userId: requestUserId(req),
+          request: parsed,
+          analyzer,
+          brief,
+        });
 
         return res.json({
           success: true,
@@ -224,23 +273,17 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
             },
             analyzer,
             brief,
+            sessionId: intakeSession.session.id,
+            status: intakeSession.session.status,
+            session: intakeSession.session,
+            questions: intakeSession.questions,
+            answers: intakeSession.answers,
+            readiness: intakeSession.readiness,
           },
         });
       } catch (error: any) {
-        if (error instanceof SyntaxError) {
-          return res.status(400).json({
-            success: false,
-            message: "Uploaded content is not valid JSON.",
-            errorCode: "MALFORMED_JSON",
-          });
-        }
-        if (error instanceof z.ZodError) {
-          return res.status(400).json({
-            success: false,
-            message: error.errors[0]?.message ?? "Invalid product intake request.",
-            errorCode: "UNKNOWN_SOURCE_SHAPE",
-          });
-        }
+        const handled = handleProductIntakeRouteError(error, res, "Invalid product intake request.");
+        if (handled) return handled;
 
         console.error("[ProductIntakeWizard] Analysis failed:", error);
         return res.status(500).json({
@@ -248,6 +291,112 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
           message: "Failed to generate Product Intake Brief.",
           errorCode: "UNKNOWN_SOURCE_SHAPE",
         });
+      }
+    },
+  );
+
+  app.get(
+    "/api/admin/product-intake-wizard/sessions",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) {
+          return res.status(400).json({ success: false, message: "Missing organization context.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+        }
+
+        const filters = productIntakeSessionListQuerySchema.parse(req.query ?? {});
+        const sessions = await intakeSessionStore.listSessions(organizationId, filters);
+        return res.json({ success: true, data: { sessions } });
+      } catch (error: any) {
+        const handled = handleProductIntakeRouteError(error, res, "Invalid intake session filters.");
+        if (handled) return handled;
+        console.error("[ProductIntakeWizard] Session list failed:", error);
+        return res.status(500).json({ success: false, message: "Failed to load Product Intake sessions.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/admin/product-intake-wizard/sessions/:id",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) {
+          return res.status(400).json({ success: false, message: "Missing organization context.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+        }
+
+        const detail = await intakeSessionStore.getSessionDetail(organizationId, req.params.id);
+        if (!detail) return res.status(404).json({ success: false, message: "Product Intake session not found.", errorCode: "SESSION_NOT_FOUND" });
+        return res.json({ success: true, data: detail });
+      } catch (error: any) {
+        const handled = handleProductIntakeRouteError(error, res, "Invalid intake session request.");
+        if (handled) return handled;
+        console.error("[ProductIntakeWizard] Session detail failed:", error);
+        return res.status(500).json({ success: false, message: "Failed to load Product Intake session.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/admin/product-intake-wizard/sessions/:id/answers",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) {
+          return res.status(400).json({ success: false, message: "Missing organization context.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+        }
+
+        const parsed = productIntakeAnswersPatchRequestSchema.parse(req.body ?? {});
+        const detail = await intakeSessionStore.upsertAnswers({
+          organizationId,
+          sessionId: req.params.id,
+          userId: requestUserId(req),
+          answers: parsed.answers,
+        });
+        if (!detail) return res.status(404).json({ success: false, message: "Product Intake session not found.", errorCode: "SESSION_NOT_FOUND" });
+        return res.json({ success: true, data: detail });
+      } catch (error: any) {
+        const handled = handleProductIntakeRouteError(error, res, "Invalid Product Intake answers.");
+        if (handled) return handled;
+        console.error("[ProductIntakeWizard] Answer save failed:", error);
+        return res.status(500).json({ success: false, message: "Failed to save Product Intake answers.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/admin/product-intake-wizard/sessions/:id/abandon",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) {
+          return res.status(400).json({ success: false, message: "Missing organization context.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+        }
+
+        const detail = await intakeSessionStore.abandonSession({
+          organizationId,
+          sessionId: req.params.id,
+          userId: requestUserId(req),
+        });
+        if (!detail) return res.status(404).json({ success: false, message: "Product Intake session not found.", errorCode: "SESSION_NOT_FOUND" });
+        return res.json({ success: true, data: detail });
+      } catch (error: any) {
+        const handled = handleProductIntakeRouteError(error, res, "Invalid Product Intake abandon request.");
+        if (handled) return handled;
+        console.error("[ProductIntakeWizard] Abandon failed:", error);
+        return res.status(500).json({ success: false, message: "Failed to abandon Product Intake session.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
       }
     },
   );
