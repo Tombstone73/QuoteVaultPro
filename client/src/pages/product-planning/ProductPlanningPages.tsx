@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
@@ -61,6 +61,7 @@ type DependencyType = "blocks" | "requires" | "relates_to";
 type ReleaseStatus = "planned" | "in_progress" | "released" | "archived";
 type AiSuggestionStatus = "pending" | "accepted" | "rejected";
 type ProductPlanningAiSource = "live_ai" | "rule_based_fallback";
+type ProductPlanningAiAnalysisType = "backlog_analysis" | "roadmap_analysis" | "epic_suggestions" | "go_live_readiness";
 type AiSuggestionType =
   | "priority"
   | "business_value"
@@ -183,6 +184,17 @@ type ProductPlanningAiSuggestion = {
   reviewedByUserId: string | null;
   source?: ProductPlanningAiSource;
   fallbackReason?: string | null;
+};
+
+type ProductPlanningAiAnalysisRecord<T = Record<string, unknown>> = {
+  id: string;
+  analysisType: ProductPlanningAiAnalysisType;
+  source: ProductPlanningAiSource;
+  fallbackReason: string | null;
+  results: T;
+  generatedByUserId: string | null;
+  generatedAt: string;
+  createdAt: string;
 };
 
 type WorkItemDetail = WorkItem & {
@@ -353,6 +365,7 @@ type ImportCommitResult = {
 type ProductPlanningResetResult = {
   counts: {
     productPlanningAiSuggestions: number;
+    productPlanningAiAnalyses: number;
     productPlanningEvents: number;
     productPlanningDependencies: number;
     productPlanningWorkItems: number;
@@ -519,6 +532,20 @@ function workItemPath(itemOrId: Pick<WorkItem, "id"> | string) {
   return ROUTES.productPlanning.workItemDetail(typeof itemOrId === "string" ? itemOrId : itemOrId.id);
 }
 
+function backlogPath(params: Record<string, string | number | boolean | null | undefined> = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value == null || value === "" || value === false) return;
+    query.set(key, String(value));
+  });
+  const suffix = query.toString();
+  return suffix ? `${ROUTES.productPlanning.backlog}?${suffix}` : ROUTES.productPlanning.backlog;
+}
+
+function backlogSearchPath(value: string | null | undefined) {
+  return backlogPath(value ? { search: value } : {});
+}
+
 function displayDate(value: string | null | undefined, includeTime = false) {
   if (!value) return "-";
   return format(new Date(value), includeTime ? "MMM d, yyyy HH:mm" : "MMM d, yyyy");
@@ -602,15 +629,16 @@ function ProductPlanningShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function StatCard({ title, value }: { title: string; value: number }) {
-  return (
-    <Card>
+function StatCard({ title, value, to }: { title: string; value: number; to?: string }) {
+  const content = (
+    <Card className={to ? "transition-colors hover:bg-muted/40" : ""}>
       <CardContent className="p-4">
         <div className="text-xs font-medium uppercase text-muted-foreground">{title}</div>
         <div className="mt-2 text-2xl font-semibold">{value}</div>
       </CardContent>
     </Card>
   );
+  return to ? <Link to={to} className="block">{content}</Link> : content;
 }
 
 function CompactItemList({
@@ -681,7 +709,7 @@ function ReleaseProgressList({ releases }: { releases: DashboardData["releasePro
         ) : releases.map((release) => {
           const percent = release.totalCount > 0 ? Math.round((release.releasedCount / release.totalCount) * 100) : 0;
           return (
-            <div key={release.id} className="rounded-md border border-border p-3">
+            <Link key={release.id} to={backlogPath({ releaseId: release.id })} className="block rounded-md border border-border p-3 hover:bg-muted/40">
               <div className="flex items-center justify-between gap-3 text-sm">
                 <span className="font-medium">{release.name}</span>
                 <Badge variant="secondary">{labelFor(RELEASE_STATUSES, release.status)}</Badge>
@@ -693,7 +721,7 @@ function ReleaseProgressList({ releases }: { releases: DashboardData["releasePro
                 <span>{release.releasedCount}/{release.totalCount} released</span>
                 <span>{release.targetDate ? format(new Date(release.targetDate), "MMM d, yyyy") : "No target date"}</span>
               </div>
-            </div>
+            </Link>
           );
         })}
       </CardContent>
@@ -731,6 +759,51 @@ function AiSourceIndicator({ source, fallbackReason }: { source?: ProductPlannin
       <Badge variant={source === "live_ai" ? "secondary" : "outline"}>{source === "live_ai" ? "Live AI" : "Rule-based fallback"}</Badge>
       {fallbackReason && <span>{fallbackReason}</span>}
     </div>
+  );
+}
+
+function AnalysisMetadataBar({
+  label,
+  analysis,
+  history,
+  showHistory,
+  onToggleHistory,
+}: {
+  label: string;
+  analysis?: ProductPlanningAiAnalysisRecord | null;
+  history?: ProductPlanningAiAnalysisRecord[];
+  showHistory?: boolean;
+  onToggleHistory?: () => void;
+}) {
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="space-y-1 text-sm">
+          <div className="font-medium">{label}</div>
+          <div className="text-xs text-muted-foreground">
+            Last Analyzed: {analysis ? displayDate(analysis.generatedAt, true) : "Never"}
+          </div>
+          {analysis && <AiSourceIndicator source={analysis.source} fallbackReason={analysis.fallbackReason} />}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {onToggleHistory && (
+            <Button variant="outline" size="sm" onClick={onToggleHistory}>
+              {showHistory ? "Hide Previous Analysis" : "View Previous Analysis"}
+            </Button>
+          )}
+        </div>
+        {showHistory && history && history.length > 0 && (
+          <div className="grid gap-2 border-t border-border pt-2 sm:col-span-2 sm:w-full">
+            {history.slice(0, 5).map((entry) => (
+              <div key={entry.id} className="flex items-center justify-between rounded-md border border-border p-2 text-xs">
+                <span>{displayDate(entry.generatedAt, true)}</span>
+                <AiSourceIndicator source={entry.source} fallbackReason={entry.fallbackReason} />
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -819,6 +892,7 @@ function BacklogAiAnalysisPanel({ analysis }: { analysis: ProductPlanningBacklog
                 {action.priority && <Badge variant={priorityBadge(action.priority)}>{action.priority}</Badge>}
               </div>
               <p className="mt-1 text-xs text-muted-foreground">{action.reasoning}</p>
+              <ActionableRecommendationLinks action={action} />
             </div>
           )) : analysis.nextActions.length === 0 ? (
             <p className="text-sm text-muted-foreground">No immediate cleanup actions detected.</p>
@@ -902,7 +976,36 @@ function MiniTextList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-function MiniNarrativeList({ title, items }: { title: string; items: Array<{ title: string; reasoning: string }> }) {
+function ActionableRecommendationLinks({ action }: { action: { title: string; relatedItemReferences?: string[] } }) {
+  const relatedRefs = action.relatedItemReferences ?? [];
+  const lowerTitle = action.title.toLowerCase();
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {relatedRefs.length > 0 && (
+        <Link to={backlogSearchPath(relatedRefs[0])}>
+          <Button variant="outline" size="sm">Open Related Items</Button>
+        </Link>
+      )}
+      {lowerTitle.includes("epic") && (
+        <Link to={ROUTES.productPlanning.backlog}>
+          <Button variant="outline" size="sm">Create Epic</Button>
+        </Link>
+      )}
+      {lowerTitle.includes("release") && (
+        <Link to={ROUTES.productPlanning.backlog}>
+          <Button variant="outline" size="sm">Create Release</Button>
+        </Link>
+      )}
+      {(lowerTitle.includes("phase") || lowerTitle.includes("priority")) && (
+        <Link to={relatedRefs.length > 0 ? backlogSearchPath(relatedRefs[0]) : ROUTES.productPlanning.backlog}>
+          <Button variant="outline" size="sm">Review Assignment</Button>
+        </Link>
+      )}
+    </div>
+  );
+}
+
+function MiniNarrativeList({ title, items }: { title: string; items: Array<{ title: string; reasoning: string; relatedItemReferences?: string[] }> }) {
   return (
     <div className="space-y-2">
       <div className="text-xs font-medium uppercase text-muted-foreground">{title}</div>
@@ -910,6 +1013,11 @@ function MiniNarrativeList({ title, items }: { title: string; items: Array<{ tit
         <div key={item.title} className="rounded-md border border-border p-2 text-xs">
           <div className="font-medium">{item.title}</div>
           <p className="mt-1 text-muted-foreground">{item.reasoning}</p>
+          {item.relatedItemReferences?.length ? (
+            <Link to={backlogSearchPath(item.relatedItemReferences[0])} className="mt-2 inline-flex text-primary hover:underline">
+              Open related items
+            </Link>
+          ) : null}
         </div>
       ))}
     </div>
@@ -934,6 +1042,50 @@ function MiniReadinessList({ title, items }: { title: string; items: WorkItem[] 
 
 function SuggestedEpicCards({ analysis, onDismiss }: { analysis: ProductPlanningEpicAnalysis; onDismiss: () => void }) {
   const [expandedEpic, setExpandedEpic] = useState<string | null>(null);
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [curatedRefs, setCuratedRefs] = useState<Record<string, string[]>>({});
+  const [addReference, setAddReference] = useState<Record<string, string>>({});
+  const { toast } = useToast();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { data: allItems = [] } = useQuery<WorkItem[]>({
+    queryKey: ["/api/product-planning/work-items", "epic-suggestion-picker"],
+    queryFn: () => fetchJson<WorkItem[]>("/api/product-planning/work-items?limit=250&sortBy=reference&sortDirection=asc"),
+  });
+  const allItemsByReference = useMemo(() => new Map(allItems.map((item) => [item.reference, item])), [allItems]);
+
+  useEffect(() => {
+    const next: Record<string, string[]> = {};
+    for (const epic of analysis.epics) {
+      next[epic.name] = Array.from(new Set(epic.relatedItemReferences));
+    }
+    setCuratedRefs(next);
+    setDismissed(new Set());
+  }, [analysis]);
+
+  const createEpicMutation = useMutation({
+    mutationFn: async (epic: ProductPlanningEpicAnalysis["epics"][number]) => {
+      const res = await apiRequest("POST", "/api/product-planning/ai/epic-drafts", {
+        name: epic.name,
+        description: epic.description,
+        businessValue: epic.businessValue,
+        recommendedPhase: epic.recommendedPhase,
+        confidence: epic.confidence,
+        reasoning: epic.reasoning,
+        relatedItemReferences: curatedRefs[epic.name] ?? epic.relatedItemReferences,
+      });
+      return (await res.json()).data as { epic: WorkItem; linkedChildren: WorkItem[] };
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/work-items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/dashboard"] });
+      toast({ title: "Epic draft created", description: `${data.epic.reference} with ${data.linkedChildren.length} linked item(s).` });
+      navigate(workItemPath(data.epic));
+    },
+    onError: (error: Error) => toast({ title: "Epic draft failed", description: error.message, variant: "destructive" }),
+  });
+
+  const visibleEpics = analysis.epics.filter((epic) => !dismissed.has(epic.name));
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -943,21 +1095,22 @@ function SuggestedEpicCards({ analysis, onDismiss }: { analysis: ProductPlanning
         </CardTitle>
       </CardHeader>
       <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {analysis.epics.slice(0, 9).map((epic) => {
+        {visibleEpics.slice(0, 9).map((epic) => {
           const isExpanded = expandedEpic === epic.name;
-          const relatedItems = epic.relatedItems ?? epic.relatedItemReferences.map((reference) => ({
+          const refs = curatedRefs[epic.name] ?? epic.relatedItemReferences;
+          const relatedItems = refs.map((reference) => epic.relatedItems?.find((item) => item.reference === reference) ?? {
             reference,
-            title: "Planning item",
-            priority: null,
-            phase: null,
-            module: null,
+            title: allItemsByReference.get(reference)?.title ?? "Planning item",
+            priority: allItemsByReference.get(reference)?.priority ?? null,
+            phase: allItemsByReference.get(reference)?.phase ?? null,
+            module: allItemsByReference.get(reference)?.module ?? null,
             reasonIncluded: epic.reasoning,
-          }));
+          });
           return (
             <div key={epic.name} className="space-y-2 rounded-md border border-border p-3 text-sm">
             <div className="flex items-start justify-between gap-2">
               <div className="font-medium">{epic.name}</div>
-              <Badge variant="secondary">{epic.relatedItemReferences.length}</Badge>
+              <Badge variant="secondary">{refs.length}</Badge>
             </div>
             <p className="text-xs text-muted-foreground">{epic.description}</p>
             <div className="flex flex-wrap gap-2">
@@ -966,8 +1119,8 @@ function SuggestedEpicCards({ analysis, onDismiss }: { analysis: ProductPlanning
               <Badge variant="secondary">{epic.confidence}%</Badge>
             </div>
             <p className="text-xs text-muted-foreground">{epic.reasoning}</p>
-            {epic.relatedItemReferences.length > 0 && (
-              <div className="text-xs text-muted-foreground">Refs: {epic.relatedItemReferences.slice(0, 6).join(", ")}</div>
+            {refs.length > 0 && (
+              <div className="text-xs text-muted-foreground">Refs: {refs.slice(0, 6).join(", ")}</div>
             )}
             {isExpanded && (
               <div className="space-y-2 rounded-md bg-muted/30 p-2">
@@ -975,29 +1128,75 @@ function SuggestedEpicCards({ analysis, onDismiss }: { analysis: ProductPlanning
                 {relatedItems.map((item) => (
                   <div key={item.reference} className="rounded-md border border-border bg-background p-2 text-xs">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-muted-foreground">{item.reference}</span>
+                      <Link to={backlogSearchPath(item.reference)} className="font-mono text-primary hover:underline">{item.reference}</Link>
                       <span className="font-medium">{item.title}</span>
                       {item.priority && <Badge variant={priorityBadge(item.priority)}>{item.priority}</Badge>}
                       {item.phase && <Badge variant="secondary">{labelFor(PHASES, item.phase)}</Badge>}
                       {item.module && <Badge variant="outline">{item.module}</Badge>}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setCuratedRefs((current) => ({
+                          ...current,
+                          [epic.name]: (current[epic.name] ?? refs).filter((reference) => reference !== item.reference),
+                        }))}
+                      >
+                        Remove
+                      </Button>
                     </div>
                     <p className="mt-1 text-muted-foreground">{item.reasonIncluded}</p>
                   </div>
                 ))}
+                <div className="flex gap-2">
+                  <Input
+                    value={addReference[epic.name] ?? ""}
+                    onChange={(event) => setAddReference((current) => ({ ...current, [epic.name]: event.target.value }))}
+                    placeholder="Add existing reference, e.g. PP-0007"
+                    className="h-8"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const reference = (addReference[epic.name] ?? "").trim();
+                      if (!reference) return;
+                      setCuratedRefs((current) => ({
+                        ...current,
+                        [epic.name]: Array.from(new Set([...(current[epic.name] ?? refs), reference])),
+                      }));
+                      setAddReference((current) => ({ ...current, [epic.name]: "" }));
+                    }}
+                  >
+                    Add
+                  </Button>
+                </div>
               </div>
             )}
             <div className="flex justify-end gap-2">
               <Button variant="outline" size="sm" onClick={() => setExpandedEpic(isExpanded ? null : epic.name)}>
                 {isExpanded ? "Hide Items" : "View Items"}
               </Button>
-              <Button variant="outline" size="sm" onClick={onDismiss}>Dismiss</Button>
-              <Button variant="outline" size="sm" onClick={() => window.confirm(`Create epic draft for ${epic.name}?`)}>
-                Create Epic Draft
+              <Button variant="outline" size="sm" onClick={() => setDismissed((current) => new Set([...Array.from(current), epic.name]))}>Dismiss</Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  if (window.confirm(`Create epic draft for ${epic.name}?`)) createEpicMutation.mutate(epic);
+                }}
+                disabled={createEpicMutation.isPending}
+              >
+                {createEpicMutation.isPending ? "Creating..." : "Create Epic Draft"}
               </Button>
             </div>
             </div>
           );
         })}
+        {visibleEpics.length === 0 && (
+          <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
+            No visible epic suggestions.
+            <Button variant="outline" size="sm" className="ml-2" onClick={onDismiss}>Close</Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -1005,8 +1204,11 @@ function SuggestedEpicCards({ analysis, onDismiss }: { analysis: ProductPlanning
 
 export function ProductPlanningDashboardPage() {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [backlogAnalysis, setBacklogAnalysis] = useState<ProductPlanningBacklogAnalysis | null>(null);
   const [epicAnalysis, setEpicAnalysis] = useState<ProductPlanningEpicAnalysis | null>(null);
+  const [showBacklogHistory, setShowBacklogHistory] = useState(false);
+  const [showEpicHistory, setShowEpicHistory] = useState(false);
   const { data, isLoading, refetch, isRefetching } = useQuery<DashboardData>({
     queryKey: ["/api/product-planning/dashboard"],
     queryFn: () => fetchJson<DashboardData>("/api/product-planning/dashboard"),
@@ -1015,6 +1217,26 @@ export function ProductPlanningDashboardPage() {
     queryKey: ["/api/product-planning/ai/readiness"],
     queryFn: () => fetchJson<ProductPlanningAiReadiness>("/api/product-planning/ai/readiness"),
   });
+  const { data: latestBacklogAnalysis } = useQuery<ProductPlanningAiAnalysisRecord<ProductPlanningBacklogAnalysis> | null>({
+    queryKey: ["/api/product-planning/ai/analyses/latest", "backlog_analysis"],
+    queryFn: () => fetchJson<ProductPlanningAiAnalysisRecord<ProductPlanningBacklogAnalysis> | null>("/api/product-planning/ai/analyses/latest?analysisType=backlog_analysis"),
+  });
+  const { data: latestEpicAnalysis } = useQuery<ProductPlanningAiAnalysisRecord<ProductPlanningEpicAnalysis> | null>({
+    queryKey: ["/api/product-planning/ai/analyses/latest", "epic_suggestions"],
+    queryFn: () => fetchJson<ProductPlanningAiAnalysisRecord<ProductPlanningEpicAnalysis> | null>("/api/product-planning/ai/analyses/latest?analysisType=epic_suggestions"),
+  });
+  const { data: backlogHistory = [] } = useQuery<ProductPlanningAiAnalysisRecord<ProductPlanningBacklogAnalysis>[]>({
+    queryKey: ["/api/product-planning/ai/analyses", "backlog_analysis"],
+    queryFn: () => fetchJson<ProductPlanningAiAnalysisRecord<ProductPlanningBacklogAnalysis>[]>("/api/product-planning/ai/analyses?analysisType=backlog_analysis&limit=10"),
+    enabled: showBacklogHistory,
+  });
+  const { data: epicHistory = [] } = useQuery<ProductPlanningAiAnalysisRecord<ProductPlanningEpicAnalysis>[]>({
+    queryKey: ["/api/product-planning/ai/analyses", "epic_suggestions"],
+    queryFn: () => fetchJson<ProductPlanningAiAnalysisRecord<ProductPlanningEpicAnalysis>[]>("/api/product-planning/ai/analyses?analysisType=epic_suggestions&limit=10"),
+    enabled: showEpicHistory,
+  });
+  const displayedBacklogAnalysis = backlogAnalysis ?? latestBacklogAnalysis?.results ?? null;
+  const displayedEpicAnalysis = epicAnalysis ?? latestEpicAnalysis?.results ?? null;
   const analyzeBacklogMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/product-planning/ai/analyze-backlog", {});
@@ -1022,6 +1244,8 @@ export function ProductPlanningDashboardPage() {
     },
     onSuccess: (analysis) => {
       setBacklogAnalysis(analysis);
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/ai/analyses/latest", "backlog_analysis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/ai/analyses", "backlog_analysis"] });
       toast({ title: "Backlog analysis ready", description: `${analysis.suggestions.length} suggestion(s) stored for review.` });
     },
     onError: (error: Error) => toast({ title: "Backlog analysis failed", description: error.message, variant: "destructive" }),
@@ -1033,6 +1257,8 @@ export function ProductPlanningDashboardPage() {
     },
     onSuccess: (data) => {
       setEpicAnalysis(data);
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/ai/analyses/latest", "epic_suggestions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/ai/analyses", "epic_suggestions"] });
       toast({ title: "Epic suggestions ready", description: `${data.suggestions.length} epic suggestion(s) stored.` });
     },
     onError: (error: Error) => toast({ title: "Epic suggestions failed", description: error.message, variant: "destructive" }),
@@ -1043,7 +1269,7 @@ export function ProductPlanningDashboardPage() {
       <div className="flex flex-wrap justify-end gap-2">
         <Button variant="outline" size="sm" onClick={() => analyzeBacklogMutation.mutate()} disabled={analyzeBacklogMutation.isPending} className="gap-2">
           <Brain className="h-4 w-4" />
-          {analyzeBacklogMutation.isPending ? "Analyzing..." : "Analyze Backlog"}
+          {analyzeBacklogMutation.isPending ? "Analyzing..." : "Refresh Analysis"}
         </Button>
         <Button variant="outline" size="sm" onClick={() => suggestEpicsMutation.mutate()} disabled={suggestEpicsMutation.isPending} className="gap-2">
           <ClipboardList className="h-4 w-4" />
@@ -1062,15 +1288,29 @@ export function ProductPlanningDashboardPage() {
       ) : (
         <>
           <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-            <StatCard title="Total backlog" value={data.totalBacklogCount} />
-            <StatCard title="Critical bugs" value={data.criticalOpenBugCount} />
-            <StatCard title="High bugs" value={data.highOpenBugCount} />
-            <StatCard title="Testing" value={data.itemsInTesting} />
-            <StatCard title="DEV validation" value={data.itemsInDevValidation} />
-            <StatCard title="MAIN validation" value={data.itemsInMainValidation} />
+            <StatCard title="Total backlog" value={data.totalBacklogCount} to={ROUTES.productPlanning.backlog} />
+            <StatCard title="Critical bugs" value={data.criticalOpenBugCount} to={backlogPath({ workItemType: "bug", priority: "critical" })} />
+            <StatCard title="High bugs" value={data.highOpenBugCount} to={backlogPath({ workItemType: "bug", priority: "high" })} />
+            <StatCard title="Testing" value={data.itemsInTesting} to={backlogPath({ planningStatus: "testing" })} />
+            <StatCard title="DEV validation" value={data.itemsInDevValidation} to={backlogPath({ planningStatus: "dev_validation" })} />
+            <StatCard title="MAIN validation" value={data.itemsInMainValidation} to={backlogPath({ planningStatus: "main_validation" })} />
           </div>
-          {backlogAnalysis && <BacklogAiAnalysisPanel analysis={backlogAnalysis} />}
-          {epicAnalysis && <SuggestedEpicCards analysis={epicAnalysis} onDismiss={() => setEpicAnalysis(null)} />}
+          <AnalysisMetadataBar
+            label="Backlog Analysis"
+            analysis={latestBacklogAnalysis}
+            history={backlogHistory}
+            showHistory={showBacklogHistory}
+            onToggleHistory={() => setShowBacklogHistory((value) => !value)}
+          />
+          {displayedBacklogAnalysis && <BacklogAiAnalysisPanel analysis={displayedBacklogAnalysis} />}
+          <AnalysisMetadataBar
+            label="Epic Suggestions"
+            analysis={latestEpicAnalysis}
+            history={epicHistory}
+            showHistory={showEpicHistory}
+            onToggleHistory={() => setShowEpicHistory((value) => !value)}
+          />
+          {displayedEpicAnalysis && <SuggestedEpicCards analysis={displayedEpicAnalysis} onDismiss={() => setEpicAnalysis(null)} />}
           <div className="grid gap-4 lg:grid-cols-2">
             <CompactItemList title="Major Bugs" items={data.majorBugs} icon={<Bug className="h-4 w-4 text-destructive" />} emptyMessage="No prioritized bugs yet." actionLabel="Push Bug Reports" actionTo={ROUTES.admin.bugReports} />
             <CompactItemList title="Prioritized Features" items={data.topPrioritizedFeatures} icon={<ClipboardList className="h-4 w-4 text-primary" />} emptyMessage="No prioritized features yet." actionLabel="Create Work Item" actionTo={ROUTES.productPlanning.backlog} />
@@ -1086,9 +1326,9 @@ export function ProductPlanningDashboardPage() {
           </div>
           <CleanupOpportunitiesList opportunities={data.cleanupOpportunities ?? []} />
           <div className="grid gap-4 lg:grid-cols-3">
-            <SummaryBreakdown title="By Status" rows={data.byStatus} />
-            <SummaryBreakdown title="By Phase" rows={data.byPhase.map((row) => ({ ...row, key: labelFor(PHASES, row.key as Phase | null) || "Unassigned" }))} />
-            <SummaryBreakdown title="By Module Workload" rows={(data.byModuleWorkload ?? data.byModule).map((row) => ({ ...row, key: row.key || "Unassigned" }))} />
+            <SummaryBreakdown title="By Status" rows={data.byStatus} hrefFor={(row) => backlogPath({ planningStatus: row.key })} />
+            <SummaryBreakdown title="By Phase" rows={data.byPhase.map((row) => ({ ...row, key: labelFor(PHASES, row.key as Phase | null) || "Unassigned", rawKey: row.key }))} hrefFor={(row) => row.rawKey ? backlogPath({ phase: row.rawKey }) : backlogPath({ missingPhase: true })} />
+            <SummaryBreakdown title="By Module Workload" rows={(data.byModuleWorkload ?? data.byModule).map((row) => ({ ...row, key: row.key || "Unassigned", rawKey: row.key }))} hrefFor={(row) => row.rawKey ? backlogPath({ module: row.rawKey }) : backlogPath({ missingModule: true })} />
           </div>
         </>
       )}
@@ -1096,7 +1336,15 @@ export function ProductPlanningDashboardPage() {
   );
 }
 
-function SummaryBreakdown({ title, rows }: { title: string; rows: Array<{ key: string | null; count: number }> }) {
+function SummaryBreakdown({
+  title,
+  rows,
+  hrefFor,
+}: {
+  title: string;
+  rows: Array<{ key: string | null; rawKey?: string | null; count: number }>;
+  hrefFor?: (row: { key: string | null; rawKey?: string | null; count: number }) => string;
+}) {
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -1104,10 +1352,14 @@ function SummaryBreakdown({ title, rows }: { title: string; rows: Array<{ key: s
       </CardHeader>
       <CardContent className="space-y-2">
         {rows.length === 0 ? <p className="text-sm text-muted-foreground">No data.</p> : rows.map((row) => (
-          <div key={row.key || "none"} className="flex items-center justify-between text-sm">
+          <Link
+            key={row.key || "none"}
+            to={hrefFor ? hrefFor(row) : ROUTES.productPlanning.backlog}
+            className="flex items-center justify-between rounded-md p-1 text-sm hover:bg-muted/40"
+          >
             <span className="truncate">{row.key || "Unassigned"}</span>
             <Badge variant="secondary">{row.count}</Badge>
-          </div>
+          </Link>
         ))}
       </CardContent>
     </Card>
@@ -1229,16 +1481,22 @@ export function ProductPlanningBacklogPage() {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const [filters, setFilters] = useState({
-    search: "",
-    workItemType: "all",
-    planningStatus: "all",
-    priority: "all",
-    module: "",
-    phase: "all",
-    sourceType: "all",
+    search: searchParams.get("search") ?? "",
+    workItemType: searchParams.get("workItemType") ?? "all",
+    planningStatus: searchParams.get("planningStatus") ?? "all",
+    priority: searchParams.get("priority") ?? "all",
+    module: searchParams.get("module") ?? "",
+    phase: searchParams.get("phase") ?? "all",
+    sourceType: searchParams.get("sourceType") ?? "all",
     importedBatchId: searchParams.get("importedBatchId") ?? "",
-    sortBy: "updatedAt",
-    sortDirection: "desc",
+    missingModule: searchParams.get("missingModule") ?? "",
+    missingPhase: searchParams.get("missingPhase") ?? "",
+    missingPriority: searchParams.get("missingPriority") ?? "",
+    missingRelease: searchParams.get("missingRelease") ?? "",
+    orphanedEpic: searchParams.get("orphanedEpic") ?? "",
+    possibleDuplicates: searchParams.get("possibleDuplicates") ?? "",
+    sortBy: searchParams.get("sortBy") ?? "updatedAt",
+    sortDirection: searchParams.get("sortDirection") ?? "desc",
   });
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState<WorkItemFormState>(EMPTY_FORM);
@@ -1374,9 +1632,22 @@ export function ProductPlanningBacklogPage() {
                 <SelectItem value="bug_report">Bug Report</SelectItem>
               </SelectContent>
             </Select>
-            {filters.importedBatchId && (
-              <Button variant="outline" size="sm" onClick={() => setFilters({ ...filters, importedBatchId: "" })}>
-                Clear Import Filter
+            {(filters.importedBatchId || filters.missingModule || filters.missingPhase || filters.missingPriority || filters.missingRelease || filters.orphanedEpic || filters.possibleDuplicates) && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setFilters({
+                  ...filters,
+                  importedBatchId: "",
+                  missingModule: "",
+                  missingPhase: "",
+                  missingPriority: "",
+                  missingRelease: "",
+                  orphanedEpic: "",
+                  possibleDuplicates: "",
+                })}
+              >
+                Clear Special Filters
               </Button>
             )}
           </div>
@@ -1723,6 +1994,12 @@ export function ProductPlanningRoadmapPage() {
   });
   const [roadmapSuggestions, setRoadmapSuggestions] = useState<ProductPlanningAiSuggestion[]>([]);
   const [roadmapAnalysis, setRoadmapAnalysis] = useState<ProductPlanningRoadmapAnalysis | null>(null);
+  const { data: latestRoadmapAnalysis } = useQuery<ProductPlanningAiAnalysisRecord<ProductPlanningRoadmapAnalysis> | null>({
+    queryKey: ["/api/product-planning/ai/analyses/latest", "roadmap_analysis"],
+    queryFn: () => fetchJson<ProductPlanningAiAnalysisRecord<ProductPlanningRoadmapAnalysis> | null>("/api/product-planning/ai/analyses/latest?analysisType=roadmap_analysis"),
+  });
+  const displayedRoadmapAnalysis = roadmapAnalysis ?? latestRoadmapAnalysis?.results ?? null;
+  const displayedRoadmapSuggestions = roadmapSuggestions.length > 0 ? roadmapSuggestions : displayedRoadmapAnalysis?.suggestions ?? [];
   const queryString = useMemo(() => {
     const params = new URLSearchParams({ sortBy: "roadmapOrder", sortDirection: "asc", limit: "250" });
     Object.entries(filters).forEach(([key, value]) => {
@@ -1788,6 +2065,7 @@ export function ProductPlanningRoadmapPage() {
     onSuccess: (analysis) => {
       setRoadmapAnalysis(analysis);
       setRoadmapSuggestions(analysis.suggestions);
+      queryClient.invalidateQueries({ queryKey: ["/api/product-planning/ai/analyses/latest", "roadmap_analysis"] });
       toast({ title: "Roadmap analysis ready", description: `${analysis.recommendations.length} recommendation(s) generated.` });
     },
     onError: (error: Error) => toast({ title: "Roadmap analysis failed", description: error.message, variant: "destructive" }),
@@ -1827,18 +2105,19 @@ export function ProductPlanningRoadmapPage() {
           </Button>
         </CardContent>
       </Card>
-      {roadmapAnalysis && (
+      {displayedRoadmapAnalysis && (
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center justify-between gap-3 text-sm">
               <span>Roadmap Analysis</span>
-              <AiSourceIndicator source={roadmapAnalysis.source} fallbackReason={roadmapAnalysis.fallbackReason} />
+              <AiSourceIndicator source={displayedRoadmapAnalysis.source} fallbackReason={displayedRoadmapAnalysis.fallbackReason} />
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {roadmapAnalysis.summary && <p className="text-sm text-muted-foreground">{roadmapAnalysis.summary}</p>}
+            <div className="text-xs text-muted-foreground">Last Analyzed: {latestRoadmapAnalysis ? displayDate(latestRoadmapAnalysis.generatedAt, true) : "Current session"}</div>
+            {displayedRoadmapAnalysis.summary && <p className="text-sm text-muted-foreground">{displayedRoadmapAnalysis.summary}</p>}
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-              {roadmapAnalysis.recommendations.map((recommendation) => (
+              {displayedRoadmapAnalysis.recommendations.map((recommendation) => (
                 <div key={recommendation.phase} className="rounded-md border border-border p-3 text-sm">
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-medium">{labelFor(PHASES, recommendation.phase as Phase) || recommendation.phase}</span>
@@ -1848,10 +2127,10 @@ export function ProductPlanningRoadmapPage() {
                 </div>
               ))}
             </div>
-            {(roadmapAnalysis.moveRecommendations?.length ?? 0) > 0 && (
+            {(displayedRoadmapAnalysis.moveRecommendations?.length ?? 0) > 0 && (
               <div className="space-y-2">
                 <div className="text-xs font-medium uppercase text-muted-foreground">What Should Move</div>
-                {roadmapAnalysis.moveRecommendations!.slice(0, 8).map((move) => (
+                {displayedRoadmapAnalysis.moveRecommendations!.slice(0, 8).map((move) => (
                   <div key={`${move.reference}-${move.recommendedPhase}`} className="rounded-md border border-border p-3 text-sm">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">{move.reference}: {labelFor(PHASES, move.currentPhase as Phase | null) || "Unassigned"} {"->"} {labelFor(PHASES, move.recommendedPhase)}</span>
@@ -1862,10 +2141,10 @@ export function ProductPlanningRoadmapPage() {
                 ))}
               </div>
             )}
-            {(roadmapAnalysis.deferRecommendations?.length ?? 0) > 0 && (
+            {(displayedRoadmapAnalysis.deferRecommendations?.length ?? 0) > 0 && (
               <div className="space-y-2">
                 <div className="text-xs font-medium uppercase text-muted-foreground">What Should Wait</div>
-                {roadmapAnalysis.deferRecommendations!.slice(0, 8).map((move) => (
+                {displayedRoadmapAnalysis.deferRecommendations!.slice(0, 8).map((move) => (
                   <div key={`${move.reference}-${move.recommendedPhase}-defer`} className="rounded-md border border-border p-3 text-sm">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">{move.reference}: {labelFor(PHASES, move.currentPhase as Phase | null) || "Unassigned"} {"->"} {labelFor(PHASES, move.recommendedPhase)}</span>
@@ -1876,10 +2155,10 @@ export function ProductPlanningRoadmapPage() {
                 ))}
               </div>
             )}
-            {(roadmapAnalysis.sequenceRecommendations?.length ?? 0) > 0 && (
+            {(displayedRoadmapAnalysis.sequenceRecommendations?.length ?? 0) > 0 && (
               <div className="space-y-2">
                 <div className="text-xs font-medium uppercase text-muted-foreground">What Should Happen First</div>
-                {roadmapAnalysis.sequenceRecommendations!.slice(0, 6).map((sequence) => (
+                {displayedRoadmapAnalysis.sequenceRecommendations!.slice(0, 6).map((sequence) => (
                   <div key={sequence.title} className="rounded-md border border-border p-3 text-sm">
                     <div className="font-medium">{sequence.title}</div>
                     <p className="mt-1 text-xs text-muted-foreground">{sequence.reasoning}</p>
@@ -1890,11 +2169,11 @@ export function ProductPlanningRoadmapPage() {
           </CardContent>
         </Card>
       )}
-      {roadmapSuggestions.length > 0 && (
+      {displayedRoadmapSuggestions.length > 0 && (
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm">Roadmap Suggestions</CardTitle></CardHeader>
           <CardContent className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-            {roadmapSuggestions.slice(0, 9).map((suggestion) => (
+            {displayedRoadmapSuggestions.slice(0, 9).map((suggestion) => (
               <div key={suggestion.id} className="rounded-md border border-border p-3 text-sm">
                 <div className="flex items-center justify-between gap-2">
                   <Badge variant="outline">{suggestion.confidence ?? 0}%</Badge>
@@ -2987,6 +3266,7 @@ export function ProductPlanningImportsPage() {
                   <div className="mt-2 grid gap-2">
                     <ResetCount label="Work items" value={resetResult.counts.productPlanningWorkItems} />
                     <ResetCount label="AI suggestions" value={resetResult.counts.productPlanningAiSuggestions} />
+                    <ResetCount label="AI analyses" value={resetResult.counts.productPlanningAiAnalyses} />
                     <ResetCount label="Events" value={resetResult.counts.productPlanningEvents} />
                     <ResetCount label="Dependencies" value={resetResult.counts.productPlanningDependencies} />
                     <ResetCount label="Import batches" value={resetResult.counts.productPlanningImportBatches} />

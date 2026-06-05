@@ -6333,6 +6333,13 @@ export const productPlanningAiSuggestionTypeValues = [
   "implementation_notes",
 ] as const;
 export const productPlanningAiSuggestionStatusValues = ["pending", "accepted", "rejected"] as const;
+export const productPlanningAiAnalysisTypeValues = [
+  "backlog_analysis",
+  "roadmap_analysis",
+  "epic_suggestions",
+  "go_live_readiness",
+] as const;
+export const productPlanningAiAnalysisSourceValues = ["live_ai", "rule_based_fallback"] as const;
 
 export const productPlanningReleases = pgTable("product_planning_releases", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -6462,6 +6469,21 @@ export const productPlanningAiSuggestions = pgTable("product_planning_ai_suggest
   index("product_planning_ai_suggestions_org_type_status_idx").on(table.organizationId, table.suggestionType, table.status, table.createdAt),
 ]);
 
+export const productPlanningAiAnalyses = pgTable("product_planning_ai_analyses", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  analysisType: text("analysis_type").$type<typeof productPlanningAiAnalysisTypeValues[number]>().notNull(),
+  source: text("source").$type<typeof productPlanningAiAnalysisSourceValues[number]>().notNull(),
+  fallbackReason: text("fallback_reason"),
+  results: jsonb("results").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  generatedByUserId: varchar("generated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  generatedAt: timestamp("generated_at", { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("product_planning_ai_analyses_org_type_generated_idx").on(table.organizationId, table.analysisType, table.generatedAt),
+  index("product_planning_ai_analyses_org_source_idx").on(table.organizationId, table.source),
+]);
+
 export const productPlanningDependencies = pgTable("product_planning_dependencies", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -6534,6 +6556,8 @@ export type ProductPlanningDependency = typeof productPlanningDependencies.$infe
 export type InsertProductPlanningDependency = typeof productPlanningDependencies.$inferInsert;
 export type ProductPlanningAiSuggestion = typeof productPlanningAiSuggestions.$inferSelect;
 export type InsertProductPlanningAiSuggestion = typeof productPlanningAiSuggestions.$inferInsert;
+export type ProductPlanningAiAnalysis = typeof productPlanningAiAnalyses.$inferSelect;
+export type InsertProductPlanningAiAnalysis = typeof productPlanningAiAnalyses.$inferInsert;
 export type ProductPlanningImportBatch = typeof productPlanningImportBatches.$inferSelect;
 export type InsertProductPlanningImportBatch = typeof productPlanningImportBatches.$inferInsert;
 export type ProductPlanningEvent = typeof productPlanningEvents.$inferSelect;

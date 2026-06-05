@@ -12,6 +12,7 @@ import {
   globalVariables,
   organizationAiSettings,
   organizations,
+  productPlanningAiAnalyses,
   productPlanningAiSuggestions,
   productPlanningDependencies,
   productPlanningEvents,
@@ -490,6 +491,17 @@ describe("Product Planning AI suggestion routes", () => {
     }));
     expect(response.body.data.goLiveReadiness.blockers.length).toBeGreaterThan(0);
     expect(response.body.data.suggestions.length).toBeGreaterThan(0);
+    expect(response.body.data.analysisId).toEqual(expect.any(String));
+
+    const latest = await request(app)
+      .get("/api/product-planning/ai/analyses/latest?analysisType=backlog_analysis");
+    expect(latest.status).toBe(200);
+    expect(latest.body.data).toEqual(expect.objectContaining({
+      id: response.body.data.analysisId,
+      analysisType: "backlog_analysis",
+      source: response.body.data.source,
+    }));
+    expect(latest.body.data.results.executiveSummary).toContain("Product Catalog Completion");
   });
 
   test("suggest epics stores advisory epic suggestions", async () => {
@@ -511,6 +523,46 @@ describe("Product Planning AI suggestion routes", () => {
       reference: expect.any(String),
       reasonIncluded: expect.any(String),
     }));
+
+    const history = await request(app)
+      .get("/api/product-planning/ai/analyses?analysisType=epic_suggestions");
+    expect(history.status).toBe(200);
+    expect(history.body.data[0]).toEqual(expect.objectContaining({
+      analysisType: "epic_suggestions",
+    }));
+  });
+
+  test("creates an epic draft and links curated child items", async () => {
+    const { org, app } = await createFixture();
+    const first = await createWorkItem(org.id, { title: "Catalog import MVP", workItemType: "feature", reference: `PP-CAT-${Math.floor(Math.random() * 1000000)}` });
+    const second = await createWorkItem(org.id, { title: "Catalog validation", workItemType: "task", reference: `PP-CAT-${Math.floor(Math.random() * 1000000)}` });
+
+    const response = await request(app)
+      .post("/api/product-planning/ai/epic-drafts")
+      .send({
+        name: "Product Catalog Completion",
+        description: "Complete catalog readiness for go-live.",
+        businessValue: "very_high",
+        recommendedPhase: "go_live",
+        confidence: 92,
+        reasoning: "Catalog work blocks operational validation.",
+        relatedItemReferences: [first.reference, second.reference],
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.epic).toEqual(expect.objectContaining({
+      workItemType: "epic",
+      title: "Product Catalog Completion",
+      phase: "go_live",
+      priority: "critical",
+    }));
+    expect(response.body.data.linkedChildren).toHaveLength(2);
+
+    const children = await db
+      .select()
+      .from(productPlanningWorkItems)
+      .where(and(eq(productPlanningWorkItems.organizationId, org.id), inArray(productPlanningWorkItems.id, [first.id, second.id])));
+    expect(children.every((item) => item.parentId === response.body.data.epic.id)).toBe(true);
   });
 
   test("go-live readiness and backlog health routes return actionable summaries", async () => {
@@ -636,6 +688,14 @@ describe("Product Planning admin reset", () => {
       confidence: "90",
       reasoning: "Reset test suggestion",
     });
+    await db.insert(productPlanningAiAnalyses).values({
+      organizationId: org.id,
+      analysisType: "backlog_analysis",
+      source: "rule_based_fallback",
+      fallbackReason: "Reset test",
+      results: { healthScore: 50 },
+      generatedByUserId: user.id,
+    });
     await db.insert(globalVariables).values({
       organizationId: org.id,
       name: "product_planning_next_reference",
@@ -663,6 +723,7 @@ describe("Product Planning admin reset", () => {
     expect(response.status).toBe(200);
     expect(response.body.data.counts).toEqual(expect.objectContaining({
       productPlanningAiSuggestions: 1,
+      productPlanningAiAnalyses: 1,
       productPlanningEvents: 1,
       productPlanningDependencies: 1,
       productPlanningWorkItems: 2,
@@ -675,6 +736,7 @@ describe("Product Planning admin reset", () => {
     const currentOrgItems = await db.select().from(productPlanningWorkItems).where(eq(productPlanningWorkItems.organizationId, org.id));
     const currentOrgBatches = await db.select().from(productPlanningImportBatches).where(eq(productPlanningImportBatches.organizationId, org.id));
     const currentOrgReleases = await db.select().from(productPlanningReleases).where(eq(productPlanningReleases.organizationId, org.id));
+    const currentOrgAnalyses = await db.select().from(productPlanningAiAnalyses).where(eq(productPlanningAiAnalyses.organizationId, org.id));
     const currentOrgCounters = await db.select().from(globalVariables).where(and(eq(globalVariables.organizationId, org.id), eq(globalVariables.name, "product_planning_next_reference")));
     const survivingBugReports = await db.select().from(bugReports).where(eq(bugReports.id, bugReport.id));
     const otherOrgItems = await db.select().from(productPlanningWorkItems).where(eq(productPlanningWorkItems.id, otherItem.id));
@@ -683,6 +745,7 @@ describe("Product Planning admin reset", () => {
     expect(currentOrgItems).toHaveLength(0);
     expect(currentOrgBatches).toHaveLength(0);
     expect(currentOrgReleases).toHaveLength(0);
+    expect(currentOrgAnalyses).toHaveLength(0);
     expect(currentOrgCounters).toHaveLength(0);
     expect(survivingBugReports).toHaveLength(1);
     expect(otherOrgItems).toHaveLength(1);
@@ -693,6 +756,80 @@ describe("Product Planning admin reset", () => {
       .send({ title: "First item after reset", priority: "high" });
     expect(createAfterReset.status).toBe(201);
     expect(createAfterReset.body.data.reference).toBe("PP-0001");
+  });
+});
+
+describe("Product Planning dashboard drill-down filters", () => {
+  test("filters missing fields, orphaned epics, possible duplicates, and releases", async () => {
+    const { org, app } = await createFixture();
+    const release = await createRelease(org.id, { name: "Filtered Release" });
+    const missingModule = await createWorkItem(org.id, { title: "Missing module", module: null });
+    const missingPhase = await createWorkItem(org.id, { title: "Missing phase", phase: null });
+    const missingRelease = await createWorkItem(org.id, { title: "Missing release", releaseId: null, releaseTarget: null });
+    const assignedRelease = await createWorkItem(org.id, { title: "Assigned release", releaseId: release.id });
+    const orphanedEpic = await createWorkItem(org.id, { title: "Orphaned epic", workItemType: "epic" });
+    await createWorkItem(org.id, { title: "Duplicate title", module: "Catalog" });
+    await createWorkItem(org.id, { title: "Duplicate title", module: "Catalog" });
+
+    const missingModuleResponse = await request(app).get("/api/product-planning/work-items?missingModule=true");
+    expect(missingModuleResponse.status).toBe(200);
+    expect(missingModuleResponse.body.data.map((item: { id: string }) => item.id)).toContain(missingModule.id);
+
+    const missingPhaseResponse = await request(app).get("/api/product-planning/work-items?missingPhase=true");
+    expect(missingPhaseResponse.body.data.map((item: { id: string }) => item.id)).toContain(missingPhase.id);
+
+    const missingReleaseResponse = await request(app).get("/api/product-planning/work-items?missingRelease=true");
+    expect(missingReleaseResponse.body.data.map((item: { id: string }) => item.id)).toContain(missingRelease.id);
+    expect(missingReleaseResponse.body.data.map((item: { id: string }) => item.id)).not.toContain(assignedRelease.id);
+
+    const orphanedEpicResponse = await request(app).get("/api/product-planning/work-items?orphanedEpic=true");
+    expect(orphanedEpicResponse.body.data.map((item: { id: string }) => item.id)).toContain(orphanedEpic.id);
+
+    const releaseResponse = await request(app).get(`/api/product-planning/work-items?releaseId=${release.id}`);
+    expect(releaseResponse.body.data.map((item: { id: string }) => item.id)).toEqual([assignedRelease.id]);
+
+    const duplicateResponse = await request(app).get("/api/product-planning/work-items?possibleDuplicates=true");
+    expect(duplicateResponse.body.data).toHaveLength(2);
+  });
+});
+
+describe("Product Planning bug report bulk push", () => {
+  test("pushes selected eligible bug reports and preserves original reports", async () => {
+    const { org, user, app } = await createFixture();
+    const referenceSeed = Math.floor(Math.random() * 900000) + 100000;
+    const bugValues = [1, 2].map((index) => ({
+      orgId: org.id,
+      referenceNumber: `B-${referenceSeed + index}`,
+      createdByUserId: user.id,
+      createdByEmail: user.email ?? "bulk@example.test",
+      title: `Bulk bug ${index}`,
+      description: `Bulk bug ${index} description`,
+      severity: index === 1 ? "high" as const : "critical" as const,
+      url: `https://example.test/bug-${index}`,
+      userAgent: "jest",
+      status: "open",
+    }));
+    const inserted = await db.insert(bugReports).values(bugValues).returning();
+
+    const response = await request(app)
+      .post("/api/bug-reports/push-to-product-planning/bulk")
+      .send({ mode: "selected", ids: inserted.map((bugReport) => bugReport.id) });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.created).toHaveLength(2);
+
+    const planningItems = await db
+      .select()
+      .from(productPlanningWorkItems)
+      .where(and(eq(productPlanningWorkItems.organizationId, org.id), inArray(productPlanningWorkItems.sourceBugReportId, inserted.map((bugReport) => bugReport.id))));
+    const survivingBugReports = await db
+      .select()
+      .from(bugReports)
+      .where(inArray(bugReports.id, inserted.map((bugReport) => bugReport.id)));
+
+    expect(planningItems).toHaveLength(2);
+    expect(planningItems.every((item) => item.sourceType === "bug_report")).toBe(true);
+    expect(survivingBugReports).toHaveLength(2);
   });
 });
 

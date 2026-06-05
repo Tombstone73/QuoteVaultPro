@@ -21,6 +21,8 @@ import {
   auditLogs,
   bugReports,
   globalVariables,
+  productPlanningAiAnalyses,
+  productPlanningAiAnalysisTypeValues,
   productPlanningAiSuggestions,
   productPlanningAiSuggestionTypeValues,
   productPlanningBusinessValueValues,
@@ -73,6 +75,13 @@ const listQuerySchema = z.object({
   ownerUserId: z.string().trim().max(255).optional(),
   releaseId: z.string().trim().max(255).optional(),
   importedBatchId: z.string().trim().max(255).optional(),
+  parentId: z.string().trim().max(255).optional(),
+  missingModule: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
+  missingPhase: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
+  missingPriority: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
+  missingRelease: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
+  orphanedEpic: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
+  possibleDuplicates: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
   includeArchived: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
   sortBy: z.enum(["createdAt", "updatedAt", "priority", "priorityScore", "reference", "module", "phase", "roadmapOrder", "sortOrder"]).default("updatedAt"),
   sortDirection: z.enum(["asc", "desc"]).default("desc"),
@@ -201,6 +210,33 @@ const createFromBugSummarySchema = z.object({
   description: z.string().trim().min(1).max(10000),
   priority: z.enum(productPlanningPriorityValues),
   module: nullableString.optional(),
+});
+
+const analysisQuerySchema = z.object({
+  analysisType: z.enum(productPlanningAiAnalysisTypeValues).optional(),
+  limit: z.coerce.number().int().min(1).max(25).default(10),
+});
+
+const createEpicDraftSchema = z.object({
+  name: z.string().trim().min(1).max(500),
+  description: nullableString.optional(),
+  businessValue: z.enum(productPlanningBusinessValueValues).nullable().optional(),
+  recommendedPhase: z.enum(productPlanningPhaseValues).nullable().optional(),
+  confidence: z.coerce.number().min(0).max(100).nullable().optional(),
+  reasoning: nullableString.optional(),
+  relatedItemIds: z.array(z.string().trim().min(1)).max(100).optional(),
+  relatedItemReferences: z.array(z.string().trim().min(1)).max(100).optional(),
+});
+
+const bulkBugReportPushSchema = z.object({
+  mode: z.enum(["selected", "all_high_severity", "all_open", "current_filter"]),
+  ids: z.array(z.string().trim().min(1)).max(200).optional(),
+  filters: z.object({
+    status: z.string().optional(),
+    severity: z.enum(["low", "medium", "high", "critical", "all"]).optional(),
+    type: z.enum(["bug", "feature", "all"]).optional(),
+    search: z.string().trim().max(120).optional(),
+  }).optional(),
 });
 
 function getUserId(user: any): string | undefined {
@@ -433,6 +469,28 @@ async function recordProductPlanningAudit(params: {
   });
 }
 
+async function persistProductPlanningAnalysis(params: {
+  organizationId: string;
+  analysisType: typeof productPlanningAiAnalysisTypeValues[number];
+  source: "live_ai" | "rule_based_fallback";
+  fallbackReason?: string | null;
+  results: Record<string, unknown>;
+  actorUserId?: string | null;
+}) {
+  const [analysis] = await db
+    .insert(productPlanningAiAnalyses)
+    .values({
+      organizationId: params.organizationId,
+      analysisType: params.analysisType,
+      source: params.source,
+      fallbackReason: params.fallbackReason ?? null,
+      results: params.results,
+      generatedByUserId: params.actorUserId ?? null,
+    })
+    .returning();
+  return analysis;
+}
+
 function toWorkItemInsert(input: z.infer<typeof createWorkItemSchema>, organizationId: string, actorUserId: string | null, reference: string) {
   const score = calculateProductPlanningPriorityScore(input);
   return {
@@ -531,6 +589,13 @@ function priorityFromBugSeverity(severity: string): "critical" | "high" | "mediu
   if (severity === "critical") return "critical";
   if (severity === "high") return "high";
   if (severity === "low") return "low";
+  return "medium";
+}
+
+function priorityFromBusinessValue(value: string | null | undefined): "critical" | "high" | "medium" | "low" {
+  if (value === "very_high") return "critical";
+  if (value === "high") return "high";
+  if (value === "low") return "low";
   return "medium";
 }
 
@@ -744,6 +809,49 @@ export function registerProductPlanningRoutes(
     }
   });
 
+  app.get("/api/product-planning/ai/analyses", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const query = analysisQuerySchema.parse(req.query);
+      const conditions = [eq(productPlanningAiAnalyses.organizationId, organizationId)];
+      if (query.analysisType) conditions.push(eq(productPlanningAiAnalyses.analysisType, query.analysisType));
+      const rows = await db
+        .select()
+        .from(productPlanningAiAnalyses)
+        .where(and(...conditions))
+        .orderBy(desc(productPlanningAiAnalyses.generatedAt))
+        .limit(query.limit);
+      res.json({ success: true, data: rows });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      console.error("[ProductPlanning] AI analysis list failed:", error);
+      res.status(500).json({ success: false, message: "Failed to list Product Planning AI analyses." });
+    }
+  });
+
+  app.get("/api/product-planning/ai/analyses/latest", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const query = analysisQuerySchema.pick({ analysisType: true }).required().parse(req.query);
+      const [analysis] = await db
+        .select()
+        .from(productPlanningAiAnalyses)
+        .where(and(
+          eq(productPlanningAiAnalyses.organizationId, organizationId),
+          eq(productPlanningAiAnalyses.analysisType, query.analysisType),
+        ))
+        .orderBy(desc(productPlanningAiAnalyses.generatedAt))
+        .limit(1);
+      res.json({ success: true, data: analysis ?? null });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      console.error("[ProductPlanning] Latest AI analysis failed:", error);
+      res.status(500).json({ success: false, message: "Failed to load latest Product Planning AI analysis." });
+    }
+  });
+
   app.get("/api/product-planning/releases", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
     try {
       if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
@@ -851,6 +959,33 @@ export function registerProductPlanningRoutes(
       if (query.ownerUserId) conditions.push(eq(productPlanningWorkItems.ownerUserId, query.ownerUserId));
       if (query.releaseId) conditions.push(eq(productPlanningWorkItems.releaseId, query.releaseId));
       if (query.importedBatchId) conditions.push(eq(productPlanningWorkItems.importedBatchId, query.importedBatchId));
+      if (query.parentId) conditions.push(eq(productPlanningWorkItems.parentId, query.parentId));
+      if (query.missingModule) conditions.push(sql`(${productPlanningWorkItems.module} IS NULL OR btrim(${productPlanningWorkItems.module}) = '')`);
+      if (query.missingPhase) conditions.push(isNull(productPlanningWorkItems.phase));
+      if (query.missingPriority) conditions.push(sql`${productPlanningWorkItems.priority} IS NULL`);
+      if (query.missingRelease) conditions.push(sql`(${productPlanningWorkItems.releaseId} IS NULL AND (${productPlanningWorkItems.releaseTarget} IS NULL OR btrim(${productPlanningWorkItems.releaseTarget}) = ''))`);
+      if (query.orphanedEpic) {
+        conditions.push(eq(productPlanningWorkItems.workItemType, "epic"));
+        conditions.push(sql`NOT EXISTS (
+          SELECT 1
+          FROM product_planning_work_items child
+          WHERE child.organization_id = ${organizationId}
+            AND child.parent_id = ${productPlanningWorkItems.id}
+            AND child.archived_at IS NULL
+        )`);
+      }
+      if (query.possibleDuplicates) {
+        conditions.push(sql`EXISTS (
+          SELECT 1
+          FROM product_planning_work_items duplicate
+          WHERE duplicate.organization_id = ${organizationId}
+            AND duplicate.id <> ${productPlanningWorkItems.id}
+            AND duplicate.archived_at IS NULL
+            AND duplicate.planning_status <> 'archived'
+            AND lower(duplicate.title) = lower(${productPlanningWorkItems.title})
+            AND lower(coalesce(duplicate.module, '')) = lower(coalesce(${productPlanningWorkItems.module}, ''))
+        )`);
+      }
       if (query.search) {
         const pattern = `%${query.search.replace(/[%_]/g, "\\$&")}%`;
         conditions.push(or(
@@ -2006,37 +2141,37 @@ export function registerProductPlanningRoutes(
           key: "possible_duplicates",
           label: "Possible duplicates",
           count: duplicateSummary?.possibleDuplicateCount ?? 0,
-          href: "/product-planning/backlog?sortBy=updatedAt",
+          href: "/product-planning/backlog?possibleDuplicates=true&sortBy=updatedAt",
         },
         {
           key: "missing_modules",
           label: "Items missing modules",
           count: cleanupSummary?.missingModuleCount ?? 0,
-          href: "/product-planning/backlog?module=",
+          href: "/product-planning/backlog?missingModule=true",
         },
         {
           key: "missing_phases",
           label: "Items missing phases",
           count: cleanupSummary?.missingPhaseCount ?? 0,
-          href: "/product-planning/backlog?sortBy=updatedAt",
+          href: "/product-planning/backlog?missingPhase=true",
         },
         {
           key: "missing_priorities",
           label: "Items missing priorities",
           count: cleanupSummary?.missingPriorityCount ?? 0,
-          href: "/product-planning/backlog?sortBy=priority",
+          href: "/product-planning/backlog?missingPriority=true&sortBy=priority",
         },
         {
           key: "orphaned_epics",
           label: "Orphaned epics",
           count: cleanupSummary?.orphanedEpicCount ?? 0,
-          href: "/product-planning/backlog?workItemType=epic",
+          href: "/product-planning/backlog?orphanedEpic=true&workItemType=epic",
         },
         {
           key: "unassigned_releases",
           label: "Unassigned releases",
           count: cleanupSummary?.unassignedReleaseCount ?? 0,
-          href: "/product-planning/backlog?sortBy=updatedAt",
+          href: "/product-planning/backlog?missingRelease=true&sortBy=updatedAt",
         },
       ];
 
@@ -2105,6 +2240,15 @@ export function registerProductPlanningRoutes(
       const items = await listAiCandidateWorkItems(organizationId);
       const analysis = await productPlanningAiAssistant.analyzeBacklog(organizationId, items);
       const suggestions = await persistAiSuggestions(organizationId, analysis.data.suggestions);
+      const data = { ...analysis.data, suggestions, source: analysis.source, fallbackReason: analysis.fallbackReason };
+      const storedAnalysis = await persistProductPlanningAnalysis({
+        organizationId,
+        analysisType: "backlog_analysis",
+        source: analysis.source,
+        fallbackReason: analysis.fallbackReason,
+        results: data as Record<string, unknown>,
+        actorUserId,
+      });
       await recordProductPlanningAudit({
         organizationId,
         actorUserId,
@@ -2122,7 +2266,7 @@ export function registerProductPlanningRoutes(
       });
       res.status(201).json({
         success: true,
-        data: { ...analysis.data, suggestions, source: analysis.source, fallbackReason: analysis.fallbackReason },
+        data: { ...data, analysisId: storedAnalysis.id, generatedAt: storedAnalysis.generatedAt, generatedByUserId: storedAnalysis.generatedByUserId },
         message: "Backlog analysis generated.",
       });
     } catch (error) {
@@ -2139,6 +2283,15 @@ export function registerProductPlanningRoutes(
       const items = await listAiCandidateWorkItems(organizationId);
       const analysis = await productPlanningAiAssistant.suggestEpics(organizationId, items);
       const suggestions = await persistAiSuggestions(organizationId, analysis.data.suggestions);
+      const data = { ...analysis.data, suggestions, source: analysis.source, fallbackReason: analysis.fallbackReason };
+      const storedAnalysis = await persistProductPlanningAnalysis({
+        organizationId,
+        analysisType: "epic_suggestions",
+        source: analysis.source,
+        fallbackReason: analysis.fallbackReason,
+        results: data as Record<string, unknown>,
+        actorUserId,
+      });
       await recordProductPlanningAudit({
         organizationId,
         actorUserId,
@@ -2147,10 +2300,120 @@ export function registerProductPlanningRoutes(
         description: "AI epic discovery suggestions generated for Product Planning.",
         newValues: { suggestionCount: suggestions.length, source: analysis.source, fallbackReason: analysis.fallbackReason },
       });
-      res.status(201).json({ success: true, data: { ...analysis.data, suggestions, source: analysis.source, fallbackReason: analysis.fallbackReason }, message: "Epic suggestions generated." });
+      res.status(201).json({ success: true, data: { ...data, analysisId: storedAnalysis.id, generatedAt: storedAnalysis.generatedAt, generatedByUserId: storedAnalysis.generatedByUserId }, message: "Epic suggestions generated." });
     } catch (error) {
       console.error("[ProductPlanning] Epic discovery failed:", error);
       res.status(500).json({ success: false, message: "Failed to generate epic suggestions." });
+    }
+  });
+
+  app.post("/api/product-planning/ai/epic-drafts", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const input = createEpicDraftSchema.parse(req.body ?? {});
+      const requestedReferences = Array.from(new Set(input.relatedItemReferences ?? []));
+      const requestedIds = Array.from(new Set(input.relatedItemIds ?? []));
+
+      const childConditions = [eq(productPlanningWorkItems.organizationId, organizationId), isNull(productPlanningWorkItems.archivedAt)];
+      const matchers = [];
+      if (requestedIds.length > 0) matchers.push(inArray(productPlanningWorkItems.id, requestedIds));
+      if (requestedReferences.length > 0) matchers.push(inArray(productPlanningWorkItems.reference, requestedReferences));
+      const relatedItems = matchers.length > 0
+        ? await db
+          .select()
+          .from(productPlanningWorkItems)
+          .where(and(...childConditions, or(...matchers)!))
+          .limit(100)
+        : [];
+
+      const created = await db.transaction(async (tx) => {
+        const reference = await allocateProductPlanningReference(organizationId, tx);
+        const [epic] = await tx
+          .insert(productPlanningWorkItems)
+          .values({
+            organizationId,
+            reference,
+            title: input.name,
+            description: input.description ?? null,
+            workItemType: "epic",
+            planningStatus: "backlog",
+            priority: priorityFromBusinessValue(input.businessValue),
+            businessValue: input.businessValue ?? null,
+            phase: input.recommendedPhase ?? null,
+            sourceType: "manual",
+            notes: [
+              input.reasoning ? `AI reasoning:\n${input.reasoning}` : "",
+              input.confidence != null ? `AI confidence: ${input.confidence}%` : "",
+            ].filter(Boolean).join("\n\n") || null,
+            createdByUserId: actorUserId,
+            updatedByUserId: actorUserId,
+          })
+          .returning();
+
+        const childrenToLink = relatedItems.filter((item) => item.id !== epic.id && item.workItemType !== "epic");
+        if (childrenToLink.length > 0) {
+          await tx
+            .update(productPlanningWorkItems)
+            .set({ parentId: epic.id, updatedByUserId: actorUserId, updatedAt: new Date() })
+            .where(and(
+              eq(productPlanningWorkItems.organizationId, organizationId),
+              inArray(productPlanningWorkItems.id, childrenToLink.map((item) => item.id)),
+            ));
+        }
+
+        await recordPlanningEvent({
+          organizationId,
+          workItemId: epic.id,
+          eventType: "created",
+          message: `Created epic draft ${epic.reference} from AI suggestion`,
+          metadata: {
+            confidence: input.confidence ?? null,
+            relatedItemReferences: childrenToLink.map((item) => item.reference),
+          },
+          actorUserId,
+          executor: tx,
+        });
+
+        for (const child of childrenToLink) {
+          await recordPlanningEvent({
+            organizationId,
+            workItemId: child.id,
+            eventType: "updated",
+            message: `Linked to epic ${epic.reference}`,
+            metadata: { parentId: epic.id, parentReference: epic.reference },
+            actorUserId,
+            executor: tx,
+          });
+        }
+
+        return { epic, linkedChildren: childrenToLink };
+      });
+
+      await recordProductPlanningAudit({
+        organizationId,
+        actorUserId,
+        actionType: "ai_epic_draft_created",
+        entityType: "product_planning_work_item",
+        entityId: created.epic.id,
+        entityName: created.epic.reference,
+        description: `Created Product Planning epic draft ${created.epic.reference}.`,
+        newValues: {
+          relatedItemCount: created.linkedChildren.length,
+          relatedItemReferences: created.linkedChildren.map((item) => item.reference),
+        },
+      });
+
+      res.status(201).json({
+        success: true,
+        data: created,
+        message: "Epic draft created.",
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      console.error("[ProductPlanning] Epic draft create failed:", error);
+      res.status(500).json({ success: false, message: "Failed to create Product Planning epic draft." });
     }
   });
 
@@ -2160,15 +2423,24 @@ export function registerProductPlanningRoutes(
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) ?? null;
       const analysis = await productPlanningAiAssistant.analyzeBacklog(organizationId, await listAiCandidateWorkItems(organizationId));
+      const data = { ...analysis.data.goLiveReadiness, liveAi: analysis.data.liveAi, source: analysis.source, fallbackReason: analysis.fallbackReason };
+      const storedAnalysis = await persistProductPlanningAnalysis({
+        organizationId,
+        analysisType: "go_live_readiness",
+        source: analysis.source,
+        fallbackReason: analysis.fallbackReason,
+        results: data as Record<string, unknown>,
+        actorUserId,
+      });
       await recordProductPlanningAudit({
         organizationId,
         actorUserId,
         actionType: "ai_go_live_readiness_generated",
         entityType: "product_planning_backlog",
         description: "AI go-live readiness analysis generated for Product Planning.",
-        newValues: { ...analysis.data.goLiveReadiness, liveAi: analysis.data.liveAi, source: analysis.source, fallbackReason: analysis.fallbackReason },
+        newValues: data,
       });
-      res.status(201).json({ success: true, data: { ...analysis.data.goLiveReadiness, liveAi: analysis.data.liveAi, source: analysis.source, fallbackReason: analysis.fallbackReason }, message: "Go-live readiness generated." });
+      res.status(201).json({ success: true, data: { ...data, analysisId: storedAnalysis.id, generatedAt: storedAnalysis.generatedAt, generatedByUserId: storedAnalysis.generatedByUserId }, message: "Go-live readiness generated." });
     } catch (error) {
       console.error("[ProductPlanning] Go-live readiness failed:", error);
       res.status(500).json({ success: false, message: "Failed to generate go-live readiness." });
@@ -2204,6 +2476,15 @@ export function registerProductPlanningRoutes(
       const actorUserId = getUserId(req.user) ?? null;
       const analysis = await productPlanningAiAssistant.analyzeRoadmap(organizationId, await listAiCandidateWorkItems(organizationId));
       const suggestions = await persistAiSuggestions(organizationId, analysis.data.suggestions);
+      const data = { ...analysis.data, suggestions, source: analysis.source, fallbackReason: analysis.fallbackReason };
+      const storedAnalysis = await persistProductPlanningAnalysis({
+        organizationId,
+        analysisType: "roadmap_analysis",
+        source: analysis.source,
+        fallbackReason: analysis.fallbackReason,
+        results: data as Record<string, unknown>,
+        actorUserId,
+      });
       await recordProductPlanningAudit({
         organizationId,
         actorUserId,
@@ -2212,7 +2493,7 @@ export function registerProductPlanningRoutes(
         description: "AI roadmap analysis generated for Product Planning.",
         newValues: { recommendations: analysis.data.recommendations, suggestionCount: suggestions.length, source: analysis.source, fallbackReason: analysis.fallbackReason },
       });
-      res.status(201).json({ success: true, data: { ...analysis.data, suggestions, source: analysis.source, fallbackReason: analysis.fallbackReason }, message: "Roadmap analysis generated." });
+      res.status(201).json({ success: true, data: { ...data, analysisId: storedAnalysis.id, generatedAt: storedAnalysis.generatedAt, generatedByUserId: storedAnalysis.generatedByUserId }, message: "Roadmap analysis generated." });
     } catch (error) {
       console.error("[ProductPlanning] Roadmap analysis failed:", error);
       res.status(500).json({ success: false, message: "Failed to generate roadmap analysis." });
@@ -2227,6 +2508,10 @@ export function registerProductPlanningRoutes(
       const actorUserId = getUserId(req.user) ?? null;
 
       const result = await db.transaction(async (tx) => {
+        const deletedAiAnalyses = await tx
+          .delete(productPlanningAiAnalyses)
+          .where(eq(productPlanningAiAnalyses.organizationId, organizationId))
+          .returning({ id: productPlanningAiAnalyses.id });
         const deletedAiSuggestions = await tx
           .delete(productPlanningAiSuggestions)
           .where(eq(productPlanningAiSuggestions.organizationId, organizationId))
@@ -2262,6 +2547,7 @@ export function registerProductPlanningRoutes(
         return {
           counts: {
             productPlanningAiSuggestions: deletedAiSuggestions.length,
+            productPlanningAiAnalyses: deletedAiAnalyses.length,
             productPlanningEvents: deletedEvents.length,
             productPlanningDependencies: deletedDependencies.length,
             productPlanningWorkItems: deletedWorkItems.length,
@@ -2655,6 +2941,126 @@ export function registerProductPlanningRoutes(
       if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
       console.error("[ProductPlanning] Create from bug summary failed:", error);
       res.status(500).json({ success: false, message: "Failed to create Product Planning item from summary." });
+    }
+  });
+
+  app.post("/api/bug-reports/push-to-product-planning/bulk", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) ?? null;
+      const input = bulkBugReportPushSchema.parse(req.body ?? {});
+
+      const conditions = [eq(bugReports.orgId, organizationId)];
+      if (input.mode === "selected") {
+        const ids = Array.from(new Set(input.ids ?? []));
+        if (ids.length === 0) return res.status(400).json({ success: false, message: "Select at least one bug report to push." });
+        conditions.push(inArray(bugReports.id, ids));
+      } else if (input.mode === "all_high_severity") {
+        conditions.push(inArray(bugReports.severity, ["high", "critical"]));
+      } else if (input.mode === "all_open") {
+        conditions.push(eq(bugReports.status, "open"));
+      } else if (input.mode === "current_filter") {
+        const filters = input.filters ?? {};
+        if (filters.status && filters.status !== "all") conditions.push(eq(bugReports.status, filters.status));
+        if (filters.severity && filters.severity !== "all") conditions.push(eq(bugReports.severity, filters.severity));
+        if (filters.type && filters.type !== "all") conditions.push(eq(bugReports.type, filters.type));
+        if (filters.search) {
+          const pattern = `%${filters.search.replace(/[%_]/g, "\\$&")}%`;
+          conditions.push(or(
+            sql`${bugReports.referenceNumber} ILIKE ${pattern} ESCAPE '\'`,
+            sql`${bugReports.title} ILIKE ${pattern} ESCAPE '\'`,
+          )!);
+        }
+      }
+
+      conditions.push(sql`NOT EXISTS (
+        SELECT 1
+        FROM product_planning_work_items existing
+        WHERE existing.organization_id = ${organizationId}
+          AND existing.source_bug_report_id = ${bugReports.id}
+      )`);
+
+      const bugRows = await db
+        .select()
+        .from(bugReports)
+        .where(and(...conditions))
+        .orderBy(desc(bugReports.createdAt))
+        .limit(200);
+
+      if (bugRows.length === 0) {
+        return res.status(200).json({
+          success: true,
+          data: { created: [], skippedCount: 0, matchedCount: 0 },
+          message: "No eligible bug reports found to push.",
+        });
+      }
+
+      const created = await db.transaction(async (tx) => {
+        const items = [];
+        for (const bugReport of bugRows) {
+          const reference = await allocateProductPlanningReference(organizationId, tx);
+          const [item] = await tx
+            .insert(productPlanningWorkItems)
+            .values({
+              organizationId,
+              reference,
+              title: bugReport.title,
+              description: bugReport.description,
+              workItemType: "bug",
+              planningStatus: "backlog",
+              priority: priorityFromBugSeverity(bugReport.severity),
+              sourceType: "bug_report",
+              sourceBugReportId: bugReport.id,
+              sourceReference: bugReport.referenceNumber,
+              requestedBy: bugReport.createdByEmail,
+              notes: bugReport.url ? `Source page: ${bugReport.url}` : null,
+              createdByUserId: actorUserId,
+              updatedByUserId: actorUserId,
+            })
+            .returning();
+          await recordPlanningEvent({
+            organizationId,
+            workItemId: item.id,
+            eventType: "pushed_from_bug_report",
+            message: `Bulk pushed from bug report ${bugReport.referenceNumber}`,
+            metadata: {
+              bugReportId: bugReport.id,
+              bugReportReference: bugReport.referenceNumber,
+              severity: bugReport.severity,
+              status: bugReport.status,
+              bulkMode: input.mode,
+            },
+            actorUserId,
+            executor: tx,
+          });
+          items.push(item);
+        }
+        return items;
+      });
+
+      await recordProductPlanningAudit({
+        organizationId,
+        actorUserId,
+        actionType: "bug_reports_bulk_pushed_to_product_planning",
+        entityType: "product_planning_work_item",
+        description: `Bulk pushed ${created.length} bug reports to Product Planning.`,
+        newValues: { mode: input.mode, createdCount: created.length, references: created.map((item) => item.reference) },
+      });
+
+      res.status(201).json({
+        success: true,
+        data: { created, skippedCount: 0, matchedCount: bugRows.length },
+        message: `Pushed ${created.length} bug report(s) to Product Planning.`,
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      const err = error as any;
+      if (err?.code === "23505") {
+        return res.status(409).json({ success: false, code: "PRODUCT_PLANNING_DUPLICATE", message: "One or more Product Planning items already exists for the selected source reports." });
+      }
+      console.error("[ProductPlanning] Bulk bug report push failed:", error);
+      res.status(500).json({ success: false, message: "Failed to bulk push bug reports to Product Planning." });
     }
   });
 
