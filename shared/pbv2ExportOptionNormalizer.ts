@@ -42,15 +42,25 @@ const OPTION_TYPE_TOKENS = new Set([
   "QUESTION",
   "CHOICE",
   "SELECT",
+  "SELECT_FIELD",
+  "SELECTOR",
+  "DROPDOWN",
   "RADIO",
+  "RADIO_GROUP",
   "CHECKBOX",
+  "CHECKBOX_GROUP",
   "BOOLEAN",
   "MULTISELECT",
+  "MULTI_SELECT",
   "NUMBER",
+  "NUMBER_INPUT",
   "TEXT",
+  "TEXT_INPUT",
   "TEXTAREA",
   "FILE",
   "DIMENSION",
+  "TOGGLE",
+  "SWITCH",
 ]);
 
 const GROUP_TYPE_TOKENS = new Set([
@@ -214,7 +224,6 @@ function choicesFromNode(node: Record<string, any>, includeOptionsAsChoices: boo
     input.options,
     enumConstraints.options,
     selectConstraints.options,
-    includeOptionsAsChoices ? node.options : undefined,
   ];
 
   const choices: NormalizedPbv2ExportChoice[] = [];
@@ -231,7 +240,24 @@ function choicesFromNode(node: Record<string, any>, includeOptionsAsChoices: boo
     }
   }
 
+  for (const rawChoice of valuesFromMaybeCollection(node.options)) {
+    if (!includeOptionsAsChoices && !isSelectableChoiceRecord(rawChoice)) continue;
+    const choice = choiceFromValue(rawChoice);
+    if (!choice) continue;
+    const signature = JSON.stringify([choice.value, choice.key, choice.label, choice.name]);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    choices.push(choice);
+  }
+
   return choices;
+}
+
+function isSelectableChoiceRecord(value: unknown): boolean {
+  if (!isRecord(value)) return value !== null && value !== undefined;
+  if (isRecord(value.input)) return false;
+  if (isGroupLike(value) && !firstString(value.value, value.key, value.code)) return false;
+  return Boolean(firstString(value.value, value.key, value.code, value.id, value.name, value.label, value.title, value.text));
 }
 
 function nodeOptionsAreStructural(node: Record<string, any>): boolean {
@@ -375,6 +401,8 @@ export function normalizePbv2ExportOptions(treeJson: unknown): Pbv2ExportOptionN
           seenOptions.add(signature);
           diagnostics.choiceCount += normalized.choices.length;
           options.push(normalized);
+        } else {
+          addSkip(skippedReasons, "duplicate_option");
         }
       }
     } else {
