@@ -45,6 +45,10 @@ import {
 import { wouldCreateProductPlanningDependencyCycle } from "../services/productPlanningDependencies";
 import { validateProductPlanningParent } from "../services/productPlanningHierarchy";
 import { calculateProductPlanningPriorityScore } from "../services/productPlanningPriority";
+import { aiProviderResolver } from "../services/ai/aiProviderResolver";
+import { isAiSecretEncryptionConfigured } from "../services/ai/aiSecretsEncryption";
+import { normalizeAiMode } from "@shared/aiFoundationContracts";
+import { DrizzleAiFoundationRepository, toAiFeatureFlags } from "../storage/aiFoundation.repo";
 import {
   findSimilarProductPlanningItems,
   ProductPlanningAiAssistant,
@@ -55,6 +59,8 @@ import {
 type DbExecutor = typeof db | any;
 const productPlanningAiAssistant = new ProductPlanningAiAssistant();
 const PRODUCT_PLANNING_RESET_CONFIRMATION = "RESET PRODUCT PLANNING";
+const productPlanningAiSettingsRepo = new DrizzleAiFoundationRepository();
+const PRODUCT_PLANNING_AI_FEATURE = "feature_review" as const;
 
 const listQuerySchema = z.object({
   search: z.string().trim().max(255).optional(),
@@ -217,6 +223,125 @@ function requireProductPlanningAccess(req: Request, res: Response): boolean {
     return false;
   }
   return true;
+}
+
+type ProductPlanningAiReadinessStatus =
+  | "live_ai_configured"
+  | "rule_based_fallback"
+  | "missing_org_ai_settings"
+  | "missing_provider_env"
+  | "missing_encrypted_api_key"
+  | "feature_review_disabled";
+
+function managedAiEnvStatus() {
+  const provider = process.env.PRINTERSHERO_MANAGED_AI_PROVIDER?.trim()
+    || process.env.AI_BUG_REVIEW_PROVIDER?.trim()
+    || "openai";
+  const endpointPresent = Boolean(process.env.PRINTERSHERO_MANAGED_AI_ENDPOINT?.trim() || process.env.AI_BUG_REVIEW_ENDPOINT?.trim());
+  const apiKeyPresent = Boolean(process.env.PRINTERSHERO_MANAGED_AI_API_KEY?.trim() || process.env.AI_BUG_REVIEW_API_KEY?.trim());
+  const modelPresent = Boolean(process.env.PRINTERSHERO_MANAGED_AI_MODEL?.trim() || process.env.AI_BUG_REVIEW_MODEL?.trim());
+  return {
+    provider,
+    endpointPresent,
+    apiKeyPresent,
+    modelPresent,
+    configured: endpointPresent && apiKeyPresent && modelPresent,
+  };
+}
+
+async function getProductPlanningAiReadiness(organizationId: string) {
+  const settings = await productPlanningAiSettingsRepo.getSettings(organizationId);
+  const managedEnv = managedAiEnvStatus();
+  const encryptionConfigured = isAiSecretEncryptionConfigured();
+  const base = {
+    feature: PRODUCT_PLANNING_AI_FEATURE,
+    settingsPresent: Boolean(settings),
+    isEnabled: Boolean(settings?.isEnabled),
+    mode: settings ? normalizeAiMode(settings.mode) : "disabled",
+    provider: settings?.provider ?? null,
+    model: settings?.model ?? null,
+    hasEncryptedApiKey: Boolean(settings?.encryptedApiKey),
+    encryptionConfigured,
+    featureReviewEnabled: Boolean(settings?.featureReviewEnabled),
+    managedProviderEnv: managedEnv,
+    resolverSource: "disabled" as string,
+  };
+
+  if (!settings) {
+    return {
+      ...base,
+      status: "missing_org_ai_settings" as ProductPlanningAiReadinessStatus,
+      label: "Missing org AI settings",
+      message: "Product Planning is using rule-based fallback because this organization has no AI settings row.",
+    };
+  }
+
+  const mode = normalizeAiMode(settings.mode);
+  const features = toAiFeatureFlags(settings);
+  if (!settings.isEnabled || mode === "disabled") {
+    return {
+      ...base,
+      status: "rule_based_fallback" as ProductPlanningAiReadinessStatus,
+      label: "Rule-based fallback",
+      message: "Organization AI is disabled.",
+    };
+  }
+
+  if (!features.featureReview) {
+    return {
+      ...base,
+      status: "feature_review_disabled" as ProductPlanningAiReadinessStatus,
+      label: "feature_review disabled",
+      message: "Product Planning requires the Feature Review AI toggle to be enabled.",
+    };
+  }
+
+  if (mode === "printershero_managed" && !managedEnv.configured) {
+    return {
+      ...base,
+      status: "missing_provider_env" as ProductPlanningAiReadinessStatus,
+      label: "Missing provider env",
+      message: "Managed AI requires provider endpoint, API key, and model environment variables.",
+    };
+  }
+
+  if (mode === "bring_your_own") {
+    if (!settings.provider || !settings.model || !settings.encryptedApiKey) {
+      return {
+        ...base,
+        status: "missing_encrypted_api_key" as ProductPlanningAiReadinessStatus,
+        label: "Missing encrypted API key",
+        message: "Bring Your Own AI requires provider, model, and an encrypted API key.",
+      };
+    }
+    if (!encryptionConfigured) {
+      return {
+        ...base,
+        status: "missing_encrypted_api_key" as ProductPlanningAiReadinessStatus,
+        label: "Missing encrypted API key",
+        message: "An encrypted API key exists, but the AI settings encryption key is not configured.",
+      };
+    }
+  }
+
+  const resolved = await aiProviderResolver.resolveProvider({ orgId: organizationId, feature: PRODUCT_PLANNING_AI_FEATURE });
+  if (resolved.enabled) {
+    return {
+      ...base,
+      resolverSource: resolved.source,
+      status: "live_ai_configured" as ProductPlanningAiReadinessStatus,
+      label: "Live AI configured",
+      message: "Product Planning AI can use the configured provider.",
+    };
+  }
+
+  return {
+    ...base,
+    resolverSource: resolved.source,
+    status: "rule_based_fallback" as ProductPlanningAiReadinessStatus,
+    label: "Rule-based fallback",
+    message: "Product Planning could not resolve a usable live AI provider.",
+  };
 }
 
 async function allocateProductPlanningReference(
@@ -606,6 +731,18 @@ export function registerProductPlanningRoutes(
   },
 ): void {
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
+
+  app.get("/api/product-planning/ai/readiness", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res) || !requireProductPlanningAccess(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const data = await getProductPlanningAiReadiness(organizationId);
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error("[ProductPlanning] AI readiness failed:", error);
+      res.status(500).json({ success: false, message: "Failed to check Product Planning AI readiness." });
+    }
+  });
 
   app.get("/api/product-planning/releases", isAuthenticated, tenantContext, async (req: Request, res: Response) => {
     try {

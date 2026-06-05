@@ -88,7 +88,7 @@ function usageRepo() {
 describe("ProductPlanningAiAssistant", () => {
   test("live AI path parses work item JSON and records usage", async () => {
     const repo = usageRepo();
-    const assistant = new ProductPlanningAiAssistant(provider(JSON.stringify({
+    const liveProvider = provider(JSON.stringify({
       summary: "Product catalog completion is the go-live bottleneck.",
       concerns: [{ label: "Go-live blocker", severity: "high", reasoning: "Catalog completion blocks validation." }],
       suggestions: [{
@@ -99,11 +99,16 @@ describe("ProductPlanningAiAssistant", () => {
         reasoning: "Catalog completion blocks Titan Graphics operational readiness.",
       }],
       nextActions: ["Create a Product Catalog Completion epic."],
-    })), repo as any, liveResolver as any);
+    }));
+    const assistant = new ProductPlanningAiAssistant(liveProvider, repo as any, liveResolver as any);
 
     const result = await assistant.analyzeWorkItem("org_1", item, [item]);
 
     expect(result.source).toBe("live_ai");
+    expect(liveProvider.generateJson).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: "org_1",
+      feature: "feature_review",
+    }));
     expect(result.data.summary).toContain("go-live bottleneck");
     expect(result.data.suggestions[0]).toEqual(expect.objectContaining({
       suggestionType: "priority",
@@ -133,7 +138,7 @@ describe("ProductPlanningAiAssistant", () => {
 
   test("live backlog analysis returns operational readiness sections", async () => {
     const repo = usageRepo();
-    const assistant = new ProductPlanningAiAssistant(provider(JSON.stringify({
+    const liveProvider = provider(JSON.stringify({
       executiveSummary: "Product Catalog Completion blocks Titan Graphics operational go-live.",
       recommendedGoLiveFocus: ["Product Catalog Completion", "Product Import Automation", "Workflow Validation"],
       goLiveBlockers: [{ title: "Product Catalog Completion", reasoning: "Catalog data gates quote and order validation.", relatedItemReferences: ["PP-0001"] }],
@@ -162,11 +167,13 @@ describe("ProductPlanningAiAssistant", () => {
         recommendedNextStep: "Build Product Import MVP and load first 25 products.",
       },
       healthFindings: [{ label: "Missing modules", count: 1, severity: "high", recommendation: "Assign catalog module." }],
-    })), repo as any, liveResolver as any);
+    }));
+    const assistant = new ProductPlanningAiAssistant(liveProvider, repo as any, liveResolver as any);
 
     const result = await assistant.analyzeBacklog("org_1", [item]);
 
     expect(result.source).toBe("live_ai");
+    expect(liveProvider.generateJson).toHaveBeenCalled();
     expect(result.data.executiveSummary).toContain("Product Catalog Completion");
     expect(result.data.goLiveBlockers?.[0].title).toBe("Product Catalog Completion");
     expect(result.data.topNextActions?.[0].title).toBe("Create Product Catalog Completion Epic");
