@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Brain,
   Download,
   FileSpreadsheet,
   FlaskConical,
@@ -11,6 +12,7 @@ import {
 } from "lucide-react";
 import type { CatalogMigrationLabAnalyzerResult } from "@shared/catalogMigrationLabSchemas";
 import { CATALOG_MIGRATION_LAB_MAX_UPLOAD_BYTES } from "@shared/catalogMigrationLabSchemas";
+import type { ProductIntakeBrief } from "@shared/productIntakeWizardSchemas";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/useAuth";
 import { canUsePlatformTools } from "@/lib/platformAccess";
@@ -83,6 +85,232 @@ function SummaryCard({ label, value, hint }: { label: string; value: string | nu
   );
 }
 
+function ConfidenceBadge({ value }: { value: number }) {
+  const variant = value >= 75 ? "default" : value >= 45 ? "outline" : "secondary";
+  return <Badge variant={variant}>{value}%</Badge>;
+}
+
+function EvidenceList({ evidence }: { evidence: ProductIntakeBrief["sourceEvidence"] }) {
+  if (evidence.length === 0) return <div className="text-sm text-muted-foreground">No source-path evidence.</div>;
+  return (
+    <div className="space-y-2">
+      {evidence.slice(0, 6).map((item, index) => (
+        <div key={`${item.sourcePath}-${index}`} className="rounded border bg-muted/30 p-2 text-xs">
+          <div className="font-medium">{item.label}</div>
+          <div className="font-mono text-muted-foreground">{item.sourcePath}</div>
+          {item.value && <div className="mt-1">{item.value}</div>}
+          <div className="mt-1 text-muted-foreground">{item.reason}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function IntakeBriefView({ brief }: { brief: ProductIntakeBrief }) {
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <SummaryCard label="Confidence" value={`${brief.overallConfidence}%`} hint={brief.source === "live_ai" ? "Live AI" : "Analyzer fallback"} />
+        <SummaryCard label="Required Options" value={brief.requiredOptions.length} />
+        <SummaryCard label="Missing Decisions" value={brief.missingDecisions.length} />
+        <SummaryCard label="Redundant Fields" value={brief.redundantFields.length} />
+      </div>
+
+      {brief.fallbackReason && (
+        <Card className="border-amber-500/20 bg-amber-500/5">
+          <CardContent className="flex items-start gap-3 p-4 text-sm">
+            <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-600" />
+            <div>{brief.fallbackReason}</div>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader><CardTitle className="text-base">Product Summary</CardTitle></CardHeader>
+          <CardContent className="space-y-4 text-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-medium uppercase text-muted-foreground">Name</div>
+                <div className="font-medium">{brief.productIdentity.likelyProductName.value ?? "-"}</div>
+              </div>
+              <ConfidenceBadge value={brief.productIdentity.likelyProductName.confidence} />
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-medium uppercase text-muted-foreground">Category</div>
+                <div className="font-medium">{brief.productIdentity.category.value ?? "-"}</div>
+              </div>
+              <ConfidenceBadge value={brief.productIdentity.category.confidence} />
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-medium uppercase text-muted-foreground">Product Type</div>
+                <div className="font-medium">{brief.productIdentity.productType.value ?? "-"}</div>
+              </div>
+              <ConfidenceBadge value={brief.productIdentity.productType.confidence} />
+            </div>
+            <EvidenceList evidence={brief.sourceEvidence} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle className="text-base">Behavior</CardTitle></CardHeader>
+          <CardContent className="space-y-4 text-sm">
+            {[
+              ["Size", brief.sizeBehavior],
+              ["Quantity", brief.quantityBehavior],
+              ["Pricing", brief.pricingAnalysis],
+            ].map(([label, behavior]) => (
+              <div key={String(label)} className="rounded border p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-medium uppercase text-muted-foreground">{String(label)}</div>
+                    <div className="font-medium">{(behavior as any).behavior.replace(/_/g, " ")}</div>
+                  </div>
+                  <ConfidenceBadge value={(behavior as any).confidence} />
+                </div>
+                {(behavior as any).notes && <div className="mt-2 text-xs text-muted-foreground">{(behavior as any).notes}</div>}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">Detected Material</CardTitle></CardHeader>
+        <CardContent className="overflow-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Reference</TableHead>
+                <TableHead>Match</TableHead>
+                <TableHead>SKU</TableHead>
+                <TableHead>Confidence</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {brief.materialAnalysis.likelyMaterialMatches.length === 0 ? <EmptyRow colSpan={4} text="No material match found." /> : brief.materialAnalysis.likelyMaterialMatches.map((material) => (
+                <TableRow key={`${material.materialId ?? material.name}-${material.name}`}>
+                  <TableCell>{material.name}</TableCell>
+                  <TableCell>{material.materialId ?? "Review required"}</TableCell>
+                  <TableCell>{material.sku ?? "-"}</TableCell>
+                  <TableCell><ConfidenceBadge value={material.confidence} /></TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        {[
+          ["Required Options", brief.requiredOptions],
+          ["Optional Options", brief.optionalOptions],
+        ].map(([title, options]) => (
+          <Card key={String(title)}>
+            <CardHeader><CardTitle className="text-base">{String(title)}</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              {(options as ProductIntakeBrief["requiredOptions"]).length === 0 ? (
+                <div className="text-sm text-muted-foreground">No options detected.</div>
+              ) : (options as ProductIntakeBrief["requiredOptions"]).map((option) => (
+                <div key={`${title}-${option.normalizedGroup}`} className="rounded border p-3 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-medium">{option.normalizedGroup}</div>
+                    <ConfidenceBadge value={option.confidence} />
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">{option.sampleValues.join(", ") || "No sample values"}</div>
+                  {option.templateMatches.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {option.templateMatches.map((match) => (
+                        <Badge key={match.templateId} variant={match.recommendation === "suggest_reuse" ? "default" : "outline"}>
+                          {match.name} {Math.round(match.score * 100)}%
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">Suggested Template Matches</CardTitle></CardHeader>
+        <CardContent className="overflow-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Template</TableHead>
+                <TableHead>Category</TableHead>
+                <TableHead>Score</TableHead>
+                <TableHead>Recommendation</TableHead>
+                <TableHead>Signals</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {brief.templateMatches.length === 0 ? <EmptyRow colSpan={5} text="No template matches above review threshold." /> : brief.templateMatches.map((match) => (
+                <TableRow key={match.templateId}>
+                  <TableCell className="font-medium">{match.name}</TableCell>
+                  <TableCell>{match.category}</TableCell>
+                  <TableCell>{Math.round(match.score * 100)}%</TableCell>
+                  <TableCell><Badge variant={match.recommendation === "suggest_reuse" ? "default" : "outline"}>{match.recommendation.replace(/_/g, " ")}</Badge></TableCell>
+                  <TableCell className="max-w-md truncate">{match.matchedSignals.join(", ")}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-6 lg:grid-cols-3">
+        <Card>
+          <CardHeader><CardTitle className="text-base">Missing Decisions</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            {brief.missingDecisions.length === 0 ? <div className="text-sm text-muted-foreground">No missing decisions detected.</div> : brief.missingDecisions.map((decision) => (
+              <div key={decision.id} className="rounded border p-3 text-sm">
+                <Badge variant={decision.severity === "blocker" ? "destructive" : "outline"}>{decision.severity}</Badge>
+                <div className="mt-2 font-medium">{decision.question}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{decision.reason}</div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle className="text-base">Redundant Fields</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            {brief.redundantFields.length === 0 ? <div className="text-sm text-muted-foreground">No likely redundant fields detected.</div> : brief.redundantFields.slice(0, 12).map((field) => (
+              <div key={`${field.sourcePath}-${field.fieldLabel}`} className="rounded border p-3 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="font-medium">{field.fieldLabel}</div>
+                  <ConfidenceBadge value={field.confidence} />
+                </div>
+                <Badge className="mt-2" variant="outline">{field.category.replace(/_/g, " ")}</Badge>
+                <div className="mt-2 font-mono text-xs text-muted-foreground">{field.sourcePath}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{field.reason}</div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle className="text-base">Warnings</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            {brief.draftWarnings.length === 0 ? <div className="text-sm text-muted-foreground">No warnings detected.</div> : brief.draftWarnings.slice(0, 12).map((warning) => (
+              <div key={`${warning.code}-${warning.message}`} className="rounded border p-3 text-sm">
+                <Badge variant={warning.severity === "warning" ? "destructive" : "outline"}>{warning.code}</Badge>
+                <div className="mt-2 text-xs text-muted-foreground">{warning.message}</div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 export default function CatalogMigrationLab() {
   const { toast } = useToast();
   const { user, isLoading } = useAuth();
@@ -92,6 +320,8 @@ export default function CatalogMigrationLab() {
   const [activeSource, setActiveSource] = useState<AnalyzerSourceKind | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<CatalogMigrationLabAnalyzerResult | null>(null);
+  const [productDescription, setProductDescription] = useState("");
+  const [intakeBrief, setIntakeBrief] = useState<ProductIntakeBrief | null>(null);
   const [warningSeverityFilter, setWarningSeverityFilter] = useState<"all" | "blocker" | "warning" | "info">("all");
   const [warningProductFilter, setWarningProductFilter] = useState("all");
   const [warningCodeFilter, setWarningCodeFilter] = useState("all");
@@ -173,6 +403,45 @@ export default function CatalogMigrationLab() {
     },
   });
 
+  const intakeMutation = useMutation({
+    mutationFn: async () => {
+      const hasJsonSource = analyzerSource.text.trim().length > 0;
+      const response = await apiRequest("POST", "/api/admin/product-intake-wizard/analyze", hasJsonSource ? {
+        sourceType: analyzerSource.kind === "upload" ? "uploaded_json" : "pasted_json",
+        fileName: analyzerSource.kind === "upload" ? fileName ?? undefined : analyzerSource.kind === "sample" ? "sample-infoflo.json" : undefined,
+        jsonText: analyzerSource.text,
+        description: productDescription.trim() || undefined,
+      } : {
+        sourceType: "text_description",
+        description: productDescription,
+      });
+      const json = await response.json();
+      if (!json?.success) throw new Error(json?.message ?? "Product Intake Brief failed");
+      return json.data as { analyzer: CatalogMigrationLabAnalyzerResult | null; brief: ProductIntakeBrief };
+    },
+    onSuccess: (result) => {
+      setIntakeBrief(result.brief);
+      if (result.analyzer) {
+        setAnalysis(result.analyzer);
+        setWarningSeverityFilter("all");
+        setWarningProductFilter("all");
+        setWarningCodeFilter("all");
+        setMigrationSort("confidence");
+      }
+      toast({
+        title: "Product Intake Brief ready",
+        description: "No products, PBV2 trees, or catalog records were created.",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Product Intake Brief failed",
+        description: error?.message ?? "The intake brief could not be generated.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -191,6 +460,7 @@ export default function CatalogMigrationLab() {
   };
 
   const canAnalyze = analyzerSource.text.trim().length > 0 && !oversized && !analyzeMutation.isPending;
+  const canGenerateIntake = (analyzerSource.text.trim().length > 0 || productDescription.trim().length > 0) && !oversized && !intakeMutation.isPending;
 
   if (isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Loading...</div>;
@@ -330,6 +600,38 @@ export default function CatalogMigrationLab() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Brain className="h-4 w-4" />
+            Product Intake Brief
+          </CardTitle>
+          <CardDescription>
+            Converts the active JSON source or a short product description into a review-ready brief. Phase 1 stops before draft creation.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Textarea
+            value={productDescription}
+            onChange={(event) => setProductDescription(event.target.value)}
+            rows={4}
+            placeholder="Foam board signs with optional grommets"
+          />
+          <div className="flex flex-wrap items-center gap-3">
+            <Button className="gap-2" disabled={!canGenerateIntake} onClick={() => intakeMutation.mutate()}>
+              {intakeMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Brain className="h-4 w-4" />}
+              {intakeMutation.isPending ? "Generating..." : "Generate Intake Brief"}
+            </Button>
+            <Badge variant="outline">Read-only</Badge>
+            <Badge variant="secondary">Review-ready only</Badge>
+          </div>
+        </CardContent>
+      </Card>
+
+      {intakeBrief && !analysis && (
+        <IntakeBriefView brief={intakeBrief} />
+      )}
+
       {analysis && (
         <div className="space-y-6">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -351,6 +653,7 @@ export default function CatalogMigrationLab() {
               <TabsTrigger value="overview">Overview</TabsTrigger>
               <TabsTrigger value="migration-planning">Migration Planning</TabsTrigger>
               <TabsTrigger value="structures">Product Structures</TabsTrigger>
+              {intakeBrief && <TabsTrigger value="intake-brief">Product Intake Brief</TabsTrigger>}
               <TabsTrigger value="conditional">Conditional Logic</TabsTrigger>
               <TabsTrigger value="worksheets">Migration Worksheets</TabsTrigger>
             </TabsList>
@@ -589,6 +892,12 @@ export default function CatalogMigrationLab() {
             </CardContent>
           </Card>
             </TabsContent>
+
+            {intakeBrief && (
+              <TabsContent value="intake-brief" className="space-y-6">
+                <IntakeBriefView brief={intakeBrief} />
+              </TabsContent>
+            )}
 
             <TabsContent value="migration-planning" className="space-y-6">
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
