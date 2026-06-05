@@ -3,31 +3,10 @@ import { useState, useEffect } from "react";
 import { useLocation } from "react-router-dom";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import {
-  Home,
-  Users,
-  Contact2,
-  FileText,
-  Inbox,
-  ShoppingCart,
-  Factory,
-  Boxes,
-  Package,
-  ClipboardList,
-  Truck,
-  Tag,
-  BarChart3,
-  Receipt,
-  CreditCard,
-  Settings,
-  UserCog,
   Plus,
   ChevronLeft,
   ChevronDown,
   ChevronRight,
-  LayoutGrid,
-  ShieldCheck,
-  Bug,
-  type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
@@ -39,173 +18,10 @@ import { Badge } from "@/components/ui/badge";
 import { ROUTES } from "@/config/routes";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import { SHIELD_LOGO_SRC } from "@/lib/branding";
-import { canUseProductPlanning } from "@/lib/productPlanningAccess";
-import { canUsePlatformTools } from "@/lib/platformAccess";
+import { filterNavByRole, NAV_CONFIG, type NavItemConfig, type NavSectionConfig } from "@/lib/titanNavigation";
 
-// ============================================================
-// NAV CONFIG - AUTHORITATIVE TITANOS NAVIGATION
-// ============================================================
-
-export type NavItemConfig = {
-  id: string;
-  name: string;
-  icon: LucideIcon;
-  path: string;
-  roles?: string[];
-  badge?: boolean; // If true, show operational badge from summary
-  badgeQuery?: string; // Legacy single-item query key (kept for approvals)
-  platformAdminOnly?: boolean; // Only shown to platform admins (isPlatformAdmin=true)
-  platformOnly?: boolean; // Only shown to platform admins/developers
-  developerOrAdminOnly?: boolean; // Only shown to platform developers/admins or org admins/owners
-  conditional?: {
-    requireApproval?: boolean; // Only show if org preference requireApproval=true
-    approverOnly?: boolean; // Only show for internal users
-  };
-};
-
-export type NavSectionConfig = {
-  section: string;
-  sectionKey: string; // Unique key for section (e.g., "sales", "production")
-  items: NavItemConfig[];
-};
-
-export const NAV_CONFIG: NavSectionConfig[] = [
-  {
-    section: "SALES",
-    sectionKey: "sales",
-    items: [
-      { id: "dashboard", name: "Dashboard", icon: Home, path: ROUTES.dashboard },
-      { id: "customers", name: "Customers", icon: Users, path: ROUTES.customers.list },
-      { id: "contacts", name: "Contacts", icon: Contact2, path: ROUTES.contacts.list },
-      { id: "quotes", name: "Quotes", icon: FileText, path: ROUTES.quotes.list },
-      {
-        id: "approvals",
-        name: "Approvals",
-        icon: ClipboardList,
-        path: "/approvals",
-        badge: true,
-        badgeQuery: "/api/quotes/pending-approvals",
-        conditional: {
-          requireApproval: true,
-          approverOnly: true,
-        },
-      },
-      { id: "orders", name: "Orders", icon: ShoppingCart, path: ROUTES.orders.list },
-      {
-        id: "inbound-orders",
-        name: "Inbound Orders",
-        icon: Inbox,
-        path: ROUTES.inboundOrders.list,
-        badge: true,
-      },
-    ],
-  },
-  {
-    section: "PRODUCTION",
-    sectionKey: "production",
-    items: [
-      { id: "production-overview", name: "Overview", icon: LayoutGrid, path: ROUTES.production.board, badge: true },
-      { id: "production-design", name: "Design", icon: FileText, path: ROUTES.production.design, badge: true },
-      { id: "production-proofing", name: "Proofing", icon: ClipboardList, path: ROUTES.production.proofing, badge: true },
-      { id: "production-prepress", name: "Prepress", icon: FileText, path: ROUTES.production.prepress, badge: true },
-      { id: "production-flatbed", name: "Flatbed", icon: Factory, path: ROUTES.production.flatbed, badge: true },
-      { id: "production-roll", name: "Roll", icon: Factory, path: ROUTES.production.roll, badge: true },
-    ],
-  },
-  {
-    section: "INVENTORY",
-    sectionKey: "inventory",
-    items: [
-      { id: "materials", name: "Materials", icon: Boxes, path: ROUTES.materials.list },
-      { id: "vendors", name: "Vendors", icon: Package, path: ROUTES.vendors.list },
-      { id: "purchase-orders", name: "Purchase Orders", icon: ClipboardList, path: ROUTES.purchaseOrders.list },
-    ],
-  },
-  {
-    section: "SHIPPING & FULFILLMENT",
-    sectionKey: "shipping",
-    items: [
-      { id: "fulfillment", name: "Fulfillment", icon: Truck, path: ROUTES.fulfillment.list, badge: true },
-      { id: "shipping", name: "Labels", icon: Tag, path: "/shipping" },
-      { id: "reports", name: "Reports", icon: BarChart3, path: "/reports" },
-    ],
-  },
-  {
-    section: "ACCOUNTING",
-    sectionKey: "accounting",
-    items: [
-      { id: "invoices", name: "Invoices", icon: Receipt, path: ROUTES.invoices.list, badge: true },
-      { id: "payments", name: "Finance", icon: CreditCard, path: "/payments" },
-    ],
-  },
-  {
-    section: "SYSTEM",
-    sectionKey: "system",
-    items: [
-      { id: "admin-dashboard", name: "Admin Dashboard", icon: Home, path: ROUTES.system.adminDashboard, roles: ["admin", "owner"] },
-      { id: "settings", name: "Settings", icon: Settings, path: ROUTES.settings.root, roles: ["admin", "owner"] },
-      { id: "users", name: "Users", icon: UserCog, path: ROUTES.users.list, roles: ["admin", "owner"] },
-      { id: "bug-reports", name: "Bug Reports", icon: Bug, path: ROUTES.admin.bugReports, roles: ["admin", "owner"] },
-      { id: "product-planning", name: "Product Planning", icon: ClipboardList, path: ROUTES.productPlanning.dashboard, developerOrAdminOnly: true },
-    ],
-  },
-  {
-    section: "PLATFORM",
-    sectionKey: "platform",
-    items: [
-      { id: "platform-tools", name: "Developer Tools", icon: LayoutGrid, path: ROUTES.platform.tools, platformOnly: true },
-      { id: "platform-orgs-new", name: "New Organization", icon: ShieldCheck, path: ROUTES.platform.orgsNew, platformAdminOnly: true },
-    ],
-  },
-];
-
-// Filter nav items by user role and conditional visibility
-export function filterNavByRole(
-  sections: NavSectionConfig[],
-  role?: string | null,
-  orgPreferences?: { quotes?: { requireApproval?: boolean } },
-  isPlatformAdmin?: boolean,
-  isPlatformDeveloper?: boolean,
-): NavSectionConfig[] {
-  const userRole = (role || "").toLowerCase();
-  const isOwner = userRole === "owner";
-  const isAdmin = userRole === "admin";
-  const isApprover = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
-  const requireApproval = orgPreferences?.quotes?.requireApproval || false;
-
-  return sections
-    .map((section) => ({
-      ...section,
-      items: section.items.filter((item) => {
-        // Platform-admin-only items
-        if (item.platformAdminOnly && !isPlatformAdmin) return false;
-        if (item.platformOnly && !canUsePlatformTools({ isPlatformAdmin, isPlatformDeveloper })) return false;
-        if (item.developerOrAdminOnly && !canUseProductPlanning({ role: userRole, isPlatformAdmin, isPlatformDeveloper })) return false;
-
-        // Check role-based visibility
-        if (!item.roles) {
-          // No role restriction
-        } else if (isOwner) {
-          // Owner sees everything
-        } else if (!item.roles.includes(userRole)) {
-          return false;
-        }
-
-        // Check conditional visibility
-        if (item.conditional) {
-          if (item.conditional.requireApproval && !requireApproval) {
-            return false;
-          }
-          if (item.conditional.approverOnly && !isApprover) {
-            return false;
-          }
-        }
-
-        return true;
-      }),
-    }))
-    .filter((section) => section.items.length > 0);
-}
+export { filterNavByRole, NAV_CONFIG };
+export type { NavItemConfig, NavSectionConfig };
 
 // Helper to determine which section a path belongs to
 function getSectionKeyForPath(pathname: string, sections: NavSectionConfig[]): string | null {

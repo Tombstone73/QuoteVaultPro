@@ -52,6 +52,8 @@ describe("AdminTools operator/developer separation", () => {
     expect(container.textContent).toContain("Materials");
     expect(container.textContent).toContain("Manage Products Data");
     expect(container.textContent).toContain("Manage Materials Data");
+    expect(container.textContent).not.toContain("Product Planning");
+    expect(container.textContent).not.toContain("Bug Reports");
     expect(container.textContent).not.toContain("Catalog Migration Lab");
     expect(container.textContent).not.toContain("QB Invoice Inspector");
     expect(container.textContent).not.toContain("QB Customer Inspector");

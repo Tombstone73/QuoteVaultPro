@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { Database, Users, Package, Building2, Bug, AlertTriangle, Trash2, Ban, Loader2 } from "lucide-react";
+import { Database, Users, Package, AlertTriangle, Trash2, Ban, Loader2 } from "lucide-react";
 import { TitanCard } from "@/components/titan";
 import { DestructiveActionModal } from "@/components/DestructiveActionModal";
 import { useToast } from "@/hooks/use-toast";
@@ -226,7 +226,7 @@ export default function AdminTools() {
         <div>
           <h2 className="text-titan-lg font-semibold text-titan-text-primary">Admin Tools</h2>
           <p className="text-titan-sm text-titan-text-secondary mt-1">
-            Infrequent administrative actions for data portability and organization lifecycle management
+            Infrequent tenant administrative actions for data portability and guarded organization maintenance
           </p>
         </div>
       </TitanCard>
@@ -300,65 +300,6 @@ export default function AdminTools() {
                 <Link to="/admin/materials/import-export">
                   <Button variant="outline" size="sm" className="w-full">
                     Manage Materials Data
-                  </Button>
-                </Link>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-      </TitanCard>
-
-      {/* Organization Lifecycle Section */}
-      <TitanCard className="p-6">
-        <div className="space-y-6">
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <Building2 className="h-5 w-5 text-titan-accent" />
-              <h3 className="text-titan-base font-semibold text-titan-text-primary">Organization Lifecycle</h3>
-            </div>
-            <p className="text-titan-sm text-titan-text-secondary">
-              Manage organizations, report bugs, and perform other system-level administrative tasks.
-            </p>
-          </div>
-
-          <div className="h-px bg-titan-border-subtle" />
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Create Organization */}
-            <Card className="border-titan-border bg-titan-bg-card-elevated">
-              <CardHeader className="pb-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <Building2 className="h-4 w-4 text-titan-accent" />
-                  <CardTitle className="text-titan-sm">Create Organization</CardTitle>
-                </div>
-                <CardDescription className="text-titan-xs">
-                  Create a new multi-tenant organization for development or testing
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Link to="/platform/orgs/new">
-                  <Button variant="outline" size="sm" className="w-full">
-                    Create Organization
-                  </Button>
-                </Link>
-              </CardContent>
-            </Card>
-
-            {/* Bug Reports */}
-            <Card className="border-titan-border bg-titan-bg-card-elevated">
-              <CardHeader className="pb-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <Bug className="h-4 w-4 text-titan-accent" />
-                  <CardTitle className="text-titan-sm">Bug Reports</CardTitle>
-                </div>
-                <CardDescription className="text-titan-xs">
-                  View and manage system bug reports and feedback
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Link to="/admin/bug-reports">
-                  <Button variant="outline" size="sm" className="w-full">
-                    View Bug Reports
                   </Button>
                 </Link>
               </CardContent>
