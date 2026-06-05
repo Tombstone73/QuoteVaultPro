@@ -29,6 +29,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  SAMPLE_INFOFLO_JSON,
+  resolveCatalogMigrationAnalyzerSource,
+  type AnalyzerSourceKind,
+} from "./catalogMigrationLabSource";
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -81,7 +86,10 @@ function SummaryCard({ label, value, hint }: { label: string; value: string | nu
 export default function CatalogMigrationLab() {
   const { toast } = useToast();
   const { user, isLoading } = useAuth();
-  const [jsonText, setJsonText] = useState("");
+  const [uploadedJsonText, setUploadedJsonText] = useState("");
+  const [pastedJsonText, setPastedJsonText] = useState("");
+  const [sampleJsonText, setSampleJsonText] = useState("");
+  const [activeSource, setActiveSource] = useState<AnalyzerSourceKind | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<CatalogMigrationLabAnalyzerResult | null>(null);
   const [warningSeverityFilter, setWarningSeverityFilter] = useState<"all" | "blocker" | "warning" | "info">("all");
@@ -90,7 +98,12 @@ export default function CatalogMigrationLab() {
   const [migrationSort, setMigrationSort] = useState<"confidence" | "category" | "template" | "routing" | "complexity">("confidence");
   const canAccessPlatformTools = canUsePlatformTools(user);
 
-  const sourceBytes = useMemo(() => new Blob([jsonText]).size, [jsonText]);
+  const analyzerSource = useMemo(
+    () => resolveCatalogMigrationAnalyzerSource({ activeSource, uploadedJsonText, pastedJsonText, sampleJsonText }),
+    [activeSource, pastedJsonText, sampleJsonText, uploadedJsonText],
+  );
+  const availableSourceCount = [uploadedJsonText, pastedJsonText, sampleJsonText].filter((text) => text.trim().length > 0).length;
+  const sourceBytes = useMemo(() => new Blob([analyzerSource.text]).size, [analyzerSource.text]);
   const oversized = sourceBytes > CATALOG_MIGRATION_LAB_MAX_UPLOAD_BYTES;
   const parsedFieldCount = useMemo(
     () => analysis?.products.reduce((count, product) => count + product.sourceFields.length, 0) ?? 0,
@@ -133,8 +146,8 @@ export default function CatalogMigrationLab() {
     mutationFn: async () => {
       const response = await apiRequest("POST", "/api/admin/catalog-migration-lab/analyze", {
         adapter: "infoflo-json",
-        fileName,
-        jsonText,
+        fileName: analyzerSource.kind === "upload" ? fileName ?? undefined : analyzerSource.kind === "sample" ? "sample-infoflo.json" : undefined,
+        jsonText: analyzerSource.text,
       });
       const json = await response.json();
       if (!json?.success) throw new Error(json?.message ?? "Analysis failed");
@@ -172,11 +185,12 @@ export default function CatalogMigrationLab() {
       return;
     }
     setFileName(file.name);
-    setJsonText(await file.text());
+    setUploadedJsonText(await file.text());
+    setActiveSource("upload");
     setAnalysis(null);
   };
 
-  const canAnalyze = jsonText.trim().length > 0 && !oversized && !analyzeMutation.isPending;
+  const canAnalyze = analyzerSource.text.trim().length > 0 && !oversized && !analyzeMutation.isPending;
 
   if (isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Loading...</div>;
@@ -239,15 +253,68 @@ export default function CatalogMigrationLab() {
             <input type="file" accept=".json,application/json" onChange={handleFileChange} />
             {fileName && <Badge variant="secondary">{fileName}</Badge>}
             <Badge variant={oversized ? "destructive" : "outline"}>{formatBytes(sourceBytes)}</Badge>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setSampleJsonText(SAMPLE_INFOFLO_JSON);
+                setActiveSource("sample");
+                setAnalysis(null);
+              }}
+            >
+              Load sample JSON
+            </Button>
           </div>
+
+          <div className="rounded border bg-muted/30 p-3">
+            <div className="mb-2 text-xs font-medium uppercase text-muted-foreground">Analyzer Source</div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant={analyzerSource.kind === "upload" ? "default" : "outline"}
+                disabled={uploadedJsonText.trim().length === 0}
+                onClick={() => setActiveSource("upload")}
+              >
+                Uploaded file
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={analyzerSource.kind === "paste" ? "default" : "outline"}
+                disabled={pastedJsonText.trim().length === 0}
+                onClick={() => setActiveSource("paste")}
+              >
+                Pasted JSON
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={analyzerSource.kind === "sample" ? "default" : "outline"}
+                disabled={sampleJsonText.trim().length === 0}
+                onClick={() => setActiveSource("sample")}
+              >
+                Sample JSON
+              </Button>
+            </div>
+            <div className="mt-2 text-sm text-muted-foreground">
+              {analyzerSource.kind
+                ? `Run Analyzer will use ${analyzerSource.label}${analyzerSource.kind === "upload" && fileName ? ` from ${fileName}` : ""}.`
+                : "Upload a file, paste JSON, or load the sample JSON to choose an analyzer source."}
+              {availableSourceCount > 1 && " Multiple sources are available; select the one to analyze above."}
+            </div>
+          </div>
+
           <Textarea
-            value={jsonText}
+            value={pastedJsonText}
             onChange={(event) => {
-              setJsonText(event.target.value);
+              setPastedJsonText(event.target.value);
+              if (event.target.value.trim().length > 0) setActiveSource("paste");
               setAnalysis(null);
             }}
             rows={10}
-            placeholder='{"products":[{"name":"Banner","category":"Signs","basePrice":25}]}'
+            placeholder="Paste InfoFlo JSON here, or upload a file above."
             className="font-mono text-xs"
           />
           {oversized && (
