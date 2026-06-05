@@ -202,12 +202,19 @@ export const ROUTES = {
     products: "/admin/products",
     productTypes: "/admin/product-types",
     bugReports: "/admin/bug-reports",
+    catalogMigrationLab: "/admin/catalog-migration-lab",
     pricingAudit: "/admin/pricing-audit",
     materialsImportExport: "/admin/materials/import-export",
   },
 
   developer: {
     qbInvoiceInspector: "/admin/developer/qb-invoice-inspector",
+    qbCustomerInspector: "/admin/developer/qb-customer-inspector",
+  },
+
+  platform: {
+    tools: "/platform/tools",
+    orgsNew: "/platform/orgs/new",
   },
 
   system: {

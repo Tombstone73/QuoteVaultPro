@@ -40,6 +40,7 @@ import { ROUTES } from "@/config/routes";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import { SHIELD_LOGO_SRC } from "@/lib/branding";
 import { canUseProductPlanning } from "@/lib/productPlanningAccess";
+import { canUsePlatformTools } from "@/lib/platformAccess";
 
 // ============================================================
 // NAV CONFIG - AUTHORITATIVE TITANOS NAVIGATION
@@ -54,6 +55,7 @@ export type NavItemConfig = {
   badge?: boolean; // If true, show operational badge from summary
   badgeQuery?: string; // Legacy single-item query key (kept for approvals)
   platformAdminOnly?: boolean; // Only shown to platform admins (isPlatformAdmin=true)
+  platformOnly?: boolean; // Only shown to platform admins/developers
   developerOrAdminOnly?: boolean; // Only shown to platform developers/admins or org admins/owners
   conditional?: {
     requireApproval?: boolean; // Only show if org preference requireApproval=true
@@ -151,7 +153,8 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     section: "PLATFORM",
     sectionKey: "platform",
     items: [
-      { id: "platform-orgs-new", name: "New Organization", icon: ShieldCheck, path: "/platform/orgs/new", platformAdminOnly: true },
+      { id: "platform-tools", name: "Developer Tools", icon: LayoutGrid, path: ROUTES.platform.tools, platformOnly: true },
+      { id: "platform-orgs-new", name: "New Organization", icon: ShieldCheck, path: ROUTES.platform.orgsNew, platformAdminOnly: true },
     ],
   },
 ];
@@ -176,6 +179,7 @@ export function filterNavByRole(
       items: section.items.filter((item) => {
         // Platform-admin-only items
         if (item.platformAdminOnly && !isPlatformAdmin) return false;
+        if (item.platformOnly && !canUsePlatformTools({ isPlatformAdmin, isPlatformDeveloper })) return false;
         if (item.developerOrAdminOnly && !canUseProductPlanning({ role: userRole, isPlatformAdmin, isPlatformDeveloper })) return false;
 
         // Check role-based visibility
