@@ -15,10 +15,17 @@ import type {
 import { registerCatalogMigrationLabRoutes } from "../routes/catalogMigrationLab.routes";
 import {
   computeProductIntakeReadiness,
+  createDbProductIntakeSessionStore,
   generateProductIntakeQuestions,
   resolveProductIntakeSessionStatus,
   type ProductIntakeSessionStore,
 } from "../services/productIntakeWizard/productIntakeSessionService";
+import {
+  productIntakeAnswers,
+  productIntakeAiDiagnostics,
+  productIntakeQuestions,
+  productIntakeSessions,
+} from "../../shared/schema";
 import type {
   ProductIntakeAiDiagnosticInput,
   ProductIntakeAiDiagnosticsStore,
@@ -145,6 +152,25 @@ function makeMemoryProductIntakeSessionStore(): ProductIntakeSessionStore {
       detail.session.updatedByUserId = userId;
       detail.readiness = computeProductIntakeReadiness({ session: detail.session, questions: detail.questions, answers: detail.answers });
       return detail;
+    },
+    async deleteSessions({ organizationId, filters }) {
+      const matches = details.filter((detail) =>
+        detail.session.organizationId === organizationId &&
+        (!filters.sessionIds?.length || filters.sessionIds.includes(detail.session.id)) &&
+        (!filters.status || detail.session.status === filters.status) &&
+        (!filters.briefSource || detail.session.brief.source === filters.briefSource),
+      );
+      let questions = 0;
+      let answers = 0;
+      for (const detail of matches) {
+        questions += detail.questions.length;
+        answers += detail.answers.length;
+      }
+      for (const match of matches) {
+        const index = details.findIndex((detail) => detail.session.id === match.session.id);
+        if (index >= 0) details.splice(index, 1);
+      }
+      return { sessions: matches.length, questions, answers, diagnostics: 0 };
     },
   };
 }
@@ -547,6 +573,130 @@ describe("Catalog Migration Lab routes", () => {
     const abandoned = await request(app).post(`/api/admin/product-intake-wizard/sessions/${sessionId}/abandon`);
     expect(abandoned.status).toBe(200);
     expect(abandoned.body.data.session.status).toBe("abandoned");
+  });
+
+  test("product intake session delete removes session questions and answers", async () => {
+    const store = makeMemoryProductIntakeSessionStore();
+    const app = buildApp({}, store);
+    const created = await request(app)
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({ sourceType: "text_description", description: "Foam board signs with optional grommets" });
+    const sessionId = created.body.data.sessionId;
+    const question = created.body.data.questions.find((row: any) => row.required);
+    await request(app)
+      .patch(`/api/admin/product-intake-wizard/sessions/${sessionId}/answers`)
+      .send({ answers: [{ questionId: question.id, answer: "3/16 White Foam Board" }] });
+
+    const deleted = await request(app).delete(`/api/admin/product-intake-wizard/sessions/${sessionId}`);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body.data.deleted).toMatchObject({
+      sessions: 1,
+      questions: expect.any(Number),
+      answers: 1,
+    });
+
+    const detail = await request(app).get(`/api/admin/product-intake-wizard/sessions/${sessionId}`);
+    expect(detail.status).toBe(404);
+  });
+
+  test("product intake session delete blocks another organization session", async () => {
+    const store = makeMemoryProductIntakeSessionStore();
+    const created = await request(buildApp({ organizationId: "org_1" }, store))
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({ sourceType: "text_description", description: "Foam board signs with optional grommets" });
+
+    const deleted = await request(buildApp({ organizationId: "org_2" }, store))
+      .delete(`/api/admin/product-intake-wizard/sessions/${created.body.data.sessionId}`);
+
+    expect(deleted.status).toBe(404);
+    expect(deleted.body.errorCode).toBe("SESSION_NOT_FOUND");
+  });
+
+  test("product intake session delete not found returns safe response", async () => {
+    const response = await request(buildApp())
+      .delete("/api/admin/product-intake-wizard/sessions/missing-session");
+
+    expect(response.status).toBe(404);
+    expect(response.body).toMatchObject({
+      success: false,
+      errorCode: "SESSION_NOT_FOUND",
+    });
+  });
+
+  test("product intake bulk delete selected and abandoned sessions", async () => {
+    const store = makeMemoryProductIntakeSessionStore();
+    const app = buildApp({}, store);
+    const first = await request(app)
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({ sourceType: "text_description", description: "Foam board signs with optional grommets" });
+    const second = await request(app)
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({ sourceType: "text_description", description: "13oz banner custom width and height proof required" });
+
+    const selected = await request(app)
+      .post("/api/admin/product-intake-wizard/sessions/bulk-delete")
+      .send({ mode: "selected", sessionIds: [first.body.data.sessionId] });
+    expect(selected.status).toBe(200);
+    expect(selected.body.data.deleted.sessions).toBe(1);
+
+    await request(app).post(`/api/admin/product-intake-wizard/sessions/${second.body.data.sessionId}/abandon`);
+    const abandoned = await request(app)
+      .post("/api/admin/product-intake-wizard/sessions/bulk-delete")
+      .send({ mode: "abandoned" });
+    expect(abandoned.status).toBe(200);
+    expect(abandoned.body.data.deleted.sessions).toBe(1);
+  });
+
+  test("product intake bulk delete analyzer fallback sessions only removes fallback briefs", async () => {
+    const store = makeMemoryProductIntakeSessionStore();
+    const app = buildApp({}, store);
+    await request(app)
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({ sourceType: "text_description", description: "Foam board signs with optional grommets" });
+
+    const deleted = await request(app)
+      .post("/api/admin/product-intake-wizard/sessions/bulk-delete")
+      .send({ mode: "analyzer_fallback" });
+    expect(deleted.status).toBe(200);
+    expect(deleted.body.data.deleted.sessions).toBe(1);
+  });
+
+  test("db-backed product intake session delete removes diagnostics before session rows", async () => {
+    const deletedTables: unknown[] = [];
+    const fakeDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [{ id: "sess_1" }],
+          }),
+        }),
+      }),
+      delete: (table: unknown) => {
+        deletedTables.push(table);
+        return {
+          where: () => ({
+            returning: async () => {
+              if (table === productIntakeAiDiagnostics) return [{ id: "diag_1" }, { id: "diag_2" }];
+              if (table === productIntakeAnswers) return [{ id: "answer_1" }, { id: "answer_2" }, { id: "answer_3" }];
+              if (table === productIntakeQuestions) return [{ id: "question_1" }, { id: "question_2" }];
+              if (table === productIntakeSessions) return [{ id: "sess_1" }];
+              return [];
+            },
+          }),
+        };
+      },
+    };
+
+    const store = createDbProductIntakeSessionStore(fakeDb);
+    const deleted = await store.deleteSessions({ organizationId: "org_1", filters: { sessionIds: ["sess_1"] } });
+
+    expect(deleted).toEqual({ sessions: 1, questions: 2, answers: 3, diagnostics: 2 });
+    expect(deletedTables).toEqual([
+      productIntakeAiDiagnostics,
+      productIntakeAnswers,
+      productIntakeQuestions,
+      productIntakeSessions,
+    ]);
   });
 
   test("product intake answers cannot target another organization session", async () => {

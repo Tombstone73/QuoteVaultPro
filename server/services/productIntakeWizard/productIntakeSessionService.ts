@@ -1,7 +1,8 @@
 import { createHash } from "crypto";
-import { and, desc, eq, gte, ilike, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import {
   productIntakeAnswers,
+  productIntakeAiDiagnostics,
   productIntakeQuestions,
   productIntakeSessions,
   type ProductIntakeAnswerRow,
@@ -45,6 +46,19 @@ export type ProductIntakeSessionListFilters = {
   createdTo?: string;
 };
 
+export type ProductIntakeSessionDeleteResult = {
+  sessions: number;
+  questions: number;
+  answers: number;
+  diagnostics: number;
+};
+
+export type ProductIntakeSessionDeleteFilters = {
+  sessionIds?: string[];
+  status?: Extract<ProductIntakeSessionStatus, "abandoned">;
+  briefSource?: "rule_based_fallback";
+};
+
 export interface ProductIntakeSessionStore {
   createFromAnalysis(input: CreateProductIntakeSessionInput): Promise<ProductIntakeSessionDetail>;
   listSessions(organizationId: string, filters?: ProductIntakeSessionListFilters): Promise<ProductIntakeSession[]>;
@@ -60,6 +74,10 @@ export interface ProductIntakeSessionStore {
     sessionId: string;
     userId: string | null;
   }): Promise<ProductIntakeSessionDetail | null>;
+  deleteSessions(args: {
+    organizationId: string;
+    filters: ProductIntakeSessionDeleteFilters;
+  }): Promise<ProductIntakeSessionDeleteResult>;
 }
 
 export class ProductIntakeSessionError extends Error {
@@ -450,6 +468,21 @@ function mapAnswer(row: ProductIntakeAnswerRow): ProductIntakeAnswer {
 }
 
 export function createDbProductIntakeSessionStore(database: any = defaultDb): ProductIntakeSessionStore {
+  const zeroDeleteResult = (): ProductIntakeSessionDeleteResult => ({ sessions: 0, questions: 0, answers: 0, diagnostics: 0 });
+
+  const resolveDeleteSessionIds = async (organizationId: string, filters: ProductIntakeSessionDeleteFilters): Promise<string[]> => {
+    const conditions = [eq(productIntakeSessions.organizationId, organizationId)];
+    if (filters.sessionIds?.length) conditions.push(inArray(productIntakeSessions.id, filters.sessionIds));
+    if (filters.status) conditions.push(eq(productIntakeSessions.status, filters.status));
+    if (filters.briefSource) conditions.push(sql`${productIntakeSessions.aiBriefJson}->>'source' = ${filters.briefSource}` as any);
+    const rows = await database
+      .select({ id: productIntakeSessions.id })
+      .from(productIntakeSessions)
+      .where(and(...conditions))
+      .limit(500);
+    return rows.map((row: { id: string }) => row.id);
+  };
+
   const getDetail = async (organizationId: string, sessionId: string): Promise<ProductIntakeSessionDetail | null> => {
     const [sessionRow] = await database
       .select()
@@ -606,6 +639,37 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
         .returning();
       if (!updated) return null;
       return getDetail(args.organizationId, args.sessionId);
+    },
+
+    async deleteSessions(args) {
+      const sessionIds = await resolveDeleteSessionIds(args.organizationId, args.filters);
+      if (sessionIds.length === 0) return zeroDeleteResult();
+
+      const result = zeroDeleteResult();
+      try {
+        const diagnosticRows = await database.delete(productIntakeAiDiagnostics)
+          .where(and(eq(productIntakeAiDiagnostics.organizationId, args.organizationId), inArray(productIntakeAiDiagnostics.sessionId, sessionIds)))
+          .returning({ id: productIntakeAiDiagnostics.id });
+        result.diagnostics = diagnosticRows.length;
+      } catch (diagnosticError) {
+        console.warn("[ProductIntakeWizard] Failed to delete AI diagnostics during intake cleanup:", diagnosticError);
+      }
+
+      const answerRows = await database.delete(productIntakeAnswers)
+        .where(and(eq(productIntakeAnswers.organizationId, args.organizationId), inArray(productIntakeAnswers.sessionId, sessionIds)))
+        .returning({ id: productIntakeAnswers.id });
+      result.answers = answerRows.length;
+
+      const questionRows = await database.delete(productIntakeQuestions)
+        .where(and(eq(productIntakeQuestions.organizationId, args.organizationId), inArray(productIntakeQuestions.sessionId, sessionIds)))
+        .returning({ id: productIntakeQuestions.id });
+      result.questions = questionRows.length;
+
+      const sessionRows = await database.delete(productIntakeSessions)
+        .where(and(eq(productIntakeSessions.organizationId, args.organizationId), inArray(productIntakeSessions.id, sessionIds)))
+        .returning({ id: productIntakeSessions.id });
+      result.sessions = sessionRows.length;
+      return result;
     },
   };
 }

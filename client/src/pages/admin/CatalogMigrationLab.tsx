@@ -8,6 +8,7 @@ import {
   FlaskConical,
   Loader2,
   ShieldCheck,
+  Trash2,
   Upload,
 } from "lucide-react";
 import type { CatalogMigrationLabAnalyzerResult } from "@shared/catalogMigrationLabSchemas";
@@ -30,6 +31,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Table,
   TableBody,
@@ -109,6 +120,35 @@ function productNameForSession(session: ProductIntakeSession) {
   return session.brief.productIdentity.likelyProductName.value ?? "Untitled product";
 }
 
+function briefSourceValue(session: ProductIntakeSession): "live_ai" | "live_ai_repaired" | "analyzer_fallback" {
+  if (session.brief.aiRepair?.accepted) return "live_ai_repaired";
+  return session.brief.source === "live_ai" ? "live_ai" : "analyzer_fallback";
+}
+
+function briefSourceLabel(session: ProductIntakeSession) {
+  const value = briefSourceValue(session);
+  if (value === "live_ai_repaired") return "Live AI repaired";
+  if (value === "live_ai") return "Live AI";
+  return "Analyzer fallback";
+}
+
+function missingDecisionCount(session: ProductIntakeSession) {
+  return (session.missingDecisions ?? []).length || session.brief.missingDecisions.length;
+}
+
+function answeredQuestionCount(session: ProductIntakeSession) {
+  return typeof session.confidence?.answeredQuestionCount === "number" ? session.confidence.answeredQuestionCount : 0;
+}
+
+function currentSessionConfidence(session: ProductIntakeSession) {
+  return typeof session.confidence?.currentConfidence === "number" ? session.confidence.currentConfidence : session.brief.overallConfidence;
+}
+
+function requiredOpenCount(session: ProductIntakeSession) {
+  if (session.status !== "needs_answers") return 0;
+  return missingDecisionCount(session);
+}
+
 function statusVariant(status: ProductIntakeSession["status"]): "default" | "secondary" | "outline" | "destructive" {
   if (status === "ready_for_draft") return "default";
   if (status === "needs_answers") return "outline";
@@ -125,7 +165,7 @@ function answerDraftsFromDetail(detail: ProductIntakeSessionDetail | null): Reco
   ]));
 }
 
-export function ProductIntakeSessionSummary({ session, readiness }: { session: ProductIntakeSession; readiness: ProductIntakeReadiness }) {
+export function ProductIntakeSessionSummary({ session, readiness, diagnosticsCount = 0 }: { session: ProductIntakeSession; readiness: ProductIntakeReadiness; diagnosticsCount?: number }) {
   const originalConfidence = typeof session.confidence?.originalConfidence === "number"
     ? session.confidence.originalConfidence
     : typeof session.confidence?.overallConfidence === "number"
@@ -145,10 +185,15 @@ export function ProductIntakeSessionSummary({ session, readiness }: { session: P
           <Badge variant={statusVariant(session.status)}>{session.status.replace(/_/g, " ")}</Badge>
         </div>
       </CardHeader>
-      <CardContent className="grid gap-4 text-sm md:grid-cols-2 lg:grid-cols-6">
+      <CardContent className="space-y-4 text-sm">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
         <div>
           <div className="text-xs font-medium uppercase text-muted-foreground">Source</div>
           <div className="mt-1 font-medium">{session.sourceType.replace(/_/g, " ")}</div>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase text-muted-foreground">Brief Source</div>
+          <div className="mt-1 font-medium">{briefSourceLabel(session)}</div>
         </div>
         <div>
           <div className="text-xs font-medium uppercase text-muted-foreground">Created</div>
@@ -169,6 +214,26 @@ export function ProductIntakeSessionSummary({ session, readiness }: { session: P
         <div>
           <div className="text-xs font-medium uppercase text-muted-foreground">Answered</div>
           <div className="mt-1 font-medium">{readiness.answeredCount}</div>
+        </div>
+        </div>
+        <div className="rounded border bg-muted/30 p-3">
+          <div className="flex flex-wrap gap-2">
+            <Badge variant={readiness.status === "ready_for_draft" ? "default" : "outline"}>
+              {readiness.status === "ready_for_draft" ? "Ready for draft" : `${readiness.unansweredRequiredCount} required open`}
+            </Badge>
+            <Badge variant={diagnosticsCount > 0 ? "secondary" : "outline"}>{diagnosticsCount} diagnostics</Badge>
+            {session.brief.fallbackReason && <Badge variant="outline">AI fallback used</Badge>}
+          </div>
+          {session.brief.source === "rule_based_fallback" && (
+            <div className="mt-2 text-xs text-amber-600">
+              Draft creation should be reviewed carefully because this brief did not come from validated AI.
+            </div>
+          )}
+          {session.brief.missingDecisions.length > 0 && (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Needs review: {session.brief.missingDecisions.map((decision) => decision.question).slice(0, 3).join("; ")}
+            </div>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -320,47 +385,243 @@ export function ProductIntakeQuestionsWizard({
 export function ProductIntakeSessionsList({
   sessions,
   onOpen,
+  onDelete,
+  onBulkDelete,
   isLoading = false,
+  isDeleting = false,
 }: {
   sessions: ProductIntakeSession[];
   onOpen: (sessionId: string) => void;
+  onDelete?: (session: ProductIntakeSession) => void;
+  onBulkDelete?: (mode: "selected" | "abandoned" | "analyzer_fallback", sessionIds?: string[]) => void;
   isLoading?: boolean;
+  isDeleting?: boolean;
 }) {
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [sourceTypeFilter, setSourceTypeFilter] = useState("all");
+  const [briefSourceFilter, setBriefSourceFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [minConfidence, setMinConfidence] = useState("");
+  const [maxConfidence, setMaxConfidence] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [pendingDelete, setPendingDelete] = useState<
+    | { kind: "single"; session: ProductIntakeSession }
+    | { kind: "bulk"; mode: "selected" | "abandoned" | "analyzer_fallback"; sessionIds?: string[]; label: string; count: number }
+    | null
+  >(null);
+  const selectedSet = new Set(selectedIds);
+  const sourceTypeOptions = useMemo(
+    () => Array.from(new Set(sessions.map((session) => session.sourceType))).sort(),
+    [sessions],
+  );
+  const filteredSessions = sessions.filter((session) => {
+    const confidence = currentSessionConfidence(session);
+    const matchesStatus = statusFilter === "all" || session.status === statusFilter;
+    const matchesSourceType = sourceTypeFilter === "all" || session.sourceType === sourceTypeFilter;
+    const matchesBriefSource = briefSourceFilter === "all" || briefSourceValue(session) === briefSourceFilter;
+    const normalizedSearch = search.trim().toLowerCase();
+    const matchesSearch = normalizedSearch.length === 0
+      || productNameForSession(session).toLowerCase().includes(normalizedSearch)
+      || session.id.toLowerCase().includes(normalizedSearch);
+    const matchesMin = minConfidence.trim() === "" || confidence >= Number(minConfidence);
+    const matchesMax = maxConfidence.trim() === "" || confidence <= Number(maxConfidence);
+    return matchesStatus && matchesSourceType && matchesBriefSource && matchesSearch && matchesMin && matchesMax;
+  });
+  const allFilteredSelected = filteredSessions.length > 0 && filteredSessions.every((session) => selectedSet.has(session.id));
+  function toggleSelected(sessionId: string) {
+    setSelectedIds((current) => current.includes(sessionId)
+      ? current.filter((id) => id !== sessionId)
+      : [...current, sessionId]);
+  }
+
+  function toggleAllFiltered() {
+    setSelectedIds((current) => {
+      const currentSet = new Set(current);
+      if (allFilteredSelected) {
+        for (const session of filteredSessions) currentSet.delete(session.id);
+      } else {
+        for (const session of filteredSessions) currentSet.add(session.id);
+      }
+      return Array.from(currentSet);
+    });
+  }
+
+  function confirmDelete() {
+    if (!pendingDelete) return;
+    if (pendingDelete.kind === "single") {
+      onDelete?.(pendingDelete.session);
+      setSelectedIds((current) => current.filter((id) => id !== pendingDelete.session.id));
+    } else {
+      onBulkDelete?.(pendingDelete.mode, pendingDelete.sessionIds);
+      if (pendingDelete.sessionIds) {
+        setSelectedIds((current) => current.filter((id) => !pendingDelete.sessionIds?.includes(id)));
+      }
+    }
+    setPendingDelete(null);
+  }
+
+  const confirmName = pendingDelete?.kind === "single" ? productNameForSession(pendingDelete.session) : pendingDelete?.label;
+  const confirmDate = pendingDelete?.kind === "single" ? formatDateTime(pendingDelete.session.createdAt) : null;
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Recent Intake Sessions</CardTitle>
-        <CardDescription>Review saved Product Intake Brief sessions for this organization.</CardDescription>
-      </CardHeader>
-      <CardContent className="overflow-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Product</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Source</TableHead>
-              <TableHead>Confidence</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? <EmptyRow colSpan={6} text="Loading intake sessions..." /> : sessions.length === 0 ? <EmptyRow colSpan={6} text="No intake sessions yet." /> : sessions.map((session) => (
-              <TableRow key={session.id}>
-                <TableCell className="font-medium">{productNameForSession(session)}</TableCell>
-                <TableCell><Badge variant={statusVariant(session.status)}>{session.status.replace(/_/g, " ")}</Badge></TableCell>
-                <TableCell>{session.sourceType.replace(/_/g, " ")}</TableCell>
-                <TableCell><ConfidenceBadge value={session.brief.overallConfidence} /></TableCell>
-                <TableCell>{formatDateTime(session.createdAt)}</TableCell>
-                <TableCell className="text-right">
-                  <Button type="button" variant="outline" size="sm" onClick={() => onOpen(session.id)}>Open</Button>
-                </TableCell>
+    <>
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle className="text-base">Recent Intake Sessions</CardTitle>
+              <CardDescription>Review saved Product Intake Brief sessions for this organization.</CardDescription>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={selectedIds.length === 0 || isDeleting}
+                onClick={() => setPendingDelete({ kind: "bulk", mode: "selected", sessionIds: selectedIds, label: `${selectedIds.length} selected session(s)`, count: selectedIds.length })}
+              >
+                Delete Selected
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={isDeleting || !sessions.some((session) => session.status === "abandoned")}
+                onClick={() => setPendingDelete({ kind: "bulk", mode: "abandoned", label: "all abandoned intake sessions", count: sessions.filter((session) => session.status === "abandoned").length })}
+              >
+                Delete Abandoned
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={isDeleting || !sessions.some((session) => briefSourceValue(session) === "analyzer_fallback")}
+                onClick={() => setPendingDelete({ kind: "bulk", mode: "analyzer_fallback", label: "all analyzer fallback sessions", count: sessions.filter((session) => briefSourceValue(session) === "analyzer_fallback").length })}
+              >
+                Delete Analyzer Fallback
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4 overflow-auto">
+          <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-6">
+            <input
+              className="h-9 rounded-md border bg-background px-3 text-sm"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search product"
+              aria-label="Search intake sessions"
+            />
+            <select className="h-9 rounded-md border bg-background px-3 text-sm" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter intake sessions by status">
+              <option value="all">All statuses</option>
+              <option value="analyzed">Analyzed</option>
+              <option value="needs_answers">Needs answers</option>
+              <option value="ready_for_draft">Ready for draft</option>
+              <option value="draft_created">Draft created</option>
+              <option value="abandoned">Abandoned</option>
+            </select>
+            <select className="h-9 rounded-md border bg-background px-3 text-sm" value={sourceTypeFilter} onChange={(event) => setSourceTypeFilter(event.target.value)} aria-label="Filter intake sessions by source type">
+              <option value="all">All source types</option>
+              {sourceTypeOptions.map((sourceType) => <option key={sourceType} value={sourceType}>{sourceType.replace(/_/g, " ")}</option>)}
+            </select>
+            <select className="h-9 rounded-md border bg-background px-3 text-sm" value={briefSourceFilter} onChange={(event) => setBriefSourceFilter(event.target.value)} aria-label="Filter intake sessions by brief source">
+              <option value="all">All brief sources</option>
+              <option value="live_ai">Live AI</option>
+              <option value="live_ai_repaired">Live AI repaired</option>
+              <option value="analyzer_fallback">Analyzer fallback</option>
+            </select>
+            <input
+              className="h-9 rounded-md border bg-background px-3 text-sm"
+              type="number"
+              min="0"
+              max="100"
+              value={minConfidence}
+              onChange={(event) => setMinConfidence(event.target.value)}
+              placeholder="Min confidence"
+              aria-label="Minimum confidence"
+            />
+            <input
+              className="h-9 rounded-md border bg-background px-3 text-sm"
+              type="number"
+              min="0"
+              max="100"
+              value={maxConfidence}
+              onChange={(event) => setMaxConfidence(event.target.value)}
+              placeholder="Max confidence"
+              aria-label="Maximum confidence"
+            />
+          </div>
+
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-10">
+                  <input type="checkbox" checked={allFilteredSelected} onChange={toggleAllFiltered} aria-label="Select filtered intake sessions" />
+                </TableHead>
+                <TableHead>Product</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead>Brief Source</TableHead>
+                <TableHead>Confidence</TableHead>
+                <TableHead>Missing</TableHead>
+                <TableHead>Required Open</TableHead>
+                <TableHead>Answered</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead></TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </CardContent>
-    </Card>
+            </TableHeader>
+            <TableBody>
+              {isLoading ? <EmptyRow colSpan={11} text="Loading intake sessions..." /> : filteredSessions.length === 0 ? <EmptyRow colSpan={11} text="No intake sessions match the current filters." /> : filteredSessions.map((session) => (
+                <TableRow key={session.id}>
+                  <TableCell>
+                    <input type="checkbox" checked={selectedSet.has(session.id)} onChange={() => toggleSelected(session.id)} aria-label={`Select ${productNameForSession(session)}`} />
+                  </TableCell>
+                  <TableCell className="font-medium">
+                    <button type="button" className="text-left underline-offset-4 hover:underline" onClick={() => onOpen(session.id)}>
+                      {productNameForSession(session)}
+                    </button>
+                  </TableCell>
+                  <TableCell><Badge variant={statusVariant(session.status)}>{session.status.replace(/_/g, " ")}</Badge></TableCell>
+                  <TableCell>{session.sourceType.replace(/_/g, " ")}</TableCell>
+                  <TableCell>{briefSourceLabel(session)}</TableCell>
+                  <TableCell><ConfidenceBadge value={currentSessionConfidence(session)} /></TableCell>
+                  <TableCell>{missingDecisionCount(session)}</TableCell>
+                  <TableCell>{requiredOpenCount(session)}</TableCell>
+                  <TableCell>{answeredQuestionCount(session)}</TableCell>
+                  <TableCell>{formatDateTime(session.createdAt)}</TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-2">
+                      <Button type="button" variant="outline" size="sm" onClick={() => onOpen(session.id)}>Open</Button>
+                      <Button type="button" variant="outline" size="sm" className="gap-1 text-destructive" disabled={isDeleting} onClick={() => setPendingDelete({ kind: "single", session })}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Delete
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+      <AlertDialog open={pendingDelete != null} onOpenChange={(open) => !open && setPendingDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this intake session?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDelete?.kind === "bulk"
+                ? `This will permanently delete ${pendingDelete.count} intake session(s): ${confirmName}.`
+                : `This will permanently delete ${confirmName}${confirmDate ? ` created ${confirmDate}` : ""}.`}
+              {" "}Products, PBV2 trees, templates, materials, and catalog migration data will not be deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDelete} disabled={isDeleting}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 
@@ -950,6 +1211,72 @@ export default function CatalogMigrationLab() {
     },
   });
 
+  const deleteSessionMutation = useMutation({
+    mutationFn: async (session: ProductIntakeSession) => {
+      const response = await apiRequest("DELETE", `/api/admin/product-intake-wizard/sessions/${session.id}`);
+      const json = await response.json();
+      if (!json?.success) throw new Error(json?.message ?? "Failed to delete intake session");
+      return { session, deleted: json.data.deleted as { sessions: number; questions: number; answers: number; diagnostics: number } };
+    },
+    onSuccess: ({ session, deleted }) => {
+      if (intakeSessionDetail?.session.id === session.id) {
+        setIntakeSessionDetail(null);
+        setIntakeBrief(null);
+      }
+      void sessionsQuery.refetch();
+      void diagnosticsQuery.refetch();
+      toast({
+        title: "Intake session deleted",
+        description: `${deleted.sessions} session(s), ${deleted.questions} question(s), and ${deleted.answers} answer(s) removed. No catalog records were changed.`,
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Delete failed",
+        description: error?.message ?? "The intake session could not be deleted.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const bulkDeleteSessionsMutation = useMutation({
+    mutationFn: async (args: { mode: "selected" | "abandoned" | "analyzer_fallback"; sessionIds?: string[] }) => {
+      const response = await apiRequest("POST", "/api/admin/product-intake-wizard/sessions/bulk-delete", args.mode === "selected"
+        ? { mode: args.mode, sessionIds: args.sessionIds ?? [] }
+        : { mode: args.mode });
+      const json = await response.json();
+      if (!json?.success) throw new Error(json?.message ?? "Failed to delete intake sessions");
+      return { ...args, deleted: json.data.deleted as { sessions: number; questions: number; answers: number; diagnostics: number } };
+    },
+    onSuccess: (result) => {
+      if (intakeSessionDetail) {
+        const activeSession = intakeSessionDetail.session;
+        const activeDeleted = result.mode === "selected"
+          ? (result.sessionIds ?? []).includes(activeSession.id)
+          : result.mode === "abandoned"
+            ? activeSession.status === "abandoned"
+            : briefSourceValue(activeSession) === "analyzer_fallback";
+        if (activeDeleted) {
+          setIntakeSessionDetail(null);
+          setIntakeBrief(null);
+        }
+      }
+      void sessionsQuery.refetch();
+      void diagnosticsQuery.refetch();
+      toast({
+        title: "Intake sessions deleted",
+        description: `${result.deleted.sessions} session(s), ${result.deleted.questions} question(s), and ${result.deleted.answers} answer(s) removed. No catalog records were changed.`,
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Bulk delete failed",
+        description: error?.message ?? "The intake sessions could not be deleted.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -1141,7 +1468,10 @@ export default function CatalogMigrationLab() {
       <ProductIntakeSessionsList
         sessions={sessionsQuery.data ?? []}
         isLoading={sessionsQuery.isLoading || openSessionMutation.isPending}
+        isDeleting={deleteSessionMutation.isPending || bulkDeleteSessionsMutation.isPending}
         onOpen={(sessionId) => openSessionMutation.mutate(sessionId)}
+        onDelete={(session) => deleteSessionMutation.mutate(session)}
+        onBulkDelete={(mode, sessionIds) => bulkDeleteSessionsMutation.mutate({ mode, sessionIds })}
       />
 
       {canAccessPlatformTools && (
@@ -1155,7 +1485,7 @@ export default function CatalogMigrationLab() {
         <div className="space-y-6">
           {intakeSessionDetail && (
             <>
-              <ProductIntakeSessionSummary session={intakeSessionDetail.session} readiness={intakeSessionDetail.readiness} />
+              <ProductIntakeSessionSummary session={intakeSessionDetail.session} readiness={intakeSessionDetail.readiness} diagnosticsCount={diagnosticsQuery.data?.length ?? 0} />
               <ProductIntakeQuestionsWizard
                 questions={intakeSessionDetail.questions}
                 answers={intakeSessionDetail.answers}
@@ -1438,7 +1768,7 @@ export default function CatalogMigrationLab() {
               <TabsContent value="intake-brief" className="space-y-6">
                 {intakeSessionDetail && (
                   <>
-                    <ProductIntakeSessionSummary session={intakeSessionDetail.session} readiness={intakeSessionDetail.readiness} />
+                    <ProductIntakeSessionSummary session={intakeSessionDetail.session} readiness={intakeSessionDetail.readiness} diagnosticsCount={diagnosticsQuery.data?.length ?? 0} />
                     <ProductIntakeQuestionsWizard
                       questions={intakeSessionDetail.questions}
                       answers={intakeSessionDetail.answers}
