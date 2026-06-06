@@ -96,7 +96,7 @@ export async function resolveProductIntakeAiReadiness(args: {
       ...base,
       provider,
       model: model || null,
-      reason: hasProviderConfig ? "live_ai_ready" : "missing_provider_config",
+      reason: hasProviderConfig ? "live_ai_ready" : "managed_env_missing",
       canAttemptLiveAi: hasProviderConfig,
     };
   }

@@ -17,6 +17,7 @@ import type {
   ProductIntakeAnswer,
   ProductIntakeAiDiagnostic,
   ProductIntakeAiReadiness,
+  ProductIntakeAiRun,
   ProductIntakeBrief,
   ProductIntakeQuestion,
   ProductIntakeReadiness,
@@ -191,7 +192,7 @@ type ProductIntakeRunState = {
   startedAt: number | null;
   completedAt: number | null;
   timeoutMs: number | null;
-  sourceResult: "live_ai" | "live_ai_repaired" | "analyzer_fallback" | null;
+  sourceResult: ProductIntakeAiRun["sourceResult"] | null;
   provider: string | null;
   model: string | null;
   message: string;
@@ -224,7 +225,11 @@ function productIntakeRunLabel(status: ProductIntakeRunStatus) {
   return "Idle";
 }
 
-function productIntakeResultStatus(brief: ProductIntakeBrief): ProductIntakeRunStatus {
+function productIntakeResultStatus(brief: ProductIntakeBrief, aiRun?: ProductIntakeAiRun | null): ProductIntakeRunStatus {
+  if (aiRun?.sourceResult === "timeout_fallback") return "timed_out";
+  if (aiRun?.sourceResult === "live_ai_repaired") return "completed_live_ai_repaired";
+  if (aiRun?.sourceResult === "live_ai") return "completed_live_ai";
+  if (aiRun?.sourceResult?.endsWith("_fallback")) return "completed_analyzer_fallback";
   if (brief.source === "live_ai" && brief.aiRepair?.accepted) return "completed_live_ai_repaired";
   if (brief.source === "live_ai") return "completed_live_ai";
   if (brief.fallbackReason?.toLowerCase().includes("timed out")) return "timed_out";
@@ -614,6 +619,10 @@ export function ProductIntakeAiStatusPanel({
           <div>
             <div className="text-xs font-medium uppercase text-muted-foreground">Mode</div>
             <div className="mt-1 font-medium">{readiness?.mode?.replace(/_/g, " ") ?? "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase text-muted-foreground">Reason</div>
+            <div className="mt-1 font-medium">{readiness?.reason?.replace(/_/g, " ") ?? "-"}</div>
           </div>
           <div>
             <div className="text-xs font-medium uppercase text-muted-foreground">Feature Review</div>
@@ -1393,21 +1402,26 @@ export default function CatalogMigrationLab() {
         questions?: ProductIntakeQuestion[];
         answers?: ProductIntakeAnswer[];
         readiness?: ProductIntakeReadiness;
+        aiRun?: ProductIntakeAiRun;
       };
     },
     onSuccess: (result) => {
       const completedAt = Date.now();
       const startedAt = intakeRunStartedAtRef.current ?? completedAt;
-      const status = productIntakeResultStatus(result.brief);
+      const status = productIntakeResultStatus(result.brief, result.aiRun);
+      const elapsedMs = result.aiRun?.elapsedMs ?? completedAt - startedAt;
+      const displayStartedAt = result.aiRun?.elapsedMs != null ? completedAt - result.aiRun.elapsedMs : startedAt;
       setIntakeRunState({
         status,
-        startedAt,
+        startedAt: displayStartedAt,
         completedAt,
-        timeoutMs: PRODUCT_INTAKE_UI_TIMEOUT_MS,
-        sourceResult: sourceResultForBrief(result.brief),
-        provider: null,
-        model: null,
-        message: runCompletionMessage(status, completedAt - startedAt, result.brief.fallbackReason),
+        timeoutMs: result.aiRun?.timeoutMs ?? PRODUCT_INTAKE_UI_TIMEOUT_MS,
+        sourceResult: result.aiRun?.sourceResult ?? sourceResultForBrief(result.brief),
+        provider: result.aiRun?.provider ?? null,
+        model: result.aiRun?.model ?? null,
+        message: result.aiRun?.reason && result.aiRun.sourceResult.endsWith("_fallback")
+          ? (result.brief.fallbackReason ?? `Live AI unavailable: ${result.aiRun.reason}. Analyzer fallback returned.`)
+          : runCompletionMessage(status, elapsedMs, result.brief.fallbackReason),
       });
       if (playIntakeSound) playProductIntakeCompletionSound();
       intakeAbortControllerRef.current = null;

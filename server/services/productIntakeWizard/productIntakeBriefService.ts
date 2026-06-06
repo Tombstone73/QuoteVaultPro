@@ -5,6 +5,8 @@ import type {
 } from "@shared/catalogMigrationLabSchemas";
 import {
   productIntakeBriefSchema,
+  type ProductIntakeAiReadiness,
+  type ProductIntakeAiRun,
   type ProductIntakeAiRepairAction,
   type ProductIntakeBrief,
   type ProductIntakeEvidence,
@@ -42,6 +44,12 @@ export type ProductIntakeBriefInput = {
   provider?: AiProviderAdapter | null;
   diagnosticsStore?: ProductIntakeAiDiagnosticsStore | null;
   createdByUserId?: string | null;
+  aiReadiness?: ProductIntakeAiReadiness | null;
+};
+
+export type ProductIntakeBriefGenerationResult = {
+  brief: ProductIntakeBrief;
+  aiRun: ProductIntakeAiRun;
 };
 
 const PRODUCT_INTAKE_BRIEF_PROMPT_VERSION = "product-intake-brief-v1";
@@ -1052,6 +1060,41 @@ async function recordAiDiagnostic(input: ProductIntakeBriefInput, args: {
   }
 }
 
+function elapsed(startedAt: number): number {
+  return Math.max(0, Date.now() - startedAt);
+}
+
+function numericMetadata(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
+}
+
+function providerUnavailableReason(input: ProductIntakeBriefInput, error: any): string {
+  if (input.aiReadiness && !input.aiReadiness.canAttemptLiveAi) return input.aiReadiness.reason;
+  return "provider_unavailable";
+}
+
+function aiRun(args: {
+  attempted: boolean;
+  reachedProvider: boolean;
+  provider?: string | null;
+  model?: string | null;
+  reason: string;
+  elapsedMs?: number | null;
+  timeoutMs?: number | null;
+  sourceResult: ProductIntakeAiRun["sourceResult"];
+}): ProductIntakeAiRun {
+  return {
+    attempted: args.attempted,
+    reachedProvider: args.reachedProvider,
+    provider: args.provider ?? null,
+    model: args.model ?? null,
+    reason: args.reason,
+    elapsedMs: args.elapsedMs ?? null,
+    timeoutMs: args.timeoutMs ?? null,
+    sourceResult: args.sourceResult,
+  };
+}
+
 function promptForBrief(input: ProductIntakeBriefInput, deterministicBrief: ProductIntakeBrief): { system: string; user: string } {
   const analyzerSummary = input.analyzer ? {
     source: input.analyzer.source,
@@ -1090,10 +1133,37 @@ function promptForBrief(input: ProductIntakeBriefInput, deterministicBrief: Prod
   };
 }
 
-export async function generateProductIntakeBrief(input: ProductIntakeBriefInput): Promise<ProductIntakeBrief> {
+export async function generateProductIntakeBriefWithRun(input: ProductIntakeBriefInput): Promise<ProductIntakeBriefGenerationResult> {
+  const startedAt = Date.now();
   const deterministicBrief = fallbackBrief(input, null);
+  if (input.aiReadiness && !input.aiReadiness.canAttemptLiveAi) {
+    const reason = `Live AI unavailable: ${input.aiReadiness.reason}. Analyzer fallback returned.`;
+    return {
+      brief: fallbackBrief(input, reason),
+      aiRun: aiRun({
+        attempted: false,
+        reachedProvider: false,
+        provider: input.aiReadiness.provider,
+        model: input.aiReadiness.model,
+        reason: input.aiReadiness.reason,
+        elapsedMs: elapsed(startedAt),
+        sourceResult: "provider_unavailable_fallback",
+      }),
+    };
+  }
   const provider = input.provider === undefined ? createConfiguredAiProvider() : input.provider;
-  if (!provider) return deterministicBrief;
+  if (!provider) {
+    return {
+      brief: deterministicBrief,
+      aiRun: aiRun({
+        attempted: false,
+        reachedProvider: false,
+        reason: "provider_not_configured",
+        elapsedMs: elapsed(startedAt),
+        sourceResult: "provider_unavailable_fallback",
+      }),
+    };
+  }
 
   try {
     const prompt = promptForBrief(input, deterministicBrief);
@@ -1107,6 +1177,8 @@ export async function generateProductIntakeBrief(input: ProductIntakeBriefInput)
       timeoutMs,
       timeoutUseCase: "product_intake",
     });
+    const responseElapsedMs = numericMetadata(response.requestMetadata?.latencyMs) ?? elapsed(startedAt);
+    const responseTimeoutMs = numericMetadata(response.requestMetadata?.timeoutMs) ?? timeoutMs;
     let aiObject: unknown;
     try {
       aiObject = parseAiJsonObject(response.rawText);
@@ -1119,7 +1191,19 @@ export async function generateProductIntakeBrief(input: ProductIntakeBriefInput)
           code: "invalid_json",
         }],
       });
-      return fallbackBrief(input, "Live AI response could not be safely normalized. Analyzer fallback returned.");
+      return {
+        brief: fallbackBrief(input, "Live AI response could not be safely normalized. Analyzer fallback returned."),
+        aiRun: aiRun({
+          attempted: true,
+          reachedProvider: true,
+          provider: response.provider,
+          model: response.model,
+          reason: "invalid_json",
+          elapsedMs: responseElapsedMs,
+          timeoutMs: responseTimeoutMs,
+          sourceResult: "schema_fallback",
+        }),
+      };
     }
 
     const parsed = productIntakeBriefSchema.safeParse(aiObject);
@@ -1133,10 +1217,22 @@ export async function generateProductIntakeBrief(input: ProductIntakeBriefInput)
           repairActions: repair.actions,
         });
         return {
-          ...repairedParsed.data,
-          workflowState: "REVIEW_READY",
-          source: "live_ai",
-          fallbackReason: null,
+          brief: {
+            ...repairedParsed.data,
+            workflowState: "REVIEW_READY",
+            source: "live_ai",
+            fallbackReason: null,
+          },
+          aiRun: aiRun({
+            attempted: true,
+            reachedProvider: true,
+            provider: response.provider,
+            model: response.model,
+            reason: "live_ai_repaired",
+            elapsedMs: responseElapsedMs,
+            timeoutMs: responseTimeoutMs,
+            sourceResult: "live_ai_repaired",
+          }),
         };
       }
       const validationErrors = repairedParsed.error.issues.map((issue) => ({
@@ -1145,20 +1241,61 @@ export async function generateProductIntakeBrief(input: ProductIntakeBriefInput)
         code: issue.code,
       }));
       await recordAiDiagnostic(input, { response, validationErrors, repairActions: repair.actions });
-      return fallbackBrief(input, "Live AI response could not be safely normalized. Analyzer fallback returned.");
+      return {
+        brief: fallbackBrief(input, "Live AI response could not be safely normalized. Analyzer fallback returned."),
+        aiRun: aiRun({
+          attempted: true,
+          reachedProvider: true,
+          provider: response.provider,
+          model: response.model,
+          reason: "schema_validation_failed",
+          elapsedMs: responseElapsedMs,
+          timeoutMs: responseTimeoutMs,
+          sourceResult: "schema_fallback",
+        }),
+      };
     }
     return {
-      ...parsed.data,
-      workflowState: "REVIEW_READY",
-      source: "live_ai",
-      fallbackReason: null,
+      brief: {
+        ...parsed.data,
+        workflowState: "REVIEW_READY",
+        source: "live_ai",
+        fallbackReason: null,
+      },
+      aiRun: aiRun({
+        attempted: true,
+        reachedProvider: true,
+        provider: response.provider,
+        model: response.model,
+        reason: "live_ai",
+        elapsedMs: responseElapsedMs,
+        timeoutMs: responseTimeoutMs,
+        sourceResult: "live_ai",
+      }),
     };
   } catch (error: any) {
-    const reason = error instanceof AiProviderUnavailableError
-      ? "Live AI unavailable: Feature Review is disabled or AI settings are missing. Analyzer fallback returned."
+    const unavailableReason = error instanceof AiProviderUnavailableError ? providerUnavailableReason(input, error) : null;
+    const reason = unavailableReason
+      ? `Live AI unavailable: ${unavailableReason}. Analyzer fallback returned.`
       : error instanceof AiProviderTimeoutError
         ? `Live AI timed out after ${Math.round(error.timeoutMs / 1000)} seconds. Analyzer fallback returned.`
       : `AI brief generation failed; deterministic analyzer brief returned: ${error?.message ?? "unknown error"}`;
-    return fallbackBrief(input, reason);
+    return {
+      brief: fallbackBrief(input, reason),
+      aiRun: aiRun({
+        attempted: true,
+        reachedProvider: error instanceof AiProviderUnavailableError ? false : error instanceof AiProviderTimeoutError,
+        provider: error instanceof AiProviderTimeoutError ? error.provider : null,
+        model: error instanceof AiProviderTimeoutError ? error.model : null,
+        reason: unavailableReason ?? (error instanceof AiProviderTimeoutError ? "timeout" : String(error?.message ?? "unknown_error")),
+        elapsedMs: error instanceof AiProviderTimeoutError ? error.elapsedMs : elapsed(startedAt),
+        timeoutMs: error instanceof AiProviderTimeoutError ? error.timeoutMs : null,
+        sourceResult: unavailableReason ? "provider_unavailable_fallback" : error instanceof AiProviderTimeoutError ? "timeout_fallback" : "analyzer_fallback",
+      }),
+    };
   }
+}
+
+export async function generateProductIntakeBrief(input: ProductIntakeBriefInput): Promise<ProductIntakeBrief> {
+  return (await generateProductIntakeBriefWithRun(input)).brief;
 }
