@@ -1,6 +1,8 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
+import { Simulate } from "react-dom/test-utils";
 import { beforeAll, describe, expect, jest, test } from "@jest/globals";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TextDecoder, TextEncoder } from "util";
 import type {
   ProductIntakeAnswer,
@@ -20,8 +22,14 @@ jest.mock("@/lib/queryClient", () => ({
   apiRequest: jest.fn(),
 }));
 
+const queryClientMock = jest.requireMock("@/lib/queryClient") as { apiRequest: jest.Mock };
+
 jest.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({ user: { role: "admin" }, isLoading: false }),
+}));
+
+jest.mock("@/lib/platformAccess", () => ({
+  canUsePlatformTools: () => true,
 }));
 
 jest.mock("@/hooks/use-toast", () => ({
@@ -37,6 +45,7 @@ let ProductIntakeQuestionsWizard: typeof import("./CatalogMigrationLab").Product
 let ProductIntakeSessionSummary: typeof import("./CatalogMigrationLab").ProductIntakeSessionSummary;
 let ProductIntakeSessionsList: typeof import("./CatalogMigrationLab").ProductIntakeSessionsList;
 let ProductIntakeAiDiagnosticsPanel: typeof import("./CatalogMigrationLab").ProductIntakeAiDiagnosticsPanel;
+let CatalogMigrationLab: typeof import("./CatalogMigrationLab").default;
 
 beforeAll(async () => {
   const module = await import("./CatalogMigrationLab");
@@ -44,6 +53,7 @@ beforeAll(async () => {
   ProductIntakeSessionSummary = module.ProductIntakeSessionSummary;
   ProductIntakeSessionsList = module.ProductIntakeSessionsList;
   ProductIntakeAiDiagnosticsPanel = module.ProductIntakeAiDiagnosticsPanel;
+  CatalogMigrationLab = module.default;
 });
 
 function session(overrides: Partial<ProductIntakeSession> = {}): ProductIntakeSession {
@@ -178,6 +188,42 @@ const readiness: ProductIntakeReadiness = {
   status: "needs_answers",
 };
 
+function intakeDetail(overrides: Partial<ProductIntakeSession> = {}) {
+  const nextSession = session(overrides);
+  return {
+    session: nextSession,
+    brief: nextSession.brief,
+    questions,
+    answers: [] as ProductIntakeAnswer[],
+    readiness,
+  };
+}
+
+function jsonResponse(data: unknown) {
+  return {
+    json: async () => data,
+  } as Response;
+}
+
+async function renderCatalogMigrationLabPage() {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <CatalogMigrationLab />
+      </QueryClientProvider>,
+    );
+  });
+  return { container, root, queryClient };
+}
+
+function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
+  Simulate.change(textarea, { target: { value } } as any);
+}
+
 describe("Product Intake session UI", () => {
   test("session summary renders status, source, confidence, and readiness", () => {
     const html = renderToStaticMarkup(<ProductIntakeSessionSummary session={session()} readiness={readiness} />);
@@ -298,5 +344,86 @@ describe("Product Intake session UI", () => {
     expect(html).toContain("Repair Actions");
     expect(html).toContain("{&quot;bad&quot;:true}");
     expect(html).not.toContain("apiKey");
+  });
+
+  test("page renders confidence and questions after analyze", async () => {
+    const detail = intakeDetail({ status: "needs_answers" });
+    queryClientMock.apiRequest.mockImplementation(async (...args: unknown[]) => {
+      const [method, url] = args as [string, string];
+      if (method === "GET" && url === "/api/admin/product-intake-wizard/sessions") {
+        return jsonResponse({ success: true, data: { sessions: [] } });
+      }
+      if (method === "GET" && url.startsWith("/api/admin/product-intake-wizard/ai-diagnostics")) {
+        return jsonResponse({ success: true, data: { diagnostics: [] } });
+      }
+      if (method === "POST" && url === "/api/admin/product-intake-wizard/analyze") {
+        return jsonResponse({
+          success: true,
+          data: {
+            analyzer: null,
+            brief: detail.brief,
+            sessionId: detail.session.id,
+            status: detail.session.status,
+            session: detail.session,
+            questions: detail.questions,
+            answers: detail.answers,
+            readiness: detail.readiness,
+          },
+        });
+      }
+      throw new Error(`Unexpected request ${method} ${url}`);
+    });
+
+    const { container, root } = await renderCatalogMigrationLabPage();
+    const description = Array.from(container.querySelectorAll("textarea")).find((textarea) =>
+      textarea.getAttribute("placeholder")?.includes("Foam board"),
+    ) as HTMLTextAreaElement;
+    await act(async () => {
+      setTextareaValue(description, "13oz banner\nCustom width and height\nSingle sided");
+    });
+    const generateButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate Intake Brief"));
+    await act(async () => {
+      generateButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Session Summary");
+    expect(container.textContent).toContain("Current Confidence");
+    expect(container.textContent).toContain("Missing Decisions Wizard");
+    expect(container.textContent).toContain("Which pricing model should this product use?");
+    act(() => root.unmount());
+    document.body.innerHTML = "";
+  });
+
+  test("page renders confidence and questions after opening recent session", async () => {
+    const detail = intakeDetail({ status: "needs_answers" });
+    queryClientMock.apiRequest.mockImplementation(async (...args: unknown[]) => {
+      const [method, url] = args as [string, string];
+      if (method === "GET" && url === "/api/admin/product-intake-wizard/sessions") {
+        return jsonResponse({ success: true, data: { sessions: [detail.session] } });
+      }
+      if (method === "GET" && url === `/api/admin/product-intake-wizard/sessions/${detail.session.id}`) {
+        return jsonResponse({ success: true, data: { ...detail, diagnostics: [] } });
+      }
+      if (method === "GET" && url.startsWith("/api/admin/product-intake-wizard/ai-diagnostics")) {
+        return jsonResponse({ success: true, data: { diagnostics: [] } });
+      }
+      throw new Error(`Unexpected request ${method} ${url}`);
+    });
+
+    const { container, root } = await renderCatalogMigrationLabPage();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const openButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Open");
+    await act(async () => {
+      openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Session Summary");
+    expect(container.textContent).toContain("Current Confidence");
+    expect(container.textContent).toContain("Missing Decisions Wizard");
+    expect(container.textContent).toContain("Which material should this product use?");
+    act(() => root.unmount());
+    document.body.innerHTML = "";
   });
 });

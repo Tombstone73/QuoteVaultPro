@@ -376,7 +376,8 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
 
         const detail = await intakeSessionStore.getSessionDetail(organizationId, req.params.id);
         if (!detail) return res.status(404).json({ success: false, message: "Product Intake session not found.", errorCode: "SESSION_NOT_FOUND" });
-        return res.json({ success: true, data: detail });
+        const diagnostics = await intakeDiagnosticsStore.listRecent(organizationId, { sessionId: req.params.id });
+        return res.json({ success: true, data: { ...detail, diagnostics } });
       } catch (error: any) {
         const handled = handleProductIntakeRouteError(error, res, "Invalid intake session request.");
         if (handled) return handled;
