@@ -31,6 +31,7 @@ import type {
   ProductIntakeAiDiagnosticInput,
   ProductIntakeAiDiagnosticsStore,
 } from "../services/productIntakeWizard/productIntakeDiagnosticsService";
+import { AiProviderTimeoutError } from "../services/ai/providers/AiProviderAdapter";
 
 type AppOptions = {
   authenticated?: boolean;
@@ -300,7 +301,7 @@ function buildApp(
     productIntakeAiProvider: options.productIntakeAiProvider ?? null,
     productIntakeSessionStore,
     productIntakeDiagnosticsStore,
-    productIntakeAiReadinessResolver: options.productIntakeAiReadinessResolver,
+    productIntakeAiReadinessResolver: options.productIntakeAiReadinessResolver ?? (async ({ organizationId, userId, databaseIdentifier }) => aiReadiness({ organizationId, userId, databaseIdentifier })),
   });
 
   return app;
@@ -476,6 +477,79 @@ describe("Catalog Migration Lab routes", () => {
     expect(response.body.data.answers).toEqual([]);
   });
 
+  test("product intake analyze returns aiRun attempted false for missing AI settings", async () => {
+    let providerCalled = false;
+    const provider = {
+      generateJson: async () => {
+        providerCalled = true;
+        return { rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} };
+      },
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+    };
+    const diagnosticsStore = makeMemoryProductIntakeDiagnosticsStore();
+    const app = buildApp({
+      productIntakeAiProvider: provider,
+      productIntakeAiReadinessResolver: async () => aiReadiness({
+        enabled: false,
+        mode: "disabled",
+        featureReviewEnabled: false,
+        provider: null,
+        model: null,
+        reason: "missing_org_ai_settings",
+        canAttemptLiveAi: false,
+      }),
+    }, makeMemoryProductIntakeSessionStore(), diagnosticsStore);
+    const response = await request(app)
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({ sourceType: "text_description", description: "4mm coroplast yard signs" });
+
+    expect(response.status).toBe(200);
+    expect(providerCalled).toBe(false);
+    expect(response.body.data.aiRun).toMatchObject({
+      attempted: false,
+      reachedProvider: false,
+      provider: null,
+      model: null,
+      reason: "missing_org_ai_settings",
+      sourceResult: "provider_unavailable_fallback",
+    });
+    expect(response.body.data.brief.fallbackReason).toContain("missing_org_ai_settings");
+    const diagnostics = await request(app).get(`/api/admin/product-intake-wizard/ai-diagnostics?sessionId=${response.body.data.sessionId}`);
+    expect(diagnostics.body.data.diagnostics).toEqual([]);
+  });
+
+  test("product intake analyze returns aiRun feature review disabled without provider call", async () => {
+    let providerCalled = false;
+    const provider = {
+      generateJson: async () => {
+        providerCalled = true;
+        return { rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} };
+      },
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+    };
+    const response = await request(buildApp({
+      productIntakeAiProvider: provider,
+      productIntakeAiReadinessResolver: async () => aiReadiness({
+        featureReviewEnabled: false,
+        reason: "feature_review_disabled",
+        canAttemptLiveAi: false,
+      }),
+    }))
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({ sourceType: "text_description", description: "13oz banner" });
+
+    expect(response.status).toBe(200);
+    expect(providerCalled).toBe(false);
+    expect(response.body.data.aiRun).toMatchObject({
+      attempted: false,
+      reachedProvider: false,
+      reason: "feature_review_disabled",
+      sourceResult: "provider_unavailable_fallback",
+    });
+  });
+
   test("product intake analyze repairs representative banner AI output and returns live AI brief", async () => {
     const provider = {
       generateJson: async () => ({
@@ -512,6 +586,45 @@ describe("Catalog Migration Lab routes", () => {
     expect(response.body.data.brief.pricingAnalysis.behavior).toBe("quantity_tiers");
     expect(response.body.data.sessionId).toBeTruthy();
     expect(response.body.data.readiness.canCreateDraft).toBe(false);
+    expect(response.body.data.aiRun).toMatchObject({
+      attempted: true,
+      reachedProvider: true,
+      provider: "openai",
+      model: "test-model",
+      sourceResult: "live_ai_repaired",
+    });
+  });
+
+  test("product intake analyze timeout returns aiRun provider and model", async () => {
+    const provider = {
+      generateJson: async () => {
+        throw new AiProviderTimeoutError({
+          timeoutMs: 60000,
+          elapsedMs: 60001,
+          provider: "openai",
+          model: "test-model",
+          useCase: "product_intake",
+        });
+      },
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+    };
+
+    const response = await request(buildApp({ productIntakeAiProvider: provider }))
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({ sourceType: "text_description", description: "13oz banner" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.aiRun).toMatchObject({
+      attempted: true,
+      reachedProvider: true,
+      provider: "openai",
+      model: "test-model",
+      reason: "timeout",
+      elapsedMs: 60001,
+      timeoutMs: 60000,
+      sourceResult: "timeout_fallback",
+    });
   });
 
   test("product intake analyze still succeeds if diagnostics attachment fails after session creation", async () => {

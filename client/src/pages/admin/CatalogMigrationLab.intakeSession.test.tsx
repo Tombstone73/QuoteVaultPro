@@ -376,6 +376,30 @@ describe("Product Intake session UI", () => {
     expect(html).toContain("60s");
   });
 
+  test("run status panel renders explicit provider unavailable reason", () => {
+    const html = renderToStaticMarkup(
+      <ProductIntakeRunStatusPanel
+        runState={{
+          status: "completed_analyzer_fallback",
+          startedAt: 1000,
+          completedAt: 2500,
+          timeoutMs: null,
+          sourceResult: "provider_unavailable_fallback",
+          provider: null,
+          model: null,
+          message: "Live AI unavailable: feature_review_disabled. Analyzer fallback returned.",
+        }}
+        now={2500}
+        playSound={false}
+        onPlaySoundChange={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Live AI unavailable: feature_review_disabled");
+    expect(html).toContain("provider unavailable fallback");
+    expect(html).toContain("Not returned");
+  });
+
   test("Product Intake AI status renders live readiness", () => {
     const html = renderToStaticMarkup(<ProductIntakeAiStatusPanel readiness={aiReadiness()} />);
 
@@ -590,6 +614,16 @@ describe("Product Intake session UI", () => {
             questions: detail.questions,
             answers: detail.answers,
             readiness: detail.readiness,
+            aiRun: {
+              attempted: true,
+              reachedProvider: true,
+              provider: "openai",
+              model: "gpt-test",
+              reason: "live_ai",
+              elapsedMs: 3210,
+              timeoutMs: 60000,
+              sourceResult: "live_ai",
+            },
           },
         });
       }
@@ -610,7 +644,9 @@ describe("Product Intake session UI", () => {
 
     expect(container.textContent).toContain("Session Summary");
     expect(container.textContent).toContain("Current Confidence");
-    expect(container.textContent).toContain("Completed with Analyzer Fallback");
+    expect(container.textContent).toContain("Completed with Live AI");
+    expect(container.textContent).toContain("openai / gpt-test");
+    expect(container.textContent).not.toContain("Not returned");
     expect(container.textContent).toContain("Missing Decisions Wizard");
     expect(container.textContent).toContain("Which pricing model should this product use?");
     act(() => root.unmount());

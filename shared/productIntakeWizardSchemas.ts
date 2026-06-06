@@ -293,6 +293,7 @@ export const productIntakeAiReadinessReasonValues = [
   "feature_review_disabled",
   "missing_provider_config",
   "missing_encryption_key",
+  "managed_env_missing",
   "provider_unavailable",
 ] as const;
 
@@ -318,6 +319,26 @@ export const productIntakeAiReadinessSchema = z.object({
 export const productIntakeAiReadinessResponseSchema = z.object({
   success: z.literal(true),
   data: productIntakeAiReadinessSchema,
+});
+
+export const productIntakeAiRunSourceResultValues = [
+  "live_ai",
+  "live_ai_repaired",
+  "analyzer_fallback",
+  "timeout_fallback",
+  "provider_unavailable_fallback",
+  "schema_fallback",
+] as const;
+
+export const productIntakeAiRunSchema = z.object({
+  attempted: z.boolean(),
+  reachedProvider: z.boolean(),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  reason: z.string(),
+  elapsedMs: z.number().int().min(0).nullable(),
+  timeoutMs: z.number().int().positive().nullable(),
+  sourceResult: z.enum(productIntakeAiRunSourceResultValues),
 });
 
 export const productIntakeWizardAnalyzeRequestSchema = z.object({
@@ -368,6 +389,7 @@ export const productIntakeWizardAnalyzeResponseSchema = z.union([
       questions: z.array(productIntakeQuestionSchema).optional(),
       answers: z.array(productIntakeAnswerSchema).optional(),
       readiness: productIntakeReadinessSchema.optional(),
+      aiRun: productIntakeAiRunSchema.optional(),
     }),
   }),
   z.object({
@@ -390,6 +412,7 @@ export type ProductIntakeAiDiagnosticIssue = z.infer<typeof productIntakeAiDiagn
 export type ProductIntakeAiRepairAction = z.infer<typeof productIntakeAiRepairActionSchema>;
 export type ProductIntakeAiDiagnostic = z.infer<typeof productIntakeAiDiagnosticSchema>;
 export type ProductIntakeAiReadiness = z.infer<typeof productIntakeAiReadinessSchema>;
+export type ProductIntakeAiRun = z.infer<typeof productIntakeAiRunSchema>;
 export type ProductIntakeAnswerPatchItem = z.infer<typeof productIntakeAnswerPatchItemSchema>;
 export type ProductIntakeAnswersPatchRequest = z.infer<typeof productIntakeAnswersPatchRequestSchema>;
 export type ProductIntakeSessionStatus = z.infer<typeof productIntakeSessionSchema>["status"];

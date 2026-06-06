@@ -17,7 +17,7 @@ import {
   type CatalogMigrationLabReferenceData,
 } from "../services/catalogMigrationLab/analyzer";
 import {
-  generateProductIntakeBrief,
+  generateProductIntakeBriefWithRun,
   type ProductIntakeTemplateReference,
 } from "../services/productIntakeWizard/productIntakeBriefService";
 import {
@@ -183,6 +183,12 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
   const intakeSessionStore = middleware.productIntakeSessionStore ?? createDbProductIntakeSessionStore();
   const intakeDiagnosticsStore = middleware.productIntakeDiagnosticsStore ?? createDbProductIntakeAiDiagnosticsStore();
 
+  const getAiReadiness = async (organizationId: string, userId: string | null, databaseIdentifier: string | null) => (
+    middleware.productIntakeAiReadinessResolver
+      ? middleware.productIntakeAiReadinessResolver({ organizationId, userId, databaseIdentifier })
+      : resolveProductIntakeAiReadiness({ organizationId, userId, databaseIdentifier })
+  );
+
   app.post(
     "/api/admin/catalog-migration-lab/analyze",
     middleware.isAuthenticated,
@@ -274,6 +280,9 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
           });
         }
 
+        const userId = requestUserId(req);
+        const databaseIdentifier = await safeCurrentDatabaseIdentifier();
+        const aiReadiness = await getAiReadiness(organizationId, userId, databaseIdentifier);
         const referenceData = await getReferenceData(organizationId);
         let analyzer = null;
         if (parsed.sourceType !== "text_description") {
@@ -287,7 +296,7 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
         }
 
         const sourceFingerprint = fingerprintProductIntakeRequest(parsed, analyzer);
-        const brief = await generateProductIntakeBrief({
+        const { brief, aiRun } = await generateProductIntakeBriefWithRun({
           orgId: organizationId,
           request: parsed,
           analyzer,
@@ -296,11 +305,12 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
           sourceFingerprint,
           provider: middleware.productIntakeAiProvider,
           diagnosticsStore: intakeDiagnosticsStore,
-          createdByUserId: requestUserId(req),
+          createdByUserId: userId,
+          aiReadiness,
         });
         const intakeSession = await intakeSessionStore.createFromAnalysis({
           organizationId,
-          userId: requestUserId(req),
+          userId,
           request: parsed,
           analyzer,
           brief,
@@ -331,6 +341,7 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
             questions: intakeSession.questions,
             answers: intakeSession.answers,
             readiness: intakeSession.readiness,
+            aiRun,
           },
         });
       } catch (error: any) {
@@ -467,9 +478,7 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
         const organizationId = getRequestOrganizationId(req);
         const userId = requestUserId(req);
         const databaseIdentifier = await safeCurrentDatabaseIdentifier();
-        const readiness = middleware.productIntakeAiReadinessResolver
-          ? await middleware.productIntakeAiReadinessResolver({ organizationId, userId, databaseIdentifier })
-          : await resolveProductIntakeAiReadiness({ organizationId, userId, databaseIdentifier });
+        const readiness = await getAiReadiness(organizationId, userId, databaseIdentifier);
         return res.json({ success: true, data: readiness });
       } catch (error: any) {
         const handled = handleProductIntakeRouteError(error, res, "Invalid Product Intake AI readiness request.");

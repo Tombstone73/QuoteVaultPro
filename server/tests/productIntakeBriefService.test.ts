@@ -11,6 +11,7 @@ import {
 import {
   detectRedundantFields,
   generateProductIntakeBrief,
+  generateProductIntakeBriefWithRun,
   matchOptionTemplates,
   normalizeProductIntakeBehaviorAlias,
   normalizeProductIntakeConfidence,
@@ -505,7 +506,58 @@ describe("Product Intake Brief service", () => {
     });
 
     expect(brief.source).toBe("rule_based_fallback");
-    expect(brief.fallbackReason).toBe("Live AI unavailable: Feature Review is disabled or AI settings are missing. Analyzer fallback returned.");
+    expect(brief.fallbackReason).toBe("Live AI unavailable: provider_unavailable. Analyzer fallback returned.");
+  });
+
+  test("AI readiness blocks provider call and returns explicit aiRun metadata", async () => {
+    let providerCalled = false;
+    const diagnostics: ProductIntakeAiDiagnosticInput[] = [];
+    const result = await generateProductIntakeBriefWithRun({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "4mm coroplast yard signs" },
+      analyzer: null,
+      templates,
+      provider: {
+        generateJson: async () => {
+          providerCalled = true;
+          return { rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} };
+        },
+        generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+        generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+      },
+      diagnosticsStore: {
+        recordSchemaValidationFailure: async (input) => {
+          diagnostics.push(input);
+        },
+        attachRecentToSession: async () => undefined,
+        listRecent: async () => [],
+      },
+      aiReadiness: {
+        organizationId: "org_1",
+        userId: "user_1",
+        databaseIdentifier: "testdb",
+        enabled: false,
+        mode: "disabled",
+        featureReviewEnabled: false,
+        provider: null,
+        model: null,
+        reason: "missing_org_ai_settings",
+        managedEnv: { endpointPresent: false, apiKeyPresent: false, modelPresent: false },
+        encryptionKeyPresent: false,
+        canAttemptLiveAi: false,
+      },
+    });
+
+    expect(providerCalled).toBe(false);
+    expect(diagnostics).toEqual([]);
+    expect(result.brief.source).toBe("rule_based_fallback");
+    expect(result.brief.fallbackReason).toContain("missing_org_ai_settings");
+    expect(result.aiRun).toMatchObject({
+      attempted: false,
+      reachedProvider: false,
+      reason: "missing_org_ai_settings",
+      sourceResult: "provider_unavailable_fallback",
+    });
   });
 
   test("records AI schema validation diagnostics without changing fallback behavior", async () => {
