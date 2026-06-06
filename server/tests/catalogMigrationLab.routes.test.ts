@@ -421,6 +421,62 @@ describe("Catalog Migration Lab routes", () => {
     expect(response.body.data.answers).toEqual([]);
   });
 
+  test("product intake analyze still succeeds if diagnostics attachment fails after session creation", async () => {
+    const diagnosticsStore: ProductIntakeAiDiagnosticsStore = {
+      recordSchemaValidationFailure: async () => undefined,
+      attachRecentToSession: async () => {
+        throw new Error("diagnostics table unavailable");
+      },
+      listRecent: async () => [],
+    };
+    const response = await request(buildApp({}, makeMemoryProductIntakeSessionStore(), diagnosticsStore))
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({
+        sourceType: "text_description",
+        description: "13oz banner custom width and height, single sided, quantity based pricing, proof required",
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.sessionId).toBeTruthy();
+    expect(response.body.data.session.status).toMatch(/needs_answers|ready_for_draft|analyzed/);
+    expect(response.body.data.readiness.canCreateDraft).toBe(false);
+  });
+
+  test("product intake route supports pvc text description with success response", async () => {
+    const response = await request(buildApp())
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({
+        sourceType: "text_description",
+        description: "PVC signs printed on 3mm PVC. Sizes: 12x18 18x24 24x36. Single or double sided. Contour cut shapes available. Optional grommets.",
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.sessionId).toBeTruthy();
+    expect(response.body.data.brief.workflowState).toBe("REVIEW_READY");
+    expect(response.body.data.questions).toEqual(expect.any(Array));
+    expect(response.body.data.readiness).toMatchObject({
+      canCreateDraft: false,
+      answeredCount: 0,
+    });
+  });
+
+  test("product intake route returns unknown source shape only for true invalid source shape", async () => {
+    const response = await request(buildApp())
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({
+        sourceType: "text_description",
+        description: "",
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({
+      success: false,
+      errorCode: "UNKNOWN_SOURCE_SHAPE",
+    });
+  });
+
   test("product intake sessions can be listed, opened, answered, and abandoned", async () => {
     const store = makeMemoryProductIntakeSessionStore();
     const app = buildApp({}, store);
