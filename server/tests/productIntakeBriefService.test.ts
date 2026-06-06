@@ -5,6 +5,9 @@ import {
 } from "../../shared/productIntakeWizardSchemas";
 import { analyzeCatalogMigrationSource } from "../services/catalogMigrationLab/analyzer";
 import {
+  type ProductIntakeAiDiagnosticInput,
+} from "../services/productIntakeWizard/productIntakeDiagnosticsService";
+import {
   detectRedundantFields,
   generateProductIntakeBrief,
   matchOptionTemplates,
@@ -157,5 +160,48 @@ describe("Product Intake Brief service", () => {
     expect(brief.productIdentity.likelyProductName.value).toBe("Foam board signs");
     expect(brief.productIdentity.category.value).toBe("Foam Board");
     expect(brief.missingDecisions.some((decision) => decision.id === "select-material")).toBe(true);
+  });
+
+  test("records AI schema validation diagnostics without changing fallback behavior", async () => {
+    const diagnostics: ProductIntakeAiDiagnosticInput[] = [];
+    const provider = {
+      generateJson: async () => ({
+        rawText: JSON.stringify({ workflowState: "REVIEW_READY", source: "live_ai" }),
+        provider: "openai",
+        model: "test-model",
+        requestMetadata: {},
+      }),
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+    };
+
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "Foam board signs" },
+      analyzer: null,
+      templates,
+      provider,
+      createdByUserId: "user_1",
+      diagnosticsStore: {
+        recordSchemaValidationFailure: async (input) => {
+          diagnostics.push(input);
+        },
+        listRecent: async () => [],
+      },
+    });
+
+    expect(brief.source).toBe("rule_based_fallback");
+    expect(brief.fallbackReason).toContain("schema validation");
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({
+      organizationId: "org_1",
+      sourceType: "text_description",
+      provider: "openai",
+      model: "test-model",
+      createdByUserId: "user_1",
+    });
+    expect(diagnostics[0].rawAiResponse).toContain("workflowState");
+    expect(diagnostics[0].failedSchemaPaths.length).toBeGreaterThan(0);
+    expect(JSON.stringify(diagnostics[0])).not.toMatch(/apiKey|sk-/i);
   });
 });
