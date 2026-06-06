@@ -1,4 +1,5 @@
 import {
+  AiProviderTimeoutError,
   AiProviderUnavailableError,
   type AiProviderAdapter,
   type AiProviderRequest,
@@ -6,7 +7,8 @@ import {
 } from "./AiProviderAdapter";
 import { aiProviderResolver } from "../aiProviderResolver";
 
-function getTimeoutMs(): number {
+export function resolveAiProviderTimeoutMs(overrideMs?: number): number {
+  if (Number.isFinite(overrideMs) && Number(overrideMs) > 0) return Number(overrideMs);
   const parsed = Number(process.env.AI_PROVIDER_TIMEOUT_MS || process.env.AI_BUG_REVIEW_TIMEOUT_MS || 30000);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 30000;
 }
@@ -79,7 +81,8 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
 
     const endpoint = composeOpenAiChatCompletionsEndpoint(config.endpoint, config.provider);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), getTimeoutMs());
+    const timeoutMs = resolveAiProviderTimeoutMs(request.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const started = Date.now();
 
     try {
@@ -131,8 +134,31 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
           source: config.source,
           providerRequestId: body?.id ?? null,
           usage: body?.usage ?? null,
+          timeoutMs,
+          timeoutUseCase: request.timeoutUseCase ?? request.feature,
         },
       };
+    } catch (error) {
+      if (controller.signal.aborted) {
+        const elapsedMs = Date.now() - started;
+        console.warn("[AI_PROVIDER] Provider request timed out.", {
+          feature: request.feature,
+          useCase: request.timeoutUseCase ?? request.feature,
+          timeoutMs,
+          elapsedMs,
+          provider: config.provider,
+          model: config.model,
+          endpoint: safeEndpointDiagnostic(endpoint),
+        });
+        throw new AiProviderTimeoutError({
+          timeoutMs,
+          elapsedMs,
+          provider: config.provider,
+          model: config.model,
+          useCase: request.timeoutUseCase ?? request.feature,
+        });
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
     }

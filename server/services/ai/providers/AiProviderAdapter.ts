@@ -7,6 +7,8 @@ export interface AiProviderRequest {
   user: string;
   promptVersion: string;
   repairAttempt?: boolean;
+  timeoutMs?: number;
+  timeoutUseCase?: string;
   providerConfig?: {
     enabled: boolean;
     provider: string | null;
@@ -35,5 +37,29 @@ export class AiProviderUnavailableError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AiProviderUnavailableError";
+  }
+}
+
+export class AiProviderTimeoutError extends Error {
+  timeoutMs: number;
+  elapsedMs: number;
+  provider: string | null;
+  model: string | null;
+  useCase: string;
+
+  constructor(args: {
+    timeoutMs: number;
+    elapsedMs: number;
+    provider: string | null;
+    model: string | null;
+    useCase: string;
+  }) {
+    super(`AI provider request timed out after ${Math.round(args.timeoutMs / 1000)} seconds.`);
+    this.name = "AiProviderTimeoutError";
+    this.timeoutMs = args.timeoutMs;
+    this.elapsedMs = args.elapsedMs;
+    this.provider = args.provider;
+    this.model = args.model;
+    this.useCase = args.useCase;
   }
 }

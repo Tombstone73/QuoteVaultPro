@@ -1,4 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
+import { AiProviderTimeoutError, type AiProviderRequest } from "../services/ai/providers/AiProviderAdapter";
 import {
   productIntakeBriefSchema,
   productIntakeWizardAnalyzeRequestSchema,
@@ -14,6 +15,7 @@ import {
   normalizeProductIntakeBehaviorAlias,
   normalizeProductIntakeConfidence,
   repairProductIntakeBriefShape,
+  resolveProductIntakeAiTimeoutMs,
   type ProductIntakeTemplateReference,
 } from "../services/productIntakeWizard/productIntakeBriefService";
 
@@ -372,6 +374,91 @@ describe("Product Intake Brief service", () => {
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0].validationErrors).toEqual([]);
     expect(diagnostics[0].repairActions?.map((action) => action.path)).toEqual(expect.arrayContaining(["pricingAnalysis", "overallConfidence"]));
+  });
+
+  test("resolves Product Intake AI timeout precedence with 60 second default", () => {
+    expect(resolveProductIntakeAiTimeoutMs({} as NodeJS.ProcessEnv)).toBe(60000);
+    expect(resolveProductIntakeAiTimeoutMs({ AI_BUG_REVIEW_TIMEOUT_MS: "31000" } as NodeJS.ProcessEnv)).toBe(31000);
+    expect(resolveProductIntakeAiTimeoutMs({
+      AI_PROVIDER_TIMEOUT_MS: "45000",
+      AI_BUG_REVIEW_TIMEOUT_MS: "31000",
+    } as NodeJS.ProcessEnv)).toBe(45000);
+    expect(resolveProductIntakeAiTimeoutMs({
+      PRODUCT_INTAKE_AI_TIMEOUT_MS: "90000",
+      AI_PROVIDER_TIMEOUT_MS: "45000",
+      AI_BUG_REVIEW_TIMEOUT_MS: "31000",
+    } as NodeJS.ProcessEnv)).toBe(90000);
+  });
+
+  test("passes Product Intake timeout and use case to the AI provider", async () => {
+    const providerRequests: AiProviderRequest[] = [];
+    const previousTimeout = process.env.PRODUCT_INTAKE_AI_TIMEOUT_MS;
+    process.env.PRODUCT_INTAKE_AI_TIMEOUT_MS = "65000";
+    const provider = {
+      generateJson: async (request: AiProviderRequest) => {
+        providerRequests.push(request);
+        return {
+          rawText: JSON.stringify({
+            ...productIntakeBriefSchema.parse(await generateProductIntakeBrief({
+              orgId: "org_inner",
+              request: { sourceType: "text_description", description: "13oz banner" },
+              analyzer: null,
+              templates,
+              provider: null,
+            })),
+            source: "live_ai",
+          }),
+          provider: "openai",
+          model: "test-model",
+          requestMetadata: {},
+        };
+      },
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+    };
+
+    try {
+      await generateProductIntakeBrief({
+        orgId: "org_1",
+        request: { sourceType: "text_description", description: "13oz banner" },
+        analyzer: null,
+        templates,
+        provider,
+      });
+    } finally {
+      if (previousTimeout === undefined) delete process.env.PRODUCT_INTAKE_AI_TIMEOUT_MS;
+      else process.env.PRODUCT_INTAKE_AI_TIMEOUT_MS = previousTimeout;
+    }
+
+    expect(providerRequests[0]?.timeoutMs).toBe(65000);
+    expect(providerRequests[0]?.timeoutUseCase).toBe("product_intake");
+  });
+
+  test("provider timeout falls back with user-friendly Product Intake message", async () => {
+    const provider = {
+      generateJson: async () => {
+        throw new AiProviderTimeoutError({
+          timeoutMs: 60000,
+          elapsedMs: 60001,
+          provider: "openai",
+          model: "gpt-test",
+          useCase: "product_intake",
+        });
+      },
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+    };
+
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "13oz banner" },
+      analyzer: null,
+      templates,
+      provider,
+    });
+
+    expect(brief.source).toBe("rule_based_fallback");
+    expect(brief.fallbackReason).toBe("Live AI timed out after 60 seconds. Analyzer fallback returned.");
   });
 
   test("records AI schema validation diagnostics without changing fallback behavior", async () => {

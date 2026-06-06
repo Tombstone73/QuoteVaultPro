@@ -13,7 +13,7 @@ import {
 } from "@shared/productIntakeWizardSchemas";
 import { parseAiJsonObject } from "../ai/bugReviewValidator";
 import { createConfiguredAiProvider } from "../ai/providers/configuredProvider";
-import { AiProviderUnavailableError, type AiProviderAdapter } from "../ai/providers/AiProviderAdapter";
+import { AiProviderTimeoutError, AiProviderUnavailableError, type AiProviderAdapter } from "../ai/providers/AiProviderAdapter";
 import type { ProductIntakeAiDiagnosticsStore } from "./productIntakeDiagnosticsService";
 
 export type ProductIntakeTemplateReference = {
@@ -45,6 +45,7 @@ export type ProductIntakeBriefInput = {
 };
 
 const PRODUCT_INTAKE_BRIEF_PROMPT_VERSION = "product-intake-brief-v1";
+const PRODUCT_INTAKE_AI_DEFAULT_TIMEOUT_MS = 60000;
 
 function clampConfidence(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -89,6 +90,14 @@ function textDescriptionProductName(description: string): string {
   if (signals.productName) return signals.productName;
   const beforeWith = cleaned.split(/\bwith\b/i)[0]?.trim();
   return (beforeWith || cleaned).slice(0, 120);
+}
+
+export function resolveProductIntakeAiTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.PRODUCT_INTAKE_AI_TIMEOUT_MS
+    ?? env.AI_PROVIDER_TIMEOUT_MS
+    ?? env.AI_BUG_REVIEW_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : PRODUCT_INTAKE_AI_DEFAULT_TIMEOUT_MS;
 }
 
 function inferCategoryFromText(text: string): { value: string | null; confidence: number } {
@@ -1083,12 +1092,15 @@ export async function generateProductIntakeBrief(input: ProductIntakeBriefInput)
 
   try {
     const prompt = promptForBrief(input, deterministicBrief);
+    const timeoutMs = resolveProductIntakeAiTimeoutMs();
     const response = await provider.generateJson({
       orgId: input.orgId,
       feature: "feature_review",
       system: prompt.system,
       user: prompt.user,
       promptVersion: PRODUCT_INTAKE_BRIEF_PROMPT_VERSION,
+      timeoutMs,
+      timeoutUseCase: "product_intake",
     });
     let aiObject: unknown;
     try {
@@ -1139,6 +1151,8 @@ export async function generateProductIntakeBrief(input: ProductIntakeBriefInput)
   } catch (error: any) {
     const reason = error instanceof AiProviderUnavailableError
       ? "AI provider unavailable; deterministic analyzer brief returned."
+      : error instanceof AiProviderTimeoutError
+        ? `Live AI timed out after ${Math.round(error.timeoutMs / 1000)} seconds. Analyzer fallback returned.`
       : `AI brief generation failed; deterministic analyzer brief returned: ${error?.message ?? "unknown error"}`;
     return fallbackBrief(input, reason);
   }

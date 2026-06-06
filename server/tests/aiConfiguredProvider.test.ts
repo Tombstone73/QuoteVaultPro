@@ -2,9 +2,15 @@ import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import {
   composeOpenAiChatCompletionsEndpoint,
   OpenAiCompatibleBugReviewProvider,
+  resolveAiProviderTimeoutMs,
 } from "../services/ai/providers/configuredProvider";
 
 const originalFetch = global.fetch;
+
+function restoreEnv(name: string, value: string | undefined) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
 
 afterEach(() => {
   global.fetch = originalFetch;
@@ -12,6 +18,29 @@ afterEach(() => {
 });
 
 describe("configured AI provider", () => {
+  test("keeps existing default timeout for non-overridden provider calls", () => {
+    const previousProviderTimeout = process.env.AI_PROVIDER_TIMEOUT_MS;
+    const previousBugReviewTimeout = process.env.AI_BUG_REVIEW_TIMEOUT_MS;
+    delete process.env.AI_PROVIDER_TIMEOUT_MS;
+    delete process.env.AI_BUG_REVIEW_TIMEOUT_MS;
+    try {
+      expect(resolveAiProviderTimeoutMs()).toBe(30000);
+    } finally {
+      restoreEnv("AI_PROVIDER_TIMEOUT_MS", previousProviderTimeout);
+      restoreEnv("AI_BUG_REVIEW_TIMEOUT_MS", previousBugReviewTimeout);
+    }
+  });
+
+  test("uses explicit request timeout before global provider timeout", () => {
+    const previousProviderTimeout = process.env.AI_PROVIDER_TIMEOUT_MS;
+    process.env.AI_PROVIDER_TIMEOUT_MS = "45000";
+    try {
+      expect(resolveAiProviderTimeoutMs(60000)).toBe(60000);
+    } finally {
+      restoreEnv("AI_PROVIDER_TIMEOUT_MS", previousProviderTimeout);
+    }
+  });
+
   test("composes OpenAI base endpoint to chat completions endpoint", () => {
     expect(composeOpenAiChatCompletionsEndpoint("https://api.openai.com", "openai"))
       .toBe("https://api.openai.com/v1/chat/completions");
