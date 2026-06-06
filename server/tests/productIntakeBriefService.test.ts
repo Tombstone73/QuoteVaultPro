@@ -193,6 +193,40 @@ describe("Product Intake Brief service", () => {
     expect(brief.optionalOptions.find((option) => option.normalizedGroup === "Finishing")?.sampleValues).toContain("Rounded corners");
   });
 
+  test("extracts banner setup signals from realistic text", async () => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: {
+        sourceType: "text_description",
+        description: [
+          "13oz banner",
+          "Custom width and height",
+          "Single sided",
+          "Hemming optional",
+          "Grommets optional",
+          "Pole pockets optional",
+          "Quantity based pricing",
+          "Route to roll printer",
+          "Proof required",
+        ].join("\n"),
+      },
+      analyzer: null,
+      templates,
+      materials: [{ id: "mat_banner", sku: "BAN13", name: "13oz Scrim Banner" }],
+      provider: null,
+    });
+
+    expect(brief.productIdentity.likelyProductName.value).toBe("13oz Banner");
+    expect(brief.productIdentity.category.value).toBe("Banners");
+    expect(brief.materialAnalysis.likelyMaterialMatches[0]).toMatchObject({ materialId: "mat_banner" });
+    expect(brief.sizeBehavior.behavior).toBe("custom_size");
+    expect(brief.quantityBehavior.behavior).toBe("quantity_tiers");
+    expect(brief.pricingAnalysis.behavior).toBe("quantity_tiers");
+    expect(brief.requiredOptions.find((option) => option.normalizedGroup === "Printed Sides")?.sampleValues).toContain("Single sided");
+    expect(brief.optionalOptions.find((option) => option.normalizedGroup === "Finishing")?.sampleValues).toEqual(expect.arrayContaining(["Hemming", "Grommets", "Pole pockets"]));
+    expect(brief.draftWarnings.map((warning) => warning.code)).toEqual(expect.arrayContaining(["proof_required", "routing_signal"]));
+  });
+
   test("repairs simple AI schema shape before falling back", async () => {
     const diagnostics: ProductIntakeAiDiagnosticInput[] = [];
     const provider = {

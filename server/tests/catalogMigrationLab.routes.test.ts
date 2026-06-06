@@ -66,7 +66,11 @@ function makeMemoryProductIntakeSessionStore(): ProductIntakeSessionStore {
         sourceType: input.request.sourceType === "text_description" ? "text_description" : input.request.sourceType === "uploaded_json" ? "json_upload" : "json_paste",
         sourceFingerprint: input.analyzer?.source.fingerprint ?? "fingerprint",
         brief: input.brief,
-        confidence: { overallConfidence: input.brief.overallConfidence },
+        confidence: {
+          originalConfidence: input.brief.overallConfidence,
+          currentConfidence: input.brief.overallConfidence,
+          overallConfidence: input.brief.overallConfidence,
+        },
         missingDecisions: input.brief.missingDecisions,
         status: resolveProductIntakeSessionStatus(input.brief, questions),
         createdProductId: null,
@@ -376,6 +380,47 @@ describe("Catalog Migration Lab routes", () => {
     expect(response.body.data.session.status).toBe("needs_answers");
   });
 
+  test("product intake analyze response includes confidence, questions, and readiness for a banner prompt", async () => {
+    const response = await request(buildApp())
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({
+        sourceType: "text_description",
+        description: [
+          "13oz banner",
+          "Custom width and height",
+          "Single sided",
+          "Hemming optional",
+          "Grommets optional",
+          "Pole pockets optional",
+          "Quantity based pricing",
+          "Route to roll printer",
+          "Proof required",
+        ].join("\n"),
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      sessionId: expect.any(String),
+      status: expect.any(String),
+      session: expect.objectContaining({
+        confidence: expect.objectContaining({
+          originalConfidence: expect.any(Number),
+          currentConfidence: expect.any(Number),
+        }),
+      }),
+      readiness: expect.objectContaining({
+        unansweredRequiredCount: expect.any(Number),
+        answeredCount: 0,
+        canCreateDraft: false,
+      }),
+    });
+    expect(response.body.data.brief.productIdentity.likelyProductName.value).toMatch(/Banner/);
+    expect(response.body.data.brief.overallConfidence).toEqual(expect.any(Number));
+    expect(Array.isArray(response.body.data.questions)).toBe(true);
+    expect(response.body.data.questions.some((question: any) => question.questionKey === "confirm-routing-proof-prepress")).toBe(true);
+    expect(response.body.data.answers).toEqual([]);
+  });
+
   test("product intake sessions can be listed, opened, answered, and abandoned", async () => {
     const store = makeMemoryProductIntakeSessionStore();
     const app = buildApp({}, store);
@@ -395,6 +440,9 @@ describe("Catalog Migration Lab routes", () => {
     const detail = await request(app).get(`/api/admin/product-intake-wizard/sessions/${sessionId}`);
     expect(detail.status).toBe(200);
     expect(detail.body.data.readiness.canCreateDraft).toBe(false);
+    expect(Array.isArray(detail.body.data.questions)).toBe(true);
+    expect(Array.isArray(detail.body.data.answers)).toBe(true);
+    expect(Array.isArray(detail.body.data.diagnostics)).toBe(true);
 
     const answered = await request(app)
       .patch(`/api/admin/product-intake-wizard/sessions/${sessionId}/answers`)

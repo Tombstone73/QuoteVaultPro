@@ -108,9 +108,11 @@ type TextDescriptionSignals = {
   productType: string | null;
   materialReferences: string[];
   sizes: string[];
+  customSize: boolean;
   sides: string[];
   printOptions: string[];
   finishingOptions: string[];
+  quantityBasedPricing: boolean;
   proofSignals: string[];
   routingSignals: string[];
   evidence: ProductIntakeEvidence[];
@@ -120,6 +122,8 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   const normalized = normalizeText(description);
   const lines = description.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const materialReferences: string[] = [];
+  const customSize = /custom\s+(?:width\s+and\s+height|size)|width\s+and\s+height/i.test(description);
+  const quantityBasedPricing = /quantity[\s-]*(?:based|tier|break|pricing)|qty[\s-]*(?:based|tier|break|pricing)/i.test(description);
   const sizeMatches = Array.from(description.matchAll(/\b(\d{1,3}(?:\.\d+)?)\s*[x×]\s*(\d{1,3}(?:\.\d+)?)\b/gi))
     .map((match) => `${match[1]}x${match[2]}`);
 
@@ -130,6 +134,10 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   } else if (/\bstyrene\b/i.test(description)) {
     materialReferences.push("Styrene");
   }
+  const bannerOzMatch = description.match(/(?:\b(\d{1,2})\s*oz\b.*\bbanner\b|\bbanner\b.*\b(\d{1,2})\s*oz\b)/i);
+  const bannerOz = bannerOzMatch ? bannerOzMatch[1] ?? bannerOzMatch[2] : null;
+  if (bannerOz) materialReferences.push(`${bannerOz}oz Banner`);
+  else if (/\bbanner\b/i.test(description)) materialReferences.push("Banner");
 
   const sides: string[] = [];
   if (/single[\s-]*sided/i.test(description)) sides.push("Single sided");
@@ -140,31 +148,37 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
 
   const finishingOptions: string[] = [];
   if (/rounded\s+corners?/i.test(description)) finishingOptions.push("Rounded corners");
+  if (/\bhemm?ing\b/i.test(description)) finishingOptions.push("Hemming");
+  if (/\bgrommets?\b/i.test(description)) finishingOptions.push("Grommets");
+  if (/pole\s+pockets?/i.test(description)) finishingOptions.push("Pole pockets");
 
   const proofSignals: string[] = [];
   if (/proof\s+(required|needed|mandatory)|requires?\s+proof/i.test(description)) proofSignals.push("Proof required");
 
   const routingSignals = unique([
     /\bflatbed\b/i.test(description) ? "Flatbed" : null,
-    /\broll\b/i.test(description) ? "Roll" : null,
+    /roll\s+printer|route\s+to\s+roll|\broll\b/i.test(description) ? "Roll printer" : null,
     /\brouter\b/i.test(description) ? "Router" : null,
     /\bcut(?:ting)?\b/i.test(description) ? "Cut" : null,
   ]);
 
   const isStyreneRigid = /styrene/.test(normalized) && (/rigid|sheet|sign/.test(normalized) || sizeMatches.length > 0);
-  const productName = isStyreneRigid ? "Styrene Signs" : null;
-  const category = isStyreneRigid ? "Rigid Signs" : null;
+  const isBanner = /\bbanner\b/.test(normalized);
+  const productName = isStyreneRigid ? "Styrene Signs" : isBanner ? (bannerOz ? `${bannerOz}oz Banner` : "Banner") : null;
+  const category = isStyreneRigid ? "Rigid Signs" : isBanner ? "Banners" : null;
 
   return {
     productName,
     category,
     categoryConfidence: category ? 86 : 20,
-    productType: isStyreneRigid ? "rigid_signage" : null,
+    productType: isStyreneRigid ? "rigid_signage" : isBanner ? "banner" : null,
     materialReferences: unique(materialReferences),
     sizes: unique(sizeMatches),
+    customSize,
     sides: unique(sides),
     printOptions: unique(printOptions),
     finishingOptions: unique(finishingOptions),
+    quantityBasedPricing,
     proofSignals,
     routingSignals,
     evidence: [
@@ -188,6 +202,7 @@ function matchMaterialsFromText(signals: TextDescriptionSignals, materials: Prod
       const normalized = normalizeText(haystack);
       let score = 0;
       if (referenceText.includes("styrene") && normalized.includes("styrene")) score += 55;
+      if (referenceText.includes("banner") && normalized.includes("banner")) score += 55;
       for (const gauge of Array.from(referenceGauges)) {
         if (haystack.toLowerCase().includes(gauge.toLowerCase()) || normalized.includes(gauge.replace(/[^0-9]/g, ""))) score += 35;
       }
@@ -487,15 +502,15 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
   const analyzerRequiredOptions = buildOptions(product, input.templates, true);
   const analyzerOptionalOptions = buildOptions(product, input.templates, false);
   const textRequiredOptions = textSignals ? [
-    textSignals.sizes.length > 0 ? textOptionGroup({
+    textSignals.sizes.length > 0 || textSignals.customSize ? textOptionGroup({
       label: "Size",
       normalizedGroup: "Size",
       required: true,
-      sampleValues: textSignals.sizes,
+      sampleValues: textSignals.sizes.length > 0 ? textSignals.sizes : ["Custom width", "Custom height"],
       sourcePath: "$.description.sizes",
-      confidence: 90,
+      confidence: textSignals.sizes.length > 0 ? 90 : 84,
       templates: input.templates,
-      reason: "Fixed size options were listed in the text description.",
+      reason: textSignals.sizes.length > 0 ? "Fixed size options were listed in the text description." : "Custom width and height were stated in the text description.",
     }) : null,
     textSignals.sides.length > 0 ? textOptionGroup({
       label: "Printed Sides",
@@ -544,15 +559,34 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
           notes: textSignals.sizes.join(", "),
           evidence: [evidence("$.description.sizes", "Sizes", textSignals.sizes.join(", "), "Fixed size options were parsed from the text description.")],
         }
+      : textSignals.customSize
+        ? {
+            behavior: "custom_size",
+            confidence: 88,
+            notes: "Custom width and height",
+            evidence: [evidence("$.description.sizes", "Size", "Custom width and height", "Custom size behavior was parsed from the text description.")],
+          }
       : analyzerBehaviors.sizeBehavior,
-    quantityBehavior: textSignals.sizes.length > 0
+    quantityBehavior: textSignals.quantityBasedPricing
+      ? {
+          behavior: "quantity_tiers",
+          confidence: 84,
+          evidence: [evidence("$.description.pricing", "Quantity", "Quantity based pricing", "Quantity-based pricing was stated in the text description.")],
+        }
+      : textSignals.sizes.length > 0 || textSignals.customSize
       ? {
           behavior: "per_piece",
           confidence: 68,
-          evidence: [evidence("$.description.sizes", "Quantity", textSignals.sizes.join(", "), "Rigid sheet/sign products with fixed size options are usually ordered per piece; confirm if needed.")],
+          evidence: [evidence("$.description.sizes", "Quantity", textSignals.sizes.join(", ") || "Custom size", "Product appears to be ordered per piece; confirm if needed.")],
         }
       : analyzerBehaviors.quantityBehavior,
-    pricingAnalysis: textSignals.sizes.length > 0 || textSignals.sides.length > 0
+    pricingAnalysis: textSignals.quantityBasedPricing
+      ? {
+          behavior: "quantity_tiers",
+          confidence: 86,
+          evidence: [evidence("$.description.pricing", "Pricing", "Quantity based pricing", "Quantity-based pricing was stated in the text description.")],
+        }
+      : textSignals.sizes.length > 0 || textSignals.sides.length > 0
       ? {
           behavior: "matrix_or_tiered",
           confidence: 62,

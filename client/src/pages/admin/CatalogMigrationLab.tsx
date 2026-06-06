@@ -679,6 +679,7 @@ export default function CatalogMigrationLab() {
   const [warningProductFilter, setWarningProductFilter] = useState("all");
   const [warningCodeFilter, setWarningCodeFilter] = useState("all");
   const [migrationSort, setMigrationSort] = useState<"confidence" | "category" | "template" | "routing" | "complexity">("confidence");
+  const [analysisTab, setAnalysisTab] = useState("overview");
   const canAccessPlatformTools = canUsePlatformTools(user);
 
   const analyzerSource = useMemo(
@@ -767,6 +768,7 @@ export default function CatalogMigrationLab() {
       setWarningProductFilter("all");
       setWarningCodeFilter("all");
       setMigrationSort("confidence");
+      setAnalysisTab("overview");
       toast({
         title: "Analysis complete",
         description: `${result.counts.totalProducts} product(s) discovered. No catalog changes were made.`,
@@ -814,6 +816,7 @@ export default function CatalogMigrationLab() {
           answers: result.answers,
           readiness: result.readiness,
         });
+        setAnalysisTab("intake-brief");
         void sessionsQuery.refetch();
       }
       if (result.analyzer) {
@@ -847,6 +850,7 @@ export default function CatalogMigrationLab() {
     onSuccess: (detail) => {
       setIntakeSessionDetail(detail);
       setIntakeBrief(detail.brief);
+      setAnalysisTab("intake-brief");
       toast({
         title: "Product Intake session opened",
         description: `${detail.questions.length} follow-up question(s) loaded.`,
@@ -1158,7 +1162,7 @@ export default function CatalogMigrationLab() {
             <SummaryCard label="Fingerprint" value={analysis.source.fingerprint.slice(0, 12)} />
           </div>
 
-          <Tabs defaultValue="overview" className="space-y-4">
+          <Tabs value={analysisTab} onValueChange={setAnalysisTab} className="space-y-4">
             <TabsList className="flex h-auto flex-wrap justify-start">
               <TabsTrigger value="overview">Overview</TabsTrigger>
               <TabsTrigger value="migration-planning">Migration Planning</TabsTrigger>
