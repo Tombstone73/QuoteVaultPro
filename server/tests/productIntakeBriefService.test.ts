@@ -232,6 +232,32 @@ describe("Product Intake Brief service", () => {
     expect(brief.draftWarnings.map((warning) => warning.code)).toEqual(expect.arrayContaining(["proof_required", "routing_signal"]));
   });
 
+  test("matches 4mm coroplast text to Coroplast material candidates", async () => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: {
+        sourceType: "text_description",
+        description: "4mm coroplast yard signs, full color, single sided, stakes optional",
+      },
+      analyzer: null,
+      templates,
+      materials: [
+        { id: "mat_10mm", sku: "10mmCoro", name: "Coroplast - 10mm" },
+        { id: "mat_4mm", sku: "4mmCoro", name: "Coroplast 4mm" },
+      ],
+      provider: null,
+    });
+
+    expect(brief.productIdentity.category.value).toBe("Coroplast / Yard Signs");
+    expect(brief.materialAnalysis.detectedMaterialReferences).toContain("Coroplast 4mm");
+    expect(brief.materialAnalysis.likelyMaterialMatches[0]).toMatchObject({
+      materialId: "mat_4mm",
+      name: "Coroplast 4mm",
+      confidence: 90,
+    });
+    expect(brief.missingDecisions.some((decision) => decision.id === "select-material")).toBe(false);
+  });
+
   test("normalizes common behavior and confidence aliases", () => {
     expect(normalizeProductIntakeBehaviorAlias("quantity-tier", "pricing")).toBe("quantity_tiers");
     expect(normalizeProductIntakeBehaviorAlias("quantity tiers", "pricing")).toBe("quantity_tiers");
