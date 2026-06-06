@@ -148,6 +148,10 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   const bannerOz = bannerOzMatch ? bannerOzMatch[1] ?? bannerOzMatch[2] : null;
   if (bannerOz) materialReferences.push(`${bannerOz}oz Banner`);
   else if (/\bbanner\b/i.test(description)) materialReferences.push("Banner");
+  const coroplastMmMatch = description.match(/(?:\b(\d{1,2})\s*mm\b.*\b(?:coroplast|coro)\b|\b(?:coroplast|coro)\b.*\b(\d{1,2})\s*mm\b)/i);
+  const coroplastMm = coroplastMmMatch ? coroplastMmMatch[1] ?? coroplastMmMatch[2] : null;
+  if (coroplastMm) materialReferences.push(`Coroplast ${coroplastMm}mm`);
+  else if (/\b(?:coroplast|coro)\b/i.test(description)) materialReferences.push("Coroplast");
 
   const sides: string[] = [];
   if (/single[\s-]*sided/i.test(description)) sides.push("Single sided");
@@ -198,7 +202,7 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
 }
 
 function gaugeTokens(value: string): string[] {
-  const gauges = Array.from(value.matchAll(/(?:^|\D)\.?(\d{2,3})(?:\D|$)/g)).map((match) => match[1]);
+  const gauges = Array.from(value.matchAll(/(?:^|\D)\.?(\d{1,3})(?:\D|$)/g)).map((match) => match[1]);
   return unique(gauges.flatMap((gauge) => [gauge, `.${gauge.padStart(3, "0")}`, `0.${gauge.padStart(3, "0")}`]));
 }
 
@@ -213,6 +217,7 @@ function matchMaterialsFromText(signals: TextDescriptionSignals, materials: Prod
       let score = 0;
       if (referenceText.includes("styrene") && normalized.includes("styrene")) score += 55;
       if (referenceText.includes("banner") && normalized.includes("banner")) score += 55;
+      if ((referenceText.includes("coroplast") || referenceText.includes("coro")) && (normalized.includes("coroplast") || normalized.includes("coro"))) score += 55;
       for (const gauge of Array.from(referenceGauges)) {
         if (haystack.toLowerCase().includes(gauge.toLowerCase()) || normalized.includes(gauge.replace(/[^0-9]/g, ""))) score += 35;
       }
