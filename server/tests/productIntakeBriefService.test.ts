@@ -403,6 +403,94 @@ describe("Product Intake Brief service", () => {
     expect(diagnostics[0].repairActions?.map((action) => action.path)).toEqual(expect.arrayContaining(["pricingAnalysis", "overallConfidence"]));
   });
 
+  test("Product Intake prompt contract accepts a full Coroplast AI brief shape", async () => {
+    const description = [
+      "4mm coroplast yard signs.",
+      "Sizes 18x24 and 24x36.",
+      "Single sided or double sided.",
+      "Optional H-wire stakes.",
+      "Quantity tier pricing.",
+      "Route to flatbed printer.",
+      "Proof required.",
+    ].join("\n");
+    const deterministic = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description },
+      analyzer: null,
+      templates,
+      materials: [{ id: "mat_coro_4mm", sku: "CORO4", name: "4mm White Coroplast" }],
+      provider: null,
+    });
+    const aiBrief = productIntakeBriefSchema.parse({
+      ...deterministic,
+      workflowState: "REVIEW_READY",
+      source: "live_ai",
+      fallbackReason: null,
+      optionalOptions: [
+        ...deterministic.optionalOptions,
+        {
+          label: "H-wire Stakes",
+          normalizedGroup: "H-wire Stakes",
+          required: false,
+          confidence: 86,
+          sampleValues: ["Optional H-wire stakes"],
+          sourcePaths: ["$.source_text"],
+          templateMatches: [],
+          evidence: [{ sourcePath: "$.source_text", label: "H-wire stakes", value: "Optional H-wire stakes", reason: "The source lists H-wire stakes as optional." }],
+        },
+      ],
+      overallConfidence: Math.max(deterministic.overallConfidence, 90),
+    });
+    const capturedRequests: AiProviderRequest[] = [];
+    const provider = {
+      generateJson: async (request: AiProviderRequest) => {
+        capturedRequests.push(request);
+        return {
+          rawText: JSON.stringify(aiBrief),
+          provider: "openai",
+          model: "gpt-test",
+          requestMetadata: { latencyMs: 1234, timeoutMs: 60000 },
+        };
+      },
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "gpt-test", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "gpt-test", requestMetadata: {} }),
+    };
+
+    const result = await generateProductIntakeBriefWithRun({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description },
+      analyzer: null,
+      templates,
+      materials: [{ id: "mat_coro_4mm", sku: "CORO4", name: "4mm White Coroplast" }],
+      provider,
+    });
+
+    expect(productIntakeBriefSchema.safeParse(JSON.parse(JSON.stringify(result.brief))).success).toBe(true);
+    expect(result.brief.source).toBe("live_ai");
+    expect(result.brief.fallbackReason).toBeNull();
+    expect(result.brief.productIdentity.likelyProductName.value).toMatch(/Coroplast|Yard/i);
+    expect(result.brief.materialAnalysis.detectedMaterialReferences.join(" ")).toMatch(/coroplast/i);
+    expect(result.brief.sizeBehavior.behavior).toBe("fixed_size");
+    expect(result.brief.quantityBehavior.behavior).toBe("quantity_tiers");
+    expect(result.brief.pricingAnalysis.behavior).toBe("quantity_tiers");
+    expect(result.brief.requiredOptions.length).toBeGreaterThan(0);
+    expect(result.brief.optionalOptions.some((option) => /stake/i.test(option.label))).toBe(true);
+    expect(result.aiRun).toMatchObject({
+      attempted: true,
+      reachedProvider: true,
+      provider: "openai",
+      model: "gpt-test",
+      reason: "live_ai",
+      sourceResult: "live_ai",
+    });
+    expect(capturedRequests[0]?.feature).toBe("feature_review");
+    expect(capturedRequests[0]?.system).toContain("The only allowed top-level keys are");
+    expect(capturedRequests[0]?.system).toContain("Do not return a wrapper object");
+    expect(capturedRequests[0]?.user).toContain("Valid output example");
+    expect(capturedRequests[0]?.user).toContain("Do not echo this input envelope");
+    expect(capturedRequests[0]?.user).toContain("Draft ProductIntakeBrief to improve");
+  });
+
   test("resolves Product Intake AI timeout precedence with 60 second default", () => {
     expect(resolveProductIntakeAiTimeoutMs({} as NodeJS.ProcessEnv)).toBe(60000);
     expect(resolveProductIntakeAiTimeoutMs({ AI_BUG_REVIEW_TIMEOUT_MS: "31000" } as NodeJS.ProcessEnv)).toBe(31000);

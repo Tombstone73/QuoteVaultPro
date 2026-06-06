@@ -1095,6 +1095,107 @@ function aiRun(args: {
   };
 }
 
+const PRODUCT_INTAKE_BRIEF_TOP_LEVEL_KEYS = [
+  "workflowState",
+  "source",
+  "fallbackReason",
+  "productIdentity",
+  "materialAnalysis",
+  "sizeBehavior",
+  "quantityBehavior",
+  "pricingAnalysis",
+  "requiredOptions",
+  "optionalOptions",
+  "templateMatches",
+  "missingDecisions",
+  "redundantFields",
+  "draftWarnings",
+  "sourceEvidence",
+  "overallConfidence",
+] as const;
+
+const PRODUCT_INTAKE_BRIEF_OUTPUT_EXAMPLE: ProductIntakeBrief = {
+  workflowState: "REVIEW_READY",
+  source: "live_ai",
+  fallbackReason: null,
+  productIdentity: {
+    likelyProductName: {
+      value: "Coroplast Yard Signs",
+      confidence: 90,
+      evidence: [{ sourcePath: "$.source_text", label: "product name", value: "4mm coroplast yard signs", reason: "The source describes coroplast yard signs." }],
+    },
+    category: {
+      value: "Yard Signs",
+      confidence: 85,
+      evidence: [{ sourcePath: "$.source_text", label: "category", value: "yard signs", reason: "The source explicitly identifies yard signs." }],
+    },
+    productType: {
+      value: "rigid_signage",
+      confidence: 82,
+      evidence: [{ sourcePath: "$.source_text", label: "product type", value: "coroplast", reason: "Coroplast yard signs are rigid signage." }],
+    },
+  },
+  materialAnalysis: {
+    detectedMaterialReferences: ["4mm coroplast"],
+    likelyMaterialMatches: [],
+    confidence: 75,
+    evidence: [{ sourcePath: "$.source_text", label: "material", value: "4mm coroplast", reason: "The source explicitly names the material." }],
+  },
+  sizeBehavior: {
+    behavior: "fixed_size",
+    confidence: 88,
+    notes: "18x24, 24x36",
+    evidence: [{ sourcePath: "$.source_text", label: "sizes", value: "18x24 and 24x36", reason: "The source lists fixed size options." }],
+  },
+  quantityBehavior: {
+    behavior: "quantity_tiers",
+    confidence: 84,
+    notes: "Quantity tier pricing",
+    evidence: [{ sourcePath: "$.source_text", label: "quantity", value: "Quantity tier pricing", reason: "The source describes quantity tier pricing." }],
+  },
+  pricingAnalysis: {
+    behavior: "quantity_tiers",
+    confidence: 84,
+    notes: "Quantity tier pricing",
+    evidence: [{ sourcePath: "$.source_text", label: "pricing", value: "Quantity tier pricing", reason: "The source describes the pricing model." }],
+  },
+  requiredOptions: [{
+    label: "Size",
+    normalizedGroup: "Size",
+    required: true,
+    confidence: 88,
+    sampleValues: ["18x24", "24x36"],
+    sourcePaths: ["$.source_text"],
+    templateMatches: [],
+    evidence: [{ sourcePath: "$.source_text", label: "Size", value: "18x24 and 24x36", reason: "The source lists fixed sizes." }],
+  }, {
+    label: "Printed Sides",
+    normalizedGroup: "Printed Sides",
+    required: true,
+    confidence: 82,
+    sampleValues: ["Single sided", "Double sided"],
+    sourcePaths: ["$.source_text"],
+    templateMatches: [],
+    evidence: [{ sourcePath: "$.source_text", label: "Printed Sides", value: "Single sided or double sided", reason: "The source lists side options." }],
+  }],
+  optionalOptions: [{
+    label: "H-wire Stakes",
+    normalizedGroup: "H-wire Stakes",
+    required: false,
+    confidence: 78,
+    sampleValues: ["Optional H-wire stakes"],
+    sourcePaths: ["$.source_text"],
+    templateMatches: [],
+    evidence: [{ sourcePath: "$.source_text", label: "H-wire stakes", value: "Optional H-wire stakes", reason: "The source lists stakes as optional." }],
+  }],
+  templateMatches: [],
+  missingDecisions: [],
+  redundantFields: [],
+  draftWarnings: [],
+  sourceEvidence: [{ sourcePath: "$.source_text", label: "source text", value: "4mm coroplast yard signs", reason: "The brief is based on the text description." }],
+  overallConfidence: 86,
+};
+
 function promptForBrief(input: ProductIntakeBriefInput, deterministicBrief: ProductIntakeBrief): { system: string; user: string } {
   const analyzerSummary = input.analyzer ? {
     source: input.analyzer.source,
@@ -1117,19 +1218,41 @@ function promptForBrief(input: ProductIntakeBriefInput, deterministicBrief: Prod
   return {
     system: [
       "You create TitanOS Product Intake Briefs.",
-      "Return only JSON that matches the provided draft schema shape.",
+      "Return JSON only: one ProductIntakeBrief object and no explanation.",
+      "Do not return a wrapper object, task metadata, sourceType, description, analyzerSummary, existingOptionTemplates, deterministicBrief, or any other input metadata at the top level.",
+      `The only allowed top-level keys are: ${PRODUCT_INTAKE_BRIEF_TOP_LEVEL_KEYS.join(", ")}.`,
+      "Set workflowState to REVIEW_READY, source to live_ai, and fallbackReason to null when returning a validated AI brief.",
       "Phase 1 is read-only: do not create products, trees, templates, or publish actions.",
       "Every major conclusion needs source-path evidence; if evidence is weak, lower confidence and add a missing decision.",
       "Only include template matches with score >= 0.65. score >= 0.85 means suggest_reuse; 0.65-0.84 means review_required.",
+      "Use $.source_text for text descriptions when no JSON path exists.",
     ].join(" "),
-    user: JSON.stringify({
-      task: "Refine this Product Intake Brief while preserving the same schema.",
-      sourceType: input.request.sourceType,
-      description: input.request.description ?? null,
-      analyzerSummary,
-      existingOptionTemplates: templateSummary,
-      deterministicBrief,
-    }),
+    user: [
+      "Return exactly one ProductIntakeBrief JSON object that validates against this contract.",
+      "",
+      "Shape contract:",
+      "- conclusion fields are objects: { \"value\": string|null, \"confidence\": 0-100, \"evidence\": ProductIntakeEvidence[] }.",
+      "- behavior fields are objects: { \"behavior\": string, \"confidence\": 0-100, \"notes\"?: string, \"evidence\": ProductIntakeEvidence[] }.",
+      "- ProductIntakeEvidence is: { \"sourcePath\": string, \"label\": string, \"value\": string|null, \"reason\": string }.",
+      "- option fields are arrays of: { \"label\": string, \"normalizedGroup\": string, \"required\": boolean, \"confidence\": 0-100, \"sampleValues\": string[], \"sourcePaths\": string[], \"templateMatches\": ProductIntakeTemplateMatch[], \"evidence\": ProductIntakeEvidence[] }.",
+      "- templateMatches, missingDecisions, redundantFields, draftWarnings, sourceEvidence, requiredOptions, and optionalOptions must always be arrays, even when empty.",
+      "",
+      "Valid output example:",
+      JSON.stringify(PRODUCT_INTAKE_BRIEF_OUTPUT_EXAMPLE),
+      "",
+      "Improve the draft below using the source context. If the draft is already best supported by evidence, return the same ProductIntakeBrief shape with source set to live_ai. Do not echo this input envelope.",
+      "",
+      "Source context:",
+      JSON.stringify({
+        sourceType: input.request.sourceType,
+        description: input.request.description ?? null,
+        analyzerSummary,
+        existingOptionTemplates: templateSummary,
+      }),
+      "",
+      "Draft ProductIntakeBrief to improve:",
+      JSON.stringify(deterministicBrief),
+    ].join("\n"),
   };
 }
 
