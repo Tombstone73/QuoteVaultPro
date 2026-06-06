@@ -7,6 +7,7 @@ import {
   productIntakeAiDiagnosticSchema,
   type ProductIntakeAiDiagnostic,
   type ProductIntakeAiDiagnosticIssue,
+  type ProductIntakeAiRepairAction,
   type ProductIntakeSourceType,
 } from "@shared/productIntakeWizardSchemas";
 import { db as defaultDb } from "../../db";
@@ -21,7 +22,7 @@ export type ProductIntakeAiDiagnosticInput = {
   rawAiResponse: string;
   validationErrors: ProductIntakeAiDiagnosticIssue[];
   failedSchemaPaths: string[];
-  repairActions?: string[];
+  repairActions?: ProductIntakeAiRepairAction[];
   promptVersion: string | null;
   createdByUserId: string | null;
 };

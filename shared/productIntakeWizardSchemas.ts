@@ -98,10 +98,34 @@ export const productIntakeWarningSchema = z.object({
   evidence: z.array(productIntakeEvidenceSchema),
 });
 
+export const productIntakeAiRepairActionSchema = z.object({
+  path: z.string().min(1),
+  originalValue: z.unknown().optional(),
+  repairedValue: z.unknown().optional(),
+  reason: z.string().min(1),
+  confidenceImpact: z.string().nullable().optional(),
+});
+
+const productIntakeAiRepairActionInputSchema = z.union([
+  productIntakeAiRepairActionSchema,
+  z.string().transform((value) => ({
+    path: "$",
+    originalValue: null,
+    repairedValue: null,
+    reason: value,
+    confidenceImpact: null,
+  })),
+]);
+
 export const productIntakeBriefSchema = z.object({
   workflowState: z.enum(productIntakeWorkflowStateValues),
   source: z.enum(productIntakeBriefSourceValues),
   fallbackReason: z.string().nullable().optional(),
+  aiRepair: z.object({
+    accepted: z.boolean(),
+    actions: z.array(productIntakeAiRepairActionSchema),
+    repairedAt: z.string().optional(),
+  }).optional(),
   productIdentity: z.object({
     likelyProductName: productIntakeConclusionSchema,
     category: productIntakeConclusionSchema,
@@ -249,7 +273,7 @@ export const productIntakeAiDiagnosticSchema = z.object({
   rawAiResponse: z.string(),
   validationErrors: z.array(productIntakeAiDiagnosticIssueSchema),
   failedSchemaPaths: z.array(z.string()),
-  repairActions: z.array(z.string()),
+  repairActions: z.array(productIntakeAiRepairActionInputSchema),
   promptVersion: z.string().nullable(),
   createdByUserId: z.string().nullable(),
   createdAt: z.string(),
@@ -329,6 +353,7 @@ export type ProductIntakeSession = z.infer<typeof productIntakeSessionSchema>;
 export type ProductIntakeReadiness = z.infer<typeof productIntakeReadinessSchema>;
 export type ProductIntakeSessionDetail = z.infer<typeof productIntakeSessionDetailSchema>;
 export type ProductIntakeAiDiagnosticIssue = z.infer<typeof productIntakeAiDiagnosticIssueSchema>;
+export type ProductIntakeAiRepairAction = z.infer<typeof productIntakeAiRepairActionSchema>;
 export type ProductIntakeAiDiagnostic = z.infer<typeof productIntakeAiDiagnosticSchema>;
 export type ProductIntakeAnswerPatchItem = z.infer<typeof productIntakeAnswerPatchItemSchema>;
 export type ProductIntakeAnswersPatchRequest = z.infer<typeof productIntakeAnswersPatchRequestSchema>;

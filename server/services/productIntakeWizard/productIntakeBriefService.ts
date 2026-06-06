@@ -5,6 +5,7 @@ import type {
 } from "@shared/catalogMigrationLabSchemas";
 import {
   productIntakeBriefSchema,
+  type ProductIntakeAiRepairAction,
   type ProductIntakeBrief,
   type ProductIntakeEvidence,
   type ProductIntakeTemplateMatch,
@@ -720,37 +721,176 @@ function normalizeOptionArray(value: unknown): string[] {
   return [];
 }
 
-function repairProductIntakeBriefShape(raw: unknown, deterministicBrief: ProductIntakeBrief): { repaired: unknown; actions: string[] } {
+function repairSourcePath(input?: ProductIntakeBriefInput): string {
+  return input?.request.sourceType === "text_description" ? "$.source_text" : "$.source";
+}
+
+function repairAction(args: {
+  path: string;
+  originalValue: unknown;
+  repairedValue: unknown;
+  reason: string;
+  confidenceImpact?: string | null;
+}): ProductIntakeAiRepairAction {
+  return {
+    path: args.path,
+    originalValue: args.originalValue,
+    repairedValue: args.repairedValue,
+    reason: args.reason,
+    confidenceImpact: args.confidenceImpact ?? null,
+  };
+}
+
+export function normalizeProductIntakeConfidence(value: unknown, fallback = 60): number {
+  if (typeof value === "number") return clampConfidence(value);
+  if (typeof value === "string") {
+    const normalized = normalizeText(value);
+    const numeric = value.match(/\d+(?:\.\d+)?/);
+    if (numeric) return clampConfidence(Number(numeric[0]));
+    if (normalized === "high" || normalized === "strong") return 85;
+    if (normalized === "medium" || normalized === "moderate") return 65;
+    if (normalized === "low" || normalized === "weak") return 35;
+  }
+  return clampConfidence(fallback);
+}
+
+export function normalizeProductIntakeBehaviorAlias(value: unknown, domain: "pricing" | "size" | "quantity" | "routing" = "pricing"): string | null {
+  const normalized = normalizeText(value);
+  if (!normalized) return null;
+  if (domain === "pricing" || domain === "quantity") {
+    if (/quantity|qty|tier|tiers|tiered|break/.test(normalized)) return "quantity_tiers";
+    if (/matrix/.test(normalized)) return "matrix_or_tiered";
+    if (/square|sqft|sq ft/.test(normalized)) return "square_foot";
+    if (/flat/.test(normalized)) return "flat";
+    if (/formula/.test(normalized)) return "formula";
+    if (/manual|quote/.test(normalized)) return "manual_quote";
+  }
+  if (domain === "size") {
+    if (/custom|width height|width and height|width_height/.test(normalized)) return "custom_size";
+    if (/fixed|preset|standard/.test(normalized)) return "fixed_size";
+    if (/none|no size/.test(normalized)) return "none";
+  }
+  if (domain === "routing") {
+    if (/roll|roll to roll|roll printer/.test(normalized)) return "roll_printer";
+    if (/flatbed/.test(normalized)) return "flatbed";
+    if (/router|cut/.test(normalized)) return "router_cut";
+  }
+  return String(value).trim();
+}
+
+function conclusionFromString(args: {
+  value: string;
+  confidence?: unknown;
+  sourcePath: string;
+  label: string;
+  reason: string;
+}) {
+  return {
+    value: args.value,
+    confidence: normalizeProductIntakeConfidence(args.confidence, 65),
+    evidence: [evidence(args.sourcePath, args.label, args.value, args.reason)],
+  };
+}
+
+function optionGroupFromAi(args: {
+  label: string;
+  required: boolean;
+  values: string[];
+  sourcePath: string;
+  confidence?: unknown;
+}) {
+  return {
+    label: args.label,
+    normalizedGroup: args.label,
+    required: args.required,
+    confidence: normalizeProductIntakeConfidence(args.confidence, args.required ? 70 : 60),
+    sampleValues: args.values.length ? args.values : [args.label],
+    sourcePaths: [args.sourcePath],
+    templateMatches: [],
+    evidence: [evidence(args.sourcePath, args.label, args.values.join(", ") || args.label, "AI option shape normalized for intake review.")],
+  };
+}
+
+function normalizeAiOptionGroups(value: unknown, required: boolean, sourcePath: string): ProductIntakeBrief["requiredOptions"] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (typeof entry === "string") {
+        return optionGroupFromAi({ label: entry, required, values: [entry], sourcePath });
+      }
+      const record = asRecord(entry);
+      if (!record) return null;
+      const label = String(record.normalizedGroup ?? record.label ?? record.name ?? "").trim();
+      if (!label) return null;
+      const values = normalizeOptionArray(record.sampleValues ?? record.values ?? record.options ?? label);
+      return optionGroupFromAi({ label, required: typeof record.required === "boolean" ? record.required : required, values, sourcePath, confidence: record.confidence });
+    })
+    .filter(Boolean) as ProductIntakeBrief["requiredOptions"];
+}
+
+export function repairProductIntakeBriefShape(raw: unknown, deterministicBrief: ProductIntakeBrief, options: { sourcePath?: string } = {}): { repaired: unknown; actions: ProductIntakeAiRepairAction[] } {
   const source = asRecord(raw);
   if (!source) return { repaired: raw, actions: [] };
-  const actions: string[] = [];
+  const actions: ProductIntakeAiRepairAction[] = [];
   const repaired: ProductIntakeBrief = JSON.parse(JSON.stringify(deterministicBrief));
+  const sourcePath = options.sourcePath ?? "$.source_text";
 
-  const name = typeof source.productName === "string" ? source.productName : typeof source.name === "string" ? source.name : null;
+  const sourceProductIdentity = asRecord(source.productIdentity);
+  const sourceMaterial = asRecord(source.materialAnalysis) ?? asRecord(source.material);
+  const sourceOptions = asRecord(source.options);
+  const name = typeof source.productName === "string"
+    ? source.productName
+    : typeof source.name === "string"
+      ? source.name
+      : typeof sourceProductIdentity?.name === "string"
+        ? sourceProductIdentity.name
+        : null;
   if (name) {
-    repaired.productIdentity.likelyProductName.value = name;
-    repaired.productIdentity.likelyProductName.confidence = Math.max(repaired.productIdentity.likelyProductName.confidence, 65);
-    actions.push("normalized productName/name into productIdentity.likelyProductName");
+    const next = conclusionFromString({ value: name, confidence: source.confidence ?? sourceProductIdentity?.confidence, sourcePath, label: "product name", reason: "AI product name alias normalized into productIdentity.likelyProductName." });
+    actions.push(repairAction({ path: "productIdentity.likelyProductName", originalValue: name, repairedValue: next, reason: "Mapped productName/name alias into expected nested conclusion.", confidenceImpact: "Conservative repaired confidence used when source confidence was missing." }));
+    repaired.productIdentity.likelyProductName = next;
   }
 
-  if (typeof source.category === "string") {
-    repaired.productIdentity.category.value = source.category;
-    repaired.productIdentity.category.confidence = Math.max(repaired.productIdentity.category.confidence, 65);
-    actions.push("normalized category string into productIdentity.category");
+  const category = typeof source.productCategory === "string"
+    ? source.productCategory
+    : typeof source.category === "string"
+      ? source.category
+      : typeof sourceProductIdentity?.category === "string"
+        ? sourceProductIdentity.category
+        : null;
+  if (category) {
+    const next = conclusionFromString({ value: category, confidence: sourceProductIdentity?.categoryConfidence ?? sourceProductIdentity?.confidence, sourcePath, label: "category", reason: "AI category alias normalized into productIdentity.category." });
+    actions.push(repairAction({ path: "productIdentity.category", originalValue: category, repairedValue: next, reason: "Mapped productCategory/category alias into expected nested conclusion.", confidenceImpact: "Conservative repaired confidence used when source confidence was missing." }));
+    repaired.productIdentity.category = next;
   }
 
-  if (typeof source.material === "string") {
-    repaired.materialAnalysis.detectedMaterialReferences = unique([...repaired.materialAnalysis.detectedMaterialReferences, source.material]);
+  const productType = typeof source.productType === "string"
+    ? source.productType
+    : typeof source.type === "string"
+      ? source.type
+      : typeof sourceProductIdentity?.type === "string"
+        ? sourceProductIdentity.type
+        : null;
+  if (productType) {
+    const next = conclusionFromString({ value: productType, confidence: sourceProductIdentity?.typeConfidence ?? sourceProductIdentity?.confidence, sourcePath, label: "product type", reason: "AI product type alias normalized into productIdentity.productType." });
+    actions.push(repairAction({ path: "productIdentity.productType", originalValue: productType, repairedValue: next, reason: "Mapped productType/type alias into expected nested conclusion.", confidenceImpact: "Conservative repaired confidence used when source confidence was missing." }));
+    repaired.productIdentity.productType = next;
+  }
+
+  const materialReferences = unique([
+    ...normalizeOptionArray(source.materials),
+    ...normalizeOptionArray(sourceMaterial?.detectedReferences),
+    ...normalizeOptionArray(sourceMaterial?.detectedMaterialReferences),
+    typeof source.material === "string" ? source.material : null,
+    typeof sourceMaterial?.detectedReference === "string" ? sourceMaterial.detectedReference : null,
+  ]);
+  if (materialReferences.length > 0) {
+    repaired.materialAnalysis.detectedMaterialReferences = unique([...repaired.materialAnalysis.detectedMaterialReferences, ...materialReferences]);
     repaired.materialAnalysis.confidence = Math.max(repaired.materialAnalysis.confidence, 55);
     if (repaired.materialAnalysis.evidence.length === 0) {
-      repaired.materialAnalysis.evidence = [evidence("$.ai.material", "material", source.material, "AI material string normalized into materialAnalysis.")];
+      repaired.materialAnalysis.evidence = [evidence(sourcePath, "material", materialReferences.join(", "), "AI material reference normalized into materialAnalysis for review.")];
     }
-    actions.push("normalized material string into materialAnalysis.detectedMaterialReferences");
-  } else if (asRecord(source.material)?.detectedReference) {
-    const detectedReference = String(asRecord(source.material)?.detectedReference);
-    repaired.materialAnalysis.detectedMaterialReferences = unique([...repaired.materialAnalysis.detectedMaterialReferences, detectedReference]);
-    repaired.materialAnalysis.confidence = Math.max(repaired.materialAnalysis.confidence, 60);
-    actions.push("normalized material.detectedReference into materialAnalysis.detectedMaterialReferences");
+    actions.push(repairAction({ path: "materialAnalysis.detectedMaterialReferences", originalValue: source.material ?? source.materials ?? sourceMaterial, repairedValue: repaired.materialAnalysis.detectedMaterialReferences, reason: "Mapped material/materials alias into detected material references without selecting a specific material.", confidenceImpact: "Material confidence capped unless deterministic matching already found a material." }));
   }
 
   const sizes = normalizeOptionArray(source.sizes ?? source.sizeOptions);
@@ -771,25 +911,102 @@ function repairProductIntakeBriefShape(raw: unknown, deterministicBrief: Product
       notes: sizes.join(", "),
       evidence: [evidence("$.ai.sizes", "Size", sizes.join(", "), "AI size array normalized into fixed size behavior.")],
     };
-    actions.push("normalized sizes into required Size option and fixed_size behavior");
+    actions.push(repairAction({ path: "requiredOptions.Size", originalValue: source.sizes ?? source.sizeOptions, repairedValue: sizes, reason: "Mapped AI size list into required Size option and fixed size behavior.", confidenceImpact: "Size behavior confidence raised to repaired conservative floor." }));
   }
 
-  const options = normalizeOptionArray(source.options);
-  if (options.length > 0) {
-    for (const optionLabel of options.slice(0, 6)) {
-      if (repaired.optionalOptions.some((option) => normalizeText(option.normalizedGroup) === normalizeText(optionLabel))) continue;
-      repaired.optionalOptions.push({
-        label: optionLabel,
-        normalizedGroup: optionLabel,
-        required: false,
-        confidence: 60,
-        sampleValues: [optionLabel],
-        sourcePaths: ["$.ai.options"],
-        templateMatches: [],
-        evidence: [evidence("$.ai.options", optionLabel, optionLabel, "AI options array normalized into optional option group.")],
-      });
+  const sizeAlias = source.sizeBehavior ?? source.size ?? source.sizeModel;
+  const repairedSizeBehavior = normalizeProductIntakeBehaviorAlias(sizeAlias, "size");
+  if (repairedSizeBehavior) {
+    const next = {
+      behavior: repairedSizeBehavior,
+      confidence: normalizeProductIntakeConfidence(asRecord(sizeAlias)?.confidence ?? source.sizeConfidence, 70),
+      notes: typeof sizeAlias === "string" ? sizeAlias : undefined,
+      evidence: [evidence(sourcePath, "size behavior", String(sizeAlias), "AI size behavior alias normalized.")],
+    };
+    actions.push(repairAction({ path: "sizeBehavior", originalValue: sizeAlias, repairedValue: next, reason: "Normalized size behavior alias into expected behavior object.", confidenceImpact: "Conservative repaired confidence used." }));
+    repaired.sizeBehavior = next;
+  }
+
+  const quantityAlias = source.quantityBehavior ?? source.quantityModel ?? source.quantity;
+  const repairedQuantityBehavior = normalizeProductIntakeBehaviorAlias(quantityAlias, "quantity");
+  if (repairedQuantityBehavior) {
+    const next = {
+      behavior: repairedQuantityBehavior,
+      confidence: normalizeProductIntakeConfidence(asRecord(quantityAlias)?.confidence ?? source.quantityConfidence, 70),
+      notes: typeof quantityAlias === "string" ? quantityAlias : undefined,
+      evidence: [evidence(sourcePath, "quantity behavior", String(quantityAlias), "AI quantity behavior alias normalized.")],
+    };
+    actions.push(repairAction({ path: "quantityBehavior", originalValue: quantityAlias, repairedValue: next, reason: "Normalized quantity behavior alias into expected behavior object.", confidenceImpact: "Conservative repaired confidence used." }));
+    repaired.quantityBehavior = next;
+  }
+
+  const pricingAlias = source.pricingModel ?? source.pricingAnalysis ?? source.pricing;
+  const repairedPricingBehavior = normalizeProductIntakeBehaviorAlias(typeof pricingAlias === "string" ? pricingAlias : asRecord(pricingAlias)?.type ?? asRecord(pricingAlias)?.behavior, "pricing");
+  if (repairedPricingBehavior) {
+    const next = {
+      behavior: repairedPricingBehavior,
+      confidence: normalizeProductIntakeConfidence(asRecord(pricingAlias)?.confidence ?? source.pricingConfidence, 70),
+      notes: typeof pricingAlias === "string" ? pricingAlias : undefined,
+      evidence: [evidence(sourcePath, "pricing model", String(typeof pricingAlias === "string" ? pricingAlias : asRecord(pricingAlias)?.type ?? asRecord(pricingAlias)?.behavior), "AI pricing model alias normalized.")],
+    };
+    actions.push(repairAction({ path: "pricingAnalysis", originalValue: pricingAlias, repairedValue: next, reason: "Normalized pricingModel/pricing alias into expected behavior object.", confidenceImpact: "Conservative repaired confidence used." }));
+    repaired.pricingAnalysis = next;
+  }
+
+  const requiredOptions = normalizeAiOptionGroups(source.requiredOptions ?? sourceOptions?.required, true, sourcePath);
+  const optionalOptions = normalizeAiOptionGroups(source.optionalOptions ?? sourceOptions?.optional ?? source.options, false, sourcePath);
+  if (requiredOptions.length > 0) {
+    for (const option of requiredOptions) {
+      if (repaired.requiredOptions.some((existing) => normalizeText(existing.normalizedGroup) === normalizeText(option.normalizedGroup))) continue;
+      repaired.requiredOptions.push(option);
     }
-    actions.push("normalized options into optional option groups");
+    actions.push(repairAction({ path: "requiredOptions", originalValue: source.requiredOptions ?? sourceOptions?.required, repairedValue: requiredOptions, reason: "Mapped AI required options alias into requiredOptions array.", confidenceImpact: "Template matches were not invented during repair." }));
+  }
+  if (optionalOptions.length > 0) {
+    for (const option of optionalOptions) {
+      const optionLabel = option.normalizedGroup;
+      if (repaired.optionalOptions.some((option) => normalizeText(option.normalizedGroup) === normalizeText(optionLabel))) continue;
+      repaired.optionalOptions.push(option);
+    }
+    actions.push(repairAction({ path: "optionalOptions", originalValue: source.optionalOptions ?? sourceOptions?.optional ?? source.options, repairedValue: optionalOptions, reason: "Mapped AI optional options alias into optionalOptions array.", confidenceImpact: "Template matches were not invented during repair." }));
+  }
+
+  const warnings = normalizeOptionArray(source.warnings);
+  if (warnings.length > 0) {
+    const repairedWarnings = warnings.slice(0, 8).map((warning) => ({
+      code: normalizeText(warning).replace(/\s+/g, "_").slice(0, 60) || "ai_warning",
+      message: warning,
+      severity: "info" as const,
+      evidence: [evidence(sourcePath, "warning", warning, "AI warning normalized into draftWarnings for review.")],
+    }));
+    repaired.draftWarnings = [...repaired.draftWarnings, ...repairedWarnings];
+    actions.push(repairAction({ path: "draftWarnings", originalValue: source.warnings, repairedValue: repairedWarnings, reason: "Mapped warnings alias into draftWarnings array.", confidenceImpact: "Warnings remain informational and do not create catalog changes." }));
+  }
+
+  if (source.confidence !== undefined) {
+    const nextConfidence = normalizeProductIntakeConfidence(source.confidence, repaired.overallConfidence);
+    actions.push(repairAction({ path: "overallConfidence", originalValue: source.confidence, repairedValue: nextConfidence, reason: "Normalized AI confidence into numeric 0-100 confidence.", confidenceImpact: "Overall confidence clamped to schema range." }));
+    repaired.overallConfidence = nextConfidence;
+  }
+
+  if (actions.length > 0) {
+    for (const arrayPath of ["requiredOptions", "optionalOptions", "redundantFields", "templateMatches", "missingDecisions", "draftWarnings", "sourceEvidence"] as const) {
+      if (!Array.isArray((repaired as any)[arrayPath])) {
+        (repaired as any)[arrayPath] = [];
+      }
+      if ((source as any)[arrayPath] === undefined) {
+        actions.push(repairAction({ path: arrayPath, originalValue: undefined, repairedValue: (repaired as any)[arrayPath], reason: "Defaulted missing schema array from deterministic brief.", confidenceImpact: null }));
+      }
+    }
+    if (repaired.sourceEvidence.length === 0) {
+      repaired.sourceEvidence = [evidence(sourcePath, "source text", null, "AI repair used the text source path convention because no JSON path was available.")];
+      actions.push(repairAction({ path: "sourceEvidence", originalValue: [], repairedValue: repaired.sourceEvidence, reason: "Added source-text evidence path for repaired AI brief.", confidenceImpact: "No high confidence was inferred from this evidence placeholder." }));
+    }
+    repaired.aiRepair = {
+      accepted: true,
+      actions,
+      repairedAt: new Date().toISOString(),
+    };
   }
 
   repaired.overallConfidence = clampConfidence(Math.max(repaired.overallConfidence, deterministicBrief.overallConfidence));
@@ -799,7 +1016,7 @@ function repairProductIntakeBriefShape(raw: unknown, deterministicBrief: Product
 async function recordAiDiagnostic(input: ProductIntakeBriefInput, args: {
   response: Awaited<ReturnType<AiProviderAdapter["generateJson"]>>;
   validationErrors: Array<{ path: string; message: string; code?: string }>;
-  repairActions?: string[];
+  repairActions?: ProductIntakeAiRepairAction[];
 }) {
   if (!input.diagnosticsStore) return;
   try {
@@ -885,14 +1102,19 @@ export async function generateProductIntakeBrief(input: ProductIntakeBriefInput)
           code: "invalid_json",
         }],
       });
-      return fallbackBrief(input, "Live AI response failed schema validation; deterministic analyzer brief returned.");
+      return fallbackBrief(input, "Live AI response could not be safely normalized. Analyzer fallback returned.");
     }
 
     const parsed = productIntakeBriefSchema.safeParse(aiObject);
     if (!parsed.success) {
-      const repair = repairProductIntakeBriefShape(aiObject, deterministicBrief);
+      const repair = repairProductIntakeBriefShape(aiObject, deterministicBrief, { sourcePath: repairSourcePath(input) });
       const repairedParsed = repair.actions.length > 0 ? productIntakeBriefSchema.safeParse(repair.repaired) : parsed;
       if (repairedParsed.success) {
+        await recordAiDiagnostic(input, {
+          response,
+          validationErrors: [],
+          repairActions: repair.actions,
+        });
         return {
           ...repairedParsed.data,
           workflowState: "REVIEW_READY",
@@ -906,7 +1128,7 @@ export async function generateProductIntakeBrief(input: ProductIntakeBriefInput)
         code: issue.code,
       }));
       await recordAiDiagnostic(input, { response, validationErrors, repairActions: repair.actions });
-      return fallbackBrief(input, "Live AI response failed schema validation; deterministic analyzer brief returned.");
+      return fallbackBrief(input, "Live AI response could not be safely normalized. Analyzer fallback returned.");
     }
     return {
       ...parsed.data,
