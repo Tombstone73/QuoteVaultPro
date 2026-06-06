@@ -213,7 +213,9 @@ describe("Product Intake Brief service", () => {
       templates,
       provider,
       diagnosticsStore: {
-        recordSchemaValidationFailure: async (input) => diagnostics.push(input),
+        recordSchemaValidationFailure: async (input) => {
+          diagnostics.push(input);
+        },
         attachRecentToSession: async () => undefined,
         listRecent: async () => [],
       },
