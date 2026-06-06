@@ -14,6 +14,7 @@ import type { CatalogMigrationLabAnalyzerResult } from "@shared/catalogMigration
 import { CATALOG_MIGRATION_LAB_MAX_UPLOAD_BYTES } from "@shared/catalogMigrationLabSchemas";
 import type {
   ProductIntakeAnswer,
+  ProductIntakeAiDiagnostic,
   ProductIntakeBrief,
   ProductIntakeQuestion,
   ProductIntakeReadiness,
@@ -351,6 +352,72 @@ export function ProductIntakeSessionsList({
   );
 }
 
+export function ProductIntakeAiDiagnosticsPanel({
+  diagnostics,
+  isLoading = false,
+}: {
+  diagnostics: ProductIntakeAiDiagnostic[];
+  isLoading?: boolean;
+}) {
+  return (
+    <Card className="border-amber-500/20">
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">AI Intake Diagnostics</CardTitle>
+            <CardDescription>Admin-only schema validation failures from Product Intake AI.</CardDescription>
+          </div>
+          <Badge variant="outline">Admin only</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {isLoading ? (
+          <div className="text-sm text-muted-foreground">Loading AI diagnostics...</div>
+        ) : diagnostics.length === 0 ? (
+          <div className="text-sm text-muted-foreground">No Product Intake AI schema validation failures recorded.</div>
+        ) : diagnostics.map((diagnostic) => (
+          <div key={diagnostic.id} className="rounded border p-4 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="font-medium">{diagnostic.provider ?? "Unknown provider"} / {diagnostic.model ?? "Unknown model"}</div>
+              <div className="text-xs text-muted-foreground">{formatDateTime(diagnostic.createdAt)}</div>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Badge variant="outline">{diagnostic.sourceType.replace(/_/g, " ")}</Badge>
+              {diagnostic.promptVersion && <Badge variant="secondary">{diagnostic.promptVersion}</Badge>}
+            </div>
+            <div className="mt-3 grid gap-3 lg:grid-cols-2">
+              <div>
+                <div className="text-xs font-medium uppercase text-muted-foreground">Failed Schema Paths</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {diagnostic.failedSchemaPaths.length === 0 ? (
+                    <span className="text-xs text-muted-foreground">No paths captured.</span>
+                  ) : diagnostic.failedSchemaPaths.map((path) => (
+                    <Badge key={path} variant="outline" className="font-mono">{path}</Badge>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-medium uppercase text-muted-foreground">Validation Errors</div>
+                <div className="mt-2 max-h-32 overflow-auto rounded bg-muted/30 p-2 text-xs">
+                  {diagnostic.validationErrors.map((error, index) => (
+                    <div key={`${error.path}-${index}`}>
+                      <span className="font-mono">{error.path || "$"}</span>: {error.message}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="mt-3">
+              <div className="text-xs font-medium uppercase text-muted-foreground">Raw AI Response</div>
+              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-3 text-xs">{diagnostic.rawAiResponse}</pre>
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 function EvidenceList({ evidence }: { evidence: ProductIntakeBrief["sourceEvidence"] }) {
   if (evidence.length === 0) return <div className="text-sm text-muted-foreground">No source-path evidence.</div>;
   return (
@@ -642,6 +709,16 @@ export default function CatalogMigrationLab() {
       const json = await response.json();
       if (!json?.success) throw new Error(json?.message ?? "Failed to load intake sessions");
       return json.data.sessions as ProductIntakeSession[];
+    },
+  });
+  const diagnosticsQuery = useQuery({
+    queryKey: ["/api/admin/product-intake-wizard/ai-diagnostics"],
+    enabled: canAccessPlatformTools && !isLoading,
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/admin/product-intake-wizard/ai-diagnostics");
+      const json = await response.json();
+      if (!json?.success) throw new Error(json?.message ?? "Failed to load intake diagnostics");
+      return json.data.diagnostics as ProductIntakeAiDiagnostic[];
     },
   });
 
@@ -1011,6 +1088,13 @@ export default function CatalogMigrationLab() {
         isLoading={sessionsQuery.isLoading || openSessionMutation.isPending}
         onOpen={(sessionId) => openSessionMutation.mutate(sessionId)}
       />
+
+      {canAccessPlatformTools && (
+        <ProductIntakeAiDiagnosticsPanel
+          diagnostics={diagnosticsQuery.data ?? []}
+          isLoading={diagnosticsQuery.isLoading}
+        />
+      )}
 
       {intakeBrief && !analysis && (
         <div className="space-y-6">

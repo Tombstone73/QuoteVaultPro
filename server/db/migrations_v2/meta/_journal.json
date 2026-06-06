@@ -645,6 +645,13 @@
       "when": 1783036800000,
       "tag": "0096_product_intake_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1783123200000,
+      "tag": "0097_product_intake_ai_diagnostics",
+      "breakpoints": true
     }
   ]
 }

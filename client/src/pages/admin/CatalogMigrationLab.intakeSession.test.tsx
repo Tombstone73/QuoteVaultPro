@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, jest, test } from "@jest/globals";
 import { TextDecoder, TextEncoder } from "util";
 import type {
   ProductIntakeAnswer,
+  ProductIntakeAiDiagnostic,
   ProductIntakeQuestion,
   ProductIntakeReadiness,
   ProductIntakeSession,
@@ -35,12 +36,14 @@ jest.mock("@/pages/not-found", () => ({
 let ProductIntakeQuestionsWizard: typeof import("./CatalogMigrationLab").ProductIntakeQuestionsWizard;
 let ProductIntakeSessionSummary: typeof import("./CatalogMigrationLab").ProductIntakeSessionSummary;
 let ProductIntakeSessionsList: typeof import("./CatalogMigrationLab").ProductIntakeSessionsList;
+let ProductIntakeAiDiagnosticsPanel: typeof import("./CatalogMigrationLab").ProductIntakeAiDiagnosticsPanel;
 
 beforeAll(async () => {
   const module = await import("./CatalogMigrationLab");
   ProductIntakeQuestionsWizard = module.ProductIntakeQuestionsWizard;
   ProductIntakeSessionSummary = module.ProductIntakeSessionSummary;
   ProductIntakeSessionsList = module.ProductIntakeSessionsList;
+  ProductIntakeAiDiagnosticsPanel = module.ProductIntakeAiDiagnosticsPanel;
 });
 
 function session(overrides: Partial<ProductIntakeSession> = {}): ProductIntakeSession {
@@ -264,5 +267,30 @@ describe("Product Intake session UI", () => {
     expect(html).toContain("Foam Board Sign");
     expect(html).toContain("ready for draft");
     expect(html).toContain("Open");
+  });
+
+  test("AI diagnostics panel renders provider, schema paths, errors, and raw response", () => {
+    const diagnostics: ProductIntakeAiDiagnostic[] = [{
+      id: "diag_1",
+      organizationId: "org_1",
+      sourceType: "text_description",
+      provider: "openai",
+      model: "gpt-test",
+      rawAiResponse: "{\"bad\":true}",
+      validationErrors: [{ path: "productIdentity", message: "Required", code: "invalid_type" }],
+      failedSchemaPaths: ["productIdentity"],
+      promptVersion: "product-intake-brief-v1",
+      createdByUserId: "user_1",
+      createdAt: "2026-06-05T00:00:00.000Z",
+    }];
+    const html = renderToStaticMarkup(<ProductIntakeAiDiagnosticsPanel diagnostics={diagnostics} />);
+
+    expect(html).toContain("AI Intake Diagnostics");
+    expect(html).toContain("Admin only");
+    expect(html).toContain("openai / gpt-test");
+    expect(html).toContain("productIdentity");
+    expect(html).toContain("Required");
+    expect(html).toContain("{&quot;bad&quot;:true}");
+    expect(html).not.toContain("apiKey");
   });
 });

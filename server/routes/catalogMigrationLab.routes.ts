@@ -25,6 +25,10 @@ import {
   ProductIntakeSessionError,
   type ProductIntakeSessionStore,
 } from "../services/productIntakeWizard/productIntakeSessionService";
+import {
+  createDbProductIntakeAiDiagnosticsStore,
+  type ProductIntakeAiDiagnosticsStore,
+} from "../services/productIntakeWizard/productIntakeDiagnosticsService";
 import type { AiProviderAdapter } from "../services/ai/providers/AiProviderAdapter";
 
 type RouteMiddleware = {
@@ -34,6 +38,7 @@ type RouteMiddleware = {
   getReferenceData?: (organizationId: string) => Promise<ProductIntakeReferenceData>;
   productIntakeAiProvider?: AiProviderAdapter | null;
   productIntakeSessionStore?: ProductIntakeSessionStore;
+  productIntakeDiagnosticsStore?: ProductIntakeAiDiagnosticsStore;
 };
 
 type ProductIntakeReferenceData = CatalogMigrationLabReferenceData & {
@@ -144,6 +149,7 @@ async function loadReferenceData(organizationId: string): Promise<ProductIntakeR
 export function registerCatalogMigrationLabRoutes(app: Express, middleware: RouteMiddleware) {
   const getReferenceData = middleware.getReferenceData ?? loadReferenceData;
   const intakeSessionStore = middleware.productIntakeSessionStore ?? createDbProductIntakeSessionStore();
+  const intakeDiagnosticsStore = middleware.productIntakeDiagnosticsStore ?? createDbProductIntakeAiDiagnosticsStore();
 
   app.post(
     "/api/admin/catalog-migration-lab/analyze",
@@ -254,6 +260,8 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
           analyzer,
           templates: referenceData.templates ?? [],
           provider: middleware.productIntakeAiProvider,
+          diagnosticsStore: intakeDiagnosticsStore,
+          createdByUserId: requestUserId(req),
         });
         const intakeSession = await intakeSessionStore.createFromAnalysis({
           organizationId,
@@ -291,6 +299,29 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
           message: "Failed to generate Product Intake Brief.",
           errorCode: "UNKNOWN_SOURCE_SHAPE",
         });
+      }
+    },
+  );
+
+  app.get(
+    "/api/admin/product-intake-wizard/ai-diagnostics",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) {
+          return res.status(400).json({ success: false, message: "Missing organization context.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+        }
+
+        const diagnostics = await intakeDiagnosticsStore.listRecent(organizationId);
+        return res.json({ success: true, data: { diagnostics } });
+      } catch (error: any) {
+        const handled = handleProductIntakeRouteError(error, res, "Invalid Product Intake diagnostics request.");
+        if (handled) return handled;
+        console.error("[ProductIntakeWizard] Diagnostics list failed:", error);
+        return res.status(500).json({ success: false, message: "Failed to load Product Intake AI diagnostics.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
       }
     },
   );

@@ -5,6 +5,7 @@ import path from "path";
 import request from "supertest";
 import type {
   ProductIntakeAnswer,
+  ProductIntakeAiDiagnostic,
   ProductIntakeBrief,
   ProductIntakeQuestion,
   ProductIntakeSession,
@@ -18,6 +19,10 @@ import {
   resolveProductIntakeSessionStatus,
   type ProductIntakeSessionStore,
 } from "../services/productIntakeWizard/productIntakeSessionService";
+import type {
+  ProductIntakeAiDiagnosticInput,
+  ProductIntakeAiDiagnosticsStore,
+} from "../services/productIntakeWizard/productIntakeDiagnosticsService";
 
 type AppOptions = {
   authenticated?: boolean;
@@ -139,7 +144,36 @@ function makeMemoryProductIntakeSessionStore(): ProductIntakeSessionStore {
   };
 }
 
-function buildApp(options: AppOptions = {}, productIntakeSessionStore = makeMemoryProductIntakeSessionStore()) {
+function makeMemoryProductIntakeDiagnosticsStore(seed: ProductIntakeAiDiagnostic[] = []): ProductIntakeAiDiagnosticsStore {
+  const diagnostics = [...seed];
+  let diagnosticSeq = diagnostics.length;
+  return {
+    async recordSchemaValidationFailure(input: ProductIntakeAiDiagnosticInput) {
+      diagnostics.push({
+        id: `diag_${++diagnosticSeq}`,
+        organizationId: input.organizationId,
+        sourceType: input.sourceType,
+        provider: input.provider,
+        model: input.model,
+        rawAiResponse: input.rawAiResponse,
+        validationErrors: input.validationErrors,
+        failedSchemaPaths: input.failedSchemaPaths,
+        promptVersion: input.promptVersion,
+        createdByUserId: input.createdByUserId,
+        createdAt: new Date().toISOString(),
+      });
+    },
+    async listRecent(organizationId: string) {
+      return diagnostics.filter((diagnostic) => diagnostic.organizationId === organizationId);
+    },
+  };
+}
+
+function buildApp(
+  options: AppOptions = {},
+  productIntakeSessionStore = makeMemoryProductIntakeSessionStore(),
+  productIntakeDiagnosticsStore = makeMemoryProductIntakeDiagnosticsStore(),
+) {
   const app = express();
   app.use(express.json({ limit: "3mb" }));
 
@@ -193,6 +227,7 @@ function buildApp(options: AppOptions = {}, productIntakeSessionStore = makeMemo
     }),
     productIntakeAiProvider: null,
     productIntakeSessionStore,
+    productIntakeDiagnosticsStore,
   });
 
   return app;
@@ -369,6 +404,33 @@ describe("Catalog Migration Lab routes", () => {
       .send({ answers: [{ questionKey: "select-material", answer: "Other org material" }] });
 
     expect(response.status).toBe(404);
+  });
+
+  test("product intake diagnostics endpoint returns recent admin diagnostics without secrets", async () => {
+    const diagnosticsStore = makeMemoryProductIntakeDiagnosticsStore([{
+      id: "diag_1",
+      organizationId: "org_1",
+      sourceType: "text_description",
+      provider: "openai",
+      model: "gpt-test",
+      rawAiResponse: "{\"bad\":true}",
+      validationErrors: [{ path: "productIdentity", message: "Required", code: "invalid_type" }],
+      failedSchemaPaths: ["productIdentity"],
+      promptVersion: "product-intake-brief-v1",
+      createdByUserId: "user_1",
+      createdAt: "2026-06-05T00:00:00.000Z",
+    }]);
+    const response = await request(buildApp({}, makeMemoryProductIntakeSessionStore(), diagnosticsStore))
+      .get("/api/admin/product-intake-wizard/ai-diagnostics");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.diagnostics[0]).toMatchObject({
+      provider: "openai",
+      model: "gpt-test",
+      rawAiResponse: "{\"bad\":true}",
+      failedSchemaPaths: ["productIdentity"],
+    });
+    expect(JSON.stringify(response.body)).not.toMatch(/apiKey|sk-/i);
   });
 
   test("catalog migration lab server files contain no database write calls", () => {

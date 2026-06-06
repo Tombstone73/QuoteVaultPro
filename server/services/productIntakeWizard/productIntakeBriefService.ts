@@ -13,6 +13,7 @@ import {
 import { parseAiJsonObject } from "../ai/bugReviewValidator";
 import { createConfiguredAiProvider } from "../ai/providers/configuredProvider";
 import { AiProviderUnavailableError, type AiProviderAdapter } from "../ai/providers/AiProviderAdapter";
+import type { ProductIntakeAiDiagnosticsStore } from "./productIntakeDiagnosticsService";
 
 export type ProductIntakeTemplateReference = {
   id: string;
@@ -30,7 +31,11 @@ export type ProductIntakeBriefInput = {
   analyzer: CatalogMigrationLabAnalyzerResult | null;
   templates: ProductIntakeTemplateReference[];
   provider?: AiProviderAdapter | null;
+  diagnosticsStore?: ProductIntakeAiDiagnosticsStore | null;
+  createdByUserId?: string | null;
 };
+
+const PRODUCT_INTAKE_BRIEF_PROMPT_VERSION = "product-intake-brief-v1";
 
 function clampConfidence(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -473,10 +478,32 @@ export async function generateProductIntakeBrief(input: ProductIntakeBriefInput)
       feature: "feature_review",
       system: prompt.system,
       user: prompt.user,
-      promptVersion: "product-intake-brief-v1",
+      promptVersion: PRODUCT_INTAKE_BRIEF_PROMPT_VERSION,
     });
     const parsed = productIntakeBriefSchema.safeParse(parseAiJsonObject(response.rawText));
     if (!parsed.success) {
+      if (input.diagnosticsStore) {
+        try {
+          const validationErrors = parsed.error.issues.map((issue) => ({
+            path: issue.path.join("."),
+            message: issue.message,
+            code: issue.code,
+          }));
+          await input.diagnosticsStore.recordSchemaValidationFailure({
+            organizationId: input.orgId,
+            sourceType: input.request.sourceType,
+            provider: response.provider ?? null,
+            model: response.model ?? null,
+            rawAiResponse: response.rawText,
+            validationErrors,
+            failedSchemaPaths: unique(validationErrors.map((issue) => issue.path || "$")),
+            promptVersion: PRODUCT_INTAKE_BRIEF_PROMPT_VERSION,
+            createdByUserId: input.createdByUserId ?? null,
+          });
+        } catch (diagnosticError) {
+          console.warn("[ProductIntakeWizard] Failed to store AI schema diagnostic:", diagnosticError);
+        }
+      }
       return fallbackBrief(input, "Live AI response failed schema validation; deterministic analyzer brief returned.");
     }
     return {

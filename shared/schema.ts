@@ -857,6 +857,7 @@ export type Pbv2TreeVersion = typeof pbv2TreeVersions.$inferSelect;
 export const productIntakeSessionSourceTypeValues = ["json_upload", "json_paste", "text_description"] as const;
 export const productIntakeSessionStatusValues = ["analyzed", "needs_answers", "ready_for_draft", "draft_created", "abandoned"] as const;
 export const productIntakeQuestionTypeValues = ["select", "multiselect", "text", "number", "boolean"] as const;
+export const productIntakeAiDiagnosticSourceTypeValues = ["uploaded_json", "pasted_json", "text_description"] as const;
 
 export const productIntakeSessions = pgTable("product_intake_sessions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -928,6 +929,26 @@ export type ProductIntakeQuestionRow = typeof productIntakeQuestions.$inferSelec
 export type InsertProductIntakeQuestionRow = typeof productIntakeQuestions.$inferInsert;
 export type ProductIntakeAnswerRow = typeof productIntakeAnswers.$inferSelect;
 export type InsertProductIntakeAnswerRow = typeof productIntakeAnswers.$inferInsert;
+
+export const productIntakeAiDiagnostics = pgTable("product_intake_ai_diagnostics", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  sourceType: text("source_type").$type<typeof productIntakeAiDiagnosticSourceTypeValues[number]>().notNull(),
+  provider: text("provider"),
+  model: text("model"),
+  rawAiResponse: text("raw_ai_response").notNull(),
+  validationErrors: jsonb("validation_errors").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
+  failedSchemaPaths: jsonb("failed_schema_paths").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  promptVersion: text("prompt_version"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("product_intake_ai_diagnostics_org_created_idx").on(table.organizationId, table.createdAt),
+  index("product_intake_ai_diagnostics_org_source_idx").on(table.organizationId, table.sourceType),
+]);
+
+export type ProductIntakeAiDiagnosticRow = typeof productIntakeAiDiagnostics.$inferSelect;
+export type InsertProductIntakeAiDiagnosticRow = typeof productIntakeAiDiagnostics.$inferInsert;
 
 export const pbv2OptionGroupTemplateStateValues = ["active", "archived"] as const;
 
