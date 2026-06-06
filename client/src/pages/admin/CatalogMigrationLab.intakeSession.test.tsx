@@ -7,6 +7,7 @@ import { TextDecoder, TextEncoder } from "util";
 import type {
   ProductIntakeAnswer,
   ProductIntakeAiDiagnostic,
+  ProductIntakeAiReadiness,
   ProductIntakeQuestion,
   ProductIntakeReadiness,
   ProductIntakeSession,
@@ -45,6 +46,7 @@ jest.mock("@/pages/not-found", () => ({
 
 let ProductIntakeQuestionsWizard: typeof import("./CatalogMigrationLab").ProductIntakeQuestionsWizard;
 let ProductIntakeRunStatusPanel: typeof import("./CatalogMigrationLab").ProductIntakeRunStatusPanel;
+let ProductIntakeAiStatusPanel: typeof import("./CatalogMigrationLab").ProductIntakeAiStatusPanel;
 let ProductIntakeSessionSummary: typeof import("./CatalogMigrationLab").ProductIntakeSessionSummary;
 let ProductIntakeSessionsList: typeof import("./CatalogMigrationLab").ProductIntakeSessionsList;
 let ProductIntakeAiDiagnosticsPanel: typeof import("./CatalogMigrationLab").ProductIntakeAiDiagnosticsPanel;
@@ -54,6 +56,7 @@ beforeAll(async () => {
   const module = await import("./CatalogMigrationLab");
   ProductIntakeQuestionsWizard = module.ProductIntakeQuestionsWizard;
   ProductIntakeRunStatusPanel = module.ProductIntakeRunStatusPanel;
+  ProductIntakeAiStatusPanel = module.ProductIntakeAiStatusPanel;
   ProductIntakeSessionSummary = module.ProductIntakeSessionSummary;
   ProductIntakeSessionsList = module.ProductIntakeSessionsList;
   ProductIntakeAiDiagnosticsPanel = module.ProductIntakeAiDiagnosticsPanel;
@@ -209,6 +212,32 @@ function jsonResponse(data: unknown) {
   } as Response;
 }
 
+function aiReadiness(overrides: Partial<ProductIntakeAiReadiness> = {}): ProductIntakeAiReadiness {
+  return {
+    organizationId: "org_1",
+    userId: "user_1",
+    databaseIdentifier: "neondb",
+    enabled: true,
+    mode: "printershero_managed",
+    featureReviewEnabled: true,
+    provider: "openai",
+    model: "gpt-test",
+    reason: "live_ai_ready",
+    managedEnv: {
+      endpointPresent: true,
+      apiKeyPresent: true,
+      modelPresent: true,
+    },
+    encryptionKeyPresent: false,
+    canAttemptLiveAi: true,
+    ...overrides,
+  };
+}
+
+function isAiReadinessRequest(method: string, url: string) {
+  return method === "GET" && url === "/api/admin/product-intake-wizard/ai-readiness";
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -347,6 +376,38 @@ describe("Product Intake session UI", () => {
     expect(html).toContain("60s");
   });
 
+  test("Product Intake AI status renders live readiness", () => {
+    const html = renderToStaticMarkup(<ProductIntakeAiStatusPanel readiness={aiReadiness()} />);
+
+    expect(html).toContain("Product Intake AI Status");
+    expect(html).toContain("Live AI ready");
+    expect(html).toContain("Product Intake can attempt Live AI");
+    expect(html).toContain("Feature Review");
+    expect(html).toContain("Enabled");
+    expect(html).toContain("openai / gpt-test");
+    expect(html).toContain("neondb");
+  });
+
+  test("Product Intake AI status renders provider unavailable fallback reason", () => {
+    const html = renderToStaticMarkup(
+      <ProductIntakeAiStatusPanel
+        readiness={aiReadiness({
+          enabled: false,
+          featureReviewEnabled: false,
+          provider: null,
+          model: null,
+          reason: "feature_review_disabled",
+          canAttemptLiveAi: false,
+        })}
+      />,
+    );
+
+    expect(html).toContain("Feature Review disabled");
+    expect(html).toContain("Analyzer fallback will be used");
+    expect(html).toContain("Can Attempt Live AI");
+    expect(html).toContain("No");
+  });
+
   test("sessions list renders recent sessions and open button", () => {
     const container = document.createElement("div");
     const root = createRoot(container);
@@ -426,6 +487,9 @@ describe("Product Intake session UI", () => {
       const [method, url] = args as [string, string];
       if (method === "GET" && url === "/api/admin/product-intake-wizard/sessions") {
         return jsonResponse({ success: true, data: { sessions } });
+      }
+      if (isAiReadinessRequest(method, url)) {
+        return jsonResponse({ success: true, data: aiReadiness() });
       }
       if (method === "GET" && url === `/api/admin/product-intake-wizard/sessions/${detail.session.id}`) {
         return jsonResponse({ success: true, data: { ...detail, diagnostics: [] } });
@@ -508,6 +572,9 @@ describe("Product Intake session UI", () => {
       if (method === "GET" && url === "/api/admin/product-intake-wizard/sessions") {
         return jsonResponse({ success: true, data: { sessions: [] } });
       }
+      if (isAiReadinessRequest(method, url)) {
+        return jsonResponse({ success: true, data: aiReadiness() });
+      }
       if (method === "GET" && url.startsWith("/api/admin/product-intake-wizard/ai-diagnostics")) {
         return jsonResponse({ success: true, data: { diagnostics: [] } });
       }
@@ -558,6 +625,9 @@ describe("Product Intake session UI", () => {
       const [method, url, _data, init] = args as [string, string, unknown, RequestInit | undefined];
       if (method === "GET" && url === "/api/admin/product-intake-wizard/sessions") {
         return jsonResponse({ success: true, data: { sessions: [] } });
+      }
+      if (isAiReadinessRequest(method, url)) {
+        return jsonResponse({ success: true, data: aiReadiness() });
       }
       if (method === "GET" && url.startsWith("/api/admin/product-intake-wizard/ai-diagnostics")) {
         return jsonResponse({ success: true, data: { diagnostics: [] } });
@@ -614,6 +684,9 @@ describe("Product Intake session UI", () => {
       if (method === "GET" && url === "/api/admin/product-intake-wizard/sessions") {
         return jsonResponse({ success: true, data: { sessions: [] } });
       }
+      if (isAiReadinessRequest(method, url)) {
+        return jsonResponse({ success: true, data: aiReadiness() });
+      }
       if (method === "GET" && url.startsWith("/api/admin/product-intake-wizard/ai-diagnostics")) {
         return jsonResponse({ success: true, data: { diagnostics: [] } });
       }
@@ -638,6 +711,9 @@ describe("Product Intake session UI", () => {
       const [method, url] = args as [string, string];
       if (method === "GET" && url === "/api/admin/product-intake-wizard/sessions") {
         return jsonResponse({ success: true, data: { sessions: [detail.session] } });
+      }
+      if (isAiReadinessRequest(method, url)) {
+        return jsonResponse({ success: true, data: aiReadiness() });
       }
       if (method === "GET" && url === `/api/admin/product-intake-wizard/sessions/${detail.session.id}`) {
         return jsonResponse({ success: true, data: { ...detail, diagnostics: [] } });

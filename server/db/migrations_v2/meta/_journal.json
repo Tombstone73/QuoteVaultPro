@@ -652,6 +652,13 @@
       "when": 1783123200000,
       "tag": "0097_product_intake_ai_diagnostics",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1783209600000,
+      "tag": "0098_product_intake_ai_diagnostics_repair",
+      "breakpoints": true
     }
   ]
 }

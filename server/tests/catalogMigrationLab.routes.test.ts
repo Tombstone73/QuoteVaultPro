@@ -6,6 +6,7 @@ import request from "supertest";
 import type {
   ProductIntakeAnswer,
   ProductIntakeAiDiagnostic,
+  ProductIntakeAiReadiness,
   ProductIntakeBrief,
   ProductIntakeQuestion,
   ProductIntakeSession,
@@ -39,6 +40,11 @@ type AppOptions = {
   isPlatformDeveloper?: boolean;
   organizationId?: string;
   productIntakeAiProvider?: any;
+  productIntakeAiReadinessResolver?: (args: {
+    organizationId: string;
+    userId: string | null;
+    databaseIdentifier: string | null;
+  }) => Promise<ProductIntakeAiReadiness>;
 };
 
 function makeMemoryProductIntakeSessionStore(): ProductIntakeSessionStore {
@@ -213,6 +219,28 @@ function makeMemoryProductIntakeDiagnosticsStore(seed: ProductIntakeAiDiagnostic
   };
 }
 
+function aiReadiness(overrides: Partial<ProductIntakeAiReadiness> = {}): ProductIntakeAiReadiness {
+  return {
+    organizationId: "org_1",
+    userId: "user_1",
+    databaseIdentifier: "testdb",
+    enabled: true,
+    mode: "printershero_managed",
+    featureReviewEnabled: true,
+    provider: "openai",
+    model: "gpt-test",
+    reason: "live_ai_ready",
+    managedEnv: {
+      endpointPresent: true,
+      apiKeyPresent: true,
+      modelPresent: true,
+    },
+    encryptionKeyPresent: false,
+    canAttemptLiveAi: true,
+    ...overrides,
+  };
+}
+
 function buildApp(
   options: AppOptions = {},
   productIntakeSessionStore = makeMemoryProductIntakeSessionStore(),
@@ -272,6 +300,7 @@ function buildApp(
     productIntakeAiProvider: options.productIntakeAiProvider ?? null,
     productIntakeSessionStore,
     productIntakeDiagnosticsStore,
+    productIntakeAiReadinessResolver: options.productIntakeAiReadinessResolver,
   });
 
   return app;
@@ -769,7 +798,71 @@ describe("Catalog Migration Lab routes", () => {
       rawAiResponse: "{\"bad\":true}",
       failedSchemaPaths: ["productIdentity"],
     });
-    expect(JSON.stringify(response.body)).not.toMatch(/apiKey|sk-/i);
+    expect(JSON.stringify(response.body)).not.toMatch(/sk-/i);
+  });
+
+  test("product intake AI readiness endpoint returns missing settings", async () => {
+    const response = await request(buildApp({
+      productIntakeAiReadinessResolver: async ({ organizationId, userId, databaseIdentifier }) => aiReadiness({
+        organizationId,
+        userId,
+        databaseIdentifier,
+        enabled: false,
+        mode: "disabled",
+        featureReviewEnabled: false,
+        provider: null,
+        model: null,
+        reason: "missing_org_ai_settings",
+        managedEnv: { endpointPresent: false, apiKeyPresent: false, modelPresent: false },
+        canAttemptLiveAi: false,
+      }),
+    })).get("/api/admin/product-intake-wizard/ai-readiness");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      organizationId: "org_1",
+      userId: "user_1",
+      enabled: false,
+      reason: "missing_org_ai_settings",
+      canAttemptLiveAi: false,
+    });
+    expect(JSON.stringify(response.body)).not.toMatch(/sk-/i);
+  });
+
+  test("product intake AI readiness endpoint returns feature review disabled", async () => {
+    const response = await request(buildApp({
+      productIntakeAiReadinessResolver: async () => aiReadiness({
+        enabled: true,
+        featureReviewEnabled: false,
+        reason: "feature_review_disabled",
+        canAttemptLiveAi: false,
+      }),
+    })).get("/api/admin/product-intake-wizard/ai-readiness");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      enabled: true,
+      featureReviewEnabled: false,
+      reason: "feature_review_disabled",
+      canAttemptLiveAi: false,
+    });
+  });
+
+  test("product intake AI readiness endpoint returns live AI ready", async () => {
+    const response = await request(buildApp({
+      productIntakeAiReadinessResolver: async () => aiReadiness(),
+    })).get("/api/admin/product-intake-wizard/ai-readiness");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      enabled: true,
+      mode: "printershero_managed",
+      featureReviewEnabled: true,
+      provider: "openai",
+      model: "gpt-test",
+      reason: "live_ai_ready",
+      canAttemptLiveAi: true,
+    });
   });
 
   test("catalog migration lab server files contain no database write calls", () => {

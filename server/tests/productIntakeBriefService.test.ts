@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { AiProviderTimeoutError, type AiProviderRequest } from "../services/ai/providers/AiProviderAdapter";
+import { AiProviderTimeoutError, AiProviderUnavailableError, type AiProviderRequest } from "../services/ai/providers/AiProviderAdapter";
 import {
   productIntakeBriefSchema,
   productIntakeWizardAnalyzeRequestSchema,
@@ -485,6 +485,27 @@ describe("Product Intake Brief service", () => {
 
     expect(brief.source).toBe("rule_based_fallback");
     expect(brief.fallbackReason).toBe("Live AI timed out after 60 seconds. Analyzer fallback returned.");
+  });
+
+  test("provider unavailable falls back with explicit Product Intake message", async () => {
+    const provider = {
+      generateJson: async () => {
+        throw new AiProviderUnavailableError("AI provider is not configured.");
+      },
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+    };
+
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "4mm coroplast yard signs" },
+      analyzer: null,
+      templates,
+      provider,
+    });
+
+    expect(brief.source).toBe("rule_based_fallback");
+    expect(brief.fallbackReason).toBe("Live AI unavailable: Feature Review is disabled or AI settings are missing. Analyzer fallback returned.");
   });
 
   test("records AI schema validation diagnostics without changing fallback behavior", async () => {
