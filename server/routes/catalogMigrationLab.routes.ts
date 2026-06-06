@@ -24,6 +24,7 @@ import {
   createDbProductIntakeSessionStore,
   fingerprintProductIntakeRequest,
   ProductIntakeSessionError,
+  type ProductIntakeSessionDeleteFilters,
   type ProductIntakeSessionStore,
 } from "../services/productIntakeWizard/productIntakeSessionService";
 import {
@@ -109,6 +110,19 @@ function handleProductIntakeRouteError(error: any, res: Response, fallbackMessag
   }
   return null;
 }
+
+const productIntakeBulkDeleteRequestSchema = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("selected"),
+    sessionIds: z.array(z.string().min(1)).min(1).max(200),
+  }),
+  z.object({
+    mode: z.literal("abandoned"),
+  }),
+  z.object({
+    mode: z.literal("analyzer_fallback"),
+  }),
+]);
 
 async function loadReferenceData(organizationId: string): Promise<ProductIntakeReferenceData> {
   const materialRows = await db
@@ -450,6 +464,64 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
         if (handled) return handled;
         console.error("[ProductIntakeWizard] Abandon failed:", error);
         return res.status(500).json({ success: false, message: "Failed to abandon Product Intake session.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+      }
+    },
+  );
+
+  app.delete(
+    "/api/admin/product-intake-wizard/sessions/:id",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) {
+          return res.status(400).json({ success: false, message: "Missing organization context.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+        }
+
+        const deleted = await intakeSessionStore.deleteSessions({
+          organizationId,
+          filters: { sessionIds: [req.params.id] },
+        });
+        if (deleted.sessions === 0) {
+          return res.status(404).json({ success: false, message: "Product Intake session not found.", errorCode: "SESSION_NOT_FOUND" });
+        }
+        return res.json({ success: true, data: { deleted } });
+      } catch (error: any) {
+        const handled = handleProductIntakeRouteError(error, res, "Invalid Product Intake delete request.");
+        if (handled) return handled;
+        console.error("[ProductIntakeWizard] Session delete failed:", error);
+        return res.status(500).json({ success: false, message: "Failed to delete Product Intake session.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/admin/product-intake-wizard/sessions/bulk-delete",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) {
+          return res.status(400).json({ success: false, message: "Missing organization context.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+        }
+
+        const parsed = productIntakeBulkDeleteRequestSchema.parse(req.body ?? {});
+        const filters: ProductIntakeSessionDeleteFilters = parsed.mode === "selected"
+          ? { sessionIds: parsed.sessionIds }
+          : parsed.mode === "abandoned"
+            ? { status: "abandoned" }
+            : { briefSource: "rule_based_fallback" };
+        const deleted = await intakeSessionStore.deleteSessions({ organizationId, filters });
+        return res.json({ success: true, data: { deleted } });
+      } catch (error: any) {
+        const handled = handleProductIntakeRouteError(error, res, "Invalid Product Intake bulk delete request.");
+        if (handled) return handled;
+        console.error("[ProductIntakeWizard] Bulk session delete failed:", error);
+        return res.status(500).json({ success: false, message: "Failed to bulk delete Product Intake sessions.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
       }
     },
   );

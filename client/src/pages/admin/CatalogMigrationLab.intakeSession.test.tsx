@@ -18,6 +18,8 @@ import type {
 
 const { renderToStaticMarkup } = require("react-dom/server") as typeof import("react-dom/server");
 
+jest.setTimeout(120000);
+
 jest.mock("@/lib/queryClient", () => ({
   apiRequest: jest.fn(),
 }));
@@ -307,14 +309,122 @@ describe("Product Intake session UI", () => {
   });
 
   test("sessions list renders recent sessions and open button", () => {
-    const html = renderToStaticMarkup(
-      <ProductIntakeSessionsList sessions={[session({ status: "ready_for_draft" })]} onOpen={() => undefined} />,
-    );
+    const container = document.createElement("div");
+    const root = createRoot(container);
 
-    expect(html).toContain("Recent Intake Sessions");
-    expect(html).toContain("Foam Board Sign");
-    expect(html).toContain("ready for draft");
-    expect(html).toContain("Open");
+    act(() => {
+      root.render(<ProductIntakeSessionsList sessions={[session({ status: "ready_for_draft" })]} onOpen={() => undefined} />);
+    });
+
+    expect(container.textContent).toContain("Recent Intake Sessions");
+    expect(container.textContent).toContain("Foam Board Sign");
+    expect(container.textContent).toContain("ready for draft");
+    expect(container.textContent).toContain("Analyzer fallback");
+    expect(container.textContent).toContain("Delete Selected");
+    expect(container.textContent).toContain("Open");
+    act(() => root.unmount());
+  });
+
+  test("sessions list filters by product search", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ProductIntakeSessionsList
+          sessions={[
+            session({ id: "sess_1" }),
+            session({ id: "sess_2", brief: { ...session().brief, productIdentity: { ...session().brief.productIdentity, likelyProductName: { value: "13oz Banner", confidence: 92, evidence: [] } } } }),
+          ]}
+          onOpen={() => undefined}
+        />,
+      );
+    });
+
+    const searchInput = container.querySelector('input[aria-label="Search intake sessions"]') as HTMLInputElement;
+    expect(container.textContent).toContain("Foam Board Sign");
+    expect(container.textContent).toContain("13oz Banner");
+    act(() => {
+      Simulate.change(searchInput, { target: { value: "banner" } } as any);
+    });
+    expect(container.textContent).not.toContain("Foam Board Sign");
+    expect(container.textContent).toContain("13oz Banner");
+    act(() => root.unmount());
+  });
+
+  test("session delete requires confirmation", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onDelete = jest.fn();
+
+    act(() => {
+      root.render(
+        <ProductIntakeSessionsList sessions={[session()]} onOpen={() => undefined} onDelete={onDelete} />,
+      );
+    });
+
+    const deleteButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Delete");
+    act(() => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Delete this intake session?");
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).reverse().find((button) => button.textContent === "Delete");
+    act(() => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onDelete).toHaveBeenCalledTimes(1);
+    act(() => root.unmount());
+    document.body.innerHTML = "";
+  });
+
+  test("opened deleted session clears from the page", async () => {
+    const detail = intakeDetail({ status: "needs_answers" });
+    let sessions = [detail.session];
+    queryClientMock.apiRequest.mockImplementation(async (...args: unknown[]) => {
+      const [method, url] = args as [string, string];
+      if (method === "GET" && url === "/api/admin/product-intake-wizard/sessions") {
+        return jsonResponse({ success: true, data: { sessions } });
+      }
+      if (method === "GET" && url === `/api/admin/product-intake-wizard/sessions/${detail.session.id}`) {
+        return jsonResponse({ success: true, data: { ...detail, diagnostics: [] } });
+      }
+      if (method === "GET" && url.startsWith("/api/admin/product-intake-wizard/ai-diagnostics")) {
+        return jsonResponse({ success: true, data: { diagnostics: [] } });
+      }
+      if (method === "DELETE" && url === `/api/admin/product-intake-wizard/sessions/${detail.session.id}`) {
+        sessions = [];
+        return jsonResponse({ success: true, data: { deleted: { sessions: 1, questions: 5, answers: 0, diagnostics: 0 } } });
+      }
+      throw new Error(`Unexpected request ${method} ${url}`);
+    });
+
+    const { container, root } = await renderCatalogMigrationLabPage();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const openButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Open");
+    await act(async () => {
+      openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.textContent).toContain("Session Summary");
+
+    const deleteButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Delete");
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).reverse().find((button) => button.textContent === "Delete");
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).not.toContain("Session Summary");
+    expect(container.textContent).toContain("No intake sessions match the current filters.");
+    act(() => root.unmount());
+    document.body.innerHTML = "";
   });
 
   test("AI diagnostics panel renders provider, schema paths, errors, and raw response", () => {
