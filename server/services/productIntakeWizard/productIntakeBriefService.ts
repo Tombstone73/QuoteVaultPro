@@ -1155,7 +1155,7 @@ export async function generateProductIntakeBrief(input: ProductIntakeBriefInput)
     };
   } catch (error: any) {
     const reason = error instanceof AiProviderUnavailableError
-      ? "AI provider unavailable; deterministic analyzer brief returned."
+      ? "Live AI unavailable: Feature Review is disabled or AI settings are missing. Analyzer fallback returned."
       : error instanceof AiProviderTimeoutError
         ? `Live AI timed out after ${Math.round(error.timeoutMs / 1000)} seconds. Analyzer fallback returned.`
       : `AI brief generation failed; deterministic analyzer brief returned: ${error?.message ?? "unknown error"}`;

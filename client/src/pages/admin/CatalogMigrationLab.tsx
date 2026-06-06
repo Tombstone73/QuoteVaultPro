@@ -16,6 +16,7 @@ import { CATALOG_MIGRATION_LAB_MAX_UPLOAD_BYTES } from "@shared/catalogMigration
 import type {
   ProductIntakeAnswer,
   ProductIntakeAiDiagnostic,
+  ProductIntakeAiReadiness,
   ProductIntakeBrief,
   ProductIntakeQuestion,
   ProductIntakeReadiness,
@@ -146,6 +147,32 @@ function answeredQuestionCount(session: ProductIntakeSession) {
 
 function currentSessionConfidence(session: ProductIntakeSession) {
   return typeof session.confidence?.currentConfidence === "number" ? session.confidence.currentConfidence : session.brief.overallConfidence;
+}
+
+function productIntakeAiStatusLabel(readiness: ProductIntakeAiReadiness | null | undefined) {
+  if (!readiness) return "Loading AI status";
+  if (readiness.reason === "live_ai_ready") return "Live AI ready";
+  if (readiness.reason === "missing_org_ai_settings") return "Missing org AI settings";
+  if (readiness.reason === "ai_disabled") return "AI disabled";
+  if (readiness.reason === "feature_review_disabled") return "Feature Review disabled";
+  if (readiness.reason === "missing_provider_config") return "Missing provider config";
+  if (readiness.reason === "missing_encryption_key") return "Missing encryption key";
+  return "Provider unavailable";
+}
+
+function productIntakeAiStatusMessage(readiness: ProductIntakeAiReadiness | null | undefined) {
+  if (!readiness) return "Checking Product Intake AI readiness for this organization.";
+  if (readiness.reason === "live_ai_ready") return "Product Intake can attempt Live AI for this organization.";
+  if (readiness.reason === "missing_org_ai_settings") return "No organization AI settings row was found. Analyzer fallback will be used.";
+  if (readiness.reason === "feature_review_disabled") return "Feature Review is disabled for this organization. Analyzer fallback will be used.";
+  if (readiness.reason === "missing_provider_config") return "Provider, model, endpoint, or API key configuration is incomplete. Analyzer fallback will be used.";
+  if (readiness.reason === "missing_encryption_key") return "Bring-your-own-key settings exist, but the AI settings encryption key is not configured.";
+  if (readiness.reason === "ai_disabled") return "Organization AI is disabled. Analyzer fallback will be used.";
+  return "The configured provider is unavailable for Product Intake. Analyzer fallback will be used.";
+}
+
+function isProviderUnavailableFallback(reason: string | null | undefined) {
+  return /live ai unavailable|provider unavailable|feature review is disabled|ai settings are missing/i.test(reason ?? "");
 }
 
 type ProductIntakeRunStatus =
@@ -324,8 +351,13 @@ export function ProductIntakeSessionSummary({ session, readiness, diagnosticsCou
           </div>
           {session.brief.source === "rule_based_fallback" && (
             <div className="mt-2 text-xs text-amber-600">
-              Draft creation should be reviewed carefully because this brief did not come from validated AI.
+              {isProviderUnavailableFallback(session.brief.fallbackReason)
+                ? "Live AI unavailable: Feature Review is disabled or AI settings are missing. Analyzer fallback returned."
+                : "Draft creation should be reviewed carefully because this brief did not come from validated AI."}
             </div>
+          )}
+          {session.brief.source === "rule_based_fallback" && session.brief.fallbackReason && !isProviderUnavailableFallback(session.brief.fallbackReason) && (
+            <div className="mt-2 text-xs text-muted-foreground">{session.brief.fallbackReason}</div>
           )}
           {session.brief.missingDecisions.length > 0 && (
             <div className="mt-2 text-xs text-muted-foreground">
@@ -547,6 +579,67 @@ export function ProductIntakeRunStatusPanel({
           />
           Play sound when analysis finishes
         </label>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function ProductIntakeAiStatusPanel({
+  readiness,
+  isLoading = false,
+}: {
+  readiness: ProductIntakeAiReadiness | null | undefined;
+  isLoading?: boolean;
+}) {
+  const ready = readiness?.reason === "live_ai_ready";
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">Product Intake AI Status</CardTitle>
+            <CardDescription>{productIntakeAiStatusMessage(readiness)}</CardDescription>
+          </div>
+          <Badge variant={ready ? "default" : "outline"}>
+            {isLoading ? "Checking..." : productIntakeAiStatusLabel(readiness)}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
+          <div>
+            <div className="text-xs font-medium uppercase text-muted-foreground">Org</div>
+            <div className="mt-1 font-mono text-xs">{readiness?.organizationId ?? "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase text-muted-foreground">Mode</div>
+            <div className="mt-1 font-medium">{readiness?.mode?.replace(/_/g, " ") ?? "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase text-muted-foreground">Feature Review</div>
+            <div className="mt-1 font-medium">{readiness ? (readiness.featureReviewEnabled ? "Enabled" : "Disabled") : "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase text-muted-foreground">Provider / Model</div>
+            <div className="mt-1 font-medium">{readiness?.provider || readiness?.model ? `${readiness.provider ?? "Unknown"} / ${readiness.model ?? "Unknown"}` : "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase text-muted-foreground">Can Attempt Live AI</div>
+            <div className="mt-1 font-medium">{readiness ? (readiness.canAttemptLiveAi ? "Yes" : "No") : "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase text-muted-foreground">Database</div>
+            <div className="mt-1 font-mono text-xs">{readiness?.databaseIdentifier ?? "-"}</div>
+          </div>
+        </div>
+        {readiness && (
+          <div className="flex flex-wrap gap-2">
+            <Badge variant={readiness.managedEnv.endpointPresent ? "secondary" : "outline"}>Managed endpoint {readiness.managedEnv.endpointPresent ? "present" : "missing"}</Badge>
+            <Badge variant={readiness.managedEnv.apiKeyPresent ? "secondary" : "outline"}>Managed key {readiness.managedEnv.apiKeyPresent ? "present" : "missing"}</Badge>
+            <Badge variant={readiness.managedEnv.modelPresent ? "secondary" : "outline"}>Managed model {readiness.managedEnv.modelPresent ? "present" : "missing"}</Badge>
+            <Badge variant={readiness.encryptionKeyPresent ? "secondary" : "outline"}>Encryption key {readiness.encryptionKeyPresent ? "present" : "missing"}</Badge>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -1204,6 +1297,16 @@ export default function CatalogMigrationLab() {
       return json.data.sessions as ProductIntakeSession[];
     },
   });
+  const aiReadinessQuery = useQuery({
+    queryKey: ["/api/admin/product-intake-wizard/ai-readiness"],
+    enabled: canAccessPlatformTools && !isLoading,
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/admin/product-intake-wizard/ai-readiness");
+      const json = await response.json();
+      if (!json?.success) throw new Error(json?.message ?? "Failed to load Product Intake AI readiness");
+      return json.data as ProductIntakeAiReadiness;
+    },
+  });
   const diagnosticsQuery = useQuery({
     queryKey: ["/api/admin/product-intake-wizard/ai-diagnostics", intakeSessionDetail?.session.id ?? null],
     enabled: canAccessPlatformTools && !isLoading,
@@ -1739,6 +1842,11 @@ export default function CatalogMigrationLab() {
           </div>
         </CardContent>
       </Card>
+
+      <ProductIntakeAiStatusPanel
+        readiness={aiReadinessQuery.data}
+        isLoading={aiReadinessQuery.isLoading}
+      />
 
       <ProductIntakeRunStatusPanel
         runState={intakeRunState}

@@ -1,6 +1,6 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { catalogMigrationLabAnalyzerRequestSchema, type CatalogMigrationLabAnalyzerRequest } from "@shared/catalogMigrationLabSchemas";
 import {
   productIntakeAnswersPatchRequestSchema,
@@ -31,7 +31,9 @@ import {
   createDbProductIntakeAiDiagnosticsStore,
   type ProductIntakeAiDiagnosticsStore,
 } from "../services/productIntakeWizard/productIntakeDiagnosticsService";
+import { resolveProductIntakeAiReadiness } from "../services/productIntakeWizard/productIntakeAiReadinessService";
 import type { AiProviderAdapter } from "../services/ai/providers/AiProviderAdapter";
+import type { ProductIntakeAiReadiness } from "@shared/productIntakeWizardSchemas";
 
 type RouteMiddleware = {
   isAuthenticated: (req: Request, res: Response, next: NextFunction) => void;
@@ -41,6 +43,11 @@ type RouteMiddleware = {
   productIntakeAiProvider?: AiProviderAdapter | null;
   productIntakeSessionStore?: ProductIntakeSessionStore;
   productIntakeDiagnosticsStore?: ProductIntakeAiDiagnosticsStore;
+  productIntakeAiReadinessResolver?: (args: {
+    organizationId: string;
+    userId: string | null;
+    databaseIdentifier: string | null;
+  }) => Promise<ProductIntakeAiReadiness>;
 };
 
 type ProductIntakeReferenceData = CatalogMigrationLabReferenceData & {
@@ -84,6 +91,16 @@ function intakePayloadSize(input: ProductIntakeWizardAnalyzeRequest): number {
 function requestUserId(req: Request): string | null {
   const user = req.user as any;
   return user?.id ?? user?.claims?.sub ?? null;
+}
+
+async function safeCurrentDatabaseIdentifier(): Promise<string | null> {
+  try {
+    const result = await db.execute(sql`select current_database() as database_identifier`);
+    const row = result.rows[0] as { database_identifier?: string } | undefined;
+    return row?.database_identifier ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function handleProductIntakeRouteError(error: any, res: Response, fallbackMessage: string) {
@@ -436,6 +453,34 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
         if (handled) return handled;
         console.error("[ProductIntakeWizard] Answer save failed:", error);
         return res.status(500).json({ success: false, message: "Failed to save Product Intake answers.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/admin/product-intake-wizard/ai-readiness",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        const userId = requestUserId(req);
+        const databaseIdentifier = await safeCurrentDatabaseIdentifier();
+        const readiness = middleware.productIntakeAiReadinessResolver
+          ? await middleware.productIntakeAiReadinessResolver({ organizationId, userId, databaseIdentifier })
+          : await resolveProductIntakeAiReadiness({ organizationId, userId, databaseIdentifier });
+        return res.json({ success: true, data: readiness });
+      } catch (error: any) {
+        const handled = handleProductIntakeRouteError(error, res, "Invalid Product Intake AI readiness request.");
+        if (handled) return handled;
+
+        console.error("[ProductIntakeWizard] AI readiness check failed:", error);
+        return res.status(500).json({
+          success: false,
+          message: "Failed to load Product Intake AI readiness.",
+          errorCode: "UNKNOWN_SOURCE_SHAPE",
+        });
       }
     },
   );

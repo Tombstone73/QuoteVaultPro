@@ -286,6 +286,40 @@ export const productIntakeAiDiagnosticsListResponseSchema = z.object({
   }),
 });
 
+export const productIntakeAiReadinessReasonValues = [
+  "live_ai_ready",
+  "missing_org_ai_settings",
+  "ai_disabled",
+  "feature_review_disabled",
+  "missing_provider_config",
+  "missing_encryption_key",
+  "provider_unavailable",
+] as const;
+
+export const productIntakeAiReadinessSchema = z.object({
+  organizationId: z.string().min(1),
+  userId: z.string().nullable(),
+  databaseIdentifier: z.string().nullable(),
+  enabled: z.boolean(),
+  mode: z.string(),
+  featureReviewEnabled: z.boolean(),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  reason: z.enum(productIntakeAiReadinessReasonValues),
+  managedEnv: z.object({
+    endpointPresent: z.boolean(),
+    apiKeyPresent: z.boolean(),
+    modelPresent: z.boolean(),
+  }),
+  encryptionKeyPresent: z.boolean(),
+  canAttemptLiveAi: z.boolean(),
+});
+
+export const productIntakeAiReadinessResponseSchema = z.object({
+  success: z.literal(true),
+  data: productIntakeAiReadinessSchema,
+});
+
 export const productIntakeWizardAnalyzeRequestSchema = z.object({
   sourceType: z.enum(productIntakeSourceTypeValues),
   fileName: z.string().trim().max(255).optional(),
@@ -355,6 +389,7 @@ export type ProductIntakeSessionDetail = z.infer<typeof productIntakeSessionDeta
 export type ProductIntakeAiDiagnosticIssue = z.infer<typeof productIntakeAiDiagnosticIssueSchema>;
 export type ProductIntakeAiRepairAction = z.infer<typeof productIntakeAiRepairActionSchema>;
 export type ProductIntakeAiDiagnostic = z.infer<typeof productIntakeAiDiagnosticSchema>;
+export type ProductIntakeAiReadiness = z.infer<typeof productIntakeAiReadinessSchema>;
 export type ProductIntakeAnswerPatchItem = z.infer<typeof productIntakeAnswerPatchItemSchema>;
 export type ProductIntakeAnswersPatchRequest = z.infer<typeof productIntakeAnswersPatchRequestSchema>;
 export type ProductIntakeSessionStatus = z.infer<typeof productIntakeSessionSchema>["status"];
