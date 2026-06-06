@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -116,6 +116,10 @@ function formatDateTime(value: string | null | undefined) {
   return date.toLocaleString();
 }
 
+function formatSeconds(ms: number) {
+  return `${Math.max(0, Math.round(ms / 1000))}s`;
+}
+
 function productNameForSession(session: ProductIntakeSession) {
   return session.brief.productIdentity.likelyProductName.value ?? "Untitled product";
 }
@@ -142,6 +146,100 @@ function answeredQuestionCount(session: ProductIntakeSession) {
 
 function currentSessionConfidence(session: ProductIntakeSession) {
   return typeof session.confidence?.currentConfidence === "number" ? session.confidence.currentConfidence : session.brief.overallConfidence;
+}
+
+type ProductIntakeRunStatus =
+  | "idle"
+  | "running_live_ai"
+  | "running_analyzer_fallback"
+  | "completed_live_ai"
+  | "completed_live_ai_repaired"
+  | "completed_analyzer_fallback"
+  | "timed_out"
+  | "failed"
+  | "canceled";
+
+type ProductIntakeRunState = {
+  status: ProductIntakeRunStatus;
+  startedAt: number | null;
+  completedAt: number | null;
+  timeoutMs: number | null;
+  sourceResult: "live_ai" | "live_ai_repaired" | "analyzer_fallback" | null;
+  provider: string | null;
+  model: string | null;
+  message: string;
+};
+
+const PRODUCT_INTAKE_UI_TIMEOUT_MS = 60000;
+
+function initialProductIntakeRunState(): ProductIntakeRunState {
+  return {
+    status: "idle",
+    startedAt: null,
+    completedAt: null,
+    timeoutMs: null,
+    sourceResult: null,
+    provider: null,
+    model: null,
+    message: "Idle",
+  };
+}
+
+function productIntakeRunLabel(status: ProductIntakeRunStatus) {
+  if (status === "running_live_ai") return "Running live AI";
+  if (status === "running_analyzer_fallback") return "Running analyzer fallback";
+  if (status === "completed_live_ai") return "Completed with Live AI";
+  if (status === "completed_live_ai_repaired") return "Completed with Live AI repaired";
+  if (status === "completed_analyzer_fallback") return "Completed with Analyzer Fallback";
+  if (status === "timed_out") return "Timed out";
+  if (status === "failed") return "Failed";
+  if (status === "canceled") return "Canceled by user";
+  return "Idle";
+}
+
+function productIntakeResultStatus(brief: ProductIntakeBrief): ProductIntakeRunStatus {
+  if (brief.source === "live_ai" && brief.aiRepair?.accepted) return "completed_live_ai_repaired";
+  if (brief.source === "live_ai") return "completed_live_ai";
+  if (brief.fallbackReason?.toLowerCase().includes("timed out")) return "timed_out";
+  return "completed_analyzer_fallback";
+}
+
+function sourceResultForBrief(brief: ProductIntakeBrief): ProductIntakeRunState["sourceResult"] {
+  if (brief.source === "live_ai" && brief.aiRepair?.accepted) return "live_ai_repaired";
+  if (brief.source === "live_ai") return "live_ai";
+  return "analyzer_fallback";
+}
+
+function runCompletionMessage(status: ProductIntakeRunStatus, elapsedMs: number, fallbackReason?: string | null) {
+  if (status === "completed_live_ai") return `Completed with Live AI in ${formatSeconds(elapsedMs)}.`;
+  if (status === "completed_live_ai_repaired") return `Completed with Live AI repaired in ${formatSeconds(elapsedMs)}.`;
+  if (status === "timed_out") return fallbackReason ?? `Live AI timed out after ${formatSeconds(elapsedMs)}. Analyzer fallback returned.`;
+  if (status === "completed_analyzer_fallback") return `Completed with Analyzer Fallback in ${formatSeconds(elapsedMs)}.`;
+  return `Completed in ${formatSeconds(elapsedMs)}.`;
+}
+
+function playProductIntakeCompletionSound() {
+  try {
+    const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextCtor) return;
+    const context = new AudioContextCtor();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.08, context.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.22);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.24);
+    setTimeout(() => {
+      void context.close?.();
+    }, 350);
+  } catch {
+    // Browsers may block audio without a user gesture; the preference stays quiet on failure.
+  }
 }
 
 function requiredOpenCount(session: ProductIntakeSession) {
@@ -377,6 +475,78 @@ export function ProductIntakeQuestionsWizard({
             </Button>
           </div>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function ProductIntakeRunStatusPanel({
+  runState,
+  now,
+  playSound,
+  onPlaySoundChange,
+}: {
+  runState: ProductIntakeRunState;
+  now: number;
+  playSound: boolean;
+  onPlaySoundChange: (value: boolean) => void;
+}) {
+  const isRunning = runState.status === "running_live_ai" || runState.status === "running_analyzer_fallback";
+  const elapsedMs = runState.startedAt ? (runState.completedAt ?? now) - runState.startedAt : 0;
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">AI Run Status</CardTitle>
+            <CardDescription>{runState.message}</CardDescription>
+          </div>
+          <Badge variant={runState.status === "failed" ? "destructive" : isRunning ? "outline" : "secondary"}>
+            {productIntakeRunLabel(runState.status)}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        {isRunning && (
+          <div className="flex items-center gap-2 rounded border bg-muted/30 p-3">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>Live AI is analyzing this product... {formatSeconds(elapsedMs)} elapsed.</span>
+          </div>
+        )}
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
+          <div>
+            <div className="text-xs font-medium uppercase text-muted-foreground">Started</div>
+            <div className="mt-1 font-medium">{runState.startedAt ? formatDateTime(new Date(runState.startedAt).toISOString()) : "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase text-muted-foreground">Completed</div>
+            <div className="mt-1 font-medium">{runState.completedAt ? formatDateTime(new Date(runState.completedAt).toISOString()) : "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase text-muted-foreground">Elapsed</div>
+            <div className="mt-1 font-medium">{runState.startedAt ? formatSeconds(elapsedMs) : "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase text-muted-foreground">Provider / Model</div>
+            <div className="mt-1 font-medium">{runState.provider && runState.model ? `${runState.provider} / ${runState.model}` : "Not returned"}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase text-muted-foreground">Timeout</div>
+            <div className="mt-1 font-medium">{runState.timeoutMs ? formatSeconds(runState.timeoutMs) : "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase text-muted-foreground">Source Result</div>
+            <div className="mt-1 font-medium">{runState.sourceResult ? runState.sourceResult.replace(/_/g, " ") : "-"}</div>
+          </div>
+        </div>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={playSound}
+            onChange={(event) => onPlaySoundChange(event.target.checked)}
+          />
+          Play sound when analysis finishes
+        </label>
       </CardContent>
     </Card>
   );
@@ -963,6 +1133,17 @@ export default function CatalogMigrationLab() {
   const [intakeBrief, setIntakeBrief] = useState<ProductIntakeBrief | null>(null);
   const [intakeSessionDetail, setIntakeSessionDetail] = useState<ProductIntakeSessionDetail | null>(null);
   const [answerDrafts, setAnswerDrafts] = useState<Record<string, unknown>>({});
+  const [intakeRunState, setIntakeRunState] = useState<ProductIntakeRunState>(() => initialProductIntakeRunState());
+  const [intakeRunNow, setIntakeRunNow] = useState(() => Date.now());
+  const intakeAbortControllerRef = useRef<AbortController | null>(null);
+  const intakeRunStartedAtRef = useRef<number | null>(null);
+  const [playIntakeSound, setPlayIntakeSound] = useState(() => {
+    try {
+      return window.localStorage.getItem("productIntake.playCompletionSound") === "true";
+    } catch {
+      return false;
+    }
+  });
   const [warningSeverityFilter, setWarningSeverityFilter] = useState<"all" | "blocker" | "warning" | "info">("all");
   const [warningProductFilter, setWarningProductFilter] = useState("all");
   const [warningCodeFilter, setWarningCodeFilter] = useState("all");
@@ -1039,6 +1220,21 @@ export default function CatalogMigrationLab() {
     setAnswerDrafts(answerDraftsFromDetail(intakeSessionDetail));
   }, [intakeSessionDetail]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("productIntake.playCompletionSound", String(playIntakeSound));
+    } catch {
+      // localStorage can be unavailable in private or locked-down browser contexts.
+    }
+  }, [playIntakeSound]);
+
+  useEffect(() => {
+    if (intakeRunState.status !== "running_live_ai" && intakeRunState.status !== "running_analyzer_fallback") return undefined;
+    setIntakeRunNow(Date.now());
+    const interval = window.setInterval(() => setIntakeRunNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [intakeRunState.status]);
+
   const analyzeMutation = useMutation({
     mutationFn: async () => {
       const response = await apiRequest("POST", "/api/admin/catalog-migration-lab/analyze", {
@@ -1073,6 +1269,8 @@ export default function CatalogMigrationLab() {
 
   const intakeMutation = useMutation({
     mutationFn: async () => {
+      const controller = intakeAbortControllerRef.current ?? new AbortController();
+      intakeAbortControllerRef.current = controller;
       const hasJsonSource = analyzerSource.text.trim().length > 0;
       const response = await apiRequest("POST", "/api/admin/product-intake-wizard/analyze", hasJsonSource ? {
         sourceType: analyzerSource.kind === "upload" ? "uploaded_json" : "pasted_json",
@@ -1082,7 +1280,7 @@ export default function CatalogMigrationLab() {
       } : {
         sourceType: "text_description",
         description: productDescription,
-      });
+      }, { signal: controller.signal });
       const json = await response.json();
       if (!json?.success) throw new Error(json?.message ?? "Product Intake Brief failed");
       return json.data as {
@@ -1095,6 +1293,22 @@ export default function CatalogMigrationLab() {
       };
     },
     onSuccess: (result) => {
+      const completedAt = Date.now();
+      const startedAt = intakeRunStartedAtRef.current ?? completedAt;
+      const status = productIntakeResultStatus(result.brief);
+      setIntakeRunState({
+        status,
+        startedAt,
+        completedAt,
+        timeoutMs: PRODUCT_INTAKE_UI_TIMEOUT_MS,
+        sourceResult: sourceResultForBrief(result.brief),
+        provider: null,
+        model: null,
+        message: runCompletionMessage(status, completedAt - startedAt, result.brief.fallbackReason),
+      });
+      if (playIntakeSound) playProductIntakeCompletionSound();
+      intakeAbortControllerRef.current = null;
+      intakeRunStartedAtRef.current = null;
       setIntakeBrief(result.brief);
       if (result.session && result.questions && result.answers && result.readiness) {
         setIntakeSessionDetail({
@@ -1120,6 +1334,29 @@ export default function CatalogMigrationLab() {
       });
     },
     onError: (error: any) => {
+      const completedAt = Date.now();
+      const startedAt = intakeRunStartedAtRef.current ?? completedAt;
+      const aborted = error?.name === "AbortError" || /abort/i.test(String(error?.message ?? ""));
+      setIntakeRunState({
+        status: aborted ? "canceled" : "failed",
+        startedAt,
+        completedAt,
+        timeoutMs: PRODUCT_INTAKE_UI_TIMEOUT_MS,
+        sourceResult: null,
+        provider: null,
+        model: null,
+        message: aborted ? "Canceled by user" : `Failed after ${formatSeconds(completedAt - startedAt)}.`,
+      });
+      intakeAbortControllerRef.current = null;
+      intakeRunStartedAtRef.current = null;
+      if (!aborted && playIntakeSound) playProductIntakeCompletionSound();
+      if (aborted) {
+        toast({
+          title: "Product Intake canceled",
+          description: "No partial session data was displayed. A completed backend session may appear after refresh.",
+        });
+        return;
+      }
       toast({
         title: "Product Intake Brief failed",
         description: error?.message ?? "The intake brief could not be generated.",
@@ -1299,6 +1536,38 @@ export default function CatalogMigrationLab() {
   const canAnalyze = analyzerSource.text.trim().length > 0 && !oversized && !analyzeMutation.isPending;
   const canGenerateIntake = (analyzerSource.text.trim().length > 0 || productDescription.trim().length > 0) && !oversized && !intakeMutation.isPending;
 
+  function startIntakeAnalysis() {
+    if (!canGenerateIntake) return;
+    const startedAt = Date.now();
+    intakeAbortControllerRef.current = new AbortController();
+    intakeRunStartedAtRef.current = startedAt;
+    setIntakeRunNow(startedAt);
+    setIntakeRunState({
+      status: "running_live_ai",
+      startedAt,
+      completedAt: null,
+      timeoutMs: PRODUCT_INTAKE_UI_TIMEOUT_MS,
+      sourceResult: null,
+      provider: null,
+      model: null,
+      message: "Live AI is analyzing this product...",
+    });
+    intakeMutation.mutate();
+  }
+
+  function cancelIntakeAnalysis() {
+    if (!intakeMutation.isPending) return;
+    intakeAbortControllerRef.current?.abort();
+    const completedAt = Date.now();
+    intakeRunStartedAtRef.current = null;
+    setIntakeRunState((current) => ({
+      ...current,
+      status: "canceled",
+      completedAt,
+      message: "Canceled by user",
+    }));
+  }
+
   if (isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Loading...</div>;
   }
@@ -1453,17 +1722,30 @@ export default function CatalogMigrationLab() {
             onChange={(event) => setProductDescription(event.target.value)}
             rows={4}
             placeholder="Foam board signs with optional grommets"
+            disabled={intakeMutation.isPending}
           />
           <div className="flex flex-wrap items-center gap-3">
-            <Button className="gap-2" disabled={!canGenerateIntake} onClick={() => intakeMutation.mutate()}>
+            <Button className="gap-2" disabled={!canGenerateIntake} onClick={startIntakeAnalysis}>
               {intakeMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Brain className="h-4 w-4" />}
               {intakeMutation.isPending ? "Generating..." : "Generate Intake Brief"}
             </Button>
+            {intakeMutation.isPending && (
+              <Button type="button" variant="outline" onClick={cancelIntakeAnalysis}>
+                Stop / Cancel
+              </Button>
+            )}
             <Badge variant="outline">Read-only</Badge>
             <Badge variant="secondary">Questions only</Badge>
           </div>
         </CardContent>
       </Card>
+
+      <ProductIntakeRunStatusPanel
+        runState={intakeRunState}
+        now={intakeRunNow}
+        playSound={playIntakeSound}
+        onPlaySoundChange={setPlayIntakeSound}
+      />
 
       <ProductIntakeSessionsList
         sessions={sessionsQuery.data ?? []}
