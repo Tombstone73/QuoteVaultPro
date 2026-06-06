@@ -162,6 +162,69 @@ describe("Product Intake Brief service", () => {
     expect(brief.missingDecisions.some((decision) => decision.id === "select-material")).toBe(true);
   });
 
+  test("extracts rigid styrene product structure from realistic text", async () => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: {
+        sourceType: "text_description",
+        description: ".040 rigid styrene sheets\n\nSizes:\n12x18\n18x24\n24x36\n\nSingle sided or double sided.\n\nFull color printing.\n\nOptional rounded corners.",
+      },
+      analyzer: null,
+      templates,
+      materials: [
+        { id: "mat_020", sku: "STY020", name: "Styrene .020" },
+        { id: "mat_030", sku: "STY030", name: "Styrene .030" },
+        { id: "mat_040", sku: "STY040", name: "Styrene .040" },
+        { id: "mat_060", sku: "STY060", name: "Styrene .060" },
+      ],
+      provider: null,
+    });
+
+    expect(brief.productIdentity.likelyProductName.value).toBe("Styrene Signs");
+    expect(brief.productIdentity.category.value).toBe("Rigid Signs");
+    expect(brief.materialAnalysis.detectedMaterialReferences).toContain("Styrene .040");
+    expect(brief.materialAnalysis.likelyMaterialMatches[0]).toMatchObject({ materialId: "mat_040", name: "Styrene .040" });
+    expect(brief.sizeBehavior.behavior).toBe("fixed_size");
+    expect(brief.sizeBehavior.evidence[0].value).toContain("12x18");
+    expect(brief.quantityBehavior.behavior).toBe("per_piece");
+    expect(brief.pricingAnalysis.behavior).toBe("matrix_or_tiered");
+    expect(brief.requiredOptions.find((option) => option.normalizedGroup === "Size")?.sampleValues).toEqual(["12x18", "18x24", "24x36"]);
+    expect(brief.requiredOptions.find((option) => option.normalizedGroup === "Printed Sides")?.sampleValues).toEqual(["Single sided", "Double sided"]);
+    expect(brief.optionalOptions.find((option) => option.normalizedGroup === "Finishing")?.sampleValues).toContain("Rounded corners");
+  });
+
+  test("repairs simple AI schema shape before falling back", async () => {
+    const diagnostics: ProductIntakeAiDiagnosticInput[] = [];
+    const provider = {
+      generateJson: async () => ({
+        rawText: JSON.stringify({ name: "AI Styrene Signs", category: "Rigid Signs", material: "styrene", sizes: ["12x18"] }),
+        provider: "openai",
+        model: "test-model",
+        requestMetadata: {},
+      }),
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+    };
+
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "styrene signs" },
+      analyzer: null,
+      templates,
+      provider,
+      diagnosticsStore: {
+        recordSchemaValidationFailure: async (input) => diagnostics.push(input),
+        attachRecentToSession: async () => undefined,
+        listRecent: async () => [],
+      },
+    });
+
+    expect(brief.source).toBe("live_ai");
+    expect(brief.productIdentity.likelyProductName.value).toBe("AI Styrene Signs");
+    expect(brief.materialAnalysis.detectedMaterialReferences).toContain("styrene");
+    expect(diagnostics).toHaveLength(0);
+  });
+
   test("records AI schema validation diagnostics without changing fallback behavior", async () => {
     const diagnostics: ProductIntakeAiDiagnosticInput[] = [];
     const provider = {
@@ -186,6 +249,7 @@ describe("Product Intake Brief service", () => {
         recordSchemaValidationFailure: async (input) => {
           diagnostics.push(input);
         },
+        attachRecentToSession: async () => undefined,
         listRecent: async () => [],
       },
     });
@@ -202,6 +266,7 @@ describe("Product Intake Brief service", () => {
     });
     expect(diagnostics[0].rawAiResponse).toContain("workflowState");
     expect(diagnostics[0].failedSchemaPaths.length).toBeGreaterThan(0);
+    expect(diagnostics[0].repairActions).toEqual(expect.any(Array));
     expect(JSON.stringify(diagnostics[0])).not.toMatch(/apiKey|sk-/i);
   });
 });

@@ -1,0 +1,6 @@
+[ 8475788ms] [INFO] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold @ http://localhost:5000/@fs/C:/Users/dale9/Downloads/QuoteVaultPro/node_modules/.vite/deps/chunk-RPCDYKBN.js?v=b2708169:21550
+[ 8476112ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://localhost:5000/api/auth/session:0
+[ 8476113ms] [LOG] [Auth] GET /api/auth/session returned 401 (not authenticated) @ http://localhost:5000/src/hooks/useAuth.ts?t=1780349616807:24
+[ 8513055ms] [INFO] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold @ http://localhost:5000/@fs/C:/Users/dale9/Downloads/QuoteVaultPro/node_modules/.vite/deps/chunk-RPCDYKBN.js?v=b2708169:21550
+[ 8513222ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://localhost:5000/api/auth/session:0
+[ 8513222ms] [LOG] [Auth] GET /api/auth/session returned 401 (not authenticated) @ http://localhost:5000/src/hooks/useAuth.ts?t=1780349616807:24

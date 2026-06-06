@@ -933,18 +933,23 @@ export type InsertProductIntakeAnswerRow = typeof productIntakeAnswers.$inferIns
 export const productIntakeAiDiagnostics = pgTable("product_intake_ai_diagnostics", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  sessionId: varchar("session_id").references(() => productIntakeSessions.id, { onDelete: "cascade" }),
   sourceType: text("source_type").$type<typeof productIntakeAiDiagnosticSourceTypeValues[number]>().notNull(),
+  sourceFingerprint: text("source_fingerprint"),
   provider: text("provider"),
   model: text("model"),
   rawAiResponse: text("raw_ai_response").notNull(),
   validationErrors: jsonb("validation_errors").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
   failedSchemaPaths: jsonb("failed_schema_paths").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  repairActions: jsonb("repair_actions").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
   promptVersion: text("prompt_version"),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("product_intake_ai_diagnostics_org_created_idx").on(table.organizationId, table.createdAt),
   index("product_intake_ai_diagnostics_org_source_idx").on(table.organizationId, table.sourceType),
+  index("product_intake_ai_diagnostics_session_idx").on(table.sessionId),
+  index("product_intake_ai_diagnostics_fingerprint_idx").on(table.sourceFingerprint),
 ]);
 
 export type ProductIntakeAiDiagnosticRow = typeof productIntakeAiDiagnostics.$inferSelect;

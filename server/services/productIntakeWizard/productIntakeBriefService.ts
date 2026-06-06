@@ -25,11 +25,19 @@ export type ProductIntakeTemplateReference = {
   templateTree: Record<string, any>;
 };
 
+export type ProductIntakeMaterialReference = {
+  id: string;
+  sku: string | null;
+  name: string;
+};
+
 export type ProductIntakeBriefInput = {
   orgId: string;
   request: ProductIntakeWizardAnalyzeRequest;
   analyzer: CatalogMigrationLabAnalyzerResult | null;
   templates: ProductIntakeTemplateReference[];
+  materials?: ProductIntakeMaterialReference[];
+  sourceFingerprint?: string | null;
   provider?: AiProviderAdapter | null;
   diagnosticsStore?: ProductIntakeAiDiagnosticsStore | null;
   createdByUserId?: string | null;
@@ -76,6 +84,8 @@ function sourceLabel(request: ProductIntakeWizardAnalyzeRequest): string {
 function textDescriptionProductName(description: string): string {
   const cleaned = description.trim().replace(/\s+/g, " ");
   if (!cleaned) return "Untitled Product";
+  const signals = extractTextDescriptionSignals(description);
+  if (signals.productName) return signals.productName;
   const beforeWith = cleaned.split(/\bwith\b/i)[0]?.trim();
   return (beforeWith || cleaned).slice(0, 120);
 }
@@ -85,9 +95,143 @@ function inferCategoryFromText(text: string): { value: string | null; confidence
   if (/\bbanner\b/.test(normalized)) return { value: "Banners", confidence: 80 };
   if (/foam board|foamcore|foam core/.test(normalized)) return { value: "Foam Board", confidence: 82 };
   if (/coroplast|coro|yard sign/.test(normalized)) return { value: "Coroplast / Yard Signs", confidence: 82 };
+  if (/styrene|rigid sheet|rigid sign/.test(normalized)) return { value: "Rigid Signs", confidence: 84 };
   if (/acrylic|pvc|acm|rigid/.test(normalized)) return { value: "Rigid Sheet", confidence: 68 };
   if (/sticker|decal|label/.test(normalized)) return { value: "Stickers", confidence: 76 };
   return { value: null, confidence: 20 };
+}
+
+type TextDescriptionSignals = {
+  productName: string | null;
+  category: string | null;
+  categoryConfidence: number;
+  productType: string | null;
+  materialReferences: string[];
+  sizes: string[];
+  sides: string[];
+  printOptions: string[];
+  finishingOptions: string[];
+  proofSignals: string[];
+  routingSignals: string[];
+  evidence: ProductIntakeEvidence[];
+};
+
+function extractTextDescriptionSignals(description: string): TextDescriptionSignals {
+  const normalized = normalizeText(description);
+  const lines = description.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const materialReferences: string[] = [];
+  const sizeMatches = Array.from(description.matchAll(/\b(\d{1,3}(?:\.\d+)?)\s*[x×]\s*(\d{1,3}(?:\.\d+)?)\b/gi))
+    .map((match) => `${match[1]}x${match[2]}`);
+
+  const styreneGaugeMatch = description.match(/(?:\.(\d{2,3})\s*(?:rigid\s+)?styrene|styrene\s*\.?(\d{2,3}))/i);
+  if (styreneGaugeMatch) {
+    const gauge = styreneGaugeMatch[1] ?? styreneGaugeMatch[2];
+    materialReferences.push(`Styrene .${gauge.padStart(3, "0")}`);
+  } else if (/\bstyrene\b/i.test(description)) {
+    materialReferences.push("Styrene");
+  }
+
+  const sides: string[] = [];
+  if (/single[\s-]*sided/i.test(description)) sides.push("Single sided");
+  if (/double[\s-]*sided/i.test(description)) sides.push("Double sided");
+
+  const printOptions: string[] = [];
+  if (/full\s*color|4\s*color|cmyk/i.test(description)) printOptions.push("Full color printing");
+
+  const finishingOptions: string[] = [];
+  if (/rounded\s+corners?/i.test(description)) finishingOptions.push("Rounded corners");
+
+  const proofSignals: string[] = [];
+  if (/proof\s+(required|needed|mandatory)|requires?\s+proof/i.test(description)) proofSignals.push("Proof required");
+
+  const routingSignals = unique([
+    /\bflatbed\b/i.test(description) ? "Flatbed" : null,
+    /\broll\b/i.test(description) ? "Roll" : null,
+    /\brouter\b/i.test(description) ? "Router" : null,
+    /\bcut(?:ting)?\b/i.test(description) ? "Cut" : null,
+  ]);
+
+  const isStyreneRigid = /styrene/.test(normalized) && (/rigid|sheet|sign/.test(normalized) || sizeMatches.length > 0);
+  const productName = isStyreneRigid ? "Styrene Signs" : null;
+  const category = isStyreneRigid ? "Rigid Signs" : null;
+
+  return {
+    productName,
+    category,
+    categoryConfidence: category ? 86 : 20,
+    productType: isStyreneRigid ? "rigid_signage" : null,
+    materialReferences: unique(materialReferences),
+    sizes: unique(sizeMatches),
+    sides: unique(sides),
+    printOptions: unique(printOptions),
+    finishingOptions: unique(finishingOptions),
+    proofSignals,
+    routingSignals,
+    evidence: [
+      evidence("$.description", "description", lines[0] ?? description.slice(0, 120), "Text description was parsed for deterministic product signals."),
+    ],
+  };
+}
+
+function gaugeTokens(value: string): string[] {
+  const gauges = Array.from(value.matchAll(/(?:^|\D)\.?(\d{2,3})(?:\D|$)/g)).map((match) => match[1]);
+  return unique(gauges.flatMap((gauge) => [gauge, `.${gauge.padStart(3, "0")}`, `0.${gauge.padStart(3, "0")}`]));
+}
+
+function matchMaterialsFromText(signals: TextDescriptionSignals, materials: ProductIntakeMaterialReference[] = []) {
+  if (signals.materialReferences.length === 0) return [];
+  const referenceText = normalizeText(signals.materialReferences.join(" "));
+  const referenceGauges = new Set(gaugeTokens(signals.materialReferences.join(" ")));
+  return materials
+    .map((material) => {
+      const haystack = `${material.name} ${material.sku ?? ""}`;
+      const normalized = normalizeText(haystack);
+      let score = 0;
+      if (referenceText.includes("styrene") && normalized.includes("styrene")) score += 55;
+      for (const gauge of Array.from(referenceGauges)) {
+        if (haystack.toLowerCase().includes(gauge.toLowerCase()) || normalized.includes(gauge.replace(/[^0-9]/g, ""))) score += 35;
+      }
+      if (score === 0 && signals.materialReferences.some((reference) => normalized.includes(normalizeText(reference)))) score += 60;
+      return { material, score: clampConfidence(score) };
+    })
+    .filter((match) => match.score >= 45)
+    .sort((a, b) => b.score - a.score || a.material.name.localeCompare(b.material.name))
+    .slice(0, 8)
+    .map((match) => ({
+      materialId: match.material.id,
+      sku: match.material.sku,
+      name: match.material.name,
+      confidence: match.score,
+      evidence: [evidence("$.description", signals.materialReferences.join(", "), match.material.name, "Text material reference matched a read-only TitanOS material candidate.")],
+    }));
+}
+
+function textOptionGroup(args: {
+  label: string;
+  normalizedGroup: string;
+  required: boolean;
+  sampleValues: string[];
+  sourcePath: string;
+  confidence: number;
+  templates: ProductIntakeTemplateReference[];
+  reason: string;
+}) {
+  const templateMatches = matchOptionTemplates({
+    optionLabel: args.normalizedGroup,
+    sampleValues: args.sampleValues,
+    sourcePaths: [args.sourcePath],
+    templates: args.templates,
+  });
+  return {
+    label: args.label,
+    normalizedGroup: args.normalizedGroup,
+    required: args.required,
+    confidence: clampConfidence(args.confidence),
+    sampleValues: args.sampleValues,
+    sourcePaths: [args.sourcePath],
+    templateMatches,
+    evidence: [evidence(args.sourcePath, args.label, args.sampleValues.join(", "), args.reason)],
+  };
 }
 
 function optionSignalsFromTree(template: ProductIntakeTemplateReference): string[] {
@@ -317,10 +461,11 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
   const product = firstProduct(input.analyzer);
   const sourceName = sourceLabel(input.request);
   const text = input.request.description ?? input.request.jsonText ?? "";
+  const textSignals = input.request.description ? extractTextDescriptionSignals(input.request.description) : null;
   const textCategory = inferCategoryFromText(text);
   const readiness = input.analyzer?.migrationReadiness.find((row) => row.sourceProductName === (product?.name ?? product?.sku));
   const structure = input.analyzer?.productStructures.find((row) => row.productName === (product?.name ?? product?.sku));
-  const materialMatches = input.analyzer?.materialCandidates
+  const analyzerMaterialMatches = input.analyzer?.materialCandidates
     .filter((material) => !product || material.sampleProducts.includes(product.name ?? product.sku ?? ""))
     .slice(0, 5)
     .map((material) => ({
@@ -330,15 +475,91 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       confidence: material.matchedMaterial ? 88 : 55,
       evidence: [evidence("$.materialCandidates", material.reference, material.matchedMaterial?.name ?? material.reference, "Analyzer detected this material reference.")],
     })) ?? [];
+  const textMaterialMatches = textSignals ? matchMaterialsFromText(textSignals, input.materials ?? []) : [];
+  const materialMatches = unique([...analyzerMaterialMatches, ...textMaterialMatches].map((match) => match.materialId ?? match.name))
+    .map((key) => [...analyzerMaterialMatches, ...textMaterialMatches].find((match) => (match.materialId ?? match.name) === key)!)
+    .filter(Boolean)
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 8);
   const descriptionName = input.request.description ? textDescriptionProductName(input.request.description) : null;
-  const categoryValue = readiness?.suggestedCategory ?? structure?.suggestedCategory ?? textCategory.value;
-  const categoryConfidence = readiness ? 75 : structure?.categoryConfidence === "source" || structure?.categoryConfidence === "high" ? 85 : textCategory.confidence;
-  const requiredOptions = buildOptions(product, input.templates, true);
-  const optionalOptions = buildOptions(product, input.templates, false);
+  const categoryValue = readiness?.suggestedCategory ?? structure?.suggestedCategory ?? textSignals?.category ?? textCategory.value;
+  const categoryConfidence = readiness ? 75 : structure?.categoryConfidence === "source" || structure?.categoryConfidence === "high" ? 85 : textSignals?.category ? textSignals.categoryConfidence : textCategory.confidence;
+  const analyzerRequiredOptions = buildOptions(product, input.templates, true);
+  const analyzerOptionalOptions = buildOptions(product, input.templates, false);
+  const textRequiredOptions = textSignals ? [
+    textSignals.sizes.length > 0 ? textOptionGroup({
+      label: "Size",
+      normalizedGroup: "Size",
+      required: true,
+      sampleValues: textSignals.sizes,
+      sourcePath: "$.description.sizes",
+      confidence: 90,
+      templates: input.templates,
+      reason: "Fixed size options were listed in the text description.",
+    }) : null,
+    textSignals.sides.length > 0 ? textOptionGroup({
+      label: "Printed Sides",
+      normalizedGroup: "Printed Sides",
+      required: true,
+      sampleValues: textSignals.sides,
+      sourcePath: "$.description.sides",
+      confidence: 88,
+      templates: input.templates,
+      reason: "Single-sided and double-sided print choices were listed in the text description.",
+    }) : null,
+  ].filter(Boolean) as ReturnType<typeof textOptionGroup>[] : [];
+  const textOptionalOptions = textSignals ? [
+    textSignals.printOptions.length > 0 ? textOptionGroup({
+      label: "Printing",
+      normalizedGroup: "Printing",
+      required: false,
+      sampleValues: textSignals.printOptions,
+      sourcePath: "$.description.printing",
+      confidence: 78,
+      templates: input.templates,
+      reason: "Printing intent was stated in the text description.",
+    }) : null,
+    textSignals.finishingOptions.length > 0 ? textOptionGroup({
+      label: "Finishing",
+      normalizedGroup: "Finishing",
+      required: false,
+      sampleValues: textSignals.finishingOptions,
+      sourcePath: "$.description.finishing",
+      confidence: 86,
+      templates: input.templates,
+      reason: "Optional finishing choices were stated in the text description.",
+    }) : null,
+  ].filter(Boolean) as ReturnType<typeof textOptionGroup>[] : [];
+  const requiredOptions = [...analyzerRequiredOptions, ...textRequiredOptions];
+  const optionalOptions = [...analyzerOptionalOptions, ...textOptionalOptions];
   const templateMatches = unique([...requiredOptions, ...optionalOptions].flatMap((option) => option.templateMatches.map((match) => match.templateId)))
     .map((templateId) => [...requiredOptions, ...optionalOptions].flatMap((option) => option.templateMatches).find((match) => match.templateId === templateId)!)
     .filter(Boolean);
-  const behaviors = behaviorFromAnalyzer(product, input.analyzer);
+  const analyzerBehaviors = behaviorFromAnalyzer(product, input.analyzer);
+  const behaviors = textSignals ? {
+    sizeBehavior: textSignals.sizes.length > 0
+      ? {
+          behavior: "fixed_size",
+          confidence: 90,
+          notes: textSignals.sizes.join(", "),
+          evidence: [evidence("$.description.sizes", "Sizes", textSignals.sizes.join(", "), "Fixed size options were parsed from the text description.")],
+        }
+      : analyzerBehaviors.sizeBehavior,
+    quantityBehavior: textSignals.sizes.length > 0
+      ? {
+          behavior: "per_piece",
+          confidence: 68,
+          evidence: [evidence("$.description.sizes", "Quantity", textSignals.sizes.join(", "), "Rigid sheet/sign products with fixed size options are usually ordered per piece; confirm if needed.")],
+        }
+      : analyzerBehaviors.quantityBehavior,
+    pricingAnalysis: textSignals.sizes.length > 0 || textSignals.sides.length > 0
+      ? {
+          behavior: "matrix_or_tiered",
+          confidence: 62,
+          evidence: [evidence("$.description", "Pricing", [...textSignals.sizes, ...textSignals.sides].join(", "), "Size and side choices imply matrix or tiered pricing, but prices were not supplied.")],
+        }
+      : analyzerBehaviors.pricingAnalysis,
+  } : analyzerBehaviors;
   const missingDecisions: ProductIntakeBrief["missingDecisions"] = [];
 
   if (!categoryValue) {
@@ -356,10 +577,18 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       question: "Which material should this product use?",
       reason: "No material match was found in the source.",
       severity: "review",
-      evidence: [evidence(product?.sourcePath ?? "$.source", "material", null, "Material evidence was missing.")],
+      evidence: [evidence(product?.sourcePath ?? "$.description", "material", textSignals?.materialReferences.join(", ") || null, "Material evidence was missing or could not be matched.")],
+    });
+  } else if (Math.max(...materialMatches.map((match) => match.confidence)) < 85) {
+    missingDecisions.push({
+      id: "select-material",
+      question: "Which material should this product use?",
+      reason: "Material candidates were found, but none reached the auto-select confidence threshold.",
+      severity: "review",
+      evidence: materialMatches.flatMap((match) => match.evidence).slice(0, 3),
     });
   }
-  if (behaviors.pricingAnalysis.behavior === "unknown") {
+  if (behaviors.pricingAnalysis.behavior === "unknown" || behaviors.pricingAnalysis.confidence < 65) {
     missingDecisions.push({
       id: "choose-pricing-model",
       question: "Which pricing model should be used before draft generation?",
@@ -374,12 +603,28 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
     ...((structure?.detectedOptionGroups ?? []).slice(0, 5).map((group) => evidence(product?.sourcePath ?? "$.source", group, group, "Analyzer detected this product option group."))),
   ];
 
-  const draftWarnings = (input.analyzer?.warnings ?? []).slice(0, 12).map((warning) => ({
+  const draftWarnings: ProductIntakeBrief["draftWarnings"] = (input.analyzer?.warnings ?? []).slice(0, 12).map((warning) => ({
     code: warning.code,
     message: warning.message,
     severity: warning.severity === "blocker" ? "warning" as const : warning.severity === "warning" ? "warning" as const : "info" as const,
     evidence: [evidence(warning.path ?? product?.sourcePath ?? "$.warnings", warning.fieldLabel ?? warning.code, warning.productName ?? null, "Analyzer warning retained for human review.")],
   }));
+  if (textSignals?.proofSignals.length) {
+    draftWarnings.push({
+      code: "proof_required",
+      message: "Source mentions proof required.",
+      severity: "info" as const,
+      evidence: [evidence("$.description.proof", "Proof", textSignals.proofSignals.join(", "), "Proof workflow signal parsed from the description.")],
+    });
+  }
+  if (textSignals?.routingSignals.length) {
+    draftWarnings.push({
+      code: "routing_signal",
+      message: `Source mentions routing signals: ${textSignals.routingSignals.join(", ")}.`,
+      severity: "info" as const,
+      evidence: [evidence("$.description.routing", "Routing", textSignals.routingSignals.join(", "), "Production routing signal parsed from the description.")],
+    });
+  }
 
   const evidenceBackedConfidence = [
     product?.name || descriptionName ? 75 : 20,
@@ -395,8 +640,8 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
     fallbackReason,
     productIdentity: {
       likelyProductName: {
-        value: product?.name ?? descriptionName ?? "Untitled Product",
-        confidence: product?.name ? 85 : descriptionName ? 60 : 20,
+        value: product?.name ?? textSignals?.productName ?? descriptionName ?? "Untitled Product",
+        confidence: product?.name ? 85 : textSignals?.productName ? 86 : descriptionName ? 60 : 20,
         evidence: [evidence(product?.sourcePath ?? "$.description", "product name", product?.name ?? descriptionName ?? null, "Best available product identity signal.")],
       },
       category: {
@@ -405,13 +650,16 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
         evidence: [evidence(product?.sourcePath ?? "$.source", "category", categoryValue, "Category inferred from source or analyzer rules.")],
       },
       productType: {
-        value: product?.productType ?? readiness?.suggestedProductTemplate ?? null,
-        confidence: product?.productType ? 80 : readiness?.suggestedProductTemplate ? 60 : 20,
-        evidence: [evidence(product?.sourcePath ?? "$.source", "product type", product?.productType ?? readiness?.suggestedProductTemplate ?? null, "Product type or template signal from source analysis.")],
+        value: product?.productType ?? readiness?.suggestedProductTemplate ?? textSignals?.productType ?? null,
+        confidence: product?.productType ? 80 : readiness?.suggestedProductTemplate ? 60 : textSignals?.productType ? 75 : 20,
+        evidence: [evidence(product?.sourcePath ?? "$.source", "product type", product?.productType ?? readiness?.suggestedProductTemplate ?? textSignals?.productType ?? null, "Product type or template signal from source analysis.")],
       },
     },
     materialAnalysis: {
-      detectedMaterialReferences: input.analyzer ? unique(input.analyzer.materialCandidates.map((material) => material.reference)) : [],
+      detectedMaterialReferences: unique([
+        ...(input.analyzer ? input.analyzer.materialCandidates.map((material) => material.reference) : []),
+        ...(textSignals?.materialReferences ?? []),
+      ]),
       likelyMaterialMatches: materialMatches,
       confidence: materialMatches.length ? Math.max(...materialMatches.map((match) => match.confidence)) : 20,
       evidence: materialMatches.flatMap((match) => match.evidence),
@@ -426,6 +674,117 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
     sourceEvidence,
     overallConfidence: clampConfidence(evidenceBackedConfidence.reduce((sum, value) => sum + value, 0) / evidenceBackedConfidence.length),
   });
+}
+
+function asRecord(value: unknown): Record<string, any> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : null;
+}
+
+function normalizeOptionArray(value: unknown): string[] {
+  if (Array.isArray(value)) return unique(value.map((entry) => typeof entry === "string" ? entry : asRecord(entry)?.label ?? asRecord(entry)?.name ?? String(entry ?? "")));
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  return [];
+}
+
+function repairProductIntakeBriefShape(raw: unknown, deterministicBrief: ProductIntakeBrief): { repaired: unknown; actions: string[] } {
+  const source = asRecord(raw);
+  if (!source) return { repaired: raw, actions: [] };
+  const actions: string[] = [];
+  const repaired: ProductIntakeBrief = JSON.parse(JSON.stringify(deterministicBrief));
+
+  const name = typeof source.productName === "string" ? source.productName : typeof source.name === "string" ? source.name : null;
+  if (name) {
+    repaired.productIdentity.likelyProductName.value = name;
+    repaired.productIdentity.likelyProductName.confidence = Math.max(repaired.productIdentity.likelyProductName.confidence, 65);
+    actions.push("normalized productName/name into productIdentity.likelyProductName");
+  }
+
+  if (typeof source.category === "string") {
+    repaired.productIdentity.category.value = source.category;
+    repaired.productIdentity.category.confidence = Math.max(repaired.productIdentity.category.confidence, 65);
+    actions.push("normalized category string into productIdentity.category");
+  }
+
+  if (typeof source.material === "string") {
+    repaired.materialAnalysis.detectedMaterialReferences = unique([...repaired.materialAnalysis.detectedMaterialReferences, source.material]);
+    repaired.materialAnalysis.confidence = Math.max(repaired.materialAnalysis.confidence, 55);
+    if (repaired.materialAnalysis.evidence.length === 0) {
+      repaired.materialAnalysis.evidence = [evidence("$.ai.material", "material", source.material, "AI material string normalized into materialAnalysis.")];
+    }
+    actions.push("normalized material string into materialAnalysis.detectedMaterialReferences");
+  } else if (asRecord(source.material)?.detectedReference) {
+    const detectedReference = String(asRecord(source.material)?.detectedReference);
+    repaired.materialAnalysis.detectedMaterialReferences = unique([...repaired.materialAnalysis.detectedMaterialReferences, detectedReference]);
+    repaired.materialAnalysis.confidence = Math.max(repaired.materialAnalysis.confidence, 60);
+    actions.push("normalized material.detectedReference into materialAnalysis.detectedMaterialReferences");
+  }
+
+  const sizes = normalizeOptionArray(source.sizes ?? source.sizeOptions);
+  if (sizes.length > 0 && !repaired.requiredOptions.some((option) => normalizeText(option.normalizedGroup) === "size")) {
+    repaired.requiredOptions.push({
+      label: "Size",
+      normalizedGroup: "Size",
+      required: true,
+      confidence: 75,
+      sampleValues: sizes,
+      sourcePaths: ["$.ai.sizes"],
+      templateMatches: [],
+      evidence: [evidence("$.ai.sizes", "Size", sizes.join(", "), "AI size array normalized into required option group.")],
+    });
+    repaired.sizeBehavior = {
+      behavior: "fixed_size",
+      confidence: Math.max(repaired.sizeBehavior.confidence, 75),
+      notes: sizes.join(", "),
+      evidence: [evidence("$.ai.sizes", "Size", sizes.join(", "), "AI size array normalized into fixed size behavior.")],
+    };
+    actions.push("normalized sizes into required Size option and fixed_size behavior");
+  }
+
+  const options = normalizeOptionArray(source.options);
+  if (options.length > 0) {
+    for (const optionLabel of options.slice(0, 6)) {
+      if (repaired.optionalOptions.some((option) => normalizeText(option.normalizedGroup) === normalizeText(optionLabel))) continue;
+      repaired.optionalOptions.push({
+        label: optionLabel,
+        normalizedGroup: optionLabel,
+        required: false,
+        confidence: 60,
+        sampleValues: [optionLabel],
+        sourcePaths: ["$.ai.options"],
+        templateMatches: [],
+        evidence: [evidence("$.ai.options", optionLabel, optionLabel, "AI options array normalized into optional option group.")],
+      });
+    }
+    actions.push("normalized options into optional option groups");
+  }
+
+  repaired.overallConfidence = clampConfidence(Math.max(repaired.overallConfidence, deterministicBrief.overallConfidence));
+  return { repaired, actions };
+}
+
+async function recordAiDiagnostic(input: ProductIntakeBriefInput, args: {
+  response: Awaited<ReturnType<AiProviderAdapter["generateJson"]>>;
+  validationErrors: Array<{ path: string; message: string; code?: string }>;
+  repairActions?: string[];
+}) {
+  if (!input.diagnosticsStore) return;
+  try {
+    await input.diagnosticsStore.recordSchemaValidationFailure({
+      organizationId: input.orgId,
+      sourceType: input.request.sourceType,
+      sourceFingerprint: input.sourceFingerprint ?? null,
+      provider: args.response.provider ?? null,
+      model: args.response.model ?? null,
+      rawAiResponse: args.response.rawText,
+      validationErrors: args.validationErrors,
+      failedSchemaPaths: unique(args.validationErrors.map((issue) => issue.path || "$")),
+      repairActions: args.repairActions ?? [],
+      promptVersion: PRODUCT_INTAKE_BRIEF_PROMPT_VERSION,
+      createdByUserId: input.createdByUserId ?? null,
+    });
+  } catch (diagnosticError) {
+    console.warn("[ProductIntakeWizard] Failed to store AI schema diagnostic:", diagnosticError);
+  }
 }
 
 function promptForBrief(input: ProductIntakeBriefInput, deterministicBrief: ProductIntakeBrief): { system: string; user: string } {
@@ -480,30 +839,39 @@ export async function generateProductIntakeBrief(input: ProductIntakeBriefInput)
       user: prompt.user,
       promptVersion: PRODUCT_INTAKE_BRIEF_PROMPT_VERSION,
     });
-    const parsed = productIntakeBriefSchema.safeParse(parseAiJsonObject(response.rawText));
+    let aiObject: unknown;
+    try {
+      aiObject = parseAiJsonObject(response.rawText);
+    } catch (parseError: any) {
+      await recordAiDiagnostic(input, {
+        response,
+        validationErrors: [{
+          path: "$",
+          message: `AI response was not parseable JSON: ${parseError?.message ?? "unknown parse error"}`,
+          code: "invalid_json",
+        }],
+      });
+      return fallbackBrief(input, "Live AI response failed schema validation; deterministic analyzer brief returned.");
+    }
+
+    const parsed = productIntakeBriefSchema.safeParse(aiObject);
     if (!parsed.success) {
-      if (input.diagnosticsStore) {
-        try {
-          const validationErrors = parsed.error.issues.map((issue) => ({
-            path: issue.path.join("."),
-            message: issue.message,
-            code: issue.code,
-          }));
-          await input.diagnosticsStore.recordSchemaValidationFailure({
-            organizationId: input.orgId,
-            sourceType: input.request.sourceType,
-            provider: response.provider ?? null,
-            model: response.model ?? null,
-            rawAiResponse: response.rawText,
-            validationErrors,
-            failedSchemaPaths: unique(validationErrors.map((issue) => issue.path || "$")),
-            promptVersion: PRODUCT_INTAKE_BRIEF_PROMPT_VERSION,
-            createdByUserId: input.createdByUserId ?? null,
-          });
-        } catch (diagnosticError) {
-          console.warn("[ProductIntakeWizard] Failed to store AI schema diagnostic:", diagnosticError);
-        }
+      const repair = repairProductIntakeBriefShape(aiObject, deterministicBrief);
+      const repairedParsed = repair.actions.length > 0 ? productIntakeBriefSchema.safeParse(repair.repaired) : parsed;
+      if (repairedParsed.success) {
+        return {
+          ...repairedParsed.data,
+          workflowState: "REVIEW_READY",
+          source: "live_ai",
+          fallbackReason: null,
+        };
       }
+      const validationErrors = repairedParsed.error.issues.map((issue) => ({
+        path: issue.path.join("."),
+        message: issue.message,
+        code: issue.code,
+      }));
+      await recordAiDiagnostic(input, { response, validationErrors, repairActions: repair.actions });
       return fallbackBrief(input, "Live AI response failed schema validation; deterministic analyzer brief returned.");
     }
     return {

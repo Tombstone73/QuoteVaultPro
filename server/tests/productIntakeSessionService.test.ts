@@ -11,6 +11,7 @@ import {
 import {
   computeProductIntakeReadiness,
   generateProductIntakeQuestions,
+  recalculateProductIntakeConfidence,
   resolveProductIntakeSessionStatus,
 } from "../services/productIntakeWizard/productIntakeSessionService";
 
@@ -132,6 +133,27 @@ describe("Product Intake question generation", () => {
     expect(questions.every((question) => !/timestamp|internal id/i.test(question.label))).toBe(true);
   });
 
+  test("material questions use candidate picker when matches exist", () => {
+    const questions = generateProductIntakeQuestions(brief({
+      materialAnalysis: {
+        detectedMaterialReferences: ["Styrene .040"],
+        likelyMaterialMatches: [
+          { materialId: "mat_040", sku: "STY040", name: "Styrene .040", confidence: 82, evidence: [] },
+          { materialId: "mat_030", sku: "STY030", name: "Styrene .030", confidence: 65, evidence: [] },
+        ],
+        confidence: 82,
+        evidence: [],
+      },
+      missingDecisions: [
+        { id: "select-material", question: "Which material should this product use?", reason: "Review material.", severity: "review", evidence: [] },
+      ],
+    }));
+
+    const materialQuestion = questions.find((question) => question.questionKey === "select-material");
+    expect(materialQuestion?.questionType).toBe("select");
+    expect(materialQuestion?.options?.map((option) => option.value)).toEqual(["mat_040", "mat_030"]);
+  });
+
   test("marks high-confidence sessions without questions ready for draft", () => {
     expect(resolveProductIntakeSessionStatus(brief({ overallConfidence: 90 }), [])).toBe("ready_for_draft");
     expect(resolveProductIntakeSessionStatus(brief({ overallConfidence: 60 }), [])).toBe("analyzed");
@@ -171,5 +193,51 @@ describe("Product Intake question generation", () => {
     expect(computeProductIntakeReadiness({ session: session(), questions, answers: [] }).unansweredRequiredCount).toBe(1);
     expect(computeProductIntakeReadiness({ session: session(), questions, answers }).status).toBe("ready_for_draft");
     expect(computeProductIntakeReadiness({ session: session("abandoned"), questions, answers }).status).toBe("abandoned");
+  });
+
+  test("confidence recalculation lifts current confidence after answers", () => {
+    const questions: ProductIntakeQuestion[] = [
+      {
+        id: "q_1",
+        organizationId: "org_1",
+        sessionId: "sess_1",
+        questionKey: "select-material",
+        questionType: "select",
+        label: "Which material should this product use?",
+        helpText: null,
+        required: true,
+        options: [{ label: "Styrene .040", value: "mat_040" }],
+        defaultValue: null,
+        sourcePath: null,
+        confidence: 70,
+        sortOrder: 1,
+        createdAt: "2026-06-05T00:00:00.000Z",
+      },
+      {
+        id: "q_2",
+        organizationId: "org_1",
+        sessionId: "sess_1",
+        questionKey: "choose-pricing-model",
+        questionType: "select",
+        label: "Which pricing model should be used?",
+        helpText: null,
+        required: true,
+        options: [{ label: "Matrix or tiered", value: "matrix_or_tiered" }],
+        defaultValue: null,
+        sourcePath: null,
+        confidence: 50,
+        sortOrder: 2,
+        createdAt: "2026-06-05T00:00:00.000Z",
+      },
+    ];
+    const answers: ProductIntakeAnswer[] = [
+      { id: "a_1", organizationId: "org_1", sessionId: "sess_1", questionId: "q_1", questionKey: "select-material", answer: "mat_040", answeredByUserId: "user_1", answeredAt: "2026-06-05T00:00:00.000Z", createdAt: "2026-06-05T00:00:00.000Z", updatedAt: "2026-06-05T00:00:00.000Z" },
+      { id: "a_2", organizationId: "org_1", sessionId: "sess_1", questionId: "q_2", questionKey: "choose-pricing-model", answer: "matrix_or_tiered", answeredByUserId: "user_1", answeredAt: "2026-06-05T00:00:00.000Z", createdAt: "2026-06-05T00:00:00.000Z", updatedAt: "2026-06-05T00:00:00.000Z" },
+    ];
+
+    const confidence = recalculateProductIntakeConfidence({ session: session("needs_answers"), questions, answers });
+    expect(confidence.originalConfidence).toBe(88);
+    expect(confidence.currentConfidence).toBeGreaterThan(88);
+    expect(confidence.answeredQuestionKeys).toEqual(["select-material", "choose-pricing-model"]);
   });
 });

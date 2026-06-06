@@ -22,6 +22,7 @@ import {
 } from "../services/productIntakeWizard/productIntakeBriefService";
 import {
   createDbProductIntakeSessionStore,
+  fingerprintProductIntakeRequest,
   ProductIntakeSessionError,
   type ProductIntakeSessionStore,
 } from "../services/productIntakeWizard/productIntakeSessionService";
@@ -254,11 +255,14 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
           analyzer = analyzeCatalogMigrationSource(analyzerRequest, referenceData);
         }
 
+        const sourceFingerprint = fingerprintProductIntakeRequest(parsed, analyzer);
         const brief = await generateProductIntakeBrief({
           orgId: organizationId,
           request: parsed,
           analyzer,
           templates: referenceData.templates ?? [],
+          materials: referenceData.materials ?? [],
+          sourceFingerprint,
           provider: middleware.productIntakeAiProvider,
           diagnosticsStore: intakeDiagnosticsStore,
           createdByUserId: requestUserId(req),
@@ -269,6 +273,11 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
           request: parsed,
           analyzer,
           brief,
+        });
+        await intakeDiagnosticsStore.attachRecentToSession({
+          organizationId,
+          sessionId: intakeSession.session.id,
+          sourceFingerprint,
         });
 
         return res.json({
@@ -315,7 +324,10 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
           return res.status(400).json({ success: false, message: "Missing organization context.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
         }
 
-        const diagnostics = await intakeDiagnosticsStore.listRecent(organizationId);
+        const sessionId = typeof req.query.sessionId === "string" && req.query.sessionId.trim()
+          ? req.query.sessionId.trim()
+          : null;
+        const diagnostics = await intakeDiagnosticsStore.listRecent(organizationId, { sessionId });
         return res.json({ success: true, data: { diagnostics } });
       } catch (error: any) {
         const handled = handleProductIntakeRouteError(error, res, "Invalid Product Intake diagnostics request.");

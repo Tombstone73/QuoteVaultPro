@@ -126,6 +126,14 @@ function answerDraftsFromDetail(detail: ProductIntakeSessionDetail | null): Reco
 }
 
 export function ProductIntakeSessionSummary({ session, readiness }: { session: ProductIntakeSession; readiness: ProductIntakeReadiness }) {
+  const originalConfidence = typeof session.confidence?.originalConfidence === "number"
+    ? session.confidence.originalConfidence
+    : typeof session.confidence?.overallConfidence === "number"
+      ? session.confidence.overallConfidence
+      : session.brief.overallConfidence;
+  const currentConfidence = typeof session.confidence?.currentConfidence === "number"
+    ? session.confidence.currentConfidence
+    : session.brief.overallConfidence;
   return (
     <Card>
       <CardHeader>
@@ -137,7 +145,7 @@ export function ProductIntakeSessionSummary({ session, readiness }: { session: P
           <Badge variant={statusVariant(session.status)}>{session.status.replace(/_/g, " ")}</Badge>
         </div>
       </CardHeader>
-      <CardContent className="grid gap-4 text-sm md:grid-cols-2 lg:grid-cols-5">
+      <CardContent className="grid gap-4 text-sm md:grid-cols-2 lg:grid-cols-6">
         <div>
           <div className="text-xs font-medium uppercase text-muted-foreground">Source</div>
           <div className="mt-1 font-medium">{session.sourceType.replace(/_/g, " ")}</div>
@@ -147,8 +155,12 @@ export function ProductIntakeSessionSummary({ session, readiness }: { session: P
           <div className="mt-1 font-medium">{formatDateTime(session.createdAt)}</div>
         </div>
         <div>
-          <div className="text-xs font-medium uppercase text-muted-foreground">Confidence</div>
-          <div className="mt-1"><ConfidenceBadge value={session.brief.overallConfidence} /></div>
+          <div className="text-xs font-medium uppercase text-muted-foreground">Original Confidence</div>
+          <div className="mt-1"><ConfidenceBadge value={Number(originalConfidence)} /></div>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase text-muted-foreground">Current Confidence</div>
+          <div className="mt-1"><ConfidenceBadge value={Number(currentConfidence)} /></div>
         </div>
         <div>
           <div className="text-xs font-medium uppercase text-muted-foreground">Required Open</div>
@@ -383,6 +395,7 @@ export function ProductIntakeAiDiagnosticsPanel({
             </div>
             <div className="mt-2 flex flex-wrap gap-2">
               <Badge variant="outline">{diagnostic.sourceType.replace(/_/g, " ")}</Badge>
+              {diagnostic.sessionId && <Badge variant="outline">Session {diagnostic.sessionId.slice(0, 8)}</Badge>}
               {diagnostic.promptVersion && <Badge variant="secondary">{diagnostic.promptVersion}</Badge>}
             </div>
             <div className="mt-3 grid gap-3 lg:grid-cols-2">
@@ -407,6 +420,16 @@ export function ProductIntakeAiDiagnosticsPanel({
                 </div>
               </div>
             </div>
+            {diagnostic.repairActions.length > 0 && (
+              <div className="mt-3">
+                <div className="text-xs font-medium uppercase text-muted-foreground">Repair Actions</div>
+                <div className="mt-2 rounded bg-muted/30 p-2 text-xs">
+                  {diagnostic.repairActions.map((action, index) => (
+                    <div key={`${action}-${index}`}>{action}</div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="mt-3">
               <div className="text-xs font-medium uppercase text-muted-foreground">Raw AI Response</div>
               <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-3 text-xs">{diagnostic.rawAiResponse}</pre>
@@ -712,10 +735,11 @@ export default function CatalogMigrationLab() {
     },
   });
   const diagnosticsQuery = useQuery({
-    queryKey: ["/api/admin/product-intake-wizard/ai-diagnostics"],
+    queryKey: ["/api/admin/product-intake-wizard/ai-diagnostics", intakeSessionDetail?.session.id ?? null],
     enabled: canAccessPlatformTools && !isLoading,
     queryFn: async () => {
-      const response = await apiRequest("GET", "/api/admin/product-intake-wizard/ai-diagnostics");
+      const query = intakeSessionDetail?.session.id ? `?sessionId=${encodeURIComponent(intakeSessionDetail.session.id)}` : "";
+      const response = await apiRequest("GET", `/api/admin/product-intake-wizard/ai-diagnostics${query}`);
       const json = await response.json();
       if (!json?.success) throw new Error(json?.message ?? "Failed to load intake diagnostics");
       return json.data.diagnostics as ProductIntakeAiDiagnostic[];

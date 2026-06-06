@@ -31,6 +31,7 @@ type AppOptions = {
   isPlatformAdmin?: boolean;
   isPlatformDeveloper?: boolean;
   organizationId?: string;
+  productIntakeAiProvider?: any;
 };
 
 function makeMemoryProductIntakeSessionStore(): ProductIntakeSessionStore {
@@ -152,19 +153,32 @@ function makeMemoryProductIntakeDiagnosticsStore(seed: ProductIntakeAiDiagnostic
       diagnostics.push({
         id: `diag_${++diagnosticSeq}`,
         organizationId: input.organizationId,
+        sessionId: input.sessionId ?? null,
         sourceType: input.sourceType,
+        sourceFingerprint: input.sourceFingerprint ?? null,
         provider: input.provider,
         model: input.model,
         rawAiResponse: input.rawAiResponse,
         validationErrors: input.validationErrors,
         failedSchemaPaths: input.failedSchemaPaths,
+        repairActions: input.repairActions ?? [],
         promptVersion: input.promptVersion,
         createdByUserId: input.createdByUserId,
         createdAt: new Date().toISOString(),
       });
     },
-    async listRecent(organizationId: string) {
-      return diagnostics.filter((diagnostic) => diagnostic.organizationId === organizationId);
+    async attachRecentToSession({ organizationId, sessionId, sourceFingerprint }) {
+      for (const diagnostic of diagnostics) {
+        if (diagnostic.organizationId === organizationId && diagnostic.sourceFingerprint === sourceFingerprint && !diagnostic.sessionId) {
+          diagnostic.sessionId = sessionId;
+        }
+      }
+    },
+    async listRecent(organizationId: string, filters = {}) {
+      return diagnostics.filter((diagnostic) =>
+        diagnostic.organizationId === organizationId &&
+        (!filters.sessionId || diagnostic.sessionId === filters.sessionId),
+      );
     },
   };
 }
@@ -225,7 +239,7 @@ function buildApp(
         },
       }],
     }),
-    productIntakeAiProvider: null,
+    productIntakeAiProvider: options.productIntakeAiProvider ?? null,
     productIntakeSessionStore,
     productIntakeDiagnosticsStore,
   });
@@ -406,16 +420,49 @@ describe("Catalog Migration Lab routes", () => {
     expect(response.status).toBe(404);
   });
 
+  test("schema validation diagnostics are attached to the current intake session", async () => {
+    const diagnosticsStore = makeMemoryProductIntakeDiagnosticsStore();
+    const provider = {
+      generateJson: async () => ({
+        rawText: JSON.stringify({ workflowState: "REVIEW_READY", source: "live_ai" }),
+        provider: "openai",
+        model: "gpt-test",
+        requestMetadata: {},
+      }),
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "gpt-test", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "gpt-test", requestMetadata: {} }),
+    };
+    const app = buildApp({ productIntakeAiProvider: provider }, makeMemoryProductIntakeSessionStore(), diagnosticsStore);
+    const created = await request(app)
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({ sourceType: "text_description", description: "Foam board signs" });
+
+    expect(created.status).toBe(200);
+    const sessionId = created.body.data.sessionId;
+    const diagnostics = await request(app).get(`/api/admin/product-intake-wizard/ai-diagnostics?sessionId=${sessionId}`);
+
+    expect(diagnostics.status).toBe(200);
+    expect(diagnostics.body.data.diagnostics).toHaveLength(1);
+    expect(diagnostics.body.data.diagnostics[0]).toMatchObject({
+      sessionId,
+      provider: "openai",
+      model: "gpt-test",
+    });
+  });
+
   test("product intake diagnostics endpoint returns recent admin diagnostics without secrets", async () => {
     const diagnosticsStore = makeMemoryProductIntakeDiagnosticsStore([{
       id: "diag_1",
       organizationId: "org_1",
+      sessionId: "sess_1",
       sourceType: "text_description",
+      sourceFingerprint: "fingerprint",
       provider: "openai",
       model: "gpt-test",
       rawAiResponse: "{\"bad\":true}",
       validationErrors: [{ path: "productIdentity", message: "Required", code: "invalid_type" }],
       failedSchemaPaths: ["productIdentity"],
+      repairActions: [],
       promptVersion: "product-intake-brief-v1",
       createdByUserId: "user_1",
       createdAt: "2026-06-05T00:00:00.000Z",
