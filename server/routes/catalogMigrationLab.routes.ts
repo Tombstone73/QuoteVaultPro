@@ -274,11 +274,15 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
           analyzer,
           brief,
         });
-        await intakeDiagnosticsStore.attachRecentToSession({
-          organizationId,
-          sessionId: intakeSession.session.id,
-          sourceFingerprint,
-        });
+        try {
+          await intakeDiagnosticsStore.attachRecentToSession({
+            organizationId,
+            sessionId: intakeSession.session.id,
+            sourceFingerprint,
+          });
+        } catch (diagnosticError) {
+          console.warn("[ProductIntakeWizard] Failed to attach AI diagnostics to intake session:", diagnosticError);
+        }
 
         return res.json({
           success: true,
@@ -376,7 +380,12 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
 
         const detail = await intakeSessionStore.getSessionDetail(organizationId, req.params.id);
         if (!detail) return res.status(404).json({ success: false, message: "Product Intake session not found.", errorCode: "SESSION_NOT_FOUND" });
-        const diagnostics = await intakeDiagnosticsStore.listRecent(organizationId, { sessionId: req.params.id });
+        let diagnostics: Awaited<ReturnType<ProductIntakeAiDiagnosticsStore["listRecent"]>> = [];
+        try {
+          diagnostics = await intakeDiagnosticsStore.listRecent(organizationId, { sessionId: req.params.id });
+        } catch (diagnosticError) {
+          console.warn("[ProductIntakeWizard] Failed to load diagnostics for intake session detail:", diagnosticError);
+        }
         return res.json({ success: true, data: { ...detail, diagnostics } });
       } catch (error: any) {
         const handled = handleProductIntakeRouteError(error, res, "Invalid intake session request.");
