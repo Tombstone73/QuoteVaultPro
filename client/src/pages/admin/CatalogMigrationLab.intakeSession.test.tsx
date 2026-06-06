@@ -74,7 +74,7 @@ function session(overrides: Partial<ProductIntakeSession> = {}): ProductIntakeSe
       sourceEvidence: [],
       overallConfidence: 88,
     },
-    confidence: { overallConfidence: 88 },
+    confidence: { originalConfidence: 88, currentConfidence: 96, overallConfidence: 88 },
     missingDecisions: [],
     status: "needs_answers",
     createdProductId: null,
@@ -187,6 +187,8 @@ describe("Product Intake session UI", () => {
     expect(html).toContain("needs answers");
     expect(html).toContain("text description");
     expect(html).toContain("88%");
+    expect(html).toContain("96%");
+    expect(html).toContain("Current Confidence");
     expect(html).toContain("Required Open");
   });
 
@@ -273,12 +275,15 @@ describe("Product Intake session UI", () => {
     const diagnostics: ProductIntakeAiDiagnostic[] = [{
       id: "diag_1",
       organizationId: "org_1",
+      sessionId: "sess_1",
       sourceType: "text_description",
+      sourceFingerprint: "fingerprint",
       provider: "openai",
       model: "gpt-test",
       rawAiResponse: "{\"bad\":true}",
       validationErrors: [{ path: "productIdentity", message: "Required", code: "invalid_type" }],
       failedSchemaPaths: ["productIdentity"],
+      repairActions: ["normalized material string into materialAnalysis.detectedMaterialReferences"],
       promptVersion: "product-intake-brief-v1",
       createdByUserId: "user_1",
       createdAt: "2026-06-05T00:00:00.000Z",
@@ -290,6 +295,7 @@ describe("Product Intake session UI", () => {
     expect(html).toContain("openai / gpt-test");
     expect(html).toContain("productIdentity");
     expect(html).toContain("Required");
+    expect(html).toContain("Repair Actions");
     expect(html).toContain("{&quot;bad&quot;:true}");
     expect(html).not.toContain("apiKey");
   });

@@ -79,6 +79,11 @@ function toIso(value: unknown): string {
   return new Date().toISOString();
 }
 
+function clampConfidence(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
 function nullableIso(value: unknown): string | null {
   if (!value) return null;
   return toIso(value);
@@ -100,7 +105,7 @@ function option(label: string, value: string = normalizeKey(label)) {
   return { label, value };
 }
 
-function questionForMissingDecision(decision: ProductIntakeBrief["missingDecisions"][number], sortOrder: number): NewQuestion | null {
+function questionForMissingDecision(brief: ProductIntakeBrief, decision: ProductIntakeBrief["missingDecisions"][number], sortOrder: number): NewQuestion | null {
   if (decision.severity === "info") return null;
   const sourcePath = firstEvidencePath(decision.evidence);
   const base = {
@@ -114,6 +119,23 @@ function questionForMissingDecision(decision: ProductIntakeBrief["missingDecisio
   };
 
   if (decision.id === "select-material") {
+    const materialOptions = brief.materialAnalysis.likelyMaterialMatches
+      .filter((match) => match.materialId || match.name)
+      .slice(0, 12)
+      .map((match) => ({
+        label: `${match.name}${match.sku ? ` (${match.sku})` : ""} - ${match.confidence}%`,
+        value: match.materialId ?? match.name,
+      }));
+    if (materialOptions.length > 0) {
+      return {
+        ...base,
+        questionType: "select",
+        label: "Which material should this product use?",
+        helpText: "Candidate TitanOS materials were found. Select the closest match or review the material library if none apply.",
+        options: materialOptions,
+        defaultValue: materialOptions[0]?.value ?? null,
+      };
+    }
     return {
       ...base,
       questionType: "text",
@@ -188,7 +210,7 @@ export function generateProductIntakeQuestions(brief: ProductIntakeBrief): NewQu
     questions.push(question);
   };
 
-  brief.missingDecisions.forEach((decision, index) => push(questionForMissingDecision(decision, index + 1)));
+  brief.missingDecisions.forEach((decision, index) => push(questionForMissingDecision(brief, decision, index + 1)));
   push(behaviorQuestion({
     key: "confirm-size-behavior",
     label: "How should size be captured?",
@@ -331,11 +353,46 @@ function sourceTextForRequest(request: ProductIntakeWizardAnalyzeRequest): strin
   return request.jsonText ?? request.analyzerRequest?.jsonText ?? request.description ?? null;
 }
 
-function fingerprintForRequest(request: ProductIntakeWizardAnalyzeRequest, analyzer: CatalogMigrationLabAnalyzerResult | null): string | null {
+export function fingerprintProductIntakeRequest(request: ProductIntakeWizardAnalyzeRequest, analyzer: CatalogMigrationLabAnalyzerResult | null): string | null {
   if (analyzer?.source.fingerprint) return analyzer.source.fingerprint;
   const text = sourceTextForRequest(request);
   if (!text) return null;
   return createHash("sha256").update(text).digest("hex");
+}
+
+function confidenceNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function recalculateProductIntakeConfidence(args: {
+  session: ProductIntakeSession;
+  questions: ProductIntakeQuestion[];
+  answers: ProductIntakeAnswer[];
+}) {
+  const existing = args.session.confidence ?? {};
+  const originalConfidence = confidenceNumber(existing.originalConfidence) ?? confidenceNumber(existing.overallConfidence) ?? args.session.brief.overallConfidence;
+  const answerByKey = new Map(args.answers.map((answer) => [answer.questionKey, answer]));
+  const answeredKeys = args.questions
+    .filter((question) => hasAnswerValue(question, answerByKey.get(question.questionKey)?.answer))
+    .map((question) => question.questionKey);
+  let lift = 0;
+  for (const key of answeredKeys) {
+    if (key === "select-material") lift += 15;
+    else if (key === "choose-pricing-model") lift += 12;
+    else if (key === "confirm-size-behavior") lift += 10;
+    else if (key === "confirm-quantity-behavior") lift += 8;
+    else if (key.startsWith("confirm-option-required-")) lift += 4;
+    else if (key.startsWith("review-template-")) lift += 2;
+    else lift += 3;
+  }
+  return {
+    ...existing,
+    originalConfidence,
+    currentConfidence: clampConfidence(originalConfidence + lift),
+    answeredQuestionKeys: answeredKeys,
+    answeredQuestionCount: answeredKeys.length,
+    recalculatedAt: new Date().toISOString(),
+  };
 }
 
 function mapSession(row: ProductIntakeSessionRow): ProductIntakeSession {
@@ -427,9 +484,11 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
         sourceType: sourceTypeForRequest(input.request),
         sourceJson: parseSourceJson(input.request) as any,
         sourceText: sourceTextForRequest(input.request),
-        sourceFingerprint: fingerprintForRequest(input.request, input.analyzer),
+        sourceFingerprint: fingerprintProductIntakeRequest(input.request, input.analyzer),
         aiBriefJson: input.brief as any,
         confidenceJson: {
+          originalConfidence: input.brief.overallConfidence,
+          currentConfidence: input.brief.overallConfidence,
           overallConfidence: input.brief.overallConfidence,
           source: input.brief.source,
           workflowState: input.brief.workflowState,
@@ -527,8 +586,9 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
       const nextDetail = await getDetail(args.organizationId, args.sessionId);
       if (!nextDetail) return null;
       const nextStatus = nextDetail.readiness.status;
+      const confidenceJson = recalculateProductIntakeConfidence(nextDetail);
       const [updatedSession] = await database.update(productIntakeSessions)
-        .set({ status: nextStatus, updatedByUserId: args.userId, updatedAt: new Date() })
+        .set({ status: nextStatus, confidenceJson, updatedByUserId: args.userId, updatedAt: new Date() })
         .where(and(eq(productIntakeSessions.id, args.sessionId), eq(productIntakeSessions.organizationId, args.organizationId)))
         .returning();
       return updatedSession ? await getDetail(args.organizationId, args.sessionId) : null;
