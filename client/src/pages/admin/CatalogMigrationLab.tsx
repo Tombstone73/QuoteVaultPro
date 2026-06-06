@@ -425,7 +425,7 @@ export function ProductIntakeAiDiagnosticsPanel({
                 <div className="text-xs font-medium uppercase text-muted-foreground">Repair Actions</div>
                 <div className="mt-2 rounded bg-muted/30 p-2 text-xs">
                   {diagnostic.repairActions.map((action, index) => (
-                    <div key={`${action}-${index}`}>{action}</div>
+                    <div key={`${action.path}-${index}`}>{repairActionText(action)}</div>
                   ))}
                 </div>
               </div>
@@ -457,15 +457,42 @@ function EvidenceList({ evidence }: { evidence: ProductIntakeBrief["sourceEviden
   );
 }
 
+function repairActionText(action: ProductIntakeAiDiagnostic["repairActions"][number]) {
+  return `${action.path}: ${action.reason}${action.confidenceImpact ? ` (${action.confidenceImpact})` : ""}`;
+}
+
 function IntakeBriefView({ brief }: { brief: ProductIntakeBrief }) {
+  const sourceHint = brief.aiRepair?.accepted
+    ? "Live AI repaired"
+    : brief.source === "live_ai"
+      ? "Live AI"
+      : "Analyzer fallback";
   return (
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <SummaryCard label="Confidence" value={`${brief.overallConfidence}%`} hint={brief.source === "live_ai" ? "Live AI" : "Analyzer fallback"} />
+        <SummaryCard label="Confidence" value={`${brief.overallConfidence}%`} hint={sourceHint} />
         <SummaryCard label="Required Options" value={brief.requiredOptions.length} />
         <SummaryCard label="Missing Decisions" value={brief.missingDecisions.length} />
         <SummaryCard label="Redundant Fields" value={brief.redundantFields.length} />
       </div>
+
+      {brief.aiRepair?.accepted && (
+        <Card className="border-blue-500/20 bg-blue-500/5">
+          <CardHeader>
+            <CardTitle className="text-base">AI Repair Notes</CardTitle>
+            <CardDescription>Live AI response repaired and accepted. {brief.aiRepair.actions.length} field(s) normalized.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2 text-xs">
+            {brief.aiRepair.actions.slice(0, 8).map((action, index) => (
+              <div key={`${action.path}-${index}`} className="rounded border bg-background/60 p-2">
+                <div className="font-mono">{action.path}</div>
+                <div className="mt-1 text-muted-foreground">{action.reason}</div>
+                {action.confidenceImpact && <div className="mt-1">{action.confidenceImpact}</div>}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {brief.fallbackReason && (
         <Card className="border-amber-500/20 bg-amber-500/5">

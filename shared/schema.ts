@@ -941,7 +941,7 @@ export const productIntakeAiDiagnostics = pgTable("product_intake_ai_diagnostics
   rawAiResponse: text("raw_ai_response").notNull(),
   validationErrors: jsonb("validation_errors").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
   failedSchemaPaths: jsonb("failed_schema_paths").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
-  repairActions: jsonb("repair_actions").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  repairActions: jsonb("repair_actions").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
   promptVersion: text("prompt_version"),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),

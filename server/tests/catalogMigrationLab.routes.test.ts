@@ -421,6 +421,44 @@ describe("Catalog Migration Lab routes", () => {
     expect(response.body.data.answers).toEqual([]);
   });
 
+  test("product intake analyze repairs representative banner AI output and returns live AI brief", async () => {
+    const provider = {
+      generateJson: async () => ({
+        rawText: JSON.stringify({
+          productName: "13oz Banner",
+          productCategory: "Banners",
+          productType: "banner",
+          pricingModel: "quantity-tier",
+          sizeBehavior: "custom width and height",
+          quantityBehavior: "tiers",
+          options: { optional: ["Grommets", "Pole pockets"] },
+          confidence: "85%",
+        }),
+        provider: "openai",
+        model: "test-model",
+        requestMetadata: {},
+      }),
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+    };
+
+    const response = await request(buildApp({ productIntakeAiProvider: provider }))
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({
+        sourceType: "text_description",
+        description: "13oz banner custom width and height quantity tier pricing route to roll printer proof required",
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.brief.source).toBe("live_ai");
+    expect(response.body.data.brief.fallbackReason).toBeNull();
+    expect(response.body.data.brief.aiRepair.accepted).toBe(true);
+    expect(response.body.data.brief.productIdentity.likelyProductName.value).toBe("13oz Banner");
+    expect(response.body.data.brief.pricingAnalysis.behavior).toBe("quantity_tiers");
+    expect(response.body.data.sessionId).toBeTruthy();
+    expect(response.body.data.readiness.canCreateDraft).toBe(false);
+  });
+
   test("product intake analyze still succeeds if diagnostics attachment fails after session creation", async () => {
     const diagnosticsStore: ProductIntakeAiDiagnosticsStore = {
       recordSchemaValidationFailure: async () => undefined,

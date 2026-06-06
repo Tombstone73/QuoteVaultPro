@@ -11,6 +11,9 @@ import {
   detectRedundantFields,
   generateProductIntakeBrief,
   matchOptionTemplates,
+  normalizeProductIntakeBehaviorAlias,
+  normalizeProductIntakeConfidence,
+  repairProductIntakeBriefShape,
   type ProductIntakeTemplateReference,
 } from "../services/productIntakeWizard/productIntakeBriefService";
 
@@ -227,6 +230,58 @@ describe("Product Intake Brief service", () => {
     expect(brief.draftWarnings.map((warning) => warning.code)).toEqual(expect.arrayContaining(["proof_required", "routing_signal"]));
   });
 
+  test("normalizes common behavior and confidence aliases", () => {
+    expect(normalizeProductIntakeBehaviorAlias("quantity-tier", "pricing")).toBe("quantity_tiers");
+    expect(normalizeProductIntakeBehaviorAlias("quantity tiers", "pricing")).toBe("quantity_tiers");
+    expect(normalizeProductIntakeBehaviorAlias("tiered", "pricing")).toBe("quantity_tiers");
+    expect(normalizeProductIntakeBehaviorAlias("custom width and height", "size")).toBe("custom_size");
+    expect(normalizeProductIntakeBehaviorAlias("width_height", "size")).toBe("custom_size");
+    expect(normalizeProductIntakeBehaviorAlias("roll-to-roll", "routing")).toBe("roll_printer");
+    expect(normalizeProductIntakeConfidence("85%")).toBe(85);
+    expect(normalizeProductIntakeConfidence("high")).toBe(85);
+  });
+
+  test("repairs aliases, missing arrays, and source text evidence into a valid brief", async () => {
+    const deterministic = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "13oz banner custom width and height quantity tier pricing" },
+      analyzer: null,
+      templates,
+      provider: null,
+    });
+
+    const repair = repairProductIntakeBriefShape({
+      productName: "13oz Banner",
+      productCategory: "Banners",
+      productType: "banner",
+      pricingModel: "quantity tiers",
+      sizeBehavior: "custom width and height",
+      confidence: "85%",
+      options: {
+        required: ["Custom width and height"],
+        optional: ["Grommets", "Pole pockets"],
+      },
+    }, deterministic, { sourcePath: "$.source_text" });
+
+    const parsed = productIntakeBriefSchema.parse(repair.repaired);
+    expect(parsed.productIdentity.likelyProductName.value).toBe("13oz Banner");
+    expect(parsed.productIdentity.category.value).toBe("Banners");
+    expect(parsed.productIdentity.productType.value).toBe("banner");
+    expect(parsed.pricingAnalysis.behavior).toBe("quantity_tiers");
+    expect(parsed.sizeBehavior.behavior).toBe("custom_size");
+    expect(parsed.overallConfidence).toBe(85);
+    expect(parsed.requiredOptions).toEqual(expect.any(Array));
+    expect(parsed.optionalOptions).toEqual(expect.any(Array));
+    expect(parsed.redundantFields).toEqual(expect.any(Array));
+    expect(parsed.productIdentity.likelyProductName.evidence[0].sourcePath).toBe("$.source_text");
+    expect(repair.actions.map((action) => action.path)).toEqual(expect.arrayContaining([
+      "productIdentity.likelyProductName",
+      "pricingAnalysis",
+      "requiredOptions",
+      "optionalOptions",
+    ]));
+  });
+
   test("repairs simple AI schema shape before falling back", async () => {
     const diagnostics: ProductIntakeAiDiagnosticInput[] = [];
     const provider = {
@@ -256,9 +311,67 @@ describe("Product Intake Brief service", () => {
     });
 
     expect(brief.source).toBe("live_ai");
+    expect(brief.aiRepair?.accepted).toBe(true);
     expect(brief.productIdentity.likelyProductName.value).toBe("AI Styrene Signs");
     expect(brief.materialAnalysis.detectedMaterialReferences).toContain("styrene");
-    expect(diagnostics).toHaveLength(0);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].validationErrors).toEqual([]);
+    expect(diagnostics[0].repairActions?.length).toBeGreaterThan(0);
+  });
+
+  test("repairs representative banner AI output and avoids fallback", async () => {
+    const diagnostics: ProductIntakeAiDiagnosticInput[] = [];
+    const provider = {
+      generateJson: async () => ({
+        rawText: JSON.stringify({
+          productName: "13oz Banner",
+          productCategory: "Banners",
+          productType: "banner",
+          materials: ["13oz Banner"],
+          pricingModel: "quantity tiers",
+          sizeBehavior: "custom width and height",
+          quantityBehavior: "tiers",
+          options: {
+            required: ["Custom width and height"],
+            optional: ["Grommets", "Pole pockets", "Double-sided"],
+          },
+          warnings: ["Roll printer routing", "Proof required"],
+          confidence: "85%",
+        }),
+        provider: "openai",
+        model: "test-model",
+        requestMetadata: {},
+      }),
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+    };
+
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "13oz banner custom width and height quantity tier pricing route to roll printer proof required" },
+      analyzer: null,
+      templates,
+      materials: [{ id: "mat_banner", sku: "BAN13", name: "13oz Scrim Banner" }],
+      provider,
+      diagnosticsStore: {
+        recordSchemaValidationFailure: async (input) => {
+          diagnostics.push(input);
+        },
+        attachRecentToSession: async () => undefined,
+        listRecent: async () => [],
+      },
+    });
+
+    expect(brief.source).toBe("live_ai");
+    expect(brief.fallbackReason).toBeNull();
+    expect(brief.aiRepair?.accepted).toBe(true);
+    expect(brief.productIdentity.likelyProductName.value).toBe("13oz Banner");
+    expect(brief.productIdentity.category.value).toBe("Banners");
+    expect(brief.pricingAnalysis.behavior).toBe("quantity_tiers");
+    expect(brief.sizeBehavior.behavior).toBe("custom_size");
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].validationErrors).toEqual([]);
+    expect(diagnostics[0].repairActions?.map((action) => action.path)).toEqual(expect.arrayContaining(["pricingAnalysis", "overallConfidence"]));
   });
 
   test("records AI schema validation diagnostics without changing fallback behavior", async () => {
@@ -291,7 +404,7 @@ describe("Product Intake Brief service", () => {
     });
 
     expect(brief.source).toBe("rule_based_fallback");
-    expect(brief.fallbackReason).toContain("schema validation");
+    expect(brief.fallbackReason).toContain("could not be safely normalized");
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]).toMatchObject({
       organizationId: "org_1",
@@ -303,6 +416,7 @@ describe("Product Intake Brief service", () => {
     expect(diagnostics[0].rawAiResponse).toContain("workflowState");
     expect(diagnostics[0].failedSchemaPaths.length).toBeGreaterThan(0);
     expect(diagnostics[0].repairActions).toEqual(expect.any(Array));
+    expect(diagnostics[0].repairActions).toHaveLength(0);
     expect(JSON.stringify(diagnostics[0])).not.toMatch(/apiKey|sk-/i);
   });
 });
