@@ -44,6 +44,7 @@ jest.mock("@/pages/not-found", () => ({
 }));
 
 let ProductIntakeQuestionsWizard: typeof import("./CatalogMigrationLab").ProductIntakeQuestionsWizard;
+let ProductIntakeRunStatusPanel: typeof import("./CatalogMigrationLab").ProductIntakeRunStatusPanel;
 let ProductIntakeSessionSummary: typeof import("./CatalogMigrationLab").ProductIntakeSessionSummary;
 let ProductIntakeSessionsList: typeof import("./CatalogMigrationLab").ProductIntakeSessionsList;
 let ProductIntakeAiDiagnosticsPanel: typeof import("./CatalogMigrationLab").ProductIntakeAiDiagnosticsPanel;
@@ -52,6 +53,7 @@ let CatalogMigrationLab: typeof import("./CatalogMigrationLab").default;
 beforeAll(async () => {
   const module = await import("./CatalogMigrationLab");
   ProductIntakeQuestionsWizard = module.ProductIntakeQuestionsWizard;
+  ProductIntakeRunStatusPanel = module.ProductIntakeRunStatusPanel;
   ProductIntakeSessionSummary = module.ProductIntakeSessionSummary;
   ProductIntakeSessionsList = module.ProductIntakeSessionsList;
   ProductIntakeAiDiagnosticsPanel = module.ProductIntakeAiDiagnosticsPanel;
@@ -207,6 +209,16 @@ function jsonResponse(data: unknown) {
   } as Response;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
+}
+
 async function renderCatalogMigrationLabPage() {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -306,6 +318,33 @@ describe("Product Intake session UI", () => {
 
     expect(html).toContain("Create TEMP Draft Coming in Phase 3");
     expect(html).toContain("disabled");
+  });
+
+  test("run status panel renders elapsed running status", () => {
+    const html = renderToStaticMarkup(
+      <ProductIntakeRunStatusPanel
+        runState={{
+          status: "running_live_ai",
+          startedAt: 1000,
+          completedAt: null,
+          timeoutMs: 60000,
+          sourceResult: null,
+          provider: "openai",
+          model: "gpt-test",
+          message: "Live AI is analyzing this product...",
+        }}
+        now={4000}
+        playSound={false}
+        onPlaySoundChange={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("AI Run Status");
+    expect(html).toContain("Running live AI");
+    expect(html).toContain("Live AI is analyzing this product");
+    expect(html).toContain("3s");
+    expect(html).toContain("openai / gpt-test");
+    expect(html).toContain("60s");
   });
 
   test("sessions list renders recent sessions and open button", () => {
@@ -504,8 +543,91 @@ describe("Product Intake session UI", () => {
 
     expect(container.textContent).toContain("Session Summary");
     expect(container.textContent).toContain("Current Confidence");
+    expect(container.textContent).toContain("Completed with Analyzer Fallback");
     expect(container.textContent).toContain("Missing Decisions Wizard");
     expect(container.textContent).toContain("Which pricing model should this product use?");
+    act(() => root.unmount());
+    document.body.innerHTML = "";
+  });
+
+  test("running status appears, generate is disabled, and cancel aborts request", async () => {
+    const pending = deferred<Response>();
+    let capturedSignal: AbortSignal | undefined;
+    let analyzePostCount = 0;
+    queryClientMock.apiRequest.mockImplementation(async (...args: unknown[]) => {
+      const [method, url, _data, init] = args as [string, string, unknown, RequestInit | undefined];
+      if (method === "GET" && url === "/api/admin/product-intake-wizard/sessions") {
+        return jsonResponse({ success: true, data: { sessions: [] } });
+      }
+      if (method === "GET" && url.startsWith("/api/admin/product-intake-wizard/ai-diagnostics")) {
+        return jsonResponse({ success: true, data: { diagnostics: [] } });
+      }
+      if (method === "POST" && url === "/api/admin/product-intake-wizard/analyze") {
+        analyzePostCount += 1;
+        capturedSignal = init?.signal as AbortSignal | undefined;
+        capturedSignal?.addEventListener("abort", () => pending.reject(Object.assign(new Error("AbortError"), { name: "AbortError" })));
+        return pending.promise;
+      }
+      throw new Error(`Unexpected request ${method} ${url}`);
+    });
+
+    const { container, root } = await renderCatalogMigrationLabPage();
+    const description = Array.from(container.querySelectorAll("textarea")).find((textarea) =>
+      textarea.getAttribute("placeholder")?.includes("Foam board"),
+    ) as HTMLTextAreaElement;
+    await act(async () => {
+      setTextareaValue(description, "13oz banner");
+    });
+    const generateButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Generate Intake Brief")) as HTMLButtonElement;
+    await act(async () => {
+      generateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain("Running live AI");
+    expect(container.textContent).toContain("Live AI is analyzing this product");
+    expect(generateButton.disabled).toBe(true);
+    expect(capturedSignal?.aborted).toBe(false);
+    await act(async () => {
+      generateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(analyzePostCount).toBe(1);
+
+    const cancelButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Stop / Cancel");
+    await act(async () => {
+      cancelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(capturedSignal?.aborted).toBe(true);
+    expect(container.textContent).toContain("Canceled by user");
+    expect(container.textContent).not.toContain("Session Summary");
+    act(() => root.unmount());
+    document.body.innerHTML = "";
+  });
+
+  test("sound preference toggle persists", async () => {
+    window.localStorage.removeItem("productIntake.playCompletionSound");
+    queryClientMock.apiRequest.mockImplementation(async (...args: unknown[]) => {
+      const [method, url] = args as [string, string];
+      if (method === "GET" && url === "/api/admin/product-intake-wizard/sessions") {
+        return jsonResponse({ success: true, data: { sessions: [] } });
+      }
+      if (method === "GET" && url.startsWith("/api/admin/product-intake-wizard/ai-diagnostics")) {
+        return jsonResponse({ success: true, data: { diagnostics: [] } });
+      }
+      throw new Error(`Unexpected request ${method} ${url}`);
+    });
+
+    const { container, root } = await renderCatalogMigrationLabPage();
+    const soundToggle = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(soundToggle.checked).toBe(false);
+    await act(async () => {
+      Simulate.change(soundToggle, { target: { checked: true } } as any);
+    });
+
+    expect(window.localStorage.getItem("productIntake.playCompletionSound")).toBe("true");
     act(() => root.unmount());
     document.body.innerHTML = "";
   });
