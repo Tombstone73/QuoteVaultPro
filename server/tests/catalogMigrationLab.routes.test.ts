@@ -277,6 +277,12 @@ function makeMemoryProductIntakeDraftCreator(store: ProductIntakeSessionStore): 
       return {
         productId: detail.session.createdProductId,
         pbv2TreeVersionId: detail.session.createdPbv2TreeVersionId,
+        draftQuality: {
+          label: "Good",
+          score: 86,
+          reasons: ["Options were organized into logical PBV2 groups."],
+          warnings: ["Pricing setup required."],
+        },
         session: detail.session,
       };
     },
@@ -813,6 +819,10 @@ describe("Catalog Migration Lab routes", () => {
       data: {
         productId: "prod_draft_1",
         pbv2TreeVersionId: "tree_draft_1",
+        draftQuality: {
+          label: "Good",
+          score: 86,
+        },
         session: {
           status: "draft_created",
           createdProductId: "prod_draft_1",

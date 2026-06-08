@@ -225,11 +225,19 @@ export const productIntakeSessionDetailSchema = z.object({
   readiness: productIntakeReadinessSchema,
 });
 
+export const productIntakeDraftQualitySchema = z.object({
+  label: z.enum(["Excellent", "Good", "Needs Review"]),
+  score: z.number().int().min(0).max(100),
+  reasons: z.array(z.string().min(1)),
+  warnings: z.array(z.string().min(1)),
+});
+
 export const productIntakeCreateDraftResponseSchema = z.object({
   success: z.literal(true),
   data: z.object({
     productId: z.string().min(1),
     pbv2TreeVersionId: z.string().min(1),
+    draftQuality: productIntakeDraftQualitySchema,
     session: productIntakeSessionSchema,
     detail: productIntakeSessionDetailSchema,
   }),
@@ -426,6 +434,7 @@ export type ProductIntakeAnswer = z.infer<typeof productIntakeAnswerSchema>;
 export type ProductIntakeSession = z.infer<typeof productIntakeSessionSchema>;
 export type ProductIntakeReadiness = z.infer<typeof productIntakeReadinessSchema>;
 export type ProductIntakeSessionDetail = z.infer<typeof productIntakeSessionDetailSchema>;
+export type ProductIntakeDraftQuality = z.infer<typeof productIntakeDraftQualitySchema>;
 export type ProductIntakeCreateDraftResponse = z.infer<typeof productIntakeCreateDraftResponseSchema>;
 export type ProductIntakeAiDiagnosticIssue = z.infer<typeof productIntakeAiDiagnosticIssueSchema>;
 export type ProductIntakeAiRepairAction = z.infer<typeof productIntakeAiRepairActionSchema>;

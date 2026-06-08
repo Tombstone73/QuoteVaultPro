@@ -59,6 +59,34 @@ function brief(overrides: Partial<ProductIntakeBrief> = {}): ProductIntakeBrief 
   };
 }
 
+function option(label: string, overrides: Partial<ProductIntakeBrief["requiredOptions"][number]> = {}): ProductIntakeBrief["requiredOptions"][number] {
+  return {
+    label,
+    normalizedGroup: label,
+    required: true,
+    confidence: 90,
+    sampleValues: [],
+    sourcePaths: [`$.${label}`],
+    templateMatches: [],
+    evidence: [],
+    ...overrides,
+  };
+}
+
+function nodes(tree: any) {
+  return Object.values(tree.nodes) as any[];
+}
+
+function inputNode(tree: any, selectionKey: string) {
+  return nodes(tree).find((node) => node.input?.selectionKey === selectionKey);
+}
+
+function groupLabels(tree: any) {
+  return nodes(tree)
+    .filter((node) => String(node.type ?? "").toUpperCase() === "GROUP")
+    .map((node) => node.label);
+}
+
 describe("Product Intake draft service", () => {
   test("builds inactive product values without assigning an active PBV2 tree", () => {
     const values = buildProductIntakeProductValues({
@@ -97,15 +125,30 @@ describe("Product Intake draft service", () => {
     expect(tree.schemaVersion).toBe(2);
     expect(tree.meta?.requiresDimensions).toBe(true);
     expect(tree.meta?.notes).toContain("Product Intake session sess_1");
-    expect(tree.rootNodeIds.length).toBeGreaterThanOrEqual(4);
-    expect(Object.values(tree.nodes).some((node: any) => node.input?.selectionKey === "size" && node.input?.type === "dimension")).toBe(true);
-    expect(Object.values(tree.nodes).some((node: any) => node.input?.selectionKey === "quantity" && node.input?.type === "number")).toBe(true);
-    expect(Object.values(tree.nodes).some((node: any) => node.input?.selectionKey === "printed_sides" && node.input?.required === true)).toBe(true);
-    expect(Object.values(tree.nodes).some((node: any) => node.input?.selectionKey === "grommets" && node.input?.required === false)).toBe(true);
+    expect(tree.meta?.productIntake?.draftQuality?.label).toMatch(/Excellent|Good|Needs Review/);
+    expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Size & Quantity", "Print Setup", "Finishing"]));
+    expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
+    expect(inputNode(tree, "quantity")?.input?.type).toBe("number");
+    expect(inputNode(tree, "printed_sides")?.input?.required).toBe(true);
+    expect(inputNode(tree, "grommets")?.input?.required).toBe(false);
   });
 
   test("reuses suggested templates without creating template records", () => {
     const templateBrief = brief({
+      requiredOptions: [option("Printed Sides", {
+        normalizedGroup: "printed_sides",
+        sampleValues: ["Single Sided", "Double Sided"],
+        templateMatches: [{
+          templateId: "tpl_printed_sides",
+          name: "Printed Sides",
+          slug: "printed-sides",
+          category: "print",
+          score: 0.96,
+          recommendation: "suggest_reuse",
+          matchedSignals: ["printed sides"],
+          evidence: [],
+        }],
+      })],
       templateMatches: [{
         templateId: "tpl_printed_sides",
         name: "Printed Sides",
@@ -116,7 +159,6 @@ describe("Product Intake draft service", () => {
         matchedSignals: ["printed sides"],
         evidence: [],
       }],
-      requiredOptions: [],
       optionalOptions: [],
     });
     const tree = buildProductIntakeDraftTree({
@@ -149,5 +191,133 @@ describe("Product Intake draft service", () => {
 
     expect(validateOptionTreeV2(tree).ok).toBe(true);
     expect(Object.values(tree.nodes).some((node: any) => node.meta?.templateSource?.sourceTemplateId === "tpl_printed_sides")).toBe(true);
+    expect(nodes(tree).filter((node) => node.label === "Printed Sides" && node.kind === "question" && node.input).length).toBe(1);
+    expect(tree.meta?.productIntake?.draftQuality?.reasons.some((reason) => /generic option/.test(reason))).toBe(true);
+  });
+
+  test("Coroplast yard signs use fixed size dropdown only with logical groups", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        productIdentity: {
+          likelyProductName: { value: "4mm Coroplast Yard Signs", confidence: 94, evidence: [] },
+          category: { value: "Yard Signs", confidence: 90, evidence: [] },
+          productType: { value: "Rigid Sign", confidence: 85, evidence: [] },
+        },
+        sizeBehavior: { behavior: "fixed_size_list", confidence: 92, evidence: [] },
+        requiredOptions: [
+          option("Size", { normalizedGroup: "size", sampleValues: ["12x18", "18x24", "24x36"] }),
+          option("Printed Sides", { normalizedGroup: "printed_sides", sampleValues: ["Single Sided", "Double Sided"] }),
+        ],
+        optionalOptions: [
+          option("H-Wire Stakes", { normalizedGroup: "h_wire_stakes", required: false, sampleValues: ["None", "Include Stakes"] }),
+        ],
+      }),
+      sessionId: "sess_coro",
+      productName: "4mm Coroplast Yard Signs",
+      userId: "user_1",
+    });
+
+    expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expect(inputNode(tree, "size")?.input?.type).toBe("select");
+    expect(inputNode(tree, "size")?.choices?.map((choice: any) => choice.label)).toEqual(["12x18", "18x24", "24x36"]);
+    expect(nodes(tree).some((node) => node.input?.selectionKey === "size" && node.input?.type === "dimension")).toBe(false);
+    expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Size & Quantity", "Print Setup", "Hardware"]));
+    expect(inputNode(tree, "h_wire_stakes")).toBeTruthy();
+  });
+
+  test("banner drafts use custom dimension size only and finishing groups", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        requiredOptions: [
+          option("Printed Sides", { normalizedGroup: "printed_sides", sampleValues: ["Single Sided", "Double Sided"] }),
+        ],
+        optionalOptions: [
+          option("Grommets", { normalizedGroup: "grommets", required: false, sampleValues: ["None", "Corners"] }),
+          option("Pole Pockets", { normalizedGroup: "pole_pockets", required: false, sampleValues: ["None", "Top", "Top and Bottom"] }),
+        ],
+      }),
+      sessionId: "sess_banner",
+      productName: "13oz Banner",
+      userId: "user_1",
+    });
+
+    expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
+    expect(nodes(tree).some((node) => node.input?.selectionKey === "size" && node.input?.type === "select")).toBe(false);
+    expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Size & Quantity", "Print Setup", "Finishing"]));
+    expect(inputNode(tree, "grommets")).toBeTruthy();
+    expect(inputNode(tree, "pole_pockets")).toBeTruthy();
+  });
+
+  test("styrene fixed size drafts do not create dimension size controls", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        productIdentity: {
+          likelyProductName: { value: ".040 Styrene Signs", confidence: 90, evidence: [] },
+          category: { value: "Rigid Signs", confidence: 90, evidence: [] },
+          productType: { value: "Styrene", confidence: 85, evidence: [] },
+        },
+        sizeBehavior: { behavior: "standard_fixed_sizes", confidence: 90, evidence: [] },
+        requiredOptions: [
+          option("Size", { normalizedGroup: "size", sampleValues: ["8x10", "11x14", "18x24"] }),
+          option("Printed Sides", { normalizedGroup: "printed_sides", sampleValues: ["Single Sided", "Double Sided"] }),
+        ],
+      }),
+      sessionId: "sess_styrene",
+      productName: ".040 Styrene Signs",
+      userId: "user_1",
+    });
+
+    expect(inputNode(tree, "size")?.input?.type).toBe("select");
+    expect(nodes(tree).some((node) => node.input?.selectionKey === "size" && node.input?.type === "dimension")).toBe(false);
+  });
+
+  test("contour-cut sticker drafts use dimension size and finishing options", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        productIdentity: {
+          likelyProductName: { value: "Contour-Cut Stickers", confidence: 92, evidence: [] },
+          category: { value: "Stickers", confidence: 90, evidence: [] },
+          productType: { value: "Sticker", confidence: 85, evidence: [] },
+        },
+        requiredOptions: [
+          option("Cut Type", { normalizedGroup: "cut_type", sampleValues: ["Contour Cut", "Square Cut"] }),
+        ],
+        optionalOptions: [
+          option("Laminate", { normalizedGroup: "laminate", required: false, sampleValues: ["None", "Gloss", "Matte"] }),
+        ],
+      }),
+      sessionId: "sess_sticker",
+      productName: "Contour-Cut Stickers",
+      userId: "user_1",
+    });
+
+    expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
+    expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Size & Quantity", "Finishing"]));
+    expect(inputNode(tree, "cut_type")).toBeTruthy();
+    expect(inputNode(tree, "laminate")).toBeTruthy();
+  });
+
+  test("acrylic sign drafts use dimension size only", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        productIdentity: {
+          likelyProductName: { value: "3mm Acrylic Signs", confidence: 92, evidence: [] },
+          category: { value: "Rigid Signs", confidence: 90, evidence: [] },
+          productType: { value: "Acrylic", confidence: 85, evidence: [] },
+        },
+        sizeBehavior: { behavior: "custom_width_height", confidence: 90, evidence: [] },
+        optionalOptions: [
+          option("Standoffs", { normalizedGroup: "standoffs", required: false, sampleValues: ["None", "Include Standoffs"] }),
+        ],
+      }),
+      sessionId: "sess_acrylic",
+      productName: "3mm Acrylic Signs",
+      userId: "user_1",
+    });
+
+    expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
+    expect(nodes(tree).some((node) => node.input?.selectionKey === "size" && node.input?.type === "select")).toBe(false);
+    expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Size & Quantity", "Hardware"]));
   });
 });

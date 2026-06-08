@@ -215,6 +215,54 @@ type Envelope<T> = {
   };
 };
 
+function ProductIntakeDraftContextPanel({ treeJson }: { treeJson: any }) {
+  const intake = treeJson?.meta?.productIntake;
+  if (!intake || typeof intake !== "object") return null;
+  const quality = intake.draftQuality && typeof intake.draftQuality === "object" ? intake.draftQuality : null;
+  const material = intake.materialMatch && typeof intake.materialMatch === "object" ? intake.materialMatch : null;
+  const missingDecisions = Array.isArray(intake.missingDecisions) ? intake.missingDecisions : [];
+  return (
+    <div className="rounded-md border border-slate-700 bg-slate-900/70 p-4 text-sm text-slate-200">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Created From Intake Session</div>
+          <div className="mt-1 font-mono text-xs text-slate-300">{String(intake.sessionId ?? "-")}</div>
+        </div>
+        {quality && (
+          <div className="text-right">
+            <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Draft Quality</div>
+            <div className="mt-1 font-semibold text-slate-100">{String(quality.label ?? "Needs Review")} · {Number(quality.score ?? 0)}/100</div>
+          </div>
+        )}
+      </div>
+      <div className="mt-3 grid gap-3 md:grid-cols-3">
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Product Name</div>
+          <div className="mt-1">{String(intake.productName ?? "-")}</div>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Confidence</div>
+          <div className="mt-1">{Number(intake.confidence ?? 0)}%</div>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Material Match</div>
+          <div className="mt-1">{material ? `${String(material.name ?? "-")} (${Number(material.confidence ?? 0)}%)` : "Needs review"}</div>
+        </div>
+      </div>
+      {missingDecisions.length > 0 && (
+        <div className="mt-3 text-xs text-amber-200">
+          Missing Decisions: {missingDecisions.map((decision: any) => String(decision.question ?? decision.id ?? "")).filter(Boolean).slice(0, 3).join("; ")}
+        </div>
+      )}
+      {quality?.warnings?.length > 0 && (
+        <div className="mt-2 text-xs text-amber-200">
+          Draft Warnings: {quality.warnings.slice(0, 3).join("; ")}
+        </div>
+      )}
+    </div>
+  );
+}
+
 async function readJsonSafe(res: Response): Promise<any> {
   const text = await res.text();
   if (!text) return null;
@@ -1502,6 +1550,8 @@ export default function PBV2ProductBuilderSectionV2({
 
   return (
     <>
+      <ProductIntakeDraftContextPanel treeJson={localTreeJson} />
+
       {/* Product Images — full-width section above options builder */}
       <div>
         <ProductImagesSection
