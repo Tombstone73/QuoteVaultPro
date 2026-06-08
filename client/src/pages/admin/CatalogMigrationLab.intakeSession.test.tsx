@@ -314,6 +314,24 @@ describe("Product Intake session UI", () => {
     expect(html).toContain("Mark Abandoned");
   });
 
+  test("text-description evidence paths render as user-facing source labels", () => {
+    const html = renderToStaticMarkup(
+      <ProductIntakeQuestionsWizard
+        session={session()}
+        questions={[{ ...questions[0], sourcePath: "$.description" }]}
+        answers={[]}
+        readiness={readiness}
+        answerDrafts={{}}
+        onAnswerChange={() => undefined}
+        onSave={() => undefined}
+        onAbandon={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Evidence: source description");
+    expect(html).not.toContain("$.description");
+  });
+
   test("save answers action is wired", () => {
     const container = document.createElement("div");
     const root = createRoot(container);

@@ -1,5 +1,6 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
+import { Simulate } from "react-dom/test-utils";
 import { describe, expect, jest, test, beforeEach } from "@jest/globals";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TextDecoder, TextEncoder } from "util";
@@ -67,9 +68,10 @@ function reviewFixture(overrides: Partial<ProductIntakeDraftReview> = {}): Produ
       updatedAt: "2026-06-08T00:00:00.000Z",
       groupCount: 1,
       optionCount: 2,
-      optionGroups: [{ id: "group_size", label: "Size & Quantity", optionCount: 2, options: ["Size", "Quantity"] }],
+      optionGroups: [{ id: "group_size", label: "Size & Quantity", optionCount: 1, options: ["Size"] }],
       draftQuality: { label: "Good", score: 86, warnings: ["Pricing setup required."] },
       intakeSummary: null,
+      basePricing: { perSqftCents: null, perPieceCents: null, minimumChargeCents: null },
     },
     publishReadiness: {
       productInactive: true,
@@ -106,6 +108,18 @@ async function renderPage(review: ProductIntakeDraftReview) {
     }
     if (method === "POST" && url === "/api/admin/product-intake-wizard/sessions/sess_1/activate-product") {
       return jsonResponse({ success: true, data: { productId: "prod_1", isActive: true } });
+    }
+    if (method === "PATCH" && url === "/api/admin/product-intake-wizard/sessions/sess_1/draft-pricing") {
+      return jsonResponse({
+        success: true,
+        data: reviewFixture({
+          pbv2Tree: {
+            ...review.pbv2Tree,
+            basePricing: { perSqftCents: 500, perPieceCents: null, minimumChargeCents: 2500 },
+          },
+          publishReadiness: { ...review.publishReadiness, pricingConfigured: true },
+        }),
+      });
     }
     throw new Error(`Unexpected request ${method} ${url}`);
   });
@@ -145,6 +159,8 @@ describe("ProductIntakeDraftReviewPage", () => {
     expect(container.textContent).toContain("Product Draft");
     expect(container.textContent).toContain("PBV2 Draft Tree");
     expect(container.textContent).toContain("Validation / Publish Readiness");
+    expect(container.textContent).toContain("Base Pricing");
+    expect(container.textContent).toContain("Save Draft Pricing");
     expect(container.textContent).toContain("Next Actions");
     expect(container.textContent).toContain("Product inactive");
     expect(container.textContent).toContain("PBV2 DRAFT");
@@ -154,6 +170,33 @@ describe("ProductIntakeDraftReviewPage", () => {
 
     const activate = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Activate Product"));
     expect(activate?.hasAttribute("disabled")).toBe(true);
+
+    act(() => root.unmount());
+  });
+
+  test("saves draft base pricing without publishing or activating", async () => {
+    const { container, root } = await renderPage(reviewFixture());
+    const inputs = Array.from(container.querySelectorAll("input"));
+    expect(inputs).toHaveLength(3);
+
+    await act(async () => {
+      Simulate.change(inputs[0], { target: { value: "5.00" } } as any);
+      Simulate.change(inputs[2], { target: { value: "25" } } as any);
+    });
+
+    const savePricing = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft Pricing"));
+    await act(async () => {
+      savePricing?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(queryClientMock.apiRequest).toHaveBeenCalledWith("PATCH", "/api/admin/product-intake-wizard/sessions/sess_1/draft-pricing", {
+      base: { perSqftCents: 500, perPieceCents: null, minimumChargeCents: 2500 },
+    });
+    expect(queryClientMock.apiRequest).not.toHaveBeenCalledWith("POST", "/api/pbv2/tree-versions/tree_1/publish");
+    expect(queryClientMock.apiRequest).not.toHaveBeenCalledWith("POST", "/api/admin/product-intake-wizard/sessions/sess_1/activate-product");
 
     act(() => root.unmount());
   });

@@ -172,6 +172,86 @@ describe("Product Intake draft service", () => {
     expect(inputNode(tree, "grommets")?.input?.required).toBe(false);
   });
 
+  test("extracts explicit source pricing into PBV2 base pricing metadata", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        pricingAnalysis: {
+          behavior: "square_foot",
+          confidence: 90,
+          notes: "Base price is $5.00 per sqft with minimum charge $25.",
+          evidence: [{ sourcePath: "$.description.pricing", label: "Pricing", value: "$5.00 per sqft, minimum charge $25", reason: "source pricing" }],
+        },
+      }),
+      sessionId: "sess_priced",
+      productName: "13oz Banner",
+      userId: "user_1",
+      sourceText: "13oz banner $5.00 per sqft minimum charge $25",
+    });
+
+    expect(tree.meta?.pricingV2?.base).toMatchObject({ perSqftCents: 500, minimumChargeCents: 2500 });
+    expect(tree.meta?.productIntake?.pricingReadiness?.basePricingConfigured).toBe(true);
+    expect(tree.meta?.productIntake?.pricingWarnings ?? []).not.toEqual(expect.arrayContaining([expect.stringMatching(/Base pricing was not found/)]));
+    expect(validateTreeHasBasePrice(tree).errors).toEqual([]);
+    expectNoQuantityOption(tree);
+  });
+
+  test("applies Product Intake pricing answers during draft generation", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({ pricingAnalysis: { behavior: "manual_quote", confidence: 70, evidence: [] } }),
+      sessionId: "sess_answered_pricing",
+      productName: "13oz Banner",
+      userId: "user_1",
+      answers: [
+        { questionKey: "base-price-per-piece", answer: 12.5 },
+        { questionKey: "minimum-charge", answer: "25" },
+      ],
+    });
+
+    expect(tree.meta?.pricingV2?.base).toMatchObject({ perPieceCents: 1250, minimumChargeCents: 2500 });
+    expect(tree.meta?.productIntake?.pricingReadiness?.sources).toEqual(expect.arrayContaining([
+      "Product Intake answer: base price per piece",
+      "Product Intake answer: minimum charge",
+    ]));
+    expect(validateTreeHasBasePrice(tree).errors).toEqual([]);
+  });
+
+  test("leaves publish-blocking base pricing empty and flags likely matrix pricing when source pricing is missing", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        productIdentity: {
+          likelyProductName: { value: "Yard Signs", confidence: 92, evidence: [] },
+          category: { value: "Yard Signs", confidence: 88, evidence: [] },
+          productType: { value: "Rigid Sign", confidence: 82, evidence: [] },
+        },
+        sizeBehavior: { behavior: "fixed_size_list", confidence: 90, evidence: [] },
+        quantityBehavior: { behavior: "quantity tiers", confidence: 90, evidence: [] },
+        pricingAnalysis: { behavior: "matrix_or_tiered", confidence: 80, notes: "size x quantity price grid", evidence: [] },
+        requiredOptions: [
+          option("Size", { normalizedGroup: "size", sampleValues: ["18x24", "24x36"] }),
+          option("Printed Sides", { normalizedGroup: "printed_sides", sampleValues: ["Single Sided", "Double Sided"] }),
+        ],
+      }),
+      sessionId: "sess_matrix",
+      productName: "Yard Signs",
+      userId: "user_1",
+      sourceText: "Yard signs use a size x quantity price grid. Prices not provided.",
+    });
+
+    expect(tree.meta?.pricingV2?.base).toEqual({});
+    expect(tree).not.toHaveProperty("pricingMatrix");
+    expect(tree.meta?.productIntake?.pricingReadiness).toMatchObject({
+      basePricingConfigured: false,
+      likelyMatrixPricing: true,
+      candidateDimensions: expect.arrayContaining(["size", "quantity", "printed_sides"]),
+    });
+    expect(tree.meta?.productIntake?.pricingWarnings).toEqual(expect.arrayContaining([
+      expect.stringMatching(/Base pricing was not found/),
+      expect.stringMatching(/Likely matrix pricing detected/),
+    ]));
+    expect(validateTreeHasBasePrice(tree).errors.map((finding) => finding.code)).toContain("PBV2_E_BASE_PRICE_MISSING");
+    expectNoQuantityOption(tree);
+  });
+
   test("reuses suggested templates without creating template records", () => {
     const templateBrief = brief({
       requiredOptions: [option("Printed Sides", {

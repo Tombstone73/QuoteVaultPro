@@ -4,6 +4,7 @@ import {
   auditLogs,
   pbv2OptionGroupTemplates,
   pbv2TreeVersions,
+  productIntakeAnswers,
   productIntakeSessions,
   products,
   productTypes,
@@ -42,6 +43,26 @@ export type ProductIntakeDraftCreator = {
   }): Promise<ProductIntakeDraftCreationResult>;
 };
 
+type IntakePricingBase = {
+  perSqftCents?: number;
+  perPieceCents?: number;
+  minimumChargeCents?: number;
+};
+
+type IntakePricingAnalysis = {
+  base: IntakePricingBase;
+  sources: string[];
+  warnings: string[];
+  likelyMatrixPricing: boolean;
+  candidateDimensions: string[];
+  matrixEvidence: string[];
+};
+
+type ProductIntakeAnswerLike = {
+  questionKey: string;
+  answer: unknown;
+};
+
 function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
@@ -70,6 +91,172 @@ function mapSession(row: typeof productIntakeSessions.$inferSelect): ProductInta
 function compactText(value: string | null | undefined, fallback: string): string {
   const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
   return normalized || fallback;
+}
+
+function collectBriefText(brief: ProductIntakeBrief, extraText?: string | null, sourceJson?: unknown): string {
+  const values: string[] = [];
+  const push = (value: unknown) => {
+    if (typeof value === "string" && value.trim()) values.push(value.trim());
+  };
+  push(extraText);
+  push(brief.pricingAnalysis.behavior);
+  push(brief.pricingAnalysis.notes);
+  push(brief.quantityBehavior.behavior);
+  push(brief.quantityBehavior.notes);
+  for (const evidence of [
+    ...brief.sourceEvidence,
+    ...brief.pricingAnalysis.evidence,
+    ...brief.quantityBehavior.evidence,
+    ...brief.draftWarnings.flatMap((warning) => warning.evidence),
+  ]) {
+    push(evidence.label);
+    push(evidence.value);
+    push(evidence.reason);
+  }
+  if (sourceJson != null) {
+    try {
+      push(JSON.stringify(sourceJson));
+    } catch {
+      // Ignore non-serializable debug payloads; source text/evidence still covers normal intake.
+    }
+  }
+  return values.join("\n");
+}
+
+function dollarsToCents(value: string): number | null {
+  const parsed = Number(value.replace(/,/g, ""));
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.round(parsed * 100);
+}
+
+function positiveCentsFromAnswer(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.round(value * 100);
+  if (typeof value === "string" && value.trim()) return dollarsToCents(value.trim().replace(/^\$/, ""));
+  return null;
+}
+
+function firstPriceMatch(text: string, patterns: RegExp[]): { cents: number; source: string } | null {
+  for (const pattern of patterns) {
+    pattern.lastIndex = 0;
+    const match = pattern.exec(text);
+    const amount = match?.[1];
+    if (!amount) continue;
+    const cents = dollarsToCents(amount);
+    if (cents == null) continue;
+    return { cents, source: match[0].trim() };
+  }
+  return null;
+}
+
+function extractPricingFromText(text: string): Pick<IntakePricingAnalysis, "base" | "sources"> {
+  const base: IntakePricingBase = {};
+  const sources: string[] = [];
+  const perSqft = firstPriceMatch(text, [
+    /\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet|sf)\b/i,
+    /(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet|sf)\s*(?:price|rate)?\s*[:=]?\s*\$(\d[\d,]*(?:\.\d{1,2})?)/i,
+  ]);
+  if (perSqft) {
+    base.perSqftCents = perSqft.cents;
+    sources.push(perSqft.source);
+  }
+  const perPiece = firstPriceMatch(text, [
+    /\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i,
+    /(?:each|piece|pc|item|unit)\s*(?:price|rate)?\s*[:=]?\s*\$(\d[\d,]*(?:\.\d{1,2})?)/i,
+  ]);
+  if (perPiece) {
+    base.perPieceCents = perPiece.cents;
+    sources.push(perPiece.source);
+  }
+  const minimum = firstPriceMatch(text, [
+    /(?:minimum|min(?:imum)?\s*(?:charge|order)?|setup\s*minimum)\s*[:=]?\s*\$(\d[\d,]*(?:\.\d{1,2})?)/i,
+    /\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:minimum|min(?:imum)?(?:\s*charge)?)\b/i,
+  ]);
+  if (minimum) {
+    base.minimumChargeCents = minimum.cents;
+    sources.push(minimum.source);
+  }
+  return { base, sources };
+}
+
+function mergeAnswerPricing(base: IntakePricingBase, answers: ProductIntakeAnswerLike[] = []): { base: IntakePricingBase; sources: string[] } {
+  const next = { ...base };
+  const sources: string[] = [];
+  for (const answer of answers) {
+    const cents = positiveCentsFromAnswer(answer.answer);
+    if (cents == null) continue;
+    if (answer.questionKey === "base-price-per-sqft") {
+      next.perSqftCents = cents;
+      sources.push("Product Intake answer: base price per square foot");
+    }
+    if (answer.questionKey === "base-price-per-piece") {
+      next.perPieceCents = cents;
+      sources.push("Product Intake answer: base price per piece");
+    }
+    if (answer.questionKey === "minimum-charge") {
+      next.minimumChargeCents = cents;
+      sources.push("Product Intake answer: minimum charge");
+    }
+  }
+  return { base: next, sources };
+}
+
+function hasBasePricing(base: IntakePricingBase): boolean {
+  return Number(base.perSqftCents) > 0 || Number(base.perPieceCents) > 0 || Number(base.minimumChargeCents) > 0;
+}
+
+function detectMatrixPricing(brief: ProductIntakeBrief, text: string): Pick<IntakePricingAnalysis, "likelyMatrixPricing" | "candidateDimensions" | "matrixEvidence"> {
+  const lower = text.toLowerCase();
+  const dimensions = new Set<string>();
+  const evidence: string[] = [];
+  const addEvidence = (value: string) => {
+    if (value && !evidence.includes(value)) evidence.push(value);
+  };
+  const hasQuantity = /\b(qty|quantity|quantities|breaks?|tiers?|price\s*breaks?)\b/.test(lower) ||
+    /quantity|tier|matrix/i.test(`${brief.quantityBehavior.behavior} ${brief.quantityBehavior.notes ?? ""}`);
+  const hasMatrixLanguage = /\b(matrix|rate\s*table|price\s*grid|pricing\s*grid|price\s*table|size\s*x\s*quantity|quantity\s*x\s*size|stock\s*x|coating\s*x)\b/i.test(text) ||
+    /matrix|tier/i.test(`${brief.pricingAnalysis.behavior} ${brief.pricingAnalysis.notes ?? ""}`);
+  const optionText = [...brief.requiredOptions, ...brief.optionalOptions]
+    .map((option) => `${option.label} ${option.normalizedGroup}`)
+    .join(" ")
+    .toLowerCase();
+  if (/\b(size|width|height|dimension)\b/.test(optionText) || /fixed|custom|size|dimension/i.test(brief.sizeBehavior.behavior)) dimensions.add("size");
+  if (hasQuantity) dimensions.add("quantity");
+  if (/\b(coating|laminate|lamination)\b/.test(optionText)) dimensions.add("coating");
+  if (/\b(stock|paper|material|substrate)\b/.test(optionText)) dimensions.add("stock");
+  if (/\b(side|sides|printed)\b/.test(optionText)) dimensions.add("printed_sides");
+  if (/\b(size\s*x\s*quantity|quantity\s*x\s*size)\b/i.test(text)) addEvidence("Source references size x quantity pricing.");
+  if (/\b(rate\s*table|price\s*grid|pricing\s*grid|matrix)\b/i.test(text)) addEvidence("Source references a pricing matrix or rate table.");
+  if (/business\s*cards?|postcards?|yard\s*signs?/i.test(text) && hasQuantity && dimensions.size >= 2) addEvidence("Product category and quantity signals suggest matrix pricing.");
+  return {
+    likelyMatrixPricing: hasMatrixLanguage && dimensions.size >= 2,
+    candidateDimensions: Array.from(dimensions),
+    matrixEvidence: evidence,
+  };
+}
+
+function analyzeDraftPricing(args: {
+  brief: ProductIntakeBrief;
+  sourceText?: string | null;
+  sourceJson?: unknown;
+  answers?: ProductIntakeAnswerLike[];
+}): IntakePricingAnalysis {
+  const text = collectBriefText(args.brief, args.sourceText, args.sourceJson);
+  const detected = extractPricingFromText(text);
+  const answered = mergeAnswerPricing(detected.base, args.answers);
+  const matrix = detectMatrixPricing(args.brief, text);
+  const warnings: string[] = [];
+  if (!hasBasePricing(answered.base)) {
+    warnings.push("Base pricing was not found in the intake source. PBV2 publish will remain blocked until per sqft, per piece, or minimum charge pricing is configured.");
+  }
+  if (matrix.likelyMatrixPricing) {
+    warnings.push("Likely matrix pricing detected. No pricing matrix was generated; configure rows in the existing PBV2 Pricing Matrix editor before publish.");
+  }
+  return {
+    base: answered.base,
+    sources: [...detected.sources, ...answered.sources],
+    warnings,
+    ...matrix,
+  };
 }
 
 function safeKey(value: string, fallback: string): string {
@@ -354,6 +541,7 @@ function assessDraftQuality(args: {
   brief: ProductIntakeBrief;
   tree: OptionTreeV2;
   sizeMode: SizeMode;
+  pricingReadiness: IntakePricingAnalysis;
   skippedTemplateOptionCount: number;
   requestedTemplateCount: number;
   reusedTemplateCount: number;
@@ -394,6 +582,14 @@ function assessDraftQuality(args: {
   if (args.brief.pricingAnalysis.behavior === "unknown" || args.brief.pricingAnalysis.confidence < 65) {
     score -= 15;
     warnings.push("Pricing setup required.");
+  }
+  if (!hasBasePricing(args.pricingReadiness.base)) {
+    score -= 10;
+    warnings.push("Base pricing is missing and must be configured before publish.");
+  }
+  if (args.pricingReadiness.likelyMatrixPricing) {
+    score -= 10;
+    warnings.push("Likely matrix pricing needs PBV2 pricing matrix review.");
   }
   const unresolvedRequired = args.brief.missingDecisions.filter((decision) => decision.severity === "blocker");
   if (unresolvedRequired.length > 0) {
@@ -440,6 +636,9 @@ export function buildProductIntakeDraftTree(args: {
   productName: string;
   userId: string | null;
   templates?: ProductIntakeDraftTemplateRow[];
+  sourceText?: string | null;
+  sourceJson?: unknown;
+  answers?: ProductIntakeAnswerLike[];
   now?: Date;
 }): OptionTreeV2 {
   const now = args.now ?? new Date();
@@ -448,6 +647,12 @@ export function buildProductIntakeDraftTree(args: {
   const sizeOption = [...args.brief.requiredOptions, ...args.brief.optionalOptions].find(isSizeOption) ?? null;
   const sizeMode = resolveSizeMode(args.brief, sizeOption);
   const materialMatch = bestMaterialMatch(args.brief);
+  const pricingReadiness = analyzeDraftPricing({
+    brief: args.brief,
+    sourceText: args.sourceText,
+    sourceJson: args.sourceJson,
+    answers: args.answers,
+  });
   let tree: OptionTreeV2 = {
     schemaVersion: 2,
     status: "DRAFT",
@@ -463,7 +668,7 @@ export function buildProductIntakeDraftTree(args: {
       pricingV2: {
         unitSystem: "imperial",
         tierBasis: "line_item_quantity",
-        base: {},
+        base: pricingReadiness.base,
         qtyTiers: [],
       },
       requiresDimensions: sizeMode === "custom_dimension",
@@ -473,6 +678,16 @@ export function buildProductIntakeDraftTree(args: {
         confidence: args.brief.overallConfidence,
         sizeMode,
         quantity: quantityMetadataForBrief(args.brief),
+        pricingReadiness: {
+          base: pricingReadiness.base,
+          sources: pricingReadiness.sources,
+          warnings: pricingReadiness.warnings,
+          basePricingConfigured: hasBasePricing(pricingReadiness.base),
+          likelyMatrixPricing: pricingReadiness.likelyMatrixPricing,
+          candidateDimensions: pricingReadiness.candidateDimensions,
+          matrixEvidence: pricingReadiness.matrixEvidence,
+        },
+        pricingWarnings: pricingReadiness.warnings,
         materialMatch: materialMatch ? {
           materialId: materialMatch.materialId,
           sku: materialMatch.sku,
@@ -595,6 +810,7 @@ export function buildProductIntakeDraftTree(args: {
     brief: args.brief,
     tree,
     sizeMode,
+    pricingReadiness,
     skippedTemplateOptionCount,
     requestedTemplateCount,
     reusedTemplateCount: reusedTemplateIds.size,
@@ -688,6 +904,16 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
         const productId = randomUUID();
         const pbv2TreeVersionId = randomUUID();
         const now = new Date();
+        const answerRows = await tx
+          .select({
+            questionKey: productIntakeAnswers.questionKey,
+            answer: productIntakeAnswers.answerJson,
+          })
+          .from(productIntakeAnswers)
+          .where(and(
+            eq(productIntakeAnswers.organizationId, organizationId),
+            eq(productIntakeAnswers.sessionId, sessionId),
+          ));
         const templateIds = collectTemplateIds(brief);
         const templateRows = templateIds.length > 0
           ? await tx
@@ -714,6 +940,9 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
           productName,
           userId,
           templates: templateRows,
+          sourceText: sessionRow.sourceText,
+          sourceJson: sessionRow.sourceJson,
+          answers: answerRows,
           now,
         });
         const draftQuality = treeJson.meta?.productIntake?.draftQuality;

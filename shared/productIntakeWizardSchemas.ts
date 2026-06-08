@@ -294,6 +294,11 @@ export const productIntakeDraftReviewSchema = z.object({
     })),
     draftQuality: z.unknown().nullable(),
     intakeSummary: z.unknown().nullable(),
+    basePricing: z.object({
+      perSqftCents: z.number().nullable(),
+      perPieceCents: z.number().nullable(),
+      minimumChargeCents: z.number().nullable(),
+    }),
   }),
   publishReadiness: z.object({
     productInactive: z.boolean(),
@@ -306,6 +311,14 @@ export const productIntakeDraftReviewSchema = z.object({
     materialLinked: z.boolean(),
     validationStatus: z.enum(["ready", "blocked", "warnings", "published"]),
     findings: z.array(productIntakeDraftReviewFindingSchema),
+  }),
+});
+
+export const productIntakeDraftPricingPatchRequestSchema = z.object({
+  base: z.object({
+    perSqftCents: z.number().int().min(0).nullable().optional(),
+    perPieceCents: z.number().int().min(0).nullable().optional(),
+    minimumChargeCents: z.number().int().min(0).nullable().optional(),
   }),
 });
 
@@ -524,6 +537,7 @@ export type ProductIntakeDraftQuality = z.infer<typeof productIntakeDraftQuality
 export type ProductIntakeCreateDraftResponse = z.infer<typeof productIntakeCreateDraftResponseSchema>;
 export type ProductIntakeDraftReview = z.infer<typeof productIntakeDraftReviewSchema>;
 export type ProductIntakeDraftReviewResponse = z.infer<typeof productIntakeDraftReviewResponseSchema>;
+export type ProductIntakeDraftPricingPatchRequest = z.infer<typeof productIntakeDraftPricingPatchRequestSchema>;
 export type ProductIntakeDraftLink = z.infer<typeof productIntakeDraftLinkSchema>;
 export type ProductIntakeDraftLinkResponse = z.infer<typeof productIntakeDraftLinkResponseSchema>;
 export type ProductIntakeAiDiagnosticIssue = z.infer<typeof productIntakeAiDiagnosticIssueSchema>;

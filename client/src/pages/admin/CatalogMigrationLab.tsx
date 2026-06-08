@@ -504,6 +504,18 @@ function renderQuestionInput(args: {
   );
 }
 
+function questionEvidenceLabel(session: ProductIntakeSession | undefined, question: ProductIntakeQuestion): string | null {
+  if (!question.sourcePath) return null;
+  const sourcePath = question.sourcePath;
+  if (session?.sourceType === "text_description" && sourcePath.startsWith("$.description")) {
+    return "Evidence: source description";
+  }
+  if (sourcePath === "$.source_text") {
+    return "Evidence: source text";
+  }
+  return `Evidence path: ${sourcePath}`;
+}
+
 export function ProductIntakeQuestionsWizard({
   session,
   questions,
@@ -555,7 +567,9 @@ export function ProductIntakeQuestionsWizard({
       <CardContent className="space-y-4">
         {questions.length === 0 ? (
           <div className="text-sm text-muted-foreground">No follow-up questions were generated.</div>
-        ) : questions.map((question) => (
+        ) : questions.map((question) => {
+          const evidenceLabel = questionEvidenceLabel(session, question);
+          return (
           <div key={question.id} className="rounded border p-4 text-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="font-medium">{question.label}</div>
@@ -566,14 +580,15 @@ export function ProductIntakeQuestionsWizard({
               </div>
             </div>
             {question.helpText && <div className="mt-1 text-xs text-muted-foreground">{question.helpText}</div>}
-            {question.sourcePath && <div className="mt-2 font-mono text-xs text-muted-foreground">{question.sourcePath}</div>}
+            {evidenceLabel && <div className="mt-2 text-xs text-muted-foreground">{evidenceLabel}</div>}
             <div className="mt-3">{renderQuestionInput({
               question,
               value: answerDrafts[question.questionKey],
               onChange: (value) => onAnswerChange(question.questionKey, value),
             })}</div>
           </div>
-        ))}
+          );
+        })}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
           <div className="text-sm text-muted-foreground">
             {hasCreatedDraft

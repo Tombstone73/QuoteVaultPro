@@ -4,6 +4,7 @@ import { eq, sql } from "drizzle-orm";
 import { catalogMigrationLabAnalyzerRequestSchema, type CatalogMigrationLabAnalyzerRequest } from "@shared/catalogMigrationLabSchemas";
 import {
   productIntakeAnswersPatchRequestSchema,
+  productIntakeDraftPricingPatchRequestSchema,
   productIntakeSessionListQuerySchema,
   productIntakeWizardAnalyzeRequestSchema,
   type ProductIntakeWizardAnalyzeRequest,
@@ -574,6 +575,36 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
         if (handled) return handled;
         console.error("[ProductIntakeWizard] Draft review failed:", error);
         return res.status(500).json({ success: false, message: "Failed to load Product Intake draft review.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/admin/product-intake-wizard/sessions/:id/draft-pricing",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) {
+          return res.status(400).json({ success: false, message: "Missing organization context.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+        }
+
+        const parsed = productIntakeDraftPricingPatchRequestSchema.parse(req.body);
+        const review = await intakeDraftReviewService.updateDraftPricing({
+          organizationId,
+          sessionId: req.params.id,
+          base: parsed.base,
+          userId: requestUserId(req),
+          userName: requestUserName(req),
+        });
+        return res.json({ success: true, data: review });
+      } catch (error: any) {
+        const handled = handleProductIntakeRouteError(error, res, "Invalid Product Intake draft pricing request.");
+        if (handled) return handled;
+        console.error("[ProductIntakeWizard] Draft pricing update failed:", error);
+        return res.status(500).json({ success: false, message: "Failed to update Product Intake draft pricing.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
       }
     },
   );
