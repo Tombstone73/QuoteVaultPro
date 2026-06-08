@@ -464,6 +464,154 @@ describe("Product Intake draft service", () => {
     ]));
   });
 
+  test("generates PBV2 pricing matrix draft from exact 4mm Coroplast yard sign source", () => {
+    const sourceText = [
+      "4mm Coroplast Yard Signs",
+      "",
+      "This is a fixed-size yard sign product.",
+      "",
+      "Finished size:",
+      '24" wide x 18" high',
+      "",
+      "Material:",
+      "4mm white coroplast",
+      "",
+      "Production:",
+      "Flatbed printed",
+      "",
+      "Proof approval:",
+      "Required",
+      "",
+      "Customer options:",
+      "Printed Sides:",
+      "- Single Sided",
+      "- Double Sided",
+      "",
+      "Optional add-on:",
+      "- H-Wire Stakes",
+      "",
+      "Pricing type:",
+      "PBV2 pricing matrix",
+      "",
+      "Matrix dimensions:",
+      "- Printed Sides",
+      "- Quantity Tier",
+      "",
+      "Important:",
+      "Quantity is the quote/order line item quantity. Do not create Quantity as a product option.",
+      'Size is fixed at 24" x 18". Do not create a Size option.',
+      "",
+      "Pricing matrix:",
+      "",
+      "Single Sided:",
+      "1-100 signs = $4.40 each",
+      "101-500 signs = $3.30 each",
+      "501+ signs = $3.00 each",
+      "",
+      "Double Sided:",
+      "1-100 signs = $5.50 each",
+      "101-500 signs = $4.40 each",
+      "501+ signs = $4.00 each",
+    ].join("\n");
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        productIdentity: {
+          likelyProductName: { value: "4mm Coroplast Yard Signs", confidence: 94, evidence: [] },
+          category: { value: "Yard Signs", confidence: 90, evidence: [] },
+          productType: { value: "Rigid Sign", confidence: 85, evidence: [] },
+        },
+        materialAnalysis: {
+          detectedMaterialReferences: ["4mm white coroplast"],
+          likelyMaterialMatches: [{ materialId: "mat_coro", sku: "CORO4", name: "4mm White Coroplast", confidence: 90, evidence: [] }],
+          confidence: 90,
+          evidence: [],
+        },
+        sizeBehavior: { behavior: "fixed_size", confidence: 95, notes: '24" wide x 18" high', evidence: [] },
+        quantityBehavior: { behavior: "quantity tiers", confidence: 95, evidence: [] },
+        pricingAnalysis: { behavior: "matrix_or_tiered", confidence: 92, notes: "PBV2 pricing matrix by printed sides and quantity tier", evidence: [] },
+        requiredOptions: [
+          option("Size", { normalizedGroup: "size", sampleValues: ['24" x 18"'] }),
+          option("Printed Sides", { normalizedGroup: "printed_sides", sampleValues: ["Single Sided", "Double Sided"] }),
+        ],
+        optionalOptions: [
+          option("H-Wire Stakes", { normalizedGroup: "h_wire_stakes", required: false, sampleValues: ["No Stakes", "Include H-Wire Stakes"] }),
+        ],
+      }),
+      sessionId: "sess_exact_yard_sign",
+      productName: "4mm Coroplast Yard Signs",
+      userId: "user_1",
+      sourceText,
+    });
+
+    expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expectNoQuantityOption(tree);
+    expect(inputNode(tree, "size")).toBeUndefined();
+    expect(inputNode(tree, "printed_sides")).toBeTruthy();
+    expect(inputNode(tree, "h_wire_stakes")).toBeTruthy();
+    expect(tree.meta?.productIntake?.matrixReadiness?.matrixConfidence).toBeGreaterThanOrEqual(85);
+    expect(tree.meta?.productIntake?.matrixReadiness?.noMatrixRowsGenerated).toBe(false);
+    expect(tree.meta?.productIntake?.matrixReadiness?.detectedQuantityBreaks).toEqual(expect.arrayContaining([1, 101, 501]));
+
+    const matrix = (tree as any).pricingMatrix;
+    expect(matrix).toMatchObject({ dimensions: ["printed_sides"] });
+    expect(matrix.rows).toHaveLength(2);
+    const single = matrix.rows.find((row: any) => row.when?.printed_sides === "single_sided");
+    const double = matrix.rows.find((row: any) => row.when?.printed_sides === "double_sided");
+    expect(single).toBeTruthy();
+    expect(double).toBeTruthy();
+    expect(single.qtyTiers.map((tier: any) => [tier.label, tier.perPieceCents])).toEqual([
+      ["1-100", 440],
+      ["101-500", 330],
+      ["501+", 300],
+    ]);
+    expect(double.qtyTiers.map((tier: any) => [tier.label, tier.perPieceCents])).toEqual([
+      ["1-100", 550],
+      ["101-500", 440],
+      ["501+", 400],
+    ]);
+    expect(tree.meta?.productIntake?.matrixDraft?.rows.map((row: any) => row.label)).toEqual(["Single Sided", "Double Sided"]);
+  });
+
+  test("uses saved matrix answers to generate draft rows when source matrix is incomplete", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        productIdentity: {
+          likelyProductName: { value: "4mm Coroplast Yard Signs", confidence: 94, evidence: [] },
+          category: { value: "Yard Signs", confidence: 90, evidence: [] },
+          productType: { value: "Rigid Sign", confidence: 85, evidence: [] },
+        },
+        sizeBehavior: { behavior: "fixed_size", confidence: 95, evidence: [] },
+        quantityBehavior: { behavior: "quantity tiers", confidence: 80, evidence: [] },
+        pricingAnalysis: { behavior: "matrix_or_tiered", confidence: 77, notes: "Printed Sides by quantity tier matrix. Prices missing.", evidence: [] },
+        requiredOptions: [
+          option("Size", { normalizedGroup: "size", sampleValues: ["24x18"] }),
+          option("Printed Sides", { normalizedGroup: "printed_sides", sampleValues: ["Single Sided", "Double Sided"] }),
+        ],
+        optionalOptions: [],
+      }),
+      sessionId: "sess_answered_matrix",
+      productName: "4mm Coroplast Yard Signs",
+      userId: "user_1",
+      sourceText: "4mm Coroplast Yard Signs. Printed Sides pricing matrix by quantity tier; source prices are missing.",
+      answers: [
+        { questionKey: "confirm-matrix-dimension", answer: "printed_sides" },
+        { questionKey: "confirm-matrix-quantity-tiers", answer: "1-100, 101-500, 501+" },
+        { questionKey: "matrix-price-printed_sides-single_sided-1_100", answer: 4.4 },
+        { questionKey: "matrix-price-printed_sides-single_sided-101_500", answer: 3.3 },
+        { questionKey: "matrix-price-printed_sides-single_sided-501", answer: 3 },
+        { questionKey: "matrix-price-printed_sides-double_sided-1_100", answer: 5.5 },
+        { questionKey: "matrix-price-printed_sides-double_sided-101_500", answer: 4.4 },
+        { questionKey: "matrix-price-printed_sides-double_sided-501", answer: 4 },
+      ],
+    });
+
+    const matrix = (tree as any).pricingMatrix;
+    expect(matrix?.dimensions).toEqual(["printed_sides"]);
+    expect(matrix.rows).toHaveLength(2);
+    expect(matrix.rows.find((row: any) => row.when.printed_sides === "single_sided").qtyTiers.map((tier: any) => tier.perPieceCents)).toEqual([440, 330, 300]);
+    expect(matrix.rows.find((row: any) => row.when.printed_sides === "double_sided").qtyTiers.map((tier: any) => tier.perPieceCents)).toEqual([550, 440, 400]);
+  });
+
   test.each([
     {
       label: "4mm Coroplast Yard Signs",

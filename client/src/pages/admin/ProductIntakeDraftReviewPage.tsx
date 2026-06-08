@@ -97,6 +97,23 @@ function titleFromMatrixType(value: string) {
     .join(" ");
 }
 
+function rowsNotGeneratedReasons(review: ProductIntakeDraftReview): string[] {
+  const readiness = review.pbv2Tree.matrixReadiness;
+  if (!readiness || !readiness.required || !readiness.noMatrixRowsGenerated) return [];
+  const reasons: string[] = [];
+  if (readiness.detectedQuantityBreaks.length < 2) reasons.push("Quantity tiers were not parsed");
+  if (readiness.matrixDimensions.length === 0) reasons.push("Matrix dimension was not confirmed");
+  if (readiness.matrixConfidence < 85) reasons.push("Matrix confidence below generation threshold");
+  if (readiness.detectedPricingSignals.length === 0 && readiness.detectedQuantityBreaks.length >= 2) {
+    reasons.push("Complete row prices were not parsed");
+  }
+  return reasons.length > 0 ? reasons : ["Source prices were incomplete for one or more matrix rows"];
+}
+
+function hasMatrixQuestions(review: ProductIntakeDraftReview): boolean {
+  return review.intake.unansweredDecisions.some((decision) => /matrix|quantity tiers|price for/i.test(decision));
+}
+
 export default function ProductIntakeDraftReviewPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const { toast } = useToast();
@@ -236,6 +253,8 @@ export default function ProductIntakeDraftReviewPage() {
   const matrixReadiness = review.pbv2Tree.matrixReadiness;
   const matrixPreview = review.pbv2Tree.matrixPreview;
   const likelyMatrixPricing = Boolean(matrixReadiness?.required);
+  const matrixRowsNotGeneratedReasons = rowsNotGeneratedReasons(review);
+  const matrixQuestionsExist = hasMatrixQuestions(review);
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -436,6 +455,17 @@ export default function ProductIntakeDraftReviewPage() {
                       <div className="mt-1 text-muted-foreground">{matrixReadiness.detectedPricingSignals.join("; ")}</div>
                     </div>
                   )}
+                  {matrixRowsNotGeneratedReasons.length > 0 && (
+                    <div>
+                      <div className="font-medium">Rows not generated because:</div>
+                      <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
+                        {matrixRowsNotGeneratedReasons.map((reason) => <li key={reason}>{reason}</li>)}
+                      </ul>
+                      {matrixQuestionsExist && (
+                        <div className="mt-2 text-muted-foreground">Answer matrix questions to generate draft rows.</div>
+                      )}
+                    </div>
+                  )}
                   {matrixPreview && (
                     <div className="rounded border bg-muted/30 p-3">
                       <div className="flex flex-wrap items-center gap-2">
@@ -487,7 +517,7 @@ export default function ProductIntakeDraftReviewPage() {
                       <AlertTriangle className="h-4 w-4" />
                       <AlertTitle>Matrix pricing review required</AlertTitle>
                       <AlertDescription>
-                        Product Intake preserved matrix setup guidance only. Configure PBV2 pricing matrix rows in the builder before publish.
+                        Product Intake preserved matrix setup guidance only. {matrixQuestionsExist ? "Answer matrix questions to generate draft rows." : "Configure PBV2 pricing matrix rows in the builder before publish."}
                       </AlertDescription>
                     </Alert>
                   )}
