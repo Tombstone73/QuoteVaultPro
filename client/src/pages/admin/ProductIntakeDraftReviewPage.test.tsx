@@ -69,8 +69,26 @@ function reviewFixture(overrides: Partial<ProductIntakeDraftReview> = {}): Produ
       groupCount: 1,
       optionCount: 2,
       optionGroups: [{ id: "group_size", label: "Size & Quantity", optionCount: 1, options: ["Size"] }],
-      draftQuality: { label: "Good", score: 86, warnings: ["Pricing setup required."] },
-      intakeSummary: null,
+      draftQuality: { label: "Good", score: 61, warnings: ["Matrix pricing is likely required and must be configured in PBV2 Pricing Matrix before publish."], reasons: ["Matrix pricing guidance was preserved without generating matrix rows."] },
+      intakeSummary: {
+        pricingReadiness: {
+          likelyMatrixPricing: true,
+          candidateDimensions: ["size", "quantity"],
+        },
+      },
+      matrixReadiness: {
+        required: true,
+        matrixType: "SIZE_QUANTITY",
+        matrixDimensions: ["size", "quantity"],
+        matrixConfidence: 88,
+        reasoning: ["Multiple fixed sizes with quantity-tier pricing were detected."],
+        recommendedSetup: "Create a PBV2 pricing matrix with Size as the selectable dimension and line item quantity tiers or row-level quantity tiers before publish.",
+        detectedSizes: ["12x18", "18x24", "24x36"],
+        detectedQuantityBreaks: [1, 5, 10, 25],
+        detectedMaterials: ["4mm Coroplast"],
+        detectedPricingSignals: ["Quantity tier pricing present."],
+        noMatrixRowsGenerated: true,
+      },
       basePricing: { perSqftCents: null, perPieceCents: null, minimumChargeCents: null },
     },
     publishReadiness: {
@@ -158,6 +176,12 @@ describe("ProductIntakeDraftReviewPage", () => {
     expect(container.textContent).toContain("Intake Summary");
     expect(container.textContent).toContain("Product Draft");
     expect(container.textContent).toContain("PBV2 Draft Tree");
+    expect(container.textContent).toContain("Matrix Readiness");
+    expect(container.textContent).toContain("Size Quantity");
+    expect(container.textContent).toContain("size");
+    expect(container.textContent).toContain("quantity");
+    expect(container.textContent).toContain("12x18, 18x24, 24x36");
+    expect(container.textContent).toContain("Create a PBV2 pricing matrix");
     expect(container.textContent).toContain("Validation / Publish Readiness");
     expect(container.textContent).toContain("Base Pricing");
     expect(container.textContent).toContain("Save Draft Pricing");

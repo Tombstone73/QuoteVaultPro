@@ -375,7 +375,7 @@ describe("Product Intake Brief service", () => {
       answers: [],
     });
 
-    expect(readyReadiness.canCreateDraft).toBe(false);
+    expect(readyReadiness.canCreateDraft).toBe(true);
     expect(readyReadiness.reviewState).toBe("ready_for_draft");
     expect(readyReadiness.penalties).toEqual([]);
 

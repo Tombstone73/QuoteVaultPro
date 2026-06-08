@@ -286,6 +286,25 @@ export type OptionTreeV2 = {
         likelyMatrixPricing: boolean;
         candidateDimensions: string[];
         matrixEvidence: string[];
+        matrixType?: string;
+        matrixConfidence?: number;
+        detectedSizes?: string[];
+        detectedQuantityBreaks?: number[];
+        detectedMaterials?: string[];
+        detectedPricingSignals?: string[];
+      };
+      matrixReadiness?: {
+        required: boolean;
+        matrixType: "NONE" | "SIZE_QUANTITY" | "QUANTITY_STOCK" | "SIZE_MATERIAL" | "QUANTITY_TIER" | "MULTI_DIMENSION";
+        matrixDimensions: string[];
+        matrixConfidence: number;
+        reasoning: string[];
+        recommendedSetup: string;
+        detectedSizes: string[];
+        detectedQuantityBreaks: number[];
+        detectedMaterials: string[];
+        detectedPricingSignals: string[];
+        noMatrixRowsGenerated: true;
       };
       pricingWarnings?: string[];
       materialMatch?: {
@@ -566,6 +585,52 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
         productName: z.string(),
         confidence: z.number().min(0).max(100),
         sizeMode: z.enum(["fixed_dropdown", "custom_dimension", "none"]).optional(),
+        quantity: z.object({
+          behavior: z.string(),
+          confidence: z.number().min(0).max(100),
+          notes: z.string().nullable(),
+          lineItemQuantitySource: z.boolean(),
+          customerFacingOptionGenerated: z.boolean(),
+          sourceOptions: z.array(z.object({
+            label: z.string(),
+            normalizedGroup: z.string(),
+            required: z.boolean(),
+            confidence: z.number().min(0).max(100),
+            sampleValues: z.array(z.string()),
+            sourcePaths: z.array(z.string()),
+          })),
+          warning: z.string().nullable(),
+        }).optional(),
+        quantityWarnings: z.array(z.string()).optional(),
+        pricingReadiness: z.object({
+          base: pricingV2BaseSchema,
+          sources: z.array(z.string()),
+          warnings: z.array(z.string()),
+          basePricingConfigured: z.boolean(),
+          likelyMatrixPricing: z.boolean(),
+          candidateDimensions: z.array(z.string()),
+          matrixEvidence: z.array(z.string()),
+          matrixType: z.string().optional(),
+          matrixConfidence: z.number().min(0).max(100).optional(),
+          detectedSizes: z.array(z.string()).optional(),
+          detectedQuantityBreaks: z.array(z.number().int().positive()).optional(),
+          detectedMaterials: z.array(z.string()).optional(),
+          detectedPricingSignals: z.array(z.string()).optional(),
+        }).optional(),
+        matrixReadiness: z.object({
+          required: z.boolean(),
+          matrixType: z.enum(["NONE", "SIZE_QUANTITY", "QUANTITY_STOCK", "SIZE_MATERIAL", "QUANTITY_TIER", "MULTI_DIMENSION"]),
+          matrixDimensions: z.array(z.string()),
+          matrixConfidence: z.number().min(0).max(100),
+          reasoning: z.array(z.string()),
+          recommendedSetup: z.string(),
+          detectedSizes: z.array(z.string()),
+          detectedQuantityBreaks: z.array(z.number().int().positive()),
+          detectedMaterials: z.array(z.string()),
+          detectedPricingSignals: z.array(z.string()),
+          noMatrixRowsGenerated: z.literal(true),
+        }).optional(),
+        pricingWarnings: z.array(z.string()).optional(),
         materialMatch: z.object({
           materialId: z.string().nullable(),
           sku: z.string().nullable(),

@@ -7,6 +7,14 @@ export const productIntakeBriefSourceValues = ["live_ai", "rule_based_fallback"]
 export const productIntakeSessionSourceTypeValues = ["json_upload", "json_paste", "text_description"] as const;
 export const productIntakeSessionStatusValues = ["analyzed", "needs_answers", "ready_for_draft", "draft_created", "abandoned"] as const;
 export const productIntakeQuestionTypeValues = ["select", "multiselect", "text", "number", "boolean"] as const;
+export const productIntakeMatrixTypeValues = [
+  "NONE",
+  "SIZE_QUANTITY",
+  "QUANTITY_STOCK",
+  "SIZE_MATERIAL",
+  "QUANTITY_TIER",
+  "MULTI_DIMENSION",
+] as const;
 
 export const productIntakeConfidenceSchema = z.number().min(0).max(100);
 
@@ -98,6 +106,20 @@ export const productIntakeWarningSchema = z.object({
   evidence: z.array(productIntakeEvidenceSchema),
 });
 
+export const productIntakeMatrixReadinessSchema = z.object({
+  required: z.boolean(),
+  matrixType: z.enum(productIntakeMatrixTypeValues),
+  matrixDimensions: z.array(z.string().min(1)),
+  matrixConfidence: productIntakeConfidenceSchema,
+  reasoning: z.array(z.string().min(1)),
+  recommendedSetup: z.string().min(1),
+  detectedSizes: z.array(z.string().min(1)),
+  detectedQuantityBreaks: z.array(z.number().int().positive()),
+  detectedMaterials: z.array(z.string().min(1)),
+  detectedPricingSignals: z.array(z.string().min(1)),
+  noMatrixRowsGenerated: z.literal(true).default(true),
+});
+
 export const productIntakeAiRepairActionSchema = z.object({
   path: z.string().min(1),
   originalValue: z.unknown().optional(),
@@ -140,6 +162,7 @@ export const productIntakeBriefSchema = z.object({
   sizeBehavior: productIntakeBehaviorSchema,
   quantityBehavior: productIntakeBehaviorSchema,
   pricingAnalysis: productIntakeBehaviorSchema,
+  matrixReadiness: productIntakeMatrixReadinessSchema.optional(),
   requiredOptions: z.array(productIntakeOptionSchema),
   optionalOptions: z.array(productIntakeOptionSchema),
   templateMatches: z.array(productIntakeTemplateMatchSchema),
@@ -294,6 +317,7 @@ export const productIntakeDraftReviewSchema = z.object({
     })),
     draftQuality: z.unknown().nullable(),
     intakeSummary: z.unknown().nullable(),
+    matrixReadiness: productIntakeMatrixReadinessSchema.nullable(),
     basePricing: z.object({
       perSqftCents: z.number().nullable(),
       perPieceCents: z.number().nullable(),
@@ -534,6 +558,7 @@ export type ProductIntakeSession = z.infer<typeof productIntakeSessionSchema>;
 export type ProductIntakeReadiness = z.infer<typeof productIntakeReadinessSchema>;
 export type ProductIntakeSessionDetail = z.infer<typeof productIntakeSessionDetailSchema>;
 export type ProductIntakeDraftQuality = z.infer<typeof productIntakeDraftQualitySchema>;
+export type ProductIntakeMatrixReadiness = z.infer<typeof productIntakeMatrixReadinessSchema>;
 export type ProductIntakeCreateDraftResponse = z.infer<typeof productIntakeCreateDraftResponseSchema>;
 export type ProductIntakeDraftReview = z.infer<typeof productIntakeDraftReviewSchema>;
 export type ProductIntakeDraftReviewResponse = z.infer<typeof productIntakeDraftReviewResponseSchema>;
