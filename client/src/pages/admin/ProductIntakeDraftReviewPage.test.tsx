@@ -261,6 +261,32 @@ describe("ProductIntakeDraftReviewPage", () => {
     act(() => root.unmount());
   });
 
+  test("explains why matrix rows were not generated and points to matrix questions", async () => {
+    const { container, root } = await renderPage(reviewFixture({
+      intake: {
+        ...reviewFixture().intake,
+        unansweredDecisions: ["Confirm matrix dimension", "What is the price for Single Sided at 1-100?"],
+      },
+      pbv2Tree: {
+        ...reviewFixture().pbv2Tree,
+        matrixReadiness: {
+          ...reviewFixture().pbv2Tree.matrixReadiness!,
+          matrixConfidence: 77,
+          detectedQuantityBreaks: [],
+          detectedPricingSignals: [],
+          noMatrixRowsGenerated: true,
+        },
+      },
+    }));
+
+    expect(container.textContent).toContain("Rows not generated because:");
+    expect(container.textContent).toContain("Quantity tiers were not parsed");
+    expect(container.textContent).toContain("Matrix confidence below generation threshold");
+    expect(container.textContent).toContain("Answer matrix questions to generate draft rows.");
+
+    act(() => root.unmount());
+  });
+
   test("saves draft base pricing without publishing or activating", async () => {
     const { container, root } = await renderPage(reviewFixture());
     const inputs = Array.from(container.querySelectorAll("input"));

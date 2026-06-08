@@ -254,6 +254,9 @@ function extractQuantityBreaks(brief: ProductIntakeBrief, text: string): number[
     const numbers = phrase.match(/\b\d+\b/g) ?? [];
     numbers.forEach(pushNumber);
   }
+  for (const match of Array.from(text.matchAll(/\b(\d{1,6})\s*(?:-\s*\d{1,6}|\+)\b/g))) {
+    pushNumber(match[1]);
+  }
 
   return Array.from(values).sort((a, b) => a - b).slice(0, 30);
 }
@@ -314,7 +317,7 @@ function detectMatrixPricing(brief: ProductIntakeBrief, text: string): Pick<Inta
   const stockMatrixSignal = /\b(stock|paper|substrate)\s*x|x\s*(stock|paper|substrate)|business\s*cards?|postcards?/i.test(text);
   const coatingMatrixSignal = /\b(coating|coat|laminate|lamination)\s*x|x\s*(coating|coat|laminate|lamination)|business\s*cards?/i.test(text);
   const materialMatrixSignal = /\b(material|substrate)\s*x|x\s*(material|substrate)|size\s*x\s*material|material\s*x\s*size/i.test(text);
-  const printedSidesMatrixSignal = /\b(sides?|printed\s*sides?)\s*x|x\s*(sides?|printed\s*sides?)|sides?\s+price\s+table/i.test(text);
+  const printedSidesMatrixSignal = /\b(sides?|printed\s*sides?)\s*x|x\s*(sides?|printed\s*sides?)|sides?\s+price\s+table|printed\s+sides/i.test(text);
   if (stockMatrixSignal && /\b(stock|paper|substrate)\b/.test(optionText)) dimensions.add("stock");
   if (coatingMatrixSignal && /\b(coating|coat|laminate|lamination)\b/.test(optionText)) dimensions.add("coating");
   if (materialMatrixSignal && /\b(material|substrate)\b/.test(optionText)) dimensions.add("material");
@@ -517,33 +520,57 @@ function pricePatternForTier(tier: MatrixTierCandidate): RegExp {
   if (tier.maxQty != null) labels.push(`${tier.minQty}-${tier.maxQty}`);
   else labels.push(`${tier.minQty}+`);
   const alternatives = Array.from(new Set(labels.map(escapeRegExp))).join("|");
-  return new RegExp(`(?:^|[^\\d])(?:${alternatives})\\s*(?:=|:|-)\\s*\\$?\\s*(\\d[\\d,]*(?:\\.\\d{1,4})?)\\b`, "i");
+  return new RegExp(`(?:^|[^\\d])(?:${alternatives})(?:\\s+(?:signs?|pieces?|pcs?|items?|units?|each|ea))?\\s*(?:=|:)\\s*\\$?\\s*(\\d[\\d,]*(?:\\.\\d{1,4})?)\\b`, "i");
 }
 
 function extractChoicePriceBlock(text: string, choiceLabels: string[], targetLabel: string): string | null {
   const lines = normalizeMatrixText(text).split("\n").map((line) => line.trim()).filter(Boolean);
-  const targetPattern = new RegExp(`^(?:[-*]\\s*)?${escapeRegExp(targetLabel)}\\s*:`, "i");
+  const headerPatternFor = (label: string) => new RegExp(`^(?:[-*]\\s*)?${escapeRegExp(label)}\\s*:?(?:\\s*$|\\s+(?=\\d{1,6}\\b))`, "i");
+  const stripTargetPattern = new RegExp(`^(?:[-*]\\s*)?${escapeRegExp(targetLabel)}\\s*:?\\s*`, "i");
+  const targetPattern = headerPatternFor(targetLabel);
   const nextChoicePatterns = choiceLabels
     .filter((label) => label.toLowerCase() !== targetLabel.toLowerCase())
-    .map((label) => new RegExp(`^(?:[-*]\\s*)?${escapeRegExp(label)}\\s*:`, "i"));
-  const startIndex = lines.findIndex((line) => targetPattern.test(line));
-  if (startIndex < 0) return null;
-
-  const block: string[] = [lines[startIndex].replace(targetPattern, "").trim()];
-  for (let index = startIndex + 1; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (nextChoicePatterns.some((pattern) => pattern.test(line))) break;
-    if (/^(?:pricing|prices|quantity tiers?|tiers?|stock|size|printed sides?)\s*:?\s*$/i.test(line)) continue;
-    block.push(line);
+    .map(headerPatternFor);
+  const startIndexes = lines
+    .map((line, index) => targetPattern.test(line) ? index : -1)
+    .filter((index) => index >= 0);
+  for (const startIndex of startIndexes) {
+    const block: string[] = [lines[startIndex].replace(stripTargetPattern, "").trim()];
+    for (let index = startIndex + 1; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (nextChoicePatterns.some((pattern) => pattern.test(line))) break;
+      if (/^(?:pricing|prices|pricing matrix|matrix dimensions?|quantity tiers?|tiers?|stock|size|printed sides?)\s*:?\s*$/i.test(line)) continue;
+      block.push(line);
+    }
+    const joined = block.join(" ").trim();
+    if (/\b\d{1,6}\s*(?:-\s*\d{1,6}|\+)?\b.*(?:=|:)\s*\$?\s*\d/.test(joined)) return joined;
   }
-  const joined = block.join(" ").trim();
-  return joined || null;
+  return null;
 }
 
 function centsFromTierBlock(block: string, tier: MatrixTierCandidate): number | null {
   const match = pricePatternForTier(tier).exec(block);
   if (!match?.[1]) return null;
   return dollarsToCents(match[1]);
+}
+
+function centsFromPipeTable(text: string, choiceLabel: string, tier: MatrixTierCandidate): number | null {
+  const rows = normalizeMatrixText(text)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.includes("|"))
+    .map((line) => line.split("|").map((cell) => cell.trim()).filter(Boolean));
+  const headerIndex = rows.findIndex((cells) =>
+    cells.some((cell) => /printed\s+sides?|sides?|option|dimension/i.test(cell)) &&
+    cells.some((cell) => cell.toLowerCase() === tier.label.toLowerCase()),
+  );
+  if (headerIndex < 0) return null;
+  const header = rows[headerIndex];
+  const tierIndex = header.findIndex((cell) => cell.toLowerCase() === tier.label.toLowerCase());
+  if (tierIndex < 0) return null;
+  const row = rows.slice(headerIndex + 1).find((cells) => cells[0]?.toLowerCase() === choiceLabel.toLowerCase());
+  if (!row?.[tierIndex]) return null;
+  return dollarsToCents(row[tierIndex].replace(/^\$/, ""));
 }
 
 function matrixDimensionCandidatesFromTree(tree: OptionTreeV2): MatrixDimensionCandidate[] {
@@ -562,7 +589,49 @@ function matrixDimensionCandidatesFromTree(tree: OptionTreeV2): MatrixDimensionC
         choices,
       };
     })
-    .filter((candidate) => candidate.selectionKey && candidate.selectionKey !== "quantity" && candidate.choices.length >= 2);
+    .filter((candidate) =>
+      candidate.selectionKey &&
+      candidate.selectionKey !== "quantity" &&
+      candidate.choices.length >= 2,
+    );
+}
+
+function appendMatrixAnswerSourceText(args: {
+  sourceText: string;
+  tree: OptionTreeV2;
+  answers?: ProductIntakeAnswerLike[];
+  readiness: ProductIntakeMatrixReadiness;
+}): string {
+  const answers = args.answers ?? [];
+  if (answers.length === 0) return args.sourceText;
+  const answerByKey = new Map(answers.map((answer) => [answer.questionKey, answer.answer]));
+  const answeredTiers = answerByKey.get("confirm-matrix-quantity-tiers");
+  const tierText = typeof answeredTiers === "string" && answeredTiers.trim()
+    ? `\nQuantity Tiers: ${answeredTiers.trim()}`
+    : "";
+  const baseText = `${args.sourceText}${tierText}`;
+  const tiers = parseQuantityTierDefinitions(baseText, args.readiness);
+  if (tiers.length === 0) return baseText;
+
+  const selectedDimension = typeof answerByKey.get("confirm-matrix-dimension") === "string"
+    ? String(answerByKey.get("confirm-matrix-dimension"))
+    : null;
+  const dimensions = matrixDimensionCandidatesFromTree(args.tree)
+    .filter((dimension) => !selectedDimension || dimension.selectionKey === selectedDimension);
+  const lines: string[] = [];
+  for (const dimension of dimensions) {
+    for (const choice of dimension.choices) {
+      const priceParts: string[] = [];
+      for (const tier of tiers) {
+        const answerKey = `matrix-price-${safeKey(dimension.selectionKey, "dimension")}-${safeKey(choice.value, "choice")}-${safeKey(tier.label, "tier")}`;
+        const cents = positiveCentsFromAnswer(answerByKey.get(answerKey));
+        if (cents == null) continue;
+        priceParts.push(`${tier.label} = $${(cents / 100).toFixed(2)}`);
+      }
+      if (priceParts.length > 0) lines.push(`${choice.label}: ${priceParts.join(", ")}`);
+    }
+  }
+  return lines.length > 0 ? `${baseText}\n${lines.join("\n")}` : baseText;
 }
 
 function buildGeneratedMatrixDraft(args: {
@@ -581,11 +650,10 @@ function buildGeneratedMatrixDraft(args: {
   const parsedCandidates = dimensionCandidates.map((dimension) => {
     const choiceLabels = dimension.choices.map((choice) => choice.label);
     const rows = dimension.choices.map((choice) => {
-      const block = extractChoicePriceBlock(args.sourceText, choiceLabels, choice.label);
-      if (!block) return null;
+      const block = extractChoicePriceBlock(args.sourceText, choiceLabels, choice.label) ?? "";
       const prices = tiers.map((tier) => ({
         tier,
-        cents: centsFromTierBlock(block, tier),
+        cents: centsFromTierBlock(block, tier) ?? centsFromPipeTable(args.sourceText, choice.label, tier),
       }));
       if (prices.some((price) => price.cents == null)) return null;
       return { choice, prices: prices as Array<{ tier: MatrixTierCandidate; cents: number }> };
@@ -761,6 +829,10 @@ function hasFixedSizeChoices(option: ProductIntakeOption | null): boolean {
   const choices = option.sampleValues.map((value) => value.trim()).filter(Boolean);
   if (choices.length < 2) return false;
   return choices.some((value) => /\d+(\.\d+)?\s*(x|×|by)\s*\d+(\.\d+)?/i.test(value)) || choices.length >= 2;
+}
+
+function hasMultipleSelectableFixedSizeChoices(option: ProductIntakeOption | null): boolean {
+  return Boolean(option && option.sampleValues.map((value) => value.trim()).filter(Boolean).length > 1);
 }
 
 function resolveSizeMode(brief: ProductIntakeBrief, sizeOption: ProductIntakeOption | null): SizeMode {
@@ -1000,7 +1072,7 @@ function assessDraftQuality(args: {
     warnings.push("One or more reusable templates could not be applied.");
   }
 
-  if (args.sizeMode === "fixed_dropdown") reasons.push("Fixed size list produced a Size dropdown only.");
+  if (args.sizeMode === "fixed_dropdown") reasons.push("Fixed size is preserved as intake metadata unless multiple selectable sizes are present.");
   if (args.sizeMode === "custom_dimension") reasons.push("Custom size behavior produced a Size dimension input only.");
   if (args.skippedTemplateOptionCount > 0) reasons.push(`${args.skippedTemplateOptionCount} generic option(s) skipped because reusable templates were applied.`);
   if (groupNodes.length >= 2 && !invalidRootGroups) reasons.push("Options were organized into logical PBV2 groups.");
@@ -1125,7 +1197,7 @@ export function buildProductIntakeDraftTree(args: {
       groupKey: "size_quantity",
       sortOrder: sortOrder++,
     });
-  } else if (sizeMode === "fixed_dropdown" && sizeOption) {
+  } else if (sizeMode === "fixed_dropdown" && sizeOption && hasMultipleSelectableFixedSizeChoices(sizeOption)) {
     const choices = optionChoices(sizeOption);
     addQuestionNode({
       tree,
@@ -1202,10 +1274,16 @@ export function buildProductIntakeDraftTree(args: {
     });
   }
 
+  const matrixSourceText = appendMatrixAnswerSourceText({
+    sourceText: collectBriefText(args.brief, args.sourceText, args.sourceJson),
+    tree,
+    answers: args.answers,
+    readiness: pricingReadiness.matrixReadiness,
+  });
   const generatedMatrix = buildGeneratedMatrixDraft({
     tree,
     sessionId: args.sessionId,
-    sourceText: collectBriefText(args.brief, args.sourceText, args.sourceJson),
+    sourceText: matrixSourceText,
     pricingReadiness,
   });
   if (generatedMatrix) {

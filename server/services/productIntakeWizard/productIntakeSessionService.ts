@@ -123,6 +123,18 @@ function option(label: string, value: string = normalizeKey(label)) {
   return { label, value };
 }
 
+function safeMatrixKey(value: string, fallback: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 48) || fallback;
+}
+
+function matrixQuestionKey(dimension: string, choiceValue: string, tierLabel: string): string {
+  return `matrix-price-${safeMatrixKey(dimension, "dimension")}-${safeMatrixKey(choiceValue, "choice")}-${safeMatrixKey(tierLabel, "tier")}`;
+}
+
 function questionForMissingDecision(brief: ProductIntakeBrief, decision: ProductIntakeBrief["missingDecisions"][number], sortOrder: number): NewQuestion | null {
   if (decision.severity === "info") return null;
   const sourcePath = firstEvidencePath(decision.evidence);
@@ -275,6 +287,81 @@ function pricingValueQuestions(brief: ProductIntakeBrief): NewQuestion[] {
   ];
 }
 
+function matrixDecisionQuestions(brief: ProductIntakeBrief): NewQuestion[] {
+  const readiness = brief.matrixReadiness;
+  if (!readiness?.required) return [];
+  const nonQuantityDimensions = readiness.matrixDimensions.filter((dimension) => !/^(quantity|qty|quantity_tier|quantity_tiers)$/i.test(dimension));
+  if (readiness.matrixType === "QUANTITY_TIER" || nonQuantityDimensions.length === 0) return [];
+  if (!readiness.noMatrixRowsGenerated && readiness.matrixConfidence >= 85) return [];
+  if (readiness.matrixConfidence >= 85 && readiness.detectedQuantityBreaks.length >= 2) return [];
+
+  const selectableOptions = [...brief.requiredOptions, ...brief.optionalOptions]
+    .filter((optionGroup) => {
+      const key = safeMatrixKey(optionGroup.normalizedGroup || optionGroup.label, "option");
+      if (key === "quantity" || key.includes("quantity") || key === "qty") return false;
+      if (key === "size" && optionGroup.sampleValues.filter((value) => value.trim()).length <= 1) return false;
+      return optionGroup.sampleValues.filter((value) => value.trim()).length >= 2;
+    });
+  const dimensionOptions = selectableOptions.map((optionGroup) => ({
+    label: optionGroup.label,
+    value: safeMatrixKey(optionGroup.normalizedGroup || optionGroup.label, "option"),
+  }));
+  const preferredDimension = dimensionOptions.find((entry) => readiness.matrixDimensions.includes(entry.value)) ?? dimensionOptions[0] ?? null;
+  const sourcePath = firstEvidencePath(brief.pricingAnalysis.evidence) ?? firstEvidencePath(brief.sourceEvidence);
+  const questions: NewQuestion[] = [];
+
+  questions.push({
+    questionKey: "confirm-matrix-dimension",
+    questionType: dimensionOptions.length > 0 ? "select" : "text",
+    label: "Confirm matrix dimension",
+    helpText: "Quantity tiers are quote/order line item quantity. Select the PBV2 customer option that defines the matrix rows.",
+    required: true,
+    options: dimensionOptions.length > 0 ? dimensionOptions : null,
+    defaultValue: preferredDimension?.value ?? null,
+    sourcePath,
+    confidence: readiness.matrixConfidence,
+    sortOrder: 55,
+  });
+
+  const detectedTierLabels = readiness.detectedQuantityBreaks.map(String);
+  questions.push({
+    questionKey: "confirm-matrix-quantity-tiers",
+    questionType: "text",
+    label: "Confirm quantity tiers",
+    helpText: "Enter tiers like 1-100, 101-500, 501+. Quantity remains the line item quantity, not a PBV2 product option.",
+    required: readiness.detectedQuantityBreaks.length < 2,
+    options: null,
+    defaultValue: detectedTierLabels.length > 0 ? detectedTierLabels.join(", ") : null,
+    sourcePath,
+    confidence: readiness.matrixConfidence,
+    sortOrder: 56,
+  });
+
+  if (!preferredDimension || readiness.detectedQuantityBreaks.length < 2) return questions;
+  const selectedOption = selectableOptions.find((optionGroup) => safeMatrixKey(optionGroup.normalizedGroup || optionGroup.label, "option") === preferredDimension.value);
+  const choices = selectedOption?.sampleValues.map((label) => ({
+    label: label.trim(),
+    value: safeMatrixKey(label, "choice"),
+  })).filter((choice) => choice.label) ?? [];
+  choices.forEach((choice, choiceIndex) => {
+    detectedTierLabels.forEach((tierLabel, tierIndex) => {
+      questions.push({
+        questionKey: matrixQuestionKey(preferredDimension.value, choice.value, tierLabel),
+        questionType: "number",
+        label: `What is the price for ${choice.label} at ${tierLabel}?`,
+        helpText: "Enter the per-piece price for this matrix cell. Do not enter a placeholder.",
+        required: false,
+        options: null,
+        defaultValue: null,
+        sourcePath,
+        confidence: readiness.matrixConfidence,
+        sortOrder: 57 + choiceIndex * 10 + tierIndex,
+      });
+    });
+  });
+  return questions;
+}
+
 function needsWorkflowFollowUp(brief: ProductIntakeBrief): boolean {
   return brief.draftWarnings.some((warning) => {
     const text = `${warning.code} ${warning.message}`;
@@ -309,6 +396,7 @@ export function generateProductIntakeQuestions(brief: ProductIntakeBrief): NewQu
     sortOrder: 41,
   }));
   pricingValueQuestions(brief).forEach(push);
+  matrixDecisionQuestions(brief).forEach(push);
 
   for (const optionGroup of [...brief.requiredOptions, ...brief.optionalOptions]) {
     if (optionGroup.confidence < 65) {

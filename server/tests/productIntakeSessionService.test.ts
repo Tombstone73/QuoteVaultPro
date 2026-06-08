@@ -154,6 +154,45 @@ describe("Product Intake question generation", () => {
     ]));
   });
 
+  test("creates targeted matrix questions when matrix pricing is incomplete", () => {
+    const questions = generateProductIntakeQuestions(brief({
+      quantityBehavior: { behavior: "quantity tiers", confidence: 78, evidence: [] },
+      pricingAnalysis: { behavior: "matrix_or_tiered", confidence: 77, notes: "Printed sides by quantity tier pricing.", evidence: [] },
+      matrixReadiness: {
+        required: true,
+        matrixType: "MULTI_DIMENSION",
+        matrixDimensions: ["quantity", "printed_sides"],
+        matrixConfidence: 77,
+        reasoning: ["Matrix-style pricing signals were detected."],
+        recommendedSetup: "Create a PBV2 pricing matrix with each detected selectable dimension and review quantity-tier behavior before publish.",
+        detectedSizes: [],
+        detectedQuantityBreaks: [1, 101, 501],
+        detectedMaterials: [],
+        detectedPricingSignals: ["Quantity tier pricing present."],
+        noMatrixRowsGenerated: true,
+      },
+      requiredOptions: [{
+        label: "Printed Sides",
+        normalizedGroup: "printed_sides",
+        required: true,
+        confidence: 92,
+        sampleValues: ["Single Sided", "Double Sided"],
+        sourcePaths: ["$.options.printedSides"],
+        templateMatches: [],
+        evidence: [],
+      }],
+    }));
+
+    expect(questions.map((question) => question.questionKey)).toEqual(expect.arrayContaining([
+      "confirm-matrix-dimension",
+      "confirm-matrix-quantity-tiers",
+      "matrix-price-printed_sides-single_sided-1",
+      "matrix-price-printed_sides-double_sided-501",
+    ]));
+    expect(questions.find((question) => question.questionKey === "confirm-matrix-dimension")?.label).toBe("Confirm matrix dimension");
+    expect(questions.find((question) => question.questionKey === "confirm-matrix-quantity-tiers")?.helpText).toContain("Quantity remains the line item quantity");
+  });
+
   test("material questions use candidate picker when matches exist", () => {
     const questions = generateProductIntakeQuestions(brief({
       materialAnalysis: {

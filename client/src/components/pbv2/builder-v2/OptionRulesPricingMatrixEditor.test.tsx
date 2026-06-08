@@ -33,6 +33,17 @@ function treeWithMatrix() {
           qtyTiers: [
             { id: "tier_1_100", label: "1-100", minQty: 1, perPieceCents: 440 },
             { id: "tier_101_500", label: "101-500", minQty: 101, perPieceCents: 330 },
+            { id: "tier_501", label: "501+", minQty: 501, perPieceCents: 300 },
+          ],
+          tierBasis: "line_item_quantity",
+        },
+        {
+          id: "row_double",
+          when: { printed_sides: "double_sided" },
+          qtyTiers: [
+            { id: "tier_1_100_double", label: "1-100", minQty: 1, perPieceCents: 550 },
+            { id: "tier_101_500_double", label: "101-500", minQty: 101, perPieceCents: 440 },
+            { id: "tier_501_double", label: "501+", minQty: 501, perPieceCents: 400 },
           ],
           tierBasis: "line_item_quantity",
         },
@@ -62,7 +73,7 @@ describe("OptionRulesPricingMatrixEditor", () => {
 
     expect(container.textContent).toContain("Pricing Matrix");
     expect(container.textContent).toContain("Printed Sides");
-    expect(container.textContent).toContain("Row Qty Tiers (2)");
+    expect(container.textContent).toContain("Row Qty Tiers (3)");
 
     const addRow = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Add Row"));
     await act(async () => {
