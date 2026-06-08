@@ -604,7 +604,15 @@ export function ProductIntakeQuestionsWizard({
         )}
         {hasCreatedDraft && (
           <div className="rounded border bg-muted/30 p-3 text-sm">
-            <div className="font-medium">Draft Product Created</div>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="font-medium">Draft Product Created</div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="outline">Product inactive</Badge>
+                <Badge variant="outline">PBV2 draft</Badge>
+                <Badge variant="outline">Publish required</Badge>
+                <Badge variant="outline">Activation required</Badge>
+              </div>
+            </div>
             <div className="mt-2 grid gap-2 md:grid-cols-2">
               <div>
                 <div className="text-xs font-medium uppercase text-muted-foreground">Product ID</div>
@@ -617,10 +625,18 @@ export function ProductIntakeQuestionsWizard({
             </div>
             {draftProductId && (
               <div className="mt-3 flex flex-wrap gap-2">
+                {session?.id && (
+                  <Button asChild size="sm" className="gap-2">
+                    <a href={`/admin/product-intake/sessions/${session.id}/review`}>
+                      <ExternalLink className="h-4 w-4" />
+                      Review Draft Product
+                    </a>
+                  </Button>
+                )}
                 <Button asChild size="sm" variant="outline" className="gap-2">
                   <a href={`/products/${draftProductId}/edit`}>
                     <ExternalLink className="h-4 w-4" />
-                    Open Product
+                    Open Product Shell
                   </a>
                 </Button>
                 <Button asChild size="sm" variant="outline" className="gap-2">

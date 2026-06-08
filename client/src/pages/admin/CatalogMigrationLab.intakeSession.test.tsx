@@ -444,6 +444,12 @@ describe("Product Intake session UI", () => {
     expect(html).toContain("Pricing setup required.");
     expect(html).toContain("prod_1");
     expect(html).toContain("tree_1");
+    expect(html).toContain("Product inactive");
+    expect(html).toContain("PBV2 draft");
+    expect(html).toContain("Publish required");
+    expect(html).toContain("Activation required");
+    expect(html).toContain("Review Draft Product");
+    expect(html).toContain("/admin/product-intake/sessions/sess_1/review");
     expect(html).toContain("/products/prod_1/edit");
     expect(html).toContain("/products/prod_1/builder-v2");
   });

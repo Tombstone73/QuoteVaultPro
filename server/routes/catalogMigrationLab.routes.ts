@@ -35,6 +35,10 @@ import {
   createDbProductIntakeDraftCreator,
   type ProductIntakeDraftCreator,
 } from "../services/productIntakeWizard/productIntakeDraftService";
+import {
+  createDbProductIntakeDraftReviewService,
+  type ProductIntakeDraftReviewService,
+} from "../services/productIntakeWizard/productIntakeDraftReviewService";
 import { resolveProductIntakeAiReadiness } from "../services/productIntakeWizard/productIntakeAiReadinessService";
 import type { AiProviderAdapter } from "../services/ai/providers/AiProviderAdapter";
 import type { ProductIntakeAiReadiness } from "@shared/productIntakeWizardSchemas";
@@ -48,6 +52,7 @@ type RouteMiddleware = {
   productIntakeSessionStore?: ProductIntakeSessionStore;
   productIntakeDiagnosticsStore?: ProductIntakeAiDiagnosticsStore;
   productIntakeDraftCreator?: ProductIntakeDraftCreator;
+  productIntakeDraftReviewService?: ProductIntakeDraftReviewService;
   productIntakeAiReadinessResolver?: (args: {
     organizationId: string;
     userId: string | null;
@@ -193,6 +198,7 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
   const intakeSessionStore = middleware.productIntakeSessionStore ?? createDbProductIntakeSessionStore();
   const intakeDiagnosticsStore = middleware.productIntakeDiagnosticsStore ?? createDbProductIntakeAiDiagnosticsStore();
   const intakeDraftCreator = middleware.productIntakeDraftCreator ?? createDbProductIntakeDraftCreator();
+  const intakeDraftReviewService = middleware.productIntakeDraftReviewService ?? createDbProductIntakeDraftReviewService();
 
   const getAiReadiness = async (organizationId: string, userId: string | null, databaseIdentifier: string | null) => (
     middleware.productIntakeAiReadinessResolver
@@ -542,6 +548,86 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
         if (handled) return handled;
         console.error("[ProductIntakeWizard] Draft creation failed:", error);
         return res.status(500).json({ success: false, message: "Failed to create inactive Product Intake draft.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/admin/product-intake-wizard/sessions/:id/draft-review",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) {
+          return res.status(400).json({ success: false, message: "Missing organization context.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+        }
+
+        const review = await intakeDraftReviewService.getDraftReview({
+          organizationId,
+          sessionId: req.params.id,
+        });
+        return res.json({ success: true, data: review });
+      } catch (error: any) {
+        const handled = handleProductIntakeRouteError(error, res, "Invalid Product Intake draft review request.");
+        if (handled) return handled;
+        console.error("[ProductIntakeWizard] Draft review failed:", error);
+        return res.status(500).json({ success: false, message: "Failed to load Product Intake draft review.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/admin/product-intake-wizard/sessions/:id/activate-product",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) {
+          return res.status(400).json({ success: false, message: "Missing organization context.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+        }
+
+        const result = await intakeDraftReviewService.activateProduct({
+          organizationId,
+          sessionId: req.params.id,
+          userId: requestUserId(req),
+          userName: requestUserName(req),
+        });
+        return res.json({ success: true, data: result });
+      } catch (error: any) {
+        const handled = handleProductIntakeRouteError(error, res, "Invalid Product Intake activation request.");
+        if (handled) return handled;
+        console.error("[ProductIntakeWizard] Product activation failed:", error);
+        return res.status(500).json({ success: false, message: "Failed to activate Product Intake product.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/admin/product-intake-wizard/products/:productId/draft-link",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) {
+          return res.status(400).json({ success: false, message: "Missing organization context.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+        }
+
+        const link = await intakeDraftReviewService.getDraftLinkForProduct({
+          organizationId,
+          productId: req.params.productId,
+        });
+        return res.json({ success: true, data: link });
+      } catch (error: any) {
+        const handled = handleProductIntakeRouteError(error, res, "Invalid Product Intake product draft-link request.");
+        if (handled) return handled;
+        console.error("[ProductIntakeWizard] Product draft-link lookup failed:", error);
+        return res.status(500).json({ success: false, message: "Failed to load Product Intake draft link.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
       }
     },
   );

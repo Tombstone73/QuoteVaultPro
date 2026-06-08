@@ -80,6 +80,7 @@ import AcceptInvitePage from "@/pages/accept-invite";
 import SelectOrgPage from "@/pages/SelectOrgPage";
 import BugReportsPage from "@/pages/admin/BugReportsPage";
 import CatalogMigrationLab from "@/pages/admin/CatalogMigrationLab";
+import ProductIntakeDraftReviewPage from "@/pages/admin/ProductIntakeDraftReviewPage";
 import ProductImportExport from "@/pages/admin/ProductImportExport";
 import PricingAuditPage from "@/pages/admin/PricingAuditPage";
 import MaterialsImportExport from "@/pages/admin/MaterialsImportExport";
@@ -232,6 +233,7 @@ function Router() {
         <Route path="/admin/product-types" element={<Navigate to="/settings/product-types" replace />} />
         <Route path="/admin/bug-reports" element={<BugReportsPage />} />
         <Route path={ROUTES.admin.catalogMigrationLab} element={<CatalogMigrationLab />} />
+        <Route path={ROUTES.admin.productIntakeReview(":sessionId")} element={<ProductIntakeDraftReviewPage />} />
         <Route path="/admin/products/import-export" element={<ProductImportExport />} />
         <Route path="/admin/pricing-audit" element={<PricingAuditPage />} />
         <Route path="/admin/materials/import-export" element={<MaterialsImportExport />} />

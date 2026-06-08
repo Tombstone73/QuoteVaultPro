@@ -33,6 +33,10 @@ import type {
   ProductIntakeAiDiagnosticsStore,
 } from "../services/productIntakeWizard/productIntakeDiagnosticsService";
 import type { ProductIntakeDraftCreator } from "../services/productIntakeWizard/productIntakeDraftService";
+import type {
+  ProductIntakeDraftReview,
+  ProductIntakeDraftReviewService,
+} from "../services/productIntakeWizard/productIntakeDraftReviewService";
 import { AiProviderTimeoutError } from "../services/ai/providers/AiProviderAdapter";
 
 type AppOptions = {
@@ -289,6 +293,98 @@ function makeMemoryProductIntakeDraftCreator(store: ProductIntakeSessionStore): 
   };
 }
 
+function makeDraftReviewFixture(overrides: Partial<ProductIntakeDraftReview> = {}): ProductIntakeDraftReview {
+  return {
+    intake: {
+      sessionId: "sess_1",
+      status: "draft_created",
+      sourceType: "text_description",
+      sourceText: "13oz banner with grommets",
+      sourceJson: null,
+      sourceFingerprint: "fp_1",
+      briefSource: "live_ai",
+      confidence: 90,
+      productName: "13oz Banner",
+      materialMatch: "13oz Scrim Banner",
+      warnings: ["Pricing setup required."],
+      unansweredDecisions: [],
+    },
+    product: {
+      id: "prod_draft_1",
+      name: "13oz Banner",
+      category: "banner",
+      description: "Generated inactive draft product.",
+      isActive: false,
+      productTypeId: "pt_roll",
+      productTypeName: "Roll",
+      primaryMaterialId: "mat_1",
+      pbv2ActiveTreeVersionId: null,
+    },
+    pbv2Tree: {
+      id: "tree_draft_1",
+      status: "DRAFT",
+      schemaVersion: 2,
+      publishedAt: null,
+      updatedAt: "2026-06-08T00:00:00.000Z",
+      groupCount: 2,
+      optionCount: 3,
+      optionGroups: [
+        { id: "group_size", label: "Size & Quantity", optionCount: 2, options: ["Size", "Quantity"] },
+      ],
+      draftQuality: { label: "Good", score: 86, warnings: ["Pricing setup required."] },
+      intakeSummary: null,
+    },
+    publishReadiness: {
+      productInactive: true,
+      pbv2TreeDraft: true,
+      pbv2TreePublished: false,
+      activeTreeAssigned: false,
+      requiredOptionsPresent: true,
+      noDuplicateSizeControls: true,
+      pricingConfigured: false,
+      materialLinked: true,
+      validationStatus: "warnings",
+      findings: [{ code: "PBV2_W_PRICE_REVIEW", severity: "WARNING", message: "Review pricing.", path: "meta.pricingV2" }],
+    },
+    ...overrides,
+  };
+}
+
+function makeMemoryProductIntakeDraftReviewService(
+  review: ProductIntakeDraftReview = makeDraftReviewFixture(),
+  options: { activationMode?: "blocked" | "success" | "wrong_org" } = {},
+): ProductIntakeDraftReviewService {
+  return {
+    async getDraftReview({ organizationId }) {
+      if (options.activationMode === "wrong_org" || organizationId !== "org_1") {
+        throw new ProductIntakeSessionError(404, "Product Intake session not found.", "SESSION_NOT_FOUND");
+      }
+      return review;
+    },
+    async getDraftLinkForProduct({ organizationId, productId }) {
+      if (organizationId !== "org_1" || productId !== review.product.id) return null;
+      return {
+        sessionId: review.intake.sessionId,
+        productId: review.product.id,
+        pbv2TreeVersionId: review.pbv2Tree.id,
+        sessionStatus: review.intake.status,
+        productIsActive: review.product.isActive,
+        pbv2Status: review.pbv2Tree.status,
+        pbv2ActiveTreeVersionId: review.product.pbv2ActiveTreeVersionId,
+      };
+    },
+    async activateProduct({ organizationId }) {
+      if (organizationId !== "org_1" || options.activationMode === "wrong_org") {
+        throw new ProductIntakeSessionError(404, "Product Intake session not found.", "SESSION_NOT_FOUND");
+      }
+      if (options.activationMode !== "success") {
+        throw new ProductIntakeSessionError(409, "Publish the PBV2 draft before activating this product.", "PBV2_NOT_PUBLISHED");
+      }
+      return { productId: review.product.id, isActive: true as const };
+    },
+  };
+}
+
 function aiReadiness(overrides: Partial<ProductIntakeAiReadiness> = {}): ProductIntakeAiReadiness {
   return {
     organizationId: "org_1",
@@ -323,6 +419,7 @@ function buildApp(
   productIntakeSessionStore = makeMemoryProductIntakeSessionStore(),
   productIntakeDiagnosticsStore = makeMemoryProductIntakeDiagnosticsStore(),
   productIntakeDraftCreator?: ProductIntakeDraftCreator,
+  productIntakeDraftReviewService?: ProductIntakeDraftReviewService,
 ) {
   const app = express();
   app.use(express.json({ limit: "3mb" }));
@@ -379,6 +476,7 @@ function buildApp(
     productIntakeSessionStore,
     productIntakeDiagnosticsStore,
     ...(productIntakeDraftCreator ? { productIntakeDraftCreator } : {}),
+    ...(productIntakeDraftReviewService ? { productIntakeDraftReviewService } : {}),
     productIntakeAiReadinessResolver: options.productIntakeAiReadinessResolver ?? (async ({ organizationId, userId, databaseIdentifier }) => aiReadiness({ organizationId, userId, databaseIdentifier })),
   });
 
@@ -885,6 +983,138 @@ describe("Catalog Migration Lab routes", () => {
     const duplicate = await request(app).post(`/api/admin/product-intake-wizard/sessions/${ready.session.id}/create-draft`).send({});
     expect(duplicate.status).toBe(409);
     expect(duplicate.body.errorCode).toBe("INTAKE_DRAFT_ALREADY_CREATED");
+  });
+
+  test("product intake draft-review returns intake, product, PBV2 tree, and publish readiness", async () => {
+    const review = makeDraftReviewFixture();
+    const app = buildApp(
+      {},
+      makeMemoryProductIntakeSessionStore(),
+      makeMemoryProductIntakeDiagnosticsStore(),
+      undefined,
+      makeMemoryProductIntakeDraftReviewService(review),
+    );
+
+    const response = await request(app).get(`/api/admin/product-intake-wizard/sessions/${review.intake.sessionId}/draft-review`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      success: true,
+      data: {
+        intake: {
+          sessionId: "sess_1",
+          briefSource: "live_ai",
+          confidence: 90,
+        },
+        product: {
+          id: "prod_draft_1",
+          isActive: false,
+        },
+        pbv2Tree: {
+          id: "tree_draft_1",
+          status: "DRAFT",
+        },
+        publishReadiness: {
+          productInactive: true,
+          pbv2TreeDraft: true,
+          noDuplicateSizeControls: true,
+          validationStatus: "warnings",
+        },
+      },
+    });
+  });
+
+  test("product intake activation is blocked before PBV2 publish and for wrong org", async () => {
+    const review = makeDraftReviewFixture();
+    const blocked = await request(buildApp(
+      {},
+      makeMemoryProductIntakeSessionStore(),
+      makeMemoryProductIntakeDiagnosticsStore(),
+      undefined,
+      makeMemoryProductIntakeDraftReviewService(review),
+    ))
+      .post(`/api/admin/product-intake-wizard/sessions/${review.intake.sessionId}/activate-product`)
+      .send({});
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.errorCode).toBe("PBV2_NOT_PUBLISHED");
+
+    const wrongOrg = await request(buildApp(
+      { organizationId: "org_2" },
+      makeMemoryProductIntakeSessionStore(),
+      makeMemoryProductIntakeDiagnosticsStore(),
+      undefined,
+      makeMemoryProductIntakeDraftReviewService(review),
+    ))
+      .post(`/api/admin/product-intake-wizard/sessions/${review.intake.sessionId}/activate-product`)
+      .send({});
+    expect(wrongOrg.status).toBe(404);
+    expect(wrongOrg.body.errorCode).toBe("SESSION_NOT_FOUND");
+  });
+
+  test("product intake activation succeeds only after published active PBV2 tree exists", async () => {
+    const review = makeDraftReviewFixture({
+      product: {
+        ...makeDraftReviewFixture().product,
+        pbv2ActiveTreeVersionId: "tree_draft_1",
+      },
+      pbv2Tree: {
+        ...makeDraftReviewFixture().pbv2Tree,
+        status: "ACTIVE",
+        publishedAt: "2026-06-08T00:00:00.000Z",
+      },
+      publishReadiness: {
+        ...makeDraftReviewFixture().publishReadiness,
+        pbv2TreeDraft: false,
+        pbv2TreePublished: true,
+        activeTreeAssigned: true,
+        validationStatus: "published",
+      },
+    });
+    const app = buildApp(
+      {},
+      makeMemoryProductIntakeSessionStore(),
+      makeMemoryProductIntakeDiagnosticsStore(),
+      undefined,
+      makeMemoryProductIntakeDraftReviewService(review, { activationMode: "success" }),
+    );
+
+    const response = await request(app)
+      .post(`/api/admin/product-intake-wizard/sessions/${review.intake.sessionId}/activate-product`)
+      .send({});
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      success: true,
+      data: {
+        productId: "prod_draft_1",
+        isActive: true,
+      },
+    });
+  });
+
+  test("product intake product draft-link supports editor banner lookup", async () => {
+    const review = makeDraftReviewFixture();
+    const app = buildApp(
+      {},
+      makeMemoryProductIntakeSessionStore(),
+      makeMemoryProductIntakeDiagnosticsStore(),
+      undefined,
+      makeMemoryProductIntakeDraftReviewService(review),
+    );
+
+    const response = await request(app).get(`/api/admin/product-intake-wizard/products/${review.product.id}/draft-link`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      success: true,
+      data: {
+        sessionId: "sess_1",
+        productId: "prod_draft_1",
+        pbv2TreeVersionId: "tree_draft_1",
+        productIsActive: false,
+        pbv2Status: "DRAFT",
+      },
+    });
   });
 
   test("product intake session delete removes session questions and answers", async () => {
