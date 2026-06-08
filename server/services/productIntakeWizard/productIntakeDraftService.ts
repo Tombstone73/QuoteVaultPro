@@ -134,9 +134,6 @@ function ensureGroup(tree: OptionTreeV2, groupKey: DraftGroupKey, usedNodeIds: S
       ui: { sortOrder: group.sortOrder, layoutHint: "stack" },
     };
   }
-  if (!tree.rootNodeIds.includes(group.id)) {
-    tree.rootNodeIds.push(group.id);
-  }
   return group.id;
 }
 
@@ -161,7 +158,7 @@ function addQuestionNode(args: {
     status: "ENABLED",
     key: args.key,
     label: args.label,
-    ui: { sortOrder: args.sortOrder },
+    ui: { groupKey: groupId, sortOrder: args.sortOrder },
     input: {
       type: args.inputType,
       required: args.required,
@@ -172,6 +169,9 @@ function addQuestionNode(args: {
     },
     ...(args.choices && args.choices.length > 0 ? { choices: args.choices } : {}),
   };
+  if (!args.tree.rootNodeIds.includes(nodeId)) {
+    args.tree.rootNodeIds.push(nodeId);
+  }
   args.tree.edges = args.tree.edges ?? [];
   args.tree.edges.push({
     id: uniqueKey(`edge_${groupId}_${nodeId}`, args.usedEdgeIds),
@@ -208,6 +208,36 @@ function resolveSizeMode(brief: ProductIntakeBrief, sizeOption: ProductIntakeOpt
 function shouldCollectQuantity(brief: ProductIntakeBrief): boolean {
   const text = `${brief.quantityBehavior.behavior} ${brief.quantityBehavior.notes ?? ""}`.toLowerCase();
   return !/unknown|none|not applicable|fixed/.test(text);
+}
+
+function quantityMetadataForBrief(brief: ProductIntakeBrief) {
+  const behavior = compactText(brief.quantityBehavior.behavior, "unknown");
+  const notes = compactText(brief.quantityBehavior.notes, "");
+  const sourceOptions = [...brief.requiredOptions, ...brief.optionalOptions]
+    .filter((option) => {
+      const text = `${option.label} ${option.normalizedGroup}`.toLowerCase();
+      return /\b(qty|quantity|quantities|tier|tiers|piece|pieces)\b/.test(text);
+    })
+    .map((option) => ({
+      label: option.label,
+      normalizedGroup: option.normalizedGroup,
+      required: option.required,
+      confidence: option.confidence,
+      sampleValues: option.sampleValues,
+      sourcePaths: option.sourcePaths,
+    }));
+
+  return {
+    behavior,
+    confidence: brief.quantityBehavior.confidence,
+    notes: notes || null,
+    lineItemQuantitySource: true,
+    customerFacingOptionGenerated: false,
+    sourceOptions,
+    warning: shouldCollectQuantity(brief)
+      ? "Quantity is captured on quote/order line items. Intake quantity behavior is preserved as pricing metadata and must not create a PBV2 customer-facing option."
+      : null,
+  };
 }
 
 function pricingModeForBrief(brief: ProductIntakeBrief): "area" | "quantity" | "flat" {
@@ -260,6 +290,7 @@ function classifyOptionGroup(option: ProductIntakeOption): DraftGroupKey {
 
 function conceptKeyForOption(option: ProductIntakeOption): string {
   const key = safeKey(option.normalizedGroup || option.label, "option");
+  if (/qty|quantity|quantities|tier|tiers/.test(key)) return "quantity";
   if (/printed?_?sides?|sides?/.test(key)) return "printed_sides";
   if (/grommet/.test(key)) return "grommets";
   if (/pole.*pocket|pocket/.test(key)) return "pole_pockets";
@@ -269,6 +300,39 @@ function conceptKeyForOption(option: ProductIntakeOption): string {
   if (/material|substrate/.test(key)) return "material";
   if (/size|dimension|width|height/.test(key)) return "size";
   return key;
+}
+
+function normalizeProductIntakeRuntimeRoots(tree: OptionTreeV2): OptionTreeV2 {
+  const nodes = tree.nodes ?? {};
+  const edges = tree.edges ?? [];
+  const roots = new Set<string>();
+
+  tree.edges = edges.map((edge) => {
+    const from = nodes[edge.fromNodeId];
+    const to = nodes[edge.toNodeId];
+    if (String(from?.type ?? "").toUpperCase() !== "GROUP" && String(to?.type ?? "").toUpperCase() !== "GROUP") {
+      return edge;
+    }
+    if (to && String(to.type ?? "").toUpperCase() !== "GROUP" && String(to.status ?? "ENABLED").toUpperCase() !== "DELETED") {
+      roots.add(to.id);
+    }
+    return { ...edge, status: "DISABLED" as const };
+  });
+
+  for (const rootId of tree.rootNodeIds ?? []) {
+    const node = nodes[rootId];
+    if (!node || String(node.type ?? "").toUpperCase() === "GROUP" || String(node.status ?? "ENABLED").toUpperCase() === "DELETED") continue;
+    roots.add(rootId);
+  }
+
+  for (const node of Object.values(nodes)) {
+    if (String(node.type ?? "").toUpperCase() !== "INPUT") continue;
+    if (String(node.status ?? "ENABLED").toUpperCase() === "DELETED") continue;
+    roots.add(node.id);
+  }
+
+  tree.rootNodeIds = Array.from(roots);
+  return tree;
 }
 
 function collectTreeConcepts(tree: OptionTreeV2): Set<string> {
@@ -306,9 +370,9 @@ function assessDraftQuality(args: {
   const hasDimensionSize = inputNodes.some((node) => (node.input?.selectionKey === "size" || node.key === "size") && node.input?.type === "dimension");
   const hasDropdownSize = inputNodes.some((node) => (node.input?.selectionKey === "size" || node.key === "size") && node.input?.type === "select");
   const groupNodes = nodes.filter((node) => String(node.type ?? "").toUpperCase() === "GROUP");
-  const ungroupedQuestionRoots = args.tree.rootNodeIds.some((nodeId) => {
+  const invalidRootGroups = args.tree.rootNodeIds.some((nodeId) => {
     const node = args.tree.nodes[nodeId];
-    return node && String(node.type ?? "").toUpperCase() !== "GROUP";
+    return node && String(node.type ?? "").toUpperCase() === "GROUP";
   });
 
   if (duplicateSelectionKeys.length > 0) {
@@ -345,9 +409,9 @@ function assessDraftQuality(args: {
     score -= 10;
     warnings.push("Template ambiguity needs review.");
   }
-  if (groupNodes.length < 2 || ungroupedQuestionRoots) {
+  if (invalidRootGroups) {
     score -= 10;
-    warnings.push("Option group organization needs review.");
+    warnings.push("Runtime root organization needs review.");
   }
   if (args.requestedTemplateCount > args.reusedTemplateCount) {
     score -= 5;
@@ -357,7 +421,8 @@ function assessDraftQuality(args: {
   if (args.sizeMode === "fixed_dropdown") reasons.push("Fixed size list produced a Size dropdown only.");
   if (args.sizeMode === "custom_dimension") reasons.push("Custom size behavior produced a Size dimension input only.");
   if (args.skippedTemplateOptionCount > 0) reasons.push(`${args.skippedTemplateOptionCount} generic option(s) skipped because reusable templates were applied.`);
-  if (groupNodes.length >= 2 && !ungroupedQuestionRoots) reasons.push("Options were organized into logical PBV2 groups.");
+  if (groupNodes.length >= 2 && !invalidRootGroups) reasons.push("Options were organized into logical PBV2 groups.");
+  reasons.push("Quote/order line item quantity remains outside customer-facing PBV2 options.");
   if (warnings.length === 0) reasons.push("No draft quality penalties detected.");
 
   const normalizedScore = Math.max(0, Math.min(100, Math.round(score)));
@@ -385,6 +450,7 @@ export function buildProductIntakeDraftTree(args: {
   const materialMatch = bestMaterialMatch(args.brief);
   let tree: OptionTreeV2 = {
     schemaVersion: 2,
+    status: "DRAFT",
     rootNodeIds: [],
     nodes: {},
     edges: [],
@@ -398,6 +464,7 @@ export function buildProductIntakeDraftTree(args: {
         unitSystem: "imperial",
         tierBasis: "line_item_quantity",
         base: {},
+        qtyTiers: [],
       },
       requiresDimensions: sizeMode === "custom_dimension",
       productIntake: {
@@ -405,6 +472,7 @@ export function buildProductIntakeDraftTree(args: {
         productName: args.productName,
         confidence: args.brief.overallConfidence,
         sizeMode,
+        quantity: quantityMetadataForBrief(args.brief),
         materialMatch: materialMatch ? {
           materialId: materialMatch.materialId,
           sku: materialMatch.sku,
@@ -461,22 +529,32 @@ export function buildProductIntakeDraftTree(args: {
   }
 
   if (shouldCollectQuantity(args.brief)) {
-    addQuestionNode({
-      tree,
-      key: "quantity",
-      label: "Quantity",
-      inputType: "number",
-      required: true,
-      usedNodeIds,
-      usedEdgeIds,
-      groupKey: "size_quantity",
-      sortOrder: sortOrder++,
-    });
+    const quantityWarnings = Array.isArray(tree.meta?.productIntake?.quantityWarnings)
+      ? tree.meta.productIntake.quantityWarnings as string[]
+      : [];
+    tree.meta = {
+      ...(tree.meta ?? {}),
+      productIntake: {
+        sessionId: args.sessionId,
+        productName: args.productName,
+        confidence: args.brief.overallConfidence,
+        ...(tree.meta?.productIntake ?? {}),
+        quantityWarnings: [
+          ...quantityWarnings,
+          "Quantity behavior found in intake. Quantity remains a quote/order line item field and was not generated as a PBV2 option.",
+        ],
+      },
+    };
   }
 
   let skippedTemplateOptionCount = 0;
   for (const option of [...args.brief.requiredOptions, ...args.brief.optionalOptions]) {
     if (isSizeOption(option)) continue;
+    const optionConcept = conceptKeyForOption(option);
+    if (optionConcept === "quantity") {
+      skippedTemplateOptionCount += 1;
+      continue;
+    }
     if (optionUsesReusedTemplate(option, reusedTemplateIds) || templateConcepts.has(conceptKeyForOption(option))) {
       skippedTemplateOptionCount += 1;
       continue;
@@ -510,6 +588,8 @@ export function buildProductIntakeDraftTree(args: {
       sortOrder,
     });
   }
+
+  tree = normalizeProductIntakeRuntimeRoots(tree);
 
   const draftQuality = assessDraftQuality({
     brief: args.brief,

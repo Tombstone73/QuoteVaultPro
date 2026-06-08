@@ -1,5 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 import { validateOptionTreeV2 } from "../../shared/optionTreeV2";
+import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "../../shared/pbv2/validator";
+import { validateTreeHasBasePrice } from "../../shared/pbv2/validator/validateBasePrice";
 import type { ProductIntakeBrief } from "../../shared/productIntakeWizardSchemas";
 import {
   buildProductIntakeDraftTree,
@@ -87,6 +89,42 @@ function groupLabels(tree: any) {
     .map((node) => node.label);
 }
 
+function expectNoQuantityOption(tree: any) {
+  const quantityNodes = nodes(tree).filter((node) => {
+    if (!node.input) return false;
+    const text = `${node.key ?? ""} ${node.label ?? ""} ${node.input?.selectionKey ?? ""}`.toLowerCase();
+    return /\bquantity\b|\bqty\b/.test(text);
+  });
+  expect(quantityNodes).toEqual([]);
+}
+
+function expectNoGroupRoots(tree: any) {
+  for (const rootId of tree.rootNodeIds) {
+    expect(String(tree.nodes[rootId]?.type ?? "").toUpperCase()).not.toBe("GROUP");
+  }
+}
+
+function expectNoRuntimeArchitectureErrors(tree: any) {
+  expect(validateOptionTreeV2(tree).ok).toBe(true);
+  expectNoGroupRoots(tree);
+  const publishValidation = validateTreeForPublish(tree, DEFAULT_VALIDATE_OPTS);
+  const blockedCodes = new Set([
+    "PBV2_E_TREE_NO_ROOTS",
+    "PBV2_E_TREE_ROOT_INVALID",
+    "PBV2_E_REQUIRED_INPUT_UNREACHABLE",
+  ]);
+  expect(publishValidation.errors.filter((finding) => blockedCodes.has(finding.code))).toEqual([]);
+  const baseValidation = validateTreeHasBasePrice(tree);
+  expect(baseValidation.errors.map((finding) => finding.code)).toContain("PBV2_E_BASE_PRICE_MISSING");
+}
+
+function expectGeneratedDraftShape(tree: any) {
+  expectNoRuntimeArchitectureErrors(tree);
+  expectNoQuantityOption(tree);
+  expect(tree.meta?.productIntake?.quantity?.customerFacingOptionGenerated).toBe(false);
+  expect(tree.meta?.productIntake?.quantityWarnings?.[0]).toContain("Quantity behavior found in intake");
+}
+
 describe("Product Intake draft service", () => {
   test("builds inactive product values without assigning an active PBV2 tree", () => {
     const values = buildProductIntakeProductValues({
@@ -122,13 +160,14 @@ describe("Product Intake draft service", () => {
     });
 
     expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expectGeneratedDraftShape(tree);
     expect(tree.schemaVersion).toBe(2);
     expect(tree.meta?.requiresDimensions).toBe(true);
     expect(tree.meta?.notes).toContain("Product Intake session sess_1");
     expect(tree.meta?.productIntake?.draftQuality?.label).toMatch(/Excellent|Good|Needs Review/);
     expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Size & Quantity", "Print Setup", "Finishing"]));
     expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
-    expect(inputNode(tree, "quantity")?.input?.type).toBe("number");
+    expect(inputNode(tree, "quantity")).toBeUndefined();
     expect(inputNode(tree, "printed_sides")?.input?.required).toBe(true);
     expect(inputNode(tree, "grommets")?.input?.required).toBe(false);
   });
@@ -190,6 +229,7 @@ describe("Product Intake draft service", () => {
     });
 
     expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expectNoRuntimeArchitectureErrors(tree);
     expect(Object.values(tree.nodes).some((node: any) => node.meta?.templateSource?.sourceTemplateId === "tpl_printed_sides")).toBe(true);
     expect(nodes(tree).filter((node) => node.label === "Printed Sides" && node.kind === "question" && node.input).length).toBe(1);
     expect(tree.meta?.productIntake?.draftQuality?.reasons.some((reason) => /generic option/.test(reason))).toBe(true);
@@ -218,6 +258,7 @@ describe("Product Intake draft service", () => {
     });
 
     expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expectGeneratedDraftShape(tree);
     expect(inputNode(tree, "size")?.input?.type).toBe("select");
     expect(inputNode(tree, "size")?.choices?.map((choice: any) => choice.label)).toEqual(["12x18", "18x24", "24x36"]);
     expect(nodes(tree).some((node) => node.input?.selectionKey === "size" && node.input?.type === "dimension")).toBe(false);
@@ -242,6 +283,7 @@ describe("Product Intake draft service", () => {
     });
 
     expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expectGeneratedDraftShape(tree);
     expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
     expect(nodes(tree).some((node) => node.input?.selectionKey === "size" && node.input?.type === "select")).toBe(false);
     expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Size & Quantity", "Print Setup", "Finishing"]));
@@ -269,6 +311,7 @@ describe("Product Intake draft service", () => {
     });
 
     expect(inputNode(tree, "size")?.input?.type).toBe("select");
+    expectGeneratedDraftShape(tree);
     expect(nodes(tree).some((node) => node.input?.selectionKey === "size" && node.input?.type === "dimension")).toBe(false);
   });
 
@@ -293,6 +336,7 @@ describe("Product Intake draft service", () => {
     });
 
     expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
+    expectGeneratedDraftShape(tree);
     expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Size & Quantity", "Finishing"]));
     expect(inputNode(tree, "cut_type")).toBeTruthy();
     expect(inputNode(tree, "laminate")).toBeTruthy();
@@ -317,7 +361,37 @@ describe("Product Intake draft service", () => {
     });
 
     expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
+    expectGeneratedDraftShape(tree);
     expect(nodes(tree).some((node) => node.input?.selectionKey === "size" && node.input?.type === "select")).toBe(false);
     expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Size & Quantity", "Hardware"]));
+  });
+
+  test("quantity-like intake options are preserved as metadata instead of customer-facing PBV2 options", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        optionalOptions: [
+          option("Quantity Tiers", {
+            normalizedGroup: "quantity_tiers",
+            required: false,
+            sampleValues: ["1", "10", "25", "100"],
+            sourcePaths: ["$.pricing.quantity_tiers"],
+          }),
+          option("Grommets", { normalizedGroup: "grommets", required: false, sampleValues: ["None", "Corners"] }),
+        ],
+      }),
+      sessionId: "sess_quantity",
+      productName: "Quantity Metadata Draft",
+      userId: "user_1",
+    });
+
+    expectGeneratedDraftShape(tree);
+    expect(inputNode(tree, "grommets")).toBeTruthy();
+    expect((tree.meta?.productIntake as any)?.quantity?.sourceOptions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: "Quantity Tiers",
+        sampleValues: ["1", "10", "25", "100"],
+        sourcePaths: ["$.pricing.quantity_tiers"],
+      }),
+    ]));
   });
 });

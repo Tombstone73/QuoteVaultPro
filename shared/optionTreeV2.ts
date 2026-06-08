@@ -229,6 +229,7 @@ export type ProductImage = {
 
 export type OptionTreeV2 = {
   schemaVersion: 2;
+  status?: "DRAFT" | "ACTIVE" | "DEPRECATED" | "ARCHIVED";
   rootNodeIds: string[];
   nodes: Record<string, OptionNodeV2>;
   edges?: Array<{
@@ -260,6 +261,23 @@ export type OptionTreeV2 = {
       productName: string;
       confidence: number;
       sizeMode?: "fixed_dropdown" | "custom_dimension" | "none";
+      quantity?: {
+        behavior: string;
+        confidence: number;
+        notes: string | null;
+        lineItemQuantitySource: boolean;
+        customerFacingOptionGenerated: boolean;
+        sourceOptions: Array<{
+          label: string;
+          normalizedGroup: string;
+          required: boolean;
+          confidence: number;
+          sampleValues: string[];
+          sourcePaths: string[];
+        }>;
+        warning: string | null;
+      };
+      quantityWarnings?: string[];
       materialMatch?: {
         materialId: string | null;
         sku: string | null;
