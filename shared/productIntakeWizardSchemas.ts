@@ -117,7 +117,42 @@ export const productIntakeMatrixReadinessSchema = z.object({
   detectedQuantityBreaks: z.array(z.number().int().positive()),
   detectedMaterials: z.array(z.string().min(1)),
   detectedPricingSignals: z.array(z.string().min(1)),
-  noMatrixRowsGenerated: z.literal(true).default(true),
+  noMatrixRowsGenerated: z.boolean().default(true),
+});
+
+export const productIntakeMatrixDraftTierSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  minQty: z.number().int().positive(),
+  maxQty: z.number().int().positive().nullable(),
+});
+
+export const productIntakeMatrixDraftPriceSchema = z.object({
+  tierId: z.string().min(1),
+  label: z.string().min(1),
+  minQty: z.number().int().positive(),
+  perPieceCents: z.number().int().positive().nullable().optional(),
+  perSqftCents: z.number().int().positive().nullable().optional(),
+  minimumChargeCents: z.number().int().positive().nullable().optional(),
+});
+
+export const productIntakeMatrixDraftRowSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  when: z.record(z.unknown()),
+  prices: z.array(productIntakeMatrixDraftPriceSchema),
+});
+
+export const productIntakeMatrixDraftSchema = z.object({
+  generatedByAI: z.literal(true),
+  reviewRequired: z.literal(true),
+  matrixConfidence: productIntakeConfidenceSchema,
+  generationReasoning: z.array(z.string().min(1)),
+  sourceSignals: z.array(z.string().min(1)),
+  dimensions: z.array(z.string().min(1)),
+  tiers: z.array(productIntakeMatrixDraftTierSchema),
+  rows: z.array(productIntakeMatrixDraftRowSchema),
+  warnings: z.array(z.string()),
 });
 
 export const productIntakeAiRepairActionSchema = z.object({
@@ -318,6 +353,7 @@ export const productIntakeDraftReviewSchema = z.object({
     draftQuality: z.unknown().nullable(),
     intakeSummary: z.unknown().nullable(),
     matrixReadiness: productIntakeMatrixReadinessSchema.nullable(),
+    matrixPreview: productIntakeMatrixDraftSchema.nullable(),
     basePricing: z.object({
       perSqftCents: z.number().nullable(),
       perPieceCents: z.number().nullable(),
@@ -559,6 +595,7 @@ export type ProductIntakeReadiness = z.infer<typeof productIntakeReadinessSchema
 export type ProductIntakeSessionDetail = z.infer<typeof productIntakeSessionDetailSchema>;
 export type ProductIntakeDraftQuality = z.infer<typeof productIntakeDraftQualitySchema>;
 export type ProductIntakeMatrixReadiness = z.infer<typeof productIntakeMatrixReadinessSchema>;
+export type ProductIntakeMatrixDraft = z.infer<typeof productIntakeMatrixDraftSchema>;
 export type ProductIntakeCreateDraftResponse = z.infer<typeof productIntakeCreateDraftResponseSchema>;
 export type ProductIntakeDraftReview = z.infer<typeof productIntakeDraftReviewSchema>;
 export type ProductIntakeDraftReviewResponse = z.infer<typeof productIntakeDraftReviewResponseSchema>;

@@ -75,6 +75,13 @@ function centsToDollars(value: number | null | undefined): string {
   return (value / 100).toFixed(2);
 }
 
+function matrixPriceLabel(price: { perPieceCents?: number | null; perSqftCents?: number | null; minimumChargeCents?: number | null }): string {
+  if (price.perSqftCents) return `$${centsToDollars(price.perSqftCents)}/sqft`;
+  if (price.perPieceCents) return `$${centsToDollars(price.perPieceCents)}/ea`;
+  if (price.minimumChargeCents) return `$${centsToDollars(price.minimumChargeCents)} min`;
+  return "-";
+}
+
 function dollarsToCents(value: string): number | null {
   const trimmed = value.trim().replace(/^\$/, "");
   if (!trimmed) return null;
@@ -227,6 +234,7 @@ export default function ProductIntakeDraftReviewPage() {
   const findings = review.publishReadiness.findings;
   const draftTreeQuery = review.pbv2Tree.id ? `?draftTreeVersionId=${encodeURIComponent(review.pbv2Tree.id)}` : "";
   const matrixReadiness = review.pbv2Tree.matrixReadiness;
+  const matrixPreview = review.pbv2Tree.matrixPreview;
   const likelyMatrixPricing = Boolean(matrixReadiness?.required);
 
   return (
@@ -369,7 +377,7 @@ export default function ProductIntakeDraftReviewPage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Matrix Readiness</CardTitle>
-              <CardDescription>Pricing matrix guidance from Product Intake. Matrix rows are never generated automatically.</CardDescription>
+              <CardDescription>Pricing matrix guidance and any AI-generated draft rows from Product Intake.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 text-sm">
               {matrixReadiness ? (
@@ -428,12 +436,67 @@ export default function ProductIntakeDraftReviewPage() {
                       <div className="mt-1 text-muted-foreground">{matrixReadiness.detectedPricingSignals.join("; ")}</div>
                     </div>
                   )}
-                  {matrixReadiness.required && (
+                  {matrixPreview && (
+                    <div className="rounded border bg-muted/30 p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="font-medium">Matrix Preview</div>
+                        <Badge variant="secondary">AI Generated</Badge>
+                        <Badge variant="outline">Review Required</Badge>
+                        <Badge variant="outline">{matrixPreview.matrixConfidence}%</Badge>
+                      </div>
+                      <div className="mt-3 grid gap-3 md:grid-cols-2">
+                        <div>
+                          <div className="text-xs uppercase text-muted-foreground">Dimensions</div>
+                          <div className="mt-1 flex flex-wrap gap-2">
+                            {matrixPreview.dimensions.map((dimension) => <Badge key={dimension} variant="secondary">{dimension}</Badge>)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-xs uppercase text-muted-foreground">Tiers</div>
+                          <div className="mt-1 text-muted-foreground">{matrixPreview.tiers.map((tier) => tier.label).join(", ")}</div>
+                        </div>
+                      </div>
+                      <div className="mt-3 overflow-auto">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Row</TableHead>
+                              {matrixPreview.tiers.map((tier) => <TableHead key={tier.id}>{tier.label}</TableHead>)}
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {matrixPreview.rows.map((row) => (
+                              <TableRow key={row.id}>
+                                <TableCell className="font-medium">{row.label}</TableCell>
+                                {matrixPreview.tiers.map((tier) => {
+                                  const price = row.prices.find((entry) => entry.tierId === tier.id);
+                                  return <TableCell key={`${row.id}_${tier.id}`}>{price ? matrixPriceLabel(price) : "-"}</TableCell>;
+                                })}
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                      {matrixPreview.warnings.length > 0 && (
+                        <div className="mt-3 text-xs text-amber-700 dark:text-amber-300">{matrixPreview.warnings.join("; ")}</div>
+                      )}
+                    </div>
+                  )}
+                  {matrixReadiness.required && !matrixPreview && (
                     <Alert>
                       <AlertTriangle className="h-4 w-4" />
                       <AlertTitle>Matrix pricing review required</AlertTitle>
                       <AlertDescription>
                         Product Intake preserved matrix setup guidance only. Configure PBV2 pricing matrix rows in the builder before publish.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                  {matrixPreview && (
+                    <Alert>
+                      <CheckCircle2 className="h-4 w-4" />
+                      <AlertTitle>Matrix draft generated</AlertTitle>
+                      <AlertDescription>
+                        Product Intake generated inactive PBV2 pricing matrix rows from explicit source prices. Review and edit them in the PBV2 builder before publish.
                       </AlertDescription>
                     </Alert>
                   )}
@@ -541,7 +604,9 @@ export default function ProductIntakeDraftReviewPage() {
                 <AlertTriangle className="h-4 w-4" />
                 <AlertTitle>Matrix pricing review required</AlertTitle>
                 <AlertDescription>
-                  Product Intake detected {matrixReadiness ? titleFromMatrixType(matrixReadiness.matrixType) : "matrix"} pricing. No matrix rows were generated; configure the pricing matrix in the PBV2 builder before publish.
+                  {matrixPreview
+                    ? `Product Intake generated a ${matrixReadiness ? titleFromMatrixType(matrixReadiness.matrixType) : "matrix"} pricing draft. Review the generated rows in the PBV2 builder before publish.`
+                    : `Product Intake detected ${matrixReadiness ? titleFromMatrixType(matrixReadiness.matrixType) : "matrix"} pricing, but source pricing was incomplete or below the confidence threshold. Configure the pricing matrix in the PBV2 builder before publish.`}
                 </AlertDescription>
               </Alert>
             )}

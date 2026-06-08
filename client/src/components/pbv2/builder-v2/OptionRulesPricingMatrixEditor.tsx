@@ -41,6 +41,10 @@ const ACTIONS = ["show", "hide", "disable", "enable", "require", "optional", "cl
 const NO_VALUE_OPERATORS = new Set(["exists", "not_exists"]);
 const MATRIX_VARIABLE_KEY_DEFAULT = "base_price";
 
+function isMatrixDebugEnabled(): boolean {
+  return Boolean((globalThis as any).__PBV2_MATRIX_DEBUG__);
+}
+
 function asRecord(value: unknown): Record<string, any> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : null;
 }
@@ -549,7 +553,7 @@ export function OptionRulesPricingMatrixEditor({
 
   const setMatrixDimension = (dimension: string, checked: boolean) => {
     const nextMatrix = setPricingMatrixDimension(pricingMatrix, dimension, checked);
-    if (import.meta.env.DEV) {
+    if (isMatrixDebugEnabled()) {
       console.log("[PBV2_MATRIX_DIMENSION_CLICK]", {
         clickedDimension: dimension,
         checked,

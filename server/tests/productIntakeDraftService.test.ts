@@ -118,6 +118,11 @@ function expectNoRuntimeArchitectureErrors(tree: any) {
   expect(baseValidation.errors.map((finding) => finding.code)).toContain("PBV2_E_BASE_PRICE_MISSING");
 }
 
+function expectNoPricingMatrixValidationErrors(tree: any) {
+  const publishValidation = validateTreeForPublish(tree, DEFAULT_VALIDATE_OPTS);
+  expect(publishValidation.errors.filter((finding) => finding.code.startsWith("PBV2_E_PRICING_MATRIX"))).toEqual([]);
+}
+
 function expectGeneratedDraftShape(tree: any) {
   expectNoRuntimeArchitectureErrors(tree);
   expectNoQuantityOption(tree);
@@ -256,11 +261,207 @@ describe("Product Intake draft service", () => {
       expect.stringMatching(/Base pricing was not found/),
       expect.stringMatching(/Likely matrix pricing detected/),
     ]));
-    expect(tree.meta?.productIntake?.draftQuality?.warnings).toEqual(expect.arrayContaining([
-      expect.stringMatching(/Matrix pricing is likely required/),
+    expect(tree.meta?.productIntake?.draftQuality?.reasons).toEqual(expect.arrayContaining([
+      expect.stringMatching(/without generating matrix rows/),
     ]));
     expect(validateTreeHasBasePrice(tree).errors.map((finding) => finding.code)).toContain("PBV2_E_BASE_PRICE_MISSING");
     expectNoQuantityOption(tree);
+  });
+
+  test.each([
+    {
+      label: "4mm Coroplast Yard Signs",
+      expectedDimension: "printed_sides",
+      briefOverrides: {
+        productIdentity: {
+          likelyProductName: { value: "24x18 Coroplast Yard Sign", confidence: 94, evidence: [] },
+          category: { value: "Yard Signs", confidence: 90, evidence: [] },
+          productType: { value: "Rigid Sign", confidence: 85, evidence: [] },
+        },
+        sizeBehavior: { behavior: "fixed_size_list", confidence: 92, evidence: [] },
+        quantityBehavior: { behavior: "quantity tiers", confidence: 92, evidence: [] },
+        pricingAnalysis: { behavior: "matrix_or_tiered", confidence: 90, notes: "printed sides x quantity price table", evidence: [] },
+        requiredOptions: [
+          option("Size", { normalizedGroup: "size", sampleValues: ["24x18"] }),
+          option("Printed Sides", { normalizedGroup: "printed_sides", sampleValues: ["Single Sided", "Double Sided"] }),
+        ],
+        optionalOptions: [],
+      },
+      sourceText: [
+        "24x18 Coroplast Yard Sign",
+        "Printed Sides: Single Sided, Double Sided",
+        "Quantity Tiers: 1-100, 101-500, 501+",
+        "Pricing:",
+        "Single Sided:",
+        "1-100 = 4.40",
+        "101-500 = 3.30",
+        "501+ = 3.00",
+        "Double Sided:",
+        "1-100 = 5.50",
+        "101-500 = 4.40",
+        "501+ = 4.00",
+      ].join("\n"),
+      expectedFirstTierCents: 440,
+    },
+    {
+      label: "Business Cards",
+      expectedDimension: "stock",
+      briefOverrides: {
+        productIdentity: {
+          likelyProductName: { value: "Business Cards", confidence: 94, evidence: [] },
+          category: { value: "Business Cards", confidence: 90, evidence: [] },
+          productType: { value: "Flat Print", confidence: 85, evidence: [] },
+        },
+        sizeBehavior: { behavior: "fixed_size", confidence: 80, evidence: [] },
+        quantityBehavior: { behavior: "quantity tiers", confidence: 92, evidence: [] },
+        pricingAnalysis: { behavior: "matrix_or_tiered", confidence: 90, notes: "stock x quantity price table", evidence: [] },
+        requiredOptions: [option("Stock", { normalizedGroup: "stock", sampleValues: ["14pt", "16pt"] })],
+        optionalOptions: [],
+      },
+      sourceText: [
+        "Business Cards",
+        "Stock: 14pt, 16pt",
+        "Quantity: 250, 500, 1000",
+        "Prices:",
+        "14pt: 250 = 35.00, 500 = 55.00, 1000 = 90.00",
+        "16pt: 250 = 40.00, 500 = 65.00, 1000 = 110.00",
+      ].join("\n"),
+      expectedFirstTierCents: 3500,
+    },
+    {
+      label: "Postcards",
+      expectedDimension: "size",
+      briefOverrides: {
+        productIdentity: {
+          likelyProductName: { value: "Postcards", confidence: 94, evidence: [] },
+          category: { value: "Postcards", confidence: 90, evidence: [] },
+          productType: { value: "Flat Print", confidence: 85, evidence: [] },
+        },
+        sizeBehavior: { behavior: "fixed_size_list", confidence: 92, evidence: [] },
+        quantityBehavior: { behavior: "quantity tiers", confidence: 92, evidence: [] },
+        pricingAnalysis: { behavior: "matrix_or_tiered", confidence: 90, notes: "size x quantity price table", evidence: [] },
+        requiredOptions: [option("Size", { normalizedGroup: "size", sampleValues: ["4x6", "5x7"] })],
+        optionalOptions: [],
+      },
+      sourceText: [
+        "Postcards",
+        "Size: 4x6, 5x7",
+        "Quantity: 100, 250, 500",
+        "4x6: 100 = 30.00, 250 = 55.00, 500 = 90.00",
+        "5x7: 100 = 40.00, 250 = 70.00, 500 = 120.00",
+      ].join("\n"),
+      expectedFirstTierCents: 3000,
+    },
+    {
+      label: "Contour-Cut Stickers",
+      expectedDimension: "cut_type",
+      briefOverrides: {
+        productIdentity: {
+          likelyProductName: { value: "Contour-Cut Stickers", confidence: 94, evidence: [] },
+          category: { value: "Stickers", confidence: 90, evidence: [] },
+          productType: { value: "Sticker", confidence: 85, evidence: [] },
+        },
+        sizeBehavior: { behavior: "custom_width_height", confidence: 90, evidence: [] },
+        quantityBehavior: { behavior: "quantity tiers", confidence: 92, evidence: [] },
+        pricingAnalysis: { behavior: "matrix_or_tiered", confidence: 90, notes: "cut type x quantity price table", evidence: [] },
+        requiredOptions: [option("Cut Type", { normalizedGroup: "cut_type", sampleValues: ["Kiss Cut", "Die Cut"] })],
+        optionalOptions: [],
+      },
+      sourceText: [
+        "Contour-Cut Stickers",
+        "Quantity: 25, 50, 100",
+        "Kiss Cut: 25 = 18.00, 50 = 30.00, 100 = 48.00",
+        "Die Cut: 25 = 22.00, 50 = 36.00, 100 = 58.00",
+      ].join("\n"),
+      expectedFirstTierCents: 1800,
+    },
+    {
+      label: "13oz Banner",
+      expectedDimension: "printed_sides",
+      briefOverrides: {
+        productIdentity: {
+          likelyProductName: { value: "13oz Banner", confidence: 94, evidence: [] },
+          category: { value: "Banners", confidence: 90, evidence: [] },
+          productType: { value: "Banner", confidence: 85, evidence: [] },
+        },
+        sizeBehavior: { behavior: "custom_size", confidence: 92, evidence: [] },
+        quantityBehavior: { behavior: "quantity tiers", confidence: 92, evidence: [] },
+        pricingAnalysis: { behavior: "matrix_or_tiered", confidence: 90, notes: "printed sides x quantity price table", evidence: [] },
+        requiredOptions: [option("Printed Sides", { normalizedGroup: "printed_sides", sampleValues: ["Single Sided", "Double Sided"] })],
+        optionalOptions: [],
+      },
+      sourceText: [
+        "13oz Banner printed sides quantity price table.",
+        "Quantity: 1, 5, 10",
+        "Single Sided: 1 = 45.00, 5 = 40.00, 10 = 35.00",
+        "Double Sided: 1 = 65.00, 5 = 60.00, 10 = 55.00",
+      ].join("\n"),
+      expectedFirstTierCents: 4500,
+    },
+    {
+      label: ".040 Styrene Signs",
+      expectedDimension: "size",
+      briefOverrides: {
+        productIdentity: {
+          likelyProductName: { value: ".040 Styrene Signs", confidence: 94, evidence: [] },
+          category: { value: "Rigid Signs", confidence: 90, evidence: [] },
+          productType: { value: "Styrene", confidence: 85, evidence: [] },
+        },
+        sizeBehavior: { behavior: "fixed_size_list", confidence: 92, evidence: [] },
+        quantityBehavior: { behavior: "quantity tiers", confidence: 92, evidence: [] },
+        pricingAnalysis: { behavior: "matrix_or_tiered", confidence: 90, notes: "size x quantity price table", evidence: [] },
+        requiredOptions: [option("Size", { normalizedGroup: "size", sampleValues: ["12x18", "18x24"] })],
+        optionalOptions: [],
+      },
+      sourceText: [
+        ".040 Styrene Signs",
+        "Quantity: 1, 10, 25",
+        "12x18: 1 = 20.00, 10 = 18.00, 25 = 15.00",
+        "18x24: 1 = 30.00, 10 = 26.00, 25 = 22.00",
+      ].join("\n"),
+      expectedFirstTierCents: 2000,
+    },
+  ])("generates high-confidence AI matrix draft for $label", ({ label, expectedDimension, briefOverrides, sourceText, expectedFirstTierCents }) => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief(briefOverrides as Partial<ProductIntakeBrief>),
+      sessionId: `sess_matrix_${label.replace(/[^a-z0-9]+/gi, "_").toLowerCase()}`,
+      productName: label,
+      userId: "user_1",
+      sourceText,
+    });
+
+    expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expectNoQuantityOption(tree);
+    expectNoRuntimeArchitectureErrors(tree);
+    expectNoPricingMatrixValidationErrors(tree);
+    expect((tree as any).pricingMatrix).toMatchObject({
+      dimensions: [expectedDimension],
+      rows: expect.any(Array),
+    });
+    expect((tree as any).pricingMatrix.rows).toHaveLength(2);
+    expect((tree as any).pricingMatrix.rows[0]).toMatchObject({
+      when: { [expectedDimension]: expect.any(String) },
+      tierBasis: "line_item_quantity",
+    });
+    expect((tree as any).pricingMatrix.rows[0].qtyTiers[0]).toMatchObject({
+      minQty: expect.any(Number),
+      perPieceCents: expectedFirstTierCents,
+    });
+    expect(tree.meta?.productIntake?.matrixReadiness).toMatchObject({
+      required: true,
+      noMatrixRowsGenerated: false,
+      matrixConfidence: expect.any(Number),
+    });
+    expect(tree.meta?.productIntake?.matrixReadiness?.matrixConfidence).toBeGreaterThanOrEqual(85);
+    expect(tree.meta?.productIntake?.matrixDraft).toMatchObject({
+      generatedByAI: true,
+      reviewRequired: true,
+      dimensions: [expectedDimension],
+      rows: expect.any(Array),
+    });
+    expect(tree.meta?.productIntake?.draftQuality?.reasons).toEqual(expect.arrayContaining([
+      expect.stringMatching(/pricing matrix draft was generated/i),
+    ]));
   });
 
   test.each([

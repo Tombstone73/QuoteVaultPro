@@ -14,11 +14,13 @@ import {
   productIntakeSessionSchema,
   type ProductIntakeBrief,
   type ProductIntakeDraftQuality,
+  type ProductIntakeMatrixDraft,
   type ProductIntakeMatrixReadiness,
   type ProductIntakeOption,
   type ProductIntakeSession,
 } from "@shared/productIntakeWizardSchemas";
-import { validateOptionTreeV2, type OptionTreeV2 } from "@shared/optionTreeV2";
+import { validateOptionTreeV2, type OptionTreeV2, type PricingV2Tier } from "@shared/optionTreeV2";
+import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 import { cloneTemplateIntoTree } from "@shared/pbv2/optionGroupTemplates";
 import { db as defaultDb } from "../../db";
 import { ProductIntakeSessionError } from "./productIntakeSessionService";
@@ -399,7 +401,7 @@ function analyzeDraftPricing(args: {
     warnings.push("Base pricing was not found in the intake source. PBV2 publish will remain blocked until per sqft, per piece, or minimum charge pricing is configured.");
   }
   if (matrix.likelyMatrixPricing) {
-    warnings.push("Likely matrix pricing detected. No pricing matrix was generated; configure rows in the existing PBV2 Pricing Matrix editor before publish.");
+    warnings.push("Likely matrix pricing detected. Product Intake will generate matrix rows only when explicit dimensions, tiers, and prices meet the confidence threshold.");
   }
   return {
     base: answered.base,
@@ -443,6 +445,235 @@ function optionChoices(option: ProductIntakeOption): Array<{ value: string; labe
       return { value: uniqueValue, label, sortOrder: seen.size - 1 };
     })
     .slice(0, 30);
+}
+
+type MatrixTierCandidate = {
+  id: string;
+  label: string;
+  minQty: number;
+  maxQty: number | null;
+};
+
+type MatrixChoiceCandidate = {
+  value: string;
+  label: string;
+};
+
+type MatrixDimensionCandidate = {
+  selectionKey: string;
+  label: string;
+  choices: MatrixChoiceCandidate[];
+};
+
+type GeneratedMatrixDraft = {
+  matrix: ProductOptionPricingMatrix;
+  draft: ProductIntakeMatrixDraft;
+  readiness: ProductIntakeMatrixReadiness;
+};
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeMatrixText(value: string): string {
+  return value.replace(/\r\n/g, "\n").replace(/[–—]/g, "-");
+}
+
+function parseQuantityTierDefinitions(text: string, readiness: ProductIntakeMatrixReadiness): MatrixTierCandidate[] {
+  const normalized = normalizeMatrixText(text);
+  const tiers: MatrixTierCandidate[] = [];
+  const seen = new Set<string>();
+  const pushTier = (label: string, minQty: number, maxQty: number | null) => {
+    if (!Number.isInteger(minQty) || minQty <= 0) return;
+    if (maxQty != null && (!Number.isInteger(maxQty) || maxQty < minQty)) return;
+    const id = safeKey(`qty_${label}`, `qty_${minQty}`);
+    if (seen.has(id)) return;
+    seen.add(id);
+    tiers.push({ id, label, minQty, maxQty });
+  };
+
+  for (const match of Array.from(normalized.matchAll(/\b(\d{1,6})\s*-\s*(\d{1,6})\b/g))) {
+    pushTier(`${match[1]}-${match[2]}`, Number(match[1]), Number(match[2]));
+  }
+  for (const match of Array.from(normalized.matchAll(/\b(\d{1,6})\s*\+/g))) {
+    pushTier(`${match[1]}+`, Number(match[1]), null);
+  }
+  if (tiers.length > 0) return tiers.slice(0, 20);
+
+  const quantityLine = normalized.split("\n")
+    .map((line) => line.trim())
+    .find((line) => /^(?:quantity|quantities|qty|quantity tiers?|tiers?|price breaks?)\b/i.test(line));
+  const detectedBreaks = quantityLine
+    ? Array.from(quantityLine.matchAll(/\b\d{1,6}\b/g)).map((match) => Number(match[0]))
+    : readiness.detectedQuantityBreaks;
+  for (const value of detectedBreaks) {
+    pushTier(String(value), value, null);
+  }
+  return tiers.slice(0, 20);
+}
+
+function pricePatternForTier(tier: MatrixTierCandidate): RegExp {
+  const labels = [tier.label, String(tier.minQty)];
+  if (tier.maxQty != null) labels.push(`${tier.minQty}-${tier.maxQty}`);
+  else labels.push(`${tier.minQty}+`);
+  const alternatives = Array.from(new Set(labels.map(escapeRegExp))).join("|");
+  return new RegExp(`(?:^|[^\\d])(?:${alternatives})\\s*(?:=|:|-)\\s*\\$?\\s*(\\d[\\d,]*(?:\\.\\d{1,4})?)\\b`, "i");
+}
+
+function extractChoicePriceBlock(text: string, choiceLabels: string[], targetLabel: string): string | null {
+  const lines = normalizeMatrixText(text).split("\n").map((line) => line.trim()).filter(Boolean);
+  const targetPattern = new RegExp(`^(?:[-*]\\s*)?${escapeRegExp(targetLabel)}\\s*:`, "i");
+  const nextChoicePatterns = choiceLabels
+    .filter((label) => label.toLowerCase() !== targetLabel.toLowerCase())
+    .map((label) => new RegExp(`^(?:[-*]\\s*)?${escapeRegExp(label)}\\s*:`, "i"));
+  const startIndex = lines.findIndex((line) => targetPattern.test(line));
+  if (startIndex < 0) return null;
+
+  const block: string[] = [lines[startIndex].replace(targetPattern, "").trim()];
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (nextChoicePatterns.some((pattern) => pattern.test(line))) break;
+    if (/^(?:pricing|prices|quantity tiers?|tiers?|stock|size|printed sides?)\s*:?\s*$/i.test(line)) continue;
+    block.push(line);
+  }
+  const joined = block.join(" ").trim();
+  return joined || null;
+}
+
+function centsFromTierBlock(block: string, tier: MatrixTierCandidate): number | null {
+  const match = pricePatternForTier(tier).exec(block);
+  if (!match?.[1]) return null;
+  return dollarsToCents(match[1]);
+}
+
+function matrixDimensionCandidatesFromTree(tree: OptionTreeV2): MatrixDimensionCandidate[] {
+  return Object.values(tree.nodes)
+    .filter((node: any) => String(node?.type ?? "").toUpperCase() === "INPUT" && node?.input?.type === "select")
+    .map((node: any) => {
+      const selectionKey = String(node.input?.selectionKey ?? node.key ?? "").trim();
+      const choices = Array.isArray(node.choices)
+        ? node.choices
+            .map((choice: any) => ({ value: String(choice?.value ?? ""), label: String(choice?.label ?? "") }))
+            .filter((choice: MatrixChoiceCandidate) => choice.value && choice.label)
+        : [];
+      return {
+        selectionKey,
+        label: String(node.label ?? selectionKey),
+        choices,
+      };
+    })
+    .filter((candidate) => candidate.selectionKey && candidate.selectionKey !== "quantity" && candidate.choices.length >= 2);
+}
+
+function buildGeneratedMatrixDraft(args: {
+  tree: OptionTreeV2;
+  sessionId: string;
+  sourceText: string;
+  pricingReadiness: IntakePricingAnalysis;
+}): GeneratedMatrixDraft | null {
+  const tiers = parseQuantityTierDefinitions(args.sourceText, args.pricingReadiness.matrixReadiness);
+  if (tiers.length < 2) return null;
+
+  const priceField = /\b(?:per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet|sf)\b/i.test(args.sourceText)
+    ? "perSqftCents"
+    : "perPieceCents";
+  const dimensionCandidates = matrixDimensionCandidatesFromTree(args.tree);
+  const parsedCandidates = dimensionCandidates.map((dimension) => {
+    const choiceLabels = dimension.choices.map((choice) => choice.label);
+    const rows = dimension.choices.map((choice) => {
+      const block = extractChoicePriceBlock(args.sourceText, choiceLabels, choice.label);
+      if (!block) return null;
+      const prices = tiers.map((tier) => ({
+        tier,
+        cents: centsFromTierBlock(block, tier),
+      }));
+      if (prices.some((price) => price.cents == null)) return null;
+      return { choice, prices: prices as Array<{ tier: MatrixTierCandidate; cents: number }> };
+    }).filter(Boolean) as Array<{ choice: MatrixChoiceCandidate; prices: Array<{ tier: MatrixTierCandidate; cents: number }> }>;
+    return { dimension, rows };
+  }).filter((candidate) => candidate.rows.length >= 2);
+
+  const selected = parsedCandidates.sort((a, b) => (b.rows.length * tiers.length) - (a.rows.length * tiers.length))[0];
+  if (!selected) return null;
+
+  const confidence = Math.max(85, Math.min(98, Math.max(args.pricingReadiness.matrixReadiness.matrixConfidence, 88 + Math.min(10, selected.rows.length + tiers.length))));
+  if (confidence < 85) return null;
+
+  const matrixRows = selected.rows.map((row) => {
+    const rowId = safeKey(`intake_matrix_${selected.dimension.selectionKey}_${row.choice.value}`, "intake_matrix_row");
+    const qtyTiers: PricingV2Tier[] = row.prices.map(({ tier, cents }) => ({
+      id: safeKey(`${rowId}_${tier.id}`, "tier"),
+      label: tier.label,
+      minQty: tier.minQty,
+      [priceField]: cents,
+    }));
+    return {
+      id: rowId,
+      when: { [selected.dimension.selectionKey]: row.choice.value },
+      qtyTiers,
+      tierBasis: "line_item_quantity" as const,
+    };
+  });
+
+  const previewRows = selected.rows.map((row) => ({
+    id: safeKey(`preview_${selected.dimension.selectionKey}_${row.choice.value}`, "preview_row"),
+    label: row.choice.label,
+    when: { [selected.dimension.selectionKey]: row.choice.value },
+    prices: row.prices.map(({ tier, cents }) => ({
+      tierId: tier.id,
+      label: tier.label,
+      minQty: tier.minQty,
+      [priceField]: cents,
+    })),
+  }));
+
+  const sourceSignals = unique([
+    ...args.pricingReadiness.matrixReadiness.reasoning,
+    ...args.pricingReadiness.matrixReadiness.detectedPricingSignals,
+    `${selected.dimension.label} rows matched explicit price values for ${tiers.length} quantity tiers.`,
+  ]);
+  const readiness: ProductIntakeMatrixReadiness = {
+    ...args.pricingReadiness.matrixReadiness,
+    required: true,
+    matrixType: args.pricingReadiness.matrixReadiness.matrixType === "NONE" ? "QUANTITY_TIER" : args.pricingReadiness.matrixReadiness.matrixType,
+    matrixDimensions: unique([
+      selected.dimension.selectionKey,
+      ...args.pricingReadiness.matrixReadiness.matrixDimensions.filter((dimension) => dimension !== selected.dimension.selectionKey),
+      "quantity",
+    ]),
+    matrixConfidence: confidence,
+    reasoning: sourceSignals,
+    recommendedSetup: "AI generated a PBV2 pricing matrix draft from explicit source tiers and prices. Review all rows in the PBV2 builder before publish.",
+    detectedQuantityBreaks: unique([...args.pricingReadiness.matrixReadiness.detectedQuantityBreaks.map(String), ...tiers.map((tier) => String(tier.minQty))]).map(Number),
+    detectedPricingSignals: sourceSignals,
+    noMatrixRowsGenerated: false,
+  };
+
+  return {
+    matrix: {
+      id: safeKey(`intake_matrix_${args.sessionId}`, "intake_matrix"),
+      dimensions: [selected.dimension.selectionKey],
+      rows: matrixRows,
+    },
+    draft: {
+      generatedByAI: true,
+      reviewRequired: true,
+      matrixConfidence: confidence,
+      generationReasoning: [
+        "Explicit matrix dimension labels matched PBV2 option choices.",
+        "Every generated row included every detected quantity tier price.",
+      ],
+      sourceSignals,
+      dimensions: [selected.dimension.selectionKey],
+      tiers,
+      rows: previewRows,
+      warnings: [
+        "AI generated this pricing matrix as an inactive draft artifact only.",
+        "Publish and product activation remain separate review steps.",
+      ],
+    },
+    readiness,
+  };
 }
 
 type DraftGroupKey = "size_quantity" | "print_setup" | "finishing" | "hardware" | "materials" | "review";
@@ -712,6 +943,7 @@ function assessDraftQuality(args: {
     const node = args.tree.nodes[nodeId];
     return node && String(node.type ?? "").toUpperCase() === "GROUP";
   });
+  const generatedMatrix = Boolean((args.tree as any).pricingMatrix?.rows?.length && args.tree.meta?.productIntake?.matrixDraft?.generatedByAI === true);
 
   if (duplicateSelectionKeys.length > 0) {
     score -= 15;
@@ -741,9 +973,9 @@ function assessDraftQuality(args: {
     score -= 25;
     warnings.push("Missing required PBV2 inputs.");
   }
-  if (args.pricingReadiness.matrixReadiness.required) {
-    score -= 25;
-    warnings.push("Matrix pricing is likely required and must be configured in PBV2 Pricing Matrix before publish.");
+  if (generatedMatrix) {
+    score += 5;
+    warnings.push("AI-generated pricing matrix draft must be reviewed before publish.");
   }
   const unresolvedRequired = args.brief.missingDecisions.filter((decision) => decision.severity === "blocker");
   if (unresolvedRequired.length > 0) {
@@ -773,7 +1005,11 @@ function assessDraftQuality(args: {
   if (args.skippedTemplateOptionCount > 0) reasons.push(`${args.skippedTemplateOptionCount} generic option(s) skipped because reusable templates were applied.`);
   if (groupNodes.length >= 2 && !invalidRootGroups) reasons.push("Options were organized into logical PBV2 groups.");
   reasons.push("Quote/order line item quantity remains outside customer-facing PBV2 options.");
-  if (args.pricingReadiness.matrixReadiness.required) reasons.push("Matrix pricing guidance was preserved without generating matrix rows.");
+  if (generatedMatrix) {
+    reasons.push("High-confidence AI pricing matrix draft was generated for review.");
+  } else if (args.pricingReadiness.matrixReadiness.required) {
+    reasons.push("Matrix pricing guidance was preserved without generating matrix rows because source pricing was incomplete or below confidence threshold.");
+  }
   if (warnings.length === 0) reasons.push("No draft quality penalties detected.");
 
   const normalizedScore = Math.max(0, Math.min(100, Math.round(score)));
@@ -964,6 +1200,50 @@ export function buildProductIntakeDraftTree(args: {
       groupKey: "review",
       sortOrder,
     });
+  }
+
+  const generatedMatrix = buildGeneratedMatrixDraft({
+    tree,
+    sessionId: args.sessionId,
+    sourceText: collectBriefText(args.brief, args.sourceText, args.sourceJson),
+    pricingReadiness,
+  });
+  if (generatedMatrix) {
+    (tree as any).pricingMatrix = generatedMatrix.matrix;
+    pricingReadiness.matrixReadiness = generatedMatrix.readiness;
+    pricingReadiness.likelyMatrixPricing = true;
+    pricingReadiness.candidateDimensions = generatedMatrix.readiness.matrixDimensions;
+    pricingReadiness.matrixEvidence = generatedMatrix.readiness.reasoning;
+    pricingReadiness.warnings = pricingReadiness.warnings.filter((warning) => !/Likely matrix pricing detected/i.test(warning));
+    pricingReadiness.warnings.push("AI generated a PBV2 Pricing Matrix draft from explicit source prices. Review rows before publish.");
+    tree.meta = {
+      ...(tree.meta ?? {}),
+      productIntake: {
+        sessionId: args.sessionId,
+        productName: args.productName,
+        confidence: args.brief.overallConfidence,
+        ...(tree.meta?.productIntake ?? {}),
+        pricingReadiness: {
+          ...(tree.meta?.productIntake?.pricingReadiness ?? {}),
+          base: pricingReadiness.base,
+          sources: pricingReadiness.sources,
+          warnings: pricingReadiness.warnings,
+          basePricingConfigured: hasBasePricing(pricingReadiness.base),
+          likelyMatrixPricing: true,
+          candidateDimensions: generatedMatrix.readiness.matrixDimensions,
+          matrixEvidence: generatedMatrix.readiness.reasoning,
+          matrixType: generatedMatrix.readiness.matrixType,
+          matrixConfidence: generatedMatrix.readiness.matrixConfidence,
+          detectedSizes: generatedMatrix.readiness.detectedSizes,
+          detectedQuantityBreaks: generatedMatrix.readiness.detectedQuantityBreaks,
+          detectedMaterials: generatedMatrix.readiness.detectedMaterials,
+          detectedPricingSignals: generatedMatrix.readiness.detectedPricingSignals,
+        },
+        matrixReadiness: generatedMatrix.readiness,
+        matrixDraft: generatedMatrix.draft,
+        pricingWarnings: pricingReadiness.warnings,
+      },
+    };
   }
 
   tree = normalizeProductIntakeRuntimeRoots(tree);
