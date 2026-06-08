@@ -49,6 +49,11 @@ export type ProductIntakeDraftReview = {
     optionGroups: Array<{ id: string; label: string; optionCount: number; options: string[] }>;
     draftQuality: unknown | null;
     intakeSummary: unknown | null;
+    basePricing: {
+      perSqftCents: number | null;
+      perPieceCents: number | null;
+      minimumChargeCents: number | null;
+    };
   };
   publishReadiness: {
     productInactive: boolean;
@@ -66,6 +71,17 @@ export type ProductIntakeDraftReview = {
 
 export type ProductIntakeDraftReviewService = {
   getDraftReview(args: { organizationId: string; sessionId: string }): Promise<ProductIntakeDraftReview>;
+  updateDraftPricing(args: {
+    organizationId: string;
+    sessionId: string;
+    base: {
+      perSqftCents?: number | null;
+      perPieceCents?: number | null;
+      minimumChargeCents?: number | null;
+    };
+    userId: string | null;
+    userName?: string | null;
+  }): Promise<ProductIntakeDraftReview>;
   getDraftLinkForProduct(args: { organizationId: string; productId: string }): Promise<{
     sessionId: string;
     productId: string;
@@ -88,7 +104,23 @@ function toIso(value: Date | string | null): string | null {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
-function summarizeTree(treeJson: any): Pick<ProductIntakeDraftReview["pbv2Tree"], "groupCount" | "optionCount" | "optionGroups" | "draftQuality" | "intakeSummary"> {
+function normalizePricingCents(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  return Math.round(value);
+}
+
+function basePricingFromTree(treeJson: any): ProductIntakeDraftReview["pbv2Tree"]["basePricing"] {
+  const base = treeJson?.meta?.pricingV2?.base && typeof treeJson.meta.pricingV2.base === "object"
+    ? treeJson.meta.pricingV2.base
+    : {};
+  return {
+    perSqftCents: normalizePricingCents(base.perSqftCents),
+    perPieceCents: normalizePricingCents(base.perPieceCents),
+    minimumChargeCents: normalizePricingCents(base.minimumChargeCents),
+  };
+}
+
+function summarizeTree(treeJson: any): Pick<ProductIntakeDraftReview["pbv2Tree"], "groupCount" | "optionCount" | "optionGroups" | "draftQuality" | "intakeSummary" | "basePricing"> {
   const nodes = treeJson?.nodes && typeof treeJson.nodes === "object" ? treeJson.nodes : {};
   const edges = Array.isArray(treeJson?.edges) ? treeJson.edges : [];
   const groups = Object.values(nodes).filter((node: any) => String(node?.type ?? "").toUpperCase() === "GROUP");
@@ -112,6 +144,7 @@ function summarizeTree(treeJson: any): Pick<ProductIntakeDraftReview["pbv2Tree"]
     optionGroups,
     draftQuality: treeJson?.meta?.productIntake?.draftQuality ?? null,
     intakeSummary: treeJson?.meta?.productIntake ?? null,
+    basePricing: basePricingFromTree(treeJson),
   };
 }
 
@@ -254,6 +287,124 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
   return {
     async getDraftReview(args) {
       return buildReview(database, args.organizationId, args.sessionId);
+    },
+
+    async updateDraftPricing({ organizationId, sessionId, base, userId, userName }) {
+      await database.transaction(async (tx: any) => {
+        const [session] = await tx
+          .select({
+            id: productIntakeSessions.id,
+            status: productIntakeSessions.status,
+            createdProductId: productIntakeSessions.createdProductId,
+            createdPbv2TreeVersionId: productIntakeSessions.createdPbv2TreeVersionId,
+          })
+          .from(productIntakeSessions)
+          .where(and(eq(productIntakeSessions.organizationId, organizationId), eq(productIntakeSessions.id, sessionId)))
+          .limit(1);
+        if (!session) throw new ProductIntakeSessionError(404, "Product Intake session not found.", "SESSION_NOT_FOUND");
+        if (session.status !== "draft_created" || !session.createdProductId || !session.createdPbv2TreeVersionId) {
+          throw new ProductIntakeSessionError(409, "Create the Product Intake draft before editing draft pricing.", "INTAKE_DRAFT_NOT_CREATED");
+        }
+
+        const [tree] = await tx
+          .select()
+          .from(pbv2TreeVersions)
+          .where(and(
+            eq(pbv2TreeVersions.organizationId, organizationId),
+            eq(pbv2TreeVersions.id, session.createdPbv2TreeVersionId),
+            eq(pbv2TreeVersions.productId, session.createdProductId),
+          ))
+          .limit(1);
+        if (!tree) throw new ProductIntakeSessionError(404, "PBV2 draft tree not found.", "PBV2_TREE_NOT_FOUND");
+        if (tree.status !== "DRAFT") {
+          throw new ProductIntakeSessionError(409, "Only PBV2 DRAFT trees can be edited from Product Intake.", "PBV2_NOT_DRAFT");
+        }
+
+        const treeJson = tree.treeJson && typeof tree.treeJson === "object" ? { ...(tree.treeJson as any) } : {};
+        const meta = treeJson.meta && typeof treeJson.meta === "object" ? { ...treeJson.meta } : {};
+        const pricingV2 = meta.pricingV2 && typeof meta.pricingV2 === "object" ? { ...meta.pricingV2 } : {};
+        const previousBase = pricingV2.base && typeof pricingV2.base === "object" ? pricingV2.base : {};
+        const nextBase = {
+          ...previousBase,
+          perSqftCents: normalizePricingCents(base.perSqftCents),
+          perPieceCents: normalizePricingCents(base.perPieceCents),
+          minimumChargeCents: normalizePricingCents(base.minimumChargeCents),
+        };
+        for (const key of ["perSqftCents", "perPieceCents", "minimumChargeCents"] as const) {
+          if (nextBase[key] == null) delete nextBase[key];
+        }
+
+        const productIntake = meta.productIntake && typeof meta.productIntake === "object" ? { ...meta.productIntake } : {};
+        const pricingReadiness = productIntake.pricingReadiness && typeof productIntake.pricingReadiness === "object"
+          ? { ...productIntake.pricingReadiness }
+          : {};
+        const warnings = Array.isArray(pricingReadiness.warnings)
+          ? pricingReadiness.warnings.filter((warning: unknown) => !/Base pricing was not found/i.test(String(warning)))
+          : [];
+        if (!pricingConfigured({ meta: { pricingV2: { base: nextBase } } })) {
+          warnings.push("Base pricing was not found in the intake source. PBV2 publish will remain blocked until per sqft, per piece, or minimum charge pricing is configured.");
+        }
+
+        const updatedTreeJson = {
+          ...treeJson,
+          meta: {
+            ...meta,
+            updatedAt: new Date().toISOString(),
+            updatedByUserId: userId ?? undefined,
+            pricingV2: {
+              unitSystem: "imperial",
+              tierBasis: "line_item_quantity",
+              ...pricingV2,
+              base: nextBase,
+            },
+            productIntake: {
+              ...productIntake,
+              pricingReadiness: {
+                ...pricingReadiness,
+                base: nextBase,
+                basePricingConfigured: pricingConfigured({ meta: { pricingV2: { base: nextBase } } }),
+                sources: Array.from(new Set([
+                    ...(Array.isArray(pricingReadiness.sources) ? pricingReadiness.sources.map(String) : []),
+                    "Product Intake draft review pricing editor",
+                ])),
+                warnings,
+              },
+              pricingWarnings: warnings,
+            },
+          },
+        };
+
+        await tx
+          .update(pbv2TreeVersions)
+          .set({
+            treeJson: updatedTreeJson,
+            updatedByUserId: userId,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(pbv2TreeVersions.organizationId, organizationId),
+            eq(pbv2TreeVersions.id, tree.id),
+            eq(pbv2TreeVersions.status, "DRAFT"),
+          ));
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: userName ?? null,
+          actionType: "product_intake_draft_pricing_updated",
+          entityType: "product_intake_session",
+          entityId: sessionId,
+          entityName: session.createdProductId,
+          description: `Product Intake draft pricing updated for PBV2 DRAFT tree ${tree.id}.`,
+          newValues: {
+            sessionId,
+            productId: session.createdProductId,
+            pbv2TreeVersionId: tree.id,
+            base: nextBase,
+          },
+        });
+      });
+      return buildReview(database, organizationId, sessionId);
     },
 
     async getDraftLinkForProduct({ organizationId, productId }) {

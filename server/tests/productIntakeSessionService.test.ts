@@ -128,9 +128,30 @@ describe("Product Intake question generation", () => {
     expect(questions.map((question) => question.questionKey)).toEqual(expect.arrayContaining([
       "select-material",
       "choose-pricing-model",
+      "base-price-per-sqft",
+      "base-price-per-piece",
+      "minimum-charge",
       "confirm-option-required-install-location",
     ]));
+    expect(questions.filter((question) => question.questionKey.startsWith("base-price") || question.questionKey === "minimum-charge").every((question) => !question.required)).toBe(true);
     expect(questions.every((question) => !/timestamp|internal id/i.test(question.label))).toBe(true);
+  });
+
+  test("does not ask base pricing questions when explicit pricing is present", () => {
+    const questions = generateProductIntakeQuestions(brief({
+      pricingAnalysis: {
+        behavior: "square_foot",
+        confidence: 90,
+        notes: "$5.00 per sqft with minimum charge $25.",
+        evidence: [{ sourcePath: "$.description.pricing", label: "Pricing", value: "$5.00 per sqft minimum $25", reason: "source pricing" }],
+      },
+    }));
+
+    expect(questions.map((question) => question.questionKey)).not.toEqual(expect.arrayContaining([
+      "base-price-per-sqft",
+      "base-price-per-piece",
+      "minimum-charge",
+    ]));
   });
 
   test("material questions use candidate picker when matches exist", () => {

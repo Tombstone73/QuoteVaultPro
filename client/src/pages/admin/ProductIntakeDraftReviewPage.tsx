@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -16,6 +16,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Table,
   TableBody,
@@ -35,6 +36,11 @@ type PublishResponse = {
   productId?: string;
   pbv2ActiveTreeVersionId?: string;
   message?: string;
+};
+
+type DraftPricingResponse = {
+  success: boolean;
+  data: ProductIntakeDraftReview;
 };
 
 function statusBadgeVariant(value: string): "default" | "secondary" | "outline" | "destructive" {
@@ -63,10 +69,28 @@ function findingText(finding: ProductIntakeDraftReview["publishReadiness"]["find
   return `${finding.code}: ${finding.message}`;
 }
 
+function centsToDollars(value: number | null | undefined): string {
+  if (!value) return "";
+  return (value / 100).toFixed(2);
+}
+
+function dollarsToCents(value: string): number | null {
+  const trimmed = value.trim().replace(/^\$/, "");
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return Math.round(parsed * 100);
+}
+
 export default function ProductIntakeDraftReviewPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const { toast } = useToast();
   const [serverWarnings, setServerWarnings] = useState<ProductIntakeDraftReview["publishReadiness"]["findings"] | null>(null);
+  const [basePricingDraft, setBasePricingDraft] = useState({
+    perSqft: "",
+    perPiece: "",
+    minimumCharge: "",
+  });
 
   const reviewQuery = useQuery<ProductIntakeDraftReview>({
     queryKey: ["/api/admin/product-intake-wizard/sessions", sessionId, "draft-review"],
@@ -80,6 +104,14 @@ export default function ProductIntakeDraftReviewPage() {
 
   const review = reviewQuery.data;
   const draftQuality = maybeDraftQuality(review?.pbv2Tree.draftQuality);
+  useEffect(() => {
+    if (!review) return;
+    setBasePricingDraft({
+      perSqft: centsToDollars(review.pbv2Tree.basePricing.perSqftCents),
+      perPiece: centsToDollars(review.pbv2Tree.basePricing.perPieceCents),
+      minimumCharge: centsToDollars(review.pbv2Tree.basePricing.minimumChargeCents),
+    });
+  }, [review?.pbv2Tree.id, review?.pbv2Tree.basePricing.perSqftCents, review?.pbv2Tree.basePricing.perPieceCents, review?.pbv2Tree.basePricing.minimumChargeCents]);
   const canActivate = Boolean(
     review &&
     !review.product.isActive &&
@@ -139,6 +171,30 @@ export default function ProductIntakeDraftReviewPage() {
     },
   });
 
+  const pricingMutation = useMutation({
+    mutationFn: async () => {
+      if (!sessionId) throw new Error("Missing session id.");
+      const response = await apiRequest("PATCH", `/api/admin/product-intake-wizard/sessions/${sessionId}/draft-pricing`, {
+        base: {
+          perSqftCents: dollarsToCents(basePricingDraft.perSqft),
+          perPieceCents: dollarsToCents(basePricingDraft.perPiece),
+          minimumChargeCents: dollarsToCents(basePricingDraft.minimumCharge),
+        },
+      });
+      return (await response.json()) as DraftPricingResponse;
+    },
+    onSuccess: async () => {
+      toast({ title: "Draft pricing saved", description: "PBV2 draft pricing metadata was updated. Publish validation still controls activation." });
+      await reviewQuery.refetch();
+      if (review?.product.id) {
+        await queryClient.invalidateQueries({ queryKey: ["/api/products", review.product.id] });
+      }
+    },
+    onError: (error: Error) => {
+      toast({ title: "Draft pricing blocked", description: error.message, variant: "destructive" });
+    },
+  });
+
   if (!sessionId) {
     return <div className="p-6 text-sm text-muted-foreground">Missing Product Intake session id.</div>;
   }
@@ -161,6 +217,11 @@ export default function ProductIntakeDraftReviewPage() {
 
   const sourcePreview = review.intake.sourceText || (review.intake.sourceJson ? JSON.stringify(review.intake.sourceJson, null, 2) : "No source payload recorded.");
   const findings = review.publishReadiness.findings;
+  const likelyMatrixPricing = Boolean(
+    review.pbv2Tree.intakeSummary &&
+    typeof review.pbv2Tree.intakeSummary === "object" &&
+    (review.pbv2Tree.intakeSummary as any).pricingReadiness?.likelyMatrixPricing,
+  );
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -181,7 +242,7 @@ export default function ProductIntakeDraftReviewPage() {
           </div>
           <div className="flex flex-wrap gap-2">
             <Button asChild variant="outline" className="gap-2">
-              <Link to={`/products/${review.product.id}/edit`}><ExternalLink className="h-4 w-4" /> Open Product Shell</Link>
+              <Link to={`/products/${review.product.id}/edit`}><ExternalLink className="h-4 w-4" /> Edit Draft Product</Link>
             </Button>
             <Button asChild variant="outline" className="gap-2">
               <Link to={`/products/${review.product.id}/builder-v2`}><ExternalLink className="h-4 w-4" /> Edit PBV2 Draft</Link>
@@ -345,6 +406,77 @@ export default function ProductIntakeDraftReviewPage() {
 
         <Card>
           <CardHeader>
+            <CardTitle className="text-base">Base Pricing</CardTitle>
+            <CardDescription>Draft-only PBV2 base pricing. Complex matrix pricing still belongs in the PBV2 builder.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 text-sm">
+            <div className="grid gap-3 md:grid-cols-3">
+              <label className="space-y-1">
+                <span className="text-xs uppercase text-muted-foreground">Per square foot</span>
+                <Input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={basePricingDraft.perSqft}
+                  onChange={(event) => setBasePricingDraft((current) => ({ ...current, perSqft: event.target.value }))}
+                  disabled={review.pbv2Tree.status !== "DRAFT" || pricingMutation.isPending}
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs uppercase text-muted-foreground">Per piece</span>
+                <Input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={basePricingDraft.perPiece}
+                  onChange={(event) => setBasePricingDraft((current) => ({ ...current, perPiece: event.target.value }))}
+                  disabled={review.pbv2Tree.status !== "DRAFT" || pricingMutation.isPending}
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs uppercase text-muted-foreground">Minimum charge</span>
+                <Input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={basePricingDraft.minimumCharge}
+                  onChange={(event) => setBasePricingDraft((current) => ({ ...current, minimumCharge: event.target.value }))}
+                  disabled={review.pbv2Tree.status !== "DRAFT" || pricingMutation.isPending}
+                />
+              </label>
+            </div>
+            {!review.publishReadiness.pricingConfigured && (
+              <Alert>
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>Pricing required before publish</AlertTitle>
+                <AlertDescription>Enter at least one real base price here or configure pricing in the PBV2 builder.</AlertDescription>
+              </Alert>
+            )}
+            {likelyMatrixPricing && (
+              <Alert>
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>Likely matrix pricing</AlertTitle>
+                <AlertDescription>
+                  Product Intake detected possible matrix pricing. No matrix rows were generated; configure the pricing matrix in the PBV2 builder before publish.
+                </AlertDescription>
+              </Alert>
+            )}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-muted-foreground">
+                Saving updates the inactive PBV2 draft tree only. It does not publish, activate, or assign an active tree.
+              </div>
+              <Button
+                type="button"
+                className="gap-2"
+                onClick={() => pricingMutation.mutate()}
+                disabled={review.pbv2Tree.status !== "DRAFT" || pricingMutation.isPending}
+              >
+                {pricingMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                Save Draft Pricing
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <CardTitle className="text-base">Next Actions</CardTitle>
             <CardDescription>Publish and activation remain separate review steps.</CardDescription>
           </CardHeader>
@@ -358,7 +490,7 @@ export default function ProductIntakeDraftReviewPage() {
             )}
             <div className="flex flex-wrap gap-2">
               <Button asChild variant="outline" className="gap-2">
-                <Link to={`/products/${review.product.id}/edit`}><ExternalLink className="h-4 w-4" /> Open Product Shell</Link>
+                <Link to={`/products/${review.product.id}/edit`}><ExternalLink className="h-4 w-4" /> Edit Draft Product</Link>
               </Button>
               <Button asChild variant="outline" className="gap-2">
                 <Link to={`/products/${review.product.id}/builder-v2`}><ExternalLink className="h-4 w-4" /> Edit PBV2 Draft</Link>

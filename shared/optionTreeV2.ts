@@ -278,6 +278,16 @@ export type OptionTreeV2 = {
         warning: string | null;
       };
       quantityWarnings?: string[];
+      pricingReadiness?: {
+        base: PricingV2Base;
+        sources: string[];
+        warnings: string[];
+        basePricingConfigured: boolean;
+        likelyMatrixPricing: boolean;
+        candidateDimensions: string[];
+        matrixEvidence: string[];
+      };
+      pricingWarnings?: string[];
       materialMatch?: {
         materialId: string | null;
         sku: string | null;

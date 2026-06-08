@@ -219,6 +219,62 @@ function behaviorQuestion(args: {
   };
 }
 
+function briefHasExplicitBasePricing(brief: ProductIntakeBrief): boolean {
+  const text = [
+    brief.pricingAnalysis.behavior,
+    brief.pricingAnalysis.notes,
+    ...brief.sourceEvidence.map((item) => `${item.label} ${item.value ?? ""} ${item.reason}`),
+    ...brief.pricingAnalysis.evidence.map((item) => `${item.label} ${item.value ?? ""} ${item.reason}`),
+  ].join("\n");
+  return /\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet|sf|each|piece|pc|item|unit)\b/i.test(text) ||
+    /(?:minimum|min(?:imum)?\s*(?:charge|order)?|setup\s*minimum)\s*[:=]?\s*\$\s*\d[\d,]*(?:\.\d{1,2})?/i.test(text) ||
+    /\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:minimum|min(?:imum)?(?:\s*charge)?)\b/i.test(text);
+}
+
+function pricingValueQuestions(brief: ProductIntakeBrief): NewQuestion[] {
+  if (briefHasExplicitBasePricing(brief)) return [];
+  const sourcePath = firstEvidencePath(brief.pricingAnalysis.evidence) ?? firstEvidencePath(brief.sourceEvidence);
+  const helpText = "Optional, draft-only base pricing. Leave blank if pricing needs later review; PBV2 publish will still require real pricing.";
+  return [
+    {
+      questionKey: "base-price-per-sqft",
+      questionType: "number",
+      label: "What is the base price per square foot?",
+      helpText,
+      required: false,
+      options: null,
+      defaultValue: null,
+      sourcePath,
+      confidence: brief.pricingAnalysis.confidence,
+      sortOrder: 50,
+    },
+    {
+      questionKey: "base-price-per-piece",
+      questionType: "number",
+      label: "What is the base price per piece?",
+      helpText,
+      required: false,
+      options: null,
+      defaultValue: null,
+      sourcePath,
+      confidence: brief.pricingAnalysis.confidence,
+      sortOrder: 51,
+    },
+    {
+      questionKey: "minimum-charge",
+      questionType: "number",
+      label: "Is there a minimum charge?",
+      helpText,
+      required: false,
+      options: null,
+      defaultValue: null,
+      sourcePath,
+      confidence: brief.pricingAnalysis.confidence,
+      sortOrder: 52,
+    },
+  ];
+}
+
 function needsWorkflowFollowUp(brief: ProductIntakeBrief): boolean {
   return brief.draftWarnings.some((warning) => {
     const text = `${warning.code} ${warning.message}`;
@@ -252,6 +308,7 @@ export function generateProductIntakeQuestions(brief: ProductIntakeBrief): NewQu
     options: [option("Per piece", "per_piece"), option("Quantity tiers", "quantity_tiers"), option("No customer quantity input", "none")],
     sortOrder: 41,
   }));
+  pricingValueQuestions(brief).forEach(push);
 
   for (const optionGroup of [...brief.requiredOptions, ...brief.optionalOptions]) {
     if (optionGroup.confidence < 65) {
