@@ -18,6 +18,7 @@ import type {
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const { renderToStaticMarkup } = require("react-dom/server") as typeof import("react-dom/server");
+const { MemoryRouter } = require("react-router-dom") as typeof import("react-router-dom");
 
 jest.setTimeout(120000);
 
@@ -437,22 +438,24 @@ describe("Product Intake session UI", () => {
 
   test("draft_created state shows created ids and links", () => {
     const html = renderToStaticMarkup(
-      <ProductIntakeQuestionsWizard
-        session={session({ status: "draft_created", createdProductId: "prod_1", createdPbv2TreeVersionId: "tree_1" })}
-        questions={questions}
-        answers={[]}
-        readiness={{ unansweredRequiredCount: 0, answeredCount: 5, canCreateDraft: false, status: "draft_created" }}
-        answerDrafts={{}}
-        onAnswerChange={() => undefined}
-        onSave={() => undefined}
-        onAbandon={() => undefined}
-        draftQuality={{
-          label: "Good",
-          score: 86,
-          reasons: ["Options were organized into logical PBV2 groups."],
-          warnings: ["Pricing setup required."],
-        }}
-      />,
+      <MemoryRouter>
+        <ProductIntakeQuestionsWizard
+          session={session({ status: "draft_created", createdProductId: "prod_1", createdPbv2TreeVersionId: "tree_1" })}
+          questions={questions}
+          answers={[]}
+          readiness={{ unansweredRequiredCount: 0, answeredCount: 5, canCreateDraft: false, status: "draft_created" }}
+          answerDrafts={{}}
+          onAnswerChange={() => undefined}
+          onSave={() => undefined}
+          onAbandon={() => undefined}
+          draftQuality={{
+            label: "Good",
+            score: 86,
+            reasons: ["Options were organized into logical PBV2 groups."],
+            warnings: ["Pricing setup required."],
+          }}
+        />
+      </MemoryRouter>,
     );
 
     expect(html).toContain("Draft Product Created");
@@ -468,8 +471,8 @@ describe("Product Intake session UI", () => {
     expect(html).toContain("Activation required");
     expect(html).toContain("Review Draft Product");
     expect(html).toContain("/admin/product-intake/sessions/sess_1/review");
-    expect(html).toContain("/products/prod_1/edit");
-    expect(html).toContain("/products/prod_1/builder-v2");
+    expect(html).toContain("/products/prod_1/edit?draftTreeVersionId=tree_1");
+    expect(html).toContain("/products/prod_1/builder-v2?draftTreeVersionId=tree_1");
   });
 
   test("run status panel renders elapsed running status", () => {

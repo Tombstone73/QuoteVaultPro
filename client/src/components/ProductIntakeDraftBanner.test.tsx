@@ -39,7 +39,7 @@ describe("ProductIntakeDraftBanner", () => {
     expect(html).toContain("PBV2 DRAFT");
     expect(html).toContain("Publish required");
     expect(html).toContain("/admin/product-intake/sessions/sess_1/review");
-    expect(html).toContain("/products/prod_1/builder-v2");
+    expect(html).toContain("/products/prod_1/builder-v2?draftTreeVersionId=tree_1");
     act(() => root.unmount());
   });
 });

@@ -14,6 +14,7 @@ import { storage } from "../storage";
 import { db } from "../db";
 import {
   products,
+  productIntakeSessions,
   productDesignConfigs,
   pbv2TreeVersions,
   pricingFormulas,
@@ -744,6 +745,9 @@ export function registerProductRoutes(
       if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
 
       const { productId } = req.params;
+      const requestedDraftTreeVersionId = typeof req.query?.draftTreeVersionId === "string" && req.query.draftTreeVersionId.trim()
+        ? req.query.draftTreeVersionId.trim()
+        : null;
 
       // Verify product exists
       const [product] = await db
@@ -755,18 +759,33 @@ export function registerProductRoutes(
       if (!product) return res.status(404).json({ success: false, message: "Product not found" });
 
       // Read DRAFT from pbv2_tree_versions table
-      const [draft] = await db
+      const draftQuery = db
         .select()
         .from(pbv2TreeVersions)
         .where(
-          and(
-            eq(pbv2TreeVersions.organizationId, organizationId),
-            eq(pbv2TreeVersions.productId, productId),
-            eq(pbv2TreeVersions.status, "DRAFT")
-          )
+          requestedDraftTreeVersionId
+            ? and(
+              eq(pbv2TreeVersions.organizationId, organizationId),
+              eq(pbv2TreeVersions.productId, productId),
+              eq(pbv2TreeVersions.id, requestedDraftTreeVersionId),
+              eq(pbv2TreeVersions.status, "DRAFT")
+            )
+            : and(
+              eq(pbv2TreeVersions.organizationId, organizationId),
+              eq(pbv2TreeVersions.productId, productId),
+              eq(pbv2TreeVersions.status, "DRAFT")
+            )
         )
         .orderBy(desc(pbv2TreeVersions.updatedAt))
         .limit(1);
+      const [draft] = await draftQuery;
+      if (requestedDraftTreeVersionId && !draft) {
+        return res.status(404).json({
+          success: false,
+          message: "Requested PBV2 draft tree was not found for this product.",
+          errorCode: "PBV2_DRAFT_TREE_NOT_FOUND",
+        });
+      }
 
       // Read ACTIVE tree using products.pbv2ActiveTreeVersionId
       let active = null;
@@ -796,6 +815,7 @@ export function registerProductRoutes(
         productId,
         draftFound: !!draft,
         draftId: draft?.id || null,
+        requestedDraftTreeVersionId,
         activeFound: !!active,
         activeId: active?.id || null,
       });
@@ -1088,8 +1108,26 @@ export function registerProductRoutes(
         .from(organizations)
         .where(eq(organizations.id, organizationId))
         .limit(1);
+      const [linkedProductIntakeDraft] = await db
+        .select({
+          sessionId: productIntakeSessions.id,
+          createdPbv2TreeVersionId: productIntakeSessions.createdPbv2TreeVersionId,
+        })
+        .from(productIntakeSessions)
+        .where(and(
+          eq(productIntakeSessions.organizationId, organizationId),
+          eq(productIntakeSessions.createdProductId, productId),
+          eq(productIntakeSessions.status, "draft_created"),
+        ))
+        .limit(1);
 
-      if (org?.pbv2ActivationMode === 'auto_on_save') {
+      if (linkedProductIntakeDraft) {
+        console.log('[PBV2_AUTO_ACTIVATE] skipped for Product Intake draft', {
+          productId,
+          sessionId: linkedProductIntakeDraft.sessionId,
+          createdPbv2TreeVersionId: linkedProductIntakeDraft.createdPbv2TreeVersionId,
+        });
+      } else if (org?.pbv2ActivationMode === 'auto_on_save') {
         activationAttempted = true;
         console.log('[PBV2_AUTO_ACTIVATE] attempting auto-activation', { draftId: draft.id, productId, orgId: organizationId });
 

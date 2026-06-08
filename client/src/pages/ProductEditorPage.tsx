@@ -1,6 +1,6 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import { useForm } from "react-hook-form";
@@ -133,6 +133,8 @@ const ProductEditorPage = () => {
   const DEBUG_NAV_GUARD = true; // Temporary debug flag
   
   const { productId } = useParams<{ productId: string }>();
+  const [searchParams] = useSearchParams();
+  const requestedDraftTreeVersionId = searchParams.get("draftTreeVersionId");
   const navigate = useNavigate();
   const { toast } = useToast();
   const auth = useAuth();
@@ -1001,6 +1003,7 @@ const ProductEditorPage = () => {
               }}
               pbv2PricingMode={pbv2PricingMode}
               onPbv2PricingModeChange={setPbv2PricingMode}
+              intakeDraftActivationLocked={Boolean(productIntakeDraftLink && !productIntakeDraftLink.productIsActive)}
               onAddPricingV2Tier={(kind) => {
                 const current = treeMeta.pricingV2 || {};
                 const tiers = kind === 'qty' ? (current.qtyTiers || []) : (current.sqftTiers || []);
@@ -1039,6 +1042,7 @@ const ProductEditorPage = () => {
             {/* Options Builder section with 2-column layout (pricing panel moved to page level) */}
             <PBV2ProductBuilderSectionV2
               productId={productId || null}
+              requestedDraftTreeVersionId={requestedDraftTreeVersionId}
               onPbv2StateChange={setPbv2State}
               onPbv2PricingDataChange={setPbv2PricingData}
               onTreeProviderReady={(provider) => {

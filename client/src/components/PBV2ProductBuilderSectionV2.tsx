@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useMemo, useState, useRef } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
@@ -25,6 +26,7 @@ import type { ValidationResult } from "@shared/pbv2/validator/types";
 import type { ProductOptionRule } from "@shared/productOptionRules";
 import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 import { normalizeTreePricingImpacts } from "@/lib/pbv2/pricing/pricingImpact";
+import { ROUTES } from "@/config/routes";
 
 /**
  * Edit-time validation - checks structure without publish-only rules.
@@ -226,7 +228,13 @@ function ProductIntakeDraftContextPanel({ treeJson }: { treeJson: any }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Created From Intake Session</div>
-          <div className="mt-1 font-mono text-xs text-slate-300">{String(intake.sessionId ?? "-")}</div>
+          {typeof intake.sessionId === "string" && intake.sessionId ? (
+            <Link className="mt-1 block font-mono text-xs text-slate-300 underline-offset-2 hover:underline" to={ROUTES.admin.productIntakeReview(intake.sessionId)}>
+              {intake.sessionId}
+            </Link>
+          ) : (
+            <div className="mt-1 font-mono text-xs text-slate-300">-</div>
+          )}
         </div>
         {quality && (
           <div className="text-right">
@@ -293,6 +301,7 @@ function envelopeMessage(status: number, json: any, fallback: string) {
 
 export default function PBV2ProductBuilderSectionV2({
   productId,
+  requestedDraftTreeVersionId,
   onPbv2StateChange,
   onPbv2PricingDataChange,
   onTreeProviderReady,
@@ -300,6 +309,7 @@ export default function PBV2ProductBuilderSectionV2({
   onTreeMetaChange,
 }: {
   productId?: string | null;
+  requestedDraftTreeVersionId?: string | null;
   onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null; isSaving?: boolean }) => void;
   onPbv2PricingDataChange?: (data: {
     pricingPreview: { addOnCents: number; breakdown: Array<{ label: string; cents: number }> } | null;
@@ -357,7 +367,7 @@ export default function PBV2ProductBuilderSectionV2({
 
   // Fetch draft/active tree (skip for new products without productId)
   const treeQuery = useQuery<TreeResponse>({
-    queryKey: ["/api/products", productId, "pbv2", "tree"],
+    queryKey: ["/api/products", productId, "pbv2", "tree", requestedDraftTreeVersionId ?? null],
     enabled: !!productId,
     queryFn: async () => {
       if (!productId) {
@@ -366,7 +376,8 @@ export default function PBV2ProductBuilderSectionV2({
       if (import.meta.env.DEV) {
         console.log('[PBV2ProductBuilderSectionV2] Fetching tree from GET /api/products/:id/pbv2/tree');
       }
-      const res = await fetch(`/api/products/${productId}/pbv2/tree`, { credentials: "include" });
+      const query = requestedDraftTreeVersionId ? `?draftTreeVersionId=${encodeURIComponent(requestedDraftTreeVersionId)}` : "";
+      const res = await fetch(`/api/products/${productId}/pbv2/tree${query}`, { credentials: "include" });
       const json = (await readJsonSafe(res)) as any;
       if (!res.ok) {
         return { success: false, message: envelopeMessage(res.status, json, "Failed to load PBV2") } as TreeResponse;
@@ -387,6 +398,7 @@ export default function PBV2ProductBuilderSectionV2({
 
   const draft = treeQuery.data?.data?.draft ?? null;
   const active = treeQuery.data?.data?.active ?? null;
+  const requestedDraftLoadError = Boolean(requestedDraftTreeVersionId && treeQuery.data && !treeQuery.data.success);
 
   // Expose method to get current tree for external persistence (product creation)
   // CRITICAL: Reads from ref, not state, to avoid stale closure
@@ -537,6 +549,12 @@ export default function PBV2ProductBuilderSectionV2({
       setHasLocalChanges(false);
       return;
     }
+    if (requestedDraftLoadError) {
+      setLocalTreeJson(null);
+      setHasLocalChanges(false);
+      setIsLocalDirty(false);
+      return;
+    }
 
     // Existing product mode: Load from server draft or active tree
     // If draft not found (e.g., auto_on_save activated it), load from active
@@ -655,7 +673,7 @@ export default function PBV2ProductBuilderSectionV2({
     if (import.meta.env.DEV) {
       console.log('[PBV2_HYDRATE] Dirty flag cleared after tree load from', treeSource);
     }
-  }, [productId, draft?.id, draft?.treeJson, active?.id, active?.treeJson, isLocalDirty, toast]);
+  }, [productId, requestedDraftTreeVersionId, requestedDraftLoadError, draft?.id, draft?.treeJson, active?.id, active?.treeJson, isLocalDirty, toast]);
 
   // Build editor model from local tree
   const editorModel = useMemo(() => {
@@ -1541,6 +1559,13 @@ export default function PBV2ProductBuilderSectionV2({
   // Loading state for existing products only
   if (productId && treeQuery.isLoading) {
     return <div className="p-8 text-center text-slate-400">Loading PBV2 tree...</div>;
+  }
+  if (requestedDraftLoadError) {
+    return (
+      <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-200">
+        PBV2 draft tree {requestedDraftTreeVersionId} could not be loaded for this product. Return to Product Intake Review or reload the full draft editor.
+      </div>
+    );
   }
 
   // Render UI once localTreeJson is initialized (seed tree or draft)

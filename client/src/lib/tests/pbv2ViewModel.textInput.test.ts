@@ -118,4 +118,57 @@ describe("pbv2ViewModel — text input type", () => {
     expect(model.options.imprint).toBeDefined();
     expect(normalized.status).toBe("DRAFT");
   });
+
+  test("Product Intake generated GROUP to INPUT structural edges hydrate into editable groups", () => {
+    const tree = normalizeTreeJson({
+      schemaVersion: 2,
+      status: "DRAFT",
+      rootNodeIds: ["intake_size", "intake_printed_sides", "intake_rounded_corners"],
+      nodes: {
+        group_size_quantity: { id: "group_size_quantity", kind: "group", type: "GROUP", status: "ENABLED", label: "Size & Quantity", ui: { sortOrder: 10 } },
+        group_print_setup: { id: "group_print_setup", kind: "group", type: "GROUP", status: "ENABLED", label: "Print Setup", ui: { sortOrder: 20 } },
+        group_finishing: { id: "group_finishing", kind: "group", type: "GROUP", status: "ENABLED", label: "Finishing", ui: { sortOrder: 30 } },
+        intake_size: {
+          id: "intake_size",
+          kind: "question",
+          type: "INPUT",
+          status: "ENABLED",
+          label: "Size",
+          key: "size",
+          input: { type: "select", required: true, selectionKey: "size" },
+          choices: [{ value: "8x10", label: "8x10" }, { value: "11x14", label: "11x14" }],
+        },
+        intake_printed_sides: {
+          id: "intake_printed_sides",
+          kind: "question",
+          type: "INPUT",
+          status: "ENABLED",
+          label: "Printed Sides",
+          key: "printed_sides",
+          input: { type: "select", required: true, selectionKey: "printed_sides" },
+          choices: [{ value: "single", label: "Single Sided" }, { value: "double", label: "Double Sided" }],
+        },
+        intake_rounded_corners: {
+          id: "intake_rounded_corners",
+          kind: "question",
+          type: "INPUT",
+          status: "ENABLED",
+          label: "Rounded Corners",
+          key: "rounded_corners",
+          input: { type: "boolean", required: false, selectionKey: "rounded_corners" },
+        },
+      },
+      edges: [
+        { id: "edge_size", fromNodeId: "group_size_quantity", toNodeId: "intake_size", status: "DISABLED" },
+        { id: "edge_sides", fromNodeId: "group_print_setup", toNodeId: "intake_printed_sides", status: "DISABLED" },
+        { id: "edge_corners", fromNodeId: "group_finishing", toNodeId: "intake_rounded_corners", status: "DISABLED" },
+      ],
+    });
+    const model = pbv2TreeToEditorModel(tree);
+
+    expect(model.groups.map((group) => group.name)).toEqual(expect.arrayContaining(["Size & Quantity", "Print Setup", "Finishing"]));
+    expect(model.groups.length).toBeGreaterThan(0);
+    expect(Object.values(model.options).map((option) => option.name)).toEqual(expect.arrayContaining(["Size", "Printed Sides", "Rounded Corners"]));
+    expect(Object.values(model.options).some((option) => /quantity|qty/i.test(`${option.name} ${option.selectionKey}`))).toBe(false);
+  });
 });
