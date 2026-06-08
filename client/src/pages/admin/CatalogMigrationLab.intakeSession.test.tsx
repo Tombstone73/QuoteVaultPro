@@ -360,6 +360,63 @@ describe("Product Intake session UI", () => {
     expect(html).toContain("Ready to create one inactive product and one PBV2 DRAFT tree.");
   });
 
+  test("Create Draft Product action is wired", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const onCreateDraft = jest.fn();
+
+    act(() => {
+      root.render(
+        <ProductIntakeQuestionsWizard
+          session={session({ status: "ready_for_draft" })}
+          questions={questions}
+          answers={[]}
+          readiness={{ unansweredRequiredCount: 0, answeredCount: 5, canCreateDraft: true, status: "ready_for_draft", reviewState: "ready_for_draft" }}
+          answerDrafts={{}}
+          onAnswerChange={() => undefined}
+          onSave={() => undefined}
+          onAbandon={() => undefined}
+          onCreateDraft={onCreateDraft}
+        />,
+      );
+    });
+
+    const draftButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Create Draft Product"));
+    expect(draftButton).toBeTruthy();
+    act(() => {
+      draftButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onCreateDraft).toHaveBeenCalledTimes(1);
+    act(() => root.unmount());
+  });
+
+  test("ineligible draft state surfaces exact reason", () => {
+    const html = renderToStaticMarkup(
+      <ProductIntakeQuestionsWizard
+        session={session({ status: "needs_answers" })}
+        questions={questions}
+        answers={[]}
+        readiness={{
+          unansweredRequiredCount: 2,
+          answeredCount: 1,
+          canCreateDraft: false,
+          status: "needs_answers",
+          reviewState: "not_ready",
+          penalties: [{ code: "required_answers_open", label: "2 required answer(s) still open", severity: "blocker" }],
+        }}
+        answerDrafts={{}}
+        onAnswerChange={() => undefined}
+        onSave={() => undefined}
+        onAbandon={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Draft creation unavailable:");
+    expect(html).toContain("Session status is needs answers; only Ready for Draft sessions can create draft products.");
+    expect(html).toContain("Create Draft Product");
+    expect(html).toContain("disabled");
+  });
+
   test("draft_created state shows created ids and links", () => {
     const html = renderToStaticMarkup(
       <ProductIntakeQuestionsWizard
