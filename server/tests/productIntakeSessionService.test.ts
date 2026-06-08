@@ -191,8 +191,15 @@ describe("Product Intake question generation", () => {
     }];
 
     expect(computeProductIntakeReadiness({ session: session(), questions, answers: [] }).unansweredRequiredCount).toBe(1);
-    expect(computeProductIntakeReadiness({ session: session(), questions, answers }).status).toBe("ready_for_draft");
+    const ready = computeProductIntakeReadiness({ session: session("ready_for_draft"), questions, answers });
+    expect(ready.status).toBe("ready_for_draft");
+    expect(ready.canCreateDraft).toBe(true);
     expect(computeProductIntakeReadiness({ session: session("abandoned"), questions, answers }).status).toBe("abandoned");
+    expect(computeProductIntakeReadiness({
+      session: { ...session("draft_created"), createdProductId: "prod_1", createdPbv2TreeVersionId: "tree_1" },
+      questions,
+      answers,
+    })).toMatchObject({ status: "draft_created", canCreateDraft: false });
   });
 
   test("confidence recalculation lifts current confidence after answers", () => {

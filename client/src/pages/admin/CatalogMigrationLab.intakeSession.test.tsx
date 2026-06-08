@@ -342,12 +342,31 @@ describe("Product Intake session UI", () => {
     act(() => root.unmount());
   });
 
-  test("ready for draft state shows disabled Phase 3 CTA", () => {
+  test("ready for draft state shows Create Draft Product CTA", () => {
     const html = renderToStaticMarkup(
       <ProductIntakeQuestionsWizard
         questions={questions}
         answers={[{ id: "a_1", organizationId: "org_1", sessionId: "sess_1", questionId: "q_text", questionKey: "material", answer: "Foam", answeredByUserId: "user_1", answeredAt: "2026-06-05T00:00:00.000Z", createdAt: "2026-06-05T00:00:00.000Z", updatedAt: "2026-06-05T00:00:00.000Z" } as ProductIntakeAnswer]}
-        readiness={{ unansweredRequiredCount: 0, answeredCount: 5, canCreateDraft: false, status: "ready_for_draft" }}
+        readiness={{ unansweredRequiredCount: 0, answeredCount: 5, canCreateDraft: true, status: "ready_for_draft" }}
+        answerDrafts={{}}
+        onAnswerChange={() => undefined}
+        onSave={() => undefined}
+        onAbandon={() => undefined}
+        onCreateDraft={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Create Draft Product");
+    expect(html).toContain("Ready to create one inactive product and one PBV2 DRAFT tree.");
+  });
+
+  test("draft_created state shows created ids and links", () => {
+    const html = renderToStaticMarkup(
+      <ProductIntakeQuestionsWizard
+        session={session({ status: "draft_created", createdProductId: "prod_1", createdPbv2TreeVersionId: "tree_1" })}
+        questions={questions}
+        answers={[]}
+        readiness={{ unansweredRequiredCount: 0, answeredCount: 5, canCreateDraft: false, status: "draft_created" }}
         answerDrafts={{}}
         onAnswerChange={() => undefined}
         onSave={() => undefined}
@@ -355,8 +374,11 @@ describe("Product Intake session UI", () => {
       />,
     );
 
-    expect(html).toContain("Create TEMP Draft Coming in Phase 3");
-    expect(html).toContain("disabled");
+    expect(html).toContain("Draft Product Created");
+    expect(html).toContain("prod_1");
+    expect(html).toContain("tree_1");
+    expect(html).toContain("/products/prod_1/edit");
+    expect(html).toContain("/products/prod_1/builder-v2");
   });
 
   test("run status panel renders elapsed running status", () => {

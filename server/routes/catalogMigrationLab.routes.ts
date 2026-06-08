@@ -31,6 +31,10 @@ import {
   createDbProductIntakeAiDiagnosticsStore,
   type ProductIntakeAiDiagnosticsStore,
 } from "../services/productIntakeWizard/productIntakeDiagnosticsService";
+import {
+  createDbProductIntakeDraftCreator,
+  type ProductIntakeDraftCreator,
+} from "../services/productIntakeWizard/productIntakeDraftService";
 import { resolveProductIntakeAiReadiness } from "../services/productIntakeWizard/productIntakeAiReadinessService";
 import type { AiProviderAdapter } from "../services/ai/providers/AiProviderAdapter";
 import type { ProductIntakeAiReadiness } from "@shared/productIntakeWizardSchemas";
@@ -43,6 +47,7 @@ type RouteMiddleware = {
   productIntakeAiProvider?: AiProviderAdapter | null;
   productIntakeSessionStore?: ProductIntakeSessionStore;
   productIntakeDiagnosticsStore?: ProductIntakeAiDiagnosticsStore;
+  productIntakeDraftCreator?: ProductIntakeDraftCreator;
   productIntakeAiReadinessResolver?: (args: {
     organizationId: string;
     userId: string | null;
@@ -91,6 +96,11 @@ function intakePayloadSize(input: ProductIntakeWizardAnalyzeRequest): number {
 function requestUserId(req: Request): string | null {
   const user = req.user as any;
   return user?.id ?? user?.claims?.sub ?? null;
+}
+
+function requestUserName(req: Request): string | null {
+  const user = req.user as any;
+  return user?.name ?? user?.email ?? user?.claims?.email ?? null;
 }
 
 async function safeCurrentDatabaseIdentifier(): Promise<string | null> {
@@ -182,6 +192,7 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
   const getReferenceData = middleware.getReferenceData ?? loadReferenceData;
   const intakeSessionStore = middleware.productIntakeSessionStore ?? createDbProductIntakeSessionStore();
   const intakeDiagnosticsStore = middleware.productIntakeDiagnosticsStore ?? createDbProductIntakeAiDiagnosticsStore();
+  const intakeDraftCreator = middleware.productIntakeDraftCreator ?? createDbProductIntakeDraftCreator();
 
   const getAiReadiness = async (organizationId: string, userId: string | null, databaseIdentifier: string | null) => (
     middleware.productIntakeAiReadinessResolver
@@ -490,6 +501,46 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
           message: "Failed to load Product Intake AI readiness.",
           errorCode: "UNKNOWN_SOURCE_SHAPE",
         });
+      }
+    },
+  );
+
+  app.post(
+    "/api/admin/product-intake-wizard/sessions/:id/create-draft",
+    middleware.isAuthenticated,
+    middleware.tenantContext,
+    async (req: Request, res: Response) => {
+      try {
+        if (!middleware.assertInternalUser(req, res) || !requireCatalogMigrationLabAccess(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) {
+          return res.status(400).json({ success: false, message: "Missing organization context.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
+        }
+
+        const result = await intakeDraftCreator.createDraftFromSession({
+          organizationId,
+          sessionId: req.params.id,
+          userId: requestUserId(req),
+          userName: requestUserName(req),
+        });
+        const detail = await intakeSessionStore.getSessionDetail(organizationId, req.params.id);
+        if (!detail) {
+          return res.status(500).json({ success: false, message: "Draft was created, but the Product Intake session could not be reloaded.", errorCode: "SESSION_RELOAD_FAILED" });
+        }
+        return res.json({
+          success: true,
+          data: {
+            productId: result.productId,
+            pbv2TreeVersionId: result.pbv2TreeVersionId,
+            session: detail.session,
+            detail,
+          },
+        });
+      } catch (error: any) {
+        const handled = handleProductIntakeRouteError(error, res, "Invalid Product Intake draft request.");
+        if (handled) return handled;
+        console.error("[ProductIntakeWizard] Draft creation failed:", error);
+        return res.status(500).json({ success: false, message: "Failed to create inactive Product Intake draft.", errorCode: "UNKNOWN_SOURCE_SHAPE" });
       }
     },
   );

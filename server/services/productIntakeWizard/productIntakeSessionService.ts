@@ -339,8 +339,8 @@ export function computeProductIntakeReadiness(args: {
     question.required && !hasAnswerValue(question, answerByKey.get(question.questionKey)?.answer),
   ).length;
   const answeredCount = args.questions.filter((question) => hasAnswerValue(question, answerByKey.get(question.questionKey)?.answer)).length;
-  const status = args.session.status === "abandoned"
-    ? "abandoned"
+  const status = args.session.status === "abandoned" || args.session.status === "draft_created"
+    ? args.session.status
     : unansweredRequiredCount > 0
       ? "needs_answers"
       : "ready_for_draft";
@@ -387,17 +387,24 @@ export function computeProductIntakeReadiness(args: {
   const reviewScore = clampConfidence(currentConfidence
     - penalties.filter((penalty) => penalty.severity === "blocker").length * 20
     - penalties.filter((penalty) => penalty.severity === "review").length * 10);
-  const reviewState = args.session.status === "abandoned"
+  const reviewState = args.session.status === "abandoned" || args.session.status === "draft_created"
     ? "not_ready"
     : penalties.some((penalty) => penalty.severity === "blocker")
       ? "not_ready"
       : penalties.length > 0 || reviewScore < 75
         ? "needs_review"
         : "ready_for_draft";
+  const canCreateDraft =
+    args.session.status === "ready_for_draft" &&
+    reviewState === "ready_for_draft" &&
+    unansweredRequiredCount === 0 &&
+    !args.session.createdProductId &&
+    !args.session.createdPbv2TreeVersionId;
+
   return productIntakeReadinessSchema.parse({
     unansweredRequiredCount,
     answeredCount,
-    canCreateDraft: false,
+    canCreateDraft,
     status,
     reviewState,
     reviewScore,
