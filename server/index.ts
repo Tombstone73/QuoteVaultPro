@@ -4,11 +4,11 @@ import cors from "cors";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { syncUsersToCustomers } from "./db/syncUsersToCustomers";
-import { startSyncWorker } from "./workers/syncProcessor";
-import { startThumbnailWorker } from "./workers/thumbnailWorker";
-import { assetPreviewWorker } from "./workers/assetPreviewWorker";
+import { getQuickBooksSyncIntervalMs, startSyncWorker } from "./workers/syncProcessor";
+import { getThumbnailFallbackIntervalMs, startThumbnailWorker } from "./workers/thumbnailWorker";
+import { assetPreviewWorker, getAssetPreviewFallbackIntervalMs } from "./workers/assetPreviewWorker";
 import { assertStripeServerConfig } from "./lib/stripe";
-import { listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from "./services/quickbooksSyncQueueWorker";
+import { getQuickBooksSyncStabilityWindowMs, listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from "./services/quickbooksSyncQueueWorker";
 import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerTick } from "./workers/workerGates";
 import { runInvoiceReminderJob } from "./invoiceReminderJob";
 import { runMigrations } from "./runMigrations";
@@ -212,7 +212,8 @@ process.on('uncaughtException', (error) => {
       logWorkerStatus(
         'Thumbnails',
         thumbnailsEnabled,
-        thumbnailsEnabled ? getWorkerIntervalOverride('THUMBNAILS', 10_000, 300_000, 'THUMBNAIL_WORKER_POLL_INTERVAL_MS') : undefined
+        thumbnailsEnabled ? getThumbnailFallbackIntervalMs() : undefined,
+        thumbnailsEnabled ? 'upload/import triggers enabled; fallback sweep only' : undefined
       );
       if (thumbnailsEnabled) {
         try {
@@ -227,7 +228,8 @@ process.on('uncaughtException', (error) => {
       logWorkerStatus(
         'AssetPreview',
         assetPreviewEnabled,
-        assetPreviewEnabled ? getWorkerIntervalOverride('ASSET_PREVIEW', 600_000, 300_000) : undefined
+        assetPreviewEnabled ? getAssetPreviewFallbackIntervalMs() : undefined,
+        assetPreviewEnabled ? 'asset create/import triggers enabled; fallback sweep only' : undefined
       );
       if (assetPreviewEnabled) {
         try {
@@ -265,7 +267,7 @@ process.on('uncaughtException', (error) => {
         logWorkerStatus(
           'QuickBooks Sync',
           qbSyncEnabled,
-          qbSyncEnabled ? getWorkerIntervalOverride('QB_SYNC', 30_000, 300_000) : undefined
+          qbSyncEnabled ? getQuickBooksSyncIntervalMs() : undefined
         );
         if (qbSyncEnabled) {
           console.log('[Server] Starting QuickBooks sync worker...');
@@ -276,24 +278,24 @@ process.on('uncaughtException', (error) => {
         const qbQueueEnabled = isWorkerEnabled('QB_QUEUE', true);
         const qbQueueInterval = getWorkerIntervalOverride(
           'QB_QUEUE',
-          Number(process.env.QB_SYNC_QUEUE_INTERVAL_MS || String(5 * 60_000)),
+          60 * 60_000,
           300_000,
-          'QB_SYNC_QUEUE_INTERVAL_MS'
+          ['QUICKBOOKS_SYNC_INTERVAL_MS', 'QB_SYNC_QUEUE_INTERVAL_MS']
         );
         logWorkerStatus('QuickBooks Queue', qbQueueEnabled, qbQueueEnabled ? qbQueueInterval : undefined);
         
         if (qbQueueEnabled) {
-          const settleWindowMinutes = Math.max(0, Number(process.env.QB_SYNC_SETTLE_WINDOW_MINUTES || '10'));
+          const stabilityWindowMs = getQuickBooksSyncStabilityWindowMs();
           const limitPerRun = Math.max(1, Math.min(100, Number(process.env.QB_SYNC_LIMIT_PER_RUN || '25')));
 
           console.log('[Server] QuickBooks queue worker enabled', {
             intervalMs: qbQueueInterval,
-            settleWindowMinutes,
+            stabilityWindowMs,
             limitPerRun,
             policy: 'interval=pending-only, flush=pending+failed',
           });
 
-          setInterval(async () => {
+          const qbQueueTimer = setInterval(async () => {
             const tickStart = Date.now();
             try {
               const orgIds = await listQuickBooksConnectedOrganizationIds();
@@ -302,9 +304,9 @@ process.on('uncaughtException', (error) => {
               for (const organizationId of orgIds) {
                 const run = await runQuickBooksSyncWorkerForOrg({
                   organizationId,
-                  settleWindowMinutes,
+                  stabilityWindowMs,
                   limitPerRun,
-                  ignoreSettleWindow: false,
+                  ignoreStabilityWindow: false,
                   includeFailed: false,
                   log: false,
                 });
@@ -322,6 +324,7 @@ process.on('uncaughtException', (error) => {
               logWorkerTick('qb_queue', Date.now() - tickStart);
             }
           }, qbQueueInterval);
+          qbQueueTimer.unref?.();
         }
       } else {
         logWorkerStatus('QuickBooks Sync', false, undefined, 'no QB credentials');

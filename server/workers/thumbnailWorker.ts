@@ -4,7 +4,7 @@ import { and, eq, inArray, isNotNull, isNull, not, or, sql } from "drizzle-orm";
 import { fileExists } from "../utils/fileStorage";
 import { canonicalDerivativeReadResolver } from "../services/storage/CanonicalDerivativeReadResolver";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
-import { getWorkerIntervalOverride, logWorkerTick } from "./workerGates";
+import { getWorkerIntervalOverride, isWorkerEnabled as isGateWorkerEnabled, logWorkerTick } from "./workerGates";
 
 type AttachmentType = "quote" | "order";
 
@@ -20,20 +20,16 @@ type PendingAttachmentRow = {
   thumbError: string | null;
 };
 
-// Production default: 10s (existing behavior)
-// Non-production default: 5min (to prevent Neon compute burn)
-const DEFAULT_POLL_INTERVAL_MS = 10_000;
-const DEFAULT_NON_PROD_POLL_INTERVAL_MS = 300_000;
+// Upload/import paths trigger generation immediately. The timer is only a slow
+// fallback sweep for missed/stuck work.
+export const THUMBNAIL_FALLBACK_INTERVAL_PROD_MS = 6 * 60 * 60 * 1000;
+export const THUMBNAIL_FALLBACK_INTERVAL_NON_PROD_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_BATCH_SIZE = 10;
 
 let workerTimer: NodeJS.Timeout | null = null;
 let isPolling = false;
-
-// Idle backoff: track consecutive empty polls and scale interval up to MAX_IDLE_INTERVAL_MS.
-// Resets to base interval immediately when pending work is found.
-let consecutiveEmptyPolls = 0;
-const IDLE_BACKOFF_AFTER = 6;   // ~1 min at 10s base; scale up after this many empty polls
-const MAX_IDLE_INTERVAL_MS = 60_000;
+let isDrainingTriggeredPolls = false;
+const triggeredThumbnailQueue: Array<{ attachmentType: AttachmentType; attachmentId: string }> = [];
 
 const LOCAL_ORIGINAL_NOT_PRESENT = "local_original_not_present";
 
@@ -60,18 +56,16 @@ function isLocalOriginalMissingMarker(value: string | null | undefined): boolean
  * and must not guess alternate key formats (e.g. inserting orderId path segments).
  */
 
-function isWorkerEnabled(): boolean {
-  const envValue = process.env.ATTACHMENT_THUMBNAIL_WORKER_ENABLED;
-  if (envValue === undefined || envValue === "") return true;
-  return envValue.toLowerCase() === "true";
+export function isThumbnailWorkerEnabled(): boolean {
+  return isGateWorkerEnabled("THUMBNAILS", true);
 }
 
-function getPollIntervalMs(): number {
+export function getThumbnailFallbackIntervalMs(): number {
   return getWorkerIntervalOverride(
     'THUMBNAILS',
-    DEFAULT_POLL_INTERVAL_MS,
-    DEFAULT_NON_PROD_POLL_INTERVAL_MS,
-    'THUMBNAIL_WORKER_POLL_INTERVAL_MS'
+    THUMBNAIL_FALLBACK_INTERVAL_PROD_MS,
+    THUMBNAIL_FALLBACK_INTERVAL_NON_PROD_MS,
+    ['THUMBNAIL_WORKER_FALLBACK_INTERVAL_MS', 'THUMBNAIL_WORKER_POLL_INTERVAL_MS']
   );
 }
 
@@ -215,8 +209,65 @@ async function resetCorruptLocalDerivatives(row: PendingAttachmentRow): Promise<
   return true;
 }
 
-async function pollOnce(): Promise<void> {
-  if (!isWorkerEnabled()) return;
+function pendingAttachmentWhere(table: typeof quoteAttachments | typeof orderAttachments) {
+  return and(
+    isNotNull(table.fileRecordId),
+    or(
+      isNull(table.thumbStatus),
+      inArray(table.thumbStatus, ["uploaded", "thumb_pending"]),
+      and(
+        eq(table.thumbStatus, "thumb_ready"),
+        sql`${table.storageProvider} = 'local'`
+      )
+    ),
+    inArray(table.thumbStatus, ["uploaded", "thumb_pending", "thumb_ready"])
+  );
+}
+
+async function fetchPendingAttachmentById(args: {
+  attachmentType: AttachmentType;
+  attachmentId: string;
+}): Promise<PendingAttachmentRow[]> {
+  if (args.attachmentType === "quote") {
+    const rows = await db
+      .select({
+        attachmentType: sql<AttachmentType>`'quote'`,
+        id: quoteAttachments.id,
+        organizationId: quoteAttachments.organizationId,
+        fileRecordId: quoteAttachments.fileRecordId,
+        mimeType: quoteAttachments.mimeType,
+        fileName: quoteAttachments.fileName,
+        originalFilename: quoteAttachments.originalFilename,
+        thumbStatus: quoteAttachments.thumbStatus,
+        thumbError: quoteAttachments.thumbError,
+      })
+      .from(quoteAttachments)
+      .where(and(eq(quoteAttachments.id, args.attachmentId), pendingAttachmentWhere(quoteAttachments)))
+      .limit(1);
+    return rows.map((r: any) => ({ ...r, organizationId: r.organizationId || "" }));
+  }
+
+  const rows = await db
+    .select({
+      attachmentType: sql<AttachmentType>`'order'`,
+      id: orderAttachments.id,
+      organizationId: orders.organizationId,
+      fileRecordId: orderAttachments.fileRecordId,
+      mimeType: orderAttachments.mimeType,
+      fileName: orderAttachments.fileName,
+      originalFilename: orderAttachments.originalFilename,
+      thumbStatus: orderAttachments.thumbStatus,
+      thumbError: orderAttachments.thumbError,
+    })
+    .from(orderAttachments)
+    .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
+    .where(and(eq(orderAttachments.id, args.attachmentId), pendingAttachmentWhere(orderAttachments)))
+    .limit(1);
+  return rows.map((r: any) => ({ ...r, organizationId: r.organizationId || "" }));
+}
+
+async function pollOnce(priority?: { attachmentType: AttachmentType; attachmentId: string }): Promise<void> {
+  if (!isThumbnailWorkerEnabled()) return;
   const debug = isDebugEnabled();
   if (isPolling) {
     if (debug) console.log("[Thumbnail Worker] Already polling, skipping");
@@ -248,7 +299,7 @@ async function pollOnce(): Promise<void> {
         inArray(table.thumbStatus, ["uploaded", "thumb_pending", "thumb_ready"])
       );
 
-    const quoteRows = await db
+    const quoteRows = priority ? [] : await db
       .select({
         attachmentType: sql<AttachmentType>`'quote'`,
         id: quoteAttachments.id,
@@ -265,7 +316,7 @@ async function pollOnce(): Promise<void> {
       .orderBy(sql`CASE WHEN ${quoteAttachments.thumbStatus} IN ('uploaded', 'thumb_pending') OR ${quoteAttachments.thumbStatus} IS NULL THEN 0 ELSE 1 END`, quoteAttachments.createdAt)
       .limit(batchSize);
 
-    const orderRows = await db
+    const orderRows = priority ? [] : await db
       .select({
         attachmentType: sql<AttachmentType>`'order'`,
         id: orderAttachments.id,
@@ -283,17 +334,16 @@ async function pollOnce(): Promise<void> {
       .orderBy(sql`CASE WHEN ${orderAttachments.thumbStatus} IN ('uploaded', 'thumb_pending') OR ${orderAttachments.thumbStatus} IS NULL THEN 0 ELSE 1 END`, orderAttachments.createdAt)
       .limit(batchSize);
 
-    const rows: PendingAttachmentRow[] = [...quoteRows, ...orderRows].map((r: any) => ({
+    const priorityRows = priority ? await fetchPendingAttachmentById(priority) : [];
+    const rows: PendingAttachmentRow[] = [...priorityRows, ...quoteRows, ...orderRows].map((r: any) => ({
       ...r,
       organizationId: r.organizationId || "",
     }));
 
     if (rows.length === 0) {
-      consecutiveEmptyPolls++;
       return;
     }
 
-    consecutiveEmptyPolls = 0;
     if (debug) console.log(`[Thumbnail Worker] Found ${rows.length} pending attachment(s)`);
 
     const { generateImageDerivatives, isSupportedImageType, isThumbnailGenerationEnabled } =
@@ -429,23 +479,48 @@ async function pollOnce(): Promise<void> {
     isPolling = false;
     const duration = Date.now() - startTime;
     logWorkerTick('thumbnails', duration, rowsProcessed);
+    if (triggeredThumbnailQueue.length > 0) {
+      const handle = setImmediate(() => {
+        drainTriggeredThumbnailQueue().catch((error) => {
+          console.error("[Thumbnail Worker] Trigger queue drain failed:", error);
+        });
+      });
+      handle.unref?.();
+    }
   }
 }
 
-function getNextPollDelayMs(): number {
-  const base = getPollIntervalMs();
-  if (consecutiveEmptyPolls < IDLE_BACKOFF_AFTER) return base;
-  // Scale up linearly by one base interval per IDLE_BACKOFF_AFTER empty polls, capped at MAX.
-  const factor = Math.ceil(consecutiveEmptyPolls / IDLE_BACKOFF_AFTER);
-  return Math.min(MAX_IDLE_INTERVAL_MS, base * factor);
+async function drainTriggeredThumbnailQueue(): Promise<void> {
+  if (isDrainingTriggeredPolls || isPolling) return;
+  isDrainingTriggeredPolls = true;
+
+  try {
+    while (triggeredThumbnailQueue.length > 0 && !isPolling) {
+      const next = triggeredThumbnailQueue.shift();
+      if (!next) break;
+      await pollOnce(next);
+    }
+  } finally {
+    isDrainingTriggeredPolls = false;
+  }
+
+  if (triggeredThumbnailQueue.length > 0 && !isPolling) {
+    const handle = setImmediate(() => {
+      drainTriggeredThumbnailQueue().catch((error) => {
+        console.error("[Thumbnail Worker] Trigger queue drain failed:", error);
+      });
+    });
+    handle.unref?.();
+  }
 }
 
 function scheduleNextPoll(): void {
-  const delay = getNextPollDelayMs();
+  const delay = getThumbnailFallbackIntervalMs();
   workerTimer = setTimeout(async () => {
     await pollOnce();
     scheduleNextPoll();
   }, delay);
+  workerTimer.unref?.();
 }
 
 export function startThumbnailWorker(): void {
@@ -454,16 +529,15 @@ export function startThumbnailWorker(): void {
     return;
   }
 
-  if (!isWorkerEnabled()) {
-    console.log("[Thumbnail Worker] Worker disabled via env (ATTACHMENT_THUMBNAIL_WORKER_ENABLED)"
-    );
+  if (!isThumbnailWorkerEnabled()) {
+    console.log("[Thumbnail Worker] Worker disabled via env");
     return;
   }
 
-  const intervalMs = getPollIntervalMs();
-  console.log(`[Thumbnail Worker] Starting worker (base poll interval: ${intervalMs}ms, idle backoff up to ${MAX_IDLE_INTERVAL_MS}ms)`);
+  const intervalMs = getThumbnailFallbackIntervalMs();
+  console.log(`[Thumbnail Worker] Starting worker (upload/import triggers enabled, fallback sweep interval: ${intervalMs}ms)`);
 
-  void pollOnce().then(() => scheduleNextPoll());
+  scheduleNextPoll();
 }
 
 export function stopThumbnailWorker(): void {
@@ -472,4 +546,34 @@ export function stopThumbnailWorker(): void {
     workerTimer = null;
     console.log("[Thumbnail Worker] Worker stopped");
   }
+}
+
+export function triggerThumbnailGenerationForAttachment(args: {
+  attachmentType: AttachmentType;
+  attachmentId: string;
+  reason?: string;
+}): void {
+  if (!args.attachmentId || !isThumbnailWorkerEnabled()) return;
+
+  const alreadyQueued = triggeredThumbnailQueue.some(
+    (entry) => entry.attachmentType === args.attachmentType && entry.attachmentId === args.attachmentId
+  );
+  if (!alreadyQueued) {
+    triggeredThumbnailQueue.push({
+      attachmentType: args.attachmentType,
+      attachmentId: args.attachmentId,
+    });
+  }
+
+  const handle = setImmediate(() => {
+    drainTriggeredThumbnailQueue().catch((error) => {
+      console.error("[Thumbnail Worker] Triggered thumbnail generation failed:", {
+        attachmentType: args.attachmentType,
+        attachmentId: args.attachmentId,
+        reason: args.reason ?? "upload-import",
+        error,
+      });
+    });
+  });
+  handle.unref?.();
 }

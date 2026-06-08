@@ -9,10 +9,29 @@
  * - Non-production: Workers default to DISABLED (unless explicitly enabled)
  * - Global kill switch: WORKERS_ENABLED=false disables ALL workers in any environment
  * - Per-worker control: WORKER_<NAME>_ENABLED overrides defaults
+ * - Worker aliases: specific legacy/product env vars are also supported
  * - Interval overrides: WORKER_<NAME>_INTERVAL_MS
  */
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+const WORKER_ENABLED_ALIASES: Record<string, string[]> = {
+  THUMBNAILS: ['THUMBNAIL_WORKER_ENABLED', 'ATTACHMENT_THUMBNAIL_WORKER_ENABLED'],
+  ASSET_PREVIEW: ['ASSET_PREVIEW_WORKER_ENABLED'],
+  QB_SYNC: ['QUICKBOOKS_WORKER_ENABLED', 'QUICKBOOKS_SYNC_WORKER_ENABLED'],
+  QB_QUEUE: ['QUICKBOOKS_WORKER_ENABLED', 'QUICKBOOKS_SYNC_WORKER_ENABLED'],
+  UPLOAD_CLEANUP: ['UPLOAD_CLEANUP_WORKER_ENABLED'],
+};
+
+function firstParsedBoolean(keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (value !== undefined && value !== '') {
+      return value.toLowerCase() === 'true';
+    }
+  }
+  return undefined;
+}
 
 /**
  * Check if a specific worker should be enabled
@@ -31,12 +50,14 @@ export function isWorkerEnabled(name: string, defaultEnabledInProd = true): bool
     }
   }
 
-  // Check per-worker override
-  const workerEnvKey = `WORKER_${name.toUpperCase()}_ENABLED`;
-  const workerEnabled = process.env[workerEnvKey];
-  
-  if (workerEnabled !== undefined && workerEnabled !== '') {
-    return workerEnabled.toLowerCase() === 'true';
+  const normalizedName = name.toUpperCase();
+  const workerEnabled = firstParsedBoolean([
+    `WORKER_${normalizedName}_ENABLED`,
+    ...(WORKER_ENABLED_ALIASES[normalizedName] ?? []),
+  ]);
+
+  if (workerEnabled !== undefined) {
+    return workerEnabled;
   }
 
   // Default behavior based on environment
@@ -61,7 +82,7 @@ export function getWorkerIntervalOverride(
   name: string,
   productionDefaultMs: number,
   nonProductionDefaultMs: number,
-  legacyEnvVar?: string
+  legacyEnvVar?: string | string[]
 ): number {
   // Check per-worker interval override (new standard)
   const workerIntervalKey = `WORKER_${name.toUpperCase()}_INTERVAL_MS`;
@@ -75,8 +96,9 @@ export function getWorkerIntervalOverride(
   }
 
   // Check legacy env var if provided (backwards compatibility)
-  if (legacyEnvVar) {
-    const legacyValue = process.env[legacyEnvVar];
+  const legacyEnvVars = Array.isArray(legacyEnvVar) ? legacyEnvVar : legacyEnvVar ? [legacyEnvVar] : [];
+  for (const envVar of legacyEnvVars) {
+    const legacyValue = process.env[envVar];
     if (legacyValue !== undefined && legacyValue !== '') {
       const parsed = Number(legacyValue);
       if (Number.isFinite(parsed) && parsed > 0) {

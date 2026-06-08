@@ -2205,6 +2205,20 @@ export class OrdersRepository {
             .values(attachment)
             .returning(ORDER_ATTACHMENT_SAFE_SELECT);
 
+        if ((newAttachment as any)?.fileRecordId) {
+            void import('../workers/thumbnailWorker')
+                .then(({ triggerThumbnailGenerationForAttachment }) => {
+                    triggerThumbnailGenerationForAttachment({
+                        attachmentType: 'order',
+                        attachmentId: String((newAttachment as any).id),
+                        reason: 'order-repo-create-attachment',
+                    });
+                })
+                .catch((error) => {
+                    console.error('[OrdersRepo] Failed to trigger thumbnail generation:', error);
+                });
+        }
+
         return newAttachment as any;
     }
 
@@ -2264,6 +2278,20 @@ export class OrdersRepository {
             .insert(orderAttachments)
             .values(data)
             .returning(ORDER_ATTACHMENT_SAFE_SELECT);
+
+        if ((newAttachment as any)?.fileRecordId) {
+            void import('../workers/thumbnailWorker')
+                .then(({ triggerThumbnailGenerationForAttachment }) => {
+                    triggerThumbnailGenerationForAttachment({
+                        attachmentType: 'order',
+                        attachmentId: String((newAttachment as any).id),
+                        reason: 'order-repo-attach-file',
+                    });
+                })
+                .catch((error) => {
+                    console.error('[OrdersRepo] Failed to trigger thumbnail generation:', error);
+                });
+        }
 
         return newAttachment as any;
     }

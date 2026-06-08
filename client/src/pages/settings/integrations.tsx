@@ -83,6 +83,7 @@ type QBSyncQueueEnvelope = {
   success: boolean;
   data?: {
     settleWindowMinutes: number;
+    stabilityWindowMs: number;
     invoices: { pending: number; failed: number };
     payments: { pending: number; failed: number };
     nextEligibleCounts: { invoices: number; payments: number };
@@ -94,7 +95,9 @@ type QBFlushEnvelope = {
   success: boolean;
   data?: {
     settleWindowMinutes: number;
+    stabilityWindowMs: number;
     ignoreSettleWindow: boolean;
+    ignoreStabilityWindow: boolean;
     invoices: { attempted: number; succeeded: number; failed: number };
     payments: { attempted: number; succeeded: number; failed: number };
   };
@@ -811,8 +814,8 @@ export default function SettingsIntegrations() {
                 <div className="grid gap-3 rounded-lg border bg-card p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="text-sm text-muted-foreground">
-                      Settle window:{" "}
-                      <span className="font-medium text-foreground">{qbQueue?.data?.settleWindowMinutes ?? 10} min</span>
+                      Stability window:{" "}
+                      <span className="font-medium text-foreground">{qbQueue?.data?.settleWindowMinutes ?? 30} min</span>
                       <span className="mx-2 text-muted-foreground/50">•</span>
                       Eligible now:{" "}
                       <span className="font-medium text-foreground">
@@ -855,7 +858,7 @@ export default function SettingsIntegrations() {
                   </div>
 
                   <div className="text-xs text-muted-foreground">
-                    Sync now ignores the settle window (operator override). Partial or multi-invoice payments are not supported in MVP.
+                    Sync now bypasses the timer but still waits for recently edited invoices and payments to stabilize. Partial or multi-invoice payments are not supported in MVP.
                   </div>
                 </div>
               </div>

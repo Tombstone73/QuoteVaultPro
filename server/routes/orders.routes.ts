@@ -911,6 +911,18 @@ export async function registerOrderRoutes(
             },
         });
 
+        void import('../workers/thumbnailWorker')
+            .then(({ triggerThumbnailGenerationForAttachment }) => {
+                triggerThumbnailGenerationForAttachment({
+                    attachmentType: 'order',
+                    attachmentId: String(finalized.linkedRecord.id),
+                    reason: 'order-attachment-upload',
+                });
+            })
+            .catch((error) => {
+                console.error('[OrderAttachments:POST] Failed to trigger thumbnail generation:', error);
+            });
+
         return finalized.linkedRecord;
     };
 
@@ -3637,7 +3649,6 @@ export async function registerOrderRoutes(
             // PHASE 2: Create asset + link to order (fail-soft)
             try {
                 const { assetRepository } = await import('../services/assets/AssetRepository');
-                const { assetPreviewGenerator } = await import('../services/assets/AssetPreviewGenerator');
                 const resolvedOriginal = attachment.fileRecordId
                     ? await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId))
                     : null;
@@ -3651,12 +3662,6 @@ export async function registerOrderRoutes(
                 });
                 await assetRepository.linkAsset(organizationId, asset.id, 'order', orderId, 'attachment');
                 console.log(`[OrderAttachments:POST] Created asset ${asset.id} + linked to order ${orderId}`);
-
-                setImmediate(() => {
-                    assetPreviewGenerator.generatePreviews(asset).catch((err) => {
-                        console.error('[AssetPreviewGenerator] async generatePreviews failed', err);
-                    });
-                });
             } catch (assetError) {
                 console.error(`[OrderAttachments:POST] Asset creation failed (non-blocking):`, assetError);
             }
@@ -5425,6 +5430,20 @@ export async function registerOrderRoutes(
                     storageProvider: undefined,
                     bucket: 'titan-private',
                 }).returning())[0];
+
+            if (attachment.fileRecordId) {
+                void import('../workers/thumbnailWorker')
+                    .then(({ triggerThumbnailGenerationForAttachment }) => {
+                        triggerThumbnailGenerationForAttachment({
+                            attachmentType: 'order',
+                            attachmentId: String(attachment.id),
+                            reason: 'order-file-upload',
+                        });
+                    })
+                    .catch((error) => {
+                        console.error('[POST /api/orders/:id/files] Failed to trigger thumbnail generation:', error);
+                    });
+            }
 
             if (resolvedLineItemId) {
                 uploadStep = 'create_line_item_file_record';

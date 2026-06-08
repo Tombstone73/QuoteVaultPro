@@ -387,13 +387,26 @@ export function registerQuoteLineItemFileRoutes(
         });
       }
 
+      if (attachment.fileRecordId) {
+        void import('../workers/thumbnailWorker')
+          .then(({ triggerThumbnailGenerationForAttachment }) => {
+            triggerThumbnailGenerationForAttachment({
+              attachmentType: 'quote',
+              attachmentId: String(attachment.id),
+              reason: 'quote-line-item-file-upload',
+            });
+          })
+          .catch((error) => {
+            console.error('[LineItemFiles:POST] Failed to trigger thumbnail generation:', error);
+          });
+      }
+
       console.log(`[LineItemFiles:POST] Saved attachment storageProvider=${attachment.storageProvider || 'none'} storageKey=${attachment.fileUrl || 'null'}`);
       console.log(`[LineItemFiles:POST] Created attachment id=${attachment.id}, quoteLineItemId=${attachment.quoteLineItemId}`);
 
       // PHASE 2: Create asset + link (fail-soft: errors logged but don't block response)
       try {
         const { assetRepository } = await import('../services/assets/AssetRepository');
-        const { assetPreviewGenerator } = await import('../services/assets/AssetPreviewGenerator');
         const asset = await assetRepository.createAsset(organizationId, {
           fileRecordId: attachment.fileRecordId ?? null,
           fileKey: attachment.fileRecordId ? null : attachment.fileUrl,
@@ -403,12 +416,6 @@ export function registerQuoteLineItemFileRoutes(
         });
         await assetRepository.linkAsset(organizationId, asset.id, 'quote_line_item', lineItemId, 'primary');
         console.log(`[LineItemFiles:POST] Created asset ${asset.id} + linked to quote_line_item ${lineItemId}`);
-
-        setImmediate(() => {
-          assetPreviewGenerator.generatePreviews(asset).catch((err) => {
-            console.error('[AssetPreviewGenerator] async generatePreviews failed', err);
-          });
-        });
       } catch (assetError) {
         console.error(`[LineItemFiles:POST] Asset creation failed (non-blocking):`, assetError);
       }
