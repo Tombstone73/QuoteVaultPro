@@ -50,6 +50,7 @@ let ProductIntakeAiStatusPanel: typeof import("./CatalogMigrationLab").ProductIn
 let ProductIntakeSessionSummary: typeof import("./CatalogMigrationLab").ProductIntakeSessionSummary;
 let ProductIntakeSessionsList: typeof import("./CatalogMigrationLab").ProductIntakeSessionsList;
 let ProductIntakeAiDiagnosticsPanel: typeof import("./CatalogMigrationLab").ProductIntakeAiDiagnosticsPanel;
+let ProductIntakeQualityMetrics: typeof import("./CatalogMigrationLab").ProductIntakeQualityMetrics;
 let CatalogMigrationLab: typeof import("./CatalogMigrationLab").default;
 
 beforeAll(async () => {
@@ -60,6 +61,7 @@ beforeAll(async () => {
   ProductIntakeSessionSummary = module.ProductIntakeSessionSummary;
   ProductIntakeSessionsList = module.ProductIntakeSessionsList;
   ProductIntakeAiDiagnosticsPanel = module.ProductIntakeAiDiagnosticsPanel;
+  ProductIntakeQualityMetrics = module.ProductIntakeQualityMetrics;
   CatalogMigrationLab = module.default;
 });
 
@@ -193,6 +195,11 @@ const readiness: ProductIntakeReadiness = {
   answeredCount: 1,
   canCreateDraft: false,
   status: "needs_answers",
+  reviewState: "not_ready",
+  reviewScore: 46,
+  penalties: [
+    { code: "required_answers_open", label: "2 required answer(s) still open", severity: "blocker" },
+  ],
 };
 
 function intakeDetail(overrides: Partial<ProductIntakeSession> = {}) {
@@ -279,6 +286,9 @@ describe("Product Intake session UI", () => {
     expect(html).toContain("96%");
     expect(html).toContain("Current Confidence");
     expect(html).toContain("Required Open");
+    expect(html).toContain("Not Ready");
+    expect(html).toContain("Review Score");
+    expect(html).toContain("2 required answer(s) still open");
   });
 
   test("questions render by type with save and abandon actions", () => {
@@ -447,6 +457,26 @@ describe("Product Intake session UI", () => {
     expect(container.textContent).toContain("Delete Selected");
     expect(container.textContent).toContain("Open");
     act(() => root.unmount());
+  });
+
+  test("quality metrics render recent intake session mix", () => {
+    const html = renderToStaticMarkup(
+      <ProductIntakeQualityMetrics
+        sessions={[
+          session({ status: "ready_for_draft", brief: { ...session().brief, source: "live_ai", materialAnalysis: { detectedMaterialReferences: ["Foam"], likelyMaterialMatches: [{ materialId: "mat_1", sku: "FOAM", name: "Foam", confidence: 90, evidence: [] }], confidence: 90, evidence: [] } } }),
+          session({ id: "sess_2", brief: { ...session().brief, source: "live_ai", aiRepair: { accepted: true, actions: [] } } }),
+          session({ id: "sess_3", status: "needs_answers" }),
+        ]}
+      />,
+    );
+
+    expect(html).toContain("Product Intake Quality Metrics");
+    expect(html).toContain("Total Sessions");
+    expect(html).toContain("Live AI Repaired");
+    expect(html).toContain("Analyzer Fallback");
+    expect(html).toContain("Avg Confidence");
+    expect(html).toContain("Ready For Draft");
+    expect(html).toContain("Not Ready");
   });
 
   test("sessions list filters by product search", () => {

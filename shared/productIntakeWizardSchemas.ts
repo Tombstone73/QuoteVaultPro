@@ -208,6 +208,13 @@ export const productIntakeReadinessSchema = z.object({
   answeredCount: z.number().int().min(0),
   canCreateDraft: z.literal(false),
   status: z.enum(productIntakeSessionStatusValues),
+  reviewState: z.enum(["ready_for_draft", "needs_review", "not_ready"]).optional(),
+  reviewScore: z.number().min(0).max(100).optional(),
+  penalties: z.array(z.object({
+    code: z.string().min(1),
+    label: z.string().min(1),
+    severity: z.enum(["review", "blocker"]),
+  })).optional(),
 });
 
 export const productIntakeSessionDetailSchema = z.object({

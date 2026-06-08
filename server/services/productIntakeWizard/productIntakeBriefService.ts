@@ -100,6 +100,23 @@ function textDescriptionProductName(description: string): string {
   return (beforeWith || cleaned).slice(0, 120);
 }
 
+function titleCaseProductName(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .map((part) => {
+      if (/^\.\d+$/.test(part) || /^\d+(?:mm|oz)$/i.test(part)) return part.toLowerCase();
+      if (/^h-?wire$/i.test(part)) return "H-wire";
+      return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+    })
+    .join(" ")
+    .replace(/\bPvc\b/g, "PVC")
+    .replace(/\bAcm\b/g, "ACM")
+    .replace(/\bCmyk\b/g, "CMYK")
+    .replace(/\bContour Cut\b/g, "Contour-Cut");
+}
+
 export function resolveProductIntakeAiTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.PRODUCT_INTAKE_AI_TIMEOUT_MS
     ?? env.AI_PROVIDER_TIMEOUT_MS
@@ -114,8 +131,8 @@ function inferCategoryFromText(text: string): { value: string | null; confidence
   if (/foam board|foamcore|foam core/.test(normalized)) return { value: "Foam Board", confidence: 82 };
   if (/coroplast|coro|yard sign/.test(normalized)) return { value: "Coroplast / Yard Signs", confidence: 82 };
   if (/styrene|rigid sheet|rigid sign/.test(normalized)) return { value: "Rigid Signs", confidence: 84 };
-  if (/acrylic|pvc|acm|rigid/.test(normalized)) return { value: "Rigid Sheet", confidence: 68 };
   if (/sticker|decal|label/.test(normalized)) return { value: "Stickers", confidence: 76 };
+  if (/acrylic|pvc|acm|rigid/.test(normalized)) return { value: "Rigid Signs", confidence: 74 };
   return { value: null, confidence: 20 };
 }
 
@@ -142,7 +159,7 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   const materialReferences: string[] = [];
   const customSize = /custom\s+(?:width\s+and\s+height|size)|width\s+and\s+height/i.test(description);
   const quantityBasedPricing = /quantity[\s-]*(?:based|tier|break|pricing)|qty[\s-]*(?:based|tier|break|pricing)/i.test(description);
-  const sizeMatches = Array.from(description.matchAll(/\b(\d{1,3}(?:\.\d+)?)\s*[x×]\s*(\d{1,3}(?:\.\d+)?)\b/gi))
+  const sizeMatches = Array.from(description.matchAll(/\b(\d{1,3}(?:\.\d+)?)\s*(?:[xX]|\u00D7)\s*(\d{1,3}(?:\.\d+)?)\b/gi))
     .map((match) => `${match[1]}x${match[2]}`);
 
   const styreneGaugeMatch = description.match(/(?:\.(\d{2,3})\s*(?:rigid\s+)?styrene|styrene\s*\.?(\d{2,3}))/i);
@@ -160,6 +177,15 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   const coroplastMm = coroplastMmMatch ? coroplastMmMatch[1] ?? coroplastMmMatch[2] : null;
   if (coroplastMm) materialReferences.push(`Coroplast ${coroplastMm}mm`);
   else if (/\b(?:coroplast|coro)\b/i.test(description)) materialReferences.push("Coroplast");
+  const acrylicMmMatch = description.match(/(?:\b(\d{1,2})\s*mm\b.*\bacrylic\b|\bacrylic\b.*\b(\d{1,2})\s*mm\b)/i);
+  const acrylicMm = acrylicMmMatch ? acrylicMmMatch[1] ?? acrylicMmMatch[2] : null;
+  if (acrylicMm) materialReferences.push(`${acrylicMm}mm Acrylic`);
+  else if (/\bacrylic\b/i.test(description)) materialReferences.push("Acrylic");
+  const pvcMmMatch = description.match(/(?:\b(\d{1,2})\s*mm\b.*\bpvc\b|\bpvc\b.*\b(\d{1,2})\s*mm\b)/i);
+  const pvcMm = pvcMmMatch ? pvcMmMatch[1] ?? pvcMmMatch[2] : null;
+  if (pvcMm) materialReferences.push(`${pvcMm}mm PVC`);
+  else if (/\bpvc\b/i.test(description)) materialReferences.push("PVC");
+  if (/\bvinyl\b/i.test(description) && /sticker|decal|label/i.test(description)) materialReferences.push("Vinyl");
 
   const sides: string[] = [];
   if (/single[\s-]*sided/i.test(description)) sides.push("Single sided");
@@ -173,6 +199,10 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   if (/\bhemm?ing\b/i.test(description)) finishingOptions.push("Hemming");
   if (/\bgrommets?\b/i.test(description)) finishingOptions.push("Grommets");
   if (/pole\s+pockets?/i.test(description)) finishingOptions.push("Pole pockets");
+  if (/\blaminate|lamination\b/i.test(description)) finishingOptions.push("Laminate");
+  if (/\bh[\s-]?wire\b|\bstakes?\b/i.test(description)) finishingOptions.push("H-wire Stakes");
+  if (/white\s+ink/i.test(description)) finishingOptions.push("White Ink");
+  if (/contour[\s-]?cut/i.test(description) && !/sticker|decal|label/i.test(description)) finishingOptions.push("Contour Cut");
 
   const proofSignals: string[] = [];
   if (/proof\s+(required|needed|mandatory)|requires?\s+proof/i.test(description)) proofSignals.push("Proof required");
@@ -186,14 +216,28 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
 
   const isStyreneRigid = /styrene/.test(normalized) && (/rigid|sheet|sign/.test(normalized) || sizeMatches.length > 0);
   const isBanner = /\bbanner\b/.test(normalized);
-  const productName = isStyreneRigid ? "Styrene Signs" : isBanner ? (bannerOz ? `${bannerOz}oz Banner` : "Banner") : null;
-  const category = isStyreneRigid ? "Rigid Signs" : isBanner ? "Banners" : null;
+  const isCoroplastYardSign = /coroplast|coro|yard sign/.test(normalized);
+  const isSticker = /sticker|decal|label/.test(normalized);
+  const isContourCutSticker = isSticker && /contour\s*cut/.test(normalized);
+  const isAcrylicSign = /acrylic/.test(normalized) && (/sign|sheet|panel|rigid/.test(normalized) || sizeMatches.length > 0);
+  const isPvcSign = /\bpvc\b/.test(normalized) && (/sign|sheet|panel|rigid/.test(normalized) || sizeMatches.length > 0);
+  const styreneName = isStyreneRigid ? titleCaseProductName(`${styreneGaugeMatch ? `.${(styreneGaugeMatch[1] ?? styreneGaugeMatch[2]).padStart(3, "0")} ` : ""}Styrene Signs`) : null;
+  const coroplastName = isCoroplastYardSign ? titleCaseProductName(`${coroplastMm ? `${coroplastMm}mm ` : ""}Coroplast Yard Signs`) : null;
+  const acrylicName = isAcrylicSign ? titleCaseProductName(`${acrylicMm ? `${acrylicMm}mm ` : ""}Acrylic Signs`) : null;
+  const pvcName = isPvcSign ? titleCaseProductName(`${pvcMm ? `${pvcMm}mm ` : ""}PVC Signs`) : null;
+  const productName = styreneName
+    ?? (isBanner ? (bannerOz ? `${bannerOz}oz Banner` : "Banner") : null)
+    ?? coroplastName
+    ?? (isContourCutSticker ? "Contour-Cut Stickers" : isSticker ? "Stickers" : null)
+    ?? acrylicName
+    ?? pvcName;
+  const category = isStyreneRigid || isAcrylicSign || isPvcSign ? "Rigid Signs" : isBanner ? "Banners" : isCoroplastYardSign ? "Coroplast / Yard Signs" : isSticker ? "Stickers" : null;
 
   return {
     productName,
     category,
     categoryConfidence: category ? 86 : 20,
-    productType: isStyreneRigid ? "rigid_signage" : isBanner ? "banner" : null,
+    productType: isStyreneRigid || isCoroplastYardSign || isAcrylicSign || isPvcSign ? "rigid_signage" : isBanner ? "banner" : isSticker ? "stickers" : null,
     materialReferences: unique(materialReferences),
     sizes: unique(sizeMatches),
     customSize,
@@ -226,6 +270,9 @@ function matchMaterialsFromText(signals: TextDescriptionSignals, materials: Prod
       if (referenceText.includes("styrene") && normalized.includes("styrene")) score += 55;
       if (referenceText.includes("banner") && normalized.includes("banner")) score += 55;
       if ((referenceText.includes("coroplast") || referenceText.includes("coro")) && (normalized.includes("coroplast") || normalized.includes("coro"))) score += 55;
+      if (referenceText.includes("acrylic") && normalized.includes("acrylic")) score += 55;
+      if (referenceText.includes("pvc") && normalized.includes("pvc")) score += 55;
+      if (referenceText.includes("vinyl") && normalized.includes("vinyl")) score += 55;
       for (const gauge of Array.from(referenceGauges)) {
         if (haystack.toLowerCase().includes(gauge.toLowerCase()) || normalized.includes(gauge.replace(/[^0-9]/g, ""))) score += 35;
       }
@@ -309,8 +356,12 @@ export function matchOptionTemplates(args: {
         return normalized && (normalizeText(args.optionLabel).includes(normalized) || normalized.includes(normalizeText(args.optionLabel)) || normalized.split(" ").some((token) => optionTokens.has(token)));
       });
       const overlap = Array.from(optionTokens).filter((token) => signalTokens.has(token)).length;
-      const exactish = matchedSignals.some((signal) => normalizeText(signal) === normalizeText(args.optionLabel));
-      const score = Math.min(1, (overlap / Math.max(optionTokens.size, 1)) * 0.75 + (exactish ? 0.3 : 0) + (matchedSignals.length > 1 ? 0.1 : 0));
+      const normalizedOptionLabel = normalizeText(args.optionLabel);
+      const normalizedSamples = args.sampleValues.map((value) => normalizeText(value));
+      const exactish = matchedSignals.some((signal) => normalizeText(signal) === normalizedOptionLabel);
+      const sampleExactish = normalizedSamples.some((sample) => sample && (sample === normalizedOptionLabel || signalTokens.has(sample)));
+      const slugExactish = normalizeText(template.slug) === normalizedOptionLabel;
+      const score = Math.min(1, (overlap / Math.max(optionTokens.size, 1)) * 0.75 + (exactish || slugExactish ? 0.3 : 0) + (sampleExactish ? 0.2 : 0) + (matchedSignals.length > 1 ? 0.1 : 0));
       return {
         template,
         score,
@@ -557,16 +608,16 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       templates: input.templates,
       reason: "Printing intent was stated in the text description.",
     }) : null,
-    textSignals.finishingOptions.length > 0 ? textOptionGroup({
-      label: "Finishing",
-      normalizedGroup: "Finishing",
+    ...textSignals.finishingOptions.map((finishing) => textOptionGroup({
+      label: finishing,
+      normalizedGroup: finishing,
       required: false,
-      sampleValues: textSignals.finishingOptions,
-      sourcePath: "$.description.finishing",
-      confidence: 86,
+      sampleValues: [finishing],
+      sourcePath: `$.description.finishing.${normalizeText(finishing).replace(/\s+/g, "_")}`,
+      confidence: 88,
       templates: input.templates,
-      reason: "Optional finishing choices were stated in the text description.",
-    }) : null,
+      reason: "An optional finishing choice was stated in the text description.",
+    })),
   ].filter(Boolean) as ReturnType<typeof textOptionGroup>[] : [];
   const requiredOptions = [...analyzerRequiredOptions, ...textRequiredOptions];
   const optionalOptions = [...analyzerOptionalOptions, ...textOptionalOptions];

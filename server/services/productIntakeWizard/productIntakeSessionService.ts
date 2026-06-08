@@ -204,7 +204,7 @@ function behaviorQuestion(args: {
   options: Array<{ label: string; value: string }>;
   sortOrder: number;
 }): NewQuestion | null {
-  if (args.behavior.behavior !== "unknown" && args.behavior.confidence >= 50) return null;
+  if (args.behavior.behavior !== "unknown" && args.behavior.confidence >= 65) return null;
   return {
     questionKey: args.key,
     questionType: "select",
@@ -217,6 +217,15 @@ function behaviorQuestion(args: {
     confidence: args.behavior.confidence,
     sortOrder: args.sortOrder,
   };
+}
+
+function needsWorkflowFollowUp(brief: ProductIntakeBrief): boolean {
+  return brief.draftWarnings.some((warning) => {
+    const text = `${warning.code} ${warning.message}`;
+    if (!/routing|prepress|proof/i.test(text)) return false;
+    if (warning.severity === "info" && /proof_required|routing_signal/i.test(warning.code)) return false;
+    return /unknown|missing|unclear|ambiguous|conflict|review|warning|blocker/i.test(text) || warning.severity === "warning";
+  });
 }
 
 export function generateProductIntakeQuestions(brief: ProductIntakeBrief): NewQuestion[] {
@@ -277,7 +286,7 @@ export function generateProductIntakeQuestions(brief: ProductIntakeBrief): NewQu
     }
   }
 
-  if (brief.draftWarnings.some((warning) => /routing|prepress|proof/i.test(`${warning.code} ${warning.message}`))) {
+  if (needsWorkflowFollowUp(brief)) {
     push({
       questionKey: "confirm-routing-proof-prepress",
       questionType: "text",
@@ -335,11 +344,64 @@ export function computeProductIntakeReadiness(args: {
     : unansweredRequiredCount > 0
       ? "needs_answers"
       : "ready_for_draft";
+  const penalties: Array<{ code: string; label: string; severity: "review" | "blocker" }> = [];
+  const brief = args.session.brief;
+  const materialConfidence = brief.materialAnalysis.confidence;
+  const bestTemplateReviewCount = brief.templateMatches.filter((match) => match.recommendation === "review_required").length;
+  const materialAnswered = hasAnswerValue(
+    args.questions.find((question) => question.questionKey === "select-material") ?? ({
+      questionType: "text",
+    } as ProductIntakeQuestion),
+    answerByKey.get("select-material")?.answer,
+  );
+  const pricingAnswered = hasAnswerValue(
+    args.questions.find((question) => question.questionKey === "choose-pricing-model") ?? ({
+      questionType: "text",
+    } as ProductIntakeQuestion),
+    answerByKey.get("choose-pricing-model")?.answer,
+  );
+  const workflowNeedsReview = brief.draftWarnings.some((warning) => {
+    const text = `${warning.code} ${warning.message}`;
+    if (!/routing|prepress|proof/i.test(text)) return false;
+    if (warning.severity === "info" && /proof_required|routing_signal/i.test(warning.code)) return false;
+    return warning.severity === "warning" || /unknown|missing|unclear|ambiguous|conflict|review/i.test(text);
+  });
+
+  if (unansweredRequiredCount > 0) {
+    penalties.push({ code: "required_answers_open", label: `${unansweredRequiredCount} required answer(s) still open`, severity: "blocker" });
+  }
+  if (!materialAnswered && (materialConfidence < 65 || brief.materialAnalysis.likelyMaterialMatches.length === 0)) {
+    penalties.push({ code: "material_unresolved", label: "Material is unresolved or below confidence threshold", severity: "blocker" });
+  }
+  if (!pricingAnswered && (brief.pricingAnalysis.behavior === "unknown" || brief.pricingAnalysis.confidence < 65)) {
+    penalties.push({ code: "pricing_unresolved", label: "Pricing behavior is unresolved or below confidence threshold", severity: "blocker" });
+  }
+  if (workflowNeedsReview) {
+    penalties.push({ code: "workflow_unresolved", label: "Routing, proofing, or prepress workflow still needs review", severity: "review" });
+  }
+  if (bestTemplateReviewCount >= 3) {
+    penalties.push({ code: "template_ambiguity", label: "Several option template matches still require review", severity: "review" });
+  }
+
+  const currentConfidence = typeof args.session.confidence?.currentConfidence === "number" ? args.session.confidence.currentConfidence : brief.overallConfidence;
+  const reviewScore = clampConfidence(currentConfidence
+    - penalties.filter((penalty) => penalty.severity === "blocker").length * 20
+    - penalties.filter((penalty) => penalty.severity === "review").length * 10);
+  const reviewState = args.session.status === "abandoned"
+    ? "not_ready"
+    : penalties.some((penalty) => penalty.severity === "blocker")
+      ? "not_ready"
+      : penalties.length > 0 || reviewScore < 75
+        ? "needs_review"
+        : "ready_for_draft";
   return productIntakeReadinessSchema.parse({
     unansweredRequiredCount,
     answeredCount,
     canCreateDraft: false,
     status,
+    reviewState,
+    reviewScore,
+    penalties,
   });
 }
 
