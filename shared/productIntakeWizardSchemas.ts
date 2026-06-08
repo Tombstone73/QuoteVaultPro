@@ -206,7 +206,7 @@ export const productIntakeSessionSchema = z.object({
 export const productIntakeReadinessSchema = z.object({
   unansweredRequiredCount: z.number().int().min(0),
   answeredCount: z.number().int().min(0),
-  canCreateDraft: z.literal(false),
+  canCreateDraft: z.boolean(),
   status: z.enum(productIntakeSessionStatusValues),
   reviewState: z.enum(["ready_for_draft", "needs_review", "not_ready"]).optional(),
   reviewScore: z.number().min(0).max(100).optional(),
@@ -223,6 +223,16 @@ export const productIntakeSessionDetailSchema = z.object({
   questions: z.array(productIntakeQuestionSchema),
   answers: z.array(productIntakeAnswerSchema),
   readiness: productIntakeReadinessSchema,
+});
+
+export const productIntakeCreateDraftResponseSchema = z.object({
+  success: z.literal(true),
+  data: z.object({
+    productId: z.string().min(1),
+    pbv2TreeVersionId: z.string().min(1),
+    session: productIntakeSessionSchema,
+    detail: productIntakeSessionDetailSchema,
+  }),
 });
 
 export const productIntakeAnswerPatchItemSchema = z.object({
@@ -409,12 +419,14 @@ export const productIntakeWizardAnalyzeResponseSchema = z.union([
 export type ProductIntakeSourceType = z.infer<typeof productIntakeWizardAnalyzeRequestSchema>["sourceType"];
 export type ProductIntakeEvidence = z.infer<typeof productIntakeEvidenceSchema>;
 export type ProductIntakeTemplateMatch = z.infer<typeof productIntakeTemplateMatchSchema>;
+export type ProductIntakeOption = z.infer<typeof productIntakeOptionSchema>;
 export type ProductIntakeBrief = z.infer<typeof productIntakeBriefSchema>;
 export type ProductIntakeQuestion = z.infer<typeof productIntakeQuestionSchema>;
 export type ProductIntakeAnswer = z.infer<typeof productIntakeAnswerSchema>;
 export type ProductIntakeSession = z.infer<typeof productIntakeSessionSchema>;
 export type ProductIntakeReadiness = z.infer<typeof productIntakeReadinessSchema>;
 export type ProductIntakeSessionDetail = z.infer<typeof productIntakeSessionDetailSchema>;
+export type ProductIntakeCreateDraftResponse = z.infer<typeof productIntakeCreateDraftResponseSchema>;
 export type ProductIntakeAiDiagnosticIssue = z.infer<typeof productIntakeAiDiagnosticIssueSchema>;
 export type ProductIntakeAiRepairAction = z.infer<typeof productIntakeAiRepairActionSchema>;
 export type ProductIntakeAiDiagnostic = z.infer<typeof productIntakeAiDiagnosticSchema>;

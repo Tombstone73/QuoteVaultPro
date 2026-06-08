@@ -4,9 +4,11 @@ import {
   AlertTriangle,
   Brain,
   Download,
+  ExternalLink,
   FileSpreadsheet,
   FlaskConical,
   Loader2,
+  PackagePlus,
   ShieldCheck,
   Trash2,
   Upload,
@@ -22,6 +24,7 @@ import type {
   ProductIntakeQuestion,
   ProductIntakeReadiness,
   ProductIntakeSession,
+  ProductIntakeCreateDraftResponse,
   ProductIntakeSessionDetail,
 } from "@shared/productIntakeWizardSchemas";
 import { apiRequest } from "@/lib/queryClient";
@@ -479,6 +482,7 @@ function renderQuestionInput(args: {
 }
 
 export function ProductIntakeQuestionsWizard({
+  session,
   questions,
   answers,
   readiness,
@@ -486,9 +490,12 @@ export function ProductIntakeQuestionsWizard({
   onAnswerChange,
   onSave,
   onAbandon,
+  onCreateDraft,
   isSaving = false,
   isAbandoning = false,
+  isCreatingDraft = false,
 }: {
+  session?: ProductIntakeSession;
   questions: ProductIntakeQuestion[];
   answers: ProductIntakeAnswer[];
   readiness: ProductIntakeReadiness;
@@ -496,10 +503,15 @@ export function ProductIntakeQuestionsWizard({
   onAnswerChange: (questionKey: string, value: unknown) => void;
   onSave: () => void;
   onAbandon: () => void;
+  onCreateDraft?: () => void;
   isSaving?: boolean;
   isAbandoning?: boolean;
+  isCreatingDraft?: boolean;
 }) {
   const answeredKeys = new Set(answers.filter((answer) => answer.answer != null).map((answer) => answer.questionKey));
+  const draftProductId = session?.createdProductId ?? null;
+  const draftTreeId = session?.createdPbv2TreeVersionId ?? null;
+  const hasCreatedDraft = session?.status === "draft_created" || Boolean(draftProductId || draftTreeId);
   return (
     <Card>
       <CardHeader>
@@ -537,11 +549,18 @@ export function ProductIntakeQuestionsWizard({
         ))}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
           <div className="text-sm text-muted-foreground">
-            {readiness.reviewState === "ready_for_draft" || readiness.status === "ready_for_draft" ? "Ready for Phase 3 draft generation." : "Answer required questions and review flagged penalties before draft readiness."}
+            {hasCreatedDraft
+              ? "Draft product was created. Publish remains a separate validation step."
+              : readiness.canCreateDraft
+                ? "Ready to create one inactive product and one PBV2 DRAFT tree."
+                : "Answer required questions and review flagged penalties before draft readiness."}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {readiness.status === "ready_for_draft" && (
-              <Button type="button" variant="outline" disabled>Create TEMP Draft Coming in Phase 3</Button>
+            {(readiness.status === "ready_for_draft" || hasCreatedDraft) && (
+              <Button type="button" className="gap-2" variant="outline" onClick={onCreateDraft} disabled={!readiness.canCreateDraft || isCreatingDraft || hasCreatedDraft}>
+                {isCreatingDraft ? <Loader2 className="h-4 w-4 animate-spin" /> : <PackagePlus className="h-4 w-4" />}
+                {hasCreatedDraft ? "Draft Product Created" : isCreatingDraft ? "Creating..." : "Create Draft Product"}
+              </Button>
             )}
             <Button type="button" variant="outline" onClick={onAbandon} disabled={isAbandoning}>
               {isAbandoning ? "Marking..." : "Mark Abandoned"}
@@ -551,6 +570,37 @@ export function ProductIntakeQuestionsWizard({
             </Button>
           </div>
         </div>
+        {hasCreatedDraft && (
+          <div className="rounded border bg-muted/30 p-3 text-sm">
+            <div className="font-medium">Draft Product Created</div>
+            <div className="mt-2 grid gap-2 md:grid-cols-2">
+              <div>
+                <div className="text-xs font-medium uppercase text-muted-foreground">Product ID</div>
+                <div className="mt-1 font-mono text-xs">{draftProductId ?? "-"}</div>
+              </div>
+              <div>
+                <div className="text-xs font-medium uppercase text-muted-foreground">PBV2 Draft Tree ID</div>
+                <div className="mt-1 font-mono text-xs">{draftTreeId ?? "-"}</div>
+              </div>
+            </div>
+            {draftProductId && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button asChild size="sm" variant="outline" className="gap-2">
+                  <a href={`/products/${draftProductId}/edit`}>
+                    <ExternalLink className="h-4 w-4" />
+                    Open Product
+                  </a>
+                </Button>
+                <Button asChild size="sm" variant="outline" className="gap-2">
+                  <a href={`/products/${draftProductId}/builder-v2`}>
+                    <ExternalLink className="h-4 w-4" />
+                    Open PBV2 Draft
+                  </a>
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -1645,6 +1695,32 @@ export default function CatalogMigrationLab() {
     },
   });
 
+  const createDraftMutation = useMutation({
+    mutationFn: async () => {
+      if (!intakeSessionDetail) throw new Error("No intake session is selected.");
+      const response = await apiRequest("POST", `/api/admin/product-intake-wizard/sessions/${intakeSessionDetail.session.id}/create-draft`);
+      const json = await response.json() as ProductIntakeCreateDraftResponse | { success: false; message?: string };
+      if (!json?.success) throw new Error(json?.message ?? "Failed to create draft product");
+      return json.data;
+    },
+    onSuccess: (data) => {
+      setIntakeSessionDetail(data.detail);
+      setIntakeBrief(data.detail.brief);
+      void sessionsQuery.refetch();
+      toast({
+        title: "Draft product created",
+        description: "Inactive product and PBV2 DRAFT tree were created. Publish remains separate.",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Draft creation failed",
+        description: error?.message ?? "The intake session could not create a draft product.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const deleteSessionMutation = useMutation({
     mutationFn: async (session: ProductIntakeSession) => {
       const response = await apiRequest("DELETE", `/api/admin/product-intake-wizard/sessions/${session.id}`);
@@ -1780,10 +1856,10 @@ export default function CatalogMigrationLab() {
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-2xl font-semibold">Catalog Migration Lab</h1>
             <Badge variant="outline">Experimental</Badge>
-            <Badge variant="secondary">Read-only</Badge>
+            <Badge variant="secondary">Review-first</Badge>
           </div>
           <p className="mt-2 text-sm text-muted-foreground">
-            Analyze an InfoFlo JSON product catalog export before any mapping, draft generation, or import workflow exists.
+            Analyze an InfoFlo JSON product catalog export, collect missing decisions, and create inactive product drafts for human review.
           </p>
         </div>
         {analysis && (
@@ -1802,10 +1878,10 @@ export default function CatalogMigrationLab() {
         <CardContent className="flex items-start gap-3 p-4">
           <ShieldCheck className="mt-0.5 h-4 w-4 text-blue-500" />
           <div className="space-y-1 text-sm">
-            <div className="font-medium text-blue-700 dark:text-blue-300">Phase 1 safety boundary</div>
+            <div className="font-medium text-blue-700 dark:text-blue-300">Product Intake safety boundary</div>
             <div className="text-muted-foreground">
-              This page only parses uploaded JSON and returns catalog intelligence. It does not create products, drafts,
-              PBV2 trees, materials, pricing formulas, Product Planning records, or catalog table changes.
+              AI analysis remains review-first. The draft action creates only an inactive product and a PBV2 DRAFT tree;
+              it does not publish PBV2 trees, assign active trees, activate catalog products, create templates, or change existing products.
             </div>
           </div>
         </CardContent>
@@ -1973,6 +2049,7 @@ export default function CatalogMigrationLab() {
             <>
               <ProductIntakeSessionSummary session={intakeSessionDetail.session} readiness={intakeSessionDetail.readiness} diagnosticsCount={diagnosticsQuery.data?.length ?? 0} />
               <ProductIntakeQuestionsWizard
+                session={intakeSessionDetail.session}
                 questions={intakeSessionDetail.questions}
                 answers={intakeSessionDetail.answers}
                 readiness={intakeSessionDetail.readiness}
@@ -1980,8 +2057,10 @@ export default function CatalogMigrationLab() {
                 onAnswerChange={(questionKey, value) => setAnswerDrafts((current) => ({ ...current, [questionKey]: value }))}
                 onSave={() => saveAnswersMutation.mutate()}
                 onAbandon={() => abandonSessionMutation.mutate()}
+                onCreateDraft={() => createDraftMutation.mutate()}
                 isSaving={saveAnswersMutation.isPending}
                 isAbandoning={abandonSessionMutation.isPending}
+                isCreatingDraft={createDraftMutation.isPending}
               />
             </>
           )}

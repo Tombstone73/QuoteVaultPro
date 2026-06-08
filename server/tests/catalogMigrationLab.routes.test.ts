@@ -18,6 +18,7 @@ import {
   computeProductIntakeReadiness,
   createDbProductIntakeSessionStore,
   generateProductIntakeQuestions,
+  ProductIntakeSessionError,
   resolveProductIntakeSessionStatus,
   type ProductIntakeSessionStore,
 } from "../services/productIntakeWizard/productIntakeSessionService";
@@ -31,6 +32,7 @@ import type {
   ProductIntakeAiDiagnosticInput,
   ProductIntakeAiDiagnosticsStore,
 } from "../services/productIntakeWizard/productIntakeDiagnosticsService";
+import type { ProductIntakeDraftCreator } from "../services/productIntakeWizard/productIntakeDraftService";
 import { AiProviderTimeoutError } from "../services/ai/providers/AiProviderAdapter";
 
 type AppOptions = {
@@ -220,6 +222,67 @@ function makeMemoryProductIntakeDiagnosticsStore(seed: ProductIntakeAiDiagnostic
   };
 }
 
+function readyDraftBrief(overrides: Partial<ProductIntakeBrief> = {}): ProductIntakeBrief {
+  return {
+    workflowState: "REVIEW_READY",
+    source: "live_ai",
+    fallbackReason: null,
+    productIdentity: {
+      likelyProductName: { value: "13oz Banner", confidence: 92, evidence: [] },
+      category: { value: "Banners", confidence: 88, evidence: [] },
+      productType: { value: "Banner", confidence: 84, evidence: [] },
+    },
+    materialAnalysis: {
+      detectedMaterialReferences: ["13oz banner"],
+      likelyMaterialMatches: [{ materialId: "mat_1", sku: "BAN13", name: "13oz Banner", confidence: 91, evidence: [] }],
+      confidence: 91,
+      evidence: [],
+    },
+    sizeBehavior: { behavior: "custom_size", confidence: 90, evidence: [] },
+    quantityBehavior: { behavior: "quantity_based", confidence: 90, evidence: [] },
+    pricingAnalysis: { behavior: "square_foot", confidence: 90, evidence: [] },
+    requiredOptions: [],
+    optionalOptions: [],
+    templateMatches: [],
+    missingDecisions: [],
+    redundantFields: [],
+    draftWarnings: [],
+    sourceEvidence: [],
+    overallConfidence: 90,
+    ...overrides,
+  };
+}
+
+function makeMemoryProductIntakeDraftCreator(store: ProductIntakeSessionStore): ProductIntakeDraftCreator {
+  return {
+    async createDraftFromSession({ organizationId, sessionId }) {
+      const detail = await store.getSessionDetail(organizationId, sessionId);
+      if (!detail) throw new ProductIntakeSessionError(404, "Product Intake session not found.", "SESSION_NOT_FOUND");
+      if (detail.session.createdProductId || detail.session.createdPbv2TreeVersionId) {
+        throw new ProductIntakeSessionError(409, "This intake session already created a draft product.", "INTAKE_DRAFT_ALREADY_CREATED");
+      }
+      if (detail.session.status !== "ready_for_draft") {
+        throw new ProductIntakeSessionError(409, "Only ready_for_draft intake sessions can create draft products.", "INTAKE_NOT_READY");
+      }
+
+      detail.session.status = "draft_created";
+      detail.session.createdProductId = "prod_draft_1";
+      detail.session.createdPbv2TreeVersionId = "tree_draft_1";
+      detail.session.updatedAt = new Date().toISOString();
+      detail.readiness = computeProductIntakeReadiness({
+        session: detail.session,
+        questions: detail.questions,
+        answers: detail.answers,
+      });
+      return {
+        productId: detail.session.createdProductId,
+        pbv2TreeVersionId: detail.session.createdPbv2TreeVersionId,
+        session: detail.session,
+      };
+    },
+  };
+}
+
 function aiReadiness(overrides: Partial<ProductIntakeAiReadiness> = {}): ProductIntakeAiReadiness {
   return {
     organizationId: "org_1",
@@ -242,10 +305,18 @@ function aiReadiness(overrides: Partial<ProductIntakeAiReadiness> = {}): Product
   };
 }
 
+function expectedCanCreateDraft(data: any): boolean {
+  return data.session?.status === "ready_for_draft" &&
+    data.readiness?.reviewState === "ready_for_draft" &&
+    !data.session?.createdProductId &&
+    !data.session?.createdPbv2TreeVersionId;
+}
+
 function buildApp(
   options: AppOptions = {},
   productIntakeSessionStore = makeMemoryProductIntakeSessionStore(),
   productIntakeDiagnosticsStore = makeMemoryProductIntakeDiagnosticsStore(),
+  productIntakeDraftCreator?: ProductIntakeDraftCreator,
 ) {
   const app = express();
   app.use(express.json({ limit: "3mb" }));
@@ -301,6 +372,7 @@ function buildApp(
     productIntakeAiProvider: options.productIntakeAiProvider ?? null,
     productIntakeSessionStore,
     productIntakeDiagnosticsStore,
+    ...(productIntakeDraftCreator ? { productIntakeDraftCreator } : {}),
     productIntakeAiReadinessResolver: options.productIntakeAiReadinessResolver ?? (async ({ organizationId, userId, databaseIdentifier }) => aiReadiness({ organizationId, userId, databaseIdentifier })),
   });
 
@@ -414,7 +486,7 @@ describe("Catalog Migration Lab routes", () => {
     expect(response.body.data.brief.templateMatches.some((match: any) => match.templateId === "tpl_grommets")).toBe(true);
     expect(response.body.data.sessionId).toBeTruthy();
     expect(response.body.data.session.status).toMatch(/needs_answers|ready_for_draft|analyzed/);
-    expect(response.body.data.readiness.canCreateDraft).toBe(false);
+    expect(response.body.data.readiness.canCreateDraft).toBe(expectedCanCreateDraft(response.body.data));
   });
 
   test("product intake route supports a short text description without running JSON import", async () => {
@@ -467,7 +539,7 @@ describe("Catalog Migration Lab routes", () => {
       readiness: expect.objectContaining({
         unansweredRequiredCount: expect.any(Number),
         answeredCount: 0,
-        canCreateDraft: false,
+        canCreateDraft: expect.any(Boolean),
       }),
     });
     expect(response.body.data.brief.productIdentity.likelyProductName.value).toMatch(/Banner/);
@@ -586,7 +658,7 @@ describe("Catalog Migration Lab routes", () => {
     expect(response.body.data.brief.productIdentity.likelyProductName.value).toBe("13oz Banner");
     expect(response.body.data.brief.pricingAnalysis.behavior).toBe("quantity_tiers");
     expect(response.body.data.sessionId).toBeTruthy();
-    expect(response.body.data.readiness.canCreateDraft).toBe(false);
+    expect(response.body.data.readiness.canCreateDraft).toBe(expectedCanCreateDraft(response.body.data));
     expect(response.body.data.aiRun).toMatchObject({
       attempted: true,
       reachedProvider: true,
@@ -647,7 +719,7 @@ describe("Catalog Migration Lab routes", () => {
     expect(response.body.success).toBe(true);
     expect(response.body.data.sessionId).toBeTruthy();
     expect(response.body.data.session.status).toMatch(/needs_answers|ready_for_draft|analyzed/);
-    expect(response.body.data.readiness.canCreateDraft).toBe(false);
+    expect(response.body.data.readiness.canCreateDraft).toBe(expectedCanCreateDraft(response.body.data));
   });
 
   test("product intake route supports pvc text description with success response", async () => {
@@ -664,7 +736,7 @@ describe("Catalog Migration Lab routes", () => {
     expect(response.body.data.brief.workflowState).toBe("REVIEW_READY");
     expect(response.body.data.questions).toEqual(expect.any(Array));
     expect(response.body.data.readiness).toMatchObject({
-      canCreateDraft: false,
+      canCreateDraft: expect.any(Boolean),
       answeredCount: 0,
     });
   });
@@ -716,6 +788,93 @@ describe("Catalog Migration Lab routes", () => {
     const abandoned = await request(app).post(`/api/admin/product-intake-wizard/sessions/${sessionId}/abandon`);
     expect(abandoned.status).toBe(200);
     expect(abandoned.body.data.session.status).toBe("abandoned");
+  });
+
+  test("product intake create-draft transitions only ready sessions to draft_created", async () => {
+    const store = makeMemoryProductIntakeSessionStore();
+    const created = await store.createFromAnalysis({
+      organizationId: "org_1",
+      userId: "user_1",
+      request: { sourceType: "text_description", description: "13oz banner" } as any,
+      analyzer: null,
+      brief: readyDraftBrief(),
+    });
+    expect(created.session.status).toBe("ready_for_draft");
+    expect(created.readiness.canCreateDraft).toBe(true);
+
+    const app = buildApp({}, store, makeMemoryProductIntakeDiagnosticsStore(), makeMemoryProductIntakeDraftCreator(store));
+    const response = await request(app)
+      .post(`/api/admin/product-intake-wizard/sessions/${created.session.id}/create-draft`)
+      .send({});
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      success: true,
+      data: {
+        productId: "prod_draft_1",
+        pbv2TreeVersionId: "tree_draft_1",
+        session: {
+          status: "draft_created",
+          createdProductId: "prod_draft_1",
+          createdPbv2TreeVersionId: "tree_draft_1",
+        },
+        detail: {
+          readiness: {
+            canCreateDraft: false,
+            status: "draft_created",
+          },
+        },
+      },
+    });
+  });
+
+  test("product intake create-draft blocks wrong status, wrong org, and duplicate creation", async () => {
+    const store = makeMemoryProductIntakeSessionStore();
+    const needsAnswers = await store.createFromAnalysis({
+      organizationId: "org_1",
+      userId: "user_1",
+      request: { sourceType: "text_description", description: "foam board" } as any,
+      analyzer: null,
+      brief: readyDraftBrief({
+        materialAnalysis: { detectedMaterialReferences: [], likelyMaterialMatches: [], confidence: 25, evidence: [] },
+        overallConfidence: 60,
+      }),
+    });
+    const notReadyDetail = await store.getSessionDetail("org_1", needsAnswers.session.id);
+    if (notReadyDetail) {
+      notReadyDetail.session.status = "analyzed";
+      notReadyDetail.readiness = computeProductIntakeReadiness({
+        session: notReadyDetail.session,
+        questions: notReadyDetail.questions,
+        answers: notReadyDetail.answers,
+      });
+    }
+    const ready = await store.createFromAnalysis({
+      organizationId: "org_1",
+      userId: "user_1",
+      request: { sourceType: "text_description", description: "13oz banner" } as any,
+      analyzer: null,
+      brief: readyDraftBrief(),
+    });
+    const draftCreator = makeMemoryProductIntakeDraftCreator(store);
+
+    const notReady = await request(buildApp({}, store, makeMemoryProductIntakeDiagnosticsStore(), draftCreator))
+      .post(`/api/admin/product-intake-wizard/sessions/${needsAnswers.session.id}/create-draft`)
+      .send({});
+    expect(notReady.status).toBe(409);
+    expect(notReady.body.errorCode).toBe("INTAKE_NOT_READY");
+
+    const wrongOrg = await request(buildApp({ organizationId: "org_2" }, store, makeMemoryProductIntakeDiagnosticsStore(), draftCreator))
+      .post(`/api/admin/product-intake-wizard/sessions/${ready.session.id}/create-draft`)
+      .send({});
+    expect(wrongOrg.status).toBe(404);
+    expect(wrongOrg.body.errorCode).toBe("SESSION_NOT_FOUND");
+
+    const app = buildApp({}, store, makeMemoryProductIntakeDiagnosticsStore(), draftCreator);
+    await request(app).post(`/api/admin/product-intake-wizard/sessions/${ready.session.id}/create-draft`).send({});
+    const duplicate = await request(app).post(`/api/admin/product-intake-wizard/sessions/${ready.session.id}/create-draft`).send({});
+    expect(duplicate.status).toBe(409);
+    expect(duplicate.body.errorCode).toBe("INTAKE_DRAFT_ALREADY_CREATED");
   });
 
   test("product intake session delete removes session questions and answers", async () => {
