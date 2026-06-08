@@ -319,6 +319,28 @@ function answerDraftsFromDetail(detail: ProductIntakeSessionDetail | null): Reco
   ]));
 }
 
+function draftCreationUnavailableReason(session: ProductIntakeSession | undefined, readiness: ProductIntakeReadiness): string | null {
+  if (session?.status === "draft_created" || session?.createdProductId || session?.createdPbv2TreeVersionId) {
+    return "Draft product was already created for this session.";
+  }
+  if (session?.status === "abandoned") return "Abandoned sessions cannot create draft products.";
+  if (session?.status && session.status !== "ready_for_draft") {
+    return `Session status is ${session.status.replace(/_/g, " ")}; only Ready for Draft sessions can create draft products.`;
+  }
+  if (readiness.unansweredRequiredCount > 0) {
+    return `${readiness.unansweredRequiredCount} required decision(s) still need answers.`;
+  }
+  const blocker = readiness.penalties?.find((penalty) => penalty.severity === "blocker");
+  if (blocker) return blocker.label;
+  if (readiness.reviewState && readiness.reviewState !== "ready_for_draft") {
+    return `Review state is ${reviewStateLabel(readiness.reviewState)}.`;
+  }
+  if (!readiness.canCreateDraft) {
+    return "The backend did not mark this session eligible for draft creation.";
+  }
+  return null;
+}
+
 export function ProductIntakeSessionSummary({ session, readiness, diagnosticsCount = 0 }: { session: ProductIntakeSession; readiness: ProductIntakeReadiness; diagnosticsCount?: number }) {
   const originalConfidence = typeof session.confidence?.originalConfidence === "number"
     ? session.confidence.originalConfidence
@@ -512,6 +534,8 @@ export function ProductIntakeQuestionsWizard({
   const draftProductId = session?.createdProductId ?? null;
   const draftTreeId = session?.createdPbv2TreeVersionId ?? null;
   const hasCreatedDraft = session?.status === "draft_created" || Boolean(draftProductId || draftTreeId);
+  const unavailableReason = draftCreationUnavailableReason(session, readiness);
+  const showDraftAction = Boolean(session) || readiness.status === "ready_for_draft" || hasCreatedDraft;
   return (
     <Card>
       <CardHeader>
@@ -553,10 +577,10 @@ export function ProductIntakeQuestionsWizard({
               ? "Draft product was created. Publish remains a separate validation step."
               : readiness.canCreateDraft
                 ? "Ready to create one inactive product and one PBV2 DRAFT tree."
-                : "Answer required questions and review flagged penalties before draft readiness."}
+                : `Draft creation unavailable: ${unavailableReason ?? "answer required questions and review flagged penalties before draft readiness."}`}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {(readiness.status === "ready_for_draft" || hasCreatedDraft) && (
+            {showDraftAction && (
               <Button type="button" className="gap-2" variant="outline" onClick={onCreateDraft} disabled={!readiness.canCreateDraft || isCreatingDraft || hasCreatedDraft}>
                 {isCreatingDraft ? <Loader2 className="h-4 w-4 animate-spin" /> : <PackagePlus className="h-4 w-4" />}
                 {hasCreatedDraft ? "Draft Product Created" : isCreatingDraft ? "Creating..." : "Create Draft Product"}
@@ -570,6 +594,11 @@ export function ProductIntakeQuestionsWizard({
             </Button>
           </div>
         </div>
+        {!hasCreatedDraft && unavailableReason && (
+          <div className="rounded border bg-muted/30 p-3 text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">Draft creation unavailable:</span> {unavailableReason}
+          </div>
+        )}
         {hasCreatedDraft && (
           <div className="rounded border bg-muted/30 p-3 text-sm">
             <div className="font-medium">Draft Product Created</div>
@@ -1880,8 +1909,8 @@ export default function CatalogMigrationLab() {
           <div className="space-y-1 text-sm">
             <div className="font-medium text-blue-700 dark:text-blue-300">Product Intake safety boundary</div>
             <div className="text-muted-foreground">
-              AI analysis remains review-first. The draft action creates only an inactive product and a PBV2 DRAFT tree;
-              it does not publish PBV2 trees, assign active trees, activate catalog products, create templates, or change existing products.
+              Draft creation is available only for Ready for Draft sessions. Drafts are inactive and not published.
+              The draft action does not publish PBV2 trees, assign active trees, activate catalog products, create templates, or change existing products.
             </div>
           </div>
         </CardContent>
@@ -1969,7 +1998,7 @@ export default function CatalogMigrationLab() {
           {oversized && (
             <div className="flex items-center gap-2 text-sm text-destructive">
               <AlertTriangle className="h-4 w-4" />
-              Source is too large for the Phase 1 analyzer.
+              Source is too large for the analyzer.
             </div>
           )}
           <Button className="gap-2" disabled={!canAnalyze} onClick={() => analyzeMutation.mutate()}>
@@ -2007,8 +2036,8 @@ export default function CatalogMigrationLab() {
                 Stop / Cancel
               </Button>
             )}
-            <Badge variant="outline">Read-only</Badge>
-            <Badge variant="secondary">Questions only</Badge>
+            <Badge variant="outline">Review-first</Badge>
+            <Badge variant="secondary">Inactive drafts only</Badge>
           </div>
         </CardContent>
       </Card>
@@ -2335,6 +2364,7 @@ export default function CatalogMigrationLab() {
                   <>
                     <ProductIntakeSessionSummary session={intakeSessionDetail.session} readiness={intakeSessionDetail.readiness} diagnosticsCount={diagnosticsQuery.data?.length ?? 0} />
                     <ProductIntakeQuestionsWizard
+                      session={intakeSessionDetail.session}
                       questions={intakeSessionDetail.questions}
                       answers={intakeSessionDetail.answers}
                       readiness={intakeSessionDetail.readiness}
@@ -2342,8 +2372,10 @@ export default function CatalogMigrationLab() {
                       onAnswerChange={(questionKey, value) => setAnswerDrafts((current) => ({ ...current, [questionKey]: value }))}
                       onSave={() => saveAnswersMutation.mutate()}
                       onAbandon={() => abandonSessionMutation.mutate()}
+                      onCreateDraft={() => createDraftMutation.mutate()}
                       isSaving={saveAnswersMutation.isPending}
                       isAbandoning={abandonSessionMutation.isPending}
+                      isCreatingDraft={createDraftMutation.isPending}
                     />
                   </>
                 )}
