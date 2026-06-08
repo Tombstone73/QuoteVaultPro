@@ -9,6 +9,7 @@ import {
   getAbsolutePath,
   getFileExtension,
 } from "../utils/fileStorage";
+import { getWorkerIntervalOverride, isWorkerEnabled, logWorkerStatus } from "../workers/workerGates";
 
 export type UploadPurpose = "quote-attachment" | "order-attachment";
 
@@ -370,6 +371,18 @@ export async function cleanupExpiredUploadSessions(): Promise<{ deleted: number;
   return { deleted, errors };
 }
 
+export const UPLOAD_CLEANUP_INTERVAL_PROD_MS = 6 * 60 * 60 * 1000;
+export const UPLOAD_CLEANUP_INTERVAL_NON_PROD_MS = 6 * 60 * 60 * 1000;
+
+export function getUploadCleanupIntervalMs(): number {
+  return getWorkerIntervalOverride(
+    "UPLOAD_CLEANUP",
+    UPLOAD_CLEANUP_INTERVAL_PROD_MS,
+    UPLOAD_CLEANUP_INTERVAL_NON_PROD_MS,
+    "UPLOAD_CLEANUP_WORKER_INTERVAL_MS"
+  );
+}
+
 export function startUploadCleanupTimerOnce(options?: {
   intervalMs?: number;
 }): void {
@@ -377,10 +390,24 @@ export function startUploadCleanupTimerOnce(options?: {
   if ((globalThis as any)[key]) return;
   (globalThis as any)[key] = true;
 
-  const intervalMs = options?.intervalMs ?? 10 * 60 * 1000; // 10 minutes
-  setInterval(() => {
+  const enabled = isWorkerEnabled("UPLOAD_CLEANUP", true);
+  const intervalMs = options?.intervalMs ?? getUploadCleanupIntervalMs();
+  logWorkerStatus(
+    "UploadCleanup",
+    enabled,
+    enabled ? intervalMs : undefined,
+    enabled ? "runs once on startup, then scheduled cleanup" : undefined
+  );
+  if (!enabled) return;
+
+  cleanupExpiredUploadSessions().catch(() => {
+    // fail-soft
+  });
+
+  const timer = setInterval(() => {
     cleanupExpiredUploadSessions().catch(() => {
       // fail-soft
     });
   }, intervalMs);
+  timer.unref?.();
 }

@@ -622,6 +622,18 @@ export async function registerAttachmentRoutes(
       },
     });
 
+    void import("../workers/thumbnailWorker")
+      .then(({ triggerThumbnailGenerationForAttachment }) => {
+        triggerThumbnailGenerationForAttachment({
+          attachmentType: "quote",
+          attachmentId: String(finalized.linkedRecord.id),
+          reason: "quote-attachment-upload",
+        });
+      })
+      .catch((error) => {
+        console.error("[QuoteAttachments:POST] Failed to trigger thumbnail generation:", error);
+      });
+
     return finalized.linkedRecord;
   };
 

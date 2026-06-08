@@ -14,16 +14,17 @@ let isRunning = false;
 let workerInterval: NodeJS.Timeout | null = null;
 
 // Configuration
-// Production: 30s, Non-production: 5min (to prevent Neon compute burn)
-const DEFAULT_POLL_INTERVAL_MS = 30_000;
+// Production: 60min, Non-production: 5min (gate keeps non-prod off unless explicitly enabled)
+const DEFAULT_POLL_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_NON_PROD_POLL_INTERVAL_MS = 300_000;
 const MAX_RETRIES = 3;
 
-function getPollIntervalMs(): number {
+export function getQuickBooksSyncIntervalMs(): number {
   return getWorkerIntervalOverride(
     'QB_SYNC',
     DEFAULT_POLL_INTERVAL_MS,
-    DEFAULT_NON_PROD_POLL_INTERVAL_MS
+    DEFAULT_NON_PROD_POLL_INTERVAL_MS,
+    'QUICKBOOKS_SYNC_INTERVAL_MS'
   );
 }
 
@@ -136,7 +137,7 @@ export function startSyncWorker(): void {
     return;
   }
 
-  const intervalMs = getPollIntervalMs();
+  const intervalMs = getQuickBooksSyncIntervalMs();
   console.log(`[Sync Worker] Starting worker (poll interval: ${intervalMs}ms)`);
 
   // Run immediately on start
@@ -150,6 +151,7 @@ export function startSyncWorker(): void {
       console.error('[Sync Worker] Error in scheduled poll:', error);
     });
   }, intervalMs);
+  workerInterval.unref?.();
 
   console.log('[Sync Worker] Worker started successfully');
 }
@@ -175,7 +177,7 @@ export function getWorkerStatus(): {
 } {
   return {
     running: workerInterval !== null,
-    pollIntervalMs: getPollIntervalMs(),
+    pollIntervalMs: getQuickBooksSyncIntervalMs(),
     isProcessing: isRunning,
   };
 }

@@ -83,6 +83,14 @@ export class AssetRepository {
       throw new Error('Failed to create asset');
     }
 
+    void import('../../workers/assetPreviewWorker')
+      .then(({ triggerAssetPreviewGeneration }) => {
+        triggerAssetPreviewGeneration(asset, 'asset-repository-create');
+      })
+      .catch((error) => {
+        console.error('[AssetRepository] Failed to trigger asset preview generation:', error);
+      });
+
     return asset;
   }
 

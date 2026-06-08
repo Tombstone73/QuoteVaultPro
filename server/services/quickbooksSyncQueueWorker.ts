@@ -13,14 +13,19 @@ export type QuickBooksSyncQueueCounts = {
   payments: { pending: number; failed: number };
   nextEligibleCounts: { invoices: number; payments: number };
   settleWindowMinutes: number;
+  stabilityWindowMs: number;
 };
 
 export type QuickBooksSyncWorkerRunResult = {
   settleWindowMinutes: number;
+  stabilityWindowMs: number;
   ignoreSettleWindow: boolean;
+  ignoreStabilityWindow: boolean;
   invoices: { attempted: number; succeeded: number; failed: number };
   payments: { attempted: number; succeeded: number; failed: number };
 };
+
+export const DEFAULT_QB_SYNC_STABILITY_WINDOW_MS = 30 * 60 * 1000;
 
 function toOneLineHumanMessage(input: unknown, maxLen = 220): string {
   const text = String(input || "")
@@ -32,9 +37,25 @@ function toOneLineHumanMessage(input: unknown, maxLen = 220): string {
   return `${text.slice(0, Math.max(0, maxLen - 1))}…`;
 }
 
-function cutoffDate({ now, settleWindowMinutes, ignoreSettleWindow }: { now: Date; settleWindowMinutes: number; ignoreSettleWindow: boolean }) {
-  if (ignoreSettleWindow) return now;
-  const ms = Math.max(0, settleWindowMinutes) * 60 * 1000;
+export function getQuickBooksSyncStabilityWindowMs(): number {
+  const explicit = Number(process.env.QUICKBOOKS_SYNC_STABILITY_WINDOW_MS);
+  if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+
+  const legacyMinutes = Number(process.env.QB_SYNC_SETTLE_WINDOW_MINUTES);
+  if (Number.isFinite(legacyMinutes) && legacyMinutes >= 0) {
+    return legacyMinutes * 60 * 1000;
+  }
+
+  return DEFAULT_QB_SYNC_STABILITY_WINDOW_MS;
+}
+
+export function isUpdatedBeforeQuickBooksStabilityCutoff(updatedAt: Date, now: Date, stabilityWindowMs: number): boolean {
+  return updatedAt.getTime() <= now.getTime() - Math.max(0, stabilityWindowMs);
+}
+
+function cutoffDate({ now, stabilityWindowMs, ignoreStabilityWindow }: { now: Date; stabilityWindowMs: number; ignoreStabilityWindow: boolean }) {
+  if (ignoreStabilityWindow) return now;
+  const ms = Math.max(0, stabilityWindowMs);
   return new Date(now.getTime() - ms);
 }
 
@@ -49,17 +70,24 @@ export async function listQuickBooksConnectedOrganizationIds(): Promise<string[]
 
 export async function getQuickBooksSyncQueueCountsForOrg(params: {
   organizationId: string;
-  settleWindowMinutes: number;
+  settleWindowMinutes?: number;
+  stabilityWindowMs?: number;
 }): Promise<QuickBooksSyncQueueCounts> {
-  const { organizationId, settleWindowMinutes } = params;
+  const { organizationId } = params;
+  const stabilityWindowMs = params.stabilityWindowMs ?? (
+    typeof params.settleWindowMinutes === "number"
+      ? Math.max(0, params.settleWindowMinutes) * 60 * 1000
+      : getQuickBooksSyncStabilityWindowMs()
+  );
+  const settleWindowMinutes = Math.round(stabilityWindowMs / 60_000);
   const now = new Date();
-  const cutoff = cutoffDate({ now, settleWindowMinutes, ignoreSettleWindow: false });
+  const cutoff = cutoffDate({ now, stabilityWindowMs, ignoreStabilityWindow: false });
 
   const [invoiceCounts] = await db
     .select({
       pending: sql<number>`sum(case when ${invoices.qbSyncStatus} = 'pending' then 1 else 0 end)::int`,
       failed: sql<number>`sum(case when ${invoices.qbSyncStatus} = 'failed' then 1 else 0 end)::int`,
-      eligible: sql<number>`sum(case when ${invoices.qbSyncStatus} in ('pending','failed') and ${invoices.updatedAt} <= ${cutoff} then 1 else 0 end)::int`,
+      eligible: sql<number>`sum(case when ${invoices.qbSyncStatus} in ('pending','failed') and lower(${invoices.status}) <> 'draft' and ${invoices.updatedAt} <= ${cutoff} then 1 else 0 end)::int`,
     })
     .from(invoices)
     .where(eq(invoices.organizationId, organizationId));
@@ -90,6 +118,7 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
 
   return {
     settleWindowMinutes,
+    stabilityWindowMs,
     invoices: { pending: Number(invoiceCounts?.pending || 0), failed: Number(invoiceCounts?.failed || 0) },
     payments: { pending: Number(paymentCounts?.pending || 0), failed: Number(paymentCounts?.failed || 0) },
     nextEligibleCounts: { invoices: Number(invoiceCounts?.eligible || 0), payments: Number(eligiblePayments?.eligible || 0) },
@@ -98,23 +127,31 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
 
 export async function runQuickBooksSyncWorkerForOrg(params: {
   organizationId: string;
-  settleWindowMinutes: number;
+  settleWindowMinutes?: number;
+  stabilityWindowMs?: number;
   limitPerRun: number;
   ignoreSettleWindow?: boolean;
+  ignoreStabilityWindow?: boolean;
   includeFailed?: boolean;
   log?: boolean;
 }): Promise<QuickBooksSyncWorkerRunResult> {
   const {
     organizationId,
-    settleWindowMinutes,
     limitPerRun,
     ignoreSettleWindow = false,
+    ignoreStabilityWindow = ignoreSettleWindow,
     includeFailed = true,
     log = false,
   } = params;
+  const stabilityWindowMs = params.stabilityWindowMs ?? (
+    typeof params.settleWindowMinutes === "number"
+      ? Math.max(0, params.settleWindowMinutes) * 60 * 1000
+      : getQuickBooksSyncStabilityWindowMs()
+  );
+  const settleWindowMinutes = Math.round(stabilityWindowMs / 60_000);
 
   const now = new Date();
-  const cutoff = cutoffDate({ now, settleWindowMinutes, ignoreSettleWindow });
+  const cutoff = cutoffDate({ now, stabilityWindowMs, ignoreStabilityWindow });
   const invoiceStatuses = includeFailed ? ["pending", "failed"] : ["pending"];
   const paymentStatuses = includeFailed ? ["pending", "failed"] : ["pending"];
 
@@ -152,19 +189,23 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
   if (eligibleInvoices.length === 0 && eligiblePayments.length === 0) {
     return {
       settleWindowMinutes,
+      stabilityWindowMs,
       ignoreSettleWindow,
+      ignoreStabilityWindow,
       invoices: { attempted: 0, succeeded: 0, failed: 0 },
       payments: { attempted: 0, succeeded: 0, failed: 0 },
     };
   }
 
   if (log) {
-    console.log(`[QB Queue] start org=${organizationId} ignoreSettle=${ignoreSettleWindow} cutoff=${cutoff.toISOString()} inv=${eligibleInvoices.length} pay=${eligiblePayments.length}`);
+    console.log(`[QB Queue] start org=${organizationId} ignoreStability=${ignoreStabilityWindow} cutoff=${cutoff.toISOString()} inv=${eligibleInvoices.length} pay=${eligiblePayments.length}`);
   }
 
   const result: QuickBooksSyncWorkerRunResult = {
     settleWindowMinutes,
+    stabilityWindowMs,
     ignoreSettleWindow,
+    ignoreStabilityWindow,
     invoices: { attempted: 0, succeeded: 0, failed: 0 },
     payments: { attempted: 0, succeeded: 0, failed: 0 },
   };

@@ -315,7 +315,7 @@ export function registerOrderLineItemFileRoutes(
       }
 
       const { assetRepository } = await import('../services/assets/AssetRepository');
-      const { assetPreviewGenerator } = await import('../services/assets/AssetPreviewGenerator');
+      const { triggerAssetPreviewGeneration } = await import('../workers/assetPreviewWorker');
       const { enrichAssetWithUrls } = await import('../services/assets/enrichAssetWithUrls');
 
       const userId = getUserId(req.user);
@@ -426,11 +426,7 @@ export function registerOrderLineItemFileRoutes(
           });
         }
 
-        setImmediate(() => {
-          assetPreviewGenerator.generatePreviews(asset).catch((err) => {
-            console.error('[AssetPreviewGenerator] async generatePreviews failed', err);
-          });
-        });
+        triggerAssetPreviewGeneration(asset, 'order-line-item-file');
         createdAssets.push({ ...(await enrichAssetWithUrls(asset)), role: normalizeRole(c.role) });
 
         try {

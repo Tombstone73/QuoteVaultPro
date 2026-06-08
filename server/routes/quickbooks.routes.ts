@@ -31,6 +31,7 @@ import { getRequestOrganizationId } from "../tenantContext";
 import * as quickbooksService from "../quickbooksService";
 import * as syncWorker from "../workers/syncProcessor";
 import {
+  getQuickBooksSyncStabilityWindowMs,
   getQuickBooksSyncQueueCountsForOrg,
   runQuickBooksSyncWorkerForOrg,
 } from "../services/quickbooksSyncQueueWorker";
@@ -148,8 +149,8 @@ export function registerQuickBooksRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
 
-      const settleWindowMinutes = Math.max(0, Number(process.env.QB_SYNC_SETTLE_WINDOW_MINUTES || '10'));
-      const data = await getQuickBooksSyncQueueCountsForOrg({ organizationId, settleWindowMinutes });
+      const stabilityWindowMs = getQuickBooksSyncStabilityWindowMs();
+      const data = await getQuickBooksSyncQueueCountsForOrg({ organizationId, stabilityWindowMs });
       return res.json({ success: true, data });
     } catch (error: any) {
       console.error('[QB Queue] Error:', error);
@@ -159,22 +160,23 @@ export function registerQuickBooksRoutes(
 
   /**
    * POST /api/integrations/quickbooks/flush
-   * Operator override: runs queue worker immediately for current org.
-   * NOTE: This flush ignores the settle window by design.
+   * Manual run: bypasses the timer but still respects the stability window.
+   * Pass { force: true } only for explicit test/operator override.
    */
   app.post('/api/integrations/quickbooks/flush', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
 
-      const settleWindowMinutes = Math.max(0, Number(process.env.QB_SYNC_SETTLE_WINDOW_MINUTES || '10'));
+      const stabilityWindowMs = getQuickBooksSyncStabilityWindowMs();
       const limitPerRun = Math.max(1, Math.min(100, Number(process.env.QB_SYNC_LIMIT_PER_RUN || '25')));
+      const force = req.body?.force === true;
 
       const result = await runQuickBooksSyncWorkerForOrg({
         organizationId,
-        settleWindowMinutes,
+        stabilityWindowMs,
         limitPerRun,
-        ignoreSettleWindow: true,
+        ignoreStabilityWindow: force,
         includeFailed: true,
         log: true,
       });
@@ -543,14 +545,15 @@ export function registerQuickBooksRoutes(
 
       // Under queue-only, treat the legacy trigger as a flush of the derived queue.
       if (qbSyncPolicy === 'queue_only') {
-        const settleWindowMinutes = Math.max(0, Number(process.env.QB_SYNC_SETTLE_WINDOW_MINUTES || '10'));
+        const stabilityWindowMs = getQuickBooksSyncStabilityWindowMs();
         const limitPerRun = Math.max(1, Math.min(100, Number(process.env.QB_SYNC_LIMIT_PER_RUN || '25')));
+        const force = req.body?.force === true;
 
         const result = await runQuickBooksSyncWorkerForOrg({
           organizationId,
-          settleWindowMinutes,
+          stabilityWindowMs,
           limitPerRun,
-          ignoreSettleWindow: true,
+          ignoreStabilityWindow: force,
           includeFailed: true,
           log: true,
         });
