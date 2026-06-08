@@ -1,6 +1,6 @@
 import { describe, expect, jest, test } from "@jest/globals";
 import { exportProducts } from "../pbv2ExportMapper";
-import { buildImportPlan, buildPbv2ImportProductValues } from "../pbv2ImportMapper";
+import { applyImport, buildImportPlan, buildPbv2ImportProductValues } from "../pbv2ImportMapper";
 import { createPbv2BannerProductTreeJson } from "../../../shared/pbv2/starterTree";
 import { normalizePbv2ExportOptions } from "../../../shared/pbv2ExportOptionNormalizer";
 
@@ -130,6 +130,30 @@ const installationRuntimeTree = {
     pricingV2: {
       base: { perPieceCents: 10000 },
     },
+  },
+};
+
+const installationServicePricingTree = {
+  schemaVersion: 2,
+  root: {
+    id: "installation-root",
+    type: "GROUP",
+    label: "Installation",
+  },
+  meta: {
+    pricingV2: {
+      base: { flatFeeCents: 10000 },
+      formula: "flatFee",
+    },
+  },
+};
+
+const brokenPopulatedZeroOptionTree = {
+  schemaVersion: 2,
+  root: {
+    id: "broken-root",
+    type: "GROUP",
+    label: "Broken product shell",
   },
 };
 
@@ -267,6 +291,107 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
     expect(exported.pricingConfigPresent).toBe(true);
   });
 
+  test("PBV2 export treats pricing-only Installation service as a valid simple product", async () => {
+    const result = await exportProducts(
+      { db: {} as any, organizationId: "org_1" },
+      [{
+        id: "prod_install_service",
+        name: "Installation",
+        description: "Installation service",
+        pricingMode: "flat",
+        pricingFormula: "flatFee",
+        isService: true,
+        optionTreeJson: null,
+      }],
+      new Map([[
+        "prod_install_service",
+        {
+          active: {
+            schemaVersion: 2,
+            treeJson: installationServicePricingTree,
+            publishedAt: new Date("2026-01-01T00:00:00.000Z"),
+          },
+        },
+      ]]),
+      [],
+      [],
+    );
+
+    const exported = result.products[0];
+    expect(exported.optionTreeJson).toEqual(installationServicePricingTree);
+    expect(exported.pbv2?.activeTree?.treeJson).toEqual(installationServicePricingTree);
+    expect(exported.optionGroupCount).toBe(1);
+    expect(exported.optionCount).toBe(0);
+    expect(exported.choiceCount).toBe(0);
+    expect(exported.pricingConfigPresent).toBe(true);
+    expect(exported.exportWarnings).toContain("NO_CUSTOMER_OPTIONS");
+    expect(exported.productKind).toBe("service");
+  });
+
+  test("PBV2 export-all can include normal option products and simple service products", async () => {
+    const result = await exportProducts(
+      { db: {} as any, organizationId: "org_1" },
+      [
+        {
+          id: "prod_banner",
+          name: "Banner",
+          description: "Option product",
+          optionTreeJson: null,
+        },
+        {
+          id: "prod_install_service",
+          name: "Installation",
+          description: "Installation service",
+          pricingMode: "flat",
+          pricingFormula: "flatFee",
+          isService: true,
+          optionTreeJson: null,
+        },
+      ],
+      new Map([
+        ["prod_banner", { active: { schemaVersion: 2, treeJson: activePbv2Tree } }],
+        ["prod_install_service", { active: { schemaVersion: 2, treeJson: installationServicePricingTree } }],
+      ]),
+      [],
+      [],
+    );
+
+    expect(result.products.map((product) => product.name)).toEqual(["Banner", "Installation"]);
+    expect(result.products[0]).toMatchObject({ optionCount: 1, pricingConfigPresent: true });
+    expect(result.products[1]).toMatchObject({
+      optionCount: 0,
+      pricingConfigPresent: true,
+      exportWarnings: ["NO_CUSTOMER_OPTIONS"],
+      productKind: "service",
+    });
+  });
+
+  test("PBV2 selected export works for a simple service product", async () => {
+    const result = await exportProducts(
+      { db: {} as any, organizationId: "org_1" },
+      [{
+        id: "prod_install_service",
+        name: "Installation",
+        description: "Installation service",
+        pricingMode: "flat",
+        pricingFormula: "flatFee",
+        isService: true,
+        optionTreeJson: null,
+      }],
+      new Map([["prod_install_service", { active: { schemaVersion: 2, treeJson: installationServicePricingTree } }]]),
+      [],
+      [],
+    );
+
+    expect(result.products).toHaveLength(1);
+    expect(result.products[0]).toMatchObject({
+      name: "Installation",
+      optionCount: 0,
+      pricingConfigPresent: true,
+      exportWarnings: ["NO_CUSTOMER_OPTIONS"],
+    });
+  });
+
   test("PBV2 option export normalization preserves Installation option metadata", () => {
     const normalized = normalizePbv2ExportOptions(installationRuntimeTree);
 
@@ -371,6 +496,41 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
         detectedOptionLikeNodes: 0,
       }),
     );
+    consoleError.mockRestore();
+  });
+
+  test("PBV2 export still aborts populated trees with no serializable options or pricing config", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    await expect(exportProducts(
+      { db: {} as any, organizationId: "org_1" },
+      [{
+        id: "prod_broken",
+        name: "Broken Service Shell",
+        description: "Desc",
+        optionTreeJson: null,
+      }],
+      new Map([[
+        "prod_broken",
+        {
+          active: {
+            schemaVersion: 2,
+            treeJson: brokenPopulatedZeroOptionTree,
+            publishedAt: new Date("2026-01-01T00:00:00.000Z"),
+          },
+        },
+      ]]),
+      [],
+      [],
+    )).rejects.toMatchObject({
+      message: expect.stringContaining("produced zero options from a populated runtime tree"),
+      code: "PBV2_EXPORT_ZERO_OPTIONS",
+      metadata: expect.objectContaining({
+        productId: "prod_broken",
+        productName: "Broken Service Shell",
+        totalTraversedNodes: 1,
+        detectedOptionLikeNodes: 0,
+      }),
+    });
     consoleError.mockRestore();
   });
 
@@ -508,6 +668,46 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
       expect.objectContaining({ code: "PBV2_OPTIONS_MISSING_FROM_TREE" }),
     ]));
   });
+
+  test("PBV2 import accepts exported simple service product without orphaning tree rows", async () => {
+    const exported = await exportProducts(
+      { db: {} as any, organizationId: "source_org" },
+      [{
+        id: "prod_install_service",
+        name: "Installation",
+        description: "Installation service",
+        pricingMode: "flat",
+        pricingFormula: "flatFee",
+        isService: true,
+        optionTreeJson: null,
+      }],
+      new Map([["prod_install_service", { active: { schemaVersion: 2, treeJson: installationServicePricingTree } }]]),
+      [],
+      [],
+    );
+    const db = makeTransactionalImportDb();
+
+    const result = await applyImport(
+      {
+        db: db.client as any,
+        organizationId: "target_org",
+        userId: "user_1",
+        mode: "upsertBySlug",
+      },
+      exported,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.counts.created).toBe(1);
+    expect(result.failed).toHaveLength(0);
+    expect(db.productInserts).toHaveLength(1);
+    expect(db.treeInserts).toHaveLength(2);
+    expect(db.treeInserts.map((row: any) => row.status).sort()).toEqual(["ACTIVE", "DRAFT"]);
+    expect(db.treeInserts.every((row: any) => row.productId === db.productInserts[0].id)).toBe(true);
+    expect(db.productUpdates[0]).toMatchObject({
+      optionTreeJson: installationServicePricingTree,
+    });
+  });
 });
 
 function makeEmptyImportDb() {
@@ -517,5 +717,55 @@ function makeEmptyImportDb() {
         where: async () => [],
       }),
     }),
+  };
+}
+
+function makeQueryResult(rows: any[]) {
+  return {
+    then: (resolve: (value: any[]) => unknown, reject?: (reason: unknown) => unknown) =>
+      Promise.resolve(rows).then(resolve, reject),
+    limit: async () => rows,
+    orderBy: async () => rows,
+  };
+}
+
+function makeTransactionalImportDb() {
+  const productInserts: any[] = [];
+  const treeInserts: any[] = [];
+  const productUpdates: any[] = [];
+
+  const makeClient = (): any => ({
+    select: () => ({
+      from: () => ({
+        where: () => makeQueryResult([]),
+        limit: async () => [],
+      }),
+    }),
+    insert: () => ({
+      values: async (value: any) => {
+        if (value?.status === "ACTIVE" || value?.status === "DRAFT") {
+          treeInserts.push(value);
+        } else {
+          productInserts.push(value);
+        }
+      },
+    }),
+    delete: () => ({
+      where: async () => undefined,
+    }),
+    update: () => ({
+      set: (value: any) => {
+        productUpdates.push(value);
+        return { where: async () => undefined };
+      },
+    }),
+    transaction: async (callback: (tx: any) => Promise<void>) => callback(makeClient()),
+  });
+
+  return {
+    client: makeClient(),
+    productInserts,
+    treeInserts,
+    productUpdates,
   };
 }

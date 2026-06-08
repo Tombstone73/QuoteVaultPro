@@ -217,6 +217,14 @@ export async function buildImportPlan(
         field: "pbv2.activeTree.treeJson",
       });
     }
+
+    if (item.exportWarnings?.includes("NO_CUSTOMER_OPTIONS")) {
+      dryItem.warnings.push({
+        code: "NO_CUSTOMER_OPTIONS",
+        message: "Product has PBV2 pricing/runtime data but no customer-facing option selections.",
+        field: "exportWarnings",
+      });
+    }
     
     if (item.pbv2?.draftTree?.treeJson) {
       const treeValidation = validatePbv2TreeStructure(item.pbv2.draftTree.treeJson);
@@ -620,8 +628,25 @@ function validatePbv2TreeStructure(treeJson: any): { ok: boolean; error?: string
     return { ok: false, error: "Tree must be an object" };
   }
   
-  if (!Array.isArray(treeJson.rootNodeIds) && !Array.isArray(treeJson.nodes)) {
-    return { ok: false, error: "Tree must have rootNodeIds or nodes array" };
+  const hasNodeList = Array.isArray(treeJson.rootNodeIds) || Array.isArray(treeJson.nodes) || Boolean(treeJson.nodes && typeof treeJson.nodes === "object");
+  const hasRuntimeRoot = Boolean(treeJson.root && typeof treeJson.root === "object");
+  const hasStructuralCollections = ["children", "groups", "questions", "fields", "inputs", "options"].some((key) => {
+    const value = treeJson[key];
+    return Array.isArray(value) ? value.length > 0 : Boolean(value && typeof value === "object");
+  });
+  const meta = treeJson.meta && typeof treeJson.meta === "object" ? treeJson.meta : {};
+  const hasRuntimePricing = Boolean(
+    treeJson.pricingMatrix ||
+    treeJson.pricingConfig ||
+    treeJson.pricingFormula ||
+    meta.pricingMatrix ||
+    meta.pricingV2 ||
+    meta.pricingFormula ||
+    meta.pricingFormulaVariables
+  );
+
+  if (!hasNodeList && !hasRuntimeRoot && !hasStructuralCollections && !hasRuntimePricing) {
+    return { ok: false, error: "Tree must have nodes, a runtime root, structural collections, or runtime pricing data" };
   }
   
   // Basic structure check - detailed validation happens at publish time

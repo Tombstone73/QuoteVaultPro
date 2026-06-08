@@ -21,6 +21,8 @@ type Pbv2TreeVersion = any;
 type ProductType = any;
 type Material = any;
 
+const NO_CUSTOMER_OPTIONS_WARNING = "NO_CUSTOMER_OPTIONS";
+
 export interface ExportMapperContext {
   db: typeof DbType;
   organizationId: string;
@@ -128,6 +130,17 @@ export async function exportProducts(
 
     if (isPbv2Product && activeTreeJson && summary.optionCount === 0) {
       const normalization = normalizePbv2ExportOptions(activeTreeJson);
+      const hasSimplePricing = summary.pricingConfigPresent;
+      if (hasSimplePricing) {
+        exportItem.exportWarnings = Array.from(new Set([
+          ...(exportItem.exportWarnings ?? []),
+          NO_CUSTOMER_OPTIONS_WARNING,
+        ]));
+        exportItem.productKind = product.isService ? "service" : "simple";
+        exportedProducts.push(exportItem);
+        continue;
+      }
+
       const metadata = {
         productId: product.id,
         productName: product.name,
