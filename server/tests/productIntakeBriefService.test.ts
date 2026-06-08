@@ -19,6 +19,10 @@ import {
   resolveProductIntakeAiTimeoutMs,
   type ProductIntakeTemplateReference,
 } from "../services/productIntakeWizard/productIntakeBriefService";
+import {
+  computeProductIntakeReadiness,
+  generateProductIntakeQuestions,
+} from "../services/productIntakeWizard/productIntakeSessionService";
 
 const templates: ProductIntakeTemplateReference[] = [
   {
@@ -186,7 +190,7 @@ describe("Product Intake Brief service", () => {
       provider: null,
     });
 
-    expect(brief.productIdentity.likelyProductName.value).toBe("Styrene Signs");
+    expect(brief.productIdentity.likelyProductName.value).toBe(".040 Styrene Signs");
     expect(brief.productIdentity.category.value).toBe("Rigid Signs");
     expect(brief.materialAnalysis.detectedMaterialReferences).toContain("Styrene .040");
     expect(brief.materialAnalysis.likelyMaterialMatches[0]).toMatchObject({ materialId: "mat_040", name: "Styrene .040" });
@@ -196,7 +200,7 @@ describe("Product Intake Brief service", () => {
     expect(brief.pricingAnalysis.behavior).toBe("matrix_or_tiered");
     expect(brief.requiredOptions.find((option) => option.normalizedGroup === "Size")?.sampleValues).toEqual(["12x18", "18x24", "24x36"]);
     expect(brief.requiredOptions.find((option) => option.normalizedGroup === "Printed Sides")?.sampleValues).toEqual(["Single sided", "Double sided"]);
-    expect(brief.optionalOptions.find((option) => option.normalizedGroup === "Finishing")?.sampleValues).toContain("Rounded corners");
+    expect(brief.optionalOptions.find((option) => option.normalizedGroup === "Rounded corners")?.sampleValues).toContain("Rounded corners");
   });
 
   test("extracts banner setup signals from realistic text", async () => {
@@ -229,8 +233,9 @@ describe("Product Intake Brief service", () => {
     expect(brief.quantityBehavior.behavior).toBe("quantity_tiers");
     expect(brief.pricingAnalysis.behavior).toBe("quantity_tiers");
     expect(brief.requiredOptions.find((option) => option.normalizedGroup === "Printed Sides")?.sampleValues).toContain("Single sided");
-    expect(brief.optionalOptions.find((option) => option.normalizedGroup === "Finishing")?.sampleValues).toEqual(expect.arrayContaining(["Hemming", "Grommets", "Pole pockets"]));
+    expect(brief.optionalOptions.map((option) => option.normalizedGroup)).toEqual(expect.arrayContaining(["Hemming", "Grommets", "Pole pockets"]));
     expect(brief.draftWarnings.map((warning) => warning.code)).toEqual(expect.arrayContaining(["proof_required", "routing_signal"]));
+    expect(generateProductIntakeQuestions(brief).some((question) => question.questionKey === "confirm-routing-proof-prepress")).toBe(false);
   });
 
   test("matches 4mm coroplast text to Coroplast material candidates", async () => {
@@ -257,6 +262,161 @@ describe("Product Intake Brief service", () => {
       confidence: 90,
     });
     expect(brief.missingDecisions.some((decision) => decision.id === "select-material")).toBe(false);
+  });
+
+  test.each([
+    {
+      label: "4mm Coroplast Yard Signs",
+      description: [
+        "4mm coroplast yard signs.",
+        "Sizes 18x24 and 24x36.",
+        "Single sided or double sided.",
+        "Optional H-wire stakes.",
+        "Quantity tier pricing.",
+        "Route to flatbed printer.",
+        "Proof required.",
+      ].join("\n"),
+      materials: [{ id: "mat_coro", sku: "CORO4", name: "4mm White Coroplast" }],
+      expectedName: "4mm Coroplast Yard Signs",
+      expectedMaterialId: "mat_coro",
+      expectedRequired: ["Size", "Printed Sides"],
+      expectedOptional: ["H-wire Stakes"],
+    },
+    {
+      label: "13oz Banner",
+      description: "13oz banner custom width and height, single sided, optional grommets and pole pockets, quantity tier pricing, route to roll printer, proof required.",
+      materials: [{ id: "mat_banner", sku: "BAN13", name: "13oz Scrim Banner" }],
+      expectedName: "13oz Banner",
+      expectedMaterialId: "mat_banner",
+      expectedRequired: ["Size", "Printed Sides"],
+      expectedOptional: ["Grommets", "Pole pockets"],
+    },
+    {
+      label: ".040 Styrene Signs",
+      description: ".040 rigid styrene sheets. Sizes 12x18, 18x24, 24x36. Single sided or double sided. Full color printing. Optional rounded corners.",
+      materials: [{ id: "mat_styrene", sku: "STY040", name: "Styrene .040" }],
+      expectedName: ".040 Styrene Signs",
+      expectedMaterialId: "mat_styrene",
+      expectedRequired: ["Size", "Printed Sides"],
+      expectedOptional: ["Rounded corners"],
+    },
+    {
+      label: "Contour-Cut Stickers",
+      description: "Contour-cut vinyl stickers. Custom size. Full color. Optional laminate. Quantity tier pricing.",
+      materials: [{ id: "mat_vinyl", sku: "VINYL", name: "White Print Vinyl" }],
+      expectedName: "Contour-Cut Stickers",
+      expectedMaterialId: "mat_vinyl",
+      expectedRequired: ["Size"],
+      expectedOptional: ["Printing", "Laminate"],
+    },
+    {
+      label: "3mm Acrylic Signs",
+      description: "3mm acrylic signs. Sizes 12x18 and 24x36. Single sided. Optional white ink and rounded corners. Quantity tier pricing.",
+      materials: [{ id: "mat_acrylic", sku: "ACR3", name: "3mm Clear Acrylic" }],
+      expectedName: "3mm Acrylic Signs",
+      expectedMaterialId: "mat_acrylic",
+      expectedRequired: ["Size", "Printed Sides"],
+      expectedOptional: ["White Ink", "Rounded corners"],
+    },
+  ])("normalizes quality signals for $label", async (testCase) => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: testCase.description },
+      analyzer: null,
+      templates,
+      materials: testCase.materials,
+      provider: null,
+    });
+
+    expect(brief.productIdentity.likelyProductName.value).toBe(testCase.expectedName);
+    expect(brief.materialAnalysis.likelyMaterialMatches[0]?.materialId).toBe(testCase.expectedMaterialId);
+    expect(brief.requiredOptions.map((option) => option.normalizedGroup)).toEqual(expect.arrayContaining(testCase.expectedRequired));
+    expect(brief.optionalOptions.map((option) => option.normalizedGroup)).toEqual(expect.arrayContaining(testCase.expectedOptional));
+    expect(brief.optionalOptions.map((option) => option.normalizedGroup)).not.toContain("Proof Required");
+    expect(brief.optionalOptions.map((option) => option.normalizedGroup)).not.toContain("Routing");
+    expect(generateProductIntakeQuestions(brief).some((question) => question.questionKey === "confirm-routing-proof-prepress")).toBe(false);
+  });
+
+  test("computes readiness penalties and review states without enabling draft creation", async () => {
+    const readyBrief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "13oz banner custom width and height single sided quantity tier pricing proof required route to roll printer" },
+      analyzer: null,
+      templates,
+      materials: [{ id: "mat_banner", sku: "BAN13", name: "13oz Scrim Banner" }],
+      provider: null,
+    });
+    const readyQuestions = generateProductIntakeQuestions(readyBrief).map((question, index) => ({
+      ...question,
+      id: `q_ready_${index}`,
+      organizationId: "org_1",
+      sessionId: "sess_ready",
+      createdAt: new Date().toISOString(),
+    }));
+    const readyReadiness = computeProductIntakeReadiness({
+      session: {
+        id: "sess_ready",
+        organizationId: "org_1",
+        sourceType: "text_description",
+        sourceFingerprint: null,
+        brief: readyBrief,
+        confidence: { currentConfidence: readyBrief.overallConfidence },
+        missingDecisions: readyBrief.missingDecisions,
+        status: "ready_for_draft",
+        createdProductId: null,
+        createdPbv2TreeVersionId: null,
+        createdByUserId: null,
+        updatedByUserId: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        abandonedAt: null,
+      },
+      questions: readyQuestions,
+      answers: [],
+    });
+
+    expect(readyReadiness.canCreateDraft).toBe(false);
+    expect(readyReadiness.reviewState).toBe("ready_for_draft");
+    expect(readyReadiness.penalties).toEqual([]);
+
+    const notReadyBrief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "Mystery sign with unknown pricing" },
+      analyzer: null,
+      templates,
+      provider: null,
+    });
+    const notReadyQuestions = generateProductIntakeQuestions(notReadyBrief).map((question, index) => ({
+      ...question,
+      id: `q_not_ready_${index}`,
+      organizationId: "org_1",
+      sessionId: "sess_not_ready",
+      createdAt: new Date().toISOString(),
+    }));
+    const notReadyReadiness = computeProductIntakeReadiness({
+      session: {
+        id: "sess_not_ready",
+        organizationId: "org_1",
+        sourceType: "text_description",
+        sourceFingerprint: null,
+        brief: notReadyBrief,
+        confidence: { currentConfidence: notReadyBrief.overallConfidence },
+        missingDecisions: notReadyBrief.missingDecisions,
+        status: "needs_answers",
+        createdProductId: null,
+        createdPbv2TreeVersionId: null,
+        createdByUserId: null,
+        updatedByUserId: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        abandonedAt: null,
+      },
+      questions: notReadyQuestions,
+      answers: [],
+    });
+
+    expect(notReadyReadiness.reviewState).toBe("not_ready");
+    expect(notReadyReadiness.penalties?.map((penalty) => penalty.code)).toEqual(expect.arrayContaining(["material_unresolved", "pricing_unresolved"]));
   });
 
   test("normalizes common behavior and confidence aliases", () => {

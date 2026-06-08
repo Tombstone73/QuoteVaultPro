@@ -150,6 +150,27 @@ function currentSessionConfidence(session: ProductIntakeSession) {
   return typeof session.confidence?.currentConfidence === "number" ? session.confidence.currentConfidence : session.brief.overallConfidence;
 }
 
+function reviewStateLabel(value: ProductIntakeReadiness["reviewState"] | ProductIntakeSession["status"] | undefined) {
+  if (value === "ready_for_draft") return "Ready For Draft";
+  if (value === "needs_review") return "Needs Review";
+  if (value === "not_ready") return "Not Ready";
+  if (value === "needs_answers") return "Not Ready";
+  return "Needs Review";
+}
+
+function reviewStateVariant(value: ProductIntakeReadiness["reviewState"] | ProductIntakeSession["status"] | undefined): "default" | "secondary" | "outline" | "destructive" {
+  if (value === "ready_for_draft") return "default";
+  if (value === "not_ready" || value === "needs_answers") return "destructive";
+  return "outline";
+}
+
+function estimateSessionReviewState(session: ProductIntakeSession): ProductIntakeReadiness["reviewState"] {
+  if (session.status === "abandoned") return "not_ready";
+  if (session.status === "needs_answers") return "not_ready";
+  if (session.status === "ready_for_draft" && currentSessionConfidence(session) >= 75) return "ready_for_draft";
+  return "needs_review";
+}
+
 function productIntakeAiStatusLabel(readiness: ProductIntakeAiReadiness | null | undefined) {
   if (!readiness) return "Loading AI status";
   if (readiness.reason === "live_ai_ready") return "Live AI ready";
@@ -345,15 +366,31 @@ export function ProductIntakeSessionSummary({ session, readiness, diagnosticsCou
           <div className="text-xs font-medium uppercase text-muted-foreground">Answered</div>
           <div className="mt-1 font-medium">{readiness.answeredCount}</div>
         </div>
+        <div>
+          <div className="text-xs font-medium uppercase text-muted-foreground">Readiness</div>
+          <div className="mt-1 font-medium">{reviewStateLabel(readiness.reviewState ?? readiness.status)}</div>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase text-muted-foreground">Review Score</div>
+          <div className="mt-1 font-medium">{readiness.reviewScore ?? currentConfidence}%</div>
+        </div>
         </div>
         <div className="rounded border bg-muted/30 p-3">
           <div className="flex flex-wrap gap-2">
             <Badge variant={readiness.status === "ready_for_draft" ? "default" : "outline"}>
               {readiness.status === "ready_for_draft" ? "Ready for draft" : `${readiness.unansweredRequiredCount} required open`}
             </Badge>
+            <Badge variant={reviewStateVariant(readiness.reviewState ?? readiness.status)}>
+              {reviewStateLabel(readiness.reviewState ?? readiness.status)}
+            </Badge>
             <Badge variant={diagnosticsCount > 0 ? "secondary" : "outline"}>{diagnosticsCount} diagnostics</Badge>
             {session.brief.fallbackReason && <Badge variant="outline">AI fallback used</Badge>}
           </div>
+          {readiness.penalties && readiness.penalties.length > 0 && (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Still needs review: {readiness.penalties.map((penalty) => penalty.label).slice(0, 3).join("; ")}
+            </div>
+          )}
           {session.brief.source === "rule_based_fallback" && (
             <div className="mt-2 text-xs text-amber-600">
               {isProviderUnavailableFallback(session.brief.fallbackReason)
@@ -471,7 +508,9 @@ export function ProductIntakeQuestionsWizard({
             <CardTitle className="text-base">Missing Decisions Wizard</CardTitle>
             <CardDescription>{readiness.unansweredRequiredCount} required unanswered; {readiness.answeredCount} answered.</CardDescription>
           </div>
-          <Badge variant={statusVariant(readiness.status)}>{readiness.status.replace(/_/g, " ")}</Badge>
+          <Badge variant={reviewStateVariant(readiness.reviewState ?? readiness.status)}>
+            {reviewStateLabel(readiness.reviewState ?? readiness.status)}
+          </Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -498,7 +537,7 @@ export function ProductIntakeQuestionsWizard({
         ))}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
           <div className="text-sm text-muted-foreground">
-            {readiness.status === "ready_for_draft" ? "Ready for Phase 3 draft generation." : "Answer required questions to reach draft readiness."}
+            {readiness.reviewState === "ready_for_draft" || readiness.status === "ready_for_draft" ? "Ready for Phase 3 draft generation." : "Answer required questions and review flagged penalties before draft readiness."}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {readiness.status === "ready_for_draft" && (
@@ -649,6 +688,47 @@ export function ProductIntakeAiStatusPanel({
             <Badge variant={readiness.encryptionKeyPresent ? "secondary" : "outline"}>Encryption key {readiness.encryptionKeyPresent ? "present" : "missing"}</Badge>
           </div>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+export function ProductIntakeQualityMetrics({ sessions }: { sessions: ProductIntakeSession[] }) {
+  const total = sessions.length;
+  const liveAi = sessions.filter((session) => briefSourceValue(session) === "live_ai").length;
+  const liveAiRepaired = sessions.filter((session) => briefSourceValue(session) === "live_ai_repaired").length;
+  const analyzerFallback = sessions.filter((session) => briefSourceValue(session) === "analyzer_fallback").length;
+  const averageConfidence = total > 0
+    ? Math.round(sessions.reduce((sum, session) => sum + currentSessionConfidence(session), 0) / total)
+    : 0;
+  const readyForDraft = sessions.filter((session) => estimateSessionReviewState(session) === "ready_for_draft").length;
+  const needsReview = sessions.filter((session) => estimateSessionReviewState(session) === "needs_review").length;
+  const notReady = sessions.filter((session) => estimateSessionReviewState(session) === "not_ready").length;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Product Intake Quality Metrics</CardTitle>
+        <CardDescription>Recent session mix for deciding when Phase 3 draft generation is safe.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-3 md:grid-cols-4 lg:grid-cols-8">
+          {[
+            ["Total Sessions", total],
+            ["Live AI", liveAi],
+            ["Live AI Repaired", liveAiRepaired],
+            ["Analyzer Fallback", analyzerFallback],
+            ["Avg Confidence", `${averageConfidence}%`],
+            ["Ready For Draft", readyForDraft],
+            ["Needs Review", needsReview],
+            ["Not Ready", notReady],
+          ].map(([label, value]) => (
+            <div key={String(label)} className="rounded border bg-muted/20 p-3">
+              <div className="text-xs font-medium uppercase text-muted-foreground">{label}</div>
+              <div className="mt-2 text-xl font-semibold">{value}</div>
+            </div>
+          ))}
+        </div>
       </CardContent>
     </Card>
   );
@@ -1868,6 +1948,8 @@ export default function CatalogMigrationLab() {
         playSound={playIntakeSound}
         onPlaySoundChange={setPlayIntakeSound}
       />
+
+      <ProductIntakeQualityMetrics sessions={sessionsQuery.data ?? []} />
 
       <ProductIntakeSessionsList
         sessions={sessionsQuery.data ?? []}

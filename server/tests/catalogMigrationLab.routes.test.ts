@@ -473,7 +473,8 @@ describe("Catalog Migration Lab routes", () => {
     expect(response.body.data.brief.productIdentity.likelyProductName.value).toMatch(/Banner/);
     expect(response.body.data.brief.overallConfidence).toEqual(expect.any(Number));
     expect(Array.isArray(response.body.data.questions)).toBe(true);
-    expect(response.body.data.questions.some((question: any) => question.questionKey === "confirm-routing-proof-prepress")).toBe(true);
+    expect(response.body.data.questions.some((question: any) => question.questionKey === "confirm-routing-proof-prepress")).toBe(false);
+    expect(response.body.data.readiness.reviewState).toMatch(/ready_for_draft|needs_review|not_ready/);
     expect(response.body.data.answers).toEqual([]);
   });
 
