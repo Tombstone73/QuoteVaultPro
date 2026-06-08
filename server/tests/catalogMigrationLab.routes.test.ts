@@ -351,6 +351,7 @@ function makeDraftReviewFixture(overrides: Partial<ProductIntakeDraftReview> = {
         detectedPricingSignals: ["Quantity tier pricing present."],
         noMatrixRowsGenerated: true,
       },
+      matrixPreview: null,
       basePricing: { perSqftCents: null, perPieceCents: null, minimumChargeCents: null },
     },
     publishReadiness: {

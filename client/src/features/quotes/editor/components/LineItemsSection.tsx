@@ -27,6 +27,7 @@ import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { buildPbv2DefaultSelections } from "@shared/pbv2OrderEntryRuntime";
+import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 import { deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
@@ -549,7 +550,7 @@ export function LineItemsSection({
         const cardRoot = contentEl?.parentElement ?? contentEl;
         cardRoot?.scrollIntoView({ block: "start", behavior: "instant" as ScrollBehavior });
 
-        const currentDimsRequired = requiresDimensionsV2(expandedProduct, expandedOptionTreeJson);
+        const currentDimsRequired = requiresDimensionsV2(expandedProduct, expandedOptionTreeJson) && !getPbv2FixedDimensions(expandedOptionTreeJson);
         if (currentDimsRequired) {
           widthInputRefs.current[pendingKey]?.focus({ preventScroll: true });
         }
@@ -568,8 +569,9 @@ export function LineItemsSection({
   useEffect(() => {
     if (!expandedItem) return;
     const itemKey = getItemKey(expandedItem);
-    setWidthText(String(expandedItem.width || 1));
-    setHeightText(String(expandedItem.height || 1));
+    const fixed = getPbv2FixedDimensions(expandedOptionTreeJson);
+    setWidthText(String(fixed?.widthIn ?? expandedItem.width ?? 1));
+    setHeightText(String(fixed?.heightIn ?? expandedItem.height ?? 1));
     setQty(expandedItem.quantity || 1);
     setNotes((expandedItem.specsJson as any)?.notes || expandedItem.notes || "");
     setDescription(expandedItem.description || "");
@@ -668,15 +670,17 @@ export function LineItemsSection({
     expandedItem?.tempId,
     expandedProduct?.id,
     expandedProduct?.name,
+    expandedOptionTreeJson,
     (expandedProduct as any)?.requiresDesign,
     (expandedProduct as any)?.requiresPrepress,
     (expandedProduct as any)?.requiresProofApproval,
     (expandedProduct as any)?.requiresProductionJob,
   ]);
 
-  const dimsRequired = requiresDimensionsV2(expandedProduct, expandedOptionTreeJson);
-  const widthNum = dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
-  const heightNum = dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
+  const fixedDimensions = getPbv2FixedDimensions(expandedOptionTreeJson);
+  const dimsRequired = requiresDimensionsV2(expandedProduct, expandedOptionTreeJson) && !fixedDimensions;
+  const widthNum = fixedDimensions ? fixedDimensions.widthIn : dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
+  const heightNum = fixedDimensions ? fixedDimensions.heightIn : dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
   const qtyNum = Number.isFinite(qty) && qty > 0 ? qty : 1;
 
   const handleOptionSelectionsV2Change = useCallback((next: LineItemOptionSelectionsV2) => {

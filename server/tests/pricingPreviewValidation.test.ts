@@ -101,6 +101,27 @@ describe('validatePricingPreviewRequest', () => {
       expect(result.normalized).not.toHaveProperty('optionsJson');
     }
   });
+
+  test('derives dimensions from fixed-size PBV2 metadata when width and height are omitted', () => {
+    const result = validatePricingPreviewRequest({
+      treeJson: {
+        ...validTree,
+        meta: {
+          requiresDimensions: false,
+          fixedDimensions: { widthIn: 24, heightIn: 18, unit: "in", label: '24" x 18"' },
+        },
+      },
+      quantity: 25,
+      optionSelectionsJson: { printed_sides: { value: 'single_sided' } },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.normalized.widthNum).toBe(24);
+      expect(result.normalized.heightNum).toBe(18);
+      expect(result.normalized.quantityNum).toBe(25);
+    }
+  });
 });
 
 describe('zodIssuesToPreviewDetails', () => {

@@ -632,6 +632,7 @@ export function LineItemCard({
             />
             {/* Top editing row */}
             <div className="flex flex-wrap items-end gap-3">
+              {dimsRequired ? (
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-2">
                   <div className="flex flex-col gap-1">
@@ -663,6 +664,7 @@ export function LineItemCard({
                   </div>
                 </div>
               </div>
+              ) : null}
 
               <div className="flex items-center gap-2">
                 <div className="text-xs text-muted-foreground">Qty</div>

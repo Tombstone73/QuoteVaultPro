@@ -4,6 +4,7 @@ import {
   getRenderablePbv2QuestionNodeIds,
   hasPbv2Selections,
 } from "./pbv2OrderEntryRuntime";
+import { getPbv2FixedDimensions } from "./pbv2/fixedDimensions";
 
 type OrderEntryProductLike = {
   id: string;
@@ -74,7 +75,9 @@ export type InitialOrderLineItemDraftDebug = {
   optionSelectionsJson: LineItemOptionSelectionsV2 | null;
 };
 
-function isDimensionRequired(product: OrderEntryProductLike): boolean {
+function isDimensionRequired(product: OrderEntryProductLike, activeTree?: OptionTreeV2 | null): boolean {
+  if (getPbv2FixedDimensions(activeTree)) return false;
+  if (activeTree?.meta?.requiresDimensions !== undefined) return activeTree.meta.requiresDimensions;
   if (typeof product.requiresDimensions === "boolean") return product.requiresDimensions;
   if (product.pricingMode === "fee" || product.pricingMode === "addon" || product.pricingMode === "flat") return false;
   return true;
@@ -91,6 +94,8 @@ export function buildInitialOrderLineItemDraftFromProduct(
     return String(label || nodeId);
   });
   const optionSelectionsJson = activeTree ? buildPbv2DefaultSelections(activeTree) : null;
+  const fixedDimensions = getPbv2FixedDimensions(activeTree);
+  const dimensionsRequired = isDimensionRequired(product, activeTree);
   const requiresDesign =
     typeof product.requiresDesign === "boolean"
       ? product.requiresDesign
@@ -148,8 +153,8 @@ export function buildInitialOrderLineItemDraftFromProduct(
     productId: product.id,
     productVariantId: null,
     description: "",
-    width: isDimensionRequired(product) ? 1 : 0,
-    height: isDimensionRequired(product) ? 1 : 0,
+    width: fixedDimensions ? fixedDimensions.widthIn : dimensionsRequired ? 1 : 0,
+    height: fixedDimensions ? fixedDimensions.heightIn : dimensionsRequired ? 1 : 0,
     quantity: 1,
     unitPrice: "0.00",
     totalPrice: "0.00",

@@ -523,6 +523,75 @@ describe("PricingService pricing matrix variable resolution", () => {
     expect(double.debug?.tierResolution?.matrixRowId).toBe("6mm_double");
   });
 
+  test("fixed-size printed-sides matrix prices from line item quantity without submitted dimensions", () => {
+    const tree = {
+      schemaVersion: 2 as const,
+      rootNodeIds: ["printed_sides"],
+      nodes: {
+        printed_sides: {
+          id: "printed_sides",
+          kind: "question" as const,
+          label: "Printed Sides",
+          input: { type: "select" as const, selectionKey: "printed_sides" },
+          choices: [
+            { value: "single_sided", label: "Single Sided" },
+            { value: "double_sided", label: "Double Sided" },
+          ],
+        },
+      },
+      pricingMatrix: {
+        dimensions: ["printed_sides"],
+        rows: [
+          {
+            id: "single_sided",
+            when: { printed_sides: "single_sided" },
+            tierBasis: "line_item_quantity",
+            qtyTiers: [
+              { id: "single_1_100", label: "1-100", minQty: 1, maxQty: 100, perPieceCents: 440 },
+              { id: "single_101_500", label: "101-500", minQty: 101, maxQty: 500, perPieceCents: 330 },
+              { id: "single_501", label: "501+", minQty: 501, maxQty: null, perPieceCents: 300 },
+            ],
+          },
+          {
+            id: "double_sided",
+            when: { printed_sides: "double_sided" },
+            tierBasis: "line_item_quantity",
+            qtyTiers: [
+              { id: "double_1_100", label: "1-100", minQty: 1, maxQty: 100, perPieceCents: 550 },
+              { id: "double_101_500", label: "101-500", minQty: 101, maxQty: 500, perPieceCents: 440 },
+              { id: "double_501", label: "501+", minQty: 501, maxQty: null, perPieceCents: 400 },
+            ],
+          },
+        ],
+      },
+      meta: {
+        requiresDimensions: false,
+        fixedDimensions: { widthIn: 24, heightIn: 18, unit: "in" as const, label: '24" x 18"' },
+        pricingV2: { unitSystem: "imperial" as const, tierBasis: "line_item_quantity" as const, base: {} },
+      },
+    };
+
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: undefined as unknown as number,
+      heightIn: undefined as unknown as number,
+      quantity: 250,
+      pbv2ExplicitSelections: { printed_sides: { value: "double_sided" } },
+      debug: true,
+    });
+
+    expect(result.totalPrice).toBeCloseTo(1100, 2);
+    expect(result.debug?.inputs?.widthIn).toBe(24);
+    expect(result.debug?.inputs?.heightIn).toBe(18);
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      source: "matrix_row",
+      matrixRowId: "double_sided",
+      tierBasis: "line_item_quantity",
+      tierBasisValue: 250,
+      matchedTierLabel: "101-500",
+    }));
+  });
+
   test("row without qty tiers falls back to product-level PBV2 tiers", () => {
     const tree = makeAcmTree({
       dimensions: ["thickness"],
