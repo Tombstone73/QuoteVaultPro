@@ -9,6 +9,8 @@
  * makes payload-rejection failures actionable instead of a bare message.
  */
 
+import { resolvePbv2RuntimeDimensions } from "@shared/pbv2/fixedDimensions";
+
 export const PBV2_INVALID_PREVIEW_PAYLOAD = "PBV2_INVALID_PREVIEW_PAYLOAD";
 
 export interface PreviewValidationDetail {
@@ -121,8 +123,13 @@ export function validatePricingPreviewRequest(body: any): PreviewRequestValidati
     });
   }
 
-  const widthNum = validatePositiveNumber(width, "width", "Width", details);
-  const heightNum = validatePositiveNumber(height, "height", "Height", details);
+  const runtimeDimensions = resolvePbv2RuntimeDimensions({ treeJson, widthIn: width, heightIn: height });
+  const widthNum = runtimeDimensions.fixedDimensions
+    ? runtimeDimensions.widthIn
+    : validatePositiveNumber(width, "width", "Width", details);
+  const heightNum = runtimeDimensions.fixedDimensions
+    ? runtimeDimensions.heightIn
+    : validatePositiveNumber(height, "height", "Height", details);
   const quantityNum = validatePositiveNumber(quantity, "quantity", "Quantity", details);
 
   let pbv2ExplicitSelections: Record<string, any> = {};

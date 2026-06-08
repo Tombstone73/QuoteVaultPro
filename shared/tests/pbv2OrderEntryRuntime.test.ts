@@ -259,4 +259,30 @@ describe("PBV2 order-entry runtime", () => {
     expect(draft.specsJson.initialDraft.renderedOptionLabels).toEqual(["Finish", "Extras", "Note"]);
     expect(draft.debug.defaultSelectionsFound).toBe(true);
   });
+
+  test("buildInitialOrderLineItemDraftFromProduct seeds fixed PBV2 dimensions without custom size entry", () => {
+    const tree = {
+      ...makeTree(),
+      meta: {
+        requiresDimensions: false,
+        fixedDimensions: { widthIn: 24, heightIn: 18, unit: "in" as const, label: '24" x 18"' },
+      },
+    };
+    const draft = buildInitialOrderLineItemDraftFromProduct(
+      {
+        id: "prod_fixed",
+        name: "4mm Coroplast Yard Signs",
+        requiresProductionJob: true,
+        pbv2ActiveTreeVersionId: "tree_fixed",
+        optionTreeJson: tree,
+      },
+      tree,
+      "order_1",
+    );
+
+    expect(draft.width).toBe(24);
+    expect(draft.height).toBe(18);
+    expect(draft.quantity).toBe(1);
+    expect(draft.requiresProductionJob).toBe(true);
+  });
 });

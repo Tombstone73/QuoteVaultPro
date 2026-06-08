@@ -20,6 +20,7 @@ import {
   type ProductIntakeSession,
 } from "@shared/productIntakeWizardSchemas";
 import { validateOptionTreeV2, type OptionTreeV2, type PricingV2Tier } from "@shared/optionTreeV2";
+import type { Pbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 import { cloneTemplateIntoTree } from "@shared/pbv2/optionGroupTemplates";
 import { db as defaultDb } from "../../db";
@@ -227,7 +228,7 @@ const NO_MATRIX_READINESS: ProductIntakeMatrixReadiness = {
 };
 
 function extractSizeSignals(brief: ProductIntakeBrief, text: string): string[] {
-  const sourceSizes = Array.from(text.matchAll(/\b(\d{1,3}(?:\.\d+)?)\s*(?:x|by)\s*(\d{1,3}(?:\.\d+)?)\b/gi))
+  const sourceSizes = Array.from(text.matchAll(/\b(\d{1,3}(?:\.\d+)?)\s*(?:"|in|inch(?:es)?)?\s*(?:wide|w)?\s*(?:x|×|by)\s*(\d{1,3}(?:\.\d+)?)\s*(?:"|in|inch(?:es)?)?\s*(?:high|h)?\b/gi))
     .map((match) => `${match[1]}x${match[2]}`);
   const optionSizes = [...brief.requiredOptions, ...brief.optionalOptions]
     .filter(isSizeOption)
@@ -259,6 +260,85 @@ function extractQuantityBreaks(brief: ProductIntakeBrief, text: string): number[
   }
 
   return Array.from(values).sort((a, b) => a - b).slice(0, 30);
+}
+
+function parseFixedDimensionText(value: string): Pbv2FixedDimensions | null {
+  const match = value.match(/\b(\d{1,3}(?:\.\d+)?)\s*(?:"|in|inch(?:es)?)?\s*(?:wide|w)?\s*(?:x|×|by)\s*(\d{1,3}(?:\.\d+)?)\s*(?:"|in|inch(?:es)?)?\s*(?:high|h)?\b/i);
+  if (!match) return null;
+  const widthIn = Number(match[1]);
+  const heightIn = Number(match[2]);
+  if (!Number.isFinite(widthIn) || widthIn <= 0 || !Number.isFinite(heightIn) || heightIn <= 0) return null;
+  return {
+    widthIn,
+    heightIn,
+    unit: "in",
+    label: `${widthIn}" x ${heightIn}"`,
+    source: "product_intake",
+    confidence: 95,
+  };
+}
+
+function fixedDimensionsForBrief(
+  brief: ProductIntakeBrief,
+  sizeOption: ProductIntakeOption | null,
+  text: string,
+  sizeMode: SizeMode,
+): Pbv2FixedDimensions | null {
+  if (sizeMode !== "fixed_dropdown" || hasMultipleSelectableFixedSizeChoices(sizeOption)) return null;
+  const sources = [
+    ...(sizeOption?.sampleValues ?? []),
+    ...extractSizeSignals(brief, text),
+    text,
+  ];
+  for (const source of sources) {
+    const parsed = parseFixedDimensionText(String(source ?? ""));
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function sizeMetadataForBrief(args: {
+  brief: ProductIntakeBrief;
+  sizeOption: ProductIntakeOption | null;
+  sizeMode: SizeMode;
+  fixedDimensions: Pbv2FixedDimensions | null;
+}) {
+  const sourceOptions = args.sizeOption
+    ? [{
+      label: args.sizeOption.label,
+      normalizedGroup: args.sizeOption.normalizedGroup,
+      required: args.sizeOption.required,
+      confidence: args.sizeOption.confidence,
+      sampleValues: args.sizeOption.sampleValues,
+      sourcePaths: args.sizeOption.sourcePaths,
+    }]
+    : [];
+
+  if (args.fixedDimensions) {
+    return {
+      behavior: "fixed_dimensions" as const,
+      fixedDimensions: args.fixedDimensions,
+      customerFacingOptionGenerated: false,
+      sourceOptions,
+      warning: "Fixed size is stored as product metadata and was not generated as a PBV2 Size option.",
+    };
+  }
+
+  if (args.sizeMode === "custom_dimension") {
+    return {
+      behavior: "custom_dimensions" as const,
+      customerFacingOptionGenerated: true,
+      sourceOptions,
+      warning: null,
+    };
+  }
+
+  return {
+    behavior: "none" as const,
+    customerFacingOptionGenerated: false,
+    sourceOptions,
+    warning: null,
+  };
 }
 
 function hasProductSignal(text: string, patterns: RegExp[]): boolean {
@@ -1109,6 +1189,9 @@ export function buildProductIntakeDraftTree(args: {
   const usedEdgeIds = new Set<string>();
   const sizeOption = [...args.brief.requiredOptions, ...args.brief.optionalOptions].find(isSizeOption) ?? null;
   const sizeMode = resolveSizeMode(args.brief, sizeOption);
+  const sourceText = collectBriefText(args.brief, args.sourceText, args.sourceJson);
+  const fixedDimensions = fixedDimensionsForBrief(args.brief, sizeOption, sourceText, sizeMode);
+  const sizeMetadata = sizeMetadataForBrief({ brief: args.brief, sizeOption, sizeMode, fixedDimensions });
   const materialMatch = bestMaterialMatch(args.brief);
   const pricingReadiness = analyzeDraftPricing({
     brief: args.brief,
@@ -1135,11 +1218,14 @@ export function buildProductIntakeDraftTree(args: {
         qtyTiers: [],
       },
       requiresDimensions: sizeMode === "custom_dimension",
+      ...(fixedDimensions ? { fixedDimensions } : {}),
       productIntake: {
         sessionId: args.sessionId,
         productName: args.productName,
         confidence: args.brief.overallConfidence,
         sizeMode,
+        ...(fixedDimensions ? { fixedDimensions } : {}),
+        size: sizeMetadata,
         quantity: quantityMetadataForBrief(args.brief),
         pricingReadiness: {
           base: pricingReadiness.base,
@@ -1275,7 +1361,7 @@ export function buildProductIntakeDraftTree(args: {
   }
 
   const matrixSourceText = appendMatrixAnswerSourceText({
-    sourceText: collectBriefText(args.brief, args.sourceText, args.sourceJson),
+    sourceText,
     tree,
     answers: args.answers,
     readiness: pricingReadiness.matrixReadiness,

@@ -2,6 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 import { validateOptionTreeV2 } from "../../shared/optionTreeV2";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "../../shared/pbv2/validator";
 import { validateTreeHasBasePrice } from "../../shared/pbv2/validator/validateBasePrice";
+import { getPbv2FixedDimensions } from "../../shared/pbv2/fixedDimensions";
 import type { ProductIntakeBrief } from "../../shared/productIntakeWizardSchemas";
 import {
   buildProductIntakeDraftTree,
@@ -546,6 +547,18 @@ describe("Product Intake draft service", () => {
     expect(validateOptionTreeV2(tree).ok).toBe(true);
     expectNoQuantityOption(tree);
     expect(inputNode(tree, "size")).toBeUndefined();
+    expect(tree.meta?.requiresDimensions).toBe(false);
+    expect(getPbv2FixedDimensions(tree)).toMatchObject({
+      widthIn: 24,
+      heightIn: 18,
+      unit: "in",
+      source: "product_intake",
+    });
+    expect(tree.meta?.productIntake?.size).toMatchObject({
+      behavior: "fixed_dimensions",
+      customerFacingOptionGenerated: false,
+      fixedDimensions: { widthIn: 24, heightIn: 18, unit: "in" },
+    });
     expect(inputNode(tree, "printed_sides")).toBeTruthy();
     expect(inputNode(tree, "h_wire_stakes")).toBeTruthy();
     expect(tree.meta?.productIntake?.matrixReadiness?.matrixConfidence).toBeGreaterThanOrEqual(85);

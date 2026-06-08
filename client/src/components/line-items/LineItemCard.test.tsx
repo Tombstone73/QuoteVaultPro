@@ -197,3 +197,18 @@ describe("LineItemCard collapsed header actions", () => {
     await cleanup();
   });
 });
+
+describe("LineItemCard fixed-size editing", () => {
+  it("hides width and height controls when dimensions are not customer-entered", async () => {
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: true,
+      dimsRequired: false,
+    });
+
+    expect(container.textContent).not.toContain("Width");
+    expect(container.textContent).not.toContain("Height");
+    expect(container.textContent).toContain("Qty");
+
+    await cleanup();
+  });
+});

@@ -42,9 +42,11 @@ import {
   customerContacts,
   quoteLineItems,
   products,
+  pbv2TreeVersions,
   auditLogs,
   quoteListNotes,
 } from "@shared/schema";
+import { resolvePbv2RuntimeDimensions } from "@shared/pbv2/fixedDimensions";
 import {
   buildProofApprovalManualOverrideAuditEvent,
   resolveLineItemProofApprovalRequirement,
@@ -440,14 +442,6 @@ export function registerQuoteRoutes(
         return res.status(400).json({ message: "quantity must be a positive number" });
       }
 
-      // Validation: dimensions (required for most products)
-      if (width == null || height == null) {
-        return res.status(400).json({ message: "width and height are required" });
-      }
-      if (width <= 0 || height <= 0) {
-        return res.status(400).json({ message: "width and height must be positive" });
-      }
-
       // Parse PBV2 selections from JSON string or use directly
       let pbv2ExplicitSelections: Record<string, any> = {};
       if (optionSelectionsJson) {
@@ -500,6 +494,33 @@ export function registerQuoteRoutes(
         });
       }
 
+      const treeVersionIdForDimensions = pbv2TreeVersionIdOverride || product.pbv2ActiveTreeVersionId;
+      let runtimeWidth = Number(width);
+      let runtimeHeight = Number(height);
+      if (treeVersionIdForDimensions) {
+        const [treeVersionForDimensions] = await db
+          .select({ treeJson: pbv2TreeVersions.treeJson })
+          .from(pbv2TreeVersions)
+          .where(
+            and(
+              eq(pbv2TreeVersions.id, treeVersionIdForDimensions),
+              eq(pbv2TreeVersions.organizationId, organizationId)
+            )
+          )
+          .limit(1);
+        const resolvedDimensions = resolvePbv2RuntimeDimensions({
+          treeJson: treeVersionForDimensions?.treeJson,
+          widthIn: width,
+          heightIn: height,
+        });
+        runtimeWidth = resolvedDimensions.widthIn;
+        runtimeHeight = resolvedDimensions.heightIn;
+      }
+
+      if (!Number.isFinite(runtimeWidth) || runtimeWidth <= 0 || !Number.isFinite(runtimeHeight) || runtimeHeight <= 0) {
+        return res.status(400).json({ message: "width and height must be positive" });
+      }
+
       // Call unified PricingService with error handling
       let pricingResult;
       try {
@@ -507,8 +528,8 @@ export function registerQuoteRoutes(
           organizationId,
           productId,
           quantity,
-          widthIn: width,
-          heightIn: height,
+          widthIn: runtimeWidth,
+          heightIn: runtimeHeight,
           pbv2ExplicitSelections,
           pbv2TreeVersionIdOverride,
         });

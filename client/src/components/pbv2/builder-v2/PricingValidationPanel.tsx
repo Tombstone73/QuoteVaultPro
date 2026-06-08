@@ -25,6 +25,7 @@ import type { Finding } from "@shared/pbv2/findings";
 import { pbv2TreeToEditorModel, type EditorModel } from "@/lib/pbv2/pbv2ViewModel";
 import { resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
 import { filterPbv2ChoicesForRuntime } from "@shared/pbv2OrderEntryRuntime";
+import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 
 export type PricingPreviewState = {
   width: number;
@@ -589,6 +590,18 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     };
   }, [treeJson, pricingV2Override]);
 
+  const fixedDimensions = useMemo(() => getPbv2FixedDimensions(treeForPreview), [treeForPreview]);
+  const previewWidth = fixedDimensions?.widthIn ?? previewState.width;
+  const previewHeight = fixedDimensions?.heightIn ?? previewState.height;
+
+  useEffect(() => {
+    if (!fixedDimensions) return;
+    setPreviewState((prev) => {
+      if (prev.width === fixedDimensions.widthIn && prev.height === fixedDimensions.heightIn) return prev;
+      return { ...prev, width: fixedDimensions.widthIn, height: fixedDimensions.heightIn };
+    });
+  }, [fixedDimensions?.widthIn, fixedDimensions?.heightIn]);
+
   const previewGroups = useMemo(
     () => buildPreviewGroups(treeForPreview, previewState.selectedOptionValues),
     [treeForPreview, previewState.selectedOptionValues],
@@ -622,8 +635,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     () =>
       JSON.stringify({
         treeJson: treeForPreview,
-        width: previewState.width,
-        height: previewState.height,
+        width: previewWidth,
+        height: previewHeight,
         quantity: previewState.quantity,
         pricingFormulaOverride,
         manualFormulaText,
@@ -633,22 +646,22 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
         pricingProfileConfig,
         optionSelectionsJson: selectionPayload,
       }),
-    [treeForPreview, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, selectionPayload],
+    [treeForPreview, previewWidth, previewHeight, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, selectionPayload],
   );
 
   const inputErrors = useMemo(() => {
     const next: Partial<Record<"width" | "height" | "quantity", string>> = {};
-    if (!Number.isFinite(previewState.width) || previewState.width <= 0) {
+    if (!Number.isFinite(previewWidth) || previewWidth <= 0) {
       next.width = "Width must be greater than 0.";
     }
-    if (!Number.isFinite(previewState.height) || previewState.height <= 0) {
+    if (!Number.isFinite(previewHeight) || previewHeight <= 0) {
       next.height = "Height must be greater than 0.";
     }
     if (!Number.isFinite(previewState.quantity) || previewState.quantity < 1 || !Number.isInteger(previewState.quantity)) {
       next.quantity = "Quantity must be an integer of 1 or more.";
     }
     return next;
-  }, [previewState.width, previewState.height, previewState.quantity]);
+  }, [previewWidth, previewHeight, previewState.quantity]);
 
   const hasInputErrors = Boolean(inputErrors.width || inputErrors.height || inputErrors.quantity);
 
@@ -702,11 +715,11 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     return null;
   }, [error, apiErrors]);
   const calculatedSqftPerItem = useMemo(() => {
-    if (!Number.isFinite(previewState.width) || !Number.isFinite(previewState.height) || previewState.width <= 0 || previewState.height <= 0) {
+    if (!Number.isFinite(previewWidth) || !Number.isFinite(previewHeight) || previewWidth <= 0 || previewHeight <= 0) {
       return undefined;
     }
-    return (previewState.width * previewState.height) / 144;
-  }, [previewState.width, previewState.height]);
+    return (previewWidth * previewHeight) / 144;
+  }, [previewWidth, previewHeight]);
   const configuredTrimAllowances = useMemo(() => {
     const geometry = (treeForPreview as any)?.meta?.geometry;
     const legacy = Number(geometry?.trimAllowance ?? 0);
@@ -719,10 +732,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   }, [treeForPreview]);
   const orderedWidth = typeof result?.derived?.orderedWidth === "number"
     ? result.derived.orderedWidth
-    : previewState.width;
+    : previewWidth;
   const orderedHeight = typeof result?.derived?.orderedHeight === "number"
     ? result.derived.orderedHeight
-    : previewState.height;
+    : previewHeight;
   const trimAllowanceX = typeof result?.derived?.trimAllowanceX === "number"
     ? result.derived.trimAllowanceX
     : (typeof formulaDebug?.derived?.trim_allowance_x === "number" ? formulaDebug.derived.trim_allowance_x : configuredTrimAllowances.trimAllowanceX);
@@ -999,8 +1012,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
           signal: controller.signal,
           body: JSON.stringify({
             treeJson: treeForPreview,
-            width: previewState.width,
-            height: previewState.height,
+            width: previewWidth,
+            height: previewHeight,
             quantity: previewState.quantity,
             pricingFormulaOverride,
             manualFormulaText,
@@ -1053,7 +1066,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [hasInputErrors, requestSignature, treeForPreview, previewState.width, previewState.height, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, selectionPayload]);
+  }, [hasInputErrors, requestSignature, treeForPreview, previewWidth, previewHeight, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, selectionPayload]);
 
   return (
     <aside className="h-full w-full max-w-full min-w-0 bg-card flex flex-col overflow-hidden">
@@ -1071,31 +1084,42 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                 <div className="text-[11px] text-slate-500 shrink-0">Units: {previewState.unit === "in" ? "inches" : previewState.unit}</div>
               </div>
 
-              <div className="grid grid-cols-[repeat(3,minmax(0,1fr))] gap-2 min-w-0 max-w-full">
-                <div className="min-w-0">
-                  <Label className="text-xs text-slate-400">Width ({previewState.unit})</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    step="any"
-                    value={previewState.width}
-                    onChange={(e) => setPreviewState((prev) => ({ ...prev, width: Number(e.target.value) }))}
-                    className="bg-slate-950/60 border-slate-700/60 h-8 w-full min-w-0"
-                  />
-                  {inputErrors.width ? <div className="mt-1 text-[11px] text-red-300">{inputErrors.width}</div> : null}
-                </div>
-                <div className="min-w-0">
-                  <Label className="text-xs text-slate-400">Height ({previewState.unit})</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    step="any"
-                    value={previewState.height}
-                    onChange={(e) => setPreviewState((prev) => ({ ...prev, height: Number(e.target.value) }))}
-                    className="bg-slate-950/60 border-slate-700/60 h-8 w-full min-w-0"
-                  />
-                  {inputErrors.height ? <div className="mt-1 text-[11px] text-red-300">{inputErrors.height}</div> : null}
-                </div>
+              <div className={fixedDimensions ? "grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-2 min-w-0 max-w-full" : "grid grid-cols-[repeat(3,minmax(0,1fr))] gap-2 min-w-0 max-w-full"}>
+                {fixedDimensions ? (
+                  <div className="min-w-0">
+                    <Label className="text-xs text-slate-400">Fixed Size</Label>
+                    <div className="flex h-8 items-center rounded-md border border-slate-700/60 bg-slate-950/40 px-2 font-mono text-sm text-slate-200">
+                      {fixedDimensions.label ?? `${previewWidth}" x ${previewHeight}"`}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="min-w-0">
+                      <Label className="text-xs text-slate-400">Width ({previewState.unit})</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="any"
+                        value={previewState.width}
+                        onChange={(e) => setPreviewState((prev) => ({ ...prev, width: Number(e.target.value) }))}
+                        className="bg-slate-950/60 border-slate-700/60 h-8 w-full min-w-0"
+                      />
+                      {inputErrors.width ? <div className="mt-1 text-[11px] text-red-300">{inputErrors.width}</div> : null}
+                    </div>
+                    <div className="min-w-0">
+                      <Label className="text-xs text-slate-400">Height ({previewState.unit})</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="any"
+                        value={previewState.height}
+                        onChange={(e) => setPreviewState((prev) => ({ ...prev, height: Number(e.target.value) }))}
+                        className="bg-slate-950/60 border-slate-700/60 h-8 w-full min-w-0"
+                      />
+                      {inputErrors.height ? <div className="mt-1 text-[11px] text-red-300">{inputErrors.height}</div> : null}
+                    </div>
+                  </>
+                )}
                 <div className="min-w-0">
                   <Label className="text-xs text-slate-400">Quantity</Label>
                   <Input

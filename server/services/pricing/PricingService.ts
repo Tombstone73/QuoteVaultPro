@@ -47,6 +47,7 @@ import {
   type Pbv2TierResolutionWarning,
 } from '../../../shared/pbv2/pricingAdapter';
 import { calculateSheetYield, extractFormulaVariables, parseFormulaBoolean, sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
+import { resolvePbv2RuntimeDimensions } from '../../../shared/pbv2/fixedDimensions';
 import { buildNumericSelectionFormulaVariables } from '../../../shared/pbv2/numericSelectionFormulaVariables';
 import {
   collectPbv2WeightMaterialIds,
@@ -434,12 +435,14 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     organizationId,
     productId,
     quantity,
-    widthIn,
-    heightIn,
+    widthIn: requestedWidthIn,
+    heightIn: requestedHeightIn,
     pbv2ExplicitSelections,
     pbv2TreeVersionIdOverride,
     overridePriceCents,
   } = input;
+  let widthIn = requestedWidthIn;
+  let heightIn = requestedHeightIn;
 
   // Step 0: Check for manual price override
   // If override is set, return it immediately without calculating PBV2
@@ -458,6 +461,11 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     }
 
     const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
+    ({ widthIn, heightIn } = resolvePbv2RuntimeDimensions({
+      treeJson: treeVersion.treeJson,
+      widthIn,
+      heightIn,
+    }));
     const pricingMethod = String(product.pricingProfileKey || "default");
     const ruleValidatedSelections = resolveRuleValidatedSelectionsForPricing(
       treeVersion.treeJson as any,
@@ -569,6 +577,11 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
 
   // Step 3: Load tree version
   const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
+  ({ widthIn, heightIn } = resolvePbv2RuntimeDimensions({
+    treeJson: treeVersion.treeJson,
+    widthIn,
+    heightIn,
+  }));
   const ruleValidatedSelections = resolveRuleValidatedSelectionsForPricing(
     treeVersion.treeJson as any,
     pbv2ExplicitSelections
@@ -833,8 +846,13 @@ export function evaluatePricingPreviewFromTree(input: {
   materialRecords?: Pbv2WeightMaterialRecord[];
   debug?: boolean;
 }): PricingPreviewEvaluationResult {
-  const widthIn = Number(input.widthIn);
-  const heightIn = Number(input.heightIn);
+  const runtimeDimensions = resolvePbv2RuntimeDimensions({
+    treeJson: input.treeJson,
+    widthIn: input.widthIn,
+    heightIn: input.heightIn,
+  });
+  const widthIn = Number(runtimeDimensions.widthIn);
+  const heightIn = Number(runtimeDimensions.heightIn);
   const quantity = Number(input.quantity);
 
   if (!Number.isFinite(widthIn) || widthIn <= 0) {
@@ -3439,13 +3457,29 @@ function calculateFormulaAwareBasePrice(input: {
     });
   }
 
-  if (!shouldEvaluateFormula) {
+  const usePbv2BaseForPerPieceMatrix =
+    sourceResolution.source === "profile" &&
+    baseDetails.perPieceCents > 0 &&
+    baseDetails.perSqftCents === 0 &&
+    (tierResolution.tierSource === "matrix_row" || baseDetails.basePriceSource === "pricing_matrix.row_qty_tier");
+
+  if (!shouldEvaluateFormula || usePbv2BaseForPerPieceMatrix) {
     if (profileUsesFormula) {
+      if (usePbv2BaseForPerPieceMatrix) {
+        formulaDebug.errors = [
+          ...(formulaDebug.errors ?? []),
+          {
+            code: "PBV2_PROFILE_FORMULA_SKIPPED_FOR_PER_PIECE_MATRIX",
+            message: "Default profile formula was skipped because a per-piece pricing matrix row supplied the PBV2 base price.",
+          },
+        ];
+      } else {
       throw buildPbv2PricingFormulaError({
         message: "PBV2 formula pricing is selected, but no formula expression is configured.",
         code: "PBV2_FORMULA_MISSING",
         debug: formulaDebug,
       });
+      }
     }
     return {
       basePriceCents: baseDetails.totalCents,

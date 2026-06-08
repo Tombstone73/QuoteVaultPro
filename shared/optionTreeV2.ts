@@ -250,17 +250,54 @@ export type OptionTreeV2 = {
     pricingFormula?: string;
     formulaOutputMeaning?: "billable" | "final_price" | "generic";
     outputMeaning?: "billable" | "final_price" | "generic";
-    formulaVariables?: Record<string, number>;
-    pricingFormulaVariables?: Record<string, number>;
+    formulaVariables?: Record<string, number | boolean>;
+    pricingFormulaVariables?: Record<string, number | boolean>;
     pricingV2?: PricingV2;
     shippingConfig?: ShippingConfig;
     productImages?: ProductImage[];
     requiresDimensions?: boolean; // Default true if missing (product requires W x H)
+    fixedDimensions?: {
+      widthIn: number;
+      heightIn: number;
+      unit: "in";
+      label?: string;
+      source?: string;
+      confidence?: number;
+    };
     productIntake?: {
       sessionId: string;
       productName: string;
       confidence: number;
       sizeMode?: "fixed_dropdown" | "custom_dimension" | "none";
+      fixedDimensions?: {
+        widthIn: number;
+        heightIn: number;
+        unit: "in";
+        label?: string;
+        source?: string;
+        confidence?: number;
+      };
+      size?: {
+        behavior: "fixed_dimensions" | "custom_dimensions" | "none";
+        fixedDimensions?: {
+          widthIn: number;
+          heightIn: number;
+          unit: "in";
+          label?: string;
+          source?: string;
+          confidence?: number;
+        };
+        customerFacingOptionGenerated: boolean;
+        sourceOptions: Array<{
+          label: string;
+          normalizedGroup: string;
+          required: boolean;
+          confidence: number;
+          sampleValues: string[];
+          sourcePaths: string[];
+        }>;
+        warning: string | null;
+      };
       quantity?: {
         behavior: string;
         confidence: number;
@@ -602,17 +639,54 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
       pricingFormula: z.string().optional(),
       formulaOutputMeaning: z.enum(["billable", "final_price", "generic"]).optional(),
       outputMeaning: z.enum(["billable", "final_price", "generic"]).optional(),
-      formulaVariables: z.record(z.number()).optional(),
-      pricingFormulaVariables: z.record(z.number()).optional(),
+      formulaVariables: z.record(z.union([z.number(), z.boolean()])).optional(),
+      pricingFormulaVariables: z.record(z.union([z.number(), z.boolean()])).optional(),
       pricingV2: pricingV2Schema.optional(),
       shippingConfig: shippingConfigSchema.optional(),
       productImages: z.array(productImageSchema).optional(),
       requiresDimensions: z.boolean().optional(),
+      fixedDimensions: z.object({
+        widthIn: z.number().positive(),
+        heightIn: z.number().positive(),
+        unit: z.literal("in"),
+        label: z.string().optional(),
+        source: z.string().optional(),
+        confidence: z.number().min(0).max(100).optional(),
+      }).optional(),
       productIntake: z.object({
         sessionId: z.string(),
         productName: z.string(),
         confidence: z.number().min(0).max(100),
         sizeMode: z.enum(["fixed_dropdown", "custom_dimension", "none"]).optional(),
+        fixedDimensions: z.object({
+          widthIn: z.number().positive(),
+          heightIn: z.number().positive(),
+          unit: z.literal("in"),
+          label: z.string().optional(),
+          source: z.string().optional(),
+          confidence: z.number().min(0).max(100).optional(),
+        }).optional(),
+        size: z.object({
+          behavior: z.enum(["fixed_dimensions", "custom_dimensions", "none"]),
+          fixedDimensions: z.object({
+            widthIn: z.number().positive(),
+            heightIn: z.number().positive(),
+            unit: z.literal("in"),
+            label: z.string().optional(),
+            source: z.string().optional(),
+            confidence: z.number().min(0).max(100).optional(),
+          }).optional(),
+          customerFacingOptionGenerated: z.boolean(),
+          sourceOptions: z.array(z.object({
+            label: z.string(),
+            normalizedGroup: z.string(),
+            required: z.boolean(),
+            confidence: z.number().min(0).max(100),
+            sampleValues: z.array(z.string()),
+            sourcePaths: z.array(z.string()),
+          })),
+          warning: z.string().nullable(),
+        }).optional(),
         quantity: z.object({
           behavior: z.string(),
           confidence: z.number().min(0).max(100),

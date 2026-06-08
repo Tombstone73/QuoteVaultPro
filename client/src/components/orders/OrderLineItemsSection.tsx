@@ -65,6 +65,7 @@ import {
   hasPbv2Selections,
   shouldHydratePbv2Defaults,
 } from "@shared/pbv2OrderEntryRuntime";
+import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 import {
   buildInitialOrderLineItemDraftFromProduct,
   type InitialOrderLineItemDraftDebug,
@@ -125,8 +126,10 @@ function SortableOrderLineItemWrapper({
   );
 }
 
-function requiresDimensions(product: Product | null): boolean {
+function requiresDimensions(product: Product | null, treeJson?: OptionTreeV2 | null): boolean {
   if (!product) return true;
+  if (getPbv2FixedDimensions(treeJson)) return false;
+  if (treeJson?.meta?.requiresDimensions !== undefined) return treeJson.meta.requiresDimensions;
   const anyProduct = product as any;
   if (typeof anyProduct.requiresDimensions === "boolean") return anyProduct.requiresDimensions;
   if (anyProduct.pricingMode === "fee" || anyProduct.pricingMode === "addon") return false;
@@ -1246,7 +1249,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   );
 
   const expandedProductIsPbv2 = isPbv2Product(expandedProduct);
-  const dimsRequired = requiresDimensions(expandedProduct);
+  const fixedDimensions = getPbv2FixedDimensions(effectivePbv2Tree);
+  const dimsRequired = requiresDimensions(expandedProduct, effectivePbv2Tree);
 
   const [widthText, setWidthText] = useState("");
   const [heightText, setHeightText] = useState("");
@@ -1461,8 +1465,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
     setDraftProductId(String(expandedItem.productId || ""));
     setDraftProductVariantId(normalizeVariantId(expandedItem.productVariantId));
-    setWidthText(String(expandedItem.width || 1));
-    setHeightText(String(expandedItem.height || 1));
+    const fixed = getPbv2FixedDimensions(effectivePbv2Tree);
+    setWidthText(String(fixed?.widthIn ?? expandedItem.width ?? 1));
+    setHeightText(String(fixed?.heightIn ?? expandedItem.height ?? 1));
     setQty(expandedItem.quantity || 1);
 
     const nextNotes =
@@ -1550,8 +1555,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           getPbv2SnapshotFromLineItem(expandedItem)?.treeVersionId ??
           ""
       ),
-      width: Number.parseFloat(expandedItem.width || "1") || 1,
-      height: Number.parseFloat(expandedItem.height || "1") || 1,
+      width: fixed?.widthIn ?? (Number.parseFloat(expandedItem.width || "1") || 1),
+      height: fixed?.heightIn ?? (Number.parseFloat(expandedItem.height || "1") || 1),
       quantity: expandedItem.quantity || 1,
       notes: nextNotes,
       productionNotes: nextProductionNotes,
@@ -1562,7 +1567,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       optionSelectionsV2: nextSelectionsV2.selected ?? {},
       totalPrice: currentTotal,
     };
-  }, [expandedItem?.id, onDraftLineItemPricingChange, resetPricingDirtyByUser]);
+  }, [expandedItem?.id, effectivePbv2Tree, onDraftLineItemPricingChange, resetPricingDirtyByUser]);
 
   // Hydrate PBV2 defaults from the product tree when a line item is first expanded
   // with no saved selections. resolveRuntimeVisibility computes effective defaults from
@@ -1627,8 +1632,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     orderId,
   ]);
 
-  const widthNum = dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
-  const heightNum = dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
+  const widthNum = fixedDimensions ? fixedDimensions.widthIn : dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
+  const heightNum = fixedDimensions ? fixedDimensions.heightIn : dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
   const qtyNum = Number.isFinite(qty) && qty > 0 ? qty : 1;
 
   const handleProductReplacement = useCallback((nextProductId: string) => {
