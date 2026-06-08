@@ -81,6 +81,7 @@ export const ProductForm = ({
   onPricingEngineChange,
   pbv2PricingMode,
   onPbv2PricingModeChange,
+  intakeDraftActivationLocked = false,
 }: {
   form: any;
   materials: any;
@@ -110,6 +111,7 @@ export const ProductForm = ({
   onPricingEngineChange?: (engine: "formulaLibrary" | "pricingProfile" | "pricingFormula") => void;
   pbv2PricingMode?: "basic" | "advanced";
   onPbv2PricingModeChange?: (mode: "basic" | "advanced") => void;
+  intakeDraftActivationLocked?: boolean;
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
@@ -468,6 +470,9 @@ export const ProductForm = ({
               onUpdateTier={onUpdatePricingV2Tier!}
               onDeleteTier={onDeletePricingV2Tier!}
             />
+            <div className="mt-2 text-[11px] text-slate-500">
+              Product Editor pricing changes are saved to the PBV2 draft tree when you click Save.
+            </div>
           </div>
 
           {/* RIGHT: Advanced Settings + Finished Size Rules */}
@@ -480,10 +485,15 @@ export const ProductForm = ({
                   <FormItem className="min-h-9">
                     <div className="flex items-center gap-2">
                       <FormControl>
-                        <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
+                        <Switch checked={field.value ?? true} onCheckedChange={field.onChange} disabled={intakeDraftActivationLocked} />
                       </FormControl>
                       <FormLabel className="text-sm text-slate-300 !mt-0">Active</FormLabel>
                     </div>
+                    {intakeDraftActivationLocked ? (
+                      <FormDescription className="text-xs text-amber-300">
+                        Product Intake drafts activate from the intake review after PBV2 publish.
+                      </FormDescription>
+                    ) : null}
                     <FormMessage />
                   </FormItem>
                 )}

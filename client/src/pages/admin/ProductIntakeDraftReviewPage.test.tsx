@@ -165,8 +165,8 @@ describe("ProductIntakeDraftReviewPage", () => {
     expect(container.textContent).toContain("Product inactive");
     expect(container.textContent).toContain("PBV2 DRAFT");
     expect(container.textContent).toContain("Publish the PBV2 draft before activating this product.");
-    expect(container.innerHTML).toContain("/products/prod_1/edit");
-    expect(container.innerHTML).toContain("/products/prod_1/builder-v2");
+    expect(container.innerHTML).toContain("/products/prod_1/edit?draftTreeVersionId=tree_1");
+    expect(container.innerHTML).toContain("/products/prod_1/builder-v2?draftTreeVersionId=tree_1");
 
     const activate = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Activate Product"));
     expect(activate?.hasAttribute("disabled")).toBe(true);

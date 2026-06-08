@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 
 export function ProductIntakeDraftBanner({ link }: { link: ProductIntakeDraftLink }) {
   const hasDraftTree = Boolean(link.pbv2TreeVersionId);
+  const draftTreeQuery = link.pbv2TreeVersionId ? `?draftTreeVersionId=${encodeURIComponent(link.pbv2TreeVersionId)}` : "";
   return (
     <Alert className="mb-4">
       <PackageCheck className="h-4 w-4" />
@@ -35,7 +36,7 @@ export function ProductIntakeDraftBanner({ link }: { link: ProductIntakeDraftLin
             </Button>
             {hasDraftTree ? (
               <Button asChild size="sm" variant="outline" className="gap-2">
-                <Link to={`/products/${link.productId}/builder-v2`}>
+                <Link to={`/products/${link.productId}/builder-v2${draftTreeQuery}`}>
                   <ExternalLink className="h-4 w-4" />
                   Open PBV2 Draft
                 </Link>

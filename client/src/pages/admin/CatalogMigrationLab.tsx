@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import {
   AlertTriangle,
   Brain,
@@ -61,6 +62,7 @@ import {
   resolveCatalogMigrationAnalyzerSource,
   type AnalyzerSourceKind,
 } from "./catalogMigrationLabSource";
+import { ROUTES } from "@/config/routes";
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -642,23 +644,23 @@ export function ProductIntakeQuestionsWizard({
               <div className="mt-3 flex flex-wrap gap-2">
                 {session?.id && (
                   <Button asChild size="sm" className="gap-2">
-                    <a href={`/admin/product-intake/sessions/${session.id}/review`}>
+                    <Link to={ROUTES.admin.productIntakeReview(session.id)}>
                       <ExternalLink className="h-4 w-4" />
                       Review Draft Product
-                    </a>
+                    </Link>
                   </Button>
                 )}
                 <Button asChild size="sm" variant="outline" className="gap-2">
-                  <a href={`/products/${draftProductId}/edit`}>
+                  <Link to={`/products/${draftProductId}/edit${draftTreeId ? `?draftTreeVersionId=${encodeURIComponent(draftTreeId)}` : ""}`}>
                     <ExternalLink className="h-4 w-4" />
-                    Open Product Shell
-                  </a>
+                    Open Full Draft Editor
+                  </Link>
                 </Button>
                 <Button asChild size="sm" variant="outline" className="gap-2">
-                  <a href={`/products/${draftProductId}/builder-v2`}>
+                  <Link to={`/products/${draftProductId}/builder-v2${draftTreeId ? `?draftTreeVersionId=${encodeURIComponent(draftTreeId)}` : ""}`}>
                     <ExternalLink className="h-4 w-4" />
                     Open PBV2 Draft
-                  </a>
+                  </Link>
                 </Button>
               </div>
             )}

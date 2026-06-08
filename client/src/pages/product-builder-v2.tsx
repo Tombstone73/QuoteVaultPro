@@ -4,11 +4,13 @@
  * This is the primary route for editing product option trees.
  */
 
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import PBV2ProductBuilderSectionV2 from '@/components/PBV2ProductBuilderSectionV2';
 
 export default function ProductBuilderV2Page() {
   const { productId } = useParams<{ productId: string }>();
+  const [searchParams] = useSearchParams();
+  const requestedDraftTreeVersionId = searchParams.get("draftTreeVersionId");
 
   if (!productId) {
     return (
@@ -23,7 +25,7 @@ export default function ProductBuilderV2Page() {
   // Full-screen builder with no constraints from parent layout
   return (
     <div className="w-full h-full">
-      <PBV2ProductBuilderSectionV2 productId={productId} />
+      <PBV2ProductBuilderSectionV2 productId={productId} requestedDraftTreeVersionId={requestedDraftTreeVersionId} />
     </div>
   );
 }

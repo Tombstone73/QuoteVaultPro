@@ -217,6 +217,7 @@ export default function ProductIntakeDraftReviewPage() {
 
   const sourcePreview = review.intake.sourceText || (review.intake.sourceJson ? JSON.stringify(review.intake.sourceJson, null, 2) : "No source payload recorded.");
   const findings = review.publishReadiness.findings;
+  const draftTreeQuery = review.pbv2Tree.id ? `?draftTreeVersionId=${encodeURIComponent(review.pbv2Tree.id)}` : "";
   const likelyMatrixPricing = Boolean(
     review.pbv2Tree.intakeSummary &&
     typeof review.pbv2Tree.intakeSummary === "object" &&
@@ -242,10 +243,10 @@ export default function ProductIntakeDraftReviewPage() {
           </div>
           <div className="flex flex-wrap gap-2">
             <Button asChild variant="outline" className="gap-2">
-              <Link to={`/products/${review.product.id}/edit`}><ExternalLink className="h-4 w-4" /> Edit Draft Product</Link>
+              <Link to={`/products/${review.product.id}/edit${draftTreeQuery}`}><ExternalLink className="h-4 w-4" /> Open Full Draft Editor</Link>
             </Button>
             <Button asChild variant="outline" className="gap-2">
-              <Link to={`/products/${review.product.id}/builder-v2`}><ExternalLink className="h-4 w-4" /> Edit PBV2 Draft</Link>
+              <Link to={`/products/${review.product.id}/builder-v2${draftTreeQuery}`}><ExternalLink className="h-4 w-4" /> PBV2-Only Builder</Link>
             </Button>
           </div>
         </div>
@@ -490,10 +491,10 @@ export default function ProductIntakeDraftReviewPage() {
             )}
             <div className="flex flex-wrap gap-2">
               <Button asChild variant="outline" className="gap-2">
-                <Link to={`/products/${review.product.id}/edit`}><ExternalLink className="h-4 w-4" /> Edit Draft Product</Link>
+                <Link to={`/products/${review.product.id}/edit${draftTreeQuery}`}><ExternalLink className="h-4 w-4" /> Open Full Draft Editor</Link>
               </Button>
               <Button asChild variant="outline" className="gap-2">
-                <Link to={`/products/${review.product.id}/builder-v2`}><ExternalLink className="h-4 w-4" /> Edit PBV2 Draft</Link>
+                <Link to={`/products/${review.product.id}/builder-v2${draftTreeQuery}`}><ExternalLink className="h-4 w-4" /> PBV2-Only Builder</Link>
               </Button>
               <Button type="button" variant="outline" className="gap-2" onClick={() => reviewQuery.refetch()} disabled={reviewQuery.isFetching}>
                 {reviewQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
