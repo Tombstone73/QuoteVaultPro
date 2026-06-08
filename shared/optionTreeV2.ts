@@ -304,7 +304,35 @@ export type OptionTreeV2 = {
         detectedQuantityBreaks: number[];
         detectedMaterials: string[];
         detectedPricingSignals: string[];
-        noMatrixRowsGenerated: true;
+        noMatrixRowsGenerated: boolean;
+      };
+      matrixDraft?: {
+        generatedByAI: true;
+        reviewRequired: true;
+        matrixConfidence: number;
+        generationReasoning: string[];
+        sourceSignals: string[];
+        dimensions: string[];
+        tiers: Array<{
+          id: string;
+          label: string;
+          minQty: number;
+          maxQty: number | null;
+        }>;
+        rows: Array<{
+          id: string;
+          label: string;
+          when: Record<string, unknown>;
+          prices: Array<{
+            tierId: string;
+            label: string;
+            minQty: number;
+            perPieceCents?: number | null;
+            perSqftCents?: number | null;
+            minimumChargeCents?: number | null;
+          }>;
+        }>;
+        warnings: string[];
       };
       pricingWarnings?: string[];
       materialMatch?: {
@@ -628,7 +656,35 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
           detectedQuantityBreaks: z.array(z.number().int().positive()),
           detectedMaterials: z.array(z.string()),
           detectedPricingSignals: z.array(z.string()),
-          noMatrixRowsGenerated: z.literal(true),
+          noMatrixRowsGenerated: z.boolean(),
+        }).optional(),
+        matrixDraft: z.object({
+          generatedByAI: z.literal(true),
+          reviewRequired: z.literal(true),
+          matrixConfidence: z.number().min(0).max(100),
+          generationReasoning: z.array(z.string()),
+          sourceSignals: z.array(z.string()),
+          dimensions: z.array(z.string()),
+          tiers: z.array(z.object({
+            id: z.string(),
+            label: z.string(),
+            minQty: z.number().int().positive(),
+            maxQty: z.number().int().positive().nullable(),
+          })),
+          rows: z.array(z.object({
+            id: z.string(),
+            label: z.string(),
+            when: z.record(z.unknown()),
+            prices: z.array(z.object({
+              tierId: z.string(),
+              label: z.string(),
+              minQty: z.number().int().positive(),
+              perPieceCents: z.number().int().positive().nullable().optional(),
+              perSqftCents: z.number().int().positive().nullable().optional(),
+              minimumChargeCents: z.number().int().positive().nullable().optional(),
+            })),
+          })),
+          warnings: z.array(z.string()),
         }).optional(),
         pricingWarnings: z.array(z.string()).optional(),
         materialMatch: z.object({

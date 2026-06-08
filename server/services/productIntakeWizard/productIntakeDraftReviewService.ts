@@ -9,7 +9,12 @@ import {
 import { validateTreeForPublish, DEFAULT_VALIDATE_OPTS } from "@shared/pbv2/validator";
 import { validateTreeHasBasePrice } from "@shared/pbv2/validator/validateBasePrice";
 import type { Finding } from "@shared/pbv2/findings";
-import { productIntakeMatrixReadinessSchema, type ProductIntakeMatrixReadiness } from "@shared/productIntakeWizardSchemas";
+import {
+  productIntakeMatrixDraftSchema,
+  productIntakeMatrixReadinessSchema,
+  type ProductIntakeMatrixDraft,
+  type ProductIntakeMatrixReadiness,
+} from "@shared/productIntakeWizardSchemas";
 import { db as defaultDb } from "../../db";
 import { ProductIntakeSessionError } from "./productIntakeSessionService";
 
@@ -51,6 +56,7 @@ export type ProductIntakeDraftReview = {
     draftQuality: unknown | null;
     intakeSummary: unknown | null;
     matrixReadiness: ProductIntakeMatrixReadiness | null;
+    matrixPreview: ProductIntakeMatrixDraft | null;
     basePricing: {
       perSqftCents: number | null;
       perPieceCents: number | null;
@@ -152,7 +158,13 @@ function matrixReadinessFromTree(treeJson: any): ProductIntakeMatrixReadiness | 
   return parsedLegacy.success ? parsedLegacy.data : null;
 }
 
-function summarizeTree(treeJson: any): Pick<ProductIntakeDraftReview["pbv2Tree"], "groupCount" | "optionCount" | "optionGroups" | "draftQuality" | "intakeSummary" | "matrixReadiness" | "basePricing"> {
+function matrixPreviewFromTree(treeJson: any): ProductIntakeMatrixDraft | null {
+  const candidate = treeJson?.meta?.productIntake?.matrixDraft;
+  const parsed = productIntakeMatrixDraftSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : null;
+}
+
+function summarizeTree(treeJson: any): Pick<ProductIntakeDraftReview["pbv2Tree"], "groupCount" | "optionCount" | "optionGroups" | "draftQuality" | "intakeSummary" | "matrixReadiness" | "matrixPreview" | "basePricing"> {
   const nodes = treeJson?.nodes && typeof treeJson.nodes === "object" ? treeJson.nodes : {};
   const edges = Array.isArray(treeJson?.edges) ? treeJson.edges : [];
   const groups = Object.values(nodes).filter((node: any) => String(node?.type ?? "").toUpperCase() === "GROUP");
@@ -177,6 +189,7 @@ function summarizeTree(treeJson: any): Pick<ProductIntakeDraftReview["pbv2Tree"]
     draftQuality: treeJson?.meta?.productIntake?.draftQuality ?? null,
     intakeSummary: treeJson?.meta?.productIntake ?? null,
     matrixReadiness: matrixReadinessFromTree(treeJson),
+    matrixPreview: matrixPreviewFromTree(treeJson),
     basePricing: basePricingFromTree(treeJson),
   };
 }

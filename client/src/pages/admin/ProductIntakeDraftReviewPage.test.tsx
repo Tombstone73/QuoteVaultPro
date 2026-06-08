@@ -89,6 +89,7 @@ function reviewFixture(overrides: Partial<ProductIntakeDraftReview> = {}): Produ
         detectedPricingSignals: ["Quantity tier pricing present."],
         noMatrixRowsGenerated: true,
       },
+      matrixPreview: null,
       basePricing: { perSqftCents: null, perPieceCents: null, minimumChargeCents: null },
     },
     publishReadiness: {
@@ -194,6 +195,68 @@ describe("ProductIntakeDraftReviewPage", () => {
 
     const activate = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Activate Product"));
     expect(activate?.hasAttribute("disabled")).toBe(true);
+
+    act(() => root.unmount());
+  });
+
+  test("renders generated matrix preview rows and values", async () => {
+    const { container, root } = await renderPage(reviewFixture({
+      pbv2Tree: {
+        ...reviewFixture().pbv2Tree,
+        matrixReadiness: {
+          ...reviewFixture().pbv2Tree.matrixReadiness!,
+          matrixDimensions: ["printed_sides", "quantity"],
+          noMatrixRowsGenerated: false,
+          matrixConfidence: 95,
+          recommendedSetup: "AI generated a PBV2 pricing matrix draft from explicit source tiers and prices. Review all rows in the PBV2 builder before publish.",
+        },
+        matrixPreview: {
+          generatedByAI: true,
+          reviewRequired: true,
+          matrixConfidence: 95,
+          generationReasoning: ["Every generated row included every detected quantity tier price."],
+          sourceSignals: ["Printed Sides rows matched explicit price values for 3 quantity tiers."],
+          dimensions: ["printed_sides"],
+          tiers: [
+            { id: "qty_1_100", label: "1-100", minQty: 1, maxQty: 100 },
+            { id: "qty_101_500", label: "101-500", minQty: 101, maxQty: 500 },
+            { id: "qty_501", label: "501+", minQty: 501, maxQty: null },
+          ],
+          rows: [
+            {
+              id: "preview_single_sided",
+              label: "Single Sided",
+              when: { printed_sides: "single_sided" },
+              prices: [
+                { tierId: "qty_1_100", label: "1-100", minQty: 1, perPieceCents: 440 },
+                { tierId: "qty_101_500", label: "101-500", minQty: 101, perPieceCents: 330 },
+                { tierId: "qty_501", label: "501+", minQty: 501, perPieceCents: 300 },
+              ],
+            },
+            {
+              id: "preview_double_sided",
+              label: "Double Sided",
+              when: { printed_sides: "double_sided" },
+              prices: [
+                { tierId: "qty_1_100", label: "1-100", minQty: 1, perPieceCents: 550 },
+                { tierId: "qty_101_500", label: "101-500", minQty: 101, perPieceCents: 440 },
+                { tierId: "qty_501", label: "501+", minQty: 501, perPieceCents: 400 },
+              ],
+            },
+          ],
+          warnings: ["AI generated this pricing matrix as an inactive draft artifact only."],
+        },
+      },
+    }));
+
+    expect(container.textContent).toContain("Matrix Preview");
+    expect(container.textContent).toContain("AI Generated");
+    expect(container.textContent).toContain("Review Required");
+    expect(container.textContent).toContain("Single Sided");
+    expect(container.textContent).toContain("Double Sided");
+    expect(container.textContent).toContain("$4.40/ea");
+    expect(container.textContent).toContain("$5.50/ea");
+    expect(container.textContent).toContain("Matrix draft generated");
 
     act(() => root.unmount());
   });
