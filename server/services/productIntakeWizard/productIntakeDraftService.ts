@@ -12,6 +12,7 @@ import {
   productIntakeBriefSchema,
   productIntakeSessionSchema,
   type ProductIntakeBrief,
+  type ProductIntakeDraftQuality,
   type ProductIntakeOption,
   type ProductIntakeSession,
 } from "@shared/productIntakeWizardSchemas";
@@ -20,7 +21,7 @@ import { cloneTemplateIntoTree } from "@shared/pbv2/optionGroupTemplates";
 import { db as defaultDb } from "../../db";
 import { ProductIntakeSessionError } from "./productIntakeSessionService";
 
-type TemplateRow = {
+export type ProductIntakeDraftTemplateRow = {
   id: string;
   templateTree: Record<string, any>;
 };
@@ -28,6 +29,7 @@ type TemplateRow = {
 export type ProductIntakeDraftCreationResult = {
   productId: string;
   pbv2TreeVersionId: string;
+  draftQuality: ProductIntakeDraftQuality;
   session: ProductIntakeSession;
 };
 
@@ -90,6 +92,9 @@ function uniqueKey(base: string, used: Set<string>): string {
   return candidate;
 }
 
+const TRUE_CONDITION = { op: "EXISTS", value: { op: "literal", value: true } };
+const PRODUCT_INTAKE_TEMPLATE_REUSE_THRESHOLD = 0.85;
+
 function optionChoices(option: ProductIntakeOption): Array<{ value: string; label: string; sortOrder: number }> {
   const seen = new Set<string>();
   return option.sampleValues
@@ -103,6 +108,38 @@ function optionChoices(option: ProductIntakeOption): Array<{ value: string; labe
     .slice(0, 30);
 }
 
+type DraftGroupKey = "size_quantity" | "print_setup" | "finishing" | "hardware" | "materials" | "review";
+type SizeMode = "fixed_dropdown" | "custom_dimension" | "none";
+
+const DRAFT_GROUPS: Record<DraftGroupKey, { id: string; label: string; sortOrder: number }> = {
+  size_quantity: { id: "group_size_quantity", label: "Size & Quantity", sortOrder: 10 },
+  print_setup: { id: "group_print_setup", label: "Print Setup", sortOrder: 20 },
+  finishing: { id: "group_finishing", label: "Finishing", sortOrder: 30 },
+  hardware: { id: "group_hardware", label: "Hardware", sortOrder: 40 },
+  materials: { id: "group_materials", label: "Materials", sortOrder: 50 },
+  review: { id: "group_review", label: "Review", sortOrder: 90 },
+};
+
+function ensureGroup(tree: OptionTreeV2, groupKey: DraftGroupKey, usedNodeIds: Set<string>): string {
+  const group = DRAFT_GROUPS[groupKey];
+  if (!tree.nodes[group.id]) {
+    usedNodeIds.add(group.id);
+    tree.nodes[group.id] = {
+      id: group.id,
+      kind: "group",
+      type: "GROUP",
+      status: "ENABLED",
+      key: group.id,
+      label: group.label,
+      ui: { sortOrder: group.sortOrder, layoutHint: "stack" },
+    };
+  }
+  if (!tree.rootNodeIds.includes(group.id)) {
+    tree.rootNodeIds.push(group.id);
+  }
+  return group.id;
+}
+
 function addQuestionNode(args: {
   tree: OptionTreeV2;
   key: string;
@@ -111,9 +148,12 @@ function addQuestionNode(args: {
   required: boolean;
   choices?: Array<{ value: string; label: string; sortOrder?: number }>;
   usedNodeIds: Set<string>;
+  usedEdgeIds: Set<string>;
+  groupKey: DraftGroupKey;
   sortOrder: number;
 }) {
   const nodeId = uniqueKey(`intake_${safeKey(args.key, "option")}`, args.usedNodeIds);
+  const groupId = ensureGroup(args.tree, args.groupKey, args.usedNodeIds);
   args.tree.nodes[nodeId] = {
     id: nodeId,
     kind: "question",
@@ -132,12 +172,37 @@ function addQuestionNode(args: {
     },
     ...(args.choices && args.choices.length > 0 ? { choices: args.choices } : {}),
   };
-  args.tree.rootNodeIds.push(nodeId);
+  args.tree.edges = args.tree.edges ?? [];
+  args.tree.edges.push({
+    id: uniqueKey(`edge_${groupId}_${nodeId}`, args.usedEdgeIds),
+    fromNodeId: groupId,
+    toNodeId: nodeId,
+    status: "DISABLED",
+    priority: args.sortOrder,
+    condition: TRUE_CONDITION,
+  });
 }
 
-function shouldCollectDimensions(brief: ProductIntakeBrief): boolean {
+function isSizeOption(option: ProductIntakeOption): boolean {
+  const text = `${option.label} ${option.normalizedGroup}`.toLowerCase();
+  return /\b(size|sizes|dimension|dimensions|width|height)\b/.test(text);
+}
+
+function hasFixedSizeChoices(option: ProductIntakeOption | null): boolean {
+  if (!option) return false;
+  const choices = option.sampleValues.map((value) => value.trim()).filter(Boolean);
+  if (choices.length < 2) return false;
+  return choices.some((value) => /\d+(\.\d+)?\s*(x|×|by)\s*\d+(\.\d+)?/i.test(value)) || choices.length >= 2;
+}
+
+function resolveSizeMode(brief: ProductIntakeBrief, sizeOption: ProductIntakeOption | null): SizeMode {
   const text = `${brief.sizeBehavior.behavior} ${brief.sizeBehavior.notes ?? ""}`.toLowerCase();
-  return /custom|size|dimension|area|sqft|square|width|height|sheet/.test(text);
+  const custom = /custom|dimension|width|height|area|sqft|square|linear/.test(text);
+  const fixed = /fixed|standard|preset|predefined|dropdown|list|sizes/.test(text) || hasFixedSizeChoices(sizeOption);
+  if (fixed && !custom) return "fixed_dropdown";
+  if (custom) return "custom_dimension";
+  if (fixed) return "fixed_dropdown";
+  return "none";
 }
 
 function shouldCollectQuantity(brief: ProductIntakeBrief): boolean {
@@ -152,11 +217,15 @@ function pricingModeForBrief(brief: ProductIntakeBrief): "area" | "quantity" | "
   return "area";
 }
 
+function isReusableTemplateMatch(match: ProductIntakeBrief["templateMatches"][number]): boolean {
+  return match.recommendation === "suggest_reuse" && match.score >= PRODUCT_INTAKE_TEMPLATE_REUSE_THRESHOLD;
+}
+
 function collectTemplateIds(brief: ProductIntakeBrief): string[] {
   const ids = new Set<string>();
   const collect = (matches: ProductIntakeBrief["templateMatches"]) => {
     for (const match of matches) {
-      if (match.recommendation === "suggest_reuse") ids.add(match.templateId);
+      if (isReusableTemplateMatch(match)) ids.add(match.templateId);
     }
   };
   collect(brief.templateMatches);
@@ -164,14 +233,140 @@ function collectTemplateIds(brief: ProductIntakeBrief): string[] {
   return Array.from(ids).slice(0, 20);
 }
 
-function applyTemplateMatches(tree: OptionTreeV2, brief: ProductIntakeBrief, templates: TemplateRow[]): OptionTreeV2 {
+function applyTemplateMatches(tree: OptionTreeV2, templates: ProductIntakeDraftTemplateRow[]): { tree: OptionTreeV2; reusedTemplateIds: Set<string> } {
   let current: OptionTreeV2 = tree;
+  const reusedTemplateIds = new Set<string>();
   for (const template of templates) {
     const cloned = cloneTemplateIntoTree(current, template.templateTree, { sourceTemplateId: template.id });
     if (!cloned.ok) continue;
     current = cloned.tree as OptionTreeV2;
+    reusedTemplateIds.add(template.id);
   }
-  return current;
+  return { tree: current, reusedTemplateIds };
+}
+
+function optionUsesReusedTemplate(option: ProductIntakeOption, reusedTemplateIds: Set<string>): boolean {
+  return option.templateMatches.some((match) => isReusableTemplateMatch(match) && reusedTemplateIds.has(match.templateId));
+}
+
+function classifyOptionGroup(option: ProductIntakeOption): DraftGroupKey {
+  const text = `${option.label} ${option.normalizedGroup}`.toLowerCase();
+  if (/material|substrate|stock/.test(text)) return "materials";
+  if (/side|sides|print|color|white ink|ink/.test(text)) return "print_setup";
+  if (/stake|h-wire|h wire|standoff|stand off|hardware|frame|grommet stake/.test(text)) return "hardware";
+  if (/grommet|pole pocket|pocket|laminate|lamination|contour|cut|rounded|corner|hem|sew|finish|shape/.test(text)) return "finishing";
+  return "finishing";
+}
+
+function conceptKeyForOption(option: ProductIntakeOption): string {
+  const key = safeKey(option.normalizedGroup || option.label, "option");
+  if (/printed?_?sides?|sides?/.test(key)) return "printed_sides";
+  if (/grommet/.test(key)) return "grommets";
+  if (/pole.*pocket|pocket/.test(key)) return "pole_pockets";
+  if (/laminat/.test(key)) return "laminate";
+  if (/contour|cut_type|die_cut|kiss_cut/.test(key)) return "cut_type";
+  if (/h_?wire|stake/.test(key)) return "h_wire_stakes";
+  if (/material|substrate/.test(key)) return "material";
+  if (/size|dimension|width|height/.test(key)) return "size";
+  return key;
+}
+
+function collectTreeConcepts(tree: OptionTreeV2): Set<string> {
+  const concepts = new Set<string>();
+  for (const node of Object.values(tree.nodes)) {
+    const raw = String(node.input?.selectionKey ?? node.key ?? node.label ?? "");
+    if (raw) concepts.add(safeKey(raw, "concept"));
+  }
+  return concepts;
+}
+
+function bestMaterialMatch(brief: ProductIntakeBrief) {
+  return brief.materialAnalysis.likelyMaterialMatches
+    .filter((match) => match.materialId)
+    .sort((a, b) => b.confidence - a.confidence)[0] ?? null;
+}
+
+function assessDraftQuality(args: {
+  brief: ProductIntakeBrief;
+  tree: OptionTreeV2;
+  sizeMode: SizeMode;
+  skippedTemplateOptionCount: number;
+  requestedTemplateCount: number;
+  reusedTemplateCount: number;
+}): ProductIntakeDraftQuality {
+  let score = 100;
+  const reasons: string[] = [];
+  const warnings: string[] = [];
+  const nodes = Object.values(args.tree.nodes);
+  const inputNodes = nodes.filter((node) => node.kind === "question" || String(node.type ?? "").toUpperCase() === "INPUT");
+  const selectionKeys = inputNodes.map((node) => String(node.input?.selectionKey ?? node.key ?? node.id));
+  const labels = inputNodes.map((node) => safeKey(String(node.label ?? ""), "option"));
+  const duplicateSelectionKeys = selectionKeys.filter((key, index) => selectionKeys.indexOf(key) !== index);
+  const duplicateLabels = labels.filter((label, index) => labels.indexOf(label) !== index);
+  const hasDimensionSize = inputNodes.some((node) => (node.input?.selectionKey === "size" || node.key === "size") && node.input?.type === "dimension");
+  const hasDropdownSize = inputNodes.some((node) => (node.input?.selectionKey === "size" || node.key === "size") && node.input?.type === "select");
+  const groupNodes = nodes.filter((node) => String(node.type ?? "").toUpperCase() === "GROUP");
+  const ungroupedQuestionRoots = args.tree.rootNodeIds.some((nodeId) => {
+    const node = args.tree.nodes[nodeId];
+    return node && String(node.type ?? "").toUpperCase() !== "GROUP";
+  });
+
+  if (duplicateSelectionKeys.length > 0) {
+    score -= 15;
+    warnings.push("Duplicate option selection keys detected.");
+  }
+  if (duplicateLabels.length > 0) {
+    score -= 10;
+    warnings.push("Duplicate option concepts detected.");
+  }
+  if (hasDimensionSize && hasDropdownSize) {
+    score -= 25;
+    warnings.push("Conflicting size controls detected.");
+  }
+  if (!bestMaterialMatch(args.brief) || args.brief.materialAnalysis.confidence < 65) {
+    score -= 15;
+    warnings.push("Material match needs review.");
+  }
+  if (args.brief.pricingAnalysis.behavior === "unknown" || args.brief.pricingAnalysis.confidence < 65) {
+    score -= 15;
+    warnings.push("Pricing setup required.");
+  }
+  const unresolvedRequired = args.brief.missingDecisions.filter((decision) => decision.severity === "blocker");
+  if (unresolvedRequired.length > 0) {
+    score -= 20;
+    warnings.push(`${unresolvedRequired.length} required decision(s) remain unresolved.`);
+  }
+  const templateAmbiguity = [
+    ...args.brief.templateMatches,
+    ...args.brief.requiredOptions.flatMap((option) => option.templateMatches),
+    ...args.brief.optionalOptions.flatMap((option) => option.templateMatches),
+  ].filter((match) => match.recommendation === "review_required");
+  if (templateAmbiguity.length > 0) {
+    score -= 10;
+    warnings.push("Template ambiguity needs review.");
+  }
+  if (groupNodes.length < 2 || ungroupedQuestionRoots) {
+    score -= 10;
+    warnings.push("Option group organization needs review.");
+  }
+  if (args.requestedTemplateCount > args.reusedTemplateCount) {
+    score -= 5;
+    warnings.push("One or more reusable templates could not be applied.");
+  }
+
+  if (args.sizeMode === "fixed_dropdown") reasons.push("Fixed size list produced a Size dropdown only.");
+  if (args.sizeMode === "custom_dimension") reasons.push("Custom size behavior produced a Size dimension input only.");
+  if (args.skippedTemplateOptionCount > 0) reasons.push(`${args.skippedTemplateOptionCount} generic option(s) skipped because reusable templates were applied.`);
+  if (groupNodes.length >= 2 && !ungroupedQuestionRoots) reasons.push("Options were organized into logical PBV2 groups.");
+  if (warnings.length === 0) reasons.push("No draft quality penalties detected.");
+
+  const normalizedScore = Math.max(0, Math.min(100, Math.round(score)));
+  return {
+    score: normalizedScore,
+    label: normalizedScore >= 90 ? "Excellent" : normalizedScore >= 75 ? "Good" : "Needs Review",
+    reasons,
+    warnings,
+  };
 }
 
 export function buildProductIntakeDraftTree(args: {
@@ -179,11 +374,15 @@ export function buildProductIntakeDraftTree(args: {
   sessionId: string;
   productName: string;
   userId: string | null;
-  templates?: TemplateRow[];
+  templates?: ProductIntakeDraftTemplateRow[];
   now?: Date;
 }): OptionTreeV2 {
   const now = args.now ?? new Date();
   const usedNodeIds = new Set<string>();
+  const usedEdgeIds = new Set<string>();
+  const sizeOption = [...args.brief.requiredOptions, ...args.brief.optionalOptions].find(isSizeOption) ?? null;
+  const sizeMode = resolveSizeMode(args.brief, sizeOption);
+  const materialMatch = bestMaterialMatch(args.brief);
   let tree: OptionTreeV2 = {
     schemaVersion: 2,
     rootNodeIds: [],
@@ -200,16 +399,40 @@ export function buildProductIntakeDraftTree(args: {
         tierBasis: "line_item_quantity",
         base: {},
       },
-      requiresDimensions: shouldCollectDimensions(args.brief),
+      requiresDimensions: sizeMode === "custom_dimension",
+      productIntake: {
+        sessionId: args.sessionId,
+        productName: args.productName,
+        confidence: args.brief.overallConfidence,
+        sizeMode,
+        materialMatch: materialMatch ? {
+          materialId: materialMatch.materialId,
+          sku: materialMatch.sku,
+          name: materialMatch.name,
+          confidence: materialMatch.confidence,
+        } : null,
+        missingDecisions: args.brief.missingDecisions.map((decision) => ({
+          id: decision.id,
+          question: decision.question,
+          severity: decision.severity,
+        })),
+      },
     },
   };
 
-  tree = applyTemplateMatches(tree, args.brief, args.templates ?? []);
+  const requestedTemplateCount = collectTemplateIds(args.brief).length;
+  const templateResult = applyTemplateMatches(tree, args.templates ?? []);
+  tree = templateResult.tree;
+  const reusedTemplateIds = templateResult.reusedTemplateIds;
   usedNodeIds.clear();
   Object.keys(tree.nodes).forEach((nodeId) => usedNodeIds.add(nodeId));
+  (tree.edges ?? []).forEach((edge) => {
+    if (edge.id) usedEdgeIds.add(edge.id);
+  });
+  const templateConcepts = collectTreeConcepts(tree);
 
   let sortOrder = tree.rootNodeIds.length + 1;
-  if (shouldCollectDimensions(args.brief)) {
+  if (sizeMode === "custom_dimension") {
     addQuestionNode({
       tree,
       key: "size",
@@ -217,6 +440,22 @@ export function buildProductIntakeDraftTree(args: {
       inputType: "dimension",
       required: true,
       usedNodeIds,
+      usedEdgeIds,
+      groupKey: "size_quantity",
+      sortOrder: sortOrder++,
+    });
+  } else if (sizeMode === "fixed_dropdown" && sizeOption) {
+    const choices = optionChoices(sizeOption);
+    addQuestionNode({
+      tree,
+      key: "size",
+      label: "Size",
+      inputType: choices.length > 0 ? "select" : "boolean",
+      required: sizeOption.required,
+      choices: choices.length > 0 ? choices : undefined,
+      usedNodeIds,
+      usedEdgeIds,
+      groupKey: "size_quantity",
       sortOrder: sortOrder++,
     });
   }
@@ -229,11 +468,19 @@ export function buildProductIntakeDraftTree(args: {
       inputType: "number",
       required: true,
       usedNodeIds,
+      usedEdgeIds,
+      groupKey: "size_quantity",
       sortOrder: sortOrder++,
     });
   }
 
+  let skippedTemplateOptionCount = 0;
   for (const option of [...args.brief.requiredOptions, ...args.brief.optionalOptions]) {
+    if (isSizeOption(option)) continue;
+    if (optionUsesReusedTemplate(option, reusedTemplateIds) || templateConcepts.has(conceptKeyForOption(option))) {
+      skippedTemplateOptionCount += 1;
+      continue;
+    }
     const key = safeKey(option.normalizedGroup || option.label, "option");
     const choices = optionChoices(option);
     addQuestionNode({
@@ -244,6 +491,8 @@ export function buildProductIntakeDraftTree(args: {
       required: option.required,
       choices: choices.length > 0 ? choices : undefined,
       usedNodeIds,
+      usedEdgeIds,
+      groupKey: classifyOptionGroup(option),
       sortOrder: sortOrder++,
     });
   }
@@ -256,9 +505,31 @@ export function buildProductIntakeDraftTree(args: {
       inputType: "boolean",
       required: true,
       usedNodeIds,
+      usedEdgeIds,
+      groupKey: "review",
       sortOrder,
     });
   }
+
+  const draftQuality = assessDraftQuality({
+    brief: args.brief,
+    tree,
+    sizeMode,
+    skippedTemplateOptionCount,
+    requestedTemplateCount,
+    reusedTemplateCount: reusedTemplateIds.size,
+  });
+  tree.meta = {
+    ...(tree.meta ?? {}),
+    productIntake: {
+      ...(tree.meta?.productIntake ?? {
+        sessionId: args.sessionId,
+        productName: args.productName,
+        confidence: args.brief.overallConfidence,
+      }),
+      draftQuality,
+    },
+  };
 
   const validation = validateOptionTreeV2(tree);
   if (!validation.ok) {
@@ -365,6 +636,10 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
           templates: templateRows,
           now,
         });
+        const draftQuality = treeJson.meta?.productIntake?.draftQuality;
+        if (!draftQuality) {
+          throw new ProductIntakeSessionError(500, "Generated PBV2 draft tree is missing draft quality metadata.", "PBV2_DRAFT_INVALID");
+        }
 
         await tx.insert(products).values(productValues);
         await tx.insert(pbv2TreeVersions).values({
@@ -417,12 +692,14 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
             productIsActive: false,
             pbv2Status: "DRAFT",
             activeTreeAssigned: false,
+            draftQuality,
           },
         });
 
         return {
           productId,
           pbv2TreeVersionId,
+          draftQuality,
           session: mapSession(updatedSessionRow),
         };
       });

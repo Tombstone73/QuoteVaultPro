@@ -255,6 +255,29 @@ export type OptionTreeV2 = {
     shippingConfig?: ShippingConfig;
     productImages?: ProductImage[];
     requiresDimensions?: boolean; // Default true if missing (product requires W x H)
+    productIntake?: {
+      sessionId: string;
+      productName: string;
+      confidence: number;
+      sizeMode?: "fixed_dropdown" | "custom_dimension" | "none";
+      materialMatch?: {
+        materialId: string | null;
+        sku: string | null;
+        name: string;
+        confidence: number;
+      } | null;
+      missingDecisions?: Array<{
+        id: string;
+        question: string;
+        severity: "blocker" | "review" | "info";
+      }>;
+      draftQuality?: {
+        label: "Excellent" | "Good" | "Needs Review";
+        score: number;
+        reasons: string[];
+        warnings: string[];
+      };
+    };
   };
 };
 
@@ -510,6 +533,29 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
       shippingConfig: shippingConfigSchema.optional(),
       productImages: z.array(productImageSchema).optional(),
       requiresDimensions: z.boolean().optional(),
+      productIntake: z.object({
+        sessionId: z.string(),
+        productName: z.string(),
+        confidence: z.number().min(0).max(100),
+        sizeMode: z.enum(["fixed_dropdown", "custom_dimension", "none"]).optional(),
+        materialMatch: z.object({
+          materialId: z.string().nullable(),
+          sku: z.string().nullable(),
+          name: z.string(),
+          confidence: z.number().min(0).max(100),
+        }).nullable().optional(),
+        missingDecisions: z.array(z.object({
+          id: z.string(),
+          question: z.string(),
+          severity: z.enum(["blocker", "review", "info"]),
+        })).optional(),
+        draftQuality: z.object({
+          label: z.enum(["Excellent", "Good", "Needs Review"]),
+          score: z.number().int().min(0).max(100),
+          reasons: z.array(z.string()),
+          warnings: z.array(z.string()),
+        }).optional(),
+      }).optional(),
     })
     .optional(),
 });

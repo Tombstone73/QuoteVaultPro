@@ -428,10 +428,20 @@ describe("Product Intake session UI", () => {
         onAnswerChange={() => undefined}
         onSave={() => undefined}
         onAbandon={() => undefined}
+        draftQuality={{
+          label: "Good",
+          score: 86,
+          reasons: ["Options were organized into logical PBV2 groups."],
+          warnings: ["Pricing setup required."],
+        }}
       />,
     );
 
     expect(html).toContain("Draft Product Created");
+    expect(html).toContain("Draft Quality");
+    expect(html).toContain("Good");
+    expect(html).toContain("86/100");
+    expect(html).toContain("Pricing setup required.");
     expect(html).toContain("prod_1");
     expect(html).toContain("tree_1");
     expect(html).toContain("/products/prod_1/edit");

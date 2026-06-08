@@ -25,6 +25,7 @@ import type {
   ProductIntakeReadiness,
   ProductIntakeSession,
   ProductIntakeCreateDraftResponse,
+  ProductIntakeDraftQuality,
   ProductIntakeSessionDetail,
 } from "@shared/productIntakeWizardSchemas";
 import { apiRequest } from "@/lib/queryClient";
@@ -513,6 +514,7 @@ export function ProductIntakeQuestionsWizard({
   onSave,
   onAbandon,
   onCreateDraft,
+  draftQuality,
   isSaving = false,
   isAbandoning = false,
   isCreatingDraft = false,
@@ -526,6 +528,7 @@ export function ProductIntakeQuestionsWizard({
   onSave: () => void;
   onAbandon: () => void;
   onCreateDraft?: () => void;
+  draftQuality?: ProductIntakeDraftQuality | null;
   isSaving?: boolean;
   isAbandoning?: boolean;
   isCreatingDraft?: boolean;
@@ -626,6 +629,25 @@ export function ProductIntakeQuestionsWizard({
                     Open PBV2 Draft
                   </a>
                 </Button>
+              </div>
+            )}
+            {draftQuality && (
+              <div className="mt-3 rounded border bg-background/60 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">Draft Quality</span>
+                  <Badge variant={draftQuality.label === "Needs Review" ? "outline" : "secondary"}>{draftQuality.label}</Badge>
+                  <Badge variant="outline">{draftQuality.score}/100</Badge>
+                </div>
+                {draftQuality.reasons.length > 0 && (
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    {draftQuality.reasons.slice(0, 3).join("; ")}
+                  </div>
+                )}
+                {draftQuality.warnings.length > 0 && (
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-amber-700 dark:text-amber-300">
+                    {draftQuality.warnings.slice(0, 5).map((warning) => <li key={warning}>{warning}</li>)}
+                  </ul>
+                )}
               </div>
             )}
           </div>
@@ -1393,6 +1415,7 @@ export default function CatalogMigrationLab() {
   const [productDescription, setProductDescription] = useState("");
   const [intakeBrief, setIntakeBrief] = useState<ProductIntakeBrief | null>(null);
   const [intakeSessionDetail, setIntakeSessionDetail] = useState<ProductIntakeSessionDetail | null>(null);
+  const [createdDraftQuality, setCreatedDraftQuality] = useState<ProductIntakeDraftQuality | null>(null);
   const [answerDrafts, setAnswerDrafts] = useState<Record<string, unknown>>({});
   const [intakeRunState, setIntakeRunState] = useState<ProductIntakeRunState>(() => initialProductIntakeRunState());
   const [intakeRunNow, setIntakeRunNow] = useState(() => Date.now());
@@ -1594,6 +1617,7 @@ export default function CatalogMigrationLab() {
           answers: result.answers,
           readiness: result.readiness,
         });
+        setCreatedDraftQuality(null);
         setAnalysisTab("intake-brief");
         void sessionsQuery.refetch();
       }
@@ -1651,6 +1675,7 @@ export default function CatalogMigrationLab() {
     onSuccess: (detail) => {
       setIntakeSessionDetail(detail);
       setIntakeBrief(detail.brief);
+      setCreatedDraftQuality(null);
       setAnalysisTab("intake-brief");
       toast({
         title: "Product Intake session opened",
@@ -1683,6 +1708,7 @@ export default function CatalogMigrationLab() {
     onSuccess: (detail) => {
       setIntakeSessionDetail(detail);
       setIntakeBrief(detail.brief);
+      setCreatedDraftQuality(null);
       void sessionsQuery.refetch();
       toast({
         title: "Answers saved",
@@ -1709,6 +1735,7 @@ export default function CatalogMigrationLab() {
     onSuccess: (detail) => {
       setIntakeSessionDetail(detail);
       setIntakeBrief(detail.brief);
+      setCreatedDraftQuality(null);
       void sessionsQuery.refetch();
       toast({
         title: "Session abandoned",
@@ -1735,6 +1762,7 @@ export default function CatalogMigrationLab() {
     onSuccess: (data) => {
       setIntakeSessionDetail(data.detail);
       setIntakeBrief(data.detail.brief);
+      setCreatedDraftQuality(data.draftQuality);
       void sessionsQuery.refetch();
       toast({
         title: "Draft product created",
@@ -2087,6 +2115,7 @@ export default function CatalogMigrationLab() {
                 onSave={() => saveAnswersMutation.mutate()}
                 onAbandon={() => abandonSessionMutation.mutate()}
                 onCreateDraft={() => createDraftMutation.mutate()}
+                draftQuality={createdDraftQuality}
                 isSaving={saveAnswersMutation.isPending}
                 isAbandoning={abandonSessionMutation.isPending}
                 isCreatingDraft={createDraftMutation.isPending}
@@ -2373,6 +2402,7 @@ export default function CatalogMigrationLab() {
                       onSave={() => saveAnswersMutation.mutate()}
                       onAbandon={() => abandonSessionMutation.mutate()}
                       onCreateDraft={() => createDraftMutation.mutate()}
+                      draftQuality={createdDraftQuality}
                       isSaving={saveAnswersMutation.isPending}
                       isAbandoning={abandonSessionMutation.isPending}
                       isCreatingDraft={createDraftMutation.isPending}

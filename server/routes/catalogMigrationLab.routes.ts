@@ -532,6 +532,7 @@ export function registerCatalogMigrationLabRoutes(app: Express, middleware: Rout
           data: {
             productId: result.productId,
             pbv2TreeVersionId: result.pbv2TreeVersionId,
+            draftQuality: result.draftQuality,
             session: detail.session,
             detail,
           },
