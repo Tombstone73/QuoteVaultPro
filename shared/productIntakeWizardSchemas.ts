@@ -243,6 +243,92 @@ export const productIntakeCreateDraftResponseSchema = z.object({
   }),
 });
 
+export const productIntakeDraftReviewFindingSchema = z.object({
+  code: z.string().min(1),
+  severity: z.enum(["ERROR", "WARNING", "INFO"]),
+  message: z.string().min(1),
+  path: z.string().min(1),
+  entityId: z.string().optional(),
+  context: z.record(z.unknown()).optional(),
+});
+
+export const productIntakeDraftReviewSchema = z.object({
+  intake: z.object({
+    sessionId: z.string().min(1),
+    status: z.string().min(1),
+    sourceType: z.string().min(1),
+    sourceText: z.string().nullable(),
+    sourceJson: z.unknown().nullable(),
+    sourceFingerprint: z.string().nullable(),
+    briefSource: z.string().nullable(),
+    confidence: z.number().nullable(),
+    productName: z.string().nullable(),
+    materialMatch: z.string().nullable(),
+    warnings: z.array(z.string()),
+    unansweredDecisions: z.array(z.string()),
+  }),
+  product: z.object({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    category: z.string().nullable(),
+    description: z.string(),
+    isActive: z.boolean(),
+    productTypeId: z.string().nullable(),
+    productTypeName: z.string().nullable(),
+    primaryMaterialId: z.string().nullable(),
+    pbv2ActiveTreeVersionId: z.string().nullable(),
+  }),
+  pbv2Tree: z.object({
+    id: z.string().min(1),
+    status: z.enum(["DRAFT", "ACTIVE", "DEPRECATED", "ARCHIVED"]),
+    schemaVersion: z.number().int(),
+    publishedAt: z.string().nullable(),
+    updatedAt: z.string(),
+    groupCount: z.number().int().min(0),
+    optionCount: z.number().int().min(0),
+    optionGroups: z.array(z.object({
+      id: z.string().min(1),
+      label: z.string().min(1),
+      optionCount: z.number().int().min(0),
+      options: z.array(z.string()),
+    })),
+    draftQuality: z.unknown().nullable(),
+    intakeSummary: z.unknown().nullable(),
+  }),
+  publishReadiness: z.object({
+    productInactive: z.boolean(),
+    pbv2TreeDraft: z.boolean(),
+    pbv2TreePublished: z.boolean(),
+    activeTreeAssigned: z.boolean(),
+    requiredOptionsPresent: z.boolean(),
+    noDuplicateSizeControls: z.boolean(),
+    pricingConfigured: z.boolean(),
+    materialLinked: z.boolean(),
+    validationStatus: z.enum(["ready", "blocked", "warnings", "published"]),
+    findings: z.array(productIntakeDraftReviewFindingSchema),
+  }),
+});
+
+export const productIntakeDraftLinkSchema = z.object({
+  sessionId: z.string().min(1),
+  productId: z.string().min(1),
+  pbv2TreeVersionId: z.string().nullable(),
+  sessionStatus: z.string().min(1),
+  productIsActive: z.boolean(),
+  pbv2Status: z.string().nullable(),
+  pbv2ActiveTreeVersionId: z.string().nullable(),
+});
+
+export const productIntakeDraftReviewResponseSchema = z.object({
+  success: z.literal(true),
+  data: productIntakeDraftReviewSchema,
+});
+
+export const productIntakeDraftLinkResponseSchema = z.object({
+  success: z.literal(true),
+  data: productIntakeDraftLinkSchema.nullable(),
+});
+
 export const productIntakeAnswerPatchItemSchema = z.object({
   questionId: z.string().min(1).optional(),
   questionKey: z.string().min(1).optional(),
@@ -436,6 +522,10 @@ export type ProductIntakeReadiness = z.infer<typeof productIntakeReadinessSchema
 export type ProductIntakeSessionDetail = z.infer<typeof productIntakeSessionDetailSchema>;
 export type ProductIntakeDraftQuality = z.infer<typeof productIntakeDraftQualitySchema>;
 export type ProductIntakeCreateDraftResponse = z.infer<typeof productIntakeCreateDraftResponseSchema>;
+export type ProductIntakeDraftReview = z.infer<typeof productIntakeDraftReviewSchema>;
+export type ProductIntakeDraftReviewResponse = z.infer<typeof productIntakeDraftReviewResponseSchema>;
+export type ProductIntakeDraftLink = z.infer<typeof productIntakeDraftLinkSchema>;
+export type ProductIntakeDraftLinkResponse = z.infer<typeof productIntakeDraftLinkResponseSchema>;
 export type ProductIntakeAiDiagnosticIssue = z.infer<typeof productIntakeAiDiagnosticIssueSchema>;
 export type ProductIntakeAiRepairAction = z.infer<typeof productIntakeAiRepairActionSchema>;
 export type ProductIntakeAiDiagnostic = z.infer<typeof productIntakeAiDiagnosticSchema>;

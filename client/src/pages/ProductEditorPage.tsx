@@ -6,6 +6,7 @@ import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertProductSchema, type Product, type InsertProduct, type UpdateProduct } from "@shared/schema";
+import type { ProductIntakeDraftLink } from "@shared/productIntakeWizardSchemas";
 import { useProductBuilderDraft } from "@/hooks/useProductBuilderDraft";
 import { useMaterials } from "@/hooks/useMaterials";
 import { usePricingFormulas } from "@/hooks/usePricingFormulas";
@@ -35,6 +36,7 @@ import { ChevronRight, Copy, RotateCcw, Save } from "lucide-react";
 import PBV2ProductBuilderSectionV2 from "@/components/PBV2ProductBuilderSectionV2";
 import { ensureRootNodeIds, normalizeTreeJson } from "@/lib/pbv2/pbv2ViewModel";
 import { PricingValidationPanel } from "@/components/pbv2/builder-v2/PricingValidationPanel";
+import { ProductIntakeDraftBanner } from "@/components/ProductIntakeDraftBanner";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
@@ -182,6 +184,16 @@ const ProductEditorPage = () => {
   const { data: product, isLoading } = useQuery<Product>({
     queryKey: ["/api/products", productId],
     enabled: !isNewProduct,
+  });
+
+  const { data: productIntakeDraftLink } = useQuery<ProductIntakeDraftLink | null>({
+    queryKey: ["/api/admin/product-intake-wizard/products", productId, "draft-link"],
+    enabled: !isNewProduct && Boolean(productId),
+    queryFn: async () => {
+      const response = await apiRequest("GET", `/api/admin/product-intake-wizard/products/${productId}/draft-link`);
+      const json = await response.json();
+      return json.data as ProductIntakeDraftLink | null;
+    },
   });
 
   const form = useForm<ProductFormData>({
@@ -962,6 +974,9 @@ const ProductEditorPage = () => {
           storageKey="product-editor-pricing-preview-collapsed"
           left={
           <div className="space-y-0">
+            {productIntakeDraftLink && !productIntakeDraftLink.productIsActive ? (
+              <ProductIntakeDraftBanner link={productIntakeDraftLink} />
+            ) : null}
             {/* Product sections: Basic Info, Pricing, Materials, Advanced, Images */}
             <ProductForm
               form={form}
