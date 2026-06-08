@@ -14,6 +14,7 @@ import {
   productIntakeSessionSchema,
   type ProductIntakeBrief,
   type ProductIntakeDraftQuality,
+  type ProductIntakeMatrixReadiness,
   type ProductIntakeOption,
   type ProductIntakeSession,
 } from "@shared/productIntakeWizardSchemas";
@@ -55,6 +56,7 @@ type IntakePricingAnalysis = {
   warnings: string[];
   likelyMatrixPricing: boolean;
   candidateDimensions: string[];
+  matrixReadiness: ProductIntakeMatrixReadiness;
   matrixEvidence: string[];
 };
 
@@ -91,6 +93,10 @@ function mapSession(row: typeof productIntakeSessions.$inferSelect): ProductInta
 function compactText(value: string | null | undefined, fallback: string): string {
   const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
   return normalized || fallback;
+}
+
+function unique(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean)));
 }
 
 function collectBriefText(brief: ProductIntakeBrief, extraText?: string | null, sourceJson?: unknown): string {
@@ -204,33 +210,177 @@ function hasBasePricing(base: IntakePricingBase): boolean {
   return Number(base.perSqftCents) > 0 || Number(base.perPieceCents) > 0 || Number(base.minimumChargeCents) > 0;
 }
 
-function detectMatrixPricing(brief: ProductIntakeBrief, text: string): Pick<IntakePricingAnalysis, "likelyMatrixPricing" | "candidateDimensions" | "matrixEvidence"> {
+const NO_MATRIX_READINESS: ProductIntakeMatrixReadiness = {
+  required: false,
+  matrixType: "NONE",
+  matrixDimensions: [],
+  matrixConfidence: 0,
+  reasoning: [],
+  recommendedSetup: "No pricing matrix setup is recommended from the current intake signals.",
+  detectedSizes: [],
+  detectedQuantityBreaks: [],
+  detectedMaterials: [],
+  detectedPricingSignals: [],
+  noMatrixRowsGenerated: true,
+};
+
+function extractSizeSignals(brief: ProductIntakeBrief, text: string): string[] {
+  const sourceSizes = Array.from(text.matchAll(/\b(\d{1,3}(?:\.\d+)?)\s*(?:x|by)\s*(\d{1,3}(?:\.\d+)?)\b/gi))
+    .map((match) => `${match[1]}x${match[2]}`);
+  const optionSizes = [...brief.requiredOptions, ...brief.optionalOptions]
+    .filter(isSizeOption)
+    .flatMap((option) => option.sampleValues)
+    .filter((value) => /\d/.test(value));
+  return unique([...sourceSizes, ...optionSizes]).slice(0, 30);
+}
+
+function extractQuantityBreaks(brief: ProductIntakeBrief, text: string): number[] {
+  const values = new Set<number>();
+  const pushNumber = (value: unknown) => {
+    const parsed = Number(String(value ?? "").replace(/[^0-9.]/g, ""));
+    if (Number.isInteger(parsed) && parsed > 0 && parsed <= 100000) values.add(parsed);
+  };
+
+  for (const option of [...brief.requiredOptions, ...brief.optionalOptions]) {
+    const optionText = `${option.label} ${option.normalizedGroup}`.toLowerCase();
+    if (!/\b(qty|quantity|quantities|tier|tiers|break|breaks)\b/.test(optionText)) continue;
+    option.sampleValues.forEach(pushNumber);
+  }
+
+  const quantityPhrases = text.match(/(?:qty|quantity|quantities|breaks?|tiers?|price\s*breaks?)\s*[:=-]?\s*((?:\d+[\s,;:/-]*(?:and\s*)?){2,})/gi) ?? [];
+  for (const phrase of quantityPhrases) {
+    const numbers = phrase.match(/\b\d+\b/g) ?? [];
+    numbers.forEach(pushNumber);
+  }
+
+  return Array.from(values).sort((a, b) => a - b).slice(0, 30);
+}
+
+function hasProductSignal(text: string, patterns: RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function optionTextForMatrix(brief: ProductIntakeBrief): string {
+  return [...brief.requiredOptions, ...brief.optionalOptions]
+    .map((option) => `${option.label} ${option.normalizedGroup} ${option.sampleValues.join(" ")}`)
+    .join(" ")
+    .toLowerCase();
+}
+
+function recommendationForMatrixType(matrixType: ProductIntakeMatrixReadiness["matrixType"]): string {
+  if (matrixType === "SIZE_QUANTITY") return "Create a PBV2 pricing matrix with Size as the selectable dimension and line item quantity tiers or row-level quantity tiers before publish.";
+  if (matrixType === "QUANTITY_STOCK") return "Create a PBV2 pricing matrix using Stock/Material choices with quantity-tier pricing before publish.";
+  if (matrixType === "SIZE_MATERIAL") return "Create a PBV2 pricing matrix using Size and Material/Stock dimensions before publish.";
+  if (matrixType === "QUANTITY_TIER") return "Configure PBV2 quantity tiers before publish; a full option matrix may not be needed unless another selectable dimension affects price.";
+  if (matrixType === "MULTI_DIMENSION") return "Create a PBV2 pricing matrix with each detected selectable dimension and review quantity-tier behavior before publish.";
+  return NO_MATRIX_READINESS.recommendedSetup;
+}
+
+function detectMatrixPricing(brief: ProductIntakeBrief, text: string): Pick<IntakePricingAnalysis, "likelyMatrixPricing" | "candidateDimensions" | "matrixEvidence" | "matrixReadiness"> {
   const lower = text.toLowerCase();
   const dimensions = new Set<string>();
-  const evidence: string[] = [];
-  const addEvidence = (value: string) => {
-    if (value && !evidence.includes(value)) evidence.push(value);
+  const reasoning: string[] = [];
+  const pricingSignals: string[] = [];
+  const addReason = (value: string) => {
+    if (value && !reasoning.includes(value)) reasoning.push(value);
+  };
+  const addSignal = (value: string) => {
+    if (value && !pricingSignals.includes(value)) pricingSignals.push(value);
   };
   const hasQuantity = /\b(qty|quantity|quantities|breaks?|tiers?|price\s*breaks?)\b/.test(lower) ||
     /quantity|tier|matrix/i.test(`${brief.quantityBehavior.behavior} ${brief.quantityBehavior.notes ?? ""}`);
-  const hasMatrixLanguage = /\b(matrix|rate\s*table|price\s*grid|pricing\s*grid|price\s*table|size\s*x\s*quantity|quantity\s*x\s*size|stock\s*x|coating\s*x)\b/i.test(text) ||
+  const hasMatrixLanguage = /\b(matrix|rate\s*table|price\s*grid|pricing\s*grid|price\s*table|multiple\s+price\s+tables?|breakpoint\s+pricing|size\s*x\s*quantity|quantity\s*x\s*size|stock\s*x|coating\s*x)\b/i.test(text) ||
     /matrix|tier/i.test(`${brief.pricingAnalysis.behavior} ${brief.pricingAnalysis.notes ?? ""}`);
-  const optionText = [...brief.requiredOptions, ...brief.optionalOptions]
-    .map((option) => `${option.label} ${option.normalizedGroup}`)
-    .join(" ")
-    .toLowerCase();
-  if (/\b(size|width|height|dimension)\b/.test(optionText) || /fixed|custom|size|dimension/i.test(brief.sizeBehavior.behavior)) dimensions.add("size");
+  const optionText = optionTextForMatrix(brief);
+  const detectedSizes = extractSizeSignals(brief, text);
+  const detectedQuantityBreaks = extractQuantityBreaks(brief, text);
+  const materialNames = unique([
+    ...brief.materialAnalysis.detectedMaterialReferences,
+    ...brief.materialAnalysis.likelyMaterialMatches.map((match) => match.name),
+  ]).slice(0, 12);
+
+  if (/\b(size|width|height|dimension)\b/.test(optionText) || /fixed|custom|size|dimension/i.test(brief.sizeBehavior.behavior) || detectedSizes.length > 0) {
+    dimensions.add("size");
+    if (detectedSizes.length > 1) addReason("Multiple fixed sizes were detected.");
+  }
   if (hasQuantity) dimensions.add("quantity");
-  if (/\b(coating|laminate|lamination)\b/.test(optionText)) dimensions.add("coating");
-  if (/\b(stock|paper|material|substrate)\b/.test(optionText)) dimensions.add("stock");
-  if (/\b(side|sides|printed)\b/.test(optionText)) dimensions.add("printed_sides");
-  if (/\b(size\s*x\s*quantity|quantity\s*x\s*size)\b/i.test(text)) addEvidence("Source references size x quantity pricing.");
-  if (/\b(rate\s*table|price\s*grid|pricing\s*grid|matrix)\b/i.test(text)) addEvidence("Source references a pricing matrix or rate table.");
-  if (/business\s*cards?|postcards?|yard\s*signs?/i.test(text) && hasQuantity && dimensions.size >= 2) addEvidence("Product category and quantity signals suggest matrix pricing.");
+  if (detectedQuantityBreaks.length > 1) {
+    dimensions.add("quantity");
+    addReason("Quantity breaks were detected.");
+    addSignal("Quantity tier pricing present.");
+  }
+  const stockMatrixSignal = /\b(stock|paper|substrate)\s*x|x\s*(stock|paper|substrate)|business\s*cards?|postcards?/i.test(text);
+  const coatingMatrixSignal = /\b(coating|coat|laminate|lamination)\s*x|x\s*(coating|coat|laminate|lamination)|business\s*cards?/i.test(text);
+  const materialMatrixSignal = /\b(material|substrate)\s*x|x\s*(material|substrate)|size\s*x\s*material|material\s*x\s*size/i.test(text);
+  const printedSidesMatrixSignal = /\b(sides?|printed\s*sides?)\s*x|x\s*(sides?|printed\s*sides?)|sides?\s+price\s+table/i.test(text);
+  if (stockMatrixSignal && /\b(stock|paper|substrate)\b/.test(optionText)) dimensions.add("stock");
+  if (coatingMatrixSignal && /\b(coating|coat|laminate|lamination)\b/.test(optionText)) dimensions.add("coating");
+  if (materialMatrixSignal && /\b(material|substrate)\b/.test(optionText)) dimensions.add("material");
+  if (printedSidesMatrixSignal && /\b(side|sides|printed)\b/.test(optionText)) dimensions.add("printed_sides");
+  if (/\b(size\s*x\s*quantity|quantity\s*x\s*size)\b/i.test(text)) {
+    addReason("Source references size x quantity pricing.");
+    addSignal("Size x quantity pricing signal.");
+  }
+  if (/\b(rate\s*table|price\s*grid|pricing\s*grid|price\s*table|matrix|multiple\s+price\s+tables?|breakpoint\s+pricing)\b/i.test(text)) {
+    addReason("Source references a pricing matrix, price table, or breakpoint pricing.");
+    addSignal("Matrix/table pricing language present.");
+  }
+  if (hasProductSignal(text, [/business\s*cards?/i, /postcards?/i]) && hasQuantity && /\b(stock|paper|coating|coat|size)\b/.test(optionText)) {
+    addReason("Common print product pattern suggests quantity plus stock/coating/size matrix pricing.");
+  }
+  if (hasProductSignal(text, [/yard\s*signs?/i, /coroplast/i, /\bcoro\b/i]) && hasQuantity && dimensions.has("size")) {
+    addReason("Yard sign/coroplast products commonly use size x quantity pricing.");
+  }
+  if (hasProductSignal(text, [/stickers?|decals?/i]) && hasQuantity && dimensions.has("size")) {
+    addReason("Sticker products commonly use size x quantity or quantity-tier pricing.");
+  }
+
+  const dimensionList = Array.from(dimensions);
+  const formulaFriendlyBanner = /\bbanner\b/i.test(text) &&
+    /square\s*foot|sqft|per\s+sq|formula|custom_size|custom size/i.test(`${text} ${brief.sizeBehavior.behavior} ${brief.pricingAnalysis.behavior}`) &&
+    !hasMatrixLanguage &&
+    detectedQuantityBreaks.length === 0;
+  let matrixType: ProductIntakeMatrixReadiness["matrixType"] = "NONE";
+  if (!formulaFriendlyBanner) {
+    if (dimensionList.length >= 3) matrixType = "MULTI_DIMENSION";
+    else if (dimensions.has("size") && dimensions.has("quantity") && dimensionList.filter((dimension) => !["size", "quantity"].includes(dimension)).length === 0) matrixType = "SIZE_QUANTITY";
+    else if (dimensions.has("quantity") && (dimensions.has("stock") || dimensions.has("coating")) && dimensionList.length <= 3) matrixType = "QUANTITY_STOCK";
+    else if (dimensions.has("size") && (dimensions.has("material") || dimensions.has("stock")) && !dimensions.has("quantity")) matrixType = "SIZE_MATERIAL";
+    else if (dimensions.has("quantity") && detectedQuantityBreaks.length > 1 && dimensionList.length === 1) matrixType = "QUANTITY_TIER";
+    else if (dimensionList.length >= 2) matrixType = "MULTI_DIMENSION";
+  }
+
+  const required = matrixType !== "NONE" && (hasMatrixLanguage || reasoning.length > 0 || detectedQuantityBreaks.length > 1);
+  const confidence = required
+    ? Math.min(95, 55 + (hasMatrixLanguage ? 15 : 0) + Math.min(20, reasoning.length * 7) + (detectedQuantityBreaks.length > 1 ? 10 : 0))
+    : 0;
+  const matrixReadiness: ProductIntakeMatrixReadiness = required
+    ? {
+        required: true,
+        matrixType,
+        matrixDimensions: dimensionList,
+        matrixConfidence: confidence,
+        reasoning: reasoning.length ? reasoning : ["Matrix-style pricing signals were detected from intake behavior and options."],
+        recommendedSetup: recommendationForMatrixType(matrixType),
+        detectedSizes,
+        detectedQuantityBreaks,
+        detectedMaterials: materialNames,
+        detectedPricingSignals: pricingSignals,
+        noMatrixRowsGenerated: true,
+      }
+    : {
+        ...NO_MATRIX_READINESS,
+        detectedSizes,
+        detectedQuantityBreaks,
+        detectedMaterials: materialNames,
+        detectedPricingSignals: pricingSignals,
+      };
+
   return {
-    likelyMatrixPricing: hasMatrixLanguage && dimensions.size >= 2,
-    candidateDimensions: Array.from(dimensions),
-    matrixEvidence: evidence,
+    likelyMatrixPricing: matrixReadiness.required,
+    candidateDimensions: matrixReadiness.matrixDimensions,
+    matrixEvidence: matrixReadiness.reasoning,
+    matrixReadiness,
   };
 }
 
@@ -584,12 +734,16 @@ function assessDraftQuality(args: {
     warnings.push("Pricing setup required.");
   }
   if (!hasBasePricing(args.pricingReadiness.base)) {
-    score -= 10;
+    score -= 25;
     warnings.push("Base pricing is missing and must be configured before publish.");
   }
-  if (args.pricingReadiness.likelyMatrixPricing) {
-    score -= 10;
-    warnings.push("Likely matrix pricing needs PBV2 pricing matrix review.");
+  if (!inputNodes.some((node) => node.input?.required === true)) {
+    score -= 25;
+    warnings.push("Missing required PBV2 inputs.");
+  }
+  if (args.pricingReadiness.matrixReadiness.required) {
+    score -= 25;
+    warnings.push("Matrix pricing is likely required and must be configured in PBV2 Pricing Matrix before publish.");
   }
   const unresolvedRequired = args.brief.missingDecisions.filter((decision) => decision.severity === "blocker");
   if (unresolvedRequired.length > 0) {
@@ -619,6 +773,7 @@ function assessDraftQuality(args: {
   if (args.skippedTemplateOptionCount > 0) reasons.push(`${args.skippedTemplateOptionCount} generic option(s) skipped because reusable templates were applied.`);
   if (groupNodes.length >= 2 && !invalidRootGroups) reasons.push("Options were organized into logical PBV2 groups.");
   reasons.push("Quote/order line item quantity remains outside customer-facing PBV2 options.");
+  if (args.pricingReadiness.matrixReadiness.required) reasons.push("Matrix pricing guidance was preserved without generating matrix rows.");
   if (warnings.length === 0) reasons.push("No draft quality penalties detected.");
 
   const normalizedScore = Math.max(0, Math.min(100, Math.round(score)));
@@ -686,7 +841,14 @@ export function buildProductIntakeDraftTree(args: {
           likelyMatrixPricing: pricingReadiness.likelyMatrixPricing,
           candidateDimensions: pricingReadiness.candidateDimensions,
           matrixEvidence: pricingReadiness.matrixEvidence,
+          matrixType: pricingReadiness.matrixReadiness.matrixType,
+          matrixConfidence: pricingReadiness.matrixReadiness.matrixConfidence,
+          detectedSizes: pricingReadiness.matrixReadiness.detectedSizes,
+          detectedQuantityBreaks: pricingReadiness.matrixReadiness.detectedQuantityBreaks,
+          detectedMaterials: pricingReadiness.matrixReadiness.detectedMaterials,
+          detectedPricingSignals: pricingReadiness.matrixReadiness.detectedPricingSignals,
         },
+        matrixReadiness: pricingReadiness.matrixReadiness,
         pricingWarnings: pricingReadiness.warnings,
         materialMatch: materialMatch ? {
           materialId: materialMatch.materialId,

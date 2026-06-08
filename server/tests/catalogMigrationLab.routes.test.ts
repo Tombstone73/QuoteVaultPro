@@ -329,10 +329,29 @@ function makeDraftReviewFixture(overrides: Partial<ProductIntakeDraftReview> = {
       groupCount: 2,
       optionCount: 3,
       optionGroups: [
-        { id: "group_size", label: "Size & Quantity", optionCount: 2, options: ["Size", "Quantity"] },
+        { id: "group_size", label: "Size & Quantity", optionCount: 1, options: ["Size"] },
       ],
-      draftQuality: { label: "Good", score: 86, warnings: ["Pricing setup required."] },
-      intakeSummary: null,
+      draftQuality: { label: "Good", score: 86, warnings: ["Pricing setup required."], reasons: ["Matrix pricing guidance was preserved without generating matrix rows."] },
+      intakeSummary: {
+        pricingReadiness: {
+          likelyMatrixPricing: true,
+          candidateDimensions: ["size", "quantity"],
+        },
+      },
+      matrixReadiness: {
+        required: true,
+        matrixType: "SIZE_QUANTITY",
+        matrixDimensions: ["size", "quantity"],
+        matrixConfidence: 88,
+        reasoning: ["Multiple fixed sizes with quantity-tier pricing were detected."],
+        recommendedSetup: "Create a PBV2 pricing matrix with Size as the selectable dimension and line item quantity tiers or row-level quantity tiers before publish.",
+        detectedSizes: ["12x18", "18x24"],
+        detectedQuantityBreaks: [1, 10, 25],
+        detectedMaterials: ["4mm Coroplast"],
+        detectedPricingSignals: ["Quantity tier pricing present."],
+        noMatrixRowsGenerated: true,
+      },
+      basePricing: { perSqftCents: null, perPieceCents: null, minimumChargeCents: null },
     },
     publishReadiness: {
       productInactive: true,
@@ -360,6 +379,26 @@ function makeMemoryProductIntakeDraftReviewService(
         throw new ProductIntakeSessionError(404, "Product Intake session not found.", "SESSION_NOT_FOUND");
       }
       return review;
+    },
+    async updateDraftPricing({ organizationId, base }) {
+      if (organizationId !== "org_1") {
+        throw new ProductIntakeSessionError(404, "Product Intake session not found.", "SESSION_NOT_FOUND");
+      }
+      return makeDraftReviewFixture({
+        ...review,
+        pbv2Tree: {
+          ...review.pbv2Tree,
+          basePricing: {
+            perSqftCents: base.perSqftCents ?? null,
+            perPieceCents: base.perPieceCents ?? null,
+            minimumChargeCents: base.minimumChargeCents ?? null,
+          },
+        },
+        publishReadiness: {
+          ...review.publishReadiness,
+          pricingConfigured: Boolean(base.perSqftCents || base.perPieceCents || base.minimumChargeCents),
+        },
+      });
     },
     async getDraftLinkForProduct({ organizationId, productId }) {
       if (organizationId !== "org_1" || productId !== review.product.id) return null;

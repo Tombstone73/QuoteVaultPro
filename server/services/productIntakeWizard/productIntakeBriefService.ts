@@ -10,6 +10,7 @@ import {
   type ProductIntakeAiRepairAction,
   type ProductIntakeBrief,
   type ProductIntakeEvidence,
+  type ProductIntakeMatrixReadiness,
   type ProductIntakeTemplateMatch,
   type ProductIntakeWizardAnalyzeRequest,
 } from "@shared/productIntakeWizardSchemas";
@@ -546,6 +547,93 @@ function behaviorFromAnalyzer(product: NormalizedSourceProduct | null, analyzer:
   };
 }
 
+function fallbackMatrixReadiness(args: {
+  text: string;
+  textSignals: TextDescriptionSignals | null;
+  requiredOptions: ProductIntakeBrief["requiredOptions"];
+  optionalOptions: ProductIntakeBrief["optionalOptions"];
+  materialMatches: ProductIntakeBrief["materialAnalysis"]["likelyMaterialMatches"];
+  behaviors: Pick<ProductIntakeBrief, "sizeBehavior" | "quantityBehavior" | "pricingAnalysis">;
+}): ProductIntakeMatrixReadiness {
+  const optionText = [...args.requiredOptions, ...args.optionalOptions]
+    .map((option) => `${option.label} ${option.normalizedGroup} ${option.sampleValues.join(" ")}`)
+    .join(" ")
+    .toLowerCase();
+  const text = `${args.text} ${args.behaviors.sizeBehavior.behavior} ${args.behaviors.quantityBehavior.behavior} ${args.behaviors.pricingAnalysis.behavior} ${args.behaviors.pricingAnalysis.notes ?? ""}`;
+  const lower = normalizeText(text);
+  const dimensions = new Set<string>();
+  const reasoning: string[] = [];
+  const pricingSignals: string[] = [];
+  const sizes = unique([
+    ...(args.textSignals?.sizes ?? []),
+    ...[...args.requiredOptions, ...args.optionalOptions]
+      .filter((option) => /size|dimension|width|height/i.test(`${option.label} ${option.normalizedGroup}`))
+      .flatMap((option) => option.sampleValues),
+  ]).slice(0, 30);
+  const quantityBreaks = unique((text.match(/\b\d+\b/g) ?? []).filter((value) => {
+    const number = Number(value);
+    return Number.isInteger(number) && number > 0 && number <= 100000;
+  })).map(Number).slice(0, 30);
+
+  if (sizes.length > 0 || /fixed|size|dimension|width|height/.test(lower)) dimensions.add("size");
+  if (/quantity|quantities|qty|tier|break/.test(lower)) dimensions.add("quantity");
+  const stockMatrixSignal = /\b(stock|paper|substrate)\s*x|x\s*(stock|paper|substrate)|business\s*cards?|postcards?/i.test(text);
+  const coatingMatrixSignal = /\b(coating|coat|laminate|lamination)\s*x|x\s*(coating|coat|laminate|lamination)|business\s*cards?/i.test(text);
+  const materialMatrixSignal = /\b(material|substrate)\s*x|x\s*(material|substrate)|size\s*x\s*material|material\s*x\s*size/i.test(text);
+  if (stockMatrixSignal && /stock|paper|substrate/.test(optionText)) dimensions.add("stock");
+  if (coatingMatrixSignal && /coating|coat|laminate|lamination/.test(optionText)) dimensions.add("coating");
+  if (materialMatrixSignal && /material|substrate/.test(optionText)) dimensions.add("material");
+
+  if (sizes.length > 1) reasoning.push("Multiple fixed sizes were detected.");
+  if (/quantity|qty|tier|break/.test(lower)) {
+    reasoning.push("Quantity-tier or quantity-break pricing was detected.");
+    pricingSignals.push("Quantity tier pricing present.");
+  }
+  if (/matrix|price table|rate table|pricing grid|price grid|size x quantity|quantity x size|breakpoint pricing/.test(lower)) {
+    reasoning.push("Matrix/table pricing language was detected.");
+    pricingSignals.push("Matrix/table pricing language present.");
+  }
+
+  const dimensionList = Array.from(dimensions);
+  let matrixType: ProductIntakeMatrixReadiness["matrixType"] = "NONE";
+  if (dimensionList.length >= 3) matrixType = "MULTI_DIMENSION";
+  else if (dimensions.has("size") && dimensions.has("quantity") && dimensionList.length === 2) matrixType = "SIZE_QUANTITY";
+  else if (dimensions.has("quantity") && (dimensions.has("stock") || dimensions.has("coating")) && dimensionList.length <= 3) matrixType = "QUANTITY_STOCK";
+  else if (dimensions.has("size") && (dimensions.has("material") || dimensions.has("stock")) && !dimensions.has("quantity")) matrixType = "SIZE_MATERIAL";
+  else if (dimensions.has("quantity") && dimensionList.length === 1) matrixType = "QUANTITY_TIER";
+  else if (dimensionList.length >= 2) matrixType = "MULTI_DIMENSION";
+
+  const required = matrixType !== "NONE" && reasoning.length > 0 && !(/\bbanner\b/.test(lower) && /square foot|sqft|formula/.test(lower) && !/matrix|table|tier|break/.test(lower));
+  const recommendedSetup = matrixType === "SIZE_QUANTITY"
+    ? "Create a PBV2 pricing matrix with Size as the selectable dimension and line item quantity tiers or row-level quantity tiers before publish."
+    : matrixType === "QUANTITY_STOCK"
+      ? "Create a PBV2 pricing matrix using Stock/Material choices with quantity-tier pricing before publish."
+      : matrixType === "SIZE_MATERIAL"
+        ? "Create a PBV2 pricing matrix using Size and Material/Stock dimensions before publish."
+        : matrixType === "QUANTITY_TIER"
+          ? "Configure PBV2 quantity tiers before publish; a full option matrix may not be needed unless another selectable dimension affects price."
+          : matrixType === "MULTI_DIMENSION"
+            ? "Create a PBV2 pricing matrix with each detected selectable dimension and review quantity-tier behavior before publish."
+            : "No pricing matrix setup is recommended from the current intake signals.";
+
+  return {
+    required,
+    matrixType: required ? matrixType : "NONE",
+    matrixDimensions: required ? dimensionList : [],
+    matrixConfidence: required ? Math.min(95, 60 + reasoning.length * 8) : 0,
+    reasoning: required ? reasoning : [],
+    recommendedSetup,
+    detectedSizes: sizes,
+    detectedQuantityBreaks: required ? quantityBreaks : [],
+    detectedMaterials: unique([
+      ...(args.textSignals?.materialReferences ?? []),
+      ...args.materialMatches.map((match) => match.name),
+    ]).slice(0, 12),
+    detectedPricingSignals: pricingSignals,
+    noMatrixRowsGenerated: true,
+  };
+}
+
 function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | null): ProductIntakeBrief {
   const product = firstProduct(input.analyzer);
   const sourceName = sourceLabel(input.request);
@@ -741,6 +829,14 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
     behaviors.pricingAnalysis.confidence,
     requiredOptions.length + optionalOptions.length > 0 ? 75 : 35,
   ];
+  const matrixReadiness = fallbackMatrixReadiness({
+    text,
+    textSignals,
+    requiredOptions,
+    optionalOptions,
+    materialMatches,
+    behaviors,
+  });
 
   return productIntakeBriefSchema.parse({
     workflowState: "REVIEW_READY",
@@ -773,6 +869,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       evidence: materialMatches.flatMap((match) => match.evidence),
     },
     ...behaviors,
+    matrixReadiness,
     requiredOptions,
     optionalOptions,
     templateMatches,
@@ -1155,6 +1252,7 @@ const PRODUCT_INTAKE_BRIEF_TOP_LEVEL_KEYS = [
   "sizeBehavior",
   "quantityBehavior",
   "pricingAnalysis",
+  "matrixReadiness",
   "requiredOptions",
   "optionalOptions",
   "templateMatches",
@@ -1209,6 +1307,19 @@ const PRODUCT_INTAKE_BRIEF_OUTPUT_EXAMPLE: ProductIntakeBrief = {
     confidence: 84,
     notes: "Quantity tier pricing",
     evidence: [{ sourcePath: "$.source_text", label: "pricing", value: "Quantity tier pricing", reason: "The source describes the pricing model." }],
+  },
+  matrixReadiness: {
+    required: true,
+    matrixType: "SIZE_QUANTITY",
+    matrixDimensions: ["size", "quantity"],
+    matrixConfidence: 88,
+    reasoning: ["Multiple fixed sizes and quantity-tier pricing were detected."],
+    recommendedSetup: "Create a PBV2 pricing matrix with Size as the selectable dimension and line item quantity tiers or row-level quantity tiers before publish.",
+    detectedSizes: ["18x24", "24x36"],
+    detectedQuantityBreaks: [],
+    detectedMaterials: ["4mm coroplast"],
+    detectedPricingSignals: ["Quantity tier pricing present."],
+    noMatrixRowsGenerated: true,
   },
   requiredOptions: [{
     label: "Size",

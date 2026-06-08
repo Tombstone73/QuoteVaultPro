@@ -9,6 +9,7 @@ import {
 import { validateTreeForPublish, DEFAULT_VALIDATE_OPTS } from "@shared/pbv2/validator";
 import { validateTreeHasBasePrice } from "@shared/pbv2/validator/validateBasePrice";
 import type { Finding } from "@shared/pbv2/findings";
+import { productIntakeMatrixReadinessSchema, type ProductIntakeMatrixReadiness } from "@shared/productIntakeWizardSchemas";
 import { db as defaultDb } from "../../db";
 import { ProductIntakeSessionError } from "./productIntakeSessionService";
 
@@ -49,6 +50,7 @@ export type ProductIntakeDraftReview = {
     optionGroups: Array<{ id: string; label: string; optionCount: number; options: string[] }>;
     draftQuality: unknown | null;
     intakeSummary: unknown | null;
+    matrixReadiness: ProductIntakeMatrixReadiness | null;
     basePricing: {
       perSqftCents: number | null;
       perPieceCents: number | null;
@@ -120,7 +122,37 @@ function basePricingFromTree(treeJson: any): ProductIntakeDraftReview["pbv2Tree"
   };
 }
 
-function summarizeTree(treeJson: any): Pick<ProductIntakeDraftReview["pbv2Tree"], "groupCount" | "optionCount" | "optionGroups" | "draftQuality" | "intakeSummary" | "basePricing"> {
+function matrixReadinessFromTree(treeJson: any): ProductIntakeMatrixReadiness | null {
+  const productIntake = treeJson?.meta?.productIntake && typeof treeJson.meta.productIntake === "object"
+    ? treeJson.meta.productIntake
+    : null;
+  const direct = productIntake?.matrixReadiness;
+  const parsedDirect = productIntakeMatrixReadinessSchema.safeParse(direct);
+  if (parsedDirect.success) return parsedDirect.data;
+
+  const pricing = productIntake?.pricingReadiness && typeof productIntake.pricingReadiness === "object"
+    ? productIntake.pricingReadiness
+    : null;
+  if (!pricing) return null;
+  const parsedLegacy = productIntakeMatrixReadinessSchema.safeParse({
+    required: Boolean(pricing.likelyMatrixPricing),
+    matrixType: typeof pricing.matrixType === "string" ? pricing.matrixType : Boolean(pricing.likelyMatrixPricing) ? "MULTI_DIMENSION" : "NONE",
+    matrixDimensions: Array.isArray(pricing.candidateDimensions) ? pricing.candidateDimensions.map(String) : [],
+    matrixConfidence: typeof pricing.matrixConfidence === "number" ? pricing.matrixConfidence : Boolean(pricing.likelyMatrixPricing) ? 60 : 0,
+    reasoning: Array.isArray(pricing.matrixEvidence) ? pricing.matrixEvidence.map(String).filter(Boolean) : [],
+    recommendedSetup: Boolean(pricing.likelyMatrixPricing)
+      ? "Create or review a PBV2 pricing matrix before publish."
+      : "No pricing matrix setup is recommended from the current intake signals.",
+    detectedSizes: Array.isArray(pricing.detectedSizes) ? pricing.detectedSizes.map(String).filter(Boolean) : [],
+    detectedQuantityBreaks: Array.isArray(pricing.detectedQuantityBreaks) ? pricing.detectedQuantityBreaks.map(Number).filter((value: number) => Number.isInteger(value) && value > 0) : [],
+    detectedMaterials: Array.isArray(pricing.detectedMaterials) ? pricing.detectedMaterials.map(String).filter(Boolean) : [],
+    detectedPricingSignals: Array.isArray(pricing.detectedPricingSignals) ? pricing.detectedPricingSignals.map(String).filter(Boolean) : [],
+    noMatrixRowsGenerated: true,
+  });
+  return parsedLegacy.success ? parsedLegacy.data : null;
+}
+
+function summarizeTree(treeJson: any): Pick<ProductIntakeDraftReview["pbv2Tree"], "groupCount" | "optionCount" | "optionGroups" | "draftQuality" | "intakeSummary" | "matrixReadiness" | "basePricing"> {
   const nodes = treeJson?.nodes && typeof treeJson.nodes === "object" ? treeJson.nodes : {};
   const edges = Array.isArray(treeJson?.edges) ? treeJson.edges : [];
   const groups = Object.values(nodes).filter((node: any) => String(node?.type ?? "").toUpperCase() === "GROUP");
@@ -144,6 +176,7 @@ function summarizeTree(treeJson: any): Pick<ProductIntakeDraftReview["pbv2Tree"]
     optionGroups,
     draftQuality: treeJson?.meta?.productIntake?.draftQuality ?? null,
     intakeSummary: treeJson?.meta?.productIntake ?? null,
+    matrixReadiness: matrixReadinessFromTree(treeJson),
     basePricing: basePricingFromTree(treeJson),
   };
 }

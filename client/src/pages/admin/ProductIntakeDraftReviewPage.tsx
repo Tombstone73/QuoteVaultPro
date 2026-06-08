@@ -53,7 +53,7 @@ function yesNo(value: boolean) {
   return value ? "Yes" : "No";
 }
 
-function maybeDraftQuality(value: unknown): { label: string; score?: number; warnings: string[] } | null {
+function maybeDraftQuality(value: unknown): { label: string; score?: number; warnings: string[]; reasons: string[] } | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
   const label = typeof raw.label === "string" ? raw.label : null;
@@ -62,6 +62,7 @@ function maybeDraftQuality(value: unknown): { label: string; score?: number; war
     label,
     score: typeof raw.score === "number" ? raw.score : undefined,
     warnings: Array.isArray(raw.warnings) ? raw.warnings.map(String) : [],
+    reasons: Array.isArray(raw.reasons) ? raw.reasons.map(String) : [],
   };
 }
 
@@ -80,6 +81,13 @@ function dollarsToCents(value: string): number | null {
   const parsed = Number(trimmed);
   if (!Number.isFinite(parsed) || parsed < 0) return null;
   return Math.round(parsed * 100);
+}
+
+function titleFromMatrixType(value: string) {
+  return value
+    .split("_")
+    .map((part) => part.charAt(0) + part.slice(1).toLowerCase())
+    .join(" ");
 }
 
 export default function ProductIntakeDraftReviewPage() {
@@ -218,11 +226,8 @@ export default function ProductIntakeDraftReviewPage() {
   const sourcePreview = review.intake.sourceText || (review.intake.sourceJson ? JSON.stringify(review.intake.sourceJson, null, 2) : "No source payload recorded.");
   const findings = review.publishReadiness.findings;
   const draftTreeQuery = review.pbv2Tree.id ? `?draftTreeVersionId=${encodeURIComponent(review.pbv2Tree.id)}` : "";
-  const likelyMatrixPricing = Boolean(
-    review.pbv2Tree.intakeSummary &&
-    typeof review.pbv2Tree.intakeSummary === "object" &&
-    (review.pbv2Tree.intakeSummary as any).pricingReadiness?.likelyMatrixPricing,
-  );
+  const matrixReadiness = review.pbv2Tree.matrixReadiness;
+  const likelyMatrixPricing = Boolean(matrixReadiness?.required);
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -302,6 +307,9 @@ export default function ProductIntakeDraftReviewPage() {
                   {draftQuality.warnings.length > 0 && (
                     <div className="mt-2 text-xs text-amber-700 dark:text-amber-300">{draftQuality.warnings.join("; ")}</div>
                   )}
+                  {draftQuality.reasons.length > 0 && (
+                    <div className="mt-2 text-xs text-muted-foreground">{draftQuality.reasons.join("; ")}</div>
+                  )}
                 </div>
               )}
             </CardContent>
@@ -355,6 +363,84 @@ export default function ProductIntakeDraftReviewPage() {
                   </TableBody>
                 </Table>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Matrix Readiness</CardTitle>
+              <CardDescription>Pricing matrix guidance from Product Intake. Matrix rows are never generated automatically.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm">
+              {matrixReadiness ? (
+                <>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div>
+                      <div className="text-xs uppercase text-muted-foreground">Detected Matrix Type</div>
+                      <div className="font-medium">{titleFromMatrixType(matrixReadiness.matrixType)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase text-muted-foreground">Confidence</div>
+                      <div>{matrixReadiness.matrixConfidence}%</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase text-muted-foreground">Rows Generated</div>
+                      <Badge variant="outline">{matrixReadiness.noMatrixRowsGenerated ? "No" : "Review"}</Badge>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs uppercase text-muted-foreground">Dimensions</div>
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      {matrixReadiness.matrixDimensions.length > 0 ? matrixReadiness.matrixDimensions.map((dimension) => (
+                        <Badge key={dimension} variant="secondary">{dimension}</Badge>
+                      )) : <span className="text-muted-foreground">No matrix dimensions detected.</span>}
+                    </div>
+                  </div>
+                  {matrixReadiness.reasoning.length > 0 && (
+                    <div>
+                      <div className="font-medium">Reason</div>
+                      <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
+                        {matrixReadiness.reasoning.map((reason) => <li key={reason}>{reason}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  <div>
+                    <div className="font-medium">Recommended Setup</div>
+                    <div className="mt-1 text-muted-foreground">{matrixReadiness.recommendedSetup}</div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div>
+                      <div className="text-xs uppercase text-muted-foreground">Detected Sizes</div>
+                      <div className="mt-1 text-muted-foreground">{matrixReadiness.detectedSizes.join(", ") || "-"}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase text-muted-foreground">Quantity Breaks</div>
+                      <div className="mt-1 text-muted-foreground">{matrixReadiness.detectedQuantityBreaks.join(", ") || "-"}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase text-muted-foreground">Materials / Stock</div>
+                      <div className="mt-1 text-muted-foreground">{matrixReadiness.detectedMaterials.join(", ") || "-"}</div>
+                    </div>
+                  </div>
+                  {matrixReadiness.detectedPricingSignals.length > 0 && (
+                    <div>
+                      <div className="text-xs uppercase text-muted-foreground">Pricing Signals</div>
+                      <div className="mt-1 text-muted-foreground">{matrixReadiness.detectedPricingSignals.join("; ")}</div>
+                    </div>
+                  )}
+                  {matrixReadiness.required && (
+                    <Alert>
+                      <AlertTriangle className="h-4 w-4" />
+                      <AlertTitle>Matrix pricing review required</AlertTitle>
+                      <AlertDescription>
+                        Product Intake preserved matrix setup guidance only. Configure PBV2 pricing matrix rows in the builder before publish.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                </>
+              ) : (
+                <div className="text-muted-foreground">No matrix readiness metadata was recorded for this draft.</div>
+              )}
             </CardContent>
           </Card>
 
@@ -453,9 +539,9 @@ export default function ProductIntakeDraftReviewPage() {
             {likelyMatrixPricing && (
               <Alert>
                 <AlertTriangle className="h-4 w-4" />
-                <AlertTitle>Likely matrix pricing</AlertTitle>
+                <AlertTitle>Matrix pricing review required</AlertTitle>
                 <AlertDescription>
-                  Product Intake detected possible matrix pricing. No matrix rows were generated; configure the pricing matrix in the PBV2 builder before publish.
+                  Product Intake detected {matrixReadiness ? titleFromMatrixType(matrixReadiness.matrixType) : "matrix"} pricing. No matrix rows were generated; configure the pricing matrix in the PBV2 builder before publish.
                 </AlertDescription>
               </Alert>
             )}
