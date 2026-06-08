@@ -102,6 +102,8 @@ export const productExportV2ItemSchema = z.object({
   pricingConfigPresent: z.boolean().optional(),
   matrixCount: z.number().int().min(0).optional(),
   tierCount: z.number().int().min(0).optional(),
+  exportWarnings: z.array(z.string()).optional(),
+  productKind: z.enum(["option_based", "simple", "service"]).optional(),
   
   // Variants (if needed in future - not implemented in v1)
   // variants: z.array(productVariantExportSchema).optional(),
