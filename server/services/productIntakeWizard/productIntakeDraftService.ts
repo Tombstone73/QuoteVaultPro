@@ -1376,6 +1376,39 @@ function bestMaterialMatch(brief: ProductIntakeBrief) {
     .sort((a, b) => b.confidence - a.confidence)[0] ?? null;
 }
 
+function materialReviewMetadata(brief: ProductIntakeBrief, materialMatch: ReturnType<typeof bestMaterialMatch>) {
+  const sourceMaterialText = unique(brief.materialAnalysis.detectedMaterialReferences.map((value) => value.trim()).filter(Boolean)).join(", ") || null;
+  const candidateMatches = brief.materialAnalysis.likelyMaterialMatches
+    .slice(0, 10)
+    .map((match) => ({
+      materialId: match.materialId ?? null,
+      sku: match.sku ?? null,
+      name: match.name,
+      confidence: match.confidence,
+    }));
+  const matchConfidence = Math.max(
+    brief.materialAnalysis.confidence,
+    ...candidateMatches.map((match) => match.confidence),
+    0,
+  );
+  const resolved = Boolean(materialMatch?.materialId && brief.materialAnalysis.confidence >= 65 && Number(materialMatch.confidence) >= 65);
+  const materialMatchStatus: "resolved" | "review_required" | "unresolved" = resolved
+    ? "resolved"
+    : candidateMatches.length > 0 || sourceMaterialText
+      ? "review_required"
+      : "unresolved";
+  const materialAssociationRequired = materialMatchStatus !== "resolved";
+
+  return {
+    materialMatchStatus,
+    materialAssociationRequired,
+    sourceMaterialText,
+    candidateMatches,
+    confidence: matchConfidence,
+    warnings: materialAssociationRequired ? ["Material association required."] : [],
+  };
+}
+
 function assessDraftQuality(args: {
   brief: ProductIntakeBrief;
   tree: OptionTreeV2;
@@ -1500,6 +1533,7 @@ export function buildProductIntakeDraftTree(args: {
   const fixedDimensions = fixedDimensionsForBrief(args.brief, sizeOption, sourceText, sizeMode);
   const sizeMetadata = sizeMetadataForBrief({ brief: args.brief, sizeOption, sizeMode, fixedDimensions });
   const materialMatch = bestMaterialMatch(args.brief);
+  const materialReview = materialReviewMetadata(args.brief, materialMatch);
   const pricingReadiness = analyzeDraftPricing({
     brief: args.brief,
     sourceText: args.sourceText,
@@ -1558,6 +1592,11 @@ export function buildProductIntakeDraftTree(args: {
           name: materialMatch.name,
           confidence: materialMatch.confidence,
         } : null,
+        materialMatchStatus: materialReview.materialMatchStatus,
+        materialAssociationRequired: materialReview.materialAssociationRequired,
+        sourceMaterialText: materialReview.sourceMaterialText,
+        materialCandidateMatches: materialReview.candidateMatches,
+        materialWarnings: materialReview.warnings,
         missingDecisions: args.brief.missingDecisions.map((decision) => ({
           id: decision.id,
           question: decision.question,
@@ -1759,7 +1798,7 @@ export function buildProductIntakeProductValues(args: {
 }) {
   const productName = compactText(args.brief.productIdentity.likelyProductName.value, "Product Intake Draft");
   const material = args.brief.materialAnalysis.likelyMaterialMatches
-    .filter((match) => match.materialId)
+    .filter((match) => match.materialId && args.brief.materialAnalysis.confidence >= 65 && match.confidence >= 65)
     .sort((a, b) => b.confidence - a.confidence)[0];
   const summaryEvidence = args.brief.sourceEvidence
     .map((evidence) => `${evidence.label}: ${evidence.value ?? ""}`.trim())

@@ -222,6 +222,7 @@ function ProductIntakeDraftContextPanel({ treeJson }: { treeJson: any }) {
   if (!intake || typeof intake !== "object") return null;
   const quality = intake.draftQuality && typeof intake.draftQuality === "object" ? intake.draftQuality : null;
   const material = intake.materialMatch && typeof intake.materialMatch === "object" ? intake.materialMatch : null;
+  const materialAssociationRequired = Boolean(intake.materialAssociationRequired || intake.materialMatchStatus === "review_required" || intake.materialMatchStatus === "unresolved");
   const missingDecisions = Array.isArray(intake.missingDecisions) ? intake.missingDecisions : [];
   return (
     <div className="rounded-md border border-slate-700 bg-slate-900/70 p-4 text-sm text-slate-200">
@@ -257,6 +258,11 @@ function ProductIntakeDraftContextPanel({ treeJson }: { treeJson: any }) {
           <div className="mt-1">{material ? `${String(material.name ?? "-")} (${Number(material.confidence ?? 0)}%)` : "Needs review"}</div>
         </div>
       </div>
+      {materialAssociationRequired && (
+        <div className="mt-3 text-xs font-medium text-amber-200">
+          Material association required.
+        </div>
+      )}
       {missingDecisions.length > 0 && (
         <div className="mt-3 text-xs text-amber-200">
           Missing Decisions: {missingDecisions.map((decision: any) => String(decision.question ?? decision.id ?? "")).filter(Boolean).slice(0, 3).join("; ")}

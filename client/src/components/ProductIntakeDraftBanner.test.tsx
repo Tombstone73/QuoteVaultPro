@@ -27,6 +27,8 @@ describe("ProductIntakeDraftBanner", () => {
               productIsActive: false,
               pbv2Status: "DRAFT",
               pbv2ActiveTreeVersionId: null,
+              materialAssociationRequired: true,
+              intakeWarnings: ["Material association required."],
             }}
           />
         </MemoryRouter>,
@@ -36,6 +38,7 @@ describe("ProductIntakeDraftBanner", () => {
 
     expect(html).toContain("Created from Product Intake");
     expect(html).toContain("Product inactive");
+    expect(html).toContain("Material association required.");
     expect(html).toContain("PBV2 DRAFT");
     expect(html).toContain("Publish required");
     expect(html).toContain("/admin/product-intake/sessions/sess_1/review");

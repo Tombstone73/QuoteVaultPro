@@ -396,6 +396,16 @@ export type OptionTreeV2 = {
         name: string;
         confidence: number;
       } | null;
+      materialMatchStatus?: "resolved" | "review_required" | "unresolved";
+      materialAssociationRequired?: boolean;
+      sourceMaterialText?: string | null;
+      materialCandidateMatches?: Array<{
+        materialId: string | null;
+        sku: string | null;
+        name: string;
+        confidence: number;
+      }>;
+      materialWarnings?: string[];
       missingDecisions?: Array<{
         id: string;
         question: string;
@@ -803,6 +813,16 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
           name: z.string(),
           confidence: z.number().min(0).max(100),
         }).nullable().optional(),
+        materialMatchStatus: z.enum(["resolved", "review_required", "unresolved"]).optional(),
+        materialAssociationRequired: z.boolean().optional(),
+        sourceMaterialText: z.string().nullable().optional(),
+        materialCandidateMatches: z.array(z.object({
+          materialId: z.string().nullable(),
+          sku: z.string().nullable(),
+          name: z.string(),
+          confidence: z.number().min(0).max(100),
+        })).optional(),
+        materialWarnings: z.array(z.string()).optional(),
         missingDecisions: z.array(z.object({
           id: z.string(),
           question: z.string(),

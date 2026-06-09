@@ -30,6 +30,10 @@ export type ProductIntakeDraftReview = {
     confidence: number | null;
     productName: string | null;
     materialMatch: string | null;
+    materialMatchStatus: "resolved" | "review_required" | "unresolved";
+    materialAssociationRequired: boolean;
+    sourceMaterialText: string | null;
+    materialCandidates: Array<{ materialId: string | null; sku: string | null; name: string; confidence: number }>;
     warnings: string[];
     unansweredDecisions: string[];
   };
@@ -98,6 +102,8 @@ export type ProductIntakeDraftReviewService = {
     productIsActive: boolean;
     pbv2Status: string | null;
     pbv2ActiveTreeVersionId: string | null;
+    materialAssociationRequired: boolean;
+    intakeWarnings: string[];
   } | null>;
   activateProduct(args: {
     organizationId: string;
@@ -200,11 +206,42 @@ function conclusionValue(value: unknown): string | null {
   return typeof raw === "string" && raw.trim() ? raw : null;
 }
 
+function materialReviewFromBrief(brief: any) {
+  const materialAnalysis = brief?.materialAnalysis && typeof brief.materialAnalysis === "object" ? brief.materialAnalysis : {};
+  const matches = Array.isArray(materialAnalysis.likelyMaterialMatches) ? materialAnalysis.likelyMaterialMatches : [];
+  const candidates = matches.slice(0, 10).map((match: any) => ({
+    materialId: typeof match?.materialId === "string" && match.materialId ? match.materialId : null,
+    sku: typeof match?.sku === "string" && match.sku ? match.sku : null,
+    name: String(match?.name ?? "Unknown material"),
+    confidence: typeof match?.confidence === "number" ? match.confidence : 0,
+  }));
+  const likelyMaterial = candidates[0] ?? null;
+  const sourceMaterialText = Array.isArray(materialAnalysis.detectedMaterialReferences)
+    ? materialAnalysis.detectedMaterialReferences.map((value: any) => String(value).trim()).filter(Boolean).join(", ") || null
+    : null;
+  const analysisConfidence = typeof materialAnalysis.confidence === "number" ? materialAnalysis.confidence : 0;
+  const resolved = Boolean(likelyMaterial?.materialId && analysisConfidence >= 65 && likelyMaterial.confidence >= 65);
+  const materialMatchStatus: "resolved" | "review_required" | "unresolved" = resolved
+    ? "resolved"
+    : candidates.length > 0 || sourceMaterialText
+      ? "review_required"
+      : "unresolved";
+
+  return {
+    likelyMaterial,
+    materialMatchStatus,
+    materialAssociationRequired: materialMatchStatus !== "resolved",
+    sourceMaterialText,
+    materialCandidates: candidates,
+  };
+}
+
 function buildIntakeSummary(session: any): ProductIntakeDraftReview["intake"] {
   const brief = session.aiBriefJson && typeof session.aiBriefJson === "object" ? session.aiBriefJson as any : {};
-  const likelyMaterial = Array.isArray(brief?.materialAnalysis?.likelyMaterialMatches)
-    ? brief.materialAnalysis.likelyMaterialMatches[0]
-    : null;
+  const materialReview = materialReviewFromBrief(brief);
+  const draftWarnings = Array.isArray(brief?.draftWarnings)
+    ? brief.draftWarnings.map((warning: any) => String(warning?.message ?? "")).filter(Boolean)
+    : [];
   return {
     sessionId: session.id,
     status: session.status,
@@ -215,10 +252,15 @@ function buildIntakeSummary(session: any): ProductIntakeDraftReview["intake"] {
     briefSource: typeof brief.source === "string" ? brief.source : null,
     confidence: typeof brief.overallConfidence === "number" ? brief.overallConfidence : null,
     productName: conclusionValue(brief?.productIdentity?.likelyProductName),
-    materialMatch: typeof likelyMaterial?.name === "string" ? likelyMaterial.name : null,
-    warnings: Array.isArray(brief?.draftWarnings)
-      ? brief.draftWarnings.map((warning: any) => String(warning?.message ?? "")).filter(Boolean)
-      : [],
+    materialMatch: typeof materialReview.likelyMaterial?.name === "string" ? materialReview.likelyMaterial.name : null,
+    materialMatchStatus: materialReview.materialMatchStatus,
+    materialAssociationRequired: materialReview.materialAssociationRequired,
+    sourceMaterialText: materialReview.sourceMaterialText,
+    materialCandidates: materialReview.materialCandidates,
+    warnings: [
+      ...(materialReview.materialAssociationRequired ? ["Material association required."] : []),
+      ...draftWarnings,
+    ],
     unansweredDecisions: Array.isArray(brief?.missingDecisions)
       ? brief.missingDecisions.map((decision: any) => String(decision?.question ?? decision?.reason ?? "")).filter(Boolean)
       : [],
@@ -463,6 +505,7 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
           productIsActive: products.isActive,
           pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
           pbv2Status: pbv2TreeVersions.status,
+          treeJson: pbv2TreeVersions.treeJson,
         })
         .from(productIntakeSessions)
         .innerJoin(products, eq(productIntakeSessions.createdProductId, products.id))
@@ -477,7 +520,25 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
         ))
         .orderBy(desc(productIntakeSessions.updatedAt))
         .limit(1);
-      return session ?? null;
+      if (!session) return null;
+      const intake = (session as any).treeJson?.meta?.productIntake;
+      const materialAssociationRequired = Boolean(intake?.materialAssociationRequired);
+      const materialWarnings = Array.isArray(intake?.materialWarnings)
+        ? intake.materialWarnings.map((warning: any) => String(warning)).filter(Boolean)
+        : [];
+      return {
+        sessionId: session.sessionId,
+        productId: session.productId,
+        pbv2TreeVersionId: session.pbv2TreeVersionId,
+        sessionStatus: session.sessionStatus,
+        productIsActive: session.productIsActive,
+        pbv2ActiveTreeVersionId: session.pbv2ActiveTreeVersionId,
+        pbv2Status: session.pbv2Status,
+        materialAssociationRequired,
+        intakeWarnings: materialAssociationRequired && materialWarnings.length === 0
+          ? ["Material association required."]
+          : materialWarnings,
+      };
     },
 
     async activateProduct({ organizationId, sessionId, userId, userName }) {
