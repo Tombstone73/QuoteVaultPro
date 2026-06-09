@@ -20,6 +20,11 @@ export function ProductIntakeDraftBanner({ link }: { link: ProductIntakeDraftLin
               ? " Options are in a PBV2 draft until published."
               : " No PBV2 draft tree is linked yet."}
           </p>
+          {link.materialAssociationRequired ? (
+            <p className="font-medium text-amber-700 dark:text-amber-300">
+              {(link.intakeWarnings ?? []).find((warning) => /material association required/i.test(warning)) ?? "Material association required."}
+            </p>
+          ) : null}
           <div className="flex flex-wrap gap-2">
             <Badge variant={link.productIsActive ? "secondary" : "outline"}>{link.productIsActive ? "Product active" : "Product inactive"}</Badge>
             <Badge variant={link.pbv2Status === "ACTIVE" ? "secondary" : "outline"}>PBV2 {link.pbv2Status ?? "missing"}</Badge>

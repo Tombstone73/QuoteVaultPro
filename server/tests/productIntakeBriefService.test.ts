@@ -340,7 +340,7 @@ describe("Product Intake Brief service", () => {
   test("computes readiness penalties and review states without enabling draft creation", async () => {
     const readyBrief = await generateProductIntakeBrief({
       orgId: "org_1",
-      request: { sourceType: "text_description", description: "13oz banner custom width and height single sided quantity tier pricing proof required route to roll printer" },
+      request: { sourceType: "text_description", description: "13oz banner custom width and height single sided $5.00 per sqft proof required route to roll printer" },
       analyzer: null,
       templates,
       materials: [{ id: "mat_banner", sku: "BAN13", name: "13oz Scrim Banner" }],
@@ -353,6 +353,20 @@ describe("Product Intake Brief service", () => {
       sessionId: "sess_ready",
       createdAt: new Date().toISOString(),
     }));
+    const readyAnswers = readyQuestions
+      .filter((question) => question.required)
+      .map((question, index) => ({
+        id: `answer_ready_${index}`,
+        organizationId: "org_1",
+        sessionId: "sess_ready",
+        questionId: question.id,
+        questionKey: question.questionKey,
+        answer: question.questionType === "select" ? question.options?.[0]?.value ?? "square_foot" : "1, 10, 25",
+        answeredByUserId: "user_1",
+        answeredAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }));
     const readyReadiness = computeProductIntakeReadiness({
       session: {
         id: "sess_ready",
@@ -372,7 +386,7 @@ describe("Product Intake Brief service", () => {
         abandonedAt: null,
       },
       questions: readyQuestions,
-      answers: [],
+      answers: readyAnswers,
     });
 
     expect(readyReadiness.canCreateDraft).toBe(true);

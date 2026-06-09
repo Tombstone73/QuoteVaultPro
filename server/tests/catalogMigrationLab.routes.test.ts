@@ -306,6 +306,10 @@ function makeDraftReviewFixture(overrides: Partial<ProductIntakeDraftReview> = {
       confidence: 90,
       productName: "13oz Banner",
       materialMatch: "13oz Scrim Banner",
+      materialMatchStatus: "resolved",
+      materialAssociationRequired: false,
+      sourceMaterialText: "13oz banner",
+      materialCandidates: [{ materialId: "mat_1", sku: "BAN13", name: "13oz Scrim Banner", confidence: 91 }],
       warnings: ["Pricing setup required."],
       unansweredDecisions: [],
     },
@@ -411,6 +415,8 @@ function makeMemoryProductIntakeDraftReviewService(
         productIsActive: review.product.isActive,
         pbv2Status: review.pbv2Tree.status,
         pbv2ActiveTreeVersionId: review.product.pbv2ActiveTreeVersionId,
+        materialAssociationRequired: review.intake.materialAssociationRequired,
+        intakeWarnings: review.intake.warnings,
       };
     },
     async activateProduct({ organizationId }) {
@@ -973,6 +979,42 @@ describe("Catalog Migration Lab routes", () => {
           },
         },
       },
+    });
+  });
+
+  test("product intake create-draft allows unresolved material as a review warning", async () => {
+    const store = makeMemoryProductIntakeSessionStore();
+    const created = await store.createFromAnalysis({
+      organizationId: "org_1",
+      userId: "user_1",
+      request: { sourceType: "text_description", description: "Mystery substrate sign $5 per sqft" } as any,
+      analyzer: null,
+      brief: readyDraftBrief({
+        materialAnalysis: {
+          detectedMaterialReferences: ["Mystery substrate"],
+          likelyMaterialMatches: [],
+          confidence: 25,
+          evidence: [],
+        },
+      }),
+    });
+    expect(created.session.status).toBe("ready_for_draft");
+    expect(created.readiness.canCreateDraft).toBe(true);
+    expect(created.readiness.reviewState).toBe("needs_review");
+    expect(created.readiness.penalties).toEqual([
+      expect.objectContaining({ code: "material_unresolved", severity: "review" }),
+    ]);
+
+    const app = buildApp({}, store, makeMemoryProductIntakeDiagnosticsStore(), makeMemoryProductIntakeDraftCreator(store));
+    const response = await request(app)
+      .post(`/api/admin/product-intake-wizard/sessions/${created.session.id}/create-draft`)
+      .send({});
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.session).toMatchObject({
+      status: "draft_created",
+      createdProductId: "prod_draft_1",
+      createdPbv2TreeVersionId: "tree_draft_1",
     });
   });
 

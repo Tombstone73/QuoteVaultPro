@@ -322,6 +322,15 @@ export const productIntakeDraftReviewSchema = z.object({
     confidence: z.number().nullable(),
     productName: z.string().nullable(),
     materialMatch: z.string().nullable(),
+    materialMatchStatus: z.enum(["resolved", "review_required", "unresolved"]),
+    materialAssociationRequired: z.boolean(),
+    sourceMaterialText: z.string().nullable(),
+    materialCandidates: z.array(z.object({
+      materialId: z.string().nullable(),
+      sku: z.string().nullable(),
+      name: z.string(),
+      confidence: z.number().min(0).max(100),
+    })),
     warnings: z.array(z.string()),
     unansweredDecisions: z.array(z.string()),
   }),
@@ -390,6 +399,8 @@ export const productIntakeDraftLinkSchema = z.object({
   productIsActive: z.boolean(),
   pbv2Status: z.string().nullable(),
   pbv2ActiveTreeVersionId: z.string().nullable(),
+  materialAssociationRequired: z.boolean().optional(),
+  intakeWarnings: z.array(z.string()).optional(),
 });
 
 export const productIntakeDraftReviewResponseSchema = z.object({

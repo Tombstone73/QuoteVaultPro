@@ -179,6 +179,43 @@ describe("Product Intake draft service", () => {
     expect(inputNode(tree, "grommets")?.input?.required).toBe(false);
   });
 
+  test("unresolved material is stored as review metadata without blocking draft artifacts", () => {
+    const unresolvedBrief = brief({
+      materialAnalysis: {
+        detectedMaterialReferences: ["Mystery vinyl"],
+        likelyMaterialMatches: [
+          { materialId: "mat_candidate", sku: "MYST", name: "Mystery Candidate", confidence: 45, evidence: [] },
+        ],
+        confidence: 45,
+        evidence: [],
+      },
+    });
+    const tree = buildProductIntakeDraftTree({
+      brief: unresolvedBrief,
+      sessionId: "sess_unresolved_material",
+      productName: "Mystery Vinyl Sign",
+      userId: "user_1",
+    });
+    const productValues = buildProductIntakeProductValues({
+      organizationId: "org_1",
+      productId: "prod_unresolved",
+      brief: unresolvedBrief,
+      productTypeId: "ptype_banner",
+    });
+
+    expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expect(productValues.primaryMaterialId).toBeNull();
+    expect(productValues.isActive).toBe(false);
+    expect(tree.meta?.productIntake?.materialMatchStatus).toBe("review_required");
+    expect(tree.meta?.productIntake?.materialAssociationRequired).toBe(true);
+    expect(tree.meta?.productIntake?.sourceMaterialText).toBe("Mystery vinyl");
+    expect(tree.meta?.productIntake?.materialCandidateMatches).toEqual([
+      { materialId: "mat_candidate", sku: "MYST", name: "Mystery Candidate", confidence: 45 },
+    ]);
+    expect(tree.meta?.productIntake?.materialWarnings).toEqual(["Material association required."]);
+    expect(tree.meta?.productIntake?.draftQuality?.warnings).toEqual(expect.arrayContaining(["Material match needs review."]));
+  });
+
   test("extracts explicit source pricing into PBV2 base pricing metadata", () => {
     const tree = buildProductIntakeDraftTree({
       brief: brief({

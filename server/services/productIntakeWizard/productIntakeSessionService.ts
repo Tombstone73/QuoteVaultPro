@@ -142,7 +142,9 @@ function questionForMissingDecision(brief: ProductIntakeBrief, decision: Product
     questionKey: normalizeKey(decision.id),
     label: decision.question,
     helpText: decision.reason,
-    required: decision.severity === "blocker" || decision.severity === "review",
+    required: decision.id === "select-material"
+      ? false
+      : decision.severity === "blocker" || decision.severity === "review",
     sourcePath,
     confidence: null,
     sortOrder,
@@ -559,7 +561,7 @@ export function computeProductIntakeReadiness(args: {
     penalties.push({ code: "required_answers_open", label: `${unansweredRequiredCount} required answer(s) still open`, severity: "blocker" });
   }
   if (!materialAnswered && (materialConfidence < 65 || brief.materialAnalysis.likelyMaterialMatches.length === 0)) {
-    penalties.push({ code: "material_unresolved", label: "Material is unresolved or below confidence threshold", severity: "blocker" });
+    penalties.push({ code: "material_unresolved", label: "Material association required.", severity: "review" });
   }
   if (!pricingAnswered && (brief.pricingAnalysis.behavior === "unknown" || brief.pricingAnalysis.confidence < 65)) {
     penalties.push({ code: "pricing_unresolved", label: "Pricing behavior is unresolved or below confidence threshold", severity: "blocker" });
@@ -584,8 +586,8 @@ export function computeProductIntakeReadiness(args: {
         : "ready_for_draft";
   const canCreateDraft =
     args.session.status === "ready_for_draft" &&
-    reviewState === "ready_for_draft" &&
     unansweredRequiredCount === 0 &&
+    !penalties.some((penalty) => penalty.severity === "blocker") &&
     !args.session.createdProductId &&
     !args.session.createdPbv2TreeVersionId;
 

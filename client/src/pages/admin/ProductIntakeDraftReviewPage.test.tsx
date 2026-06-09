@@ -46,6 +46,10 @@ function reviewFixture(overrides: Partial<ProductIntakeDraftReview> = {}): Produ
       confidence: 92,
       productName: "13oz Banner",
       materialMatch: "13oz Scrim Banner",
+      materialMatchStatus: "resolved",
+      materialAssociationRequired: false,
+      sourceMaterialText: "13oz banner",
+      materialCandidates: [{ materialId: "mat_1", sku: "BAN13", name: "13oz Scrim Banner", confidence: 91 }],
       warnings: ["Pricing setup required."],
       unansweredDecisions: ["Confirm finishing defaults."],
     },
@@ -195,6 +199,35 @@ describe("ProductIntakeDraftReviewPage", () => {
 
     const activate = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Activate Product"));
     expect(activate?.hasAttribute("disabled")).toBe(true);
+
+    act(() => root.unmount());
+  });
+
+  test("shows material association required when draft material is unresolved", async () => {
+    const { container, root } = await renderPage(reviewFixture({
+      intake: {
+        ...reviewFixture().intake,
+        materialMatch: null,
+        materialMatchStatus: "unresolved",
+        materialAssociationRequired: true,
+        sourceMaterialText: "Mystery vinyl",
+        materialCandidates: [],
+        warnings: ["Material association required.", "Pricing setup required."],
+      },
+      product: {
+        ...reviewFixture().product,
+        primaryMaterialId: null,
+      },
+      publishReadiness: {
+        ...reviewFixture().publishReadiness,
+        materialLinked: false,
+      },
+    }));
+
+    expect(container.textContent).toContain("Material association required.");
+    expect(container.textContent).toContain("Review required");
+    expect(container.textContent).toContain("Material linked");
+    expect(container.textContent).toContain("No");
 
     act(() => root.unmount());
   });
