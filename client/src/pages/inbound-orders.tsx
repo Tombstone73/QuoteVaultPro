@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
@@ -614,6 +614,7 @@ function SourceEvidencePanel({
   latestAttempt,
   parseError,
   isParsing,
+  parseDisabled,
   onParse,
 }: {
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
@@ -622,6 +623,7 @@ function SourceEvidencePanel({
   latestAttempt: ClientInboundOrderParseAttempt | null;
   parseError: Error | null;
   isParsing: boolean;
+  parseDisabled: boolean;
   onParse: () => void;
 }) {
   if (!selectedRecord) {
@@ -654,7 +656,7 @@ function SourceEvidencePanel({
             <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
               <Badge variant="secondary">{titleCase(record.sourceType)}</Badge>
               <StatusBadge status={record.status} />
-              <Button type="button" size="sm" onClick={onParse} disabled={isParsing}>
+              <Button type="button" size="sm" onClick={onParse} disabled={parseDisabled}>
                 {isParsing ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : (
@@ -690,8 +692,14 @@ function SourceEvidencePanel({
             <div className="mt-1 text-xs text-muted-foreground">
               {latestAttempt ? `Last attempt ${formatRelative(latestAttempt.createdAt)}` : "No AI parse has been run for this record."}
             </div>
+            {isParsing && (
+              <div className="mt-2 flex items-center gap-2 text-xs font-medium text-primary">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Parsing source evidence...
+              </div>
+            )}
           </div>
-          {(parseError || latestAttempt?.status === "failed") && (
+          {!isParsing && (parseError || latestAttempt?.status === "failed") && (
             <Alert variant="destructive" className="mt-3">
               <AlertTriangle className="h-4 w-4" />
               <AlertTitle>Parse unavailable</AlertTitle>
@@ -997,6 +1005,8 @@ export default function InboundOrdersPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [queueFilters, setQueueFilters] = useState<QueueFilters>(defaultQueueFilters);
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
+  const [parsingRecordId, setParsingRecordId] = useState<string | null>(null);
+  const parseInFlightRef = useRef(false);
   const listUrl = useMemo(() => buildInboundOrderListUrl(queueFilters), [queueFilters]);
 
   const listQuery = useQuery({
@@ -1069,7 +1079,20 @@ export default function InboundOrdersPage() {
       } satisfies ClientInboundOrderDraftPreviewResponse);
       setSelectedId(parsedRecordId);
     },
+    onSettled: () => {
+      parseInFlightRef.current = false;
+      setParsingRecordId(null);
+    },
   });
+
+  const isParseInFlight = Boolean(parsingRecordId) || parseMutation.isPending;
+  const isSelectedRecordParsing = Boolean(selectedId && parsingRecordId === selectedId);
+  const runParseForSelectedRecord = () => {
+    if (!selectedId || parseInFlightRef.current) return;
+    parseInFlightRef.current = true;
+    setParsingRecordId(selectedId);
+    parseMutation.mutate(selectedId);
+  };
 
   const pageError = getErrorTone(
     (listQuery.error as Error | null)
@@ -1158,10 +1181,9 @@ export default function InboundOrdersPage() {
               isLoading={detailQuery.isLoading}
               latestAttempt={draftPreviewQuery.data?.data.latestAttempt ?? null}
               parseError={parseMutation.error as Error | null}
-              isParsing={parseMutation.isPending}
-              onParse={() => {
-                if (selectedId) parseMutation.mutate(selectedId);
-              }}
+              isParsing={isSelectedRecordParsing}
+              parseDisabled={isParseInFlight}
+              onParse={runParseForSelectedRecord}
             />
           </div>
         </section>

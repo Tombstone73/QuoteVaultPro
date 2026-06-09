@@ -427,6 +427,7 @@ describe("InboundOrdersPage", () => {
   test("shows parse loading and error states", async () => {
     const row = record();
     let rejectParse: ((error: Error) => void) | null = null;
+    let parseRequestCount = 0;
 
     apiFetchMock.mockImplementation(async (url: any, options?: any) => {
       const path = String(url);
@@ -434,6 +435,7 @@ describe("InboundOrdersPage", () => {
       if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
       if (path === "/api/inbound-orders/inbound_1/draft-preview") return jsonResponse(draftPreview());
       if (path === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST") {
+        parseRequestCount += 1;
         return await new Promise((_, reject) => {
           rejectParse = reject;
         });
@@ -453,12 +455,103 @@ describe("InboundOrdersPage", () => {
       Simulate.click(parseButton!);
     });
     await waitForText("Parsing...");
+    await waitForText("Parsing source evidence...");
+    expect(parseButton?.disabled).toBe(true);
+
+    act(() => {
+      Simulate.click(parseButton!);
+    });
+    await flush();
+    expect(parseRequestCount).toBe(1);
+
     await act(async () => {
       rejectParse?.(new Error("AI provider is not configured."));
     });
     await waitForText("AI provider is not configured.");
 
     expect(container.textContent).toContain("Parse unavailable");
+    const retryButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Parse with AI")
+    ));
+    expect(retryButton?.disabled).toBe(false);
+  });
+
+  test("keeps the previous parsed preview visible while a re-parse is running", async () => {
+    const row = record();
+    const previousDraft = parsedDraft({
+      customer: {
+        ...parsedDraft().customer,
+        companyName: "Previous Signs",
+        customerCandidates: [{
+          id: "customer_previous",
+          label: "Previous Signs",
+          confidence: 74,
+          reason: "Previous parse candidate",
+          metadata: {},
+        }],
+      },
+      globalWarnings: [],
+      missingDecisions: [],
+    });
+    const nextDraft = parsedDraft({
+      customer: {
+        ...parsedDraft().customer,
+        companyName: "Updated Signs",
+        customerCandidates: [{
+          id: "customer_next",
+          label: "Updated Signs",
+          confidence: 93,
+          reason: "New parse candidate",
+          metadata: {},
+        }],
+      },
+    });
+    const previousAttempt = parseAttempt({ parsedDraft: previousDraft, confidence: 74, warnings: [] });
+    const nextAttempt = parseAttempt({ id: "attempt_2", parsedDraft: nextDraft, confidence: 93, warnings: nextDraft.globalWarnings });
+    let resolveParse: ((response: any) => void) | null = null;
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview({ draft: previousDraft, latestAttempt: previousAttempt }));
+      }
+      if (path === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST") {
+        return await new Promise((resolve) => {
+          resolveParse = resolve;
+        });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Previous Signs");
+
+    const parseButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Parse with AI")
+    ));
+    act(() => {
+      Simulate.click(parseButton!);
+    });
+
+    await waitForText("Parsing source evidence...");
+    expect(container.textContent).toContain("Previous Signs");
+    expect(container.textContent).not.toContain("Updated Signs");
+
+    await act(async () => {
+      resolveParse?.(jsonResponse({
+        success: true,
+        data: {
+          draft: nextDraft,
+          latestAttempt: nextAttempt,
+          record: { ...row, status: "needs_review", parsedAt: "2026-06-09T12:03:00.000Z" },
+        },
+      }));
+    });
+
+    await waitForText("Updated Signs");
+    expect(container.textContent).toContain("93% confidence");
   });
 
   test("refreshes draft preview after parse and renders reviewable parsed data", async () => {
