@@ -14,6 +14,7 @@ export type ProductKnowledgeCandidateInput = {
   materialName?: string | null;
   materialCategory?: string | null;
   metadataText?: string | null;
+  isService?: boolean | null;
 };
 
 export type ProductKnowledgeMatch = {
@@ -168,14 +169,18 @@ export function scoreProductKnowledgeCandidates(
       const category = scoreField(candidate.category ?? "", phrases, queryTokens);
       const material = scoreField([candidate.materialName, candidate.materialCategory].filter(Boolean).join(" "), phrases, queryTokens);
       const metadata = scoreField(candidate.metadataText ?? "", phrases, queryTokens);
-      const combinedConfidence = Math.min(100, Math.round(Math.max(
-        name.score,
-        description.score * 0.98,
-        category.score * 0.94,
-        material.score * 0.96,
-        metadata.score * 0.9,
-        name.score * 0.4 + description.score * 0.35 + category.score * 0.15 + material.score * 0.1,
-      )));
+      const accessoryPenalty = candidate.isService
+        || /\b(accessor(?:y|ies)|hardware|stake|stakes|grommet|fee|setup|install|installation|design)\b/i.test(`${candidate.name} ${candidate.category ?? ""}`)
+        ? 18
+        : 0;
+      const combinedConfidence = Math.max(0, Math.min(100, Math.round(Math.max(
+        name.score * 0.72,
+        description.score,
+        category.score * 0.98,
+        material.score,
+        metadata.score * 0.86,
+        name.score * 0.18 + description.score * 0.38 + category.score * 0.22 + material.score * 0.22,
+      ) - accessoryPenalty)));
       const reasons = [
         ...name.reasons.map((reason) => `name ${reason}`),
         ...description.reasons.map((reason) => `description ${reason}`),
@@ -200,6 +205,7 @@ export function scoreProductKnowledgeCandidates(
             categoryScore: category.score,
             materialScore: material.score,
             metadataScore: metadata.score,
+            accessoryPenalty,
             combinedConfidence,
           },
         },

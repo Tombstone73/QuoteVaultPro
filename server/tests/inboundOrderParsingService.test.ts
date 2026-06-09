@@ -5,8 +5,10 @@ import { AiProviderUnavailableError, type AiProviderAdapter } from "../services/
 import { InboundOrderParsingService } from "../services/inboundOrders/InboundOrderParsingService";
 import { InboundOrderTransitionError } from "../services/inboundOrders/InboundOrderService";
 import {
+  classifyDateSourceText,
   detectAttachmentDocument,
   detectEvidenceConflicts,
+  extractClassifiedDates,
   extractMachineReadablePdfText,
   extractPurchaseOrderFields,
   type InboundOrderEvidenceBundle,
@@ -453,6 +455,7 @@ describe("InboundOrderParsingService", () => {
   test("detects purchase order documents and extracts Brainstorm-style PO fields", () => {
     const poText = [
       "Purchase Order 151661",
+      "Purchase Order Date: 06/08/26",
       "Arrival Due Date MUST EOD 6/11",
       "3 PVC Signs",
       "24x36",
@@ -475,6 +478,32 @@ describe("InboundOrderParsingService", () => {
       material: "3mm White PVC",
       dimensions: "24x36",
     });
+    expect(fields.dateCandidates[0]).toMatchObject({
+      parsedDate: "2026-06-11",
+      classification: "ARRIVAL_DATE",
+      sourceText: "Arrival Due Date MUST EOD 6/11",
+    });
+    expect(fields.fieldSources.dueDate).toMatchObject({
+      value: "2026-06-11",
+      sourceText: "Arrival Due Date MUST EOD 6/11",
+      confidence: expect.any(Number),
+    });
+  });
+
+  test("classifies dates before choosing requested due date", () => {
+    expect(classifyDateSourceText("PO Date 6/8")).toBe("PO_DATE");
+    expect(classifyDateSourceText("Need by Friday")).toBe("DUE_DATE");
+    expect(classifyDateSourceText("Ship Date 6/10")).toBe("SHIP_DATE");
+
+    const candidates = extractClassifiedDates({
+      text: "Purchase Order Date: 06/08/26\nArrival Due Date: MUST EOD 6/11",
+      receivedAt: "2026-06-08T12:00:00.000Z",
+    });
+
+    expect(candidates[0]).toMatchObject({
+      parsedDate: "2026-06-11",
+      classification: "ARRIVAL_DATE",
+    });
   });
 
   test("detects conflicts between email body and purchase order attachment", () => {
@@ -482,9 +511,10 @@ describe("InboundOrderParsingService", () => {
       {
         type: "EMAIL_BODY",
         label: "Email Body",
-        rawText: "Please print 50 signs. PO attached.",
+        rawText: "Please print 50 signs. Need by Friday. PO attached.",
         documentType: "unknown",
         documentConfidence: 0,
+        extractionStatus: "not_attempted",
         warnings: [],
       },
       {
@@ -497,14 +527,17 @@ describe("InboundOrderParsingService", () => {
         pageCount: 1,
         documentType: "purchase_order",
         documentConfidence: 98,
+        extractionStatus: "successful",
         poSummary: {
           poNumber: "151661",
-          dueDate: "2026-06-11",
+          dueDate: "2026-06-09",
           quantity: 3,
           productDescription: "PVC Signs",
           material: "3mm White PVC",
           dimensions: "24x36",
           printSpecs: [],
+          dateCandidates: [],
+          fieldSources: {},
         },
         warnings: [],
       },
@@ -513,6 +546,8 @@ describe("InboundOrderParsingService", () => {
     expect(conflicts).toEqual([expect.objectContaining({
       code: "evidence_quantity_conflict",
       message: expect.stringContaining("email (50)"),
+    }), expect.objectContaining({
+      code: "evidence_due_date_conflict",
     })]);
   });
 
@@ -529,6 +564,7 @@ describe("InboundOrderParsingService", () => {
         pageCount: 1,
         documentType: "purchase_order",
         documentConfidence: 98,
+        extractionStatus: "successful",
         poSummary: {
           poNumber: "151661",
           dueDate: "2026-06-11",
@@ -537,6 +573,16 @@ describe("InboundOrderParsingService", () => {
           material: "3mm White PVC",
           dimensions: "24x36",
           printSpecs: [],
+          dateCandidates: [],
+          fieldSources: {
+            dueDate: {
+              value: "2026-06-11",
+              sourceType: "PDF_ATTACHMENT",
+              sourceDocument: "Brainstorm Print PO.pdf",
+              sourceText: "Arrival Due Date MUST EOD 6/11",
+              confidence: 98,
+            },
+          },
         },
         warnings: [],
       }],
@@ -556,5 +602,37 @@ describe("InboundOrderParsingService", () => {
       width: 24,
       height: 36,
     });
+  });
+
+  test("product ranking favors printable material/category/description over accessories", () => {
+    const matches = scoreProductKnowledgeCandidates(
+      { sourceText: "3 PVC Signs 24x36 3mm White PVC", productName: "PVC Signs", materialText: "3mm White PVC" },
+      [
+        {
+          id: "accessory_stake",
+          name: "PVC Sign Stake",
+          description: "Accessory hardware for signs.",
+          category: "Accessories",
+          materialName: "Steel Stake",
+          materialCategory: "Hardware",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "printable_pvc",
+          name: "3mm White PVC",
+          description: "Printable rigid PVC signs and display panels.",
+          category: "Rigid Signs",
+          materialName: "3mm White PVC",
+          materialCategory: "PVC",
+          metadataText: "{}",
+          isService: false,
+        },
+      ],
+      5,
+    );
+
+    expect(matches[0].id).toBe("printable_pvc");
+    expect(matches[0].metadata.matchBreakdown.materialScore).toBeGreaterThan(0);
   });
 });

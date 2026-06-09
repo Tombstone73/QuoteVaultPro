@@ -617,6 +617,7 @@ describe("InboundOrdersPage", () => {
           pageCount: 1,
           documentType: "purchase_order",
           documentConfidence: 98,
+          extractionStatus: "successful",
           poSummary: {
             poNumber: "151661",
             dueDate: "2026-06-11",
@@ -625,6 +626,56 @@ describe("InboundOrdersPage", () => {
             material: "3mm White PVC",
             dimensions: "24x36",
             printSpecs: [],
+            dateCandidates: [{
+              parsedDate: "2026-06-11",
+              sourceText: "Arrival Due Date; MUST EOD 6/11",
+              classification: "ARRIVAL_DATE",
+              confidence: 98,
+            }],
+            fieldSources: {
+              poNumber: {
+                value: "151661",
+                sourceType: "PDF_ATTACHMENT",
+                sourceDocument: "Purchase Order 151661",
+                sourceText: "Purchase Order 151661",
+                confidence: 98,
+              },
+              dueDate: {
+                value: "2026-06-11",
+                sourceType: "PDF_ATTACHMENT",
+                sourceDocument: "Purchase Order 151661",
+                sourceText: "Arrival Due Date; MUST EOD 6/11",
+                confidence: 98,
+              },
+              quantity: {
+                value: 3,
+                sourceType: "PDF_ATTACHMENT",
+                sourceDocument: "Purchase Order 151661",
+                sourceText: "3 PVC Signs",
+                confidence: 100,
+              },
+              material: {
+                value: "3mm White PVC",
+                sourceType: "PDF_ATTACHMENT",
+                sourceDocument: "Purchase Order 151661",
+                sourceText: "3mm White PVC",
+                confidence: 92,
+              },
+              dimensions: {
+                value: "24x36",
+                sourceType: "PDF_ATTACHMENT",
+                sourceDocument: "Purchase Order 151661",
+                sourceText: "24x36",
+                confidence: 95,
+              },
+              productDescription: {
+                value: "PVC Signs",
+                sourceType: "PDF_ATTACHMENT",
+                sourceDocument: "Purchase Order 151661",
+                sourceText: "3 PVC Signs",
+                confidence: 90,
+              },
+            },
           },
           warnings: [],
         }],
@@ -670,7 +721,13 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Brainstorm Print PO.pdf");
     expect(container.textContent).toContain("Purchase Order");
     expect(container.textContent).toContain("98%");
+    expect(container.textContent).toContain("Pages: 1");
+    expect(container.textContent).toContain("Extraction: Successful");
     expect(container.textContent).toContain("PO Extraction Summary");
+    expect(container.textContent).toContain("Field Sources");
+    expect(container.textContent).toContain("Source: PDF Attachment");
+    expect(container.textContent).toContain("Document: Purchase Order 151661");
+    expect(container.textContent).toContain("Source Text: Arrival Due Date; MUST EOD 6/11");
     expect(container.textContent).toContain("151661");
     expect(container.textContent).toContain("3mm White PVC");
     expect(container.textContent).toContain("24x36");

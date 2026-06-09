@@ -452,7 +452,10 @@ export class InboundOrderParsingService {
 
   refineParsedDraft(record: InboundOrderRecord, draft: InboundOrderParsedDraft, evidenceBundle?: InboundOrderEvidenceBundle): InboundOrderParsedDraft {
     const evidenceRefined = evidenceBundle ? this.applyAttachmentEvidencePriority(draft, evidenceBundle) : draft;
-    const dateRefined = this.applyDateInference(record, evidenceRefined);
+    const hasPurchaseOrderDueDate = Boolean(
+      evidenceBundle?.items.some((item) => item.documentType === "purchase_order" && item.poSummary?.dueDate),
+    );
+    const dateRefined = hasPurchaseOrderDueDate ? evidenceRefined : this.applyDateInference(record, evidenceRefined);
     const decisionsRefined = this.applyMissingDecisionDetection(dateRefined);
     return evidenceBundle
       ? {

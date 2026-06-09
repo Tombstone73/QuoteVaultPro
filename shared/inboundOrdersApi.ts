@@ -83,6 +83,7 @@ export const inboundOrderEvidenceItemSchema = z.object({
   pageCount: z.number().int().positive().optional().nullable(),
   documentType: z.enum(["purchase_order", "artwork_reference", "unknown"]).default("unknown"),
   documentConfidence: z.number().min(0).max(100).default(0),
+  extractionStatus: z.enum(["successful", "failed", "not_attempted"]).default("not_attempted"),
   poSummary: z.object({
     poNumber: z.string().trim().max(255).optional().nullable(),
     customer: z.string().trim().max(255).optional().nullable(),
@@ -96,6 +97,19 @@ export const inboundOrderEvidenceItemSchema = z.object({
     shippingNotes: z.string().trim().max(2000).optional().nullable(),
     price: z.string().trim().max(120).optional().nullable(),
     versionCount: z.number().positive().optional().nullable(),
+    dateCandidates: z.array(z.object({
+      parsedDate: z.string().trim().max(80),
+      sourceText: z.string().trim().max(500),
+      classification: z.enum(["PO_DATE", "ORDER_DATE", "DUE_DATE", "ARRIVAL_DATE", "SHIP_DATE", "EVENT_DATE", "UNKNOWN"]),
+      confidence: z.number().min(0).max(100),
+    })).default([]),
+    fieldSources: z.record(z.object({
+      value: z.union([z.string(), z.number(), z.boolean()]).nullable(),
+      sourceType: z.enum(["EMAIL_SUBJECT", "EMAIL_BODY", "PDF_ATTACHMENT", "TEXT_ATTACHMENT", "MANUAL_NOTES"]),
+      sourceDocument: z.string().trim().max(512).optional().nullable(),
+      sourceText: z.string().trim().max(1000).optional().nullable(),
+      confidence: z.number().min(0).max(100),
+    })).default({}),
   }).optional().nullable(),
   warnings: z.array(inboundOrderParseWarningSchema).default([]),
 });
