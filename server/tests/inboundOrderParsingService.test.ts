@@ -1,8 +1,16 @@
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 
 import { AiProviderUnavailableError, type AiProviderAdapter } from "../services/ai/providers/AiProviderAdapter";
 import { InboundOrderParsingService } from "../services/inboundOrders/InboundOrderParsingService";
 import { InboundOrderTransitionError } from "../services/inboundOrders/InboundOrderService";
+import {
+  detectAttachmentDocument,
+  detectEvidenceConflicts,
+  extractMachineReadablePdfText,
+  extractPurchaseOrderFields,
+  type InboundOrderEvidenceBundle,
+} from "../services/inboundOrders/InboundOrderEvidenceService";
 import { inferInboundRequestedDate } from "../services/inboundOrders/inboundOrderDateInference";
 import { scoreProductKnowledgeCandidates } from "../storage/inboundProductKnowledgeMatcher";
 
@@ -421,5 +429,132 @@ describe("InboundOrderParsingService", () => {
 
     expect(refined.order.requestedDueDate).toBe("2027-06-01");
     expect(refined.order.warnings[0].code).toBe("date_inferred_from_context");
+  });
+
+  test("extracts machine-readable PDF text for attachment evidence", async () => {
+    const pdf = await PDFDocument.create();
+    const page = pdf.addPage([612, 792]);
+    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    page.drawText("Purchase Order 151661\nArrival Due Date MUST EOD 6/11\n3 PVC Signs\n24x36\n3mm White PVC", {
+      x: 48,
+      y: 720,
+      size: 12,
+      font,
+    });
+    const bytes = await pdf.save();
+
+    const extracted = await extractMachineReadablePdfText(Buffer.from(bytes));
+
+    expect(extracted.pageCount).toBe(1);
+    expect(extracted.text).toContain("Purchase Order 151661");
+    expect(extracted.text).toContain("3mm White PVC");
+  });
+
+  test("detects purchase order documents and extracts Brainstorm-style PO fields", () => {
+    const poText = [
+      "Purchase Order 151661",
+      "Arrival Due Date MUST EOD 6/11",
+      "3 PVC Signs",
+      "24x36",
+      "3mm White PVC",
+    ].join("\n");
+
+    const detected = detectAttachmentDocument(poText, "Brainstorm Print PO.pdf");
+    const fields = extractPurchaseOrderFields({
+      text: poText,
+      receivedAt: "2026-06-08T12:00:00.000Z",
+    });
+
+    expect(detected.documentType).toBe("purchase_order");
+    expect(detected.documentConfidence).toBeGreaterThanOrEqual(70);
+    expect(fields).toMatchObject({
+      poNumber: "151661",
+      dueDate: "2026-06-11",
+      quantity: 3,
+      productDescription: "PVC Signs",
+      material: "3mm White PVC",
+      dimensions: "24x36",
+    });
+  });
+
+  test("detects conflicts between email body and purchase order attachment", () => {
+    const conflicts = detectEvidenceConflicts([
+      {
+        type: "EMAIL_BODY",
+        label: "Email Body",
+        rawText: "Please print 50 signs. PO attached.",
+        documentType: "unknown",
+        documentConfidence: 0,
+        warnings: [],
+      },
+      {
+        type: "PDF_ATTACHMENT",
+        label: "Brainstorm Print PO.pdf",
+        sourceId: "file_1",
+        fileName: "Brainstorm Print PO.pdf",
+        mimeType: "application/pdf",
+        rawText: "Purchase Order 151661\n3 PVC Signs",
+        pageCount: 1,
+        documentType: "purchase_order",
+        documentConfidence: 98,
+        poSummary: {
+          poNumber: "151661",
+          dueDate: "2026-06-11",
+          quantity: 3,
+          productDescription: "PVC Signs",
+          material: "3mm White PVC",
+          dimensions: "24x36",
+          printSpecs: [],
+        },
+        warnings: [],
+      },
+    ]);
+
+    expect(conflicts).toEqual([expect.objectContaining({
+      code: "evidence_quantity_conflict",
+      message: expect.stringContaining("email (50)"),
+    })]);
+  });
+
+  test("prioritizes purchase order fields before product matching", () => {
+    const service = new InboundOrderParsingService(makeRepository().repo as any, () => null);
+    const evidenceBundle: InboundOrderEvidenceBundle = {
+      items: [{
+        type: "PDF_ATTACHMENT",
+        label: "Brainstorm Print PO.pdf",
+        sourceId: "file_1",
+        fileName: "Brainstorm Print PO.pdf",
+        mimeType: "application/pdf",
+        rawText: "Purchase Order 151661\nArrival Due Date MUST EOD 6/11\n3 PVC Signs\n24x36\n3mm White PVC",
+        pageCount: 1,
+        documentType: "purchase_order",
+        documentConfidence: 98,
+        poSummary: {
+          poNumber: "151661",
+          dueDate: "2026-06-11",
+          quantity: 3,
+          productDescription: "PVC Signs",
+          material: "3mm White PVC",
+          dimensions: "24x36",
+          printSpecs: [],
+        },
+        warnings: [],
+      }],
+      conflicts: [],
+    };
+
+    const refined = service.applyAttachmentEvidencePriority(parsedDraft({
+      lineItems: [],
+    }) as any, evidenceBundle);
+
+    expect(refined.order.poNumber).toBe("151661");
+    expect(refined.order.requestedDueDate).toBe("2026-06-11");
+    expect(refined.lineItems[0]).toMatchObject({
+      quantity: 3,
+      productName: "PVC Signs",
+      materialText: "3mm White PVC",
+      width: 24,
+      height: 36,
+    });
   });
 });

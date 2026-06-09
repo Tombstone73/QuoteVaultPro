@@ -385,6 +385,19 @@ function ProductMatchReasoning({ candidates }: { candidates: InboundOrderParsedD
   );
 }
 
+function PoSummaryGrid({ summary }: { summary: NonNullable<InboundOrderParsedDraft["evidence"]["items"][number]["poSummary"]> }) {
+  return (
+    <div className="mt-2 grid grid-cols-2 gap-2">
+      <InlineField label="PO Number" value={summary.poNumber} />
+      <InlineField label="Due Date" value={summary.dueDate} />
+      <InlineField label="Quantity" value={summary.quantity} />
+      <InlineField label="Product" value={summary.productDescription} />
+      <InlineField label="Material" value={summary.material} />
+      <InlineField label="Size" value={summary.dimensions} />
+    </div>
+  );
+}
+
 function QueueTriageControls({
   filters,
   summary,
@@ -671,6 +684,7 @@ function SourceEvidencePanel({
   selectedRecord,
   isLoading,
   latestAttempt,
+  draftPreview,
   parseError,
   isParsing,
   parseDisabled,
@@ -680,6 +694,7 @@ function SourceEvidencePanel({
   selectedRecord: ClientInboundOrderRecord | null;
   isLoading: boolean;
   latestAttempt: ClientInboundOrderParseAttempt | null;
+  draftPreview: ClientInboundOrderDraftPreviewResponse["data"] | undefined;
   parseError: Error | null;
   isParsing: boolean;
   parseDisabled: boolean;
@@ -702,6 +717,11 @@ function SourceEvidencePanel({
   const record = detail?.record ?? selectedRecord;
   const evidence = getManualInboundEvidence(record);
   const warnings = detail?.warnings ?? [];
+  const evidenceItems = draftPreview?.draft?.evidence?.items ?? [];
+  const attachmentEvidence = evidenceItems.filter((item) => (
+    item.type === "PDF_ATTACHMENT" || item.type === "TEXT_ATTACHMENT"
+  ));
+  const evidenceConflicts = draftPreview?.draft?.evidence?.conflicts ?? [];
 
   return (
     <ScrollArea className="h-full">
@@ -789,6 +809,60 @@ function SourceEvidencePanel({
         <section className="rounded-md border border-border p-3">
           <h3 className="text-sm font-semibold text-foreground">Notes</h3>
           <div className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{evidence.notes || "No notes."}</div>
+        </section>
+
+        <section className="rounded-md border border-border p-3">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-foreground">Attachments</h3>
+            <Badge variant="outline">{detail?.files?.length ?? 0}</Badge>
+          </div>
+          <div className="mt-3 space-y-3">
+            {(detail?.files ?? []).length === 0 ? (
+              <div className="text-sm text-muted-foreground">No attachments linked to this inbound record.</div>
+            ) : (
+              (detail?.files ?? []).map((file) => {
+                const extracted = attachmentEvidence.find((item) => item.sourceId === file.id);
+                return (
+                  <div key={file.id} className="rounded-md border border-border bg-muted/20 px-3 py-2">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {file.mimeType || "unknown type"} / {file.role}
+                        </div>
+                      </div>
+                      {extracted ? (
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant={extracted.documentType === "purchase_order" ? "default" : "outline"}>
+                            {titleCase(extracted.documentType)}
+                          </Badge>
+                          <Badge variant="secondary">{extracted.documentConfidence}%</Badge>
+                        </div>
+                      ) : (
+                        <Badge variant="outline">Not extracted</Badge>
+                      )}
+                    </div>
+                    {extracted?.poSummary && (
+                      <div className="mt-3 rounded-md border border-border bg-background/60 p-3">
+                        <div className="text-xs font-semibold uppercase text-muted-foreground">PO Extraction Summary</div>
+                        <PoSummaryGrid summary={extracted.poSummary} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+          {evidenceConflicts.length > 0 && (
+            <div className="mt-3 space-y-2">
+              {evidenceConflicts.map((conflict, index) => (
+                <div key={`${conflict.code}-${index}`} className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  <div className="font-medium">{conflict.code}</div>
+                  <div className="text-xs">{conflict.message}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="rounded-md border border-border p-3">
@@ -1242,6 +1316,7 @@ export default function InboundOrdersPage() {
               selectedRecord={selectedRecord}
               isLoading={detailQuery.isLoading}
               latestAttempt={draftPreviewQuery.data?.data.latestAttempt ?? null}
+              draftPreview={draftPreviewQuery.data?.data}
               parseError={parseMutation.error as Error | null}
               isParsing={isSelectedRecordParsing}
               parseDisabled={isParseInFlight}
