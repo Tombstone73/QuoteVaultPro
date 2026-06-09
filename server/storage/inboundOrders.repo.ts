@@ -9,6 +9,7 @@ import {
   inboundOrderEvents,
   inboundOrderFiles,
   inboundOrderLineItems,
+  inboundOrderParseAttempts,
   inboundOrderRecords,
   inboundOrderReviewSnapshots,
   inboundOrderSources,
@@ -22,6 +23,7 @@ import {
   type InboundOrderEvent,
   type InboundOrderFile,
   type InboundOrderLineItem,
+  type InboundOrderParseAttempt,
   type InboundOrderRecord,
   type InboundOrderRecordStatus,
   type InboundOrderReviewSnapshot,
@@ -78,6 +80,11 @@ export type CreateInboundOrderEventValues = Omit<
 
 export type CreateInboundOrderReviewSnapshotValues = Omit<
   typeof inboundOrderReviewSnapshots.$inferInsert,
+  "id" | "createdAt"
+>;
+
+export type CreateInboundOrderParseAttemptValues = Omit<
+  typeof inboundOrderParseAttempts.$inferInsert,
   "id" | "createdAt"
 >;
 
@@ -141,6 +148,14 @@ export type InboundContactSearchResult = {
   phone: string | null;
   mobile: string | null;
   isPrimary: boolean;
+};
+
+export type InboundCandidateResult = {
+  id: string;
+  label: string;
+  confidence: number;
+  reason: string | null;
+  metadata: Record<string, unknown>;
 };
 
 export type MatchInboundCustomerInput = {
@@ -461,6 +476,51 @@ export class InboundOrdersRepository {
       .limit(1);
 
     return snapshot ?? null;
+  }
+
+  async listParseAttempts(organizationId: string, inboundRecordId: string): Promise<InboundOrderParseAttempt[]> {
+    return this.dbInstance
+      .select()
+      .from(inboundOrderParseAttempts)
+      .where(
+        and(
+          eq(inboundOrderParseAttempts.organizationId, organizationId),
+          eq(inboundOrderParseAttempts.inboundOrderRecordId, inboundRecordId),
+        ),
+      )
+      .orderBy(desc(inboundOrderParseAttempts.createdAt));
+  }
+
+  async getLatestParseAttempt(
+    organizationId: string,
+    inboundRecordId: string,
+  ): Promise<InboundOrderParseAttempt | null> {
+    const [attempt] = await this.dbInstance
+      .select()
+      .from(inboundOrderParseAttempts)
+      .where(
+        and(
+          eq(inboundOrderParseAttempts.organizationId, organizationId),
+          eq(inboundOrderParseAttempts.inboundOrderRecordId, inboundRecordId),
+        ),
+      )
+      .orderBy(desc(inboundOrderParseAttempts.createdAt))
+      .limit(1);
+
+    return attempt ?? null;
+  }
+
+  async createParseAttempt(values: CreateInboundOrderParseAttemptValues): Promise<InboundOrderParseAttempt> {
+    const [attempt] = await this.dbInstance
+      .insert(inboundOrderParseAttempts)
+      .values(values)
+      .returning();
+
+    if (!attempt) {
+      throw new Error("Failed to create inbound order parse attempt");
+    }
+
+    return attempt;
   }
 
   async getQuote(organizationId: string, quoteId: string): Promise<Quote | null> {
@@ -858,6 +918,159 @@ export class InboundOrdersRepository {
 
       return { record, event };
     });
+  }
+
+  async searchCustomerCandidates(args: {
+    organizationId: string;
+    email?: string | null;
+    name?: string | null;
+    limit: number;
+  }): Promise<InboundCandidateResult[]> {
+    const predicates = [eq(customers.organizationId, args.organizationId)];
+    const email = args.email?.trim();
+    const name = args.name?.trim();
+
+    if (email) {
+      const pattern = `%${email}%`;
+      predicates.push(sql`(
+        ${customers.email} ilike ${pattern}
+        or exists (
+          select 1 from ${customerContacts}
+          where ${customerContacts.organizationId} = ${args.organizationId}
+            and ${customerContacts.email} ilike ${pattern}
+            and exists (
+              select 1 from ${customerContactLinks}
+              where ${customerContactLinks.contactId} = ${customerContacts.id}
+                and ${customerContactLinks.customerId} = ${customers.id}
+                and ${customerContactLinks.status} = 'active'
+            )
+        )
+      )`);
+    } else if (name) {
+      const pattern = `%${name}%`;
+      predicates.push(sql`${customers.companyName} ilike ${pattern}`);
+    } else {
+      return [];
+    }
+
+    const rows = await this.dbInstance
+      .select({
+        id: customers.id,
+        label: customers.companyName,
+        email: customers.email,
+        phone: customers.phone,
+      })
+      .from(customers)
+      .where(and(...predicates))
+      .orderBy(asc(customers.companyName))
+      .limit(args.limit);
+
+    return rows.map((row) => ({
+      id: row.id,
+      label: row.label,
+      confidence: email && row.email?.toLowerCase() === email.toLowerCase() ? 95 : email ? 82 : 65,
+      reason: email ? "Matched sender/contact email text." : "Matched customer/company text.",
+      metadata: {
+        email: row.email,
+        phone: row.phone,
+      },
+    }));
+  }
+
+  async searchContactCandidates(args: {
+    organizationId: string;
+    email?: string | null;
+    name?: string | null;
+    limit: number;
+  }): Promise<InboundCandidateResult[]> {
+    const predicates = [eq(customerContacts.organizationId, args.organizationId)];
+    const email = args.email?.trim();
+    const name = args.name?.trim();
+
+    if (email) {
+      const pattern = `%${email}%`;
+      predicates.push(sql`${customerContacts.email} ilike ${pattern}`);
+    } else if (name) {
+      const pattern = `%${name}%`;
+      predicates.push(sql`(
+        ${customerContacts.firstName} ilike ${pattern}
+        or ${customerContacts.lastName} ilike ${pattern}
+      )`);
+    } else {
+      return [];
+    }
+
+    const rows = await this.dbInstance
+      .select({
+        id: customerContacts.id,
+        firstName: customerContacts.firstName,
+        lastName: customerContacts.lastName,
+        email: customerContacts.email,
+        phone: customerContacts.phone,
+      })
+      .from(customerContacts)
+      .where(and(...predicates))
+      .orderBy(asc(customerContacts.lastName), asc(customerContacts.firstName))
+      .limit(args.limit);
+
+    return rows.map((row) => {
+      const label = `${row.firstName ?? ""} ${row.lastName ?? ""}`.trim() || row.email || row.id;
+      return {
+        id: row.id,
+        label,
+        confidence: email && row.email?.toLowerCase() === email.toLowerCase() ? 96 : email ? 82 : 60,
+        reason: email ? "Matched source email text." : "Matched contact name text.",
+        metadata: {
+          email: row.email,
+          phone: row.phone,
+        },
+      };
+    });
+  }
+
+  async searchProductCandidates(args: {
+    organizationId: string;
+    productName?: string | null;
+    materialText?: string | null;
+    limit: number;
+  }): Promise<InboundCandidateResult[]> {
+    const predicates = [eq(products.organizationId, args.organizationId)];
+    const productName = args.productName?.trim();
+    const materialText = args.materialText?.trim();
+    const search = productName || materialText;
+
+    if (!search) return [];
+
+    const pattern = `%${search}%`;
+    predicates.push(sql`(
+      ${products.name} ilike ${pattern}
+      or ${products.category} ilike ${pattern}
+      or ${products.description} ilike ${pattern}
+    )`);
+
+    const rows = await this.dbInstance
+      .select({
+        id: products.id,
+        name: products.name,
+        category: products.category,
+        description: products.description,
+      })
+      .from(products)
+      .where(and(...predicates))
+      .orderBy(asc(products.name))
+      .limit(args.limit);
+
+    const normalizedProductName = productName?.toLowerCase();
+    return rows.map((row) => ({
+      id: row.id,
+      label: row.name,
+      confidence: normalizedProductName && row.name.toLowerCase() === normalizedProductName ? 92 : 68,
+      reason: productName ? "Matched parsed product name/category text." : "Matched parsed material text.",
+      metadata: {
+        category: row.category,
+        description: row.description,
+      },
+    }));
   }
 
   async createManualInboundOrder(args: {

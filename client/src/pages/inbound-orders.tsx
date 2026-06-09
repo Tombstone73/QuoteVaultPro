@@ -25,6 +25,9 @@ import { cn } from "@/lib/utils";
 import {
   getManualInboundEvidence,
   type InboundOrderDetailResponse,
+  type InboundOrderDraftPreviewResponse,
+  type InboundOrderParsedDraft,
+  type InboundOrderParseResponse,
   type InboundOrdersListResponse,
   type InboundOrderStatusGroup,
   type InboundOrderQueueSummary,
@@ -54,6 +57,16 @@ type ClientInboundOrdersListResponse = Omit<InboundOrdersListResponse, "data"> &
 
 type ClientInboundOrderDetailResponse = Omit<InboundOrderDetailResponse, "data"> & {
   data: Omit<InboundOrderDetailResponse["data"], "record"> & {
+    record: ClientInboundOrderRecord;
+  };
+};
+
+type ClientInboundOrderParseAttempt = NonNullable<InboundOrderDraftPreviewResponse["data"]["latestAttempt"]>;
+
+type ClientInboundOrderDraftPreviewResponse = InboundOrderDraftPreviewResponse;
+
+type ClientInboundOrderParseResponse = Omit<InboundOrderParseResponse, "data"> & {
+  data: Omit<InboundOrderParseResponse["data"], "record"> & {
     record: ClientInboundOrderRecord;
   };
 };
@@ -243,6 +256,72 @@ function DetailField({ label, value }: { label: string; value: string | null | u
     <div className="min-w-0">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="truncate text-sm font-medium text-foreground">{value || "-"}</div>
+    </div>
+  );
+}
+
+function InlineField({ label, value }: { label: string; value: string | number | boolean | null | undefined }) {
+  const display = typeof value === "boolean" ? (value ? "Yes" : "No") : value;
+  return (
+    <div className="min-w-0 rounded-md border border-border bg-muted/20 px-3 py-2">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 break-words text-sm font-medium text-foreground">{display ?? "-"}</div>
+    </div>
+  );
+}
+
+function WarningList({ warnings }: { warnings: InboundOrderParsedDraft["globalWarnings"] }) {
+  if (warnings.length === 0) {
+    return <div className="text-sm text-muted-foreground">No parse warnings.</div>;
+  }
+
+  return (
+    <div className="space-y-2">
+      {warnings.map((warning, index) => (
+        <div key={`${warning.code}-${index}`} className="rounded-md border border-border bg-muted/20 px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-sm font-medium text-foreground">{warning.code}</div>
+            <Badge variant={warning.severity === "blocking" ? "destructive" : "outline"}>
+              {titleCase(warning.severity)}
+            </Badge>
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">{warning.message}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CandidateList({
+  title,
+  candidates,
+}: {
+  title: string;
+  candidates: InboundOrderParsedDraft["customer"]["customerCandidates"];
+}) {
+  return (
+    <div className="rounded-md border border-border p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h4 className="text-xs font-semibold uppercase text-muted-foreground">{title}</h4>
+        <Badge variant="outline">{candidates.length}</Badge>
+      </div>
+      {candidates.length === 0 ? (
+        <div className="text-sm text-muted-foreground">No candidates found.</div>
+      ) : (
+        <div className="space-y-2">
+          {candidates.map((candidate) => (
+            <div key={candidate.id} className="rounded-md bg-muted/30 px-3 py-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-foreground">{candidate.label}</div>
+                  {candidate.reason && <div className="mt-1 text-xs text-muted-foreground">{candidate.reason}</div>}
+                </div>
+                <Badge variant="secondary">{candidate.confidence}%</Badge>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -532,10 +611,18 @@ function SourceEvidencePanel({
   detail,
   selectedRecord,
   isLoading,
+  latestAttempt,
+  parseError,
+  isParsing,
+  onParse,
 }: {
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
   selectedRecord: ClientInboundOrderRecord | null;
   isLoading: boolean;
+  latestAttempt: ClientInboundOrderParseAttempt | null;
+  parseError: Error | null;
+  isParsing: boolean;
+  onParse: () => void;
 }) {
   if (!selectedRecord) {
     return <EmptyPanel title="Select a record" detail="Source evidence will appear once an inbound item is selected." />;
@@ -564,9 +651,17 @@ function SourceEvidencePanel({
               <h2 className="truncate text-sm font-semibold text-foreground">{getRecordTitle(record)}</h2>
               <div className="mt-1 text-xs text-muted-foreground">TEMP_INBOUND / review-first intake</div>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
               <Badge variant="secondary">{titleCase(record.sourceType)}</Badge>
               <StatusBadge status={record.status} />
+              <Button type="button" size="sm" onClick={onParse} disabled={isParsing}>
+                {isParsing ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="mr-2 h-4 w-4" />
+                )}
+                {isParsing ? "Parsing..." : "Parse with AI"}
+              </Button>
             </div>
           </div>
           <div className="mt-4 grid grid-cols-2 gap-3">
@@ -577,6 +672,37 @@ function SourceEvidencePanel({
             <DetailField label="Created" value={formatTimestamp(record.createdAt)} />
             <DetailField label="Updated" value={formatTimestamp(record.updatedAt)} />
           </div>
+          <div className="mt-4 rounded-md border border-border bg-muted/20 px-3 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs font-semibold uppercase text-muted-foreground">AI Parse Attempt</div>
+              {latestAttempt ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={latestAttempt.status === "failed" ? "destructive" : "secondary"}>
+                    {titleCase(latestAttempt.status)}
+                  </Badge>
+                  <Badge variant="outline">{latestAttempt.confidence ?? 0}% confidence</Badge>
+                  <Badge variant="outline">{Array.isArray(latestAttempt.warnings) ? latestAttempt.warnings.length : 0} warnings</Badge>
+                </div>
+              ) : (
+                <Badge variant="outline">Not parsed</Badge>
+              )}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {latestAttempt ? `Last attempt ${formatRelative(latestAttempt.createdAt)}` : "No AI parse has been run for this record."}
+            </div>
+          </div>
+          {(parseError || latestAttempt?.status === "failed") && (
+            <Alert variant="destructive" className="mt-3">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>Parse unavailable</AlertTitle>
+              <AlertDescription>
+                {parseError?.message
+                  || (Array.isArray(latestAttempt?.errors) && latestAttempt.errors.length > 0
+                    ? latestAttempt.errors.map((error: any) => error?.message).filter(Boolean).join(" ")
+                    : "AI parsing failed. Source evidence remains available for retry.")}
+              </AlertDescription>
+            </Alert>
+          )}
         </section>
 
         <section className="rounded-md border border-border p-3">
@@ -645,9 +771,13 @@ function SourceEvidencePanel({
 function DraftBuilderPanel({
   selectedRecord,
   isLoading,
+  draftPreview,
+  previewError,
 }: {
   selectedRecord: ClientInboundOrderRecord | null;
   isLoading: boolean;
+  draftPreview: ClientInboundOrderDraftPreviewResponse["data"] | undefined;
+  previewError: Error | null;
 }) {
   if (!selectedRecord) {
     return <EmptyPanel title="Draft builder" detail="Draft builder will appear after parsing." />;
@@ -662,19 +792,203 @@ function DraftBuilderPanel({
     );
   }
 
+  if (previewError) {
+    return (
+      <div className="p-4">
+        <Alert variant="destructive">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>Draft preview unavailable</AlertTitle>
+          <AlertDescription>{previewError.message}</AlertDescription>
+        </Alert>
+        <div className="mt-4 rounded-md border border-border p-3 text-sm text-muted-foreground">
+          Phase 2: parsing only. Order creation is disabled.
+        </div>
+      </div>
+    );
+  }
+
+  const draft = draftPreview?.draft ?? null;
+  const latestAttempt = draftPreview?.latestAttempt ?? null;
+
+  if (!draft) {
+    return (
+      <div className="flex h-full min-h-[260px] flex-col items-center justify-center px-6 text-center">
+        <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-muted">
+          <Sparkles className="h-5 w-5 text-muted-foreground" />
+        </div>
+        <div className="mt-4 text-sm font-semibold text-foreground">Draft builder will appear after parsing.</div>
+        <div className="mt-1 max-w-sm text-sm text-muted-foreground">
+          Phase 2: parsing only. Order creation is disabled.
+        </div>
+        {latestAttempt?.status === "failed" && (
+          <div className="mt-3 max-w-sm rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            Last parse failed. Source evidence remains available for retry.
+          </div>
+        )}
+        <Button type="button" className="mt-4" disabled>
+          Create Draft Order
+        </Button>
+      </div>
+    );
+  }
+
+  const allWarnings = [
+    ...draft.globalWarnings,
+    ...draft.customer.warnings,
+    ...draft.order.warnings,
+    ...draft.lineItems.flatMap((lineItem) => lineItem.warnings),
+    ...draft.artwork.flatMap((artwork) => artwork.warnings),
+  ];
+
   return (
-    <div className="flex h-full min-h-[260px] flex-col items-center justify-center px-6 text-center">
-      <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-muted">
-        <Sparkles className="h-5 w-5 text-muted-foreground" />
+    <ScrollArea className="h-full">
+      <div className="space-y-4 p-4">
+        <Alert>
+          <Sparkles className="h-4 w-4" />
+          <AlertTitle>Phase 2: parsing only. Order creation is disabled.</AlertTitle>
+          <AlertDescription>
+            Review candidate matches and missing decisions here. This panel does not create customers, products, orders, production jobs, fulfillment, or invoices.
+          </AlertDescription>
+        </Alert>
+
+        <section className="rounded-md border border-border p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-foreground">Parse Summary</h3>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="secondary">{latestAttempt?.confidence ?? 0}% confidence</Badge>
+              <Badge variant="outline">{allWarnings.length} warnings</Badge>
+              <Badge variant="outline">{draft.missingDecisions.length} missing decisions</Badge>
+            </div>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <InlineField label="Status" value={latestAttempt ? titleCase(latestAttempt.status) : "Parsed"} />
+            <InlineField label="Parsed" value={latestAttempt ? formatTimestamp(latestAttempt.createdAt) : null} />
+          </div>
+        </section>
+
+        <section className="rounded-md border border-border p-3">
+          <h3 className="text-sm font-semibold text-foreground">Customer Match Candidates</h3>
+          <div className="mt-3 grid grid-cols-1 gap-2">
+            <InlineField label="Source name" value={draft.customer.sourceName} />
+            <InlineField label="Source email" value={draft.customer.sourceEmail} />
+            <InlineField label="Company" value={draft.customer.companyName} />
+          </div>
+          <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
+            <CandidateList title="Customers" candidates={draft.customer.customerCandidates} />
+            <CandidateList title="Contacts" candidates={draft.customer.contactCandidates} />
+          </div>
+        </section>
+
+        <section className="rounded-md border border-border p-3">
+          <h3 className="text-sm font-semibold text-foreground">Order Details</h3>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <InlineField label="PO number" value={draft.order.poNumber} />
+            <InlineField label="Due date" value={draft.order.requestedDueDate} />
+            <InlineField label="Ship method" value={draft.order.requestedShipMethod} />
+            <InlineField label="Pickup" value={draft.order.requestedPickup} />
+          </div>
+          {draft.order.notes && (
+            <div className="mt-3 whitespace-pre-wrap rounded-md border border-border bg-muted/20 p-3 text-sm text-foreground">
+              {draft.order.notes}
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-md border border-border p-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-foreground">Line Items</h3>
+            <Badge variant="outline">{draft.lineItems.length}</Badge>
+          </div>
+          <div className="mt-3 space-y-3">
+            {draft.lineItems.length === 0 ? (
+              <div className="text-sm text-muted-foreground">No line items detected.</div>
+            ) : (
+              draft.lineItems.map((lineItem, index) => (
+                <div key={index} className="rounded-md border border-border p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h4 className="text-sm font-semibold text-foreground">
+                      {lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`}
+                    </h4>
+                    <Badge variant="secondary">{lineItem.confidence}% confidence</Badge>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <InlineField label="Quantity" value={lineItem.quantity} />
+                    <InlineField
+                      label="Dimensions"
+                      value={lineItem.width && lineItem.height
+                        ? `${lineItem.width} x ${lineItem.height}${lineItem.dimensionsUnit ? ` ${lineItem.dimensionsUnit}` : ""}`
+                        : null}
+                    />
+                    <InlineField label="Material" value={lineItem.materialText} />
+                    <InlineField label="Artwork refs" value={lineItem.artworkRefs.join(", ") || null} />
+                  </div>
+                  <div className="mt-3">
+                    <CandidateList title="Products" candidates={lineItem.productCandidates} />
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-md border border-border p-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-foreground">Artwork / References</h3>
+            <Badge variant="outline">{draft.artwork.length}</Badge>
+          </div>
+          <div className="mt-3 space-y-2">
+            {draft.artwork.length === 0 ? (
+              <div className="text-sm text-muted-foreground">No artwork references detected.</div>
+            ) : (
+              draft.artwork.map((artwork, index) => (
+                <div key={index} className="rounded-md border border-border bg-muted/20 px-3 py-2">
+                  <div className="text-sm font-medium text-foreground">{artwork.filename || artwork.sourceReference || `Artwork ${index + 1}`}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {titleCase(artwork.purpose)} / line {artwork.likelyLineItemIndex !== null ? artwork.likelyLineItemIndex + 1 : "-"} / {artwork.confidence}% confidence
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-md border border-border p-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-foreground">Missing Decisions</h3>
+            <Badge variant="outline">{draft.missingDecisions.length}</Badge>
+          </div>
+          <div className="mt-3 space-y-2">
+            {draft.missingDecisions.length === 0 ? (
+              <div className="text-sm text-muted-foreground">No missing decisions detected.</div>
+            ) : (
+              draft.missingDecisions.map((decision) => (
+                <div key={decision.field} className="rounded-md border border-border bg-muted/20 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-medium text-foreground">{decision.label}</div>
+                    <Badge variant={decision.severity === "blocking" ? "destructive" : "outline"}>
+                      {titleCase(decision.severity)}
+                    </Badge>
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">{decision.reason}</div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-md border border-border p-3">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-foreground">Warnings</h3>
+            <Badge variant="outline">{allWarnings.length}</Badge>
+          </div>
+          <WarningList warnings={allWarnings} />
+        </section>
+
+        <Button type="button" className="w-full" disabled>
+          Create Draft Order
+        </Button>
       </div>
-      <div className="mt-4 text-sm font-semibold text-foreground">Draft builder will appear after parsing.</div>
-      <div className="mt-1 max-w-sm text-sm text-muted-foreground">
-        Phase 1 keeps this record review-only. No customer, product, order, production, fulfillment, or invoice records will be created here.
-      </div>
-      <Button type="button" className="mt-4" disabled>
-        Create Draft Order
-      </Button>
-    </div>
+    </ScrollArea>
   );
 }
 
@@ -720,6 +1034,12 @@ export default function InboundOrdersPage() {
     enabled: Boolean(selectedId),
   });
 
+  const draftPreviewQuery = useQuery({
+    queryKey: ["/api/inbound-orders", selectedId, "draft-preview"],
+    queryFn: () => readJson<ClientInboundOrderDraftPreviewResponse>(`/api/inbound-orders/${selectedId}/draft-preview`),
+    enabled: Boolean(selectedId),
+  });
+
   const createManualMutation = useMutation({
     mutationFn: (payload: ManualInboundOrderCreateRequest) => (
       postJson<ManualInboundOrderCreateResponse>("/api/inbound-orders/manual", payload)
@@ -732,8 +1052,29 @@ export default function InboundOrdersPage() {
     },
   });
 
+  const parseMutation = useMutation({
+    mutationFn: (recordId: string) => postJson<ClientInboundOrderParseResponse>(`/api/inbound-orders/${recordId}/parse`, {}),
+    onSuccess: async (response) => {
+      const parsedRecordId = response.data.record.id;
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId] }),
+      ]);
+      queryClient.setQueryData(["/api/inbound-orders", parsedRecordId, "draft-preview"], {
+        success: true,
+        data: {
+          draft: response.data.draft,
+          latestAttempt: response.data.latestAttempt,
+        },
+      } satisfies ClientInboundOrderDraftPreviewResponse);
+      setSelectedId(parsedRecordId);
+    },
+  });
+
   const pageError = getErrorTone(
-    (listQuery.error as Error | null) || (detailQuery.error as Error | null),
+    (listQuery.error as Error | null)
+      || (detailQuery.error as Error | null)
+      || (draftPreviewQuery.error as Error | null),
   );
   const listError = getErrorTone(listQuery.error as Error | null);
 
@@ -760,10 +1101,11 @@ export default function InboundOrdersPage() {
               onClick={() => {
                 listQuery.refetch();
                 if (selectedId) detailQuery.refetch();
+                if (selectedId) draftPreviewQuery.refetch();
               }}
-              disabled={listQuery.isFetching || detailQuery.isFetching}
+              disabled={listQuery.isFetching || detailQuery.isFetching || draftPreviewQuery.isFetching}
             >
-              {listQuery.isFetching || detailQuery.isFetching ? (
+              {listQuery.isFetching || detailQuery.isFetching || draftPreviewQuery.isFetching ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
                 <RefreshCw className="mr-2 h-4 w-4" />
@@ -814,6 +1156,12 @@ export default function InboundOrdersPage() {
               detail={detailQuery.data?.data}
               selectedRecord={selectedRecord}
               isLoading={detailQuery.isLoading}
+              latestAttempt={draftPreviewQuery.data?.data.latestAttempt ?? null}
+              parseError={parseMutation.error as Error | null}
+              isParsing={parseMutation.isPending}
+              onParse={() => {
+                if (selectedId) parseMutation.mutate(selectedId);
+              }}
             />
           </div>
         </section>
@@ -821,10 +1169,15 @@ export default function InboundOrdersPage() {
         <section className="min-h-[320px] min-w-0 lg:min-h-0">
           <div className="flex h-12 items-center justify-between border-b border-border px-4">
             <div className="text-sm font-semibold text-foreground">Draft Builder</div>
-            <Badge variant="outline">Phase 1</Badge>
+            <Badge variant="outline">Phase 2</Badge>
           </div>
           <div className="h-[calc(100%-3rem)]">
-            <DraftBuilderPanel selectedRecord={selectedRecord} isLoading={detailQuery.isLoading} />
+            <DraftBuilderPanel
+              selectedRecord={selectedRecord}
+              isLoading={detailQuery.isLoading || draftPreviewQuery.isLoading}
+              draftPreview={draftPreviewQuery.data?.data}
+              previewError={draftPreviewQuery.error as Error | null}
+            />
           </div>
         </section>
       </div>

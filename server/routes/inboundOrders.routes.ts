@@ -20,6 +20,7 @@ import {
   InboundOrderTransitionError,
   inboundOrderService,
 } from "../services/inboundOrders/InboundOrderService";
+import { inboundOrderParsingService } from "../services/inboundOrders/InboundOrderParsingService";
 import { getRequestOrganizationId } from "../tenantContext";
 
 function getUserId(user: any): string | undefined {
@@ -121,10 +122,12 @@ export function registerInboundOrderRoutes(
     tenantContext: any;
     assertInternalUser: (req: any, res: any) => boolean;
     inboundOrderService?: typeof inboundOrderService;
+    inboundOrderParsingService?: typeof inboundOrderParsingService;
   },
 ): void {
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
   const service = middleware.inboundOrderService ?? inboundOrderService;
+  const parsingService = middleware.inboundOrderParsingService ?? inboundOrderParsingService;
 
   app.get("/api/inbound-orders", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -278,6 +281,91 @@ export function registerInboundOrderRoutes(
 
       console.error("Error updating inbound order status:", error);
       res.status(500).json({ message: "Failed to update inbound order status" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/parse", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const result = await parsingService.parseInboundOrderRecord({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
+      });
+
+      res.json({ success: true, data: result });
+    } catch (error) {
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+
+      if (isMissingInboundSchemaError(error)) {
+        return sendInboundSchemaUnavailable(res);
+      }
+
+      console.error("Error parsing inbound order:", error);
+      res.status(500).json({ message: "Failed to parse inbound order" });
+    }
+  });
+
+  app.get("/api/inbound-orders/:id/parse-attempts", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const attempts = await parsingService.listParseAttempts({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+      });
+
+      res.json({ success: true, data: attempts });
+    } catch (error) {
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+
+      if (isMissingInboundSchemaError(error)) {
+        return sendInboundSchemaUnavailable(res);
+      }
+
+      console.error("Error listing inbound order parse attempts:", error);
+      res.status(500).json({ message: "Failed to list inbound order parse attempts" });
+    }
+  });
+
+  app.get("/api/inbound-orders/:id/draft-preview", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const preview = await parsingService.getDraftPreview({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+      });
+
+      res.json({ success: true, data: preview });
+    } catch (error) {
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+
+      if (isMissingInboundSchemaError(error)) {
+        return sendInboundSchemaUnavailable(res);
+      }
+
+      console.error("Error loading inbound order draft preview:", error);
+      res.status(500).json({ message: "Failed to load inbound order draft preview" });
     }
   });
 

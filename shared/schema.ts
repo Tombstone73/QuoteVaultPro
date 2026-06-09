@@ -7286,6 +7286,13 @@ export const inboundOrderReviewSnapshotTypeValues = [
   "customer_reply",
 ] as const;
 
+export const inboundOrderParseAttemptStatusValues = [
+  "success",
+  "failed",
+  "repaired",
+  "fallback",
+] as const;
+
 export const inboundOrderSourceTypeSchema = z.enum(inboundOrderSourceTypeValues);
 export const inboundOrderSourceStatusSchema = z.enum(inboundOrderSourceStatusValues);
 export const inboundOrderSourceTrustLevelSchema = z.enum(inboundOrderSourceTrustLevelValues);
@@ -7298,6 +7305,7 @@ export const inboundOrderReviewItemStatusSchema = z.enum(inboundOrderReviewItemS
 export const inboundOrderDecisionFlagStatusSchema = z.enum(inboundOrderDecisionFlagStatusValues);
 export const inboundOrderEventActorTypeSchema = z.enum(inboundOrderEventActorTypeValues);
 export const inboundOrderReviewSnapshotTypeSchema = z.enum(inboundOrderReviewSnapshotTypeValues);
+export const inboundOrderParseAttemptStatusSchema = z.enum(inboundOrderParseAttemptStatusValues);
 
 export type InboundOrderSourceType = (typeof inboundOrderSourceTypeValues)[number];
 export type InboundOrderSourceStatus = (typeof inboundOrderSourceStatusValues)[number];
@@ -7311,6 +7319,7 @@ export type InboundOrderReviewItemStatus = (typeof inboundOrderReviewItemStatusV
 export type InboundOrderDecisionFlagStatus = (typeof inboundOrderDecisionFlagStatusValues)[number];
 export type InboundOrderEventActorType = (typeof inboundOrderEventActorTypeValues)[number];
 export type InboundOrderReviewSnapshotType = (typeof inboundOrderReviewSnapshotTypeValues)[number];
+export type InboundOrderParseAttemptStatus = (typeof inboundOrderParseAttemptStatusValues)[number];
 
 export const inboundOrderSourceTypeEnum = pgEnum("inbound_order_source_type", inboundOrderSourceTypeValues);
 export const inboundOrderSourceStatusEnum = pgEnum("inbound_order_source_status", inboundOrderSourceStatusValues);
@@ -7324,6 +7333,7 @@ export const inboundOrderReviewItemStatusEnum = pgEnum("inbound_order_review_ite
 export const inboundOrderDecisionFlagStatusEnum = pgEnum("inbound_order_decision_flag_status", inboundOrderDecisionFlagStatusValues);
 export const inboundOrderEventActorTypeEnum = pgEnum("inbound_order_event_actor_type", inboundOrderEventActorTypeValues);
 export const inboundOrderReviewSnapshotTypeEnum = pgEnum("inbound_order_review_snapshot_type", inboundOrderReviewSnapshotTypeValues);
+export const inboundOrderParseAttemptStatusEnum = pgEnum("inbound_order_parse_attempt_status", inboundOrderParseAttemptStatusValues);
 
 export const inboundOrderSources = pgTable("inbound_order_sources", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -7532,6 +7542,26 @@ export const inboundOrderReviewSnapshots = pgTable("inbound_order_review_snapsho
   index("inbound_order_review_snapshots_org_type_created_idx").on(table.organizationId, table.snapshotType, table.createdAt),
 ]);
 
+export const inboundOrderParseAttempts = pgTable("inbound_order_parse_attempts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  inboundOrderRecordId: varchar("inbound_order_record_id").notNull().references(() => inboundOrderRecords.id, { onDelete: "cascade" }),
+  status: inboundOrderParseAttemptStatusEnum("status").notNull(),
+  provider: varchar("provider", { length: 100 }),
+  model: varchar("model", { length: 160 }),
+  rawPromptHash: varchar("raw_prompt_hash", { length: 128 }),
+  rawResponse: jsonb("raw_response").$type<Record<string, unknown> | null>(),
+  repairedResponse: jsonb("repaired_response").$type<Record<string, unknown> | null>(),
+  parsedDraft: jsonb("parsed_draft").$type<Record<string, unknown> | null>(),
+  confidence: integer("confidence"),
+  warnings: jsonb("warnings").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
+  errors: jsonb("errors").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("inbound_order_parse_attempts_org_record_created_idx").on(table.organizationId, table.inboundOrderRecordId, table.createdAt),
+  index("inbound_order_parse_attempts_org_status_created_idx").on(table.organizationId, table.status, table.createdAt),
+]);
+
 export const inboundOrderSourcesRelations = relations(inboundOrderSources, ({ one, many }) => ({
   organization: one(organizations, {
     fields: [inboundOrderSources.organizationId],
@@ -7555,6 +7585,7 @@ export const inboundOrderRecordsRelations = relations(inboundOrderRecords, ({ on
   decisionFlags: many(inboundOrderDecisionFlags),
   events: many(inboundOrderEvents),
   reviewSnapshots: many(inboundOrderReviewSnapshots),
+  parseAttempts: many(inboundOrderParseAttempts),
 }));
 
 export const inboundOrderLineItemsRelations = relations(inboundOrderLineItems, ({ one, many }) => ({
@@ -7622,6 +7653,13 @@ export const inboundOrderEventsRelations = relations(inboundOrderEvents, ({ one 
 export const inboundOrderReviewSnapshotsRelations = relations(inboundOrderReviewSnapshots, ({ one }) => ({
   record: one(inboundOrderRecords, {
     fields: [inboundOrderReviewSnapshots.inboundRecordId],
+    references: [inboundOrderRecords.id],
+  }),
+}));
+
+export const inboundOrderParseAttemptsRelations = relations(inboundOrderParseAttempts, ({ one }) => ({
+  record: one(inboundOrderRecords, {
+    fields: [inboundOrderParseAttempts.inboundOrderRecordId],
     references: [inboundOrderRecords.id],
   }),
 }));
@@ -7742,6 +7780,21 @@ export const updateInboundOrderReviewSnapshotSchema = insertInboundOrderReviewSn
   id: z.string(),
 });
 
+export const insertInboundOrderParseAttemptSchema = createInsertSchema(inboundOrderParseAttempts).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+}).extend({
+  status: inboundOrderParseAttemptStatusSchema,
+  confidence: z.coerce.number().int().min(0).max(100).optional().nullable(),
+  warnings: z.array(z.record(z.unknown())).default([]),
+  errors: z.array(z.record(z.unknown())).default([]),
+});
+
+export const updateInboundOrderParseAttemptSchema = insertInboundOrderParseAttemptSchema.partial().extend({
+  id: z.string(),
+});
+
 export type SelectInboundOrderSource = typeof inboundOrderSources.$inferSelect;
 export type InsertInboundOrderSource = z.infer<typeof insertInboundOrderSourceSchema>;
 export type UpdateInboundOrderSource = z.infer<typeof updateInboundOrderSourceSchema>;
@@ -7781,6 +7834,11 @@ export type SelectInboundOrderReviewSnapshot = typeof inboundOrderReviewSnapshot
 export type InsertInboundOrderReviewSnapshot = z.infer<typeof insertInboundOrderReviewSnapshotSchema>;
 export type UpdateInboundOrderReviewSnapshot = z.infer<typeof updateInboundOrderReviewSnapshotSchema>;
 export type InboundOrderReviewSnapshot = SelectInboundOrderReviewSnapshot;
+
+export type SelectInboundOrderParseAttempt = typeof inboundOrderParseAttempts.$inferSelect;
+export type InsertInboundOrderParseAttempt = z.infer<typeof insertInboundOrderParseAttemptSchema>;
+export type UpdateInboundOrderParseAttempt = z.infer<typeof updateInboundOrderParseAttemptSchema>;
+export type InboundOrderParseAttempt = SelectInboundOrderParseAttempt;
 
 // ============================================================
 // REPRINT REQUESTS

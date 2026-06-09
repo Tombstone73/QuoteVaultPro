@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   inboundOrderRecordStatusSchema,
   inboundOrderSourceTypeSchema,
+  type InboundOrderParseAttempt,
   type InboundOrderDecisionFlag,
   type InboundOrderEvent,
   type InboundOrderFile,
@@ -53,6 +54,87 @@ export const inboundOrderStatusUpdateSchema = z.object({
     z.enum(["waiting", "converted", "rejected"]),
   ]),
 });
+
+export const inboundOrderParseAttemptStatusValues = ["success", "failed", "repaired", "fallback"] as const;
+export const inboundOrderParseAttemptStatusSchema = z.enum(inboundOrderParseAttemptStatusValues);
+
+export const inboundOrderParseWarningSchema = z.object({
+  code: z.string().trim().min(1).max(100).default("parse_warning"),
+  message: z.string().trim().min(1).max(1000),
+  severity: z.enum(["info", "warning", "blocking"]).default("warning"),
+  fieldPath: z.string().trim().max(255).optional().nullable(),
+});
+
+export const inboundOrderCandidateSchema = z.object({
+  id: z.string().trim().min(1),
+  label: z.string().trim().min(1),
+  confidence: z.number().min(0).max(100),
+  reason: z.string().trim().max(1000).optional().nullable(),
+  metadata: z.record(z.unknown()).default({}),
+});
+
+const confidenceSchema = z.number().min(0).max(100).default(0);
+const stringArraySchema = z.array(z.string().trim().min(1).max(500)).default([]);
+
+export const inboundOrderParsedDraftSchema = z.object({
+  customer: z.object({
+    sourceName: z.string().trim().max(255).nullable().default(null),
+    sourceEmail: z.string().trim().max(255).nullable().default(null),
+    sourcePhone: z.string().trim().max(80).nullable().default(null),
+    companyName: z.string().trim().max(255).nullable().default(null),
+    candidateCustomerIds: z.array(z.string()).default([]),
+    candidateContactIds: z.array(z.string()).default([]),
+    customerCandidates: z.array(inboundOrderCandidateSchema).default([]),
+    contactCandidates: z.array(inboundOrderCandidateSchema).default([]),
+    confidence: confidenceSchema,
+    warnings: z.array(inboundOrderParseWarningSchema).default([]),
+  }),
+  order: z.object({
+    requestedDueDate: z.string().trim().max(80).nullable().default(null),
+    requestedShipMethod: z.string().trim().max(160).nullable().default(null),
+    requestedPickup: z.boolean().nullable().default(null),
+    poNumber: z.string().trim().max(255).nullable().default(null),
+    notes: z.string().trim().max(10000).nullable().default(null),
+    confidence: confidenceSchema,
+    warnings: z.array(inboundOrderParseWarningSchema).default([]),
+  }),
+  lineItems: z.array(z.object({
+    sourceText: z.string().trim().max(5000).nullable().default(null),
+    productName: z.string().trim().max(255).nullable().default(null),
+    candidateProductIds: z.array(z.string()).default([]),
+    productCandidates: z.array(inboundOrderCandidateSchema).default([]),
+    quantity: z.number().positive().nullable().default(null),
+    width: z.number().positive().nullable().default(null),
+    height: z.number().positive().nullable().default(null),
+    dimensionsUnit: z.string().trim().max(40).nullable().default(null),
+    materialText: z.string().trim().max(255).nullable().default(null),
+    optionTexts: stringArraySchema,
+    finishingTexts: stringArraySchema,
+    artworkRefs: stringArraySchema,
+    confidence: confidenceSchema,
+    warnings: z.array(inboundOrderParseWarningSchema).default([]),
+  })).default([]),
+  artwork: z.array(z.object({
+    filename: z.string().trim().max(512).nullable().default(null),
+    sourceReference: z.string().trim().max(512).nullable().default(null),
+    likelyLineItemIndex: z.number().int().min(0).nullable().default(null),
+    purpose: z.enum(["artwork", "proof", "reference", "unknown"]).default("unknown"),
+    confidence: confidenceSchema,
+    warnings: z.array(inboundOrderParseWarningSchema).default([]),
+  })).default([]),
+  globalWarnings: z.array(inboundOrderParseWarningSchema).default([]),
+  missingDecisions: z.array(z.object({
+    field: z.string().trim().min(1).max(255),
+    label: z.string().trim().min(1).max(255),
+    reason: z.string().trim().min(1).max(1000),
+    severity: z.enum(["info", "warning", "blocking"]).default("warning"),
+  })).default([]),
+});
+
+export type InboundOrderParseAttemptStatus = z.infer<typeof inboundOrderParseAttemptStatusSchema>;
+export type InboundOrderParsedDraft = z.infer<typeof inboundOrderParsedDraftSchema>;
+export type InboundOrderParseWarning = z.infer<typeof inboundOrderParseWarningSchema>;
+export type InboundOrderCandidate = z.infer<typeof inboundOrderCandidateSchema>;
 
 export type ManualInboundOrderCreateRequest = z.infer<typeof manualInboundOrderCreateSchema>;
 export type InboundOrderStatusUpdateRequest = z.infer<typeof inboundOrderStatusUpdateSchema>;
@@ -147,6 +229,32 @@ export type ManualInboundOrderCreateResponse = {
 };
 
 export type InboundOrderStatusUpdateResponse = InboundOrderDetailResponse;
+
+export type InboundOrderParseAttemptDto = Omit<InboundOrderParseAttempt, "createdAt"> & {
+  createdAt: string;
+};
+
+export type InboundOrderDraftPreviewResponse = {
+  success: true;
+  data: {
+    draft: InboundOrderParsedDraft | null;
+    latestAttempt: InboundOrderParseAttemptDto | null;
+  };
+};
+
+export type InboundOrderParseResponse = {
+  success: true;
+  data: {
+    draft: InboundOrderParsedDraft | null;
+    latestAttempt: InboundOrderParseAttemptDto;
+    record: InboundOrderRecord;
+  };
+};
+
+export type InboundOrderParseAttemptsResponse = {
+  success: true;
+  data: InboundOrderParseAttemptDto[];
+};
 
 export function normalizeInboundOrderStatusForStorage(
   status: InboundOrderStatusUpdateRequest["status"],

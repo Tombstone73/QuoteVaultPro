@@ -162,6 +162,118 @@ function listResponse(rows: any[]) {
   };
 }
 
+function draftPreview(overrides: Record<string, any> = {}) {
+  return {
+    success: true,
+    data: {
+      draft: null,
+      latestAttempt: null,
+      ...overrides,
+    },
+  };
+}
+
+function parsedDraft(overrides: Record<string, any> = {}) {
+  return {
+    customer: {
+      sourceName: "Ada Lovelace",
+      sourceEmail: "ada@example.com",
+      sourcePhone: null,
+      companyName: "Ada Signs",
+      candidateCustomerIds: ["customer_1"],
+      candidateContactIds: ["contact_1"],
+      customerCandidates: [{
+        id: "customer_1",
+        label: "Ada Signs",
+        confidence: 88,
+        reason: "Email domain and company name matched",
+        metadata: {},
+      }],
+      contactCandidates: [{
+        id: "contact_1",
+        label: "Ada Lovelace",
+        confidence: 91,
+        reason: "Sender email matched",
+        metadata: {},
+      }],
+      confidence: 86,
+      warnings: [],
+    },
+    order: {
+      requestedDueDate: "2026-06-20",
+      requestedShipMethod: "Pickup",
+      requestedPickup: true,
+      poNumber: "PO-123",
+      notes: "Please make two banners.",
+      confidence: 84,
+      warnings: [],
+    },
+    lineItems: [{
+      sourceText: "two banners",
+      productName: "Banner",
+      candidateProductIds: ["product_1"],
+      productCandidates: [{
+        id: "product_1",
+        label: "Vinyl Banner",
+        confidence: 78,
+        reason: "Product name matched",
+        metadata: {},
+      }],
+      quantity: 2,
+      width: 24,
+      height: 36,
+      dimensionsUnit: "in",
+      materialText: "vinyl",
+      optionTexts: ["grommets"],
+      finishingTexts: [],
+      artworkRefs: ["logo.pdf"],
+      confidence: 82,
+      warnings: [],
+    }],
+    artwork: [{
+      filename: "logo.pdf",
+      sourceReference: "logo attached",
+      likelyLineItemIndex: 0,
+      purpose: "artwork",
+      confidence: 72,
+      warnings: [],
+    }],
+    globalWarnings: [{
+      code: "confirm_size",
+      message: "Confirm final banner size before conversion.",
+      severity: "warning",
+      fieldPath: "lineItems.0",
+    }],
+    missingDecisions: [{
+      field: "installation",
+      label: "Installation needed",
+      reason: "Request did not mention installation.",
+      severity: "warning",
+    }],
+    ...overrides,
+  };
+}
+
+function parseAttempt(overrides: Record<string, any> = {}) {
+  return {
+    id: "attempt_1",
+    organizationId: "org_1",
+    inboundOrderRecordId: "inbound_1",
+    status: "success",
+    provider: "test",
+    model: "test-model",
+    rawPromptHash: "hash",
+    rawResponse: {},
+    repairedResponse: null,
+    parsedDraft: null,
+    confidence: 82,
+    warnings: [],
+    errors: [],
+    createdAt: "2026-06-09T12:01:00.000Z",
+    ...overrides,
+  };
+}
+
 async function flush() {
   await act(async () => {
     await Promise.resolve();
@@ -234,6 +346,9 @@ describe("InboundOrdersPage", () => {
       if (path === "/api/inbound-orders/inbound_1") {
         return jsonResponse({ success: true, data: detail(created) });
       }
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview());
+      }
       return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
     });
 
@@ -286,5 +401,109 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Ada Lovelace / ada@example.com");
     expect(container.textContent).toContain("Please make two banners.");
     expect(container.textContent).toContain("Draft builder will appear after parsing.");
+  });
+
+  test("renders parse action and disabled draft order control for a selected record", async () => {
+    const row = record();
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") return jsonResponse(draftPreview());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Parse with AI");
+
+    const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Create Draft Order")
+    ));
+    expect(createDraftButton).toBeTruthy();
+    expect(createDraftButton?.disabled).toBe(true);
+    expect(container.textContent).toContain("Phase 2: parsing only. Order creation is disabled.");
+  });
+
+  test("shows parse loading and error states", async () => {
+    const row = record();
+    let rejectParse: ((error: Error) => void) | null = null;
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") return jsonResponse(draftPreview());
+      if (path === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST") {
+        return await new Promise((_, reject) => {
+          rejectParse = reject;
+        });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Parse with AI");
+
+    const parseButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Parse with AI")
+    ));
+    expect(parseButton).toBeTruthy();
+
+    act(() => {
+      Simulate.click(parseButton!);
+    });
+    await waitForText("Parsing...");
+    await act(async () => {
+      rejectParse?.(new Error("AI provider is not configured."));
+    });
+    await waitForText("AI provider is not configured.");
+
+    expect(container.textContent).toContain("Parse unavailable");
+  });
+
+  test("refreshes draft preview after parse and renders reviewable parsed data", async () => {
+    const row = record();
+    const draft = parsedDraft();
+    const attempt = parseAttempt({ parsedDraft: draft, confidence: 82, warnings: draft.globalWarnings });
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") return jsonResponse(draftPreview());
+      if (path === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST") {
+        return jsonResponse({
+          success: true,
+          data: {
+            draft,
+            latestAttempt: attempt,
+            record: { ...row, status: "needs_review", parsedAt: "2026-06-09T12:01:00.000Z" },
+          },
+        });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Parse with AI");
+
+    const parseButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Parse with AI")
+    ));
+    await act(async () => {
+      Simulate.click(parseButton!);
+    });
+
+    await waitForText("Customer Match Candidates");
+    expect(container.textContent).toContain("Ada Signs");
+    expect(container.textContent).toContain("Vinyl Banner");
+    expect(container.textContent).toContain("Confirm final banner size before conversion.");
+    expect(container.textContent).toContain("82% confidence");
+    expect(container.textContent).toContain("Phase 2: parsing only. Order creation is disabled.");
+
+    const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Create Draft Order")
+    ));
+    expect(createDraftButton?.disabled).toBe(true);
   });
 });
