@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { AiProviderUnavailableError, type AiProviderAdapter } from "../services/ai/providers/AiProviderAdapter";
 import { InboundOrderParsingService } from "../services/inboundOrders/InboundOrderParsingService";
 import { InboundOrderTransitionError } from "../services/inboundOrders/InboundOrderService";
+import { inferInboundRequestedDate } from "../services/inboundOrders/inboundOrderDateInference";
+import { scoreProductKnowledgeCandidates } from "../storage/inboundProductKnowledgeMatcher";
 
 function inboundRecord(overrides: Record<string, any> = {}) {
   const now = new Date("2026-06-09T12:00:00.000Z");
@@ -192,6 +194,13 @@ describe("InboundOrderParsingService", () => {
     expect(result.latestAttempt.status).toBe("success");
     expect(result.draft?.customer.customerCandidates[0].id).toBe("customer_1");
     expect(result.draft?.lineItems[0].productCandidates[0].id).toBe("product_1");
+    expect(repo.searchProductCandidates).toHaveBeenCalledWith(expect.objectContaining({
+      sourceText: "two banners",
+      productName: "Banner",
+      materialText: "vinyl",
+      optionTexts: [],
+      finishingTexts: [],
+    }));
     expect(attempts[0].parsedDraft.customer.candidateCustomerIds).toEqual(["customer_1"]);
     expect(repo.createParseAttempt).toHaveBeenCalledWith(expect.objectContaining({
       organizationId: "org_1",
@@ -288,5 +297,129 @@ describe("InboundOrderParsingService", () => {
       message: "Inbound order record not found",
       statusCode: 404,
     });
+  });
+
+  test("infers month/day dates from inbound received date context", () => {
+    const result = inferInboundRequestedDate({
+      text: "ALL FIRM IN HAND BY 6/19",
+      receivedAt: "2026-06-08T14:00:00.000Z",
+      now: new Date("2026-06-09T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      parsedDate: "2026-06-19",
+      sourceText: expect.stringContaining("6/19"),
+    });
+    expect(result?.confidence).toBeGreaterThanOrEqual(80);
+  });
+
+  test("moves ambiguous already-passed month/day dates into the future with warning", () => {
+    const result = inferInboundRequestedDate({
+      text: "Need by 6/1",
+      receivedAt: "2026-06-08T14:00:00.000Z",
+      now: new Date("2026-06-09T12:00:00.000Z"),
+    });
+
+    expect(result?.parsedDate).toBe("2027-06-01");
+    expect(result?.warning).toContain("next year");
+  });
+
+  test("infers relative weekday dates from received date context", () => {
+    const friday = inferInboundRequestedDate({
+      text: "Need by Friday",
+      receivedAt: "2026-06-08T14:00:00.000Z",
+    });
+    const nextWednesday = inferInboundRequestedDate({
+      text: "Need by next Wednesday",
+      receivedAt: "2026-06-08T14:00:00.000Z",
+    });
+
+    expect(friday?.parsedDate).toBe("2026-06-12");
+    expect(nextWednesday?.parsedDate).toBe("2026-06-17");
+  });
+
+  test("scores product matches using description/category/material knowledge with reasoning", () => {
+    const matches = scoreProductKnowledgeCandidates(
+      { sourceText: "Need 20 yard signs full color", productName: "Yard Sign", materialText: null },
+      [
+        {
+          id: "product_coroplast",
+          name: "4mm Coroplast",
+          description: "Weather-resistant corrugated plastic commonly used for yard signs, political signs, realtor signs, event signs, and outdoor promotional signage.",
+          category: "Signage",
+          materialName: "4mm Coroplast",
+          materialCategory: "Rigid Substrate",
+          metadataText: "{}",
+        },
+        {
+          id: "product_poster",
+          name: "Poster Paper",
+          description: "Indoor poster paper.",
+          category: "Posters",
+          materialName: "Poster Paper",
+          materialCategory: "Paper",
+          metadataText: "{}",
+        },
+      ],
+      5,
+    );
+
+    expect(matches[0].id).toBe("product_coroplast");
+    expect(matches[0].confidence).toBeGreaterThanOrEqual(80);
+    expect(matches[0].metadata.matchReasons.join(" ")).toContain("yard sign");
+    expect(matches[0].metadata.matchBreakdown.descriptionScore).toBeGreaterThan(0);
+  });
+
+  test("generates CSR-style missing decisions for yard signs without dimensions or artwork", () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderParsingService(repo as any, () => null);
+    const refined = service.applyMissingDecisionDetection(parsedDraft({
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: "YARD SIGNS FULL COLOR IMPRINT SINGLE SIDED",
+        productName: "Yard Sign",
+        quantity: 20,
+        width: null,
+        height: null,
+        artworkRefs: [],
+      }],
+      artwork: [],
+      missingDecisions: [],
+    }) as any);
+
+    expect(refined.missingDecisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: "lineItems.0.dimensions",
+        label: "What size are the signs?",
+        severity: "blocking",
+      }),
+      expect.objectContaining({
+        field: "lineItems.0.artwork",
+        label: "Is artwork supplied for this item?",
+      }),
+    ]));
+  });
+
+  test("normalizes parsed due date from source evidence and stores a warning on low confidence", () => {
+    const service = new InboundOrderParsingService(makeRepository().repo as any, () => null);
+    const refined = service.applyDateInference(
+      inboundRecord({
+        receivedAt: new Date("2026-06-08T12:00:00.000Z"),
+        rawPayloadJson: {
+          intakeMode: "TEMP_INBOUND",
+          bodyText: "Need yard signs by 6/1",
+        },
+      }) as any,
+      parsedDraft({
+        order: {
+          ...parsedDraft().order,
+          requestedDueDate: "2023-06-01",
+          warnings: [],
+        },
+      }) as any,
+    );
+
+    expect(refined.order.requestedDueDate).toBe("2027-06-01");
+    expect(refined.order.warnings[0].code).toBe("date_inferred_from_context");
   });
 });

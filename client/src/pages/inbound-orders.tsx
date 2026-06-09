@@ -326,6 +326,65 @@ function CandidateList({
   );
 }
 
+function getStringArrayMetadata(candidate: InboundOrderParsedDraft["customer"]["customerCandidates"][number], key: string): string[] {
+  const value = candidate.metadata?.[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function getBreakdownMetadata(candidate: InboundOrderParsedDraft["customer"]["customerCandidates"][number]) {
+  const value = candidate.metadata?.matchBreakdown;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function ProductMatchReasoning({ candidates }: { candidates: InboundOrderParsedDraft["lineItems"][number]["productCandidates"] }) {
+  return (
+    <div className="rounded-md border border-border p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h4 className="text-xs font-semibold uppercase text-muted-foreground">Product Match Reasoning</h4>
+        <Badge variant="outline">{candidates.length}</Badge>
+      </div>
+      {candidates.length === 0 ? (
+        <div className="text-sm text-muted-foreground">No product match reasoning available.</div>
+      ) : (
+        <div className="space-y-3">
+          {candidates.map((candidate) => {
+            const reasons = getStringArrayMetadata(candidate, "matchReasons");
+            const breakdown = getBreakdownMetadata(candidate);
+            return (
+              <div key={candidate.id} className="rounded-md bg-muted/30 px-3 py-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-foreground">{candidate.label}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{candidate.reason || "Candidate returned by product matcher."}</div>
+                  </div>
+                  <Badge variant="secondary">{candidate.confidence}%</Badge>
+                </div>
+                {reasons.length > 0 && (
+                  <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-muted-foreground">
+                    {reasons.slice(0, 5).map((reason, index) => (
+                      <li key={`${candidate.id}-reason-${index}`}>{reason}</li>
+                    ))}
+                  </ul>
+                )}
+                {breakdown && (
+                  <div className="mt-2 grid grid-cols-2 gap-1 text-xs text-muted-foreground">
+                    <span>Name {String(breakdown.nameScore ?? 0)}</span>
+                    <span>Description {String(breakdown.descriptionScore ?? 0)}</span>
+                    <span>Category {String(breakdown.categoryScore ?? 0)}</span>
+                    <span>Material {String(breakdown.materialScore ?? 0)}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function QueueTriageControls({
   filters,
   summary,
@@ -932,6 +991,9 @@ function DraftBuilderPanel({
                   </div>
                   <div className="mt-3">
                     <CandidateList title="Products" candidates={lineItem.productCandidates} />
+                  </div>
+                  <div className="mt-3">
+                    <ProductMatchReasoning candidates={lineItem.productCandidates} />
                   </div>
                 </div>
               ))

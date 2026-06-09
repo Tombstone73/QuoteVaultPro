@@ -216,8 +216,21 @@ function parsedDraft(overrides: Record<string, any> = {}) {
         id: "product_1",
         label: "Vinyl Banner",
         confidence: 78,
-        reason: "Product name matched",
-        metadata: {},
+        reason: "description matched \"banner\"; category matched \"signage\"",
+        metadata: {
+          matchReasons: [
+            "description matched \"banner\"",
+            "category matched \"signage\"",
+          ],
+          matchBreakdown: {
+            nameScore: 70,
+            descriptionScore: 92,
+            categoryScore: 76,
+            materialScore: 64,
+            metadataScore: 0,
+            combinedConfidence: 78,
+          },
+        },
       }],
       quantity: 2,
       width: 24,
@@ -590,6 +603,11 @@ describe("InboundOrdersPage", () => {
     await waitForText("Customer Match Candidates");
     expect(container.textContent).toContain("Ada Signs");
     expect(container.textContent).toContain("Vinyl Banner");
+    expect(container.textContent).toContain("Product Match Reasoning");
+    expect(container.textContent).toContain("description matched \"banner\"");
+    expect(container.textContent).toContain("Description 92");
+    expect(container.textContent).toContain("2026-06-20");
+    expect(container.textContent).toContain("Installation needed");
     expect(container.textContent).toContain("Confirm final banner size before conversion.");
     expect(container.textContent).toContain("82% confidence");
     expect(container.textContent).toContain("Phase 2: parsing only. Order creation is disabled.");
