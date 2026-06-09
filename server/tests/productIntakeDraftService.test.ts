@@ -585,6 +585,125 @@ describe("Product Intake draft service", () => {
     expect(tree.meta?.productIntake?.matrixDraft?.rows.map((row: any) => row.label)).toEqual(["Single Sided", "Double Sided"]);
   });
 
+  test("generates selected matrix dimensions and rows for thickness plus printed sides", () => {
+    const sourceText = [
+      "4mm and 10mm Coroplast Yard Signs",
+      "",
+      "This is a fixed-size manufactured print product.",
+      "",
+      "Finished size:",
+      '24" wide x 18" high',
+      "",
+      "Material:",
+      "White coroplast",
+      "",
+      "Available thickness options:",
+      "- 4mm Coroplast",
+      "- 10mm Coroplast",
+      "",
+      "Customer options:",
+      "Printed Sides:",
+      "- Single Sided",
+      "- Double Sided",
+      "",
+      "Material Thickness:",
+      "- 4mm Coroplast",
+      "- 10mm Coroplast",
+      "",
+      "Optional Add-On:",
+      "- H-Wire Stakes",
+      "",
+      "Pricing type:",
+      "PBV2 pricing matrix",
+      "",
+      "Matrix dimensions:",
+      "- Printed Sides",
+      "- Material Thickness",
+      "- Quantity Tier",
+      "",
+      "Important rules:",
+      "Quantity belongs on the quote/order line item. Do not create Quantity as a product option.",
+      'Size is fixed at 24" x 18". Do not create a Size option.',
+      "Do not ask for width or height during quote/order entry.",
+      "H-Wire Stakes is an optional add-on and should not be part of the pricing matrix unless pricing varies by H-Wire Stakes.",
+      "",
+      "Pricing matrix:",
+      "",
+      "4mm Coroplast, Single Sided:",
+      "1-100 signs = $4.40 each",
+      "101-500 signs = $3.30 each",
+      "501+ signs = $3.00 each",
+      "",
+      "4mm Coroplast, Double Sided:",
+      "1-100 signs = $5.50 each",
+      "101-500 signs = $4.40 each",
+      "501+ signs = $4.00 each",
+      "",
+      "10mm Coroplast, Single Sided:",
+      "1-100 signs = $8.40 each",
+      "101-500 signs = $7.30 each",
+      "501+ signs = $7.00 each",
+      "",
+      "10mm Coroplast, Double Sided:",
+      "1-100 signs = $9.50 each",
+      "101-500 signs = $8.40 each",
+      "501+ signs = $8.00 each",
+    ].join("\n");
+
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        productIdentity: {
+          likelyProductName: { value: "4mm and 10mm Coroplast Yard Signs", confidence: 94, evidence: [] },
+          category: { value: "Yard Signs", confidence: 90, evidence: [] },
+          productType: { value: "Rigid Sign", confidence: 85, evidence: [] },
+        },
+        sizeBehavior: { behavior: "fixed_size", confidence: 95, notes: '24" wide x 18" high', evidence: [] },
+        quantityBehavior: { behavior: "quantity tiers", confidence: 95, evidence: [] },
+        pricingAnalysis: { behavior: "matrix_or_tiered", confidence: 94, notes: "PBV2 pricing matrix by material thickness, printed sides, and quantity tier", evidence: [] },
+        requiredOptions: [
+          option("Size", { normalizedGroup: "size", sampleValues: ['24" x 18"'] }),
+          option("Material Thickness", { normalizedGroup: "material_thickness", sampleValues: ["4mm Coroplast", "10mm Coroplast"] }),
+          option("Printed Sides", { normalizedGroup: "printed_sides", sampleValues: ["Single Sided", "Double Sided"] }),
+        ],
+        optionalOptions: [
+          option("H-Wire Stakes", { normalizedGroup: "h_wire_stakes", required: false, sampleValues: ["No Stakes", "Include H-Wire Stakes"] }),
+        ],
+      }),
+      sessionId: "sess_thickness_sides_yard_sign",
+      productName: "4mm and 10mm Coroplast Yard Signs",
+      userId: "user_1",
+      sourceText,
+    });
+
+    expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expectNoQuantityOption(tree);
+    expect(inputNode(tree, "size")).toBeUndefined();
+    expect(inputNode(tree, "material_thickness")).toBeTruthy();
+    expect(inputNode(tree, "printed_sides")).toBeTruthy();
+    expect(inputNode(tree, "h_wire_stakes")).toBeTruthy();
+    expect(getPbv2FixedDimensions(tree)).toMatchObject({ widthIn: 24, heightIn: 18, unit: "in" });
+
+    const matrix = (tree as any).pricingMatrix;
+    expect(matrix?.dimensions).toEqual(["material_thickness", "printed_sides"]);
+    expect(matrix.dimensions).not.toContain("h_wire_stakes");
+    expect(matrix.rows).toHaveLength(4);
+
+    const rowFor = (thickness: string, sides: string) =>
+      matrix.rows.find((row: any) => row.when?.material_thickness === thickness && row.when?.printed_sides === sides);
+
+    expect(rowFor("4mm_coroplast", "single_sided").qtyTiers.map((tier: any) => tier.perPieceCents)).toEqual([440, 330, 300]);
+    expect(rowFor("4mm_coroplast", "double_sided").qtyTiers.map((tier: any) => tier.perPieceCents)).toEqual([550, 440, 400]);
+    expect(rowFor("10mm_coroplast", "single_sided").qtyTiers.map((tier: any) => tier.perPieceCents)).toEqual([840, 730, 700]);
+    expect(rowFor("10mm_coroplast", "double_sided").qtyTiers.map((tier: any) => tier.perPieceCents)).toEqual([950, 840, 800]);
+    expect(tree.meta?.productIntake?.matrixDraft?.dimensions).toEqual(["material_thickness", "printed_sides"]);
+    expect(tree.meta?.productIntake?.matrixDraft?.rows.map((row: any) => row.label)).toEqual([
+      "4mm Coroplast + Single Sided",
+      "4mm Coroplast + Double Sided",
+      "10mm Coroplast + Single Sided",
+      "10mm Coroplast + Double Sided",
+    ]);
+  });
+
   test("uses saved matrix answers to generate draft rows when source matrix is incomplete", () => {
     const tree = buildProductIntakeDraftTree({
       brief: brief({

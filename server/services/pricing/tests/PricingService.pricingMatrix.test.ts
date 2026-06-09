@@ -132,6 +132,85 @@ function runPreview(
   });
 }
 
+function makeFixedCoroplastThicknessSidesMatrixTree() {
+  return {
+    schemaVersion: 2 as const,
+    rootNodeIds: ["material_thickness", "printed_sides"],
+    nodes: {
+      material_thickness: {
+        id: "material_thickness",
+        kind: "question" as const,
+        label: "Material Thickness",
+        input: { type: "select" as const, selectionKey: "material_thickness" },
+        choices: [
+          { value: "4mm_coroplast", label: "4mm Coroplast" },
+          { value: "10mm_coroplast", label: "10mm Coroplast" },
+        ],
+      },
+      printed_sides: {
+        id: "printed_sides",
+        kind: "question" as const,
+        label: "Printed Sides",
+        input: { type: "select" as const, selectionKey: "printed_sides" },
+        choices: [
+          { value: "single_sided", label: "Single Sided" },
+          { value: "double_sided", label: "Double Sided" },
+        ],
+      },
+    },
+    pricingMatrix: {
+      dimensions: ["material_thickness", "printed_sides"],
+      rows: [
+        {
+          id: "4mm_single",
+          when: { material_thickness: "4mm_coroplast", printed_sides: "single_sided" },
+          tierBasis: "line_item_quantity",
+          qtyTiers: [
+            { id: "4mm_single_1_100", label: "1-100", minQty: 1, maxQty: 100, perPieceCents: 440 },
+            { id: "4mm_single_101_500", label: "101-500", minQty: 101, maxQty: 500, perPieceCents: 330 },
+            { id: "4mm_single_501", label: "501+", minQty: 501, maxQty: null, perPieceCents: 300 },
+          ],
+        },
+        {
+          id: "4mm_double",
+          when: { material_thickness: "4mm_coroplast", printed_sides: "double_sided" },
+          tierBasis: "line_item_quantity",
+          qtyTiers: [
+            { id: "4mm_double_1_100", label: "1-100", minQty: 1, maxQty: 100, perPieceCents: 550 },
+            { id: "4mm_double_101_500", label: "101-500", minQty: 101, maxQty: 500, perPieceCents: 440 },
+            { id: "4mm_double_501", label: "501+", minQty: 501, maxQty: null, perPieceCents: 400 },
+          ],
+        },
+        {
+          id: "10mm_single",
+          when: { material_thickness: "10mm_coroplast", printed_sides: "single_sided" },
+          tierBasis: "line_item_quantity",
+          qtyTiers: [
+            { id: "10mm_single_1_100", label: "1-100", minQty: 1, maxQty: 100, perPieceCents: 840 },
+            { id: "10mm_single_101_500", label: "101-500", minQty: 101, maxQty: 500, perPieceCents: 730 },
+            { id: "10mm_single_501", label: "501+", minQty: 501, maxQty: null, perPieceCents: 700 },
+          ],
+        },
+        {
+          id: "10mm_double",
+          when: { material_thickness: "10mm_coroplast", printed_sides: "double_sided" },
+          tierBasis: "line_item_quantity",
+          qtyTiers: [
+            { id: "10mm_double_1_100", label: "1-100", minQty: 1, maxQty: 100, perPieceCents: 950 },
+            { id: "10mm_double_101_500", label: "101-500", minQty: 101, maxQty: 500, perPieceCents: 840 },
+            { id: "10mm_double_501", label: "501+", minQty: 501, maxQty: null, perPieceCents: 800 },
+          ],
+        },
+      ],
+    },
+    meta: {
+      requiresDimensions: false,
+      fixedDimensions: { widthIn: 24, heightIn: 18, unit: "in" as const, label: '24" x 18"' },
+      pricingV2: { unitSystem: "imperial" as const, tierBasis: "line_item_quantity" as const, base: {} },
+    },
+  };
+}
+
 function expectPricingMatrixError(fn: () => unknown): Pbv2PricingMatrixError {
   try {
     fn();
@@ -589,6 +668,37 @@ describe("PricingService pricing matrix variable resolution", () => {
       tierBasis: "line_item_quantity",
       tierBasisValue: 250,
       matchedTierLabel: "101-500",
+    }));
+  });
+
+  test.each([
+    ["4mm_coroplast", "single_sided", 100, "1-100", 440, 440],
+    ["4mm_coroplast", "single_sided", 101, "101-500", 330, 333.3],
+    ["4mm_coroplast", "double_sided", 100, "1-100", 550, 550],
+    ["10mm_coroplast", "single_sided", 100, "1-100", 840, 840],
+    ["10mm_coroplast", "double_sided", 101, "101-500", 840, 848.4],
+  ])("fixed-size thickness+sides matrix prices %s %s qty %s", (thickness, sides, quantity, expectedTierLabel, expectedRateCents, expectedTotal) => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeFixedCoroplastThicknessSidesMatrixTree(),
+      widthIn: undefined as unknown as number,
+      heightIn: undefined as unknown as number,
+      quantity: Number(quantity),
+      pbv2ExplicitSelections: {
+        material_thickness: { value: thickness },
+        printed_sides: { value: sides },
+      },
+      debug: true,
+    });
+
+    expect(result.totalPrice).toBeCloseTo(Number(expectedTotal), 2);
+    expect(result.unitPrice).toBeCloseTo(Number(expectedRateCents) / 100, 2);
+    expect(result.debug?.inputs?.widthIn).toBe(24);
+    expect(result.debug?.inputs?.heightIn).toBe(18);
+    expect(result.debug?.tierResolution).toEqual(expect.objectContaining({
+      source: "matrix_row",
+      tierBasis: "line_item_quantity",
+      tierBasisValue: Number(quantity),
+      matchedTierLabel: expectedTierLabel,
     }));
   });
 
