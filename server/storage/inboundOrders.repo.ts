@@ -1078,6 +1078,7 @@ export class InboundOrdersRepository {
         pricingProfileConfig: products.pricingProfileConfig,
         pricingProfileKey: products.pricingProfileKey,
         pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
+        isService: products.isService,
         materialName: materials.name,
         materialCategory: materials.category,
         materialSpecsJson: materials.specsJson,
@@ -1103,6 +1104,7 @@ export class InboundOrdersRepository {
         description: row.description,
         materialName: row.materialName,
         materialCategory: row.materialCategory,
+        isService: row.isService,
         metadataText: JSON.stringify({
           optionsJson: row.optionsJson ?? null,
           pricingProfileConfig: row.pricingProfileConfig ?? null,

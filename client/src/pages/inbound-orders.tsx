@@ -191,6 +191,15 @@ function titleCase(value: string | null | undefined) {
     .join(" ") || "-";
 }
 
+function evidenceSourceLabel(value: string | null | undefined) {
+  if (value === "PDF_ATTACHMENT") return "PDF Attachment";
+  if (value === "EMAIL_BODY") return "Email Body";
+  if (value === "EMAIL_SUBJECT") return "Email Subject";
+  if (value === "TEXT_ATTACHMENT") return "Text Attachment";
+  if (value === "MANUAL_NOTES") return "Manual Notes";
+  return titleCase(value);
+}
+
 function getRecordTitle(record: ClientInboundOrderRecord) {
   const evidence = getManualInboundEvidence(record);
   return evidence.reference || evidence.subject || record.externalReference || `Inbound ${record.id.slice(0, 8)}`;
@@ -395,6 +404,53 @@ function PoSummaryGrid({ summary }: { summary: NonNullable<InboundOrderParsedDra
       <InlineField label="Material" value={summary.material} />
       <InlineField label="Size" value={summary.dimensions} />
     </div>
+  );
+}
+
+const fieldSourceLabels: Record<string, string> = {
+  poNumber: "PO Number",
+  dueDate: "Due Date",
+  quantity: "Quantity",
+  dimensions: "Dimensions",
+  material: "Material",
+  productDescription: "Product",
+};
+
+function FieldSourceSection({ draft }: { draft: InboundOrderParsedDraft }) {
+  const sourceEntries = draft.evidence.items
+    .filter((item) => item.poSummary?.fieldSources)
+    .flatMap((item) => Object.entries(item.poSummary?.fieldSources ?? {}).map(([field, source]) => ({ field, source })))
+    .filter((entry) => fieldSourceLabels[entry.field]);
+
+  return (
+    <section className="rounded-md border border-border p-3">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-foreground">Field Sources</h3>
+        <Badge variant="outline">{sourceEntries.length}</Badge>
+      </div>
+      <div className="mt-3 space-y-2">
+        {sourceEntries.length === 0 ? (
+          <div className="text-sm text-muted-foreground">No field source details available.</div>
+        ) : (
+          sourceEntries.map(({ field, source }) => (
+            <div key={field} className="rounded-md border border-border bg-muted/20 px-3 py-2">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-foreground">{fieldSourceLabels[field]}</div>
+                  <div className="mt-1 break-words text-sm text-foreground">{String(source.value ?? "-")}</div>
+                </div>
+                <Badge variant="secondary">{source.confidence}%</Badge>
+              </div>
+              <div className="mt-2 grid grid-cols-1 gap-2 text-xs text-muted-foreground">
+                <div>Source: {evidenceSourceLabel(source.sourceType)}</div>
+                {source.sourceDocument && <div>Document: {source.sourceDocument}</div>}
+                {source.sourceText && <div>Source Text: {source.sourceText}</div>}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -830,6 +886,11 @@ function SourceEvidencePanel({
                         <div className="mt-1 text-xs text-muted-foreground">
                           {file.mimeType || "unknown type"} / {file.role}
                         </div>
+                        {extracted && (
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            Pages: {extracted.pageCount ?? "-"} / Extraction: {titleCase(extracted.extractionStatus)}
+                          </div>
+                        )}
                       </div>
                       {extracted ? (
                         <div className="flex flex-wrap gap-2">
@@ -1006,6 +1067,8 @@ function DraftBuilderPanel({
             <InlineField label="Parsed" value={latestAttempt ? formatTimestamp(latestAttempt.createdAt) : null} />
           </div>
         </section>
+
+        <FieldSourceSection draft={draft} />
 
         <section className="rounded-md border border-border p-3">
           <h3 className="text-sm font-semibold text-foreground">Customer Match Candidates</h3>
