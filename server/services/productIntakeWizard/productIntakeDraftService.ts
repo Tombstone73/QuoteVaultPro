@@ -346,9 +346,9 @@ function sizeMetadataForBrief(args: {
   if (args.sizeMode === "custom_dimension") {
     return {
       behavior: "custom_dimensions" as const,
-      customerFacingOptionGenerated: true,
+      customerFacingOptionGenerated: false,
       sourceOptions,
-      warning: null,
+      warning: "Custom width and height are stored as required line-item dimensions and were not generated as a PBV2 Size option.",
     };
   }
 
@@ -412,12 +412,16 @@ function detectMatrixPricing(brief: ProductIntakeBrief, text: string): Pick<Inta
   const optionText = optionTextForMatrix(brief);
   const detectedSizes = extractSizeSignals(brief, text);
   const detectedQuantityBreaks = extractQuantityBreaks(brief, text);
+  const sizeOption = [...brief.requiredOptions, ...brief.optionalOptions].find(isSizeOption) ?? null;
+  const sizeMode = resolveSizeMode(brief, sizeOption);
+  const hasSelectableSizeDimension = sizeMode === "fixed_dropdown" &&
+    (hasMultipleSelectableFixedSizeChoices(sizeOption) || detectedSizes.length > 1);
   const materialNames = unique([
     ...brief.materialAnalysis.detectedMaterialReferences,
     ...brief.materialAnalysis.likelyMaterialMatches.map((match) => match.name),
   ]).slice(0, 12);
 
-  if (/\b(size|width|height|dimension)\b/.test(optionText) || /fixed|custom|size|dimension/i.test(brief.sizeBehavior.behavior) || detectedSizes.length > 0) {
+  if (hasSelectableSizeDimension) {
     dimensions.add("size");
     if (detectedSizes.length > 1) addReason("Multiple fixed sizes were detected.");
   }
@@ -1492,7 +1496,7 @@ function assessDraftQuality(args: {
   }
 
   if (args.sizeMode === "fixed_dropdown") reasons.push("Fixed size is preserved as intake metadata unless multiple selectable sizes are present.");
-  if (args.sizeMode === "custom_dimension") reasons.push("Custom size behavior produced a Size dimension input only.");
+  if (args.sizeMode === "custom_dimension") reasons.push("Custom size behavior is captured through required line-item dimensions.");
   if (args.skippedTemplateOptionCount > 0) reasons.push(`${args.skippedTemplateOptionCount} generic option(s) skipped because reusable templates were applied.`);
   if (groupNodes.length >= 2 && !invalidRootGroups) reasons.push("Options were organized into logical PBV2 groups.");
   reasons.push("Quote/order line item quantity remains outside customer-facing PBV2 options.");
@@ -1618,19 +1622,7 @@ export function buildProductIntakeDraftTree(args: {
   const templateConcepts = collectTreeConcepts(tree);
 
   let sortOrder = tree.rootNodeIds.length + 1;
-  if (sizeMode === "custom_dimension") {
-    addQuestionNode({
-      tree,
-      key: "size",
-      label: "Size",
-      inputType: "dimension",
-      required: true,
-      usedNodeIds,
-      usedEdgeIds,
-      groupKey: "size_quantity",
-      sortOrder: sortOrder++,
-    });
-  } else if (sizeMode === "fixed_dropdown" && sizeOption && hasMultipleSelectableFixedSizeChoices(sizeOption)) {
+  if (sizeMode === "fixed_dropdown" && sizeOption && hasMultipleSelectableFixedSizeChoices(sizeOption)) {
     const choices = optionChoices(sizeOption);
     addQuestionNode({
       tree,
