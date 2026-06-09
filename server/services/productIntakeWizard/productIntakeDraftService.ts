@@ -548,6 +548,12 @@ type MatrixDimensionCandidate = {
   choices: MatrixChoiceCandidate[];
 };
 
+type MatrixCombinationCandidate = {
+  dimensions: MatrixDimensionCandidate[];
+  choices: MatrixChoiceCandidate[];
+  prices: Array<{ tier: MatrixTierCandidate; cents: number }>;
+};
+
 type GeneratedMatrixDraft = {
   matrix: ProductOptionPricingMatrix;
   draft: ProductIntakeMatrixDraft;
@@ -653,6 +659,71 @@ function centsFromPipeTable(text: string, choiceLabel: string, tier: MatrixTierC
   return dollarsToCents(row[tierIndex].replace(/^\$/, ""));
 }
 
+function choiceAliasPattern(label: string): RegExp {
+  const escaped = escapeRegExp(label).replace(/\\ /g, "\\s+");
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?=$|[^a-z0-9])`, "i");
+}
+
+function headerContainsChoice(header: string, choice: MatrixChoiceCandidate): boolean {
+  return choiceAliasPattern(choice.label).test(header) || choiceAliasPattern(choice.value.replace(/_/g, " ")).test(header);
+}
+
+function cartesianChoiceCombinations(dimensions: MatrixDimensionCandidate[]): MatrixChoiceCandidate[][] {
+  return dimensions.reduce<MatrixChoiceCandidate[][]>((acc, dimension) => {
+    const next: MatrixChoiceCandidate[][] = [];
+    for (const prefix of acc) {
+      for (const choice of dimension.choices) {
+        next.push([...prefix, choice]);
+      }
+    }
+    return next;
+  }, [[]]);
+}
+
+function dimensionSubsets(dimensions: MatrixDimensionCandidate[], maxSize = 3): MatrixDimensionCandidate[][] {
+  const out: MatrixDimensionCandidate[][] = [];
+  const visit = (start: number, current: MatrixDimensionCandidate[]) => {
+    if (current.length > 0) out.push([...current]);
+    if (current.length >= maxSize) return;
+    for (let index = start; index < dimensions.length; index += 1) {
+      current.push(dimensions[index]);
+      visit(index + 1, current);
+      current.pop();
+    }
+  };
+  visit(0, []);
+  return out;
+}
+
+function extractCombinationPriceBlock(
+  text: string,
+  selectedChoices: MatrixChoiceCandidate[],
+  excludedChoices: MatrixChoiceCandidate[],
+): string | null {
+  const lines = normalizeMatrixText(text).split("\n").map((line) => line.trim());
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line || !/:$/.test(line)) continue;
+    const header = line.replace(/:\s*$/, "");
+    if (!selectedChoices.every((choice) => headerContainsChoice(header, choice))) continue;
+    if (excludedChoices.some((choice) => headerContainsChoice(header, choice))) continue;
+
+    const block: string[] = [];
+    for (let blockIndex = index + 1; blockIndex < lines.length; blockIndex += 1) {
+      const blockLine = lines[blockIndex];
+      if (!blockLine) {
+        if (block.length > 0) break;
+        continue;
+      }
+      if (/:$/.test(blockLine) && !/\b\d{1,6}\s*(?:-\s*\d{1,6}|\+)?\b.*(?:=|:)\s*\$?\s*\d/.test(blockLine)) break;
+      block.push(blockLine);
+    }
+    const joined = block.join(" ").trim();
+    if (/\b\d{1,6}\s*(?:-\s*\d{1,6}|\+)?\b.*(?:=|:)\s*\$?\s*\d/.test(joined)) return joined;
+  }
+  return null;
+}
+
 function matrixDimensionCandidatesFromTree(tree: OptionTreeV2): MatrixDimensionCandidate[] {
   return Object.values(tree.nodes)
     .filter((node: any) => String(node?.type ?? "").toUpperCase() === "INPUT" && node?.input?.type === "select")
@@ -727,28 +798,46 @@ function buildGeneratedMatrixDraft(args: {
     ? "perSqftCents"
     : "perPieceCents";
   const dimensionCandidates = matrixDimensionCandidatesFromTree(args.tree);
-  const parsedCandidates = dimensionCandidates.map((dimension) => {
-    const choiceLabels = dimension.choices.map((choice) => choice.label);
-    const rows = dimension.choices.map((choice) => {
-      const block = extractChoicePriceBlock(args.sourceText, choiceLabels, choice.label) ?? "";
+  const parsedCandidates = dimensionSubsets(dimensionCandidates).map((dimensions) => {
+    const selectedKeys = new Set(dimensions.map((dimension) => dimension.selectionKey));
+    const excludedChoices = dimensionCandidates
+      .filter((dimension) => !selectedKeys.has(dimension.selectionKey))
+      .flatMap((dimension) => dimension.choices);
+    const singleDimension = dimensions.length === 1 ? dimensions[0] : null;
+    const singleChoiceLabels = singleDimension?.choices.map((choice) => choice.label) ?? [];
+    const rows = cartesianChoiceCombinations(dimensions).map((choices): MatrixCombinationCandidate | null => {
+      const block = dimensions.length === 1
+        ? (extractChoicePriceBlock(args.sourceText, singleChoiceLabels, choices[0].label) ?? extractCombinationPriceBlock(args.sourceText, choices, excludedChoices) ?? "")
+        : (extractCombinationPriceBlock(args.sourceText, choices, excludedChoices) ?? "");
       const prices = tiers.map((tier) => ({
         tier,
-        cents: centsFromTierBlock(block, tier) ?? centsFromPipeTable(args.sourceText, choice.label, tier),
+        cents: centsFromTierBlock(block, tier) ?? (singleDimension ? centsFromPipeTable(args.sourceText, choices[0].label, tier) : null),
       }));
       if (prices.some((price) => price.cents == null)) return null;
-      return { choice, prices: prices as Array<{ tier: MatrixTierCandidate; cents: number }> };
-    }).filter(Boolean) as Array<{ choice: MatrixChoiceCandidate; prices: Array<{ tier: MatrixTierCandidate; cents: number }> }>;
-    return { dimension, rows };
+      return {
+        dimensions,
+        choices,
+        prices: prices as Array<{ tier: MatrixTierCandidate; cents: number }>,
+      };
+    }).filter(Boolean) as MatrixCombinationCandidate[];
+    return { dimensions, rows };
   }).filter((candidate) => candidate.rows.length >= 2);
 
-  const selected = parsedCandidates.sort((a, b) => (b.rows.length * tiers.length) - (a.rows.length * tiers.length))[0];
+  const selected = parsedCandidates.sort((a, b) => {
+    const scoreA = a.rows.length * tiers.length * a.dimensions.length;
+    const scoreB = b.rows.length * tiers.length * b.dimensions.length;
+    if (scoreB !== scoreA) return scoreB - scoreA;
+    return b.dimensions.length - a.dimensions.length;
+  })[0];
   if (!selected) return null;
 
   const confidence = Math.max(85, Math.min(98, Math.max(args.pricingReadiness.matrixReadiness.matrixConfidence, 88 + Math.min(10, selected.rows.length + tiers.length))));
   if (confidence < 85) return null;
 
   const matrixRows = selected.rows.map((row) => {
-    const rowId = safeKey(`intake_matrix_${selected.dimension.selectionKey}_${row.choice.value}`, "intake_matrix_row");
+    const rowKey = row.dimensions.map((dimension, index) => `${dimension.selectionKey}_${row.choices[index].value}`).join("_");
+    const rowId = safeKey(`intake_matrix_${rowKey}`, "intake_matrix_row");
+    const when = Object.fromEntries(row.dimensions.map((dimension, index) => [dimension.selectionKey, row.choices[index].value]));
     const qtyTiers: PricingV2Tier[] = row.prices.map(({ tier, cents }) => ({
       id: safeKey(`${rowId}_${tier.id}`, "tier"),
       label: tier.label,
@@ -757,16 +846,16 @@ function buildGeneratedMatrixDraft(args: {
     }));
     return {
       id: rowId,
-      when: { [selected.dimension.selectionKey]: row.choice.value },
+      when,
       qtyTiers,
       tierBasis: "line_item_quantity" as const,
     };
   });
 
   const previewRows = selected.rows.map((row) => ({
-    id: safeKey(`preview_${selected.dimension.selectionKey}_${row.choice.value}`, "preview_row"),
-    label: row.choice.label,
-    when: { [selected.dimension.selectionKey]: row.choice.value },
+    id: safeKey(`preview_${row.dimensions.map((dimension, index) => `${dimension.selectionKey}_${row.choices[index].value}`).join("_")}`, "preview_row"),
+    label: row.choices.map((choice) => choice.label).join(" + "),
+    when: Object.fromEntries(row.dimensions.map((dimension, index) => [dimension.selectionKey, row.choices[index].value])),
     prices: row.prices.map(({ tier, cents }) => ({
       tierId: tier.id,
       label: tier.label,
@@ -778,15 +867,16 @@ function buildGeneratedMatrixDraft(args: {
   const sourceSignals = unique([
     ...args.pricingReadiness.matrixReadiness.reasoning,
     ...args.pricingReadiness.matrixReadiness.detectedPricingSignals,
-    `${selected.dimension.label} rows matched explicit price values for ${tiers.length} quantity tiers.`,
+    `${selected.dimensions.map((dimension) => dimension.label).join(" + ")} rows matched explicit price values for ${tiers.length} quantity tiers.`,
   ]);
+  const selectedDimensionKeys = selected.dimensions.map((dimension) => dimension.selectionKey);
   const readiness: ProductIntakeMatrixReadiness = {
     ...args.pricingReadiness.matrixReadiness,
     required: true,
     matrixType: args.pricingReadiness.matrixReadiness.matrixType === "NONE" ? "QUANTITY_TIER" : args.pricingReadiness.matrixReadiness.matrixType,
     matrixDimensions: unique([
-      selected.dimension.selectionKey,
-      ...args.pricingReadiness.matrixReadiness.matrixDimensions.filter((dimension) => dimension !== selected.dimension.selectionKey),
+      ...selectedDimensionKeys,
+      ...args.pricingReadiness.matrixReadiness.matrixDimensions.filter((dimension) => !selectedDimensionKeys.includes(dimension)),
       "quantity",
     ]),
     matrixConfidence: confidence,
@@ -800,7 +890,7 @@ function buildGeneratedMatrixDraft(args: {
   return {
     matrix: {
       id: safeKey(`intake_matrix_${args.sessionId}`, "intake_matrix"),
-      dimensions: [selected.dimension.selectionKey],
+      dimensions: selectedDimensionKeys,
       rows: matrixRows,
     },
     draft: {
@@ -812,7 +902,7 @@ function buildGeneratedMatrixDraft(args: {
         "Every generated row included every detected quantity tier price.",
       ],
       sourceSignals,
-      dimensions: [selected.dimension.selectionKey],
+      dimensions: selectedDimensionKeys,
       tiers,
       rows: previewRows,
       warnings: [
