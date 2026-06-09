@@ -185,6 +185,13 @@ export type ResolveInboundDecisionFlagInput = {
 export class InboundOrdersRepository {
   constructor(private readonly dbInstance = db) {}
 
+  async listInboundOrders(
+    organizationId: string,
+    filters: InboundOrderListFilters,
+  ): Promise<InboundOrderRecord[]> {
+    return this.listRecords(organizationId, filters);
+  }
+
   async listRecords(
     organizationId: string,
     filters: InboundOrderListFilters,
@@ -274,6 +281,10 @@ export class InboundOrdersRepository {
       .offset(filters.offset);
   }
 
+  async getInboundOrderCounts(organizationId: string): Promise<InboundOrderQueueSummary> {
+    return this.getQueueSummary(organizationId);
+  }
+
   async getQueueSummary(organizationId: string): Promise<InboundOrderQueueSummary> {
     const [summary] = await this.dbInstance
       .select({
@@ -299,6 +310,10 @@ export class InboundOrdersRepository {
       rejectedTerminal: Number(summary?.rejectedTerminal ?? 0),
       withWarnings: Number(summary?.withWarnings ?? 0),
     };
+  }
+
+  async getInboundOrder(organizationId: string, inboundRecordId: string): Promise<InboundOrderRecord | null> {
+    return this.getRecord(organizationId, inboundRecordId);
   }
 
   async getRecord(organizationId: string, inboundRecordId: string): Promise<InboundOrderRecord | null> {
@@ -843,6 +858,22 @@ export class InboundOrdersRepository {
 
       return { record, event };
     });
+  }
+
+  async createManualInboundOrder(args: {
+    record: CreateInboundOrderRecordValues;
+    event: Omit<CreateInboundOrderEventValues, "inboundRecordId">;
+  }): Promise<{ record: InboundOrderRecord; event: InboundOrderEvent }> {
+    return this.createManualRecordWithEvent(args);
+  }
+
+  async updateInboundOrderStatus(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    patch: UpdateInboundOrderRecordValues;
+    event: Omit<CreateInboundOrderEventValues, "inboundRecordId" | "organizationId">;
+  }): Promise<{ record: InboundOrderRecord; event: InboundOrderEvent } | null> {
+    return this.updateRecordWithEvent(args);
   }
 
   async updateRecordWithEvent(args: {

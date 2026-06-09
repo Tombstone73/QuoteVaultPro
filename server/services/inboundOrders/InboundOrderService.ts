@@ -11,6 +11,7 @@ import {
   type InboundOrderWarning,
   type Quote,
 } from "@shared/schema";
+import type { ManualInboundOrderCreateRequest } from "@shared/inboundOrdersApi";
 import {
   inboundOrdersRepository,
   type CreateInboundOrderEventValues,
@@ -91,6 +92,12 @@ export type InboundOrderListResult = {
 export type ManualInboundOrderCreateInput = {
   organizationId: string;
   actorUserId: string | null;
+  reference?: string | null;
+  senderName?: string | null;
+  senderEmail?: string | null;
+  subject?: string | null;
+  bodyText?: string;
+  notes?: string | null;
   sourceId?: string | null;
   sourceLabel?: string | null;
   sourceRecordId?: string | null;
@@ -119,6 +126,13 @@ export type InboundOrderReviewActionInput = {
   actorUserId: string;
   action: InboundOrderReviewAction;
   note?: string | null;
+};
+
+export type InboundOrderStatusUpdateInput = {
+  organizationId: string;
+  inboundRecordId: string;
+  actorUserId: string;
+  status: InboundOrderRecordStatus;
 };
 
 export type InboundOrderReviewDraftSnapshot = {
@@ -322,6 +336,13 @@ function formatSkippedLineItemForNote(item: InboundQuoteDraftSkippedLineItem): s
 export class InboundOrderService {
   constructor(private readonly repository = inboundOrdersRepository) {}
 
+  async listInboundOrders(args: {
+    organizationId: string;
+    filters: InboundOrderListFilters;
+  }): Promise<InboundOrderListResult> {
+    return this.listRecords(args);
+  }
+
   async listRecords(args: {
     organizationId: string;
     filters: InboundOrderListFilters;
@@ -332,6 +353,17 @@ export class InboundOrderService {
     ]);
 
     return { records, summary };
+  }
+
+  async getInboundOrderCounts(args: { organizationId: string }): Promise<InboundOrderQueueSummary> {
+    return this.repository.getInboundOrderCounts(args.organizationId);
+  }
+
+  async getInboundOrder(args: {
+    organizationId: string;
+    inboundRecordId: string;
+  }): Promise<InboundOrderDetail | null> {
+    return this.getDetail(args);
   }
 
   async getDetail(args: {
@@ -418,11 +450,69 @@ export class InboundOrderService {
     return this.attachQuoteLinkage(args.organizationId, detail);
   }
 
+  async createManualInboundOrder(args: ManualInboundOrderCreateInput & ManualInboundOrderCreateRequest): Promise<{
+    record: InboundOrderRecord;
+    event: InboundOrderEvent;
+  }> {
+    const reference = args.reference?.trim() || null;
+    const senderName = args.senderName?.trim() || null;
+    const senderEmail = args.senderEmail?.trim() || null;
+    const subject = args.subject?.trim() || null;
+    const bodyText = args.bodyText.trim();
+    const notes = args.notes?.trim() || null;
+
+    return this.createManualRecord({
+      organizationId: args.organizationId,
+      actorUserId: args.actorUserId,
+      sourceLabel: "TEMP_INBOUND manual intake",
+      externalReference: reference,
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        reference,
+        sender: {
+          name: senderName,
+          email: senderEmail,
+        },
+        subject,
+        bodyText,
+        notes,
+      },
+      normalizedPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        source: {
+          type: "manual",
+          label: "Manual intake",
+        },
+        sender: {
+          name: senderName,
+          email: senderEmail,
+        },
+        reference,
+        subject,
+        bodyText,
+        notes,
+      },
+      extractedCustomerJson: {
+        senderName,
+        senderEmail,
+      },
+      extractedOrderJson: {
+        reference,
+        subject,
+        bodyText,
+        notes,
+      },
+      extractedShippingJson: {},
+      requiresHumanDecision: true,
+      reviewRequiredReason: "Manual TEMP_INBOUND record needs staff review.",
+    });
+  }
+
   async createManualRecord(args: ManualInboundOrderCreateInput): Promise<{
     record: InboundOrderRecord;
     event: InboundOrderEvent;
   }> {
-    const status: InboundOrderRecordStatus = "received";
+    const status: InboundOrderRecordStatus = "needs_review";
     const sourceType: InboundOrderSourceType = "manual";
 
     return this.repository.createManualRecordWithEvent({
@@ -435,8 +525,8 @@ export class InboundOrderService {
         sourceRecordId: args.sourceRecordId ?? null,
         sourceMessageId: args.sourceMessageId ?? null,
         status,
-        requiresHumanDecision: args.requiresHumanDecision ?? false,
-        reviewRequiredReason: args.reviewRequiredReason ?? null,
+        requiresHumanDecision: args.requiresHumanDecision ?? true,
+        reviewRequiredReason: args.reviewRequiredReason ?? "Manual inbound record needs staff review.",
         externalReference: args.externalReference ?? null,
         idempotencyKey: args.idempotencyKey ?? null,
         payloadHash: args.payloadHash ?? null,
@@ -454,13 +544,83 @@ export class InboundOrderService {
         eventType: "record.received",
         fromStatus: null,
         toStatus: status,
-        message: "Manual inbound order record created",
+        message: "Manual TEMP_INBOUND record created for review",
         metadataJson: {
           sourceType,
           sourceTrustLevel: "manual_internal",
+          intakeState: "TEMP_INBOUND",
         },
       },
     });
+  }
+
+  async updateInboundOrderStatus(args: InboundOrderStatusUpdateInput): Promise<InboundOrderDetail> {
+    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+
+    if (!record) {
+      throw new InboundOrderTransitionError("Inbound order record not found", 404);
+    }
+
+    if (record.createdQuoteId || record.createdOrderId) {
+      throw new InboundOrderTransitionError("Converted inbound records cannot be moved by Phase 1 status updates.");
+    }
+
+    const status = args.status;
+    const now = new Date();
+    const patch: UpdateInboundOrderRecordValues = {
+      status,
+      reviewOutcome: status === "terminal"
+        ? "rejected"
+        : status === "ready"
+          ? "reviewed"
+          : status === "waiting_on_customer"
+            ? "needs_clarification"
+            : null,
+      requiresHumanDecision: status === "needs_review" || status === "waiting_on_customer",
+      reviewRequiredReason: status === "needs_review"
+        ? "Manual TEMP_INBOUND record needs staff review."
+        : status === "waiting_on_customer"
+          ? "Waiting for clarification before review can continue."
+          : null,
+      rejectedAt: status === "terminal" ? now : null,
+      rejectedByUserId: status === "terminal" ? args.actorUserId : null,
+      rejectionReason: status === "terminal" ? "Rejected during inbound review." : null,
+      approvedAt: status === "ready" ? now : null,
+      submittedAt: status === "submitted" ? now : null,
+    };
+
+    const updated = await this.repository.updateRecordWithEvent({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+      patch,
+      event: {
+        actorUserId: args.actorUserId,
+        actorType: "user",
+        eventType: "review.status_updated",
+        fromStatus: record.status,
+        toStatus: status,
+        message: null,
+        metadataJson: {
+          phase: "inbound_orders_phase_1",
+          reviewOnly: true,
+        },
+      },
+    });
+
+    if (!updated) {
+      throw new InboundOrderTransitionError("Inbound order record not found", 404);
+    }
+
+    const detail = await this.getDetail({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+    });
+
+    if (!detail) {
+      throw new InboundOrderTransitionError("Inbound order record not found after status update", 404);
+    }
+
+    return detail;
   }
 
   async applyReviewAction(args: InboundOrderReviewActionInput): Promise<InboundOrderDetail> {
