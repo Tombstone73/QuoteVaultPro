@@ -704,6 +704,134 @@ describe("Product Intake draft service", () => {
     ]);
   });
 
+  test("generates formula product behavior for A1 Vinyl Stickers", () => {
+    const sourceText = [
+      "A1 Vinyl Stickers",
+      "",
+      "Custom-size roll-printed sticker/decal product.",
+      "",
+      "Material:",
+      "A1 Vinyl",
+      "",
+      "Production:",
+      "Roll Printing",
+      "",
+      "Artwork:",
+      "Required",
+      "",
+      "Proof:",
+      "Required",
+      "",
+      "Custom width/height product.",
+      "",
+      "Pricing formula:",
+      "",
+      "Add 0.25\" to width.",
+      "Add 0.25\" to height.",
+      "",
+      "Calculate square footage from adjusted dimensions.",
+      "",
+      "Round square footage up to next whole square foot.",
+      "",
+      "Use rounded sqft for pricing.",
+      "",
+      "Formula equivalent:",
+      "",
+      "rounded_sqft =",
+      "ceil(",
+      "((width + 0.25)",
+      "*",
+      "(height + 0.25))",
+      "/ 144",
+      ")",
+      "",
+      "Customer Options:",
+      "",
+      "Laminate:",
+      "- Glossy",
+      "- Matte",
+      "",
+      "Contour Cutting:",
+      "- No",
+      "- Yes",
+      "",
+      "If Yes:",
+      "+10% of base product price",
+      "",
+      "Weed and Tape:",
+      "- No",
+      "- Yes",
+      "",
+      "If Yes:",
+      "+25% of base product price",
+      "",
+      "Rule:",
+      "",
+      "Weed and Tape should only be visible when Contour Cutting = Yes.",
+    ].join("\n");
+
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        productIdentity: {
+          likelyProductName: { value: "A1 Vinyl Stickers", confidence: 94, evidence: [] },
+          category: { value: "Stickers", confidence: 90, evidence: [] },
+          productType: { value: "stickers", confidence: 88, evidence: [] },
+        },
+        materialAnalysis: {
+          detectedMaterialReferences: ["A1 Vinyl"],
+          likelyMaterialMatches: [{ materialId: "mat_a1_vinyl", sku: "A1VINYL", name: "A1 Vinyl", confidence: 90, evidence: [] }],
+          confidence: 90,
+          evidence: [],
+        },
+        sizeBehavior: { behavior: "custom_size", confidence: 95, notes: "Custom width/height product", evidence: [] },
+        quantityBehavior: { behavior: "per_piece", confidence: 85, evidence: [] },
+        pricingAnalysis: { behavior: "formula", confidence: 92, notes: "Sticker-style adjusted rounded square-foot formula", evidence: [] },
+        requiredOptions: [
+          option("Laminate", { normalizedGroup: "laminate", sampleValues: ["Glossy", "Matte"] }),
+          option("Contour Cutting", { normalizedGroup: "contour_cutting", sampleValues: ["No", "Yes"] }),
+        ],
+        optionalOptions: [
+          option("Weed and Tape", { normalizedGroup: "weed_and_tape", required: false, sampleValues: ["No", "Yes"] }),
+        ],
+      }),
+      sessionId: "sess_a1_vinyl",
+      productName: "A1 Vinyl Stickers",
+      userId: "user_1",
+      sourceText,
+    });
+
+    expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expectNoQuantityOption(tree);
+    expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
+    expect(tree.meta?.requiresDimensions).toBe(true);
+    expect((tree as any).pricingMatrix).toBeUndefined();
+    expect(tree.meta?.productIntake?.matrixReadiness?.required).toBe(false);
+    expect(tree.meta?.productIntake?.productClassification?.type).toBe("FORMULA_PRODUCT");
+    expect(tree.meta?.pricingFormula).toBe("ceil(((w + 0.25) * (h + 0.25)) * q / 144) * base_price");
+    expect(tree.meta?.productIntake?.formulaAssignment?.code).toBe("STICKER_ADJUSTED_ROUNDED_SQFT");
+
+    const laminate = inputNode(tree, "laminate");
+    const contour = inputNode(tree, "contour_cutting");
+    const weed = inputNode(tree, "weed_and_tape");
+    expect(laminate?.choices?.map((choice: any) => choice.label)).toEqual(["Glossy", "Matte"]);
+    expect(contour?.choices?.map((choice: any) => choice.label)).toEqual(["No", "Yes"]);
+    expect(weed?.choices?.map((choice: any) => choice.label)).toEqual(["No", "Yes"]);
+
+    const contourYes = contour.choices.find((choice: any) => choice.value === "yes");
+    const weedYes = weed.choices.find((choice: any) => choice.value === "yes");
+    expect(contourYes.pricingImpact).toEqual([{ mode: "addPercent", percent: 10, basis: "base", label: "Contour Cutting surcharge" }]);
+    expect(weedYes.pricingImpact).toEqual([{ mode: "addPercent", percent: 25, basis: "base", label: "Weed and Tape surcharge" }]);
+    expect((tree as any).rules).toEqual([expect.objectContaining({
+      id: "rule_contour_cutting_weed_and_tape",
+      when: { all: [{ optionGroup: "contour_cutting", operator: "equals", value: "yes" }] },
+      then: [{ action: "show", targetOptionGroup: "weed_and_tape" }],
+      else: [
+        { action: "hide", targetOptionGroup: "weed_and_tape" },
+        { action: "clear", targetOptionGroup: "weed_and_tape" },
+      ],
+    })]);
+  });
+
   test("uses saved matrix answers to generate draft rows when source matrix is incomplete", () => {
     const tree = buildProductIntakeDraftTree({
       brief: brief({

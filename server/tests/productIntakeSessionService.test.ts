@@ -137,6 +137,64 @@ describe("Product Intake question generation", () => {
     expect(questions.every((question) => !/timestamp|internal id/i.test(question.label))).toBe(true);
   });
 
+  test("asks targeted formula and rule questions only when confidence is low", () => {
+    const lowConfidence = generateProductIntakeQuestions(brief({
+      pricingAnalysis: { behavior: "formula", confidence: 70, notes: "Sticker formula suspected", evidence: [] },
+      requiredOptions: [{
+        label: "Contour Cutting",
+        normalizedGroup: "contour_cutting",
+        required: true,
+        confidence: 70,
+        sampleValues: ["No", "Yes"],
+        sourcePaths: ["$.contour_cutting"],
+        templateMatches: [],
+        evidence: [],
+      }],
+      optionalOptions: [{
+        label: "Weed and Tape",
+        normalizedGroup: "weed_and_tape",
+        required: false,
+        confidence: 70,
+        sampleValues: ["No", "Yes"],
+        sourcePaths: ["$.weed_and_tape"],
+        templateMatches: [],
+        evidence: [],
+      }],
+    }));
+
+    expect(lowConfidence.map((question) => question.questionKey)).toEqual(expect.arrayContaining([
+      "choose-pricing-formula",
+      "confirm-weed-and-tape-contour-rule",
+    ]));
+
+    const explicit = generateProductIntakeQuestions(brief({
+      pricingAnalysis: { behavior: "formula", confidence: 92, notes: "Sticker adjusted rounded sqft formula", evidence: [] },
+      requiredOptions: [{
+        label: "Contour Cutting",
+        normalizedGroup: "contour_cutting",
+        required: true,
+        confidence: 90,
+        sampleValues: ["No", "Yes"],
+        sourcePaths: ["$.contour_cutting"],
+        templateMatches: [],
+        evidence: [],
+      }],
+      optionalOptions: [{
+        label: "Weed and Tape",
+        normalizedGroup: "weed_and_tape",
+        required: false,
+        confidence: 90,
+        sampleValues: ["No", "Yes"],
+        sourcePaths: ["$.weed_and_tape"],
+        templateMatches: [],
+        evidence: [],
+      }],
+    }));
+
+    expect(explicit.map((question) => question.questionKey)).not.toContain("choose-pricing-formula");
+    expect(explicit.map((question) => question.questionKey)).not.toContain("confirm-weed-and-tape-contour-rule");
+  });
+
   test("does not ask base pricing questions when explicit pricing is present", () => {
     const questions = generateProductIntakeQuestions(brief({
       pricingAnalysis: {

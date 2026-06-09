@@ -4,6 +4,7 @@ import {
   auditLogs,
   pbv2OptionGroupTemplates,
   pbv2TreeVersions,
+  pricingFormulas,
   productIntakeAnswers,
   productIntakeSessions,
   products,
@@ -22,6 +23,7 @@ import {
 import { validateOptionTreeV2, type OptionTreeV2, type PricingV2Tier } from "@shared/optionTreeV2";
 import type { Pbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
+import type { ProductOptionRule } from "@shared/productOptionRules";
 import { cloneTemplateIntoTree } from "@shared/pbv2/optionGroupTemplates";
 import { db as defaultDb } from "../../db";
 import { ProductIntakeSessionError } from "./productIntakeSessionService";
@@ -66,6 +68,23 @@ type IntakePricingAnalysis = {
 type ProductIntakeAnswerLike = {
   questionKey: string;
   answer: unknown;
+};
+
+type ProductIntakeFormulaAssignment = {
+  code: string;
+  name: string;
+  pricingProfileKey: string;
+  expression: string;
+  config: Record<string, unknown>;
+  pricingFormulaId?: string | null;
+};
+
+const STICKER_ADJUSTED_ROUNDED_SQFT_FORMULA: ProductIntakeFormulaAssignment = {
+  code: "STICKER_ADJUSTED_ROUNDED_SQFT",
+  name: "Sticker adjusted rounded square feet",
+  pricingProfileKey: "default",
+  expression: "ceil(((w + 0.25) * (h + 0.25)) * q / 144) * base_price",
+  config: { formulaOutputMeaning: "final_price" },
 };
 
 function toIso(value: Date | string): string {
@@ -345,6 +364,20 @@ function hasProductSignal(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
 
+function isStickerFormulaProduct(brief: ProductIntakeBrief, text: string): boolean {
+  const haystack = `${text}\n${brief.productIdentity.likelyProductName.value ?? ""}\n${brief.productIdentity.category.value ?? ""}\n${brief.productIdentity.productType.value ?? ""}\n${brief.pricingAnalysis.behavior}\n${brief.pricingAnalysis.notes ?? ""}`;
+  const isSticker = /sticker|stickers|decal|decals|label|labels|vinyl/i.test(haystack);
+  const customSize = /custom\s+(?:size|width|height)|width\s*\/\s*height|width\s+and\s+height|custom_size/i.test(haystack) ||
+    /custom|dimension|width|height/i.test(`${brief.sizeBehavior.behavior} ${brief.sizeBehavior.notes ?? ""}`);
+  const formulaDriven = /formula|rounded\s+sqft|round(?:ed)?\s+square\s+foot|ceil|adjusted\s+dimensions|add\s+0\.25|0\.25"?\s+to\s+width|0\.25"?\s+to\s+height|square\s+footage|sqft/i.test(haystack);
+  return isSticker && customSize && formulaDriven;
+}
+
+function formulaAssignmentForBrief(brief: ProductIntakeBrief, text: string): ProductIntakeFormulaAssignment | null {
+  if (!isStickerFormulaProduct(brief, text)) return null;
+  return STICKER_ADJUSTED_ROUNDED_SQFT_FORMULA;
+}
+
 function optionTextForMatrix(brief: ProductIntakeBrief): string {
   return [...brief.requiredOptions, ...brief.optionalOptions]
     .map((option) => `${option.label} ${option.normalizedGroup} ${option.sampleValues.join(" ")}`)
@@ -416,7 +449,8 @@ function detectMatrixPricing(brief: ProductIntakeBrief, text: string): Pick<Inta
   if (hasProductSignal(text, [/yard\s*signs?/i, /coroplast/i, /\bcoro\b/i]) && hasQuantity && dimensions.has("size")) {
     addReason("Yard sign/coroplast products commonly use size x quantity pricing.");
   }
-  if (hasProductSignal(text, [/stickers?|decals?/i]) && hasQuantity && dimensions.has("size")) {
+  const formulaFriendlySticker = isStickerFormulaProduct(brief, text);
+  if (!formulaFriendlySticker && hasProductSignal(text, [/stickers?|decals?/i]) && hasQuantity && dimensions.has("size")) {
     addReason("Sticker products commonly use size x quantity or quantity-tier pricing.");
   }
 
@@ -426,7 +460,7 @@ function detectMatrixPricing(brief: ProductIntakeBrief, text: string): Pick<Inta
     !hasMatrixLanguage &&
     detectedQuantityBreaks.length === 0;
   let matrixType: ProductIntakeMatrixReadiness["matrixType"] = "NONE";
-  if (!formulaFriendlyBanner) {
+  if (!formulaFriendlyBanner && !formulaFriendlySticker) {
     if (dimensionList.length >= 3) matrixType = "MULTI_DIMENSION";
     else if (dimensions.has("size") && dimensions.has("quantity") && dimensionList.filter((dimension) => !["size", "quantity"].includes(dimension)).length === 0) matrixType = "SIZE_QUANTITY";
     else if (dimensions.has("quantity") && (dimensions.has("stock") || dimensions.has("coating")) && dimensionList.length <= 3) matrixType = "QUANTITY_STOCK";
@@ -949,7 +983,7 @@ function addQuestionNode(args: {
   label: string;
   inputType: "boolean" | "select" | "number" | "dimension";
   required: boolean;
-  choices?: Array<{ value: string; label: string; sortOrder?: number }>;
+  choices?: Array<{ value: string; label: string; sortOrder?: number; pricingImpact?: any[] }>;
   usedNodeIds: Set<string>;
   usedEdgeIds: Set<string>;
   groupKey: DraftGroupKey;
@@ -987,6 +1021,127 @@ function addQuestionNode(args: {
     priority: args.sortOrder,
     condition: TRUE_CONDITION,
   });
+}
+
+function inputNodeBySelectionKey(tree: OptionTreeV2, selectionKey: string): any | null {
+  return Object.values(tree.nodes).find((node: any) => node?.input?.selectionKey === selectionKey || node?.key === selectionKey) ?? null;
+}
+
+function yesChoiceValue(node: any): string | null {
+  const choices = Array.isArray(node?.choices) ? node.choices : [];
+  const choice = choices.find((entry: any) => /^yes$/i.test(String(entry?.label ?? entry?.value ?? "").trim()));
+  return choice?.value ? String(choice.value) : null;
+}
+
+function percentImpactFromText(text: string, optionPattern: RegExp): number | null {
+  optionPattern.lastIndex = 0;
+  const match = optionPattern.exec(text);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function assignChoicePercentImpact(args: {
+  tree: OptionTreeV2;
+  selectionKey: string;
+  percent: number | null;
+  label: string;
+}) {
+  if (args.percent == null) return;
+  const node = inputNodeBySelectionKey(args.tree, args.selectionKey);
+  if (!node || !Array.isArray(node.choices)) return;
+  const choiceIndex = node.choices.findIndex((choice: any) => /^yes$/i.test(String(choice?.label ?? choice?.value ?? "").trim()));
+  if (choiceIndex < 0) return;
+  const choice = node.choices[choiceIndex];
+  const existing = Array.isArray(choice.pricingImpact) ? choice.pricingImpact : [];
+  if (existing.some((impact: any) => impact?.mode === "addPercent" && Number(impact?.percent) === args.percent && (impact?.basis ?? "base") === "base")) return;
+  node.choices[choiceIndex] = {
+    ...choice,
+    pricingImpact: [
+      ...existing,
+      { mode: "addPercent", percent: args.percent, basis: "base", label: args.label },
+    ],
+  };
+}
+
+function applyFormulaProductBehaviors(tree: OptionTreeV2, sourceText: string, formulaAssignment: ProductIntakeFormulaAssignment | null) {
+  if (!formulaAssignment) return;
+  const contourNode = inputNodeBySelectionKey(tree, "contour_cutting");
+  const weedNode = inputNodeBySelectionKey(tree, "weed_and_tape");
+  const contourYes = yesChoiceValue(contourNode);
+  const contourPercent = percentImpactFromText(sourceText, /\bcontour\s+cutting\b[\s\S]{0,220}?\+\s*(\d+(?:\.\d+)?)\s*%\s*(?:of\s+base|of\s+the\s+base)?/i);
+  const weedPercent = percentImpactFromText(sourceText, /\bweed\s+and\s+tape\b[\s\S]{0,220}?\+\s*(\d+(?:\.\d+)?)\s*%\s*(?:of\s+base|of\s+the\s+base)?/i);
+
+  assignChoicePercentImpact({
+    tree,
+    selectionKey: "contour_cutting",
+    percent: contourPercent,
+    label: "Contour Cutting surcharge",
+  });
+  assignChoicePercentImpact({
+    tree,
+    selectionKey: "weed_and_tape",
+    percent: weedPercent,
+    label: "Weed and Tape surcharge",
+  });
+
+  if (contourNode && weedNode && contourYes) {
+    const rule: ProductOptionRule = {
+      id: "rule_contour_cutting_weed_and_tape",
+      label: "Contour Cutting controls Weed and Tape",
+      enabled: true,
+      when: {
+        all: [{ optionGroup: "contour_cutting", operator: "equals", value: contourYes }],
+      },
+      then: [{ action: "show", targetOptionGroup: "weed_and_tape" }],
+      else: [
+        { action: "hide", targetOptionGroup: "weed_and_tape" },
+        { action: "clear", targetOptionGroup: "weed_and_tape" },
+      ],
+    };
+    const existingRules = Array.isArray((tree as any).rules) ? (tree as any).rules : [];
+    if (!existingRules.some((existing: any) => existing?.id === rule.id)) {
+      (tree as any).rules = [...existingRules, rule];
+    }
+  }
+
+  tree.meta = {
+    ...(tree.meta ?? {}),
+    pricingProfileKey: formulaAssignment.pricingProfileKey,
+    pricingFormula: formulaAssignment.expression,
+    formulaOutputMeaning: "final_price",
+    outputMeaning: "final_price",
+    formulaVariables: {},
+    pricingFormulaVariables: {},
+    productIntake: {
+      ...(tree.meta?.productIntake ?? { sessionId: "", productName: "", confidence: 0 }),
+      productClassification: {
+        type: "FORMULA_PRODUCT",
+        confidence: 92,
+        reasons: [
+          "Sticker/decal product uses custom width and height.",
+          "Source includes adjusted rounded square-foot formula instructions.",
+          "No explicit matrix rows were required for pricing.",
+        ],
+      },
+      formulaAssignment: {
+        code: formulaAssignment.code,
+        name: formulaAssignment.name,
+        pricingProfileKey: formulaAssignment.pricingProfileKey,
+        expression: formulaAssignment.expression,
+        confidence: 92,
+        source: "product_intake",
+        pricingFormulaId: formulaAssignment.pricingFormulaId ?? null,
+      },
+      generatedBehaviors: {
+        optionRules: contourNode && weedNode && contourYes ? ["rule_contour_cutting_weed_and_tape"] : [],
+        pricingImpacts: [
+          ...(contourPercent != null ? [{ selectionKey: "contour_cutting", choice: "yes", mode: "addPercent", percent: contourPercent, basis: "base" }] : []),
+          ...(weedPercent != null ? [{ selectionKey: "weed_and_tape", choice: "yes", mode: "addPercent", percent: weedPercent, basis: "base" }] : []),
+        ],
+      },
+    },
+  };
 }
 
 function isSizeOption(option: ProductIntakeOption): boolean {
@@ -1272,6 +1427,7 @@ export function buildProductIntakeDraftTree(args: {
   sourceText?: string | null;
   sourceJson?: unknown;
   answers?: ProductIntakeAnswerLike[];
+  formulaAssignment?: ProductIntakeFormulaAssignment | null;
   now?: Date;
 }): OptionTreeV2 {
   const now = args.now ?? new Date();
@@ -1289,6 +1445,7 @@ export function buildProductIntakeDraftTree(args: {
     sourceJson: args.sourceJson,
     answers: args.answers,
   });
+  const formulaAssignment = args.formulaAssignment ?? formulaAssignmentForBrief(args.brief, sourceText);
   let tree: OptionTreeV2 = {
     schemaVersion: 2,
     status: "DRAFT",
@@ -1450,18 +1607,20 @@ export function buildProductIntakeDraftTree(args: {
     });
   }
 
+  applyFormulaProductBehaviors(tree, sourceText, formulaAssignment);
+
   const matrixSourceText = appendMatrixAnswerSourceText({
     sourceText,
     tree,
     answers: args.answers,
     readiness: pricingReadiness.matrixReadiness,
   });
-  const generatedMatrix = buildGeneratedMatrixDraft({
-    tree,
-    sessionId: args.sessionId,
-    sourceText: matrixSourceText,
-    pricingReadiness,
-  });
+  const generatedMatrix = formulaAssignment ? null : buildGeneratedMatrixDraft({
+      tree,
+      sessionId: args.sessionId,
+      sourceText: matrixSourceText,
+      pricingReadiness,
+    });
   if (generatedMatrix) {
     (tree as any).pricingMatrix = generatedMatrix.matrix;
     pricingReadiness.matrixReadiness = generatedMatrix.readiness;
@@ -1535,6 +1694,7 @@ export function buildProductIntakeProductValues(args: {
   productId: string;
   brief: ProductIntakeBrief;
   productTypeId: string | null;
+  formulaAssignment?: ProductIntakeFormulaAssignment | null;
 }) {
   const productName = compactText(args.brief.productIdentity.likelyProductName.value, "Product Intake Draft");
   const material = args.brief.materialAnalysis.likelyMaterialMatches
@@ -1554,8 +1714,13 @@ export function buildProductIntakeProductValues(args: {
     productTypeId: args.productTypeId,
     category: args.brief.productIdentity.category.value,
     pricingMode: pricingModeForBrief(args.brief),
-    pricingEngine: "pricingProfile" as const,
-    pricingProfileKey: "default",
+    pricingEngine: args.formulaAssignment
+      ? (args.formulaAssignment.pricingFormulaId ? "formulaLibrary" as const : "pricingFormula" as const)
+      : "pricingProfile" as const,
+    pricingFormulaId: args.formulaAssignment?.pricingFormulaId ?? null,
+    pricingFormula: args.formulaAssignment?.expression ?? null,
+    pricingProfileKey: args.formulaAssignment?.pricingProfileKey ?? "default",
+    pricingProfileConfig: args.formulaAssignment?.config ?? null,
     primaryMaterialId: material?.materialId ?? null,
     requiresProductionJob: true,
     requiresProofApproval: false,
@@ -1629,7 +1794,49 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
           .from(productTypes)
           .where(eq(productTypes.organizationId, organizationId));
         const productTypeId = resolveProductTypeId(brief, typeRows);
-        const productValues = buildProductIntakeProductValues({ organizationId, productId, brief, productTypeId });
+        const formulaSourceText = collectBriefText(brief, sessionRow.sourceText, sessionRow.sourceJson);
+        let formulaAssignment = formulaAssignmentForBrief(brief, formulaSourceText);
+        if (formulaAssignment) {
+          const requestedFormulaAssignment = formulaAssignment;
+          const formulaRows = await tx
+            .select({
+              id: pricingFormulas.id,
+              name: pricingFormulas.name,
+              code: pricingFormulas.code,
+              pricingProfileKey: pricingFormulas.pricingProfileKey,
+              expression: pricingFormulas.expression,
+              config: pricingFormulas.config,
+            })
+            .from(pricingFormulas)
+            .where(and(
+              eq(pricingFormulas.organizationId, organizationId),
+              eq(pricingFormulas.isActive, true),
+            ));
+          const normalizedTargetCode = safeKey(formulaAssignment.code, "formula");
+          const matchedFormula = formulaRows.find((row: any) => {
+            const rowCode = safeKey(String(row.code ?? ""), "formula");
+            const rowName = safeKey(String(row.name ?? ""), "formula");
+            const expression = String(row.expression ?? "").replace(/\s+/g, "");
+            return rowCode === normalizedTargetCode ||
+              rowName.includes("sticker_adjusted_rounded") ||
+              rowName.includes("sticker_rounded") ||
+              expression === requestedFormulaAssignment.expression.replace(/\s+/g, "");
+          });
+          if (matchedFormula?.expression) {
+            formulaAssignment = {
+              ...formulaAssignment,
+              pricingFormulaId: matchedFormula.id,
+              code: matchedFormula.code ?? formulaAssignment.code,
+              name: matchedFormula.name ?? formulaAssignment.name,
+              pricingProfileKey: matchedFormula.pricingProfileKey ?? formulaAssignment.pricingProfileKey,
+              expression: matchedFormula.expression,
+              config: matchedFormula.config && typeof matchedFormula.config === "object" && !Array.isArray(matchedFormula.config)
+                ? matchedFormula.config as Record<string, unknown>
+                : formulaAssignment.config,
+            };
+          }
+        }
+        const productValues = buildProductIntakeProductValues({ organizationId, productId, brief, productTypeId, formulaAssignment });
         const treeJson = buildProductIntakeDraftTree({
           brief,
           sessionId,
@@ -1639,6 +1846,7 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
           sourceText: sessionRow.sourceText,
           sourceJson: sessionRow.sourceJson,
           answers: answerRows,
+          formulaAssignment,
           now,
         });
         const draftQuality = treeJson.meta?.productIntake?.draftQuality;

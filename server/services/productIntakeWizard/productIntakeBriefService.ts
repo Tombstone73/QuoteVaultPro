@@ -200,10 +200,10 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   if (/\bhemm?ing\b/i.test(description)) finishingOptions.push("Hemming");
   if (/\bgrommets?\b/i.test(description)) finishingOptions.push("Grommets");
   if (/pole\s+pockets?/i.test(description)) finishingOptions.push("Pole pockets");
-  if (/\blaminate|lamination\b/i.test(description)) finishingOptions.push("Laminate");
+  if (/\blaminate|lamination\b/i.test(description) && !/glossy[\s\S]{0,80}matte|matte[\s\S]{0,80}glossy/i.test(description)) finishingOptions.push("Laminate");
   if (/\bh[\s-]?wire\b|\bstakes?\b/i.test(description)) finishingOptions.push("H-wire Stakes");
   if (/white\s+ink/i.test(description)) finishingOptions.push("White Ink");
-  if (/contour[\s-]?cut/i.test(description) && !/sticker|decal|label/i.test(description)) finishingOptions.push("Contour Cut");
+  if (/contour[\s-]?cut/i.test(description) && !/\bcontour\s+cutting\b[\s\S]{0,120}\b(?:no|yes)\b/i.test(description)) finishingOptions.push("Contour Cut");
 
   const proofSignals: string[] = [];
   if (/proof\s+(required|needed|mandatory)|requires?\s+proof/i.test(description)) proofSignals.push("Proof required");
@@ -684,8 +684,38 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       templates: input.templates,
       reason: "Single-sided and double-sided print choices were listed in the text description.",
     }) : null,
+    /\blaminate\b/i.test(text) && /\bglossy\b/i.test(text) && /\bmatte\b/i.test(text) ? textOptionGroup({
+      label: "Laminate",
+      normalizedGroup: "Laminate",
+      required: true,
+      sampleValues: ["Glossy", "Matte"],
+      sourcePath: "$.description.options.laminate",
+      confidence: 90,
+      templates: input.templates,
+      reason: "Glossy and matte laminate choices were listed in the text description.",
+    }) : null,
+    /\bcontour\s+cutting\b/i.test(text) && /\bno\b/i.test(text) && /\byes\b/i.test(text) ? textOptionGroup({
+      label: "Contour Cutting",
+      normalizedGroup: "Contour Cutting",
+      required: true,
+      sampleValues: ["No", "Yes"],
+      sourcePath: "$.description.options.contour_cutting",
+      confidence: 90,
+      templates: input.templates,
+      reason: "No/Yes contour cutting choices were listed in the text description.",
+    }) : null,
   ].filter(Boolean) as ReturnType<typeof textOptionGroup>[] : [];
   const textOptionalOptions = textSignals ? [
+    /\bweed\s+and\s+tape\b/i.test(text) && /\bno\b/i.test(text) && /\byes\b/i.test(text) ? textOptionGroup({
+      label: "Weed and Tape",
+      normalizedGroup: "Weed and Tape",
+      required: false,
+      sampleValues: ["No", "Yes"],
+      sourcePath: "$.description.options.weed_and_tape",
+      confidence: 90,
+      templates: input.templates,
+      reason: "No/Yes weed and tape choices were listed in the text description.",
+    }) : null,
     textSignals.printOptions.length > 0 ? textOptionGroup({
       label: "Printing",
       normalizedGroup: "Printing",
@@ -742,7 +772,15 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
           evidence: [evidence("$.description.sizes", "Quantity", textSignals.sizes.join(", ") || "Custom size", "Product appears to be ordered per piece; confirm if needed.")],
         }
       : analyzerBehaviors.quantityBehavior,
-    pricingAnalysis: textSignals.quantityBasedPricing
+    pricingAnalysis: /formula|rounded\s+sqft|round(?:ed)?\s+square\s+foot|ceil|adjusted\s+dimensions|add\s+0\.25|0\.25"?\s+to\s+width|0\.25"?\s+to\s+height/i.test(text) &&
+      /sticker|decal|label|vinyl/i.test(text)
+      ? {
+          behavior: "formula",
+          confidence: 92,
+          notes: "Sticker-style adjusted rounded square-foot formula",
+          evidence: [evidence("$.description.pricing_formula", "Pricing formula", "Adjusted rounded square footage", "Formula pricing instructions were stated in the text description.")],
+        }
+      : textSignals.quantityBasedPricing
       ? {
           behavior: "quantity_tiers",
           confidence: 86,
