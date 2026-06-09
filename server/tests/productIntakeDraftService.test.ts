@@ -85,6 +85,12 @@ function inputNode(tree: any, selectionKey: string) {
   return nodes(tree).find((node) => node.input?.selectionKey === selectionKey);
 }
 
+function expectNoGeneratedSizeOption(tree: any) {
+  expect(inputNode(tree, "size")).toBeUndefined();
+  expect(nodes(tree).some((node) => node.input?.selectionKey === "size")).toBe(false);
+  expect(groupLabels(tree)).not.toContain("Size & Quantity");
+}
+
 function groupLabels(tree: any) {
   return nodes(tree)
     .filter((node) => String(node.type ?? "").toUpperCase() === "GROUP")
@@ -172,8 +178,12 @@ describe("Product Intake draft service", () => {
     expect(tree.meta?.requiresDimensions).toBe(true);
     expect(tree.meta?.notes).toContain("Product Intake session sess_1");
     expect(tree.meta?.productIntake?.draftQuality?.label).toMatch(/Excellent|Good|Needs Review/);
-    expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Size & Quantity", "Print Setup", "Finishing"]));
-    expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
+    expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Print Setup", "Finishing"]));
+    expectNoGeneratedSizeOption(tree);
+    expect(tree.meta?.productIntake?.size).toMatchObject({
+      behavior: "custom_dimensions",
+      customerFacingOptionGenerated: false,
+    });
     expect(inputNode(tree, "quantity")).toBeUndefined();
     expect(inputNode(tree, "printed_sides")?.input?.required).toBe(true);
     expect(inputNode(tree, "grommets")?.input?.required).toBe(false);
@@ -874,8 +884,12 @@ describe("Product Intake draft service", () => {
 
     expect(validateOptionTreeV2(tree).ok).toBe(true);
     expectNoQuantityOption(tree);
-    expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
     expect(tree.meta?.requiresDimensions).toBe(true);
+    expectNoGeneratedSizeOption(tree);
+    expect(tree.meta?.productIntake?.size).toMatchObject({
+      behavior: "custom_dimensions",
+      customerFacingOptionGenerated: false,
+    });
     expect((tree as any).pricingMatrix).toBeUndefined();
     expect(tree.meta?.productIntake?.matrixReadiness?.required).toBe(false);
     expect(tree.meta?.productIntake?.productClassification?.type).toBe("FORMULA_PRODUCT");
@@ -917,7 +931,6 @@ describe("Product Intake draft service", () => {
       heightIn: 12,
       quantity: 1,
       pbv2ExplicitSelections: {
-        size: { value: { widthIn: 12, heightIn: 12 } },
         laminate: { value: "glossy" },
         ...selections,
       },
@@ -1044,7 +1057,6 @@ describe("Product Intake draft service", () => {
       heightIn: 12,
       quantity: 1,
       pbv2ExplicitSelections: {
-        size: { value: { widthIn: 12, heightIn: 12 } },
         laminate: { value: "glossy" },
         ...selections,
       },
@@ -1118,7 +1130,7 @@ describe("Product Intake draft service", () => {
     },
     {
       label: "Contour-Cut Stickers",
-      expectedType: "SIZE_QUANTITY",
+      expectedType: "QUANTITY_TIER",
       briefOverrides: {
         productIdentity: {
           likelyProductName: { value: "Contour-Cut Stickers", confidence: 92, evidence: [] },
@@ -1324,7 +1336,7 @@ describe("Product Intake draft service", () => {
     expect(inputNode(tree, "h_wire_stakes")).toBeTruthy();
   });
 
-  test("banner drafts use custom dimension size only and finishing groups", () => {
+  test("banner custom-size drafts use line-item dimensions and finishing groups", () => {
     const tree = buildProductIntakeDraftTree({
       brief: brief({
         requiredOptions: [
@@ -1342,9 +1354,9 @@ describe("Product Intake draft service", () => {
 
     expect(validateOptionTreeV2(tree).ok).toBe(true);
     expectGeneratedDraftShape(tree);
-    expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
-    expect(nodes(tree).some((node) => node.input?.selectionKey === "size" && node.input?.type === "select")).toBe(false);
-    expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Size & Quantity", "Print Setup", "Finishing"]));
+    expect(tree.meta?.requiresDimensions).toBe(true);
+    expectNoGeneratedSizeOption(tree);
+    expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Print Setup", "Finishing"]));
     expect(inputNode(tree, "grommets")).toBeTruthy();
     expect(inputNode(tree, "pole_pockets")).toBeTruthy();
   });
@@ -1373,7 +1385,7 @@ describe("Product Intake draft service", () => {
     expect(nodes(tree).some((node) => node.input?.selectionKey === "size" && node.input?.type === "dimension")).toBe(false);
   });
 
-  test("contour-cut sticker drafts use dimension size and finishing options", () => {
+  test("contour-cut sticker custom-size drafts use line-item dimensions and finishing options", () => {
     const tree = buildProductIntakeDraftTree({
       brief: brief({
         productIdentity: {
@@ -1393,14 +1405,15 @@ describe("Product Intake draft service", () => {
       userId: "user_1",
     });
 
-    expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
+    expect(tree.meta?.requiresDimensions).toBe(true);
+    expectNoGeneratedSizeOption(tree);
     expectGeneratedDraftShape(tree);
-    expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Size & Quantity", "Cutting", "Lamination"]));
+    expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Cutting", "Lamination"]));
     expect(inputNode(tree, "cut_type")).toBeTruthy();
     expect(inputNode(tree, "laminate")).toBeTruthy();
   });
 
-  test("acrylic sign drafts use dimension size only", () => {
+  test("acrylic custom-size drafts use line-item dimensions only", () => {
     const tree = buildProductIntakeDraftTree({
       brief: brief({
         productIdentity: {
@@ -1418,10 +1431,10 @@ describe("Product Intake draft service", () => {
       userId: "user_1",
     });
 
-    expect(inputNode(tree, "size")?.input?.type).toBe("dimension");
+    expect(tree.meta?.requiresDimensions).toBe(true);
+    expectNoGeneratedSizeOption(tree);
     expectGeneratedDraftShape(tree);
-    expect(nodes(tree).some((node) => node.input?.selectionKey === "size" && node.input?.type === "select")).toBe(false);
-    expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Size & Quantity", "Hardware"]));
+    expect(groupLabels(tree)).toEqual(expect.arrayContaining(["Hardware"]));
   });
 
   test("quantity-like intake options are preserved as metadata instead of customer-facing PBV2 options", () => {
