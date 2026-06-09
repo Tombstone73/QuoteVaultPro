@@ -21,6 +21,7 @@ import {
   type InboundCandidateResult,
 } from "../../storage/inboundOrders.repo";
 import { InboundOrderTransitionError } from "./InboundOrderService";
+import { inferInboundRequestedDate } from "./inboundOrderDateInference";
 
 const INBOUND_ORDER_PARSE_PROMPT_VERSION = "inbound-order-parse-v1";
 
@@ -114,6 +115,37 @@ function normalizeMissingDecisions(value: unknown): InboundOrderParsedDraft["mis
   }).filter((item): item is InboundOrderParsedDraft["missingDecisions"][number] => Boolean(item));
 }
 
+function combinedLineItemText(lineItem: InboundOrderParsedDraft["lineItems"][number]): string {
+  return [
+    lineItem.sourceText,
+    lineItem.productName,
+    lineItem.materialText,
+    ...lineItem.optionTexts,
+    ...lineItem.finishingTexts,
+    ...lineItem.artworkRefs,
+  ].filter(Boolean).join(" ");
+}
+
+function hasDimensionSignal(lineItem: InboundOrderParsedDraft["lineItems"][number]): boolean {
+  if (lineItem.width && lineItem.height) return true;
+  const text = combinedLineItemText(lineItem);
+  return /\b\d+(?:\.\d+)?\s*(?:in|inch|inches|ft|feet|foot|mm|cm)?\s*(?:x|by|×)\s*\d+(?:\.\d+)?\b/i.test(text)
+    || /\b\d+(?:\.\d+)?\s*(?:in|inch|inches|ft|feet|foot|mm|cm)\b/i.test(text);
+}
+
+function lineItemIntent(lineItem: InboundOrderParsedDraft["lineItems"][number]): "yard_sign" | "banner" | "sticker" | "custom_size" | null {
+  const text = combinedLineItemText(lineItem).toLowerCase();
+  if (/\b(yard|lawn|political|realtor|event)\s+signs?\b/.test(text) || /\bcoroplast\b/.test(text)) return "yard_sign";
+  if (/\bbanners?\b/.test(text)) return "banner";
+  if (/\b(stickers?|decals?|labels?)\b/.test(text)) return "sticker";
+  if (/\bcustom\s+size\b/.test(text)) return "custom_size";
+  return null;
+}
+
+function missingDecision(field: string, label: string, reason: string, severity: "warning" | "blocking" = "warning") {
+  return { field, label, reason, severity };
+}
+
 export class InboundOrderParsingService {
   constructor(
     private readonly repository = inboundOrdersRepository,
@@ -200,7 +232,8 @@ export class InboundOrderParsingService {
       const repaired = validation.success
         ? { draft: validation.draft, repairedResponse: null, repaired: false, warnings: [] as InboundOrderParseWarning[] }
         : this.repairInboundOrderParseResult(rawObject, record);
-      const draftWithCandidates = await this.addCandidateMatches(args.organizationId, repaired.draft);
+      const refinedDraft = this.refineParsedDraft(record, repaired.draft);
+      const draftWithCandidates = await this.addCandidateMatches(args.organizationId, refinedDraft);
       const score = this.scoreInboundOrderParseResult(draftWithCandidates);
       const finalWarnings = [
         ...draftWithCandidates.globalWarnings,
@@ -307,6 +340,7 @@ export class InboundOrderParsingService {
       recordId: record.id,
       sourceType: record.sourceType,
       status: record.status,
+      receivedAt: record.receivedAt,
       reference: evidence.reference,
       senderName: evidence.senderName,
       senderEmail: evidence.senderEmail,
@@ -332,6 +366,8 @@ export class InboundOrderParsingService {
         "This is parsing only. Do not create orders, quotes, customers, contacts, products, artwork, production, fulfillment, invoices, or payments.",
         "Use null for unknown scalar fields, [] for empty arrays, and confidence values from 0 to 100.",
         "Return candidate IDs only when present in provided context; otherwise leave candidate arrays empty.",
+        "Interpret dates using receivedAt/email context. If a month/day has no year, use the context year unless it has already passed, then choose the next reasonable future date and add a warning.",
+        "Think like a print CSR: flag missing size, quantity, artwork, material, and other decisions that block accurate order entry.",
       ].join(" "),
       user: [
         "Return exactly one JSON object with this shape:",
@@ -390,6 +426,116 @@ export class InboundOrderParsingService {
       };
     }
     return { success: true, draft: parsed.data };
+  }
+
+  refineParsedDraft(record: InboundOrderRecord, draft: InboundOrderParsedDraft): InboundOrderParsedDraft {
+    const dateRefined = this.applyDateInference(record, draft);
+    return this.applyMissingDecisionDetection(dateRefined);
+  }
+
+  applyDateInference(record: InboundOrderRecord, draft: InboundOrderParsedDraft): InboundOrderParsedDraft {
+    const evidence = getManualInboundEvidence(record);
+    const evidenceDateText = [
+      evidence.subject,
+      evidence.bodyText,
+      evidence.notes,
+      draft.order.notes,
+    ].filter(Boolean).join("\n");
+    const fallbackDateText = [
+      draft.order.requestedDueDate,
+      draft.order.notes,
+    ].filter(Boolean).join("\n");
+    const inferred = inferInboundRequestedDate({
+      text: evidenceDateText,
+      receivedAt: record.receivedAt,
+    }) ?? inferInboundRequestedDate({
+      text: fallbackDateText,
+      receivedAt: record.receivedAt,
+    });
+
+    if (!inferred) return draft;
+
+    const dateWarning = inferred.confidence < 80 || inferred.warning
+      ? [warning(
+        inferred.confidence < 70 ? "date_inference_low_confidence" : "date_inferred_from_context",
+        inferred.warning ?? `Requested date inferred from "${inferred.sourceText}".`,
+        inferred.confidence < 70 ? "warning" : "info",
+        "order.requestedDueDate",
+      )]
+      : [];
+
+    return {
+      ...draft,
+      order: {
+        ...draft.order,
+        requestedDueDate: inferred.parsedDate,
+        confidence: Math.max(draft.order.confidence, inferred.confidence),
+        warnings: [
+          ...draft.order.warnings,
+          ...dateWarning,
+        ],
+      },
+    };
+  }
+
+  applyMissingDecisionDetection(draft: InboundOrderParsedDraft): InboundOrderParsedDraft {
+    const existingFields = new Set(draft.missingDecisions.map((decision) => decision.field));
+    const generated: InboundOrderParsedDraft["missingDecisions"] = [];
+    const hasArtworkReference = draft.artwork.length > 0 || draft.lineItems.some((lineItem) => lineItem.artworkRefs.length > 0);
+
+    draft.lineItems.forEach((lineItem, index) => {
+      const intent = lineItemIntent(lineItem);
+      if (!hasDimensionSignal(lineItem)) {
+        const field = `lineItems.${index}.dimensions`;
+        if (!existingFields.has(field) && intent) {
+          const question = intent === "yard_sign"
+            ? "What size are the signs?"
+            : intent === "banner"
+              ? "What size banner is needed?"
+              : intent === "sticker"
+                ? "What size stickers are needed?"
+                : "What custom size is needed?";
+          generated.push(missingDecision(
+            field,
+            question,
+            "CSR review detected a product type that requires dimensions, but no size was found in the source evidence.",
+            "blocking",
+          ));
+          existingFields.add(field);
+        }
+      }
+
+      const quantityField = `lineItems.${index}.quantity`;
+      if (!lineItem.quantity && !existingFields.has(quantityField)) {
+        generated.push(missingDecision(
+          quantityField,
+          "What quantity is needed?",
+          "No clear quantity was detected for this line item.",
+          "blocking",
+        ));
+        existingFields.add(quantityField);
+      }
+
+      const artworkField = `lineItems.${index}.artwork`;
+      if (!hasArtworkReference && !existingFields.has(artworkField)) {
+        generated.push(missingDecision(
+          artworkField,
+          "Is artwork supplied for this item?",
+          "No artwork file or artwork reference was detected in the source evidence.",
+          "warning",
+        ));
+        existingFields.add(artworkField);
+      }
+    });
+
+    if (generated.length === 0) return draft;
+    return {
+      ...draft,
+      missingDecisions: [
+        ...draft.missingDecisions,
+        ...generated,
+      ],
+    };
   }
 
   repairInboundOrderParseResult(raw: unknown, record: InboundOrderRecord): {
@@ -509,8 +655,11 @@ export class InboundOrderParsingService {
     for (const lineItem of result.lineItems) {
       const candidates = await this.repository.searchProductCandidates({
         organizationId,
+        sourceText: lineItem.sourceText,
         productName: lineItem.productName,
         materialText: lineItem.materialText,
+        optionTexts: lineItem.optionTexts,
+        finishingTexts: lineItem.finishingTexts,
         limit: 5,
       });
       lineItems.push({

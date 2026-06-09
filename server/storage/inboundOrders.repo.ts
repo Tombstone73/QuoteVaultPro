@@ -14,6 +14,7 @@ import {
   inboundOrderReviewSnapshots,
   inboundOrderSources,
   inboundOrderWarnings,
+  materials,
   productVariants,
   products,
   quoteLineItems,
@@ -42,6 +43,10 @@ import {
   isDocumentNumberUniqueViolation,
   toDocumentNumberConflictError,
 } from "../services/documentNumberingService";
+import {
+  buildProductKnowledgeSearchTerms,
+  scoreProductKnowledgeCandidates,
+} from "./inboundProductKnowledgeMatcher";
 
 export type InboundOrderListFilters = {
   status?: InboundOrderRecordStatus;
@@ -1030,23 +1035,38 @@ export class InboundOrdersRepository {
 
   async searchProductCandidates(args: {
     organizationId: string;
+    sourceText?: string | null;
     productName?: string | null;
     materialText?: string | null;
+    optionTexts?: string[];
+    finishingTexts?: string[];
     limit: number;
   }): Promise<InboundCandidateResult[]> {
-    const predicates = [eq(products.organizationId, args.organizationId)];
-    const productName = args.productName?.trim();
-    const materialText = args.materialText?.trim();
-    const search = productName || materialText;
+    const terms = buildProductKnowledgeSearchTerms({
+      sourceText: args.sourceText,
+      productName: args.productName,
+      materialText: args.materialText,
+      optionTexts: args.optionTexts,
+      finishingTexts: args.finishingTexts,
+    });
 
-    if (!search) return [];
+    if (terms.length === 0) return [];
 
-    const pattern = `%${search}%`;
-    predicates.push(sql`(
-      ${products.name} ilike ${pattern}
-      or ${products.category} ilike ${pattern}
-      or ${products.description} ilike ${pattern}
-    )`);
+    const predicates = [
+      eq(products.organizationId, args.organizationId),
+      eq(products.isActive, true),
+    ];
+    const termPredicates = terms.slice(0, 20).map((term) => {
+      const pattern = `%${term}%`;
+      return sql`(
+        ${products.name} ilike ${pattern}
+        or ${products.category} ilike ${pattern}
+        or ${products.description} ilike ${pattern}
+        or ${materials.name} ilike ${pattern}
+        or ${materials.category} ilike ${pattern}
+      )`;
+    });
+    predicates.push(sql`(${sql.join(termPredicates, sql` or `)})`);
 
     const rows = await this.dbInstance
       .select({
@@ -1054,23 +1074,45 @@ export class InboundOrdersRepository {
         name: products.name,
         category: products.category,
         description: products.description,
+        optionsJson: products.optionsJson,
+        pricingProfileConfig: products.pricingProfileConfig,
+        pricingProfileKey: products.pricingProfileKey,
+        pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
+        materialName: materials.name,
+        materialCategory: materials.category,
+        materialSpecsJson: materials.specsJson,
       })
       .from(products)
+      .leftJoin(materials, eq(products.primaryMaterialId, materials.id))
       .where(and(...predicates))
       .orderBy(asc(products.name))
-      .limit(args.limit);
+      .limit(Math.max(args.limit * 12, 60));
 
-    const normalizedProductName = productName?.toLowerCase();
-    return rows.map((row) => ({
-      id: row.id,
-      label: row.name,
-      confidence: normalizedProductName && row.name.toLowerCase() === normalizedProductName ? 92 : 68,
-      reason: productName ? "Matched parsed product name/category text." : "Matched parsed material text.",
-      metadata: {
+    return scoreProductKnowledgeCandidates(
+      {
+        sourceText: args.sourceText,
+        productName: args.productName,
+        materialText: args.materialText,
+        optionTexts: args.optionTexts,
+        finishingTexts: args.finishingTexts,
+      },
+      rows.map((row) => ({
+        id: row.id,
+        name: row.name,
         category: row.category,
         description: row.description,
-      },
-    }));
+        materialName: row.materialName,
+        materialCategory: row.materialCategory,
+        metadataText: JSON.stringify({
+          optionsJson: row.optionsJson ?? null,
+          pricingProfileConfig: row.pricingProfileConfig ?? null,
+          pricingProfileKey: row.pricingProfileKey ?? null,
+          pbv2ActiveTreeVersionId: row.pbv2ActiveTreeVersionId ?? null,
+          materialSpecsJson: row.materialSpecsJson ?? null,
+        }),
+      })),
+      args.limit,
+    );
   }
 
   async createManualInboundOrder(args: {
