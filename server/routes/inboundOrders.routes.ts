@@ -11,9 +11,11 @@ import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 
 import {
-  inboundOrderRecordStatusSchema,
-  inboundOrderSourceTypeSchema,
-} from "@shared/schema";
+  inboundOrderListQuerySchema,
+  inboundOrderStatusUpdateSchema,
+  manualInboundOrderCreateSchema,
+  normalizeInboundOrderStatusForStorage,
+} from "@shared/inboundOrdersApi";
 import {
   InboundOrderTransitionError,
   inboundOrderService,
@@ -24,25 +26,9 @@ function getUserId(user: any): string | undefined {
   return user?.claims?.sub ?? user?.id;
 }
 
-const inboundOrderListQuerySchema = z.object({
-  status: inboundOrderRecordStatusSchema.optional(),
-  statusGroup: z.enum(["needs_review", "waiting", "ready", "converted", "rejected"]).optional(),
-  reviewOutcome: z.string().trim().min(1).max(100).optional(),
-  sourceType: inboundOrderSourceTypeSchema.optional(),
-  sourceId: z.string().trim().min(1).optional(),
-  assignedToUserId: z.string().trim().min(1).optional(),
-  hasWarnings: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
-  hasDecisionFlags: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
-  converted: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
-  linkedQuoteStatus: z.enum(["draft", "pending_approval", "pending", "active", "canceled"]).optional(),
-  search: z.string().trim().min(1).max(255).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(25),
-  offset: z.coerce.number().int().min(0).default(0),
-});
-
 const jsonObjectSchema = z.record(z.unknown());
 
-const manualInboundOrderCreateSchema = z.object({
+const legacyManualInboundOrderCreateSchema = z.object({
   sourceId: z.string().trim().min(1).optional().nullable(),
   sourceLabel: z.string().trim().min(1).max(255).optional().nullable(),
   sourceRecordId: z.string().trim().min(1).max(255).optional().nullable(),
@@ -58,6 +44,26 @@ const manualInboundOrderCreateSchema = z.object({
   requiresHumanDecision: z.boolean().optional().default(false),
   reviewRequiredReason: z.string().trim().min(1).max(2000).optional().nullable(),
 });
+
+function isMissingInboundSchemaError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (
+    message.includes("inbound_order")
+    && (
+      message.includes("does not exist")
+      || message.includes("relation")
+      || message.includes("type")
+      || message.includes("column")
+    )
+  );
+}
+
+function sendInboundSchemaUnavailable(res: any) {
+  return res.status(503).json({
+    success: false,
+    message: "Inbound order tables are not available yet. Run the inbound orders migration before using this queue.",
+  });
+}
 
 const reviewActionSchema = z.object({
   note: z.string().trim().min(1).max(2000).optional().nullable(),
@@ -114,9 +120,11 @@ export function registerInboundOrderRoutes(
     isAuthenticated: any;
     tenantContext: any;
     assertInternalUser: (req: any, res: any) => boolean;
+    inboundOrderService?: typeof inboundOrderService;
   },
 ): void {
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
+  const service = middleware.inboundOrderService ?? inboundOrderService;
 
   app.get("/api/inbound-orders", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -126,7 +134,7 @@ export function registerInboundOrderRoutes(
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
       const filters = inboundOrderListQuerySchema.parse(req.query);
-      const result = await inboundOrderService.listRecords({
+      const result = await service.listInboundOrders({
         organizationId,
         filters,
       });
@@ -145,6 +153,10 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
+      if (isMissingInboundSchemaError(error)) {
+        return sendInboundSchemaUnavailable(res);
+      }
+
       console.error("Error listing inbound orders:", error);
       res.status(500).json({ message: "Failed to list inbound orders" });
     }
@@ -158,7 +170,7 @@ export function registerInboundOrderRoutes(
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
       const query = inboundCustomerSearchQuerySchema.parse(req.query);
-      const customers = await inboundOrderService.searchCustomers({
+      const customers = await service.searchCustomers({
         organizationId,
         search: query.search ?? null,
         limit: query.limit,
@@ -183,7 +195,7 @@ export function registerInboundOrderRoutes(
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
       const query = inboundContactSearchQuerySchema.parse(req.query);
-      const contacts = await inboundOrderService.searchCustomerContacts({
+      const contacts = await service.searchCustomerContacts({
         organizationId,
         customerId: query.customerId,
         search: query.search ?? null,
@@ -212,7 +224,7 @@ export function registerInboundOrderRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
-      const detail = await inboundOrderService.getDetail({
+      const detail = await service.getInboundOrder({
         organizationId,
         inboundRecordId: String(req.params.id),
       });
@@ -223,8 +235,49 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: detail });
     } catch (error) {
+      if (isMissingInboundSchemaError(error)) {
+        return sendInboundSchemaUnavailable(res);
+      }
+
       console.error("Error fetching inbound order detail:", error);
       res.status(500).json({ message: "Failed to fetch inbound order detail" });
+    }
+  });
+
+  app.patch("/api/inbound-orders/:id/status", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const input = inboundOrderStatusUpdateSchema.parse(req.body ?? {});
+      const detail = await service.updateInboundOrderStatus({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
+        status: normalizeInboundOrderStatusForStorage(input.status),
+      });
+
+      res.json({ success: true, data: detail });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+
+      if (isMissingInboundSchemaError(error)) {
+        return sendInboundSchemaUnavailable(res);
+      }
+
+      console.error("Error updating inbound order status:", error);
+      res.status(500).json({ message: "Failed to update inbound order status" });
     }
   });
 
@@ -241,7 +294,7 @@ export function registerInboundOrderRoutes(
       if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
 
       const input = reviewActionSchema.parse(req.body ?? {});
-      const detail = await inboundOrderService.applyReviewAction({
+      const detail = await service.applyReviewAction({
         organizationId,
         inboundRecordId: String(req.params.id),
         actorUserId,
@@ -303,7 +356,7 @@ export function registerInboundOrderRoutes(
       if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
 
       const draftInput = reviewDraftSnapshotSchema.parse(req.body ?? {});
-      const detail = await inboundOrderService.saveReviewSnapshot({
+      const detail = await service.saveReviewSnapshot({
         organizationId,
         inboundRecordId: String(req.params.id),
         actorUserId,
@@ -337,7 +390,7 @@ export function registerInboundOrderRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
-      const preview = await inboundOrderService.getQuoteDraftPreview({
+      const preview = await service.getQuoteDraftPreview({
         organizationId,
         inboundRecordId: String(req.params.id),
       });
@@ -364,7 +417,7 @@ export function registerInboundOrderRoutes(
       if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
 
       const input = customerMatchSchema.parse(req.body ?? {});
-      const detail = await inboundOrderService.matchCustomer({
+      const detail = await service.matchCustomer({
         organizationId,
         inboundRecordId: String(req.params.id),
         actorUserId,
@@ -399,7 +452,7 @@ export function registerInboundOrderRoutes(
       if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
 
       const input = lineItemProductMatchSchema.parse(req.body ?? {});
-      const detail = await inboundOrderService.matchLineItemProduct({
+      const detail = await service.matchLineItemProduct({
         organizationId,
         inboundRecordId: String(req.params.id),
         lineItemId: String(req.params.lineItemId),
@@ -436,7 +489,7 @@ export function registerInboundOrderRoutes(
       if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
 
       const input = warningResolutionSchema.parse(req.body ?? {});
-      const detail = await inboundOrderService.resolveWarning({
+      const detail = await service.resolveWarning({
         organizationId,
         inboundRecordId: String(req.params.id),
         warningId: String(req.params.warningId),
@@ -471,7 +524,7 @@ export function registerInboundOrderRoutes(
       if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
 
       const input = decisionFlagResolutionSchema.parse(req.body ?? {});
-      const detail = await inboundOrderService.resolveDecisionFlag({
+      const detail = await service.resolveDecisionFlag({
         organizationId,
         inboundRecordId: String(req.params.id),
         flagId: String(req.params.flagId),
@@ -506,13 +559,10 @@ export function registerInboundOrderRoutes(
       const actorUserId = getUserId(req.user);
       if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
 
-      const result = await inboundOrderService.createQuoteDraftFromInbound({
-        organizationId,
-        inboundRecordId: String(req.params.id),
-        actorUserId,
+      res.status(409).json({
+        success: false,
+        message: "Inbound Orders Phase 1 is review-only. Draft conversion is not enabled yet.",
       });
-
-      res.status(result.quote.alreadyConverted ? 200 : 201).json({ success: true, data: result });
     } catch (error) {
       if (error instanceof InboundOrderTransitionError) {
         return res.status(error.statusCode).json({ message: error.message });
@@ -533,17 +583,40 @@ export function registerInboundOrderRoutes(
       const actorUserId = getUserId(req.user);
       if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
 
-      const input = manualInboundOrderCreateSchema.parse(req.body);
-      const created = await inboundOrderService.createManualRecord({
-        organizationId,
-        actorUserId,
-        ...input,
-      });
+      const parsed = manualInboundOrderCreateSchema.safeParse(req.body);
+      const legacyParsed = parsed.success
+        ? null
+        : legacyManualInboundOrderCreateSchema.safeParse(req.body);
+
+      const created = parsed.success
+        ? await service.createManualInboundOrder({
+          organizationId,
+          actorUserId,
+          ...parsed.data,
+        })
+        : legacyParsed?.success
+          ? await service.createManualRecord({
+            organizationId,
+            actorUserId,
+            ...legacyParsed.data,
+          })
+          : null;
+
+      if (!created) {
+        const validationError = parsed.success ? null : parsed.error;
+        return res.status(400).json({
+          message: validationError ? fromZodError(validationError).message : "Invalid manual inbound order payload",
+        });
+      }
 
       res.status(201).json({ success: true, data: created });
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
+      }
+
+      if (isMissingInboundSchemaError(error)) {
+        return sendInboundSchemaUnavailable(res);
       }
 
       console.error("Error creating manual inbound order:", error);
