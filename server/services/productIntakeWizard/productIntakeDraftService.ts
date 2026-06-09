@@ -948,13 +948,25 @@ function buildGeneratedMatrixDraft(args: {
   };
 }
 
-type DraftGroupKey = "size_quantity" | "print_setup" | "finishing" | "hardware" | "materials" | "review";
+type DraftGroupKey =
+  | "size_quantity"
+  | "print_setup"
+  | "finishing"
+  | "lamination"
+  | "cutting"
+  | "application_prep"
+  | "hardware"
+  | "materials"
+  | "review";
 type SizeMode = "fixed_dropdown" | "custom_dimension" | "none";
 
 const DRAFT_GROUPS: Record<DraftGroupKey, { id: string; label: string; sortOrder: number }> = {
   size_quantity: { id: "group_size_quantity", label: "Size & Quantity", sortOrder: 10 },
   print_setup: { id: "group_print_setup", label: "Print Setup", sortOrder: 20 },
   finishing: { id: "group_finishing", label: "Finishing", sortOrder: 30 },
+  lamination: { id: "group_lamination", label: "Lamination", sortOrder: 31 },
+  cutting: { id: "group_cutting", label: "Cutting", sortOrder: 32 },
+  application_prep: { id: "group_application_prep", label: "Application Prep", sortOrder: 33 },
   hardware: { id: "group_hardware", label: "Hardware", sortOrder: 40 },
   materials: { id: "group_materials", label: "Materials", sortOrder: 50 },
   review: { id: "group_review", label: "Review", sortOrder: 90 },
@@ -1033,12 +1045,16 @@ function yesChoiceValue(node: any): string | null {
   return choice?.value ? String(choice.value) : null;
 }
 
-function percentImpactFromText(text: string, optionPattern: RegExp): number | null {
-  optionPattern.lastIndex = 0;
-  const match = optionPattern.exec(text);
-  if (!match) return null;
-  const parsed = Number(match[1]);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+function percentImpactFromText(text: string, optionPatterns: RegExp | RegExp[]): number | null {
+  const patterns = Array.isArray(optionPatterns) ? optionPatterns : [optionPatterns];
+  for (const optionPattern of patterns) {
+    optionPattern.lastIndex = 0;
+    const match = optionPattern.exec(text);
+    if (!match) continue;
+    const parsed = Number(match[1]);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
 }
 
 function assignChoicePercentImpact(args: {
@@ -1069,21 +1085,22 @@ function applyFormulaProductBehaviors(tree: OptionTreeV2, sourceText: string, fo
   const contourNode = inputNodeBySelectionKey(tree, "contour_cutting");
   const weedNode = inputNodeBySelectionKey(tree, "weed_and_tape");
   const contourYes = yesChoiceValue(contourNode);
-  const contourPercent = percentImpactFromText(sourceText, /\bcontour\s+cutting\b[\s\S]{0,220}?\+\s*(\d+(?:\.\d+)?)\s*%\s*(?:of\s+base|of\s+the\s+base)?/i);
-  const weedPercent = percentImpactFromText(sourceText, /\bweed\s+and\s+tape\b[\s\S]{0,220}?\+\s*(\d+(?:\.\d+)?)\s*%\s*(?:of\s+base|of\s+the\s+base)?/i);
+  const impactVerbPattern = String.raw`(?:\+\s*|add(?:s|ed)?\s+|increase(?:s|d)?(?:\s+by)?\s+)`;
+  const contourPercent = percentImpactFromText(sourceText, [
+    new RegExp(String.raw`\bcontour\s+cutting\b[\s\S]{0,260}?${impactVerbPattern}(\d+(?:\.\d+)?)\s*%`, "i"),
+    new RegExp(String.raw`\bkiss\s+cut(?:ting)?\b[\s\S]{0,260}?${impactVerbPattern}(\d+(?:\.\d+)?)\s*%`, "i"),
+  ]);
+  const weedPercent = percentImpactFromText(sourceText, [
+    new RegExp(String.raw`\bweed\s+(?:and|&)\s+tape\b[\s\S]{0,260}?${impactVerbPattern}(\d+(?:\.\d+)?)\s*%`, "i"),
+    new RegExp(String.raw`\bweeding\s+(?:and|&)\s+(?:transfer\s+)?tape\b[\s\S]{0,260}?${impactVerbPattern}(\d+(?:\.\d+)?)\s*%`, "i"),
+  ]);
 
-  assignChoicePercentImpact({
-    tree,
-    selectionKey: "contour_cutting",
-    percent: contourPercent,
-    label: "Contour Cutting surcharge",
-  });
-  assignChoicePercentImpact({
-    tree,
-    selectionKey: "weed_and_tape",
-    percent: weedPercent,
-    label: "Weed and Tape surcharge",
-  });
+  for (const impact of [
+    { selectionKey: "contour_cutting", percent: contourPercent, label: "Contour Cutting surcharge" },
+    { selectionKey: "weed_and_tape", percent: weedPercent, label: "Weed and Tape surcharge" },
+  ]) {
+    assignChoicePercentImpact({ tree, ...impact });
+  }
 
   if (contourNode && weedNode && contourYes) {
     const rule: ProductOptionRule = {
@@ -1249,7 +1266,10 @@ function classifyOptionGroup(option: ProductIntakeOption): DraftGroupKey {
   if (/material|substrate|stock/.test(text)) return "materials";
   if (/side|sides|print|color|white ink|ink/.test(text)) return "print_setup";
   if (/stake|h-wire|h wire|standoff|stand off|hardware|frame|grommet stake/.test(text)) return "hardware";
-  if (/grommet|pole pocket|pocket|laminate|lamination|contour|cut|rounded|corner|hem|sew|finish|shape/.test(text)) return "finishing";
+  if (/laminate|lamination/.test(text)) return "lamination";
+  if (/weed\s*(?:and|&)?\s*tape|weeding|transfer tape|application prep|mask/.test(text)) return "application_prep";
+  if (/contour|kiss cut|die cut|cutting|cut type/.test(text)) return "cutting";
+  if (/grommet|pole pocket|pocket|rounded|corner|hem|sew|finish|shape/.test(text)) return "finishing";
   return "finishing";
 }
 

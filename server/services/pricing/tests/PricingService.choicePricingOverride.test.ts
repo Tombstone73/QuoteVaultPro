@@ -153,6 +153,38 @@ describe("PBV2 choice pricing overrides", () => {
       },
     };
 
+    const noImpacts = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: 12,
+      heightIn: 12,
+      quantity: 1,
+      pbv2ExplicitSelections: {
+        contour_cutting: { value: "no" },
+        weed_and_tape: { value: "no" },
+      },
+      debug: true,
+    });
+
+    expect(noImpacts.breakdown.basePrice).toBeCloseTo(100, 2);
+    expect(noImpacts.breakdown.optionsPrice).toBeCloseTo(0, 2);
+    expect(noImpacts.totalPrice).toBeCloseTo(100, 2);
+
+    const contourOnly = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: 12,
+      heightIn: 12,
+      quantity: 1,
+      pbv2ExplicitSelections: {
+        contour_cutting: { value: "yes" },
+        weed_and_tape: { value: "no" },
+      },
+      debug: true,
+    });
+
+    expect(contourOnly.breakdown.basePrice).toBeCloseTo(100, 2);
+    expect(contourOnly.breakdown.optionsPrice).toBeCloseTo(10, 2);
+    expect(contourOnly.totalPrice).toBeCloseTo(110, 2);
+
     const bothSelected = evaluatePricingPreviewFromTree({
       treeJson: tree,
       widthIn: 12,
