@@ -3,6 +3,7 @@ import express from "express";
 import request from "supertest";
 
 import { registerInboundOrderRoutes } from "../routes/inboundOrders.routes";
+import { InboundOrderTransitionError } from "../services/inboundOrders/InboundOrderService";
 
 function inboundRecord(overrides: Record<string, any> = {}) {
   const now = new Date("2026-06-09T12:00:00.000Z");
@@ -102,7 +103,76 @@ function inboundDetail(record = inboundRecord()) {
   };
 }
 
-function buildApp(service: Record<string, any>, options: { orgId?: string; internal?: boolean } = {}) {
+function parseAttempt(overrides: Record<string, any> = {}) {
+  return {
+    id: "attempt_1",
+    organizationId: "org_1",
+    inboundOrderRecordId: "inbound_1",
+    status: "success",
+    provider: "test",
+    model: "test-model",
+    rawPromptHash: "hash",
+    rawResponse: {},
+    repairedResponse: null,
+    parsedDraft: null,
+    confidence: 88,
+    warnings: [],
+    errors: [],
+    createdAt: new Date("2026-06-09T12:01:00.000Z"),
+    ...overrides,
+  };
+}
+
+function parsedDraft(overrides: Record<string, any> = {}) {
+  return {
+    customer: {
+      sourceName: "Ada Lovelace",
+      sourceEmail: "ada@example.com",
+      sourcePhone: null,
+      companyName: "Ada Signs",
+      candidateCustomerIds: ["customer_1"],
+      candidateContactIds: ["contact_1"],
+      customerCandidates: [{ id: "customer_1", label: "Ada Signs", confidence: 90, reason: "Matched name", metadata: {} }],
+      contactCandidates: [{ id: "contact_1", label: "Ada Lovelace", confidence: 92, reason: "Matched email", metadata: {} }],
+      confidence: 90,
+      warnings: [],
+    },
+    order: {
+      requestedDueDate: null,
+      requestedShipMethod: null,
+      requestedPickup: null,
+      poNumber: "PO-123",
+      notes: "Please make two banners.",
+      confidence: 80,
+      warnings: [],
+    },
+    lineItems: [{
+      sourceText: "two banners",
+      productName: "Banner",
+      candidateProductIds: ["product_1"],
+      productCandidates: [{ id: "product_1", label: "Vinyl Banner", confidence: 78, reason: "Matched product", metadata: {} }],
+      quantity: 2,
+      width: null,
+      height: null,
+      dimensionsUnit: null,
+      materialText: "vinyl",
+      optionTexts: [],
+      finishingTexts: [],
+      artworkRefs: [],
+      confidence: 76,
+      warnings: [],
+    }],
+    artwork: [],
+    globalWarnings: [],
+    missingDecisions: [],
+    ...overrides,
+  };
+}
+
+function buildApp(
+  service: Record<string, any>,
+  options: { orgId?: string; internal?: boolean; parsingService?: Record<string, any> } = {},
+) {
   const app = express();
   app.use(express.json());
 
@@ -127,6 +197,7 @@ function buildApp(service: Record<string, any>, options: { orgId?: string; inter
     tenantContext,
     assertInternalUser,
     inboundOrderService: service as any,
+    inboundOrderParsingService: options.parsingService as any,
   });
   return app;
 }
@@ -148,6 +219,11 @@ describe("inbound order routes", () => {
     resolveWarning: jest.fn(),
     resolveDecisionFlag: jest.fn(),
     createQuoteDraftFromInbound: jest.fn(),
+  };
+  const parsingService = {
+    parseInboundOrderRecord: jest.fn<(...args: any[]) => Promise<any>>(),
+    listParseAttempts: jest.fn<(...args: any[]) => Promise<any>>(),
+    getDraftPreview: jest.fn<(...args: any[]) => Promise<any>>(),
   };
 
   beforeEach(() => {
@@ -266,6 +342,95 @@ describe("inbound order routes", () => {
     expect(response.status).toBe(409);
     expect(response.body.message).toContain("Phase 1 is review-only");
     expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+  });
+
+  test("parses an inbound record through the review-only parse route", async () => {
+    const draft = parsedDraft();
+    const attempt = parseAttempt({ parsedDraft: draft });
+    parsingService.parseInboundOrderRecord.mockResolvedValue({
+      draft,
+      latestAttempt: attempt,
+      record: inboundRecord({ parsedAt: new Date("2026-06-09T12:01:00.000Z") }),
+    });
+
+    const response = await request(buildApp(service, { parsingService }))
+      .post("/api/inbound-orders/inbound_1/parse")
+      .send({});
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.draft.customer.customerCandidates[0].label).toBe("Ada Signs");
+    expect(response.body.data.latestAttempt.status).toBe("success");
+    expect(parsingService.parseInboundOrderRecord).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+  });
+
+  test("returns safe JSON when parse target is not found", async () => {
+    parsingService.parseInboundOrderRecord.mockRejectedValue(new InboundOrderTransitionError("Inbound order record not found", 404));
+
+    const response = await request(buildApp(service, { parsingService }))
+      .post("/api/inbound-orders/missing/parse")
+      .send({});
+
+    expect(response.status).toBe(404);
+    expect(response.body.message).toBe("Inbound order record not found");
+  });
+
+  test("blocks parsing converted records", async () => {
+    parsingService.parseInboundOrderRecord.mockRejectedValue(new InboundOrderTransitionError("Converted inbound records cannot be parsed in Phase 2.", 409));
+
+    const response = await request(buildApp(service, { parsingService }))
+      .post("/api/inbound-orders/inbound_1/parse")
+      .send({});
+
+    expect(response.status).toBe(409);
+    expect(response.body.message).toContain("Converted inbound records cannot be parsed");
+  });
+
+  test("returns latest parsed draft preview", async () => {
+    const draft = parsedDraft();
+    const attempt = parseAttempt({ parsedDraft: draft });
+    parsingService.getDraftPreview.mockResolvedValue({ draft, latestAttempt: attempt });
+
+    const response = await request(buildApp(service, { parsingService }))
+      .get("/api/inbound-orders/inbound_1/draft-preview");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.draft.lineItems[0].productName).toBe("Banner");
+    expect(response.body.data.latestAttempt.confidence).toBe(88);
+    expect(parsingService.getDraftPreview).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+    });
+  });
+
+  test("returns failed parse attempts without exposing internals", async () => {
+    const failedAttempt = parseAttempt({
+      status: "failed",
+      provider: null,
+      model: null,
+      parsedDraft: null,
+      confidence: 0,
+      warnings: [],
+      errors: [{ code: "provider_unavailable", message: "AI provider is not configured." }],
+    });
+    parsingService.parseInboundOrderRecord.mockResolvedValue({
+      draft: null,
+      latestAttempt: failedAttempt,
+      record: inboundRecord(),
+    });
+
+    const response = await request(buildApp(service, { parsingService }))
+      .post("/api/inbound-orders/inbound_1/parse")
+      .send({});
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.draft).toBeNull();
+    expect(response.body.data.latestAttempt.status).toBe("failed");
+    expect(response.body.data.latestAttempt.errors[0].message).toBe("AI provider is not configured.");
   });
 
   test("fails softly when inbound tables are not migrated", async () => {

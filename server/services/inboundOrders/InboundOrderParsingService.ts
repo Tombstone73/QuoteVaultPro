@@ -1,0 +1,637 @@
+import { createHash } from "crypto";
+import type { InboundOrderParseAttempt, InboundOrderRecord, InboundOrderRecordStatus } from "@shared/schema";
+import {
+  getManualInboundEvidence,
+  inboundOrderParsedDraftSchema,
+  type InboundOrderCandidate,
+  type InboundOrderParsedDraft,
+  type InboundOrderParseWarning,
+} from "@shared/inboundOrdersApi";
+import { parseAiJsonObject } from "../ai/bugReviewValidator";
+import { createConfiguredAiProvider, resolveAiProviderTimeoutMs } from "../ai/providers/configuredProvider";
+import {
+  AiProviderTimeoutError,
+  AiProviderUnavailableError,
+  type AiProviderAdapter,
+  type AiProviderResponse,
+} from "../ai/providers/AiProviderAdapter";
+import {
+  inboundOrdersRepository,
+  type CreateInboundOrderParseAttemptValues,
+  type InboundCandidateResult,
+} from "../../storage/inboundOrders.repo";
+import { InboundOrderTransitionError } from "./InboundOrderService";
+
+const INBOUND_ORDER_PARSE_PROMPT_VERSION = "inbound-order-parse-v1";
+
+export type InboundOrderParseResult = {
+  draft: InboundOrderParsedDraft | null;
+  latestAttempt: InboundOrderParseAttempt;
+  record: InboundOrderRecord;
+};
+
+function clampConfidence(value: unknown): number {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function numberValue(value: unknown): number | null {
+  const numeric = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function warning(code: string, message: string, severity: InboundOrderParseWarning["severity"] = "warning", fieldPath?: string): InboundOrderParseWarning {
+  return { code, message, severity, fieldPath: fieldPath ?? null };
+}
+
+function toError(message: string, code = "parse_failed") {
+  return { code, message };
+}
+
+function uniqueIds(candidates: InboundCandidateResult[]): string[] {
+  return Array.from(new Set(candidates.map((candidate) => candidate.id)));
+}
+
+function candidateDto(candidate: InboundCandidateResult): InboundOrderCandidate {
+  return {
+    id: candidate.id,
+    label: candidate.label,
+    confidence: clampConfidence(candidate.confidence),
+    reason: candidate.reason,
+    metadata: candidate.metadata ?? {},
+  };
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(stringValue).filter((item): item is string => Boolean(item));
+}
+
+function normalizeWarnings(value: unknown): InboundOrderParseWarning[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    if (typeof item === "string") return warning("ai_warning", item, "warning");
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const record = item as Record<string, unknown>;
+    const message = stringValue(record.message) ?? stringValue(record.reason);
+    if (!message) return null;
+    const severityRaw = stringValue(record.severity);
+    const severity = severityRaw === "blocking" || severityRaw === "info" ? severityRaw : "warning";
+    return warning(
+      stringValue(record.code) ?? "ai_warning",
+      message,
+      severity,
+      stringValue(record.fieldPath) ?? undefined,
+    );
+  }).filter((item): item is InboundOrderParseWarning => Boolean(item));
+}
+
+function normalizeMissingDecisions(value: unknown): InboundOrderParsedDraft["missingDecisions"] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item, index) => {
+    if (typeof item === "string" && item.trim()) {
+      return {
+        field: `missing_${index + 1}`,
+        label: item.trim(),
+        reason: item.trim(),
+        severity: "warning" as const,
+      };
+    }
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const record = item as Record<string, unknown>;
+    const label = stringValue(record.label) ?? stringValue(record.field) ?? `Missing decision ${index + 1}`;
+    return {
+      field: stringValue(record.field) ?? label.toLowerCase().replace(/[^a-z0-9]+/g, "_"),
+      label,
+      reason: stringValue(record.reason) ?? label,
+      severity: stringValue(record.severity) === "blocking" ? "blocking" : "warning",
+    };
+  }).filter((item): item is InboundOrderParsedDraft["missingDecisions"][number] => Boolean(item));
+}
+
+export class InboundOrderParsingService {
+  constructor(
+    private readonly repository = inboundOrdersRepository,
+    private readonly providerFactory: () => AiProviderAdapter | null = createConfiguredAiProvider,
+  ) {}
+
+  async parseInboundOrderRecord(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    actorUserId: string;
+  }): Promise<InboundOrderParseResult> {
+    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) {
+      throw new InboundOrderTransitionError("Inbound order record not found", 404);
+    }
+
+    this.assertParseAllowed(record);
+
+    await this.repository.updateRecordWithEvent({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+      patch: {
+        status: "waiting_on_customer",
+        requiresHumanDecision: true,
+        reviewRequiredReason: "AI parsing in progress.",
+      },
+      event: {
+        actorUserId: args.actorUserId,
+        actorType: "user",
+        eventType: "parse.requested",
+        fromStatus: record.status,
+        toStatus: "waiting_on_customer",
+        message: null,
+        metadataJson: {
+          phase: "inbound_orders_phase_2",
+          reviewOnly: true,
+        },
+      },
+    });
+
+    const prompt = await this.buildInboundOrderParsePrompt(args.organizationId, record);
+    const rawPromptHash = createHash("sha256").update(prompt.system).update("\n").update(prompt.user).digest("hex");
+    const provider = this.providerFactory();
+
+    if (!provider) {
+      const attempt = await this.storeAttemptAndUpdateRecord({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+        actorUserId: args.actorUserId,
+        previousStatus: "waiting_on_customer",
+        attempt: {
+          organizationId: args.organizationId,
+          inboundOrderRecordId: args.inboundRecordId,
+          status: "failed",
+          provider: null,
+          model: null,
+          rawPromptHash,
+          rawResponse: null,
+          repairedResponse: null,
+          parsedDraft: null,
+          confidence: 0,
+          warnings: [],
+          errors: [toError("AI provider is not configured.", "provider_unavailable")],
+        },
+        finalStatus: "needs_review",
+        reviewRequiredReason: "AI provider is not configured. Source evidence remains available for retry.",
+      });
+      return this.resultFromAttempt(args.organizationId, args.inboundRecordId, attempt);
+    }
+
+    try {
+      const response = await provider.generateJson({
+        orgId: args.organizationId,
+        feature: "order_parsing",
+        system: prompt.system,
+        user: prompt.user,
+        promptVersion: INBOUND_ORDER_PARSE_PROMPT_VERSION,
+        timeoutMs: resolveAiProviderTimeoutMs(),
+        timeoutUseCase: "inbound_order_parsing",
+      });
+
+      const rawObject = parseAiJsonObject(response.rawText);
+      const validation = this.validateInboundOrderParseResult(rawObject);
+      const repaired = validation.success
+        ? { draft: validation.draft, repairedResponse: null, repaired: false, warnings: [] as InboundOrderParseWarning[] }
+        : this.repairInboundOrderParseResult(rawObject, record);
+      const draftWithCandidates = await this.addCandidateMatches(args.organizationId, repaired.draft);
+      const score = this.scoreInboundOrderParseResult(draftWithCandidates);
+      const finalWarnings = [
+        ...draftWithCandidates.globalWarnings,
+        ...repaired.warnings,
+      ];
+      const finalStatus = this.resolveParsedRecordStatus(draftWithCandidates, score);
+      const attemptStatus = repaired.repaired ? "repaired" : "success";
+
+      const attempt = await this.storeAttemptAndUpdateRecord({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+        actorUserId: args.actorUserId,
+        previousStatus: "waiting_on_customer",
+        attempt: {
+          organizationId: args.organizationId,
+          inboundOrderRecordId: args.inboundRecordId,
+          status: attemptStatus,
+          provider: response.provider,
+          model: response.model,
+          rawPromptHash,
+          rawResponse: this.responseForStorage(response, rawObject),
+          repairedResponse: repaired.repairedResponse,
+          parsedDraft: draftWithCandidates,
+          confidence: score,
+          warnings: finalWarnings,
+          errors: [],
+        },
+        finalStatus,
+        reviewRequiredReason: finalStatus === "ready"
+          ? null
+          : "AI parsing found warnings or missing decisions that need staff review.",
+      });
+
+      return this.resultFromAttempt(args.organizationId, args.inboundRecordId, attempt);
+    } catch (error: any) {
+      const providerError = error instanceof AiProviderUnavailableError
+        ? "AI provider is not configured for order parsing."
+        : error instanceof AiProviderTimeoutError
+          ? error.message
+          : error?.message ?? "AI parsing failed.";
+      const attempt = await this.storeAttemptAndUpdateRecord({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+        actorUserId: args.actorUserId,
+        previousStatus: "waiting_on_customer",
+        attempt: {
+          organizationId: args.organizationId,
+          inboundOrderRecordId: args.inboundRecordId,
+          status: "failed",
+          provider: error instanceof AiProviderTimeoutError ? error.provider : null,
+          model: error instanceof AiProviderTimeoutError ? error.model : null,
+          rawPromptHash,
+          rawResponse: null,
+          repairedResponse: null,
+          parsedDraft: null,
+          confidence: 0,
+          warnings: [],
+          errors: [toError(
+            providerError,
+            error instanceof AiProviderTimeoutError
+              ? "timeout"
+              : error instanceof AiProviderUnavailableError
+                ? "provider_unavailable"
+                : "provider_failed",
+          )],
+        },
+        finalStatus: "needs_review",
+        reviewRequiredReason: `${providerError} Source evidence remains available for retry.`,
+      });
+      return this.resultFromAttempt(args.organizationId, args.inboundRecordId, attempt);
+    }
+  }
+
+  async getDraftPreview(args: {
+    organizationId: string;
+    inboundRecordId: string;
+  }): Promise<{ draft: InboundOrderParsedDraft | null; latestAttempt: InboundOrderParseAttempt | null }> {
+    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) {
+      throw new InboundOrderTransitionError("Inbound order record not found", 404);
+    }
+    const latestAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
+    return {
+      latestAttempt,
+      draft: this.parsedDraftFromAttempt(latestAttempt),
+    };
+  }
+
+  async listParseAttempts(args: {
+    organizationId: string;
+    inboundRecordId: string;
+  }): Promise<InboundOrderParseAttempt[]> {
+    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) {
+      throw new InboundOrderTransitionError("Inbound order record not found", 404);
+    }
+    return this.repository.listParseAttempts(args.organizationId, args.inboundRecordId);
+  }
+
+  async buildInboundOrderParsePrompt(organizationId: string, record: InboundOrderRecord): Promise<{ system: string; user: string }> {
+    const evidence = getManualInboundEvidence(record);
+    const files = await this.repository.listFiles(organizationId, record.id);
+    const sourceEvidence = {
+      recordId: record.id,
+      sourceType: record.sourceType,
+      status: record.status,
+      reference: evidence.reference,
+      senderName: evidence.senderName,
+      senderEmail: evidence.senderEmail,
+      subject: evidence.subject,
+      bodyText: evidence.bodyText,
+      notes: evidence.notes,
+      rawPayloadJson: record.rawPayloadJson,
+      normalizedPayloadJson: record.normalizedPayloadJson,
+      files: files.map((file) => ({
+        id: file.id,
+        sourceFilename: file.sourceFilename,
+        role: file.role,
+        status: file.status,
+        mimeType: file.mimeType,
+        reviewNotes: file.reviewNotes,
+      })),
+    };
+
+    return {
+      system: [
+        "You parse inbound print order requests for TitanOS.",
+        "Return JSON only: one parsed draft object and no explanation.",
+        "This is parsing only. Do not create orders, quotes, customers, contacts, products, artwork, production, fulfillment, invoices, or payments.",
+        "Use null for unknown scalar fields, [] for empty arrays, and confidence values from 0 to 100.",
+        "Return candidate IDs only when present in provided context; otherwise leave candidate arrays empty.",
+      ].join(" "),
+      user: [
+        "Return exactly one JSON object with this shape:",
+        JSON.stringify({
+          customer: {
+            sourceName: null,
+            sourceEmail: null,
+            sourcePhone: null,
+            companyName: null,
+            candidateCustomerIds: [],
+            candidateContactIds: [],
+            confidence: 0,
+            warnings: [],
+          },
+          order: {
+            requestedDueDate: null,
+            requestedShipMethod: null,
+            requestedPickup: null,
+            poNumber: null,
+            notes: null,
+            confidence: 0,
+            warnings: [],
+          },
+          lineItems: [{
+            sourceText: null,
+            productName: null,
+            candidateProductIds: [],
+            quantity: null,
+            width: null,
+            height: null,
+            dimensionsUnit: null,
+            materialText: null,
+            optionTexts: [],
+            finishingTexts: [],
+            artworkRefs: [],
+            confidence: 0,
+            warnings: [],
+          }],
+          artwork: [],
+          globalWarnings: [],
+          missingDecisions: [],
+        }),
+        "",
+        "Source evidence:",
+        JSON.stringify(sourceEvidence),
+      ].join("\n"),
+    };
+  }
+
+  validateInboundOrderParseResult(result: unknown): { success: true; draft: InboundOrderParsedDraft } | { success: false; errors: string[] } {
+    const parsed = inboundOrderParsedDraftSchema.safeParse(result);
+    if (!parsed.success) {
+      return {
+        success: false,
+        errors: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`),
+      };
+    }
+    return { success: true, draft: parsed.data };
+  }
+
+  repairInboundOrderParseResult(raw: unknown, record: InboundOrderRecord): {
+    draft: InboundOrderParsedDraft;
+    repairedResponse: Record<string, unknown>;
+    repaired: true;
+    warnings: InboundOrderParseWarning[];
+  } {
+    const source = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? raw as Record<string, unknown>
+      : {};
+    const candidate = (source.parsedDraft ?? source.draft ?? source) as Record<string, unknown>;
+    const evidence = getManualInboundEvidence(record);
+    const rawCustomer = candidate.customer && typeof candidate.customer === "object" ? candidate.customer as Record<string, unknown> : {};
+    const rawOrder = candidate.order && typeof candidate.order === "object" ? candidate.order as Record<string, unknown> : {};
+    const rawLineItems = Array.isArray(candidate.lineItems) ? candidate.lineItems : [];
+    const repaired = {
+      customer: {
+        sourceName: stringValue(rawCustomer.sourceName) ?? evidence.senderName,
+        sourceEmail: stringValue(rawCustomer.sourceEmail) ?? evidence.senderEmail,
+        sourcePhone: stringValue(rawCustomer.sourcePhone),
+        companyName: stringValue(rawCustomer.companyName) ?? evidence.senderName,
+        candidateCustomerIds: normalizeStringArray(rawCustomer.candidateCustomerIds),
+        candidateContactIds: normalizeStringArray(rawCustomer.candidateContactIds),
+        customerCandidates: [],
+        contactCandidates: [],
+        confidence: clampConfidence(rawCustomer.confidence),
+        warnings: normalizeWarnings(rawCustomer.warnings),
+      },
+      order: {
+        requestedDueDate: stringValue(rawOrder.requestedDueDate),
+        requestedShipMethod: stringValue(rawOrder.requestedShipMethod),
+        requestedPickup: typeof rawOrder.requestedPickup === "boolean" ? rawOrder.requestedPickup : null,
+        poNumber: stringValue(rawOrder.poNumber) ?? evidence.reference,
+        notes: stringValue(rawOrder.notes) ?? evidence.bodyText,
+        confidence: clampConfidence(rawOrder.confidence),
+        warnings: normalizeWarnings(rawOrder.warnings),
+      },
+      lineItems: rawLineItems.map((item) => {
+        const row = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : {};
+        return {
+          sourceText: stringValue(row.sourceText),
+          productName: stringValue(row.productName),
+          candidateProductIds: normalizeStringArray(row.candidateProductIds),
+          productCandidates: [],
+          quantity: numberValue(row.quantity),
+          width: numberValue(row.width),
+          height: numberValue(row.height),
+          dimensionsUnit: stringValue(row.dimensionsUnit),
+          materialText: stringValue(row.materialText),
+          optionTexts: normalizeStringArray(row.optionTexts),
+          finishingTexts: normalizeStringArray(row.finishingTexts),
+          artworkRefs: normalizeStringArray(row.artworkRefs),
+          confidence: clampConfidence(row.confidence),
+          warnings: normalizeWarnings(row.warnings),
+        };
+      }),
+      artwork: Array.isArray(candidate.artwork) ? candidate.artwork.map((item) => {
+        const row = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : {};
+        const purpose = stringValue(row.purpose);
+        return {
+          filename: stringValue(row.filename),
+          sourceReference: stringValue(row.sourceReference),
+          likelyLineItemIndex: Number.isInteger(row.likelyLineItemIndex) ? row.likelyLineItemIndex as number : null,
+          purpose: purpose === "artwork" || purpose === "proof" || purpose === "reference" ? purpose : "unknown" as const,
+          confidence: clampConfidence(row.confidence),
+          warnings: normalizeWarnings(row.warnings),
+        };
+      }) : [],
+      globalWarnings: normalizeWarnings(candidate.globalWarnings),
+      missingDecisions: normalizeMissingDecisions(candidate.missingDecisions),
+    };
+
+    const parsed = inboundOrderParsedDraftSchema.parse(repaired);
+    return {
+      draft: parsed,
+      repairedResponse: repaired,
+      repaired: true,
+      warnings: [warning("schema_repaired", "AI response needed schema normalization before review.", "info")],
+    };
+  }
+
+  scoreInboundOrderParseResult(result: InboundOrderParsedDraft): number {
+    const scores = [
+      result.customer.confidence,
+      result.order.confidence,
+      ...result.lineItems.map((lineItem) => lineItem.confidence),
+      ...result.artwork.map((artwork) => artwork.confidence),
+    ].filter((score) => Number.isFinite(score));
+    const average = scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : 0;
+    const penalty = result.missingDecisions.length * 8
+      + result.globalWarnings.filter((item) => item.severity === "blocking").length * 15;
+    return clampConfidence(average - penalty);
+  }
+
+  async matchInboundCustomerCandidates(organizationId: string, result: InboundOrderParsedDraft): Promise<{
+    customerCandidates: InboundCandidateResult[];
+    contactCandidates: InboundCandidateResult[];
+  }> {
+    const customerCandidates = await this.repository.searchCustomerCandidates({
+      organizationId,
+      email: result.customer.sourceEmail,
+      name: result.customer.companyName ?? result.customer.sourceName,
+      limit: 5,
+    });
+    const contactCandidates = await this.repository.searchContactCandidates({
+      organizationId,
+      email: result.customer.sourceEmail,
+      name: result.customer.sourceName,
+      limit: 5,
+    });
+    return { customerCandidates, contactCandidates };
+  }
+
+  async matchInboundProductCandidates(organizationId: string, result: InboundOrderParsedDraft): Promise<InboundOrderParsedDraft["lineItems"]> {
+    const lineItems = [];
+    for (const lineItem of result.lineItems) {
+      const candidates = await this.repository.searchProductCandidates({
+        organizationId,
+        productName: lineItem.productName,
+        materialText: lineItem.materialText,
+        limit: 5,
+      });
+      lineItems.push({
+        ...lineItem,
+        productCandidates: candidates.map(candidateDto),
+        candidateProductIds: uniqueIds(candidates),
+      });
+    }
+    return lineItems;
+  }
+
+  private assertParseAllowed(record: InboundOrderRecord) {
+    if (record.createdQuoteId || record.createdOrderId || record.status === "submitted" || record.status === "approved") {
+      throw new InboundOrderTransitionError("Converted inbound records cannot be parsed in Phase 2.");
+    }
+    if (record.status === "terminal" || record.reviewOutcome === "rejected") {
+      throw new InboundOrderTransitionError("Rejected inbound records cannot be parsed in Phase 2.");
+    }
+  }
+
+  private async addCandidateMatches(organizationId: string, draft: InboundOrderParsedDraft): Promise<InboundOrderParsedDraft> {
+    const { customerCandidates, contactCandidates } = await this.matchInboundCustomerCandidates(organizationId, draft);
+    const lineItems = await this.matchInboundProductCandidates(organizationId, draft);
+    return {
+      ...draft,
+      customer: {
+        ...draft.customer,
+        customerCandidates: customerCandidates.map(candidateDto),
+        contactCandidates: contactCandidates.map(candidateDto),
+        candidateCustomerIds: uniqueIds(customerCandidates),
+        candidateContactIds: uniqueIds(contactCandidates),
+      },
+      lineItems,
+    };
+  }
+
+  private resolveParsedRecordStatus(draft: InboundOrderParsedDraft, score: number): InboundOrderRecordStatus {
+    const hasBlocking = [
+      ...draft.globalWarnings,
+      ...draft.customer.warnings,
+      ...draft.order.warnings,
+      ...draft.lineItems.flatMap((lineItem) => lineItem.warnings),
+      ...draft.artwork.flatMap((artwork) => artwork.warnings),
+    ].some((item) => item.severity === "blocking");
+    const structurallyComplete = draft.lineItems.length > 0
+      && draft.lineItems.every((lineItem) => Boolean(lineItem.productName || lineItem.sourceText) && Boolean(lineItem.quantity));
+    if (structurallyComplete && !hasBlocking && draft.missingDecisions.length === 0 && score >= 70) {
+      return "ready";
+    }
+    return "needs_review";
+  }
+
+  private async storeAttemptAndUpdateRecord(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    actorUserId: string;
+    previousStatus: InboundOrderRecordStatus;
+    attempt: CreateInboundOrderParseAttemptValues;
+    finalStatus: InboundOrderRecordStatus;
+    reviewRequiredReason: string | null;
+  }): Promise<InboundOrderParseAttempt> {
+    const attempt = await this.repository.createParseAttempt(args.attempt);
+    await this.repository.updateRecordWithEvent({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+      patch: {
+        status: args.finalStatus,
+        ...(args.attempt.parsedDraft ? { parsedAt: new Date() } : {}),
+        requiresHumanDecision: args.finalStatus !== "ready",
+        reviewRequiredReason: args.reviewRequiredReason,
+      },
+      event: {
+        actorUserId: args.actorUserId,
+        actorType: "user",
+        eventType: "parse.completed",
+        fromStatus: args.previousStatus,
+        toStatus: args.finalStatus,
+        message: args.reviewRequiredReason,
+        metadataJson: {
+          parseAttemptId: attempt.id,
+          parseStatus: attempt.status,
+          confidence: attempt.confidence,
+          warningCount: Array.isArray(attempt.warnings) ? attempt.warnings.length : 0,
+          errorCount: Array.isArray(attempt.errors) ? attempt.errors.length : 0,
+          reviewOnly: true,
+        },
+      },
+    });
+    return attempt;
+  }
+
+  private async resultFromAttempt(
+    organizationId: string,
+    inboundRecordId: string,
+    latestAttempt: InboundOrderParseAttempt,
+  ): Promise<InboundOrderParseResult> {
+    const record = await this.repository.getRecord(organizationId, inboundRecordId);
+    if (!record) {
+      throw new InboundOrderTransitionError("Inbound order record not found after parse", 404);
+    }
+    return {
+      draft: this.parsedDraftFromAttempt(latestAttempt),
+      latestAttempt,
+      record,
+    };
+  }
+
+  private parsedDraftFromAttempt(attempt: InboundOrderParseAttempt | null): InboundOrderParsedDraft | null {
+    if (!attempt?.parsedDraft) return null;
+    const parsed = inboundOrderParsedDraftSchema.safeParse(attempt.parsedDraft);
+    return parsed.success ? parsed.data : null;
+  }
+
+  private responseForStorage(response: AiProviderResponse, rawObject: unknown): Record<string, unknown> {
+    return {
+      parsedJson: rawObject,
+      provider: response.provider,
+      model: response.model,
+      requestMetadata: response.requestMetadata,
+    };
+  }
+}
+
+export const inboundOrderParsingService = new InboundOrderParsingService();
