@@ -111,7 +111,7 @@ function record(overrides: Record<string, any> = {}) {
   };
 }
 
-function detail(row = record()) {
+function detail(row = record(), overrides: Record<string, any> = {}) {
   return {
     record: row,
     source: null,
@@ -143,6 +143,7 @@ function detail(row = record()) {
     },
     matchedCustomer: null,
     matchedContact: null,
+    ...overrides,
   };
 }
 
@@ -263,6 +264,10 @@ function parsedDraft(overrides: Record<string, any> = {}) {
       reason: "Request did not mention installation.",
       severity: "warning",
     }],
+    evidence: {
+      items: [],
+      conflicts: [],
+    },
     ...overrides,
   };
 }
@@ -569,13 +574,74 @@ describe("InboundOrdersPage", () => {
 
   test("refreshes draft preview after parse and renders reviewable parsed data", async () => {
     const row = record();
-    const draft = parsedDraft();
+    const attachmentFile = {
+      id: "file_1",
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      inboundLineItemId: null,
+      fileRecordId: "file_record_1",
+      sourceFilename: "Brainstorm Print PO.pdf",
+      role: "customer_upload",
+      mimeType: "application/pdf",
+      sizeBytes: 12000,
+      checksum: null,
+      status: "uploaded",
+      reviewNotes: null,
+      createdQuoteAttachmentId: null,
+      createdOrderAttachmentId: null,
+      createdAt: "2026-06-09T12:00:00.000Z",
+      updatedAt: "2026-06-09T12:00:00.000Z",
+    };
+    const draft = parsedDraft({
+      order: {
+        ...parsedDraft().order,
+        poNumber: "151661",
+        requestedDueDate: "2026-06-11",
+      },
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        productName: "PVC Signs",
+        quantity: 3,
+        width: 24,
+        height: 36,
+        materialText: "3mm White PVC",
+      }],
+      evidence: {
+        items: [{
+          type: "PDF_ATTACHMENT",
+          label: "Brainstorm Print PO.pdf",
+          sourceId: "file_1",
+          fileName: "Brainstorm Print PO.pdf",
+          mimeType: "application/pdf",
+          rawText: "Purchase Order 151661\nArrival Due Date MUST EOD 6/11\n3 PVC Signs\n24x36\n3mm White PVC",
+          pageCount: 1,
+          documentType: "purchase_order",
+          documentConfidence: 98,
+          poSummary: {
+            poNumber: "151661",
+            dueDate: "2026-06-11",
+            quantity: 3,
+            productDescription: "PVC Signs",
+            material: "3mm White PVC",
+            dimensions: "24x36",
+            printSpecs: [],
+          },
+          warnings: [],
+        }],
+        conflicts: [{
+          code: "evidence_quantity_conflict",
+          message: "Quantity mismatch between email (50) and purchase order (3).",
+          severity: "warning",
+          fieldPath: "lineItems.0.quantity",
+        }],
+      },
+    });
     const attempt = parseAttempt({ parsedDraft: draft, confidence: 82, warnings: draft.globalWarnings });
 
     apiFetchMock.mockImplementation(async (url: any, options?: any) => {
       const path = String(url);
       if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
-      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row, { files: [attachmentFile] }) });
       if (path === "/api/inbound-orders/inbound_1/draft-preview") return jsonResponse(draftPreview());
       if (path === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST") {
         return jsonResponse({
@@ -601,12 +667,20 @@ describe("InboundOrdersPage", () => {
     });
 
     await waitForText("Customer Match Candidates");
+    expect(container.textContent).toContain("Brainstorm Print PO.pdf");
+    expect(container.textContent).toContain("Purchase Order");
+    expect(container.textContent).toContain("98%");
+    expect(container.textContent).toContain("PO Extraction Summary");
+    expect(container.textContent).toContain("151661");
+    expect(container.textContent).toContain("3mm White PVC");
+    expect(container.textContent).toContain("24x36");
+    expect(container.textContent).toContain("Quantity mismatch between email (50) and purchase order (3).");
     expect(container.textContent).toContain("Ada Signs");
-    expect(container.textContent).toContain("Vinyl Banner");
+    expect(container.textContent).toContain("PVC Signs");
     expect(container.textContent).toContain("Product Match Reasoning");
     expect(container.textContent).toContain("description matched \"banner\"");
     expect(container.textContent).toContain("Description 92");
-    expect(container.textContent).toContain("2026-06-20");
+    expect(container.textContent).toContain("2026-06-11");
     expect(container.textContent).toContain("Installation needed");
     expect(container.textContent).toContain("Confirm final banner size before conversion.");
     expect(container.textContent).toContain("82% confidence");

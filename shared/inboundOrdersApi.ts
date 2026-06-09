@@ -73,6 +73,33 @@ export const inboundOrderCandidateSchema = z.object({
   metadata: z.record(z.unknown()).default({}),
 });
 
+export const inboundOrderEvidenceItemSchema = z.object({
+  type: z.enum(["EMAIL_SUBJECT", "EMAIL_BODY", "PDF_ATTACHMENT", "TEXT_ATTACHMENT", "MANUAL_NOTES"]),
+  label: z.string().trim().min(1).max(255),
+  sourceId: z.string().trim().max(255).optional().nullable(),
+  fileName: z.string().trim().max(512).optional().nullable(),
+  mimeType: z.string().trim().max(255).optional().nullable(),
+  rawText: z.string().trim().max(50000).optional().nullable(),
+  pageCount: z.number().int().positive().optional().nullable(),
+  documentType: z.enum(["purchase_order", "artwork_reference", "unknown"]).default("unknown"),
+  documentConfidence: z.number().min(0).max(100).default(0),
+  poSummary: z.object({
+    poNumber: z.string().trim().max(255).optional().nullable(),
+    customer: z.string().trim().max(255).optional().nullable(),
+    contact: z.string().trim().max(255).optional().nullable(),
+    dueDate: z.string().trim().max(80).optional().nullable(),
+    quantity: z.number().positive().optional().nullable(),
+    productDescription: z.string().trim().max(1000).optional().nullable(),
+    material: z.string().trim().max(255).optional().nullable(),
+    dimensions: z.string().trim().max(120).optional().nullable(),
+    printSpecs: z.array(z.string().trim().min(1).max(255)).default([]),
+    shippingNotes: z.string().trim().max(2000).optional().nullable(),
+    price: z.string().trim().max(120).optional().nullable(),
+    versionCount: z.number().positive().optional().nullable(),
+  }).optional().nullable(),
+  warnings: z.array(inboundOrderParseWarningSchema).default([]),
+});
+
 const confidenceSchema = z.number().min(0).max(100).default(0);
 const stringArraySchema = z.array(z.string().trim().min(1).max(500)).default([]);
 
@@ -129,12 +156,17 @@ export const inboundOrderParsedDraftSchema = z.object({
     reason: z.string().trim().min(1).max(1000),
     severity: z.enum(["info", "warning", "blocking"]).default("warning"),
   })).default([]),
+  evidence: z.object({
+    items: z.array(inboundOrderEvidenceItemSchema).default([]),
+    conflicts: z.array(inboundOrderParseWarningSchema).default([]),
+  }).default({ items: [], conflicts: [] }),
 });
 
 export type InboundOrderParseAttemptStatus = z.infer<typeof inboundOrderParseAttemptStatusSchema>;
 export type InboundOrderParsedDraft = z.infer<typeof inboundOrderParsedDraftSchema>;
 export type InboundOrderParseWarning = z.infer<typeof inboundOrderParseWarningSchema>;
 export type InboundOrderCandidate = z.infer<typeof inboundOrderCandidateSchema>;
+export type InboundOrderEvidenceItem = z.infer<typeof inboundOrderEvidenceItemSchema>;
 
 export type ManualInboundOrderCreateRequest = z.infer<typeof manualInboundOrderCreateSchema>;
 export type InboundOrderStatusUpdateRequest = z.infer<typeof inboundOrderStatusUpdateSchema>;

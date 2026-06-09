@@ -21,6 +21,10 @@ import {
   type InboundCandidateResult,
 } from "../../storage/inboundOrders.repo";
 import { InboundOrderTransitionError } from "./InboundOrderService";
+import {
+  inboundOrderEvidenceService,
+  type InboundOrderEvidenceBundle,
+} from "./InboundOrderEvidenceService";
 import { inferInboundRequestedDate } from "./inboundOrderDateInference";
 
 const INBOUND_ORDER_PARSE_PROMPT_VERSION = "inbound-order-parse-v1";
@@ -150,6 +154,7 @@ export class InboundOrderParsingService {
   constructor(
     private readonly repository = inboundOrdersRepository,
     private readonly providerFactory: () => AiProviderAdapter | null = createConfiguredAiProvider,
+    private readonly evidenceService = inboundOrderEvidenceService,
   ) {}
 
   async parseInboundOrderRecord(args: {
@@ -186,7 +191,8 @@ export class InboundOrderParsingService {
       },
     });
 
-    const prompt = await this.buildInboundOrderParsePrompt(args.organizationId, record);
+    const evidenceBundle = await this.buildEvidenceBundle(args.organizationId, record);
+    const prompt = await this.buildInboundOrderParsePrompt(args.organizationId, record, evidenceBundle);
     const rawPromptHash = createHash("sha256").update(prompt.system).update("\n").update(prompt.user).digest("hex");
     const provider = this.providerFactory();
 
@@ -232,7 +238,7 @@ export class InboundOrderParsingService {
       const repaired = validation.success
         ? { draft: validation.draft, repairedResponse: null, repaired: false, warnings: [] as InboundOrderParseWarning[] }
         : this.repairInboundOrderParseResult(rawObject, record);
-      const refinedDraft = this.refineParsedDraft(record, repaired.draft);
+      const refinedDraft = this.refineParsedDraft(record, repaired.draft, evidenceBundle);
       const draftWithCandidates = await this.addCandidateMatches(args.organizationId, refinedDraft);
       const score = this.scoreInboundOrderParseResult(draftWithCandidates);
       const finalWarnings = [
@@ -333,9 +339,22 @@ export class InboundOrderParsingService {
     return this.repository.listParseAttempts(args.organizationId, args.inboundRecordId);
   }
 
-  async buildInboundOrderParsePrompt(organizationId: string, record: InboundOrderRecord): Promise<{ system: string; user: string }> {
-    const evidence = getManualInboundEvidence(record);
+  async buildEvidenceBundle(organizationId: string, record: InboundOrderRecord): Promise<InboundOrderEvidenceBundle> {
     const files = await this.repository.listFiles(organizationId, record.id);
+    return this.evidenceService.buildEvidenceBundle({
+      organizationId,
+      record,
+      files,
+    });
+  }
+
+  async buildInboundOrderParsePrompt(
+    organizationId: string,
+    record: InboundOrderRecord,
+    evidenceBundle?: InboundOrderEvidenceBundle,
+  ): Promise<{ system: string; user: string }> {
+    const evidence = getManualInboundEvidence(record);
+    const bundle = evidenceBundle ?? await this.buildEvidenceBundle(organizationId, record);
     const sourceEvidence = {
       recordId: record.id,
       sourceType: record.sourceType,
@@ -347,16 +366,17 @@ export class InboundOrderParsingService {
       subject: evidence.subject,
       bodyText: evidence.bodyText,
       notes: evidence.notes,
-      rawPayloadJson: record.rawPayloadJson,
-      normalizedPayloadJson: record.normalizedPayloadJson,
-      files: files.map((file) => ({
-        id: file.id,
-        sourceFilename: file.sourceFilename,
-        role: file.role,
-        status: file.status,
-        mimeType: file.mimeType,
-        reviewNotes: file.reviewNotes,
+      evidenceItems: bundle.items.map((item) => ({
+        type: item.type,
+        label: item.label,
+        fileName: item.fileName,
+        rawText: item.rawText,
+        pageCount: item.pageCount,
+        documentType: item.documentType,
+        documentConfidence: item.documentConfidence,
+        poSummary: item.poSummary,
       })),
+      evidenceConflicts: bundle.conflicts,
     };
 
     return {
@@ -368,6 +388,8 @@ export class InboundOrderParsingService {
         "Return candidate IDs only when present in provided context; otherwise leave candidate arrays empty.",
         "Interpret dates using receivedAt/email context. If a month/day has no year, use the context year unless it has already passed, then choose the next reasonable future date and add a warning.",
         "Think like a print CSR: flag missing size, quantity, artwork, material, and other decisions that block accurate order entry.",
+        "Treat purchase order attachments as highest-priority evidence, then other PDF/text attachment content, then email body, then subject.",
+        "If email text conflicts with a purchase order attachment, preserve the purchase order value and return a warning.",
       ].join(" "),
       user: [
         "Return exactly one JSON object with this shape:",
@@ -428,9 +450,94 @@ export class InboundOrderParsingService {
     return { success: true, draft: parsed.data };
   }
 
-  refineParsedDraft(record: InboundOrderRecord, draft: InboundOrderParsedDraft): InboundOrderParsedDraft {
-    const dateRefined = this.applyDateInference(record, draft);
-    return this.applyMissingDecisionDetection(dateRefined);
+  refineParsedDraft(record: InboundOrderRecord, draft: InboundOrderParsedDraft, evidenceBundle?: InboundOrderEvidenceBundle): InboundOrderParsedDraft {
+    const evidenceRefined = evidenceBundle ? this.applyAttachmentEvidencePriority(draft, evidenceBundle) : draft;
+    const dateRefined = this.applyDateInference(record, evidenceRefined);
+    const decisionsRefined = this.applyMissingDecisionDetection(dateRefined);
+    return evidenceBundle
+      ? {
+        ...decisionsRefined,
+        evidence: {
+          items: evidenceBundle.items,
+          conflicts: evidenceBundle.conflicts,
+        },
+        globalWarnings: [
+          ...decisionsRefined.globalWarnings,
+          ...evidenceBundle.conflicts,
+        ],
+      }
+      : decisionsRefined;
+  }
+
+  applyAttachmentEvidencePriority(draft: InboundOrderParsedDraft, evidenceBundle: InboundOrderEvidenceBundle): InboundOrderParsedDraft {
+    const purchaseOrder = evidenceBundle.items
+      .filter((item) => item.documentType === "purchase_order" && item.poSummary)
+      .sort((left, right) => right.documentConfidence - left.documentConfidence)[0];
+    const summary = purchaseOrder?.poSummary;
+    if (!summary) return draft;
+
+    const dimensions = this.parseDimensionText(summary.dimensions ?? null);
+    const firstLine = draft.lineItems[0] ?? {
+      sourceText: null,
+      productName: null,
+      candidateProductIds: [],
+      productCandidates: [],
+      quantity: null,
+      width: null,
+      height: null,
+      dimensionsUnit: null,
+      materialText: null,
+      optionTexts: [],
+      finishingTexts: [],
+      artworkRefs: [],
+      confidence: 0,
+      warnings: [],
+    };
+    const enrichedLine = {
+      ...firstLine,
+      sourceText: [
+        firstLine.sourceText,
+        summary.productDescription,
+        summary.material,
+        summary.dimensions,
+        ...summary.printSpecs,
+      ].filter(Boolean).join(" ") || firstLine.sourceText,
+      productName: summary.productDescription ?? firstLine.productName,
+      quantity: summary.quantity ?? firstLine.quantity,
+      width: dimensions.width ?? firstLine.width,
+      height: dimensions.height ?? firstLine.height,
+      dimensionsUnit: dimensions.unit ?? firstLine.dimensionsUnit,
+      materialText: summary.material ?? firstLine.materialText,
+      optionTexts: Array.from(new Set([...firstLine.optionTexts, ...summary.printSpecs])),
+      confidence: Math.max(firstLine.confidence, purchaseOrder.documentConfidence),
+    };
+
+    return {
+      ...draft,
+      order: {
+        ...draft.order,
+        poNumber: summary.poNumber ?? draft.order.poNumber,
+        requestedDueDate: summary.dueDate ?? draft.order.requestedDueDate,
+        requestedShipMethod: summary.shippingNotes ?? draft.order.requestedShipMethod,
+        confidence: Math.max(draft.order.confidence, purchaseOrder.documentConfidence),
+        warnings: [
+          ...draft.order.warnings,
+          ...purchaseOrder.warnings,
+        ],
+      },
+      lineItems: [
+        enrichedLine,
+        ...draft.lineItems.slice(1),
+      ],
+    };
+  }
+
+  private parseDimensionText(value: string | null): { width: number | null; height: number | null; unit: string | null } {
+    if (!value) return { width: null, height: null, unit: null };
+    const match = value.match(/(\d+(?:\.\d+)?)\s*(?:in|inch|inches|ft|feet|mm|cm)?\s*[xX×]\s*(\d+(?:\.\d+)?)\s*(in|inch|inches|ft|feet|mm|cm)?/i);
+    if (!match) return { width: null, height: null, unit: null };
+    const unit = match[3]?.toLowerCase().replace(/^inch(?:es)?$/, "in").replace(/^feet$/, "ft") ?? null;
+    return { width: Number(match[1]), height: Number(match[2]), unit };
   }
 
   applyDateInference(record: InboundOrderRecord, draft: InboundOrderParsedDraft): InboundOrderParsedDraft {
