@@ -371,6 +371,24 @@ export type OptionTreeV2 = {
         }>;
         warnings: string[];
       };
+      productClassification?: {
+        type: "FORMULA_PRODUCT" | "MATRIX_PRODUCT" | "FIXED_SIZE_MATRIX" | "PER_PIECE_PRODUCT" | "FULFILLMENT_PRODUCT";
+        confidence: number;
+        reasons: string[];
+      };
+      formulaAssignment?: {
+        code: string;
+        name: string;
+        pricingProfileKey: string;
+        expression: string;
+        confidence: number;
+        source: string;
+        pricingFormulaId?: string | null;
+      };
+      generatedBehaviors?: {
+        optionRules: string[];
+        pricingImpacts: Array<Record<string, unknown>>;
+      };
       pricingWarnings?: string[];
       materialMatch?: {
         materialId: string | null;
@@ -759,6 +777,24 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
             })),
           })),
           warnings: z.array(z.string()),
+        }).optional(),
+        productClassification: z.object({
+          type: z.enum(["FORMULA_PRODUCT", "MATRIX_PRODUCT", "FIXED_SIZE_MATRIX", "PER_PIECE_PRODUCT", "FULFILLMENT_PRODUCT"]),
+          confidence: z.number().min(0).max(100),
+          reasons: z.array(z.string()),
+        }).optional(),
+        formulaAssignment: z.object({
+          code: z.string(),
+          name: z.string(),
+          pricingProfileKey: z.string(),
+          expression: z.string(),
+          confidence: z.number().min(0).max(100),
+          source: z.string(),
+          pricingFormulaId: z.string().nullable().optional(),
+        }).optional(),
+        generatedBehaviors: z.object({
+          optionRules: z.array(z.string()),
+          pricingImpacts: z.array(z.record(z.unknown())),
         }).optional(),
         pricingWarnings: z.array(z.string()).optional(),
         materialMatch: z.object({

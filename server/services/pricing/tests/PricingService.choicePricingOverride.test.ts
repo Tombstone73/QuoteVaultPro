@@ -110,6 +110,82 @@ function makeAcmTree() {
 }
 
 describe("PBV2 choice pricing overrides", () => {
+  test("formula product choice addPercent impacts price from base and option rules clear hidden selections", () => {
+    const tree = {
+      schemaVersion: 2 as const,
+      rootNodeIds: ["contour_cutting", "weed_and_tape"],
+      rules: [{
+        id: "rule_contour_cutting_weed_and_tape",
+        enabled: true,
+        when: { all: [{ optionGroup: "contour_cutting", operator: "equals", value: "yes" }] },
+        then: [{ action: "show", targetOptionGroup: "weed_and_tape" }],
+        else: [
+          { action: "hide", targetOptionGroup: "weed_and_tape" },
+          { action: "clear", targetOptionGroup: "weed_and_tape" },
+        ],
+      }],
+      nodes: {
+        contour_cutting: {
+          id: "contour_cutting",
+          type: "INPUT",
+          kind: "question" as const,
+          label: "Contour Cutting",
+          input: { type: "select" as const, selectionKey: "contour_cutting" },
+          choices: [
+            { value: "no", label: "No" },
+            { value: "yes", label: "Yes", pricingImpact: [{ mode: "addPercent" as const, percent: 10, basis: "base" as const }] },
+          ],
+        },
+        weed_and_tape: {
+          id: "weed_and_tape",
+          type: "INPUT",
+          kind: "question" as const,
+          label: "Weed and Tape",
+          input: { type: "select" as const, selectionKey: "weed_and_tape" },
+          choices: [
+            { value: "no", label: "No" },
+            { value: "yes", label: "Yes", pricingImpact: [{ mode: "addPercent" as const, percent: 25, basis: "base" as const }] },
+          ],
+        },
+      },
+      meta: {
+        pricingV2: { base: { perSqftCents: 10000 } },
+      },
+    };
+
+    const bothSelected = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: 12,
+      heightIn: 12,
+      quantity: 1,
+      pbv2ExplicitSelections: {
+        contour_cutting: { value: "yes" },
+        weed_and_tape: { value: "yes" },
+      },
+      debug: true,
+    });
+
+    expect(bothSelected.breakdown.basePrice).toBeCloseTo(100, 2);
+    expect(bothSelected.breakdown.optionsPrice).toBeCloseTo(35, 2);
+    expect(bothSelected.totalPrice).toBeCloseTo(135, 2);
+
+    const hiddenWeed = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: 12,
+      heightIn: 12,
+      quantity: 1,
+      pbv2ExplicitSelections: {
+        contour_cutting: { value: "no" },
+        weed_and_tape: { value: "yes" },
+      },
+      debug: true,
+    });
+
+    expect(hiddenWeed.debug?.runtimeSelectionContext?.selectedChoices.weed_and_tape).toBeUndefined();
+    expect(hiddenWeed.breakdown.optionsPrice).toBeCloseTo(0, 2);
+    expect(hiddenWeed.totalPrice).toBeCloseTo(100, 2);
+  });
+
   test("ACM thickness can set base sqft pricing while print sides and contour cutting remain additive", () => {
     const tree = makeAcmTree();
     const selections = {

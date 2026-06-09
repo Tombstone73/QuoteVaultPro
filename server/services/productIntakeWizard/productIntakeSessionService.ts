@@ -362,6 +362,47 @@ function matrixDecisionQuestions(brief: ProductIntakeBrief): NewQuestion[] {
   return questions;
 }
 
+function formulaDecisionQuestions(brief: ProductIntakeBrief): NewQuestion[] {
+  const behavior = `${brief.pricingAnalysis.behavior} ${brief.pricingAnalysis.notes ?? ""}`.toLowerCase();
+  if (!/formula/.test(behavior) || brief.pricingAnalysis.confidence >= 85) return [];
+  return [{
+    questionKey: "choose-pricing-formula",
+    questionType: "select",
+    label: "Which pricing formula should be used?",
+    helpText: "The source appears formula-driven, but the exact PBV2 formula pattern was not confident enough to assign automatically.",
+    required: true,
+    options: [
+      option("Sticker adjusted rounded square feet", "STICKER_ADJUSTED_ROUNDED_SQFT"),
+      option("Default square foot formula", "DEFAULT_SQFT"),
+      option("Manual review", "MANUAL_REVIEW"),
+    ],
+    defaultValue: "STICKER_ADJUSTED_ROUNDED_SQFT",
+    sourcePath: firstEvidencePath(brief.pricingAnalysis.evidence) ?? firstEvidencePath(brief.sourceEvidence),
+    confidence: brief.pricingAnalysis.confidence,
+    sortOrder: 54,
+  }];
+}
+
+function ruleDecisionQuestions(brief: ProductIntakeBrief): NewQuestion[] {
+  const options = [...brief.requiredOptions, ...brief.optionalOptions];
+  const contour = options.find((optionGroup) => /contour[\s_-]*cut/i.test(`${optionGroup.label} ${optionGroup.normalizedGroup}`));
+  const weed = options.find((optionGroup) => /weed[\s_-]*(?:and|&)?[\s_-]*tape/i.test(`${optionGroup.label} ${optionGroup.normalizedGroup}`));
+  if (!contour || !weed) return [];
+  if (contour.confidence >= 85 && weed.confidence >= 85) return [];
+  return [{
+    questionKey: "confirm-weed-and-tape-contour-rule",
+    questionType: "boolean",
+    label: "Should Weed and Tape require Contour Cutting?",
+    helpText: "If yes, Product Intake will hide and clear Weed and Tape unless Contour Cutting is Yes.",
+    required: false,
+    options: null,
+    defaultValue: true,
+    sourcePath: weed.sourcePaths[0] ?? firstEvidencePath(weed.evidence) ?? firstEvidencePath(contour.evidence),
+    confidence: Math.min(contour.confidence, weed.confidence),
+    sortOrder: 58,
+  }];
+}
+
 function needsWorkflowFollowUp(brief: ProductIntakeBrief): boolean {
   return brief.draftWarnings.some((warning) => {
     const text = `${warning.code} ${warning.message}`;
@@ -396,7 +437,9 @@ export function generateProductIntakeQuestions(brief: ProductIntakeBrief): NewQu
     sortOrder: 41,
   }));
   pricingValueQuestions(brief).forEach(push);
+  formulaDecisionQuestions(brief).forEach(push);
   matrixDecisionQuestions(brief).forEach(push);
+  ruleDecisionQuestions(brief).forEach(push);
 
   for (const optionGroup of [...brief.requiredOptions, ...brief.optionalOptions]) {
     if (optionGroup.confidence < 65) {
