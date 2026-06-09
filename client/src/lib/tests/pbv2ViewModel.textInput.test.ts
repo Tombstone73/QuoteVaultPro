@@ -171,4 +171,34 @@ describe("pbv2ViewModel — text input type", () => {
     expect(Object.values(model.options).map((option) => option.name)).toEqual(expect.arrayContaining(["Size", "Printed Sides", "Rounded Corners"]));
     expect(Object.values(model.options).some((option) => /quantity|qty/i.test(`${option.name} ${option.selectionKey}`))).toBe(false);
   });
+
+  test("pbv2TreeToEditorModel marks options and groups with choice-level pricing impacts", () => {
+    const tree = normalizeTreeJson({
+      schemaVersion: 2,
+      status: "DRAFT",
+      rootNodeIds: ["contour_cutting"],
+      nodes: {
+        group_cutting: { id: "group_cutting", kind: "group", type: "GROUP", status: "ENABLED", label: "Cutting" },
+        contour_cutting: {
+          id: "contour_cutting",
+          kind: "question",
+          type: "INPUT",
+          status: "ENABLED",
+          label: "Contour Cutting",
+          key: "contour_cutting",
+          input: { type: "select", required: true, selectionKey: "contour_cutting" },
+          choices: [
+            { value: "no", label: "No" },
+            { value: "yes", label: "Yes", pricingImpact: [{ mode: "addPercent", percent: 10, basis: "base" }] },
+          ],
+        },
+      },
+      edges: [{ id: "edge_contour", fromNodeId: "group_cutting", toNodeId: "contour_cutting", status: "DISABLED" }],
+    });
+
+    const model = pbv2TreeToEditorModel(tree);
+
+    expect(model.options.contour_cutting.hasPricing).toBe(true);
+    expect(model.tags.groupPricing.has("group_cutting")).toBe(true);
+  });
 });

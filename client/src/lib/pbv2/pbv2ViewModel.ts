@@ -547,7 +547,10 @@ export function pbv2TreeToEditorModel(treeJson: unknown): EditorModel {
     if (!optionNodeIds.has(node.id)) return;
 
     const selectionKey = node.key || node.id;
-    const hasPricing = Array.isArray(node.pricingImpact) && node.pricingImpact.length > 0;
+    const hasNodePricing = Array.isArray(node.pricingImpact) && node.pricingImpact.length > 0;
+    const hasChoicePricing = Array.isArray(node.choices)
+      && node.choices.some((choice: any) => Array.isArray(choice?.pricingImpact) && choice.pricingImpact.length > 0);
+    const hasPricing = hasNodePricing || hasChoicePricing;
     const hasProductionFlags = Array.isArray(node.materialEffects) && node.materialEffects.length > 0;
     const hasConditionals = edges.some(e => e.fromNodeId === node.id && e.condition);
     const hasWeight = Array.isArray(node.weightImpact) && node.weightImpact.length > 0;
