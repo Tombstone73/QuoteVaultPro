@@ -8,6 +8,7 @@ import {
   buildProductIntakeDraftTree,
   buildProductIntakeProductValues,
 } from "../services/productIntakeWizard/productIntakeDraftService";
+import { evaluatePricingPreviewFromTree } from "../services/pricing/PricingService";
 
 function brief(overrides: Partial<ProductIntakeBrief> = {}): ProductIntakeBrief {
   return {
@@ -865,6 +866,157 @@ describe("Product Intake draft service", () => {
         { action: "clear", targetOptionGroup: "weed_and_tape" },
       ],
     })]);
+
+    const pricedTree = {
+      ...tree,
+      meta: {
+        ...tree.meta,
+        pricingV2: { base: { perSqftCents: 5000 } },
+      },
+    };
+    const priceWithSelections = (selections: Record<string, { value: unknown }>) => evaluatePricingPreviewFromTree({
+      treeJson: pricedTree,
+      widthIn: 12,
+      heightIn: 12,
+      quantity: 1,
+      pbv2ExplicitSelections: {
+        size: { value: { widthIn: 12, heightIn: 12 } },
+        laminate: { value: "glossy" },
+        ...selections,
+      },
+      debug: true,
+    });
+    expect(priceWithSelections({ contour_cutting: { value: "no" }, weed_and_tape: { value: "no" } }).totalPrice).toBeCloseTo(100, 2);
+    expect(priceWithSelections({ contour_cutting: { value: "yes" }, weed_and_tape: { value: "no" } }).totalPrice).toBeCloseTo(110, 2);
+    expect(priceWithSelections({ contour_cutting: { value: "yes" }, weed_and_tape: { value: "yes" } }).totalPrice).toBeCloseTo(135, 2);
+    expect(priceWithSelections({ contour_cutting: { value: "no" }, weed_and_tape: { value: "yes" } }).totalPrice).toBeCloseTo(100, 2);
+  });
+
+  test("applies A1 Vinyl pricing impacts and rules to reused template option keys", () => {
+    const sourceText = [
+      "A1 Vinyl Stickers custom width and height formula product.",
+      "rounded_sqft = ceil(((width + 0.25) * (height + 0.25)) / 144).",
+      "Contour Cutting: No, Yes. If Contour Cutting = Yes Add 10% to the base product price.",
+      "Weed and Tape: No, Yes. If Weed and Tape = Yes Add 25% to the base product price.",
+      "Weed and Tape is only available when Contour Cutting = Yes.",
+      "This is NOT a pricing matrix product.",
+    ].join("\n");
+
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        productIdentity: {
+          likelyProductName: { value: "A1 Vinyl Stickers", confidence: 94, evidence: [] },
+          category: { value: "Stickers", confidence: 90, evidence: [] },
+          productType: { value: "stickers", confidence: 88, evidence: [] },
+        },
+        sizeBehavior: { behavior: "custom_size", confidence: 95, notes: "Custom width/height product", evidence: [] },
+        pricingAnalysis: { behavior: "formula", confidence: 92, notes: "Sticker-style adjusted rounded square-foot formula", evidence: [] },
+        requiredOptions: [
+          option("Laminate", { normalizedGroup: "laminate", sampleValues: ["Glossy", "Matte"] }),
+          option("Contour Cutting", { normalizedGroup: "contour_cutting", sampleValues: ["No", "Yes"] }),
+        ],
+        optionalOptions: [
+          option("Weed and Tape", { normalizedGroup: "weed_and_tape", required: false, sampleValues: ["No", "Yes"] }),
+        ],
+        templateMatches: [
+          { templateId: "tpl_contour", name: "Contour Cutting", slug: "contour-cutting", category: "cutting", score: 0.96, recommendation: "suggest_reuse", matchedSignals: [], evidence: [] },
+          { templateId: "tpl_weed", name: "Weed and Tape", slug: "weed-and-tape", category: "application_prep", score: 0.96, recommendation: "suggest_reuse", matchedSignals: [], evidence: [] },
+        ],
+      }),
+      sessionId: "sess_a1_vinyl_templates",
+      productName: "A1 Vinyl Stickers",
+      userId: "user_1",
+      sourceText,
+      templates: [
+        {
+          id: "tpl_contour",
+          templateTree: {
+            schemaVersion: 2,
+            rootGroupId: "group_contour",
+            rootNodeIds: ["group_contour"],
+            nodes: {
+              group_contour: { id: "group_contour", kind: "group", type: "GROUP", label: "Cutting" },
+              node_contour: {
+                id: "node_contour",
+                kind: "question",
+                type: "INPUT",
+                label: "Contour Cutting",
+                key: "contour_cutting",
+                input: { type: "select", required: true, selectionKey: "contour_cutting" },
+                choices: [{ value: "no", label: "No" }, { value: "yes", label: "Yes" }],
+              },
+            },
+            edges: [{ id: "edge_contour", fromNodeId: "group_contour", toNodeId: "node_contour" }],
+          },
+        },
+        {
+          id: "tpl_weed",
+          templateTree: {
+            schemaVersion: 2,
+            rootGroupId: "group_weed",
+            rootNodeIds: ["group_weed"],
+            nodes: {
+              group_weed: { id: "group_weed", kind: "group", type: "GROUP", label: "Application Prep" },
+              node_weed: {
+                id: "node_weed",
+                kind: "question",
+                type: "INPUT",
+                label: "Weed and Tape",
+                key: "weed_and_tape",
+                input: { type: "select", required: false, selectionKey: "weed_and_tape" },
+                choices: [{ value: "no", label: "No" }, { value: "yes", label: "Yes" }],
+              },
+            },
+            edges: [{ id: "edge_weed", fromNodeId: "group_weed", toNodeId: "node_weed" }],
+          },
+        },
+      ],
+    });
+
+    expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expectNoQuantityOption(tree);
+    const contour = nodes(tree).find((node) => node.input?.selectionKey?.startsWith("contour_cutting__"));
+    const weed = nodes(tree).find((node) => node.input?.selectionKey?.startsWith("weed_and_tape__"));
+    expect(contour).toBeTruthy();
+    expect(weed).toBeTruthy();
+    expect(nodes(tree).filter((node) => node.label === "Contour Cutting" && node.kind === "question" && node.input)).toHaveLength(1);
+    expect(nodes(tree).filter((node) => node.label === "Weed and Tape" && node.kind === "question" && node.input)).toHaveLength(1);
+
+    const contourKey = contour.input.selectionKey;
+    const weedKey = weed.input.selectionKey;
+    expect(contour.choices.find((choice: any) => choice.value === "yes")?.pricingImpact).toEqual([
+      { mode: "addPercent", percent: 10, basis: "base", label: "Contour Cutting surcharge" },
+    ]);
+    expect(weed.choices.find((choice: any) => choice.value === "yes")?.pricingImpact).toEqual([
+      { mode: "addPercent", percent: 25, basis: "base", label: "Weed and Tape surcharge" },
+    ]);
+    expect((tree as any).rules).toEqual([expect.objectContaining({
+      id: "rule_contour_cutting_weed_and_tape",
+      when: { all: [{ optionGroup: contourKey, operator: "equals", value: "yes" }] },
+      then: [{ action: "show", targetOptionGroup: weedKey }],
+      else: [
+        { action: "hide", targetOptionGroup: weedKey },
+        { action: "clear", targetOptionGroup: weedKey },
+      ],
+    })]);
+
+    const pricedTree = { ...tree, meta: { ...tree.meta, pricingV2: { base: { perSqftCents: 5000 } } } };
+    const priceWithSelections = (selections: Record<string, { value: unknown }>) => evaluatePricingPreviewFromTree({
+      treeJson: pricedTree,
+      widthIn: 12,
+      heightIn: 12,
+      quantity: 1,
+      pbv2ExplicitSelections: {
+        size: { value: { widthIn: 12, heightIn: 12 } },
+        laminate: { value: "glossy" },
+        ...selections,
+      },
+      debug: true,
+    });
+    expect(priceWithSelections({ [contourKey]: { value: "no" }, [weedKey]: { value: "no" } }).totalPrice).toBeCloseTo(100, 2);
+    expect(priceWithSelections({ [contourKey]: { value: "yes" }, [weedKey]: { value: "no" } }).totalPrice).toBeCloseTo(110, 2);
+    expect(priceWithSelections({ [contourKey]: { value: "yes" }, [weedKey]: { value: "yes" } }).totalPrice).toBeCloseTo(135, 2);
+    expect(priceWithSelections({ [contourKey]: { value: "no" }, [weedKey]: { value: "yes" } }).totalPrice).toBeCloseTo(100, 2);
   });
 
   test("uses saved matrix answers to generate draft rows when source matrix is incomplete", () => {

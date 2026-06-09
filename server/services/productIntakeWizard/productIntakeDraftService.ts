@@ -1035,8 +1035,32 @@ function addQuestionNode(args: {
   });
 }
 
+function selectionKeyForInputNode(node: any): string | null {
+  const key = String(node?.input?.selectionKey ?? node?.key ?? "").trim();
+  return key.length > 0 ? key : null;
+}
+
 function inputNodeBySelectionKey(tree: OptionTreeV2, selectionKey: string): any | null {
-  return Object.values(tree.nodes).find((node: any) => node?.input?.selectionKey === selectionKey || node?.key === selectionKey) ?? null;
+  return Object.values(tree.nodes).find((node: any) => {
+    const nodeSelectionKey = selectionKeyForInputNode(node);
+    return nodeSelectionKey === selectionKey || nodeSelectionKey?.startsWith(`${selectionKey}__`);
+  }) ?? null;
+}
+
+function inputNodeByConcept(args: {
+  tree: OptionTreeV2;
+  selectionKeys: string[];
+  labelPatterns: RegExp[];
+}): any | null {
+  for (const selectionKey of args.selectionKeys) {
+    const node = inputNodeBySelectionKey(args.tree, selectionKey);
+    if (node) return node;
+  }
+  return Object.values(args.tree.nodes).find((node: any) => {
+    if (String(node?.type ?? "").toUpperCase() !== "INPUT") return false;
+    const text = `${node?.label ?? ""} ${node?.key ?? ""} ${node?.input?.selectionKey ?? ""}`;
+    return args.labelPatterns.some((pattern) => pattern.test(text));
+  }) ?? null;
 }
 
 function yesChoiceValue(node: any): string | null {
@@ -1082,8 +1106,18 @@ function assignChoicePercentImpact(args: {
 
 function applyFormulaProductBehaviors(tree: OptionTreeV2, sourceText: string, formulaAssignment: ProductIntakeFormulaAssignment | null) {
   if (!formulaAssignment) return;
-  const contourNode = inputNodeBySelectionKey(tree, "contour_cutting");
-  const weedNode = inputNodeBySelectionKey(tree, "weed_and_tape");
+  const contourNode = inputNodeByConcept({
+    tree,
+    selectionKeys: ["contour_cutting", "cut_type"],
+    labelPatterns: [/\bcontour\s+cutting\b/i, /\bkiss\s+cut(?:ting)?\b/i],
+  });
+  const weedNode = inputNodeByConcept({
+    tree,
+    selectionKeys: ["weed_and_tape", "application_prep"],
+    labelPatterns: [/\bweed\s+(?:and|&)\s+tape\b/i, /\bweeding\s+(?:and|&)\s+(?:transfer\s+)?tape\b/i],
+  });
+  const contourSelectionKey = selectionKeyForInputNode(contourNode);
+  const weedSelectionKey = selectionKeyForInputNode(weedNode);
   const contourYes = yesChoiceValue(contourNode);
   const impactVerbPattern = String.raw`(?:\+\s*|add(?:s|ed)?\s+|increase(?:s|d)?(?:\s+by)?\s+)`;
   const contourPercent = percentImpactFromText(sourceText, [
@@ -1095,25 +1129,26 @@ function applyFormulaProductBehaviors(tree: OptionTreeV2, sourceText: string, fo
     new RegExp(String.raw`\bweeding\s+(?:and|&)\s+(?:transfer\s+)?tape\b[\s\S]{0,260}?${impactVerbPattern}(\d+(?:\.\d+)?)\s*%`, "i"),
   ]);
 
-  for (const impact of [
-    { selectionKey: "contour_cutting", percent: contourPercent, label: "Contour Cutting surcharge" },
-    { selectionKey: "weed_and_tape", percent: weedPercent, label: "Weed and Tape surcharge" },
-  ]) {
+  const impacts = [
+    ...(contourSelectionKey ? [{ selectionKey: contourSelectionKey, percent: contourPercent, label: "Contour Cutting surcharge" }] : []),
+    ...(weedSelectionKey ? [{ selectionKey: weedSelectionKey, percent: weedPercent, label: "Weed and Tape surcharge" }] : []),
+  ];
+  for (const impact of impacts) {
     assignChoicePercentImpact({ tree, ...impact });
   }
 
-  if (contourNode && weedNode && contourYes) {
+  if (contourSelectionKey && weedSelectionKey && contourYes) {
     const rule: ProductOptionRule = {
       id: "rule_contour_cutting_weed_and_tape",
       label: "Contour Cutting controls Weed and Tape",
       enabled: true,
       when: {
-        all: [{ optionGroup: "contour_cutting", operator: "equals", value: contourYes }],
+        all: [{ optionGroup: contourSelectionKey, operator: "equals", value: contourYes }],
       },
-      then: [{ action: "show", targetOptionGroup: "weed_and_tape" }],
+      then: [{ action: "show", targetOptionGroup: weedSelectionKey }],
       else: [
-        { action: "hide", targetOptionGroup: "weed_and_tape" },
-        { action: "clear", targetOptionGroup: "weed_and_tape" },
+        { action: "hide", targetOptionGroup: weedSelectionKey },
+        { action: "clear", targetOptionGroup: weedSelectionKey },
       ],
     };
     const existingRules = Array.isArray((tree as any).rules) ? (tree as any).rules : [];
@@ -1151,10 +1186,10 @@ function applyFormulaProductBehaviors(tree: OptionTreeV2, sourceText: string, fo
         pricingFormulaId: formulaAssignment.pricingFormulaId ?? null,
       },
       generatedBehaviors: {
-        optionRules: contourNode && weedNode && contourYes ? ["rule_contour_cutting_weed_and_tape"] : [],
+        optionRules: contourSelectionKey && weedSelectionKey && contourYes ? ["rule_contour_cutting_weed_and_tape"] : [],
         pricingImpacts: [
-          ...(contourPercent != null ? [{ selectionKey: "contour_cutting", choice: "yes", mode: "addPercent", percent: contourPercent, basis: "base" }] : []),
-          ...(weedPercent != null ? [{ selectionKey: "weed_and_tape", choice: "yes", mode: "addPercent", percent: weedPercent, basis: "base" }] : []),
+          ...(contourPercent != null && contourSelectionKey ? [{ selectionKey: contourSelectionKey, choice: "yes", mode: "addPercent", percent: contourPercent, basis: "base" }] : []),
+          ...(weedPercent != null && weedSelectionKey ? [{ selectionKey: weedSelectionKey, choice: "yes", mode: "addPercent", percent: weedPercent, basis: "base" }] : []),
         ],
       },
     },
@@ -1274,13 +1309,19 @@ function classifyOptionGroup(option: ProductIntakeOption): DraftGroupKey {
 }
 
 function conceptKeyForOption(option: ProductIntakeOption): string {
-  const key = safeKey(option.normalizedGroup || option.label, "option");
+  const key = conceptKeyFromText(option.normalizedGroup || option.label);
+  return key;
+}
+
+function conceptKeyFromText(value: string): string {
+  const key = safeKey(value, "option").replace(/__.+$/, "");
   if (/qty|quantity|quantities|tier|tiers/.test(key)) return "quantity";
   if (/printed?_?sides?|sides?/.test(key)) return "printed_sides";
   if (/grommet/.test(key)) return "grommets";
   if (/pole.*pocket|pocket/.test(key)) return "pole_pockets";
   if (/laminat/.test(key)) return "laminate";
   if (/contour|cut_type|die_cut|kiss_cut/.test(key)) return "cut_type";
+  if (/weed.*tape|weeding|transfer_tape/.test(key)) return "weed_and_tape";
   if (/h_?wire|stake/.test(key)) return "h_wire_stakes";
   if (/material|substrate/.test(key)) return "material";
   if (/size|dimension|width|height/.test(key)) return "size";
@@ -1324,7 +1365,7 @@ function collectTreeConcepts(tree: OptionTreeV2): Set<string> {
   const concepts = new Set<string>();
   for (const node of Object.values(tree.nodes)) {
     const raw = String(node.input?.selectionKey ?? node.key ?? node.label ?? "");
-    if (raw) concepts.add(safeKey(raw, "concept"));
+    if (raw) concepts.add(conceptKeyFromText(raw));
   }
   return concepts;
 }

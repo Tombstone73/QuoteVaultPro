@@ -152,4 +152,14 @@ describe("createUpdateChoicePatch – pricingMatrix cascade on value rename", ()
     const afterRows = tree.pricingMatrix.rows.map((r) => ({ ...r.when }));
     expect(afterRows).toEqual(originalRows);
   });
+
+  test("updating choice pricing impact preserves top-level option rules", () => {
+    const tree = makeRuleTree();
+    const pricingImpact = [{ mode: "addPercent" as const, percent: 10, basis: "base" as const }];
+    const { patch } = createUpdateChoicePatch(tree, "material", "fabric", { pricingImpact });
+    const updated = applyPatchToTree(tree, patch);
+
+    expect(updated.nodes.material.choices.find((choice: any) => choice.value === "fabric").pricingImpact).toEqual(pricingImpact);
+    expect(updated.rules).toEqual(tree.rules);
+  });
 });
