@@ -377,6 +377,57 @@ function parseAttempt(overrides: Record<string, any> = {}) {
   };
 }
 
+function pbv2OptionsResponse(overrides: Record<string, any> = {}) {
+  return {
+    success: true,
+    data: {
+      productId: "product_1",
+      productName: "Vinyl Banner",
+      activeTreeVersionId: "tree_1",
+      treeJson: {
+        schemaVersion: 2,
+        rootNodeIds: ["thickness", "sides"],
+        nodes: {
+          thickness: {
+            id: "thickness",
+            kind: "question",
+            label: "Thickness",
+            input: { type: "select", required: true, selectionKey: "thickness" },
+            choices: [{ id: "3mm_white", value: "3mm_white", label: "3mm White PVC" }],
+          },
+          sides: {
+            id: "sides",
+            kind: "question",
+            label: "Sides",
+            input: { type: "select", required: true, selectionKey: "sides" },
+            choices: [{ id: "single", value: "single", label: "Single Sided / 4/0" }],
+          },
+        },
+      },
+      requiredOptions: [
+        { nodeId: "thickness", selectionKey: "thickness", label: "Thickness", inputType: "select" },
+        { nodeId: "sides", selectionKey: "sides", label: "Sides", inputType: "select" },
+      ],
+      suggestedSelections: {
+        schemaVersion: 2,
+        selected: {
+          thickness: { value: "3mm_white", note: "Suggested from inbound source evidence." },
+        },
+      },
+      suggestions: [{
+        selectionKey: "thickness",
+        nodeId: "thickness",
+        label: "Thickness",
+        value: "3mm_white",
+        choiceLabel: "3mm White PVC",
+        confidence: 80,
+        reason: "Matched source evidence.",
+      }],
+      ...overrides,
+    },
+  };
+}
+
 async function flush() {
   await act(async () => {
     await Promise.resolve();
@@ -1257,6 +1308,75 @@ describe("InboundOrdersPage", () => {
     expect(savedBody.reviewedCustomerJson.unresolvedContact).toBe(false);
     expect(apiFetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/api/orders"), expect.anything());
     expect(apiFetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/api/customers"), expect.objectContaining({ method: "POST" }));
+  });
+
+  test("loads product options, shows missing required options, and saves suggested PBV2 selections", async () => {
+    const row = record();
+    const draft = parsedDraft({
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: "3 PVC Signs 24x36 3mm White PVC",
+        productName: "PVC Signs",
+        candidateProductIds: ["product_1"],
+        productCandidates: [{
+          id: "product_1",
+          label: "PVC Signs",
+          confidence: 94,
+          reason: "Matched material",
+          metadata: {},
+        }],
+        materialText: "3mm White PVC",
+      }],
+      missingDecisions: [],
+      globalWarnings: [],
+    });
+    const attempt = parseAttempt({ parsedDraft: draft, confidence: 92, warnings: [] });
+    let savedBody: any = null;
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview({ draft, latestAttempt: attempt }));
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft" && options?.method === "PUT") {
+        savedBody = JSON.parse(options.body);
+        return jsonResponse({ success: true, data: reviewDraft(draft, { ...savedBody }) });
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({ success: true, data: reviewDraft(draft) });
+      }
+      if (path === "/api/inbound-orders/product-options/product_1" && options?.method === "POST") {
+        return jsonResponse(pbv2OptionsResponse());
+      }
+      if (path.startsWith("/api/inbound-orders/customer-search") || path.startsWith("/api/inbound-orders/contact-search")) {
+        return jsonResponse({ success: true, data: [] });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Product options");
+    await waitForText("Suggested from source evidence");
+    await waitForText("Missing required options: Sides");
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Save Review Draft")
+    ));
+    await act(async () => {
+      Simulate.click(saveButton!);
+    });
+    await waitForCondition(() => Boolean(savedBody), "review draft save with PBV2 selections");
+
+    expect(savedBody.reviewedLineItemsJson[0].optionSelectionsJson).toMatchObject({
+      schemaVersion: 2,
+      selected: {
+        thickness: { value: "3mm_white" },
+      },
+    });
+    expect(savedBody.reviewedLineItemsJson[0].pbv2TreeVersionId).toBe("tree_1");
+    expect(savedBody.reviewedLineItemsJson[0].pbv2OptionSuggestions[0].choiceLabel).toBe("3mm White PVC");
   });
 
   test("rejects an inbound record out of the active queue and shows it under rejected", async () => {

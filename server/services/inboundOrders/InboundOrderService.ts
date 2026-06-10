@@ -21,8 +21,15 @@ import {
   type InboundOrderReviewDraftPayload,
   type InboundOrderReviewDraftSaveRequest,
   type InboundOrderReviewDraftStatus,
+  type InboundOrderProductOptionsResponse,
   type ManualInboundOrderCreateRequest,
 } from "@shared/inboundOrdersApi";
+import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
+import {
+  getInboundPbv2RequiredOptions,
+  getMissingInboundPbv2RequiredOptions,
+  suggestInboundPbv2Options,
+} from "@shared/inboundOrderPbv2Options";
 import {
   inboundOrdersRepository,
   type CreateInboundOrderEventValues,
@@ -37,6 +44,7 @@ import {
   OrdersRepository,
   type CreateOrderLineItemInput,
 } from "../../storage/orders.repo";
+import { priceLineItem } from "../pricing/PricingService";
 
 export type InboundQuoteSyncStatus =
   | "quote_missing"
@@ -390,10 +398,44 @@ function formatSkippedLineItemForNote(item: InboundQuoteDraftSkippedLineItem): s
   return `- ${name}: ${item.reason} (${item.detail})${source}`;
 }
 
+function formatRequiredOptionList(labels: string[]): string {
+  const unique = Array.from(new Set(labels.map((label) => label.trim()).filter(Boolean)));
+  if (unique.length <= 1) return unique[0] ?? "required options";
+  if (unique.length === 2) return `${unique[0]} and ${unique[1]}`;
+  return `${unique.slice(0, -1).join(", ")}, and ${unique[unique.length - 1]}`;
+}
+
+function normalizeInboundReviewedDueDate(value: string | null | undefined, receivedAt: Date | string | null | undefined): string | null {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) return raw;
+
+  const compactMatch = raw.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  if (compactMatch) {
+    const receivedDate = receivedAt instanceof Date ? receivedAt : new Date(receivedAt ?? Date.now());
+    const fallbackYear = Number.isNaN(receivedDate.getTime()) ? new Date().getFullYear() : receivedDate.getFullYear();
+    const month = Number(compactMatch[1]);
+    const day = Number(compactMatch[2]);
+    const rawYear = compactMatch[3] ? Number(compactMatch[3]) : fallbackYear;
+    const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 10);
+  }
+  return raw;
+}
+
 export class InboundOrderService {
   constructor(
     private readonly repository = inboundOrdersRepository,
     private readonly orderRepository = new OrdersRepository(),
+    private readonly priceLineItemFn = priceLineItem,
   ) {}
 
   async listInboundOrders(args: {
@@ -874,7 +916,7 @@ export class InboundOrderService {
     const baseDto = existingSnapshot
       ? this.reviewDraftDtoFromSnapshot(record, existingSnapshot, latestAttempt, false)
       : await this.getReviewDraft(args);
-    const errors = this.validateReviewDraftReady(baseDto);
+    const errors = await this.validateReviewDraftReadyForMarkReady(args.organizationId, baseDto);
     if (errors.length > 0) {
       throw new InboundOrderReviewDraftValidationError("Review draft is not ready to convert.", errors);
     }
@@ -1009,6 +1051,33 @@ export class InboundOrderService {
       args.search ?? null,
       args.limit,
     );
+  }
+
+  async getProductOptionsForReview(args: {
+    organizationId: string;
+    productId: string;
+    lineItem?: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number] | null;
+  }): Promise<InboundOrderProductOptionsResponse["data"]> {
+    const result = await this.repository.getProductActivePbv2Tree(args.organizationId, args.productId);
+    if (!result) {
+      throw new InboundOrderTransitionError("Product not found", 404);
+    }
+
+    const treeJson = (result.activeTree?.treeJson ?? null) as OptionTreeV2 | null;
+    const suggestionResult = suggestInboundPbv2Options(
+      treeJson,
+      args.lineItem ? this.lineItemOptionEvidenceText(args.lineItem) : "",
+    );
+
+    return {
+      productId: result.product.id,
+      productName: result.product.name ?? null,
+      activeTreeVersionId: result.activeTree?.id ?? result.product.pbv2ActiveTreeVersionId ?? null,
+      treeJson,
+      requiredOptions: getInboundPbv2RequiredOptions(treeJson, suggestionResult.selections),
+      suggestedSelections: suggestionResult.selections,
+      suggestions: suggestionResult.suggestions,
+    };
   }
 
   async matchCustomer(args: MatchInboundCustomerReviewInput): Promise<InboundOrderDetail> {
@@ -1243,13 +1312,14 @@ export class InboundOrderService {
     }
 
     try {
-      const order = await this.orderRepository.createOrder(args.organizationId, this.buildOrderCreateInputFromInboundReview({
+      const orderInput = await this.buildOrderCreateInputFromInboundReview({
         detail,
         snapshotId: latestSnapshot.id,
         snapshotVersion: latestSnapshot.snapshotVersion,
         payload,
         actorUserId: args.actorUserId,
-      }));
+      });
+      const order = await this.orderRepository.createOrder(args.organizationId, orderInput);
 
       const lineItemLinks = (order.lineItems ?? []).map((lineItem: any, index: number) => ({
         inboundLineItemId: stringFromUnknown(getPathValue(lineItem.specsJson, "inbound.sourceLineItemId"))
@@ -1266,6 +1336,26 @@ export class InboundOrderService {
         orderNumber: order.orderNumber ?? null,
         lineItemLinks,
       });
+
+      const latestParseAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
+      await this.orderRepository.createOrderAuditLog({
+        orderId: order.id,
+        userId: args.actorUserId,
+        userName: null,
+        actionType: "inbound_order_converted",
+        fromStatus: null,
+        toStatus: "new",
+        note: "Inbound order converted to draft order.",
+        metadata: {
+          inboundRecordId: args.inboundRecordId,
+          inboundReference: detail.record.externalReference ?? null,
+          sourceSubject: stringFromUnknown(getPathValue(detail.record.rawPayloadJson, "subject")),
+          sourceReference: detail.record.externalReference ?? null,
+          convertedAt: new Date().toISOString(),
+          parseConfidence: latestParseAttempt?.confidence ?? null,
+          poNumber: payload.reviewedOrderJson.poNumber ?? null,
+        },
+      } as any);
 
       const inbound = await this.getDetail({
         organizationId: args.organizationId,
@@ -1538,6 +1628,9 @@ export class InboundOrderService {
         printSpecs: lineItem.optionTexts,
         optionTexts: lineItem.optionTexts,
         finishingTexts: lineItem.finishingTexts,
+        optionSelectionsJson: null,
+        pbv2TreeVersionId: null,
+        pbv2OptionSuggestions: [],
         notes: null,
       })),
       reviewedArtworkJson: {
@@ -1701,16 +1794,18 @@ export class InboundOrderService {
       }
     });
 
+    errors.push(...await this.validateRequiredPbv2Selections(record.organizationId, payload));
+
     return Array.from(new Set(errors));
   }
 
-  private buildOrderCreateInputFromInboundReview(args: {
+  private async buildOrderCreateInputFromInboundReview(args: {
     detail: InboundOrderDetail;
     snapshotId: string;
     snapshotVersion: number;
     payload: InboundOrderReviewDraftPayload;
     actorUserId: string;
-  }): Parameters<OrdersRepository["createOrder"]>[1] {
+  }): Promise<Parameters<OrdersRepository["createOrder"]>[1]> {
     const { detail, payload } = args;
     const order = payload.reviewedOrderJson;
     const customer = payload.reviewedCustomerJson;
@@ -1729,9 +1824,28 @@ export class InboundOrderService {
       artwork.notes ? `Artwork notes: ${artwork.notes}` : null,
     ].filter(Boolean).join("\n");
 
-    const lineItems: CreateOrderLineItemInput[] = payload.reviewedLineItemsJson.map((lineItem, index) => {
+    const lineItems: CreateOrderLineItemInput[] = [];
+    for (let index = 0; index < payload.reviewedLineItemsJson.length; index += 1) {
+      const lineItem = payload.reviewedLineItemsJson[index];
       const description = lineItem.productName || lineItem.sourceText || `Inbound reviewed item ${index + 1}`;
-      return {
+      const selections = this.normalizePbv2Selections(lineItem.optionSelectionsJson);
+      const pricing = await this.priceLineItemFn({
+        organizationId: detail.record.organizationId,
+        productId: lineItem.selectedProductId!,
+        quantity: lineItem.quantity ?? 1,
+        widthIn: lineItem.width ?? undefined,
+        heightIn: lineItem.height ?? undefined,
+        pbv2ExplicitSelections: selections.selected,
+        pbv2TreeVersionIdOverride: lineItem.pbv2TreeVersionId ?? undefined,
+      });
+      if (!Number.isFinite(pricing.lineTotalCents) || pricing.lineTotalCents <= 0) {
+        throw new InboundOrderConversionValidationError(
+          "Inbound review draft is not ready for order conversion.",
+          [`${description}: pricing could not calculate a non-zero total. Review required product options before conversion.`],
+        );
+      }
+
+      lineItems.push({
         productId: lineItem.selectedProductId!,
         productType: "wide_roll",
         description,
@@ -1740,8 +1854,8 @@ export class InboundOrderService {
         height: lineItem.height ?? null,
         quantity: lineItem.quantity ?? 1,
         sqft: null,
-        unitPrice: 0,
-        totalPrice: 0,
+        unitPrice: pricing.lineTotalCents / 100 / (lineItem.quantity ?? 1),
+        totalPrice: pricing.lineTotalCents / 100,
         status: "new",
         workflowState: "new",
         requiresDesign: false,
@@ -1765,21 +1879,24 @@ export class InboundOrderService {
           },
           staffReviewedDraft: lineItem,
         },
-        selectedOptions: [],
-        optionSelectionsJson: null,
-        pbv2SnapshotJson: {},
+        pbv2TreeVersionId: pricing.pbv2TreeVersionId,
+        optionSelectionsJson: selections,
+        pbv2SnapshotJson: pricing.pbv2SnapshotJson,
+        selectedOptions: pricing.pbv2SnapshotJson.selectedOptions ?? [],
         materialUsages: [],
         sortOrder: index,
         taxAmount: 0,
         isTaxableSnapshot: true,
-      } as unknown as CreateOrderLineItemInput;
-    });
+      } as unknown as CreateOrderLineItemInput);
+    }
 
     const shippingMethod = order.fulfillmentType === "pickup"
       ? "pickup"
       : order.fulfillmentType === "shipping"
         ? "ship"
         : null;
+
+    const normalizedDueDate = normalizeInboundReviewedDueDate(order.dueDate, detail.record.receivedAt);
 
     return {
       customerId: customer.selectedCustomerId!,
@@ -1788,8 +1905,8 @@ export class InboundOrderService {
       poNumber: order.poNumber ?? detail.record.externalReference ?? null,
       status: "new",
       priority: "normal",
-      dueDate: order.dueDate ?? null,
-      requestedDueDate: order.dueDate ?? null,
+      dueDate: normalizedDueDate,
+      requestedDueDate: normalizedDueDate,
       notesInternal: reviewedNotes,
       createdByUserId: args.actorUserId,
       lineItems,
@@ -1947,6 +2064,34 @@ export class InboundOrderService {
     return Array.from(new Set(errors));
   }
 
+  private async validateReviewDraftReadyForMarkReady(
+    organizationId: string,
+    draft: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto,
+  ): Promise<string[]> {
+    const errors = this.validateReviewDraftReady(draft);
+    const pbv2Errors = await this.validateRequiredPbv2Selections(organizationId, draft);
+    return Array.from(new Set([...errors, ...pbv2Errors]));
+  }
+
+  private async validateRequiredPbv2Selections(
+    organizationId: string,
+    draft: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto,
+  ): Promise<string[]> {
+    const errors: string[] = [];
+    for (let index = 0; index < draft.reviewedLineItemsJson.length; index += 1) {
+      const lineItem = draft.reviewedLineItemsJson[index];
+      if (!lineItem.selectedProductId) continue;
+      const productOptions = await this.repository.getProductActivePbv2Tree(organizationId, lineItem.selectedProductId);
+      const treeJson = (productOptions?.activeTree?.treeJson ?? null) as OptionTreeV2 | null;
+      if (!treeJson) continue;
+      const missing = getMissingInboundPbv2RequiredOptions(treeJson, lineItem.optionSelectionsJson as LineItemOptionSelectionsV2 | null);
+      if (missing.length === 0) continue;
+      const productLabel = lineItem.productName || productOptions?.product.name || lineItem.sourceText || `Line item ${index + 1}`;
+      errors.push(`${productLabel} requires ${formatRequiredOptionList(missing.map((option) => option.label))} before conversion.`);
+    }
+    return errors;
+  }
+
   private lineItemRequiresDimensions(lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]): boolean {
     if (lineItem.width && lineItem.height) return false;
     const text = [
@@ -1958,6 +2103,39 @@ export class InboundOrderService {
     ].filter(Boolean).join(" ").toLowerCase();
     return /\b(yard|lawn|political|realtor|event)\s+signs?\b/.test(text)
       || /\b(custom\s+size|banner|banners|sign|signs|pvc|coroplast|window\s+perf|magnet|magnets?)\b/.test(text);
+  }
+
+  private lineItemOptionEvidenceText(lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]): string {
+    return [
+      lineItem.sourceText,
+      lineItem.productName,
+      lineItem.materialText,
+      lineItem.dimensionsUnit,
+      ...lineItem.printSpecs,
+      ...lineItem.optionTexts,
+      ...lineItem.finishingTexts,
+      lineItem.notes,
+    ].filter(Boolean).join(" ");
+  }
+
+  private normalizePbv2Selections(input: LineItemOptionSelectionsV2 | Record<string, unknown> | null | undefined): LineItemOptionSelectionsV2 {
+    if (input && typeof input === "object" && (input as any).schemaVersion === 2 && (input as any).selected && typeof (input as any).selected === "object") {
+      return input as LineItemOptionSelectionsV2;
+    }
+    if (input && typeof input === "object" && !Array.isArray(input)) {
+      return {
+        schemaVersion: 2,
+        selected: Object.fromEntries(
+          Object.entries(input).map(([key, value]) => [
+            key,
+            value && typeof value === "object" && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value, "value")
+              ? value
+              : { value },
+          ]),
+        ) as LineItemOptionSelectionsV2["selected"],
+      };
+    }
+    return { schemaVersion: 2, selected: {} };
   }
 
   private buildQuoteDraftPreview(detail: InboundOrderDetail): InboundQuoteDraftPreview {

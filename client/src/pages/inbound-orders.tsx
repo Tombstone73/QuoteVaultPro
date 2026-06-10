@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { ProductOptionsPanelV2 } from "@/features/quotes/editor/components/ProductOptionsPanelV2";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
@@ -41,11 +42,14 @@ import {
   type InboundOrderStatusGroup,
   type InboundOrderQueueSummary,
   type InboundOrderConvertToOrderResponse,
+  type InboundOrderProductOptionsResponse,
   type InboundMatchedContactSummary,
   type InboundMatchedCustomerSummary,
   type ManualInboundOrderCreateRequest,
   type ManualInboundOrderCreateResponse,
 } from "@shared/inboundOrdersApi";
+import type { LineItemOptionSelectionsV2 } from "@shared/optionTreeV2";
+import { getMissingInboundPbv2RequiredOptions } from "@shared/inboundOrderPbv2Options";
 import type {
   InboundOrderRecord,
   InboundOrderRecordStatus,
@@ -1291,6 +1295,82 @@ function SearchableReviewSelector({
   );
 }
 
+function ensurePbv2Selections(value: unknown): LineItemOptionSelectionsV2 {
+  if (value && typeof value === "object" && (value as any).schemaVersion === 2 && (value as any).selected) {
+    return value as LineItemOptionSelectionsV2;
+  }
+  return { schemaVersion: 2, selected: {} };
+}
+
+function ReviewLineItemProductOptions({
+  lineItem,
+  index,
+  onChange,
+}: {
+  lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
+  index: number;
+  onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
+}) {
+  const productId = lineItem.selectedProductId;
+  const query = useQuery({
+    queryKey: ["/api/inbound-orders/product-options", productId, index, lineItem.sourceText, lineItem.materialText, lineItem.optionTexts, lineItem.finishingTexts],
+    queryFn: () => postJson<InboundOrderProductOptionsResponse>(`/api/inbound-orders/product-options/${productId}`, { lineItem }),
+    enabled: Boolean(productId),
+  });
+  const config = query.data?.data ?? null;
+  const selections = ensurePbv2Selections(lineItem.optionSelectionsJson);
+
+  useEffect(() => {
+    if (!config || lineItem.optionSelectionsJson) return;
+    if (Object.keys(config.suggestedSelections.selected ?? {}).length === 0) return;
+    onChange({
+      optionSelectionsJson: config.suggestedSelections,
+      pbv2TreeVersionId: config.activeTreeVersionId,
+      pbv2OptionSuggestions: config.suggestions,
+    });
+  }, [config, lineItem.optionSelectionsJson, onChange]);
+
+  if (!productId) return null;
+  if (query.isLoading) {
+    return <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">Loading product options...</div>;
+  }
+  if (query.isError) {
+    return <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">Product options could not be loaded.</div>;
+  }
+  if (!config?.treeJson) {
+    return <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">No active PBV2 options found for selected product.</div>;
+  }
+
+  const missing = getMissingInboundPbv2RequiredOptions(config.treeJson, selections);
+  return (
+    <div className="space-y-3 rounded-md border border-border bg-muted/10 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-foreground">Product options</div>
+        {config.suggestions.length > 0 && <Badge variant="outline">{config.suggestions.length} suggested</Badge>}
+      </div>
+      {config.suggestions.length > 0 && (
+        <div className="rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-200">
+          Suggested from source evidence. Review and save before conversion.
+        </div>
+      )}
+      {missing.length > 0 && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          Missing required options: {missing.map((option) => option.label).join(", ")}
+        </div>
+      )}
+      <ProductOptionsPanelV2
+        tree={config.treeJson}
+        selections={selections}
+        onSelectionsChange={(next) => onChange({
+          optionSelectionsJson: next,
+          pbv2TreeVersionId: config.activeTreeVersionId,
+          pbv2OptionSuggestions: config.suggestions,
+        })}
+      />
+    </div>
+  );
+}
+
 function DraftBuilderPanel({
   selectedRecord,
   isLoading,
@@ -1663,13 +1743,23 @@ function DraftBuilderPanel({
                   <div className="mt-3 grid grid-cols-1 gap-3">
                     <label className="space-y-1 text-xs text-muted-foreground">
                       Product candidate
-                      <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={lineItem.selectedProductId ?? ""} onChange={(event) => updateLineItem(index, { selectedProductId: trimToNull(event.target.value) })}>
+                      <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={lineItem.selectedProductId ?? ""} onChange={(event) => updateLineItem(index, {
+                        selectedProductId: trimToNull(event.target.value),
+                        optionSelectionsJson: null,
+                        pbv2TreeVersionId: null,
+                        pbv2OptionSuggestions: [],
+                      })}>
                         <option value="">Unselected</option>
                         {(parsedLine?.productCandidates ?? []).map((candidate) => (
                           <option key={candidate.id} value={candidate.id}>{candidate.label}</option>
                         ))}
                       </select>
                     </label>
+                    <ReviewLineItemProductOptions
+                      lineItem={lineItem}
+                      index={index}
+                      onChange={(patch) => updateLineItem(index, patch)}
+                    />
                     <label className="flex items-center gap-2 text-sm text-foreground">
                       <input type="checkbox" checked={lineItem.productUnresolved} onChange={(event) => updateLineItem(index, { productUnresolved: event.target.checked })} />
                       Product unresolved
@@ -2050,7 +2140,7 @@ export default function InboundOrdersPage() {
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] });
       toast({
         title: response.data.alreadyConverted ? "Draft order already exists" : "Draft order created",
-        description: `Order ${orderId.slice(0, 8)} is ready for staff review.`,
+        description: "Draft order created. Proofs, production, invoices, and fulfillment were not started.",
       });
       if (queueFilters.statusGroup === "converted") {
         setSelectedId(recordId);

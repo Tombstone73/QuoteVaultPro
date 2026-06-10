@@ -6,6 +6,38 @@ import {
   InboundOrderTransitionError,
 } from "../services/inboundOrders/InboundOrderService";
 
+const mockPriceLineItem = jest.fn<(...args: any[]) => Promise<any>>();
+
+function mockSuccessfulPricing() {
+  mockPriceLineItem.mockResolvedValue({
+    pbv2TreeVersionId: "tree_pvc",
+    lineTotalCents: 4500,
+    breakdown: {
+      baseCents: 4500,
+      optionsCents: 0,
+      totalCents: 4500,
+      pricingMethod: "pbv2",
+    },
+    pbv2SnapshotJson: {
+      pricingSystem: "pbv2",
+      treeVersionId: "tree_pvc",
+      treeJson: {},
+      selections: {},
+      runtimeSelectionContext: {},
+      selectedOptions: [{ groupLabel: "Thickness", optionLabel: "3mm White PVC" }],
+      visibleNodeIds: ["thickness"],
+      pricedAt: "2026-06-09T12:30:00.000Z",
+      quantity: 3,
+      pricing: {
+        baseCents: 4500,
+        optionsCents: 0,
+        totalCents: 4500,
+        pricingMethod: "pbv2",
+      },
+    },
+  } as any);
+}
+
 function inboundRecord(overrides: Record<string, any> = {}) {
   const now = new Date("2026-06-09T12:00:00.000Z");
   return {
@@ -179,6 +211,14 @@ function makeRepository(record = inboundRecord(), latestAttempt = parseAttempt()
         ? { id: "product_pvc", name: "PVC Signs", category: "Signs", productType: "wide_roll", isTaxable: true }
         : null
     )),
+    getProductActivePbv2Tree: jest.fn(async (_organizationId: string, productId: string) => (
+      productId === "product_pvc"
+        ? {
+            product: { id: "product_pvc", name: "PVC Signs", pbv2ActiveTreeVersionId: null },
+            activeTree: null,
+          }
+        : null
+    )),
     claimInboundOrderForOrderConversion: jest.fn(async () => {
       if (currentRecord.status !== "ready" || currentRecord.createdOrderId || currentRecord.createdQuoteId) return null;
       currentRecord = { ...currentRecord, status: "processing", reviewOutcome: "order_conversion_requested" };
@@ -244,13 +284,56 @@ function makeOrderRepository(overrides: Record<string, any> = {}) {
     getOrderById: jest.fn(async (_organizationId: string, orderId: string) => (
       orderId === createdOrder.id ? createdOrder : undefined
     )),
+    createOrderAuditLog: jest.fn(async (log: any) => ({ id: "audit_1", createdAt: new Date("2026-06-09T12:30:00.000Z"), ...log })),
     createdOrder,
+  };
+}
+
+function requiredPbv2Tree() {
+  return {
+    schemaVersion: 2,
+    rootNodeIds: ["thickness", "sides", "contour"],
+    nodes: {
+      thickness: {
+        id: "thickness",
+        kind: "question",
+        label: "Thickness",
+        input: { type: "select", required: true, selectionKey: "thickness" },
+        choices: [{ id: "3mm_white", value: "3mm_white", label: "3mm White PVC" }],
+      },
+      sides: {
+        id: "sides",
+        kind: "question",
+        label: "Sides",
+        input: { type: "select", required: true, selectionKey: "sides" },
+        choices: [{ id: "single", value: "single", label: "Single Sided / 4/0" }],
+      },
+      contour: {
+        id: "contour",
+        kind: "question",
+        label: "Contour Cutting",
+        input: { type: "select", required: true, selectionKey: "contour_cutting" },
+        choices: [{ id: "none", value: "none", label: "No Contour Cutting" }],
+      },
+    },
+  };
+}
+
+function completePbv2Selections() {
+  return {
+    schemaVersion: 2 as const,
+    selected: {
+      thickness: { value: "3mm_white" },
+      sides: { value: "single" },
+      contour_cutting: { value: "none" },
+    },
   };
 }
 
 describe("InboundOrderService editable review draft", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSuccessfulPricing();
   });
 
   test("initializes a review draft from the latest parse attempt", async () => {
@@ -433,7 +516,10 @@ describe("InboundOrderService editable review draft", () => {
     expect(repo.createReviewSnapshotWithEvent).toHaveBeenCalledTimes(2);
   });
 
-  async function prepareReadyDraft(service: InboundOrderService) {
+  async function prepareReadyDraft(service: InboundOrderService, overrides: {
+    lineItem?: Record<string, unknown>;
+    order?: Record<string, unknown>;
+  } = {}) {
     const initialized = await service.getReviewDraft({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
@@ -446,8 +532,10 @@ describe("InboundOrderService editable review draft", () => {
       draft: {
         status: "draft",
         reviewedCustomerJson: initialized.reviewedCustomerJson,
-        reviewedOrderJson: initialized.reviewedOrderJson,
-        reviewedLineItemsJson: initialized.reviewedLineItemsJson,
+        reviewedOrderJson: { ...initialized.reviewedOrderJson, ...(overrides.order ?? {}) },
+        reviewedLineItemsJson: initialized.reviewedLineItemsJson.map((lineItem, index) => (
+          index === 0 ? { ...lineItem, ...(overrides.lineItem ?? {}) } : lineItem
+        )),
         reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: "to_follow" },
         missingDecisionsJson: initialized.missingDecisionsJson.map((decision) => ({ ...decision, status: "acknowledged", resolutionNote: "Artwork to follow" })),
         warningsJson: initialized.warningsJson,
@@ -463,7 +551,7 @@ describe("InboundOrderService editable review draft", () => {
 
   test("blocks order conversion when inbound is not ready or draft is missing", async () => {
     const notReadyRepo = makeRepository().repo;
-    const notReadyService = new InboundOrderService(notReadyRepo as any, makeOrderRepository() as any);
+    const notReadyService = new InboundOrderService(notReadyRepo as any, makeOrderRepository() as any, mockPriceLineItem);
 
     await expect(notReadyService.convertInboundReviewDraftToOrder({
       organizationId: "org_1",
@@ -478,7 +566,7 @@ describe("InboundOrderService editable review draft", () => {
     });
 
     const missingDraftRepo = makeRepository(inboundRecord({ status: "ready" })).repo;
-    const missingDraftService = new InboundOrderService(missingDraftRepo as any, makeOrderRepository() as any);
+    const missingDraftService = new InboundOrderService(missingDraftRepo as any, makeOrderRepository() as any, mockPriceLineItem);
     await expect(missingDraftService.convertInboundReviewDraftToOrder({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
@@ -491,7 +579,7 @@ describe("InboundOrderService editable review draft", () => {
   test("blocks order conversion when customer or line item data is missing", async () => {
     const { repo } = makeRepository();
     const orderRepo = makeOrderRepository();
-    const service = new InboundOrderService(repo as any, orderRepo as any);
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
     await service.saveReviewDraft({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
@@ -531,6 +619,9 @@ describe("InboundOrderService editable review draft", () => {
           printSpecs: [],
           optionTexts: [],
           finishingTexts: [],
+          optionSelectionsJson: null,
+          pbv2TreeVersionId: null,
+          pbv2OptionSuggestions: [],
           notes: null,
         }],
         reviewedArtworkJson: {
@@ -563,11 +654,83 @@ describe("InboundOrderService editable review draft", () => {
     expect(orderRepo.createOrder).not.toHaveBeenCalled();
   });
 
+  test("mark ready blocks missing required PBV2 options", async () => {
+    const { repo } = makeRepository();
+    repo.getProductActivePbv2Tree.mockResolvedValue({
+      product: { id: "product_pvc", name: "PVC", pbv2ActiveTreeVersionId: "tree_pvc" },
+      activeTree: { id: "tree_pvc", treeJson: requiredPbv2Tree() },
+    } as any);
+    const service = new InboundOrderService(repo as any, makeOrderRepository() as any, mockPriceLineItem);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: initialized.reviewedLineItemsJson,
+        reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: "to_follow" },
+        missingDecisionsJson: initialized.missingDecisionsJson.map((decision) => ({ ...decision, status: "acknowledged", resolutionNote: "Artwork to follow" })),
+        warningsJson: initialized.warningsJson,
+        reviewNotes: null,
+      },
+    });
+
+    await expect(service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    })).rejects.toMatchObject({
+      errors: expect.arrayContaining(["PVC Signs requires Thickness, Sides, and Contour Cutting before conversion."]),
+    });
+  });
+
+  test("conversion blocks when pricing cannot calculate a non-zero total", async () => {
+    mockPriceLineItem.mockResolvedValueOnce({
+      pbv2TreeVersionId: "tree_pvc",
+      lineTotalCents: 0,
+      breakdown: { baseCents: 0, optionsCents: 0, totalCents: 0 },
+      pbv2SnapshotJson: { pricingSystem: "pbv2", selectedOptions: [], pricing: { totalCents: 0 } },
+    } as any);
+    const { repo } = makeRepository();
+    const orderRepo = makeOrderRepository();
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+    await prepareReadyDraft(service, {
+      lineItem: {
+        optionSelectionsJson: completePbv2Selections(),
+        pbv2TreeVersionId: "tree_pvc",
+      },
+    });
+
+    await expect(service.convertInboundReviewDraftToOrder({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    })).rejects.toMatchObject({
+      errors: expect.arrayContaining(["PVC Signs: pricing could not calculate a non-zero total. Review required product options before conversion."]),
+    });
+    expect(orderRepo.createOrder).not.toHaveBeenCalled();
+  });
+
   test("creates a draft order from a ready inbound review and marks inbound converted", async () => {
     const { repo, getRecord } = makeRepository();
     const orderRepo = makeOrderRepository();
-    const service = new InboundOrderService(repo as any, orderRepo as any);
-    await prepareReadyDraft(service);
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+    await prepareReadyDraft(service, {
+      lineItem: {
+        optionSelectionsJson: completePbv2Selections(),
+        pbv2TreeVersionId: "tree_pvc",
+      },
+      order: {
+        dueDate: "6/11",
+      },
+    });
 
     const result = await service.convertInboundReviewDraftToOrder({
       organizationId: "org_1",
@@ -593,10 +756,34 @@ describe("InboundOrderService editable review draft", () => {
         quantity: 3,
         width: 24,
         height: 36,
+        totalPrice: 45,
+        optionSelectionsJson: completePbv2Selections(),
+        pbv2TreeVersionId: "tree_pvc",
+        selectedOptions: [{ groupLabel: "Thickness", optionLabel: "3mm White PVC" }],
         workflowState: "new",
         requiresPrepress: false,
         requiresProofApproval: false,
       })],
+      dueDate: "2026-06-11",
+    }));
+    expect(mockPriceLineItem).toHaveBeenCalledWith(expect.objectContaining({
+      productId: "product_pvc",
+      quantity: 3,
+      widthIn: 24,
+      heightIn: 36,
+      pbv2ExplicitSelections: completePbv2Selections().selected,
+      pbv2TreeVersionIdOverride: "tree_pvc",
+    }));
+    expect(orderRepo.createOrderAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      orderId: "order_1",
+      actionType: "inbound_order_converted",
+      note: "Inbound order converted to draft order.",
+      metadata: expect.objectContaining({
+        inboundRecordId: "inbound_1",
+        inboundReference: "PO-123",
+        parseConfidence: 92,
+        poNumber: "151661",
+      }),
     }));
     expect(repo.markInboundOrderConvertedToOrder).toHaveBeenCalledWith(expect.objectContaining({
       orderId: "order_1",
@@ -611,7 +798,7 @@ describe("InboundOrderService editable review draft", () => {
       submittedAt: new Date("2026-06-09T12:30:00.000Z"),
     }));
     const orderRepo = makeOrderRepository();
-    const service = new InboundOrderService(repo as any, orderRepo as any);
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
 
     const result = await service.convertInboundReviewDraftToOrder({
       organizationId: "org_1",

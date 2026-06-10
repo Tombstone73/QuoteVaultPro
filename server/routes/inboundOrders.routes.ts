@@ -224,6 +224,30 @@ export function registerInboundOrderRoutes(
     }
   });
 
+  app.post("/api/inbound-orders/product-options/:productId", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const data = await service.getProductOptionsForReview({
+        organizationId,
+        productId: String(req.params.productId),
+        lineItem: req.body?.lineItem ?? null,
+      });
+
+      res.json({ success: true, data });
+    } catch (error) {
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+
+      console.error("Error loading inbound product options:", error);
+      res.status(500).json({ message: "Failed to load inbound product options" });
+    }
+  });
+
   app.get("/api/inbound-orders/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;

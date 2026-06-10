@@ -15,6 +15,7 @@ import {
   inboundOrderSources,
   inboundOrderWarnings,
   materials,
+  pbv2TreeVersions,
   productVariants,
   products,
   quoteLineItems,
@@ -35,6 +36,7 @@ import {
   type CustomerContact,
   type Product,
   type ProductVariant,
+  type Pbv2TreeVersion,
   type Quote,
   type QuoteLineItem,
 } from "@shared/schema";
@@ -938,6 +940,41 @@ export class InboundOrdersRepository {
 
       return { record, event };
     });
+  }
+
+  async getProductActivePbv2Tree(organizationId: string, productId: string): Promise<{
+    product: Pick<Product, "id" | "name" | "pbv2ActiveTreeVersionId">;
+    activeTree: Pbv2TreeVersion | null;
+  } | null> {
+    const [product] = await this.dbInstance
+      .select({
+        id: products.id,
+        name: products.name,
+        pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
+      })
+      .from(products)
+      .where(and(eq(products.organizationId, organizationId), eq(products.id, productId)))
+      .limit(1);
+
+    if (!product) return null;
+    if (!product.pbv2ActiveTreeVersionId) {
+      return { product, activeTree: null };
+    }
+
+    const [activeTree] = await this.dbInstance
+      .select()
+      .from(pbv2TreeVersions)
+      .where(and(
+        eq(pbv2TreeVersions.organizationId, organizationId),
+        eq(pbv2TreeVersions.id, product.pbv2ActiveTreeVersionId),
+        eq(pbv2TreeVersions.status, "ACTIVE"),
+      ))
+      .limit(1);
+
+    return {
+      product,
+      activeTree: activeTree ?? null,
+    };
   }
 
   async searchCustomerCandidates(args: {

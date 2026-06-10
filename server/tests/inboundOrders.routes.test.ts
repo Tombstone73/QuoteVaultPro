@@ -283,6 +283,7 @@ describe("inbound order routes", () => {
     updateInboundOrderStatus: jest.fn<(...args: any[]) => Promise<any>>(),
     searchCustomers: jest.fn(),
     searchCustomerContacts: jest.fn(),
+    getProductOptionsForReview: jest.fn<(...args: any[]) => Promise<any>>(),
     applyReviewAction: jest.fn(),
     saveReviewSnapshot: jest.fn(),
     getQuoteDraftPreview: jest.fn(),
@@ -472,6 +473,58 @@ describe("inbound order routes", () => {
       customerId: null,
       search: "ada",
       limit: 20,
+    });
+  });
+
+  test("loads product PBV2 options for inbound review", async () => {
+    service.getProductOptionsForReview.mockResolvedValue({
+      productId: "product_pvc",
+      productName: "PVC Signs",
+      activeTreeVersionId: "tree_pvc",
+      treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {} },
+      requiredOptions: [{ nodeId: "thickness", selectionKey: "thickness", label: "Thickness", inputType: "select" }],
+      suggestedSelections: { schemaVersion: 2, selected: { thickness: { value: "3mm_white" } } },
+      suggestions: [{
+        selectionKey: "thickness",
+        nodeId: "thickness",
+        label: "Thickness",
+        value: "3mm_white",
+        choiceLabel: "3mm White PVC",
+        confidence: 80,
+        reason: "Matched source evidence.",
+      }],
+    });
+
+    const lineItem = {
+      sourceText: "3 PVC Signs",
+      productName: "PVC Signs",
+      selectedProductId: "product_pvc",
+      productUnresolved: false,
+      quantity: 3,
+      width: 24,
+      height: 36,
+      dimensionsUnit: "in",
+      materialText: "3mm White PVC",
+      printSpecs: [],
+      optionTexts: [],
+      finishingTexts: [],
+      optionSelectionsJson: null,
+      pbv2TreeVersionId: null,
+      pbv2OptionSuggestions: [],
+      notes: null,
+    };
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/product-options/product_pvc")
+      .send({ lineItem });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.activeTreeVersionId).toBe("tree_pvc");
+    expect(response.body.data.suggestions[0].choiceLabel).toBe("3mm White PVC");
+    expect(service.getProductOptionsForReview).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      productId: "product_pvc",
+      lineItem,
     });
   });
 
