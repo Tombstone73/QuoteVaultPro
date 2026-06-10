@@ -217,19 +217,34 @@ export class InboundOrdersRepository {
     filters: InboundOrderListFilters,
   ): Promise<InboundOrderRecord[]> {
     const predicates = [eq(inboundOrderRecords.organizationId, organizationId)];
+    let hasExplicitQueueScope = false;
 
     if (filters.status) {
+      hasExplicitQueueScope = true;
       predicates.push(eq(inboundOrderRecords.status, filters.status));
     } else if (filters.statusGroup === "needs_review") {
+      hasExplicitQueueScope = true;
       predicates.push(sql`${inboundOrderRecords.status} in ('received', 'processing', 'needs_review')`);
     } else if (filters.statusGroup === "waiting") {
+      hasExplicitQueueScope = true;
       predicates.push(eq(inboundOrderRecords.status, "waiting_on_customer"));
     } else if (filters.statusGroup === "ready") {
+      hasExplicitQueueScope = true;
       predicates.push(eq(inboundOrderRecords.status, "ready"));
     } else if (filters.statusGroup === "converted") {
-      predicates.push(sql`${inboundOrderRecords.createdQuoteId} is not null or ${inboundOrderRecords.status} = 'submitted'`);
+      hasExplicitQueueScope = true;
+      predicates.push(sql`(${inboundOrderRecords.createdQuoteId} is not null or ${inboundOrderRecords.status} = 'submitted')`);
     } else if (filters.statusGroup === "rejected") {
-      predicates.push(sql`${inboundOrderRecords.status} = 'terminal' or ${inboundOrderRecords.reviewOutcome} = 'rejected'`);
+      hasExplicitQueueScope = true;
+      predicates.push(sql`(${inboundOrderRecords.status} = 'terminal' or ${inboundOrderRecords.reviewOutcome} = 'rejected')`);
+    }
+
+    if (!hasExplicitQueueScope && filters.converted !== true && !filters.reviewOutcome) {
+      predicates.push(sql`(
+        ${inboundOrderRecords.status} in ('received', 'processing', 'needs_review', 'waiting_on_customer', 'ready')
+        and ${inboundOrderRecords.createdQuoteId} is null
+        and ${inboundOrderRecords.createdOrderId} is null
+      )`);
     }
 
     if (filters.reviewOutcome) {
@@ -584,15 +599,15 @@ export class InboundOrdersRepository {
 
   async searchCustomerContacts(
     organizationId: string,
-    customerId: string,
+    customerId: string | null,
     search: string | null,
     limit: number,
   ): Promise<InboundContactSearchResult[]> {
     const predicates = [
       eq(customers.organizationId, organizationId),
-      eq(customerContactLinks.customerId, customerId),
       eq(customerContactLinks.status, "active"),
     ];
+    if (customerId) predicates.push(eq(customerContactLinks.customerId, customerId));
     const trimmed = search?.trim();
 
     if (trimmed) {

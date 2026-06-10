@@ -70,6 +70,7 @@ function sendInboundSchemaUnavailable(res: any) {
 
 const reviewActionSchema = z.object({
   note: z.string().trim().min(1).max(2000).optional().nullable(),
+  reason: z.string().trim().min(1).max(2000).optional().nullable(),
 });
 
 const reviewDraftSnapshotSchema = z.object({
@@ -106,7 +107,7 @@ const inboundCustomerSearchQuerySchema = z.object({
 });
 
 const inboundContactSearchQuerySchema = z.object({
-  customerId: z.string().trim().min(1),
+  customerId: z.string().trim().min(1).optional(),
   search: z.string().trim().max(255).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
@@ -202,7 +203,7 @@ export function registerInboundOrderRoutes(
       const query = inboundContactSearchQuerySchema.parse(req.query);
       const contacts = await service.searchCustomerContacts({
         organizationId,
-        customerId: query.customerId,
+        customerId: query.customerId ?? null,
         search: query.search ?? null,
         limit: query.limit,
       });
@@ -523,7 +524,7 @@ export function registerInboundOrderRoutes(
         inboundRecordId: String(req.params.id),
         actorUserId,
         action,
-        note: input.note,
+        note: input.note ?? input.reason ?? null,
       });
 
       res.json({ success: true, data: detail });

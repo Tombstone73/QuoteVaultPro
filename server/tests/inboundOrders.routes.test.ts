@@ -409,6 +409,70 @@ describe("inbound order routes", () => {
     });
   });
 
+  test("rejects an inbound record through the auditable review action route", async () => {
+    const rejectedRecord = inboundRecord({
+      status: "terminal",
+      reviewOutcome: "rejected",
+      rejectionReason: "Spam",
+      rejectedByUserId: "user_1",
+      rejectedAt: new Date("2026-06-09T12:05:00.000Z"),
+    });
+    (service.applyReviewAction as any).mockResolvedValue(inboundDetail(rejectedRecord));
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/inbound_1/reject")
+      .send({ reason: "Spam" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.record.status).toBe("terminal");
+    expect(response.body.data.record.rejectionReason).toBe("Spam");
+    expect(service.applyReviewAction).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      action: "reject",
+      note: "Spam",
+    });
+    expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+  });
+
+  test("searches customers and all contacts for review selectors", async () => {
+    (service.searchCustomers as any).mockResolvedValue([{
+      id: "customer_1",
+      companyName: "Ada Signs",
+      email: "billing@adasigns.test",
+      phone: "555-0101",
+      status: "active",
+    }]);
+    (service.searchCustomerContacts as any).mockResolvedValue([{
+      id: "contact_1",
+      customerId: "customer_1",
+      name: "Ada Lovelace",
+      firstName: "Ada",
+      lastName: "Lovelace",
+      email: "ada@adasigns.test",
+      phone: "555-0102",
+      mobile: null,
+      isPrimary: true,
+    }]);
+
+    const customerResponse = await request(buildApp(service))
+      .get("/api/inbound-orders/customer-search?search=Ada");
+    const contactResponse = await request(buildApp(service))
+      .get("/api/inbound-orders/contact-search?search=ada");
+
+    expect(customerResponse.status).toBe(200);
+    expect(customerResponse.body.data[0].companyName).toBe("Ada Signs");
+    expect(contactResponse.status).toBe(200);
+    expect(contactResponse.body.data[0].name).toBe("Ada Lovelace");
+    expect(service.searchCustomerContacts).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      customerId: null,
+      search: "ada",
+      limit: 20,
+    });
+  });
+
   test("blocks draft conversion during phase 1", async () => {
     const response = await request(buildApp(service))
       .post("/api/inbound-orders/inbound_1/create-quote-draft")
