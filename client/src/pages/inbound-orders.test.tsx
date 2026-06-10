@@ -425,6 +425,7 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   apiFetchMock.mockReset();
+  window.localStorage.clear();
 });
 
 afterEach(() => {
@@ -535,6 +536,58 @@ describe("InboundOrdersPage", () => {
     expect(createDraftButton).toBeTruthy();
     expect(createDraftButton?.disabled).toBe(true);
     expect(container.textContent).toContain("Phase 3: editable review starts after a successful parse.");
+  });
+
+  test("collapses queue and persists resizable workspace layout", async () => {
+    const row = record();
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") return jsonResponse(draftPreview());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Parse with AI");
+
+    expect(container.querySelector("[data-testid='inbound-review-workspace']")).toBeTruthy();
+    const collapseButton = container.querySelector("[aria-label='Collapse inbound queue']") as HTMLButtonElement;
+    expect(collapseButton).toBeTruthy();
+    act(() => {
+      Simulate.click(collapseButton);
+    });
+    await waitForCondition(() => window.localStorage.getItem("titanos.inboundOrders.queueCollapsed") === "true", "queue collapsed persistence");
+    expect(container.querySelector("[aria-label='Collapsed inbound queue']")).toBeTruthy();
+
+    const expandButton = container.querySelector("[aria-label='Expand inbound queue']") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(expandButton);
+    });
+    await waitForCondition(() => window.localStorage.getItem("titanos.inboundOrders.queueCollapsed") === "false", "queue expanded persistence");
+
+    const evidencePanel = container.querySelector("[data-testid='inbound-evidence-panel']") as HTMLElement;
+    const evidenceHandle = container.querySelector("[aria-label='Resize evidence panel']") as HTMLButtonElement;
+    const startingEvidenceWidth = Number.parseInt(evidencePanel.style.getPropertyValue("--workspace-evidence-width"), 10);
+    expect(startingEvidenceWidth).toBeGreaterThanOrEqual(400);
+    act(() => {
+      Simulate.mouseDown(evidenceHandle, { clientX: 500 } as any);
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 560, bubbles: true }));
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+    await waitForCondition(() => (
+      evidencePanel.style.getPropertyValue("--workspace-evidence-width") === `${startingEvidenceWidth + 60}px`
+    ), "evidence width resize");
+    expect(window.localStorage.getItem("titanos.inboundOrders.evidenceWidth")).toBe(String(startingEvidenceWidth + 60));
+
+    const restoreButton = container.querySelector("[aria-label='Restore inbound workspace layout']") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(restoreButton);
+    });
+    await waitForCondition(() => (
+      window.localStorage.getItem("titanos.inboundOrders.evidenceWidth") === "480"
+        && window.localStorage.getItem("titanos.inboundOrders.draftWidth") === "480"
+    ), "layout restore persistence");
   });
 
   test("shows parse loading and error states", async () => {

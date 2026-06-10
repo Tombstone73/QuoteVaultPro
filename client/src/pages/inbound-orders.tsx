@@ -1,14 +1,19 @@
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
   AlertTriangle,
+  ChevronsLeft,
+  ChevronsRight,
   Clock,
   FileText,
+  GripVertical,
   Inbox,
   Loader2,
+  Maximize2,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Sparkles,
 } from "lucide-react";
@@ -93,6 +98,22 @@ const defaultQueueFilters: QueueFilters = {
   unconvertedOnly: true,
   search: "",
 };
+
+const workspaceLayoutStorageKeys = {
+  queueCollapsed: "titanos.inboundOrders.queueCollapsed",
+  evidenceWidth: "titanos.inboundOrders.evidenceWidth",
+  draftWidth: "titanos.inboundOrders.draftWidth",
+} as const;
+
+const workspaceLayoutDefaults = {
+  queueExpandedWidth: 280,
+  queueCollapsedWidth: 56,
+  evidenceWidth: 480,
+  draftWidth: 480,
+  minQueueExpandedWidth: 280,
+  minEvidenceWidth: 400,
+  minDraftWidth: 400,
+} as const;
 
 const statusLabels: Record<InboundOrderRecordStatus, string> = {
   received: "Received",
@@ -198,6 +219,34 @@ async function putJson<T>(url: string, payload: unknown): Promise<T> {
 function trimToNull(value: string) {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
+}
+
+function readStoredBoolean(key: string, fallback: boolean): boolean {
+  if (typeof window === "undefined") return fallback;
+  return window.localStorage.getItem(key) === "true" ? true : fallback;
+}
+
+function readStoredNumber(key: string, fallback: number, minimum: number): number {
+  if (typeof window === "undefined") return fallback;
+  const value = Number(window.localStorage.getItem(key));
+  return Number.isFinite(value) ? Math.max(minimum, value) : fallback;
+}
+
+function clampWorkspaceWidth(value: number, minimum: number, maximum = 900): number {
+  return Math.min(maximum, Math.max(minimum, Math.round(value)));
+}
+
+function getWorkspacePanelMaxWidth(args: { queueCollapsed: boolean; siblingMinimum: number }): number {
+  if (typeof window === "undefined") return 900;
+  if (window.innerWidth < 1280) return 900;
+  const queueWidth = args.queueCollapsed
+    ? workspaceLayoutDefaults.queueCollapsedWidth
+    : workspaceLayoutDefaults.queueExpandedWidth;
+  const gutterAllowance = 32;
+  return Math.max(
+    args.siblingMinimum,
+    window.innerWidth - queueWidth - args.siblingMinimum - gutterAllowance,
+  );
 }
 
 function cloneReviewDraft(draft: InboundOrderReviewDraftDto): ReviewDraftFormState {
@@ -1436,9 +1485,9 @@ function DraftBuilderPanel({
           </section>
         )}
 
-        <section className="rounded-md border border-border p-3">
+        <section className="sticky bottom-0 z-10 rounded-md border border-border bg-background p-3 shadow-[0_-8px_20px_rgba(15,23,42,0.08)]">
           <label className="space-y-1 text-xs text-muted-foreground">Review notes<Textarea value={form.reviewNotes ?? ""} onChange={(event) => updateForm({ reviewNotes: trimToNull(event.target.value) })} /></label>
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap justify-end gap-2">
             <Button type="button" onClick={() => { void onSave(form).catch(() => undefined); }} disabled={!dirty || actionPending}>
               {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Save Review Draft
@@ -1455,11 +1504,10 @@ function DraftBuilderPanel({
               </Button>
             )}
           </div>
+          <Button type="button" className="mt-3 w-full" disabled title="Order creation starts in Phase 4.">
+            Order creation starts in Phase 4.
+          </Button>
         </section>
-
-        <Button type="button" className="w-full" disabled title="Order creation starts in Phase 4.">
-          Order creation starts in Phase 4.
-        </Button>
       </div>
     </ScrollArea>
   );
@@ -1471,6 +1519,23 @@ export default function InboundOrdersPage() {
   const [queueFilters, setQueueFilters] = useState<QueueFilters>(defaultQueueFilters);
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
   const [parsingRecordId, setParsingRecordId] = useState<string | null>(null);
+  const [queueCollapsed, setQueueCollapsed] = useState(() => (
+    readStoredBoolean(workspaceLayoutStorageKeys.queueCollapsed, false)
+  ));
+  const [evidenceWidth, setEvidenceWidth] = useState(() => (
+    readStoredNumber(
+      workspaceLayoutStorageKeys.evidenceWidth,
+      workspaceLayoutDefaults.evidenceWidth,
+      workspaceLayoutDefaults.minEvidenceWidth,
+    )
+  ));
+  const [draftWidth, setDraftWidth] = useState(() => (
+    readStoredNumber(
+      workspaceLayoutStorageKeys.draftWidth,
+      workspaceLayoutDefaults.draftWidth,
+      workspaceLayoutDefaults.minDraftWidth,
+    )
+  ));
   const parseInFlightRef = useRef(false);
   const listUrl = useMemo(() => buildInboundOrderListUrl(queueFilters), [queueFilters]);
 
@@ -1497,6 +1562,49 @@ export default function InboundOrdersPage() {
       setSelectedId(null);
     }
   }, [records, selectedId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(workspaceLayoutStorageKeys.queueCollapsed, String(queueCollapsed));
+  }, [queueCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem(workspaceLayoutStorageKeys.evidenceWidth, String(evidenceWidth));
+  }, [evidenceWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem(workspaceLayoutStorageKeys.draftWidth, String(draftWidth));
+  }, [draftWidth]);
+
+  useEffect(() => {
+    const reconcileToViewport = () => {
+      if (window.innerWidth < 1280) return;
+      const queueWidth = queueCollapsed
+        ? workspaceLayoutDefaults.queueCollapsedWidth
+        : workspaceLayoutDefaults.queueExpandedWidth;
+      const availableWidth = window.innerWidth - queueWidth - 32;
+      let nextEvidenceWidth = clampWorkspaceWidth(evidenceWidth, workspaceLayoutDefaults.minEvidenceWidth);
+      let nextDraftWidth = clampWorkspaceWidth(draftWidth, workspaceLayoutDefaults.minDraftWidth);
+      let overflow = nextEvidenceWidth + nextDraftWidth - availableWidth;
+
+      if (overflow > 0) {
+        const evidenceReduction = Math.min(nextEvidenceWidth - workspaceLayoutDefaults.minEvidenceWidth, overflow);
+        nextEvidenceWidth -= evidenceReduction;
+        overflow -= evidenceReduction;
+      }
+
+      if (overflow > 0) {
+        const draftReduction = Math.min(nextDraftWidth - workspaceLayoutDefaults.minDraftWidth, overflow);
+        nextDraftWidth -= draftReduction;
+      }
+
+      if (nextEvidenceWidth !== evidenceWidth) setEvidenceWidth(nextEvidenceWidth);
+      if (nextDraftWidth !== draftWidth) setDraftWidth(nextDraftWidth);
+    };
+
+    reconcileToViewport();
+    window.addEventListener("resize", reconcileToViewport);
+    return () => window.removeEventListener("resize", reconcileToViewport);
+  }, [queueCollapsed, evidenceWidth, draftWidth]);
 
   const selectedRecord = useMemo(
     () => records.find((record) => record.id === selectedId) ?? null,
@@ -1598,6 +1706,69 @@ export default function InboundOrdersPage() {
     parseMutation.mutate(selectedId);
   };
 
+  const startResize = (
+    panel: "evidence" | "draft",
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startingEvidenceWidth = evidenceWidth;
+    const startingDraftWidth = draftWidth;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientX - startX;
+      if (panel === "evidence") {
+        setEvidenceWidth(clampWorkspaceWidth(
+          startingEvidenceWidth + delta,
+          workspaceLayoutDefaults.minEvidenceWidth,
+          getWorkspacePanelMaxWidth({
+            queueCollapsed,
+            siblingMinimum: Math.max(workspaceLayoutDefaults.minDraftWidth, draftWidth),
+          }),
+        ));
+        return;
+      }
+      setDraftWidth(clampWorkspaceWidth(
+        startingDraftWidth - delta,
+        workspaceLayoutDefaults.minDraftWidth,
+        getWorkspacePanelMaxWidth({
+          queueCollapsed,
+          siblingMinimum: Math.max(workspaceLayoutDefaults.minEvidenceWidth, evidenceWidth),
+        }),
+      ));
+    };
+
+    const onMouseUp = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
+
+  const restoreLayout = () => {
+    setQueueCollapsed(false);
+    setEvidenceWidth(workspaceLayoutDefaults.evidenceWidth);
+    setDraftWidth(workspaceLayoutDefaults.draftWidth);
+  };
+
+  const expandEvidence = () => {
+    setQueueCollapsed(true);
+    setEvidenceWidth(720);
+    setDraftWidth(workspaceLayoutDefaults.minDraftWidth);
+  };
+
+  const expandDraftBuilder = () => {
+    setQueueCollapsed(true);
+    setEvidenceWidth(workspaceLayoutDefaults.minEvidenceWidth);
+    setDraftWidth(720);
+  };
+
   const pageError = getErrorTone(
     (listQuery.error as Error | null)
       || (detailQuery.error as Error | null)
@@ -1651,33 +1822,89 @@ export default function InboundOrdersPage() {
         )}
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(280px,360px)_minmax(360px,1fr)_minmax(320px,480px)]">
-        <section className="min-h-[300px] min-w-0 border-b border-border lg:min-h-0 lg:border-b-0 lg:border-r">
-          <div className="flex h-12 items-center justify-between border-b border-border px-4">
-            <div className="text-sm font-semibold text-foreground">Inbound Queue</div>
-            <Badge variant="outline">{records.length}</Badge>
-          </div>
-          <div className="flex h-[calc(100%-3rem)] min-h-0 flex-col">
-            <QueueTriageControls
-              filters={queueFilters}
-              summary={queueSummary}
-              isLoading={listQuery.isFetching}
-              onChange={setQueueFilters}
-            />
-            <div className="min-h-0 flex-1">
-              {listQuery.isLoading ? (
-                <QueueSkeleton />
-              ) : (
-                <InboundQueuePanel records={records} selectedId={selectedId} onSelect={setSelectedId} />
-              )}
+      <div
+        className="flex min-h-0 flex-1 flex-col overflow-hidden xl:flex-row"
+        data-testid="inbound-review-workspace"
+      >
+        <section
+          className={cn(
+            "min-h-[300px] min-w-0 flex-none border-b border-border xl:min-h-0 xl:border-b-0 xl:border-r",
+            "w-full xl:w-[var(--workspace-queue-width)]",
+          )}
+          data-testid="inbound-queue-panel"
+          style={{
+            "--workspace-queue-width": `${queueCollapsed ? workspaceLayoutDefaults.queueCollapsedWidth : workspaceLayoutDefaults.queueExpandedWidth}px`,
+          } as CSSProperties}
+        >
+          {queueCollapsed ? (
+            <div className="hidden h-full flex-col items-center gap-3 px-2 py-3 xl:flex" aria-label="Collapsed inbound queue">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 p-0"
+                onClick={() => setQueueCollapsed(false)}
+                aria-label="Expand inbound queue"
+                title="Expand queue"
+              >
+                <ChevronsRight className="h-4 w-4" />
+              </Button>
+              <div className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-muted">
+                <Inbox className="h-4 w-4 text-muted-foreground" />
+              </div>
+              <Badge variant="outline">{records.length}</Badge>
             </div>
-          </div>
+          ) : (
+            <>
+              <div className="flex h-12 items-center justify-between border-b border-border px-4">
+                <div className="text-sm font-semibold text-foreground">Inbound Queue</div>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline">{records.length}</Badge>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="hidden h-8 w-8 p-0 xl:inline-flex"
+                    onClick={() => setQueueCollapsed(true)}
+                    aria-label="Collapse inbound queue"
+                    title="Collapse queue"
+                  >
+                    <ChevronsLeft className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+              <div className="flex h-[calc(100%-3rem)] min-h-0 flex-col">
+                <QueueTriageControls
+                  filters={queueFilters}
+                  summary={queueSummary}
+                  isLoading={listQuery.isFetching}
+                  onChange={setQueueFilters}
+                />
+                <div className="min-h-0 flex-1">
+                  {listQuery.isLoading ? (
+                    <QueueSkeleton />
+                  ) : (
+                    <InboundQueuePanel records={records} selectedId={selectedId} onSelect={setSelectedId} />
+                  )}
+                </div>
+              </div>
+            </>
+          )}
         </section>
 
-        <section className="min-h-[360px] min-w-0 border-b border-border lg:min-h-0 lg:border-b-0 lg:border-r">
-          <div className="flex h-12 items-center justify-between border-b border-border px-4">
+        <section
+          className="relative min-h-[360px] min-w-0 flex-none border-b border-border xl:min-h-0 xl:w-[var(--workspace-evidence-width)] xl:border-b-0 xl:border-r"
+          data-testid="inbound-evidence-panel"
+          style={{ "--workspace-evidence-width": `${evidenceWidth}px` } as CSSProperties}
+        >
+          <div className="flex h-12 items-center justify-between gap-2 border-b border-border px-4">
             <div className="text-sm font-semibold text-foreground">Source Evidence</div>
-            {selectedRecord && <Badge variant="secondary">{titleCase(selectedRecord.sourceType)}</Badge>}
+            <div className="flex items-center gap-2">
+              {selectedRecord && <Badge variant="secondary">{titleCase(selectedRecord.sourceType)}</Badge>}
+              <Button type="button" variant="ghost" size="sm" className="hidden h-8 w-8 p-0 xl:inline-flex" onClick={expandEvidence} aria-label="Expand evidence panel" title="Expand evidence">
+                <Maximize2 className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
           <div className="h-[calc(100%-3rem)]">
             <SourceEvidencePanel
@@ -1692,14 +1919,44 @@ export default function InboundOrdersPage() {
               onParse={runParseForSelectedRecord}
             />
           </div>
+          <button
+            type="button"
+            className="absolute right-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 xl:flex"
+            onMouseDown={(event) => startResize("evidence", event)}
+            aria-label="Resize evidence panel"
+            title="Drag to resize evidence"
+          >
+            <GripVertical className="h-4 w-4" />
+          </button>
         </section>
 
-        <section className="min-h-[320px] min-w-0 lg:min-h-0">
-          <div className="flex h-12 items-center justify-between border-b border-border px-4">
+        <section
+          className="relative min-h-[320px] min-w-0 flex-none xl:min-h-0 xl:w-[var(--workspace-draft-width)]"
+          data-testid="inbound-draft-panel"
+          style={{ "--workspace-draft-width": `${draftWidth}px` } as CSSProperties}
+        >
+          <button
+            type="button"
+            className="absolute left-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 xl:flex"
+            onMouseDown={(event) => startResize("draft", event)}
+            aria-label="Resize draft builder panel"
+            title="Drag to resize draft builder"
+          >
+            <GripVertical className="h-4 w-4" />
+          </button>
+          <div className="flex h-12 items-center justify-between gap-2 border-b border-border px-4">
             <div className="text-sm font-semibold text-foreground">Draft Builder</div>
-            <Badge variant="outline">Phase 3</Badge>
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="ghost" size="sm" className="hidden h-8 w-8 p-0 xl:inline-flex" onClick={expandDraftBuilder} aria-label="Expand draft builder panel" title="Expand draft builder">
+                <Maximize2 className="h-4 w-4" />
+              </Button>
+              <Button type="button" variant="ghost" size="sm" className="hidden h-8 w-8 p-0 xl:inline-flex" onClick={restoreLayout} aria-label="Restore inbound workspace layout" title="Restore layout">
+                <RotateCcw className="h-4 w-4" />
+              </Button>
+              <Badge variant="outline">Phase 3</Badge>
+            </div>
           </div>
-          <div className="h-[calc(100%-3rem)]">
+          <div className="h-[calc(100%-3rem)] min-w-0 overflow-hidden">
             <DraftBuilderPanel
               selectedRecord={selectedRecord}
               isLoading={detailQuery.isLoading || draftPreviewQuery.isLoading || reviewDraftQuery.isLoading}
