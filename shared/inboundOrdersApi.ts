@@ -301,6 +301,20 @@ export type InboundOrderStatusUpdateRequest = z.infer<typeof inboundOrderStatusU
 export type InboundOrderListQuery = z.infer<typeof inboundOrderListQuerySchema>;
 export type InboundOrderStatusGroup = z.infer<typeof inboundOrderStatusGroupSchema>;
 
+export type InboundOrderConvertToOrderResponse = {
+  success: boolean;
+  data: {
+    orderId: string;
+    inboundOrderId: string;
+    convertedAt: string;
+    alreadyConverted?: boolean;
+    order?: unknown;
+    inbound?: InboundOrderDetail;
+  };
+  errors?: string[];
+  message?: string;
+};
+
 export type InboundOrderQueueSummary = {
   needsReview: number;
   waitingOnCustomer: number;

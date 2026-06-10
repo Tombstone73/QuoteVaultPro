@@ -233,7 +233,7 @@ export class InboundOrdersRepository {
       predicates.push(eq(inboundOrderRecords.status, "ready"));
     } else if (filters.statusGroup === "converted") {
       hasExplicitQueueScope = true;
-      predicates.push(sql`(${inboundOrderRecords.createdQuoteId} is not null or ${inboundOrderRecords.status} = 'submitted')`);
+      predicates.push(sql`(${inboundOrderRecords.createdQuoteId} is not null or ${inboundOrderRecords.createdOrderId} is not null or ${inboundOrderRecords.status} = 'submitted')`);
     } else if (filters.statusGroup === "rejected") {
       hasExplicitQueueScope = true;
       predicates.push(sql`(${inboundOrderRecords.status} = 'terminal' or ${inboundOrderRecords.reviewOutcome} = 'rejected')`);
@@ -280,9 +280,9 @@ export class InboundOrdersRepository {
     }
 
     if (filters.converted === true) {
-      predicates.push(sql`${inboundOrderRecords.createdQuoteId} is not null`);
+      predicates.push(sql`(${inboundOrderRecords.createdQuoteId} is not null or ${inboundOrderRecords.createdOrderId} is not null)`);
     } else if (filters.converted === false) {
-      predicates.push(sql`${inboundOrderRecords.createdQuoteId} is null`);
+      predicates.push(sql`${inboundOrderRecords.createdQuoteId} is null and ${inboundOrderRecords.createdOrderId} is null`);
     }
 
     if (filters.linkedQuoteStatus) {
@@ -326,7 +326,7 @@ export class InboundOrdersRepository {
         needsReview: sql<number>`count(*) filter (where ${inboundOrderRecords.status} in ('received', 'processing', 'needs_review'))`,
         waitingOnCustomer: sql<number>`count(*) filter (where ${inboundOrderRecords.status} = 'waiting_on_customer')`,
         readyReviewed: sql<number>`count(*) filter (where ${inboundOrderRecords.status} = 'ready')`,
-        convertedSubmitted: sql<number>`count(*) filter (where ${inboundOrderRecords.createdQuoteId} is not null or ${inboundOrderRecords.status} = 'submitted')`,
+        convertedSubmitted: sql<number>`count(*) filter (where ${inboundOrderRecords.createdQuoteId} is not null or ${inboundOrderRecords.createdOrderId} is not null or ${inboundOrderRecords.status} = 'submitted')`,
         rejectedTerminal: sql<number>`count(*) filter (where ${inboundOrderRecords.status} = 'terminal' or ${inboundOrderRecords.reviewOutcome} = 'rejected')`,
         withWarnings: sql<number>`count(*) filter (where exists (
           select 1 from ${inboundOrderWarnings}
@@ -1187,6 +1187,189 @@ export class InboundOrdersRepository {
       }
 
       return { record, event };
+    });
+  }
+
+  async claimInboundOrderForOrderConversion(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    actorUserId: string;
+  }): Promise<InboundOrderRecord | null> {
+    return this.dbInstance.transaction(async (tx) => {
+      const now = new Date();
+      const [record] = await tx
+        .update(inboundOrderRecords)
+        .set({
+          status: "processing",
+          reviewOutcome: "order_conversion_requested",
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(inboundOrderRecords.organizationId, args.organizationId),
+            eq(inboundOrderRecords.id, args.inboundRecordId),
+            eq(inboundOrderRecords.status, "ready"),
+            sql`${inboundOrderRecords.createdOrderId} is null`,
+            sql`${inboundOrderRecords.createdQuoteId} is null`,
+          ),
+        )
+        .returning();
+
+      if (!record) return null;
+
+      await tx.insert(inboundOrderEvents).values({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+        actorUserId: args.actorUserId,
+        actorType: "user",
+        eventType: "convert.requested",
+        fromStatus: "ready",
+        toStatus: "processing",
+        message: "Staff requested draft order creation from reviewed inbound record.",
+        metadataJson: {
+          phase: "inbound_orders_phase_4",
+          createsOrder: true,
+          releasesProduction: false,
+          createsProofs: false,
+          createsInvoices: false,
+          createsFulfillment: false,
+          createsPayments: false,
+        },
+      });
+
+      return record;
+    });
+  }
+
+  async markInboundOrderConvertedToOrder(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    actorUserId: string;
+    orderId: string;
+    orderNumber?: string | number | null;
+    lineItemLinks: Array<{ inboundLineItemId: string | null; orderLineItemId: string }>;
+  }): Promise<InboundOrderRecord | null> {
+    return this.dbInstance.transaction(async (tx) => {
+      const [record] = await tx
+        .select()
+        .from(inboundOrderRecords)
+        .where(
+          and(
+            eq(inboundOrderRecords.organizationId, args.organizationId),
+            eq(inboundOrderRecords.id, args.inboundRecordId),
+          ),
+        )
+        .limit(1);
+
+      if (!record) return null;
+      if (record.createdOrderId && record.createdOrderId !== args.orderId) return record;
+
+      const now = new Date();
+      const [updated] = await tx
+        .update(inboundOrderRecords)
+        .set({
+          status: "submitted",
+          reviewOutcome: "order_created",
+          createdOrderId: args.orderId,
+          matchedOrderId: args.orderId,
+          submittedByUserId: args.actorUserId,
+          submittedAt: now,
+          requiresHumanDecision: false,
+          reviewRequiredReason: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(inboundOrderRecords.organizationId, args.organizationId),
+            eq(inboundOrderRecords.id, args.inboundRecordId),
+          ),
+        )
+        .returning();
+
+      for (const link of args.lineItemLinks) {
+        if (!link.inboundLineItemId) continue;
+        await tx
+          .update(inboundOrderLineItems)
+          .set({
+            createdOrderLineItemId: link.orderLineItemId,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(inboundOrderLineItems.organizationId, args.organizationId),
+              eq(inboundOrderLineItems.inboundRecordId, args.inboundRecordId),
+              eq(inboundOrderLineItems.id, link.inboundLineItemId),
+            ),
+          );
+      }
+
+      await tx.insert(inboundOrderEvents).values({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+        actorUserId: args.actorUserId,
+        actorType: "user",
+        eventType: "convert.completed",
+        fromStatus: record.status,
+        toStatus: "submitted",
+        message: `Draft order ${args.orderNumber ?? args.orderId.slice(0, 8)} created from reviewed inbound record.`,
+        metadataJson: {
+          phase: "inbound_orders_phase_4",
+          orderId: args.orderId,
+          orderNumber: args.orderNumber ?? null,
+          linkedLineItems: args.lineItemLinks.length,
+          releasesProduction: false,
+          createsProofs: false,
+          createsInvoices: false,
+          createsFulfillment: false,
+          createsPayments: false,
+        },
+      });
+
+      return updated ?? null;
+    });
+  }
+
+  async markInboundOrderConversionFailed(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    actorUserId: string;
+    message: string;
+    errors?: string[];
+  }): Promise<InboundOrderRecord | null> {
+    return this.dbInstance.transaction(async (tx) => {
+      const now = new Date();
+      const [updated] = await tx
+        .update(inboundOrderRecords)
+        .set({
+          status: "ready",
+          reviewOutcome: "order_conversion_failed",
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(inboundOrderRecords.organizationId, args.organizationId),
+            eq(inboundOrderRecords.id, args.inboundRecordId),
+            sql`${inboundOrderRecords.createdOrderId} is null`,
+          ),
+        )
+        .returning();
+
+      await tx.insert(inboundOrderEvents).values({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+        actorUserId: args.actorUserId,
+        actorType: "user",
+        eventType: "convert.failed",
+        fromStatus: "processing",
+        toStatus: updated?.status ?? null,
+        message: args.message,
+        metadataJson: {
+          phase: "inbound_orders_phase_4",
+          errors: args.errors ?? [],
+        },
+      });
+
+      return updated ?? null;
     });
   }
 

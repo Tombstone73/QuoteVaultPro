@@ -4,6 +4,7 @@ import request from "supertest";
 
 import { registerInboundOrderRoutes } from "../routes/inboundOrders.routes";
 import {
+  InboundOrderConversionValidationError,
   InboundOrderReviewDraftValidationError,
   InboundOrderTransitionError,
 } from "../services/inboundOrders/InboundOrderService";
@@ -289,6 +290,7 @@ describe("inbound order routes", () => {
     matchLineItemProduct: jest.fn(),
     resolveWarning: jest.fn(),
     resolveDecisionFlag: jest.fn(),
+    convertInboundReviewDraftToOrder: jest.fn<(...args: any[]) => Promise<any>>(),
     createQuoteDraftFromInbound: jest.fn(),
     getReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
     saveReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -671,6 +673,71 @@ describe("inbound order routes", () => {
       inboundRecordId: "inbound_1",
       actorUserId: "user_1",
     });
+  });
+
+  test("converts a ready inbound review draft to a real draft order", async () => {
+    const convertedAt = "2026-06-09T12:30:00.000Z";
+    service.convertInboundReviewDraftToOrder.mockResolvedValue({
+      orderId: "order_1",
+      inboundOrderId: "inbound_1",
+      convertedAt,
+      order: {
+        id: "order_1",
+        orderNumber: "1001",
+        status: "new",
+        state: "open",
+        fulfillmentStatus: "pending",
+        paymentStatus: "unpaid",
+        lineItems: [{
+          id: "order_line_1",
+          status: "new",
+          workflowState: "new",
+          requiresProofApproval: false,
+          requiresPrepress: false,
+          approvedProofVersionId: null,
+        }],
+      },
+      inbound: inboundDetail(inboundRecord({ status: "submitted", createdOrderId: "order_1" })),
+    });
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/inbound_1/convert-to-order")
+      .send({});
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.data).toMatchObject({
+      orderId: "order_1",
+      inboundOrderId: "inbound_1",
+      convertedAt,
+      alreadyConverted: false,
+    });
+    expect(response.body.data.order).toMatchObject({
+      status: "new",
+      state: "open",
+      fulfillmentStatus: "pending",
+      paymentStatus: "unpaid",
+    });
+    expect(service.convertInboundReviewDraftToOrder).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+  });
+
+  test("returns safe validation JSON when inbound conversion is blocked", async () => {
+    service.convertInboundReviewDraftToOrder.mockRejectedValue(new InboundOrderConversionValidationError(
+      "Inbound review draft is not ready for order conversion.",
+      ["Select an existing customer before creating a draft order."],
+    ));
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/inbound_1/convert-to-order")
+      .send({});
+
+    expect(response.status).toBe(400);
+    expect(response.body.errors).toEqual(["Select an existing customer before creating a draft order."]);
   });
 
   test("returns failed parse attempts without exposing internals", async () => {

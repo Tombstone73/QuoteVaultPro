@@ -18,6 +18,7 @@ import {
   normalizeInboundOrderStatusForStorage,
 } from "@shared/inboundOrdersApi";
 import {
+  InboundOrderConversionValidationError,
   InboundOrderReviewDraftValidationError,
   InboundOrderTransitionError,
   inboundOrderService,
@@ -795,6 +796,51 @@ export function registerInboundOrderRoutes(
 
       console.error("Error creating quote draft from inbound order:", error);
       res.status(500).json({ message: "Failed to create quote draft from inbound order" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/convert-to-order", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const result = await service.convertInboundReviewDraftToOrder({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
+      });
+
+      res.json({
+        success: true,
+        data: {
+          orderId: result.orderId,
+          inboundOrderId: result.inboundOrderId,
+          convertedAt: result.convertedAt,
+          alreadyConverted: Boolean(result.alreadyConverted),
+          order: result.order,
+          inbound: result.inbound,
+        },
+      });
+    } catch (error) {
+      if (error instanceof InboundOrderConversionValidationError) {
+        return res.status(error.statusCode).json({ success: false, message: error.message, errors: error.errors });
+      }
+
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ success: false, message: error.message });
+      }
+
+      if (isMissingInboundSchemaError(error)) {
+        return sendInboundSchemaUnavailable(res);
+      }
+
+      console.error("Error converting inbound review draft to order:", error);
+      res.status(500).json({ success: false, message: "Failed to create draft order from inbound review." });
     }
   });
 
