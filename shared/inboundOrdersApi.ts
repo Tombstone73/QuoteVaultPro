@@ -14,6 +14,8 @@ import {
   type InboundOrderSourceType,
   type InboundOrderWarning,
 } from "./schema";
+import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "./optionTreeV2";
+import type { InboundPbv2OptionSuggestion, InboundPbv2RequiredOption } from "./inboundOrderPbv2Options";
 
 export const inboundOrderStatusGroupSchema = z.enum([
   "needs_review",
@@ -222,6 +224,24 @@ export const inboundOrderReviewedLineItemSchema = z.object({
   printSpecs: z.array(z.string().trim().min(1).max(255)).default([]),
   optionTexts: stringArraySchema,
   finishingTexts: stringArraySchema,
+  optionSelectionsJson: z.object({
+    schemaVersion: z.literal(2).default(2),
+    selected: z.record(z.object({
+      value: z.unknown(),
+      note: z.string().trim().max(1000).optional(),
+    })).default({}),
+    resolved: z.record(z.unknown()).optional(),
+  }).nullable().default(null),
+  pbv2TreeVersionId: z.string().trim().min(1).nullable().default(null),
+  pbv2OptionSuggestions: z.array(z.object({
+    selectionKey: z.string().trim().min(1),
+    nodeId: z.string().trim().min(1),
+    label: z.string().trim().min(1),
+    value: z.unknown(),
+    choiceLabel: z.string().trim().min(1),
+    confidence: z.number().min(0).max(100),
+    reason: z.string().trim().min(1).max(1000),
+  })).default([]),
   notes: nullableTextSchema.default(null),
 });
 
@@ -312,6 +332,20 @@ export type InboundOrderConvertToOrderResponse = {
     inbound?: InboundOrderDetail;
   };
   errors?: string[];
+  message?: string;
+};
+
+export type InboundOrderProductOptionsResponse = {
+  success: boolean;
+  data: {
+    productId: string;
+    productName: string | null;
+    activeTreeVersionId: string | null;
+    treeJson: OptionTreeV2 | null;
+    requiredOptions: InboundPbv2RequiredOption[];
+    suggestedSelections: LineItemOptionSelectionsV2;
+    suggestions: InboundPbv2OptionSuggestion[];
+  };
   message?: string;
 };
 
