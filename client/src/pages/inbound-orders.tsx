@@ -237,18 +237,46 @@ function clampWorkspaceWidth(value: number, minimum: number, maximum = 900): num
   return Math.min(maximum, Math.max(minimum, Math.round(value)));
 }
 
-function getWorkspacePanelMaxWidth(args: { queueCollapsed: boolean; siblingMinimum: number; workspaceWidth: number }): number {
-  if (typeof window === "undefined") return 900;
-  const measuredWidth = args.workspaceWidth || window.innerWidth;
-  if (measuredWidth < workspaceLayoutDefaults.desktopBreakpoint) return 900;
-  const queueWidth = args.queueCollapsed
+function getMeasuredWorkspaceWidth(workspaceWidth: number): number {
+  if (workspaceWidth > 0) return workspaceWidth;
+  if (typeof window === "undefined") return 0;
+  return window.innerWidth;
+}
+
+function getWorkspaceQueueWidth(queueCollapsed: boolean): number {
+  return queueCollapsed
     ? workspaceLayoutDefaults.queueCollapsedWidth
     : workspaceLayoutDefaults.queueExpandedWidth;
-  const gutterAllowance = 32;
+}
+
+function getWorkspaceAvailablePanelWidth(args: { queueCollapsed: boolean; workspaceWidth: number }): number {
+  const measuredWidth = getMeasuredWorkspaceWidth(args.workspaceWidth);
+  if (measuredWidth < workspaceLayoutDefaults.desktopBreakpoint) {
+    return workspaceLayoutDefaults.evidenceWidth + workspaceLayoutDefaults.draftWidth;
+  }
   return Math.max(
-    args.siblingMinimum,
-    measuredWidth - queueWidth - args.siblingMinimum - gutterAllowance,
+    workspaceLayoutDefaults.minEvidenceWidth + workspaceLayoutDefaults.minDraftWidth,
+    measuredWidth - getWorkspaceQueueWidth(args.queueCollapsed),
   );
+}
+
+function reconcileWorkspacePanelWidths(args: {
+  evidenceWidth: number;
+  draftWidth: number;
+  queueCollapsed: boolean;
+  workspaceWidth: number;
+}) {
+  const availableWidth = getWorkspaceAvailablePanelWidth(args);
+  const maxEvidenceWidth = availableWidth - workspaceLayoutDefaults.minDraftWidth;
+  const evidenceWidth = clampWorkspaceWidth(
+    args.evidenceWidth,
+    workspaceLayoutDefaults.minEvidenceWidth,
+    maxEvidenceWidth,
+  );
+  return {
+    evidenceWidth,
+    draftWidth: Math.max(workspaceLayoutDefaults.minDraftWidth, Math.round(availableWidth - evidenceWidth)),
+  };
 }
 
 function cloneReviewDraft(draft: InboundOrderReviewDraftDto): ReviewDraftFormState {
@@ -1599,29 +1627,17 @@ export default function InboundOrdersPage() {
 
   useEffect(() => {
     const reconcileToViewport = () => {
-      const measuredWidth = workspaceWidth || window.innerWidth;
+      const measuredWidth = getMeasuredWorkspaceWidth(workspaceWidth);
       if (measuredWidth < workspaceLayoutDefaults.desktopBreakpoint) return;
-      const queueWidth = queueCollapsed
-        ? workspaceLayoutDefaults.queueCollapsedWidth
-        : workspaceLayoutDefaults.queueExpandedWidth;
-      const availableWidth = measuredWidth - queueWidth - 32;
-      let nextEvidenceWidth = clampWorkspaceWidth(evidenceWidth, workspaceLayoutDefaults.minEvidenceWidth);
-      let nextDraftWidth = clampWorkspaceWidth(draftWidth, workspaceLayoutDefaults.minDraftWidth);
-      let overflow = nextEvidenceWidth + nextDraftWidth - availableWidth;
+      const next = reconcileWorkspacePanelWidths({
+        evidenceWidth,
+        draftWidth,
+        queueCollapsed,
+        workspaceWidth: measuredWidth,
+      });
 
-      if (overflow > 0) {
-        const evidenceReduction = Math.min(nextEvidenceWidth - workspaceLayoutDefaults.minEvidenceWidth, overflow);
-        nextEvidenceWidth -= evidenceReduction;
-        overflow -= evidenceReduction;
-      }
-
-      if (overflow > 0) {
-        const draftReduction = Math.min(nextDraftWidth - workspaceLayoutDefaults.minDraftWidth, overflow);
-        nextDraftWidth -= draftReduction;
-      }
-
-      if (nextEvidenceWidth !== evidenceWidth) setEvidenceWidth(nextEvidenceWidth);
-      if (nextDraftWidth !== draftWidth) setDraftWidth(nextDraftWidth);
+      if (next.evidenceWidth !== evidenceWidth) setEvidenceWidth(next.evidenceWidth);
+      if (next.draftWidth !== draftWidth) setDraftWidth(next.draftWidth);
     };
 
     reconcileToViewport();
@@ -1737,30 +1753,28 @@ export default function InboundOrdersPage() {
     const startX = event.clientX;
     const startingEvidenceWidth = evidenceWidth;
     const startingDraftWidth = draftWidth;
+    const measuredWidth = getMeasuredWorkspaceWidth(workspaceWidth);
+    const availablePanelWidth = getWorkspaceAvailablePanelWidth({ queueCollapsed, workspaceWidth: measuredWidth });
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const delta = moveEvent.clientX - startX;
       if (panel === "evidence") {
-        setEvidenceWidth(clampWorkspaceWidth(
+        const nextEvidenceWidth = clampWorkspaceWidth(
           startingEvidenceWidth + delta,
           workspaceLayoutDefaults.minEvidenceWidth,
-          getWorkspacePanelMaxWidth({
-            queueCollapsed,
-            siblingMinimum: Math.max(workspaceLayoutDefaults.minDraftWidth, draftWidth),
-            workspaceWidth,
-          }),
-        ));
+          availablePanelWidth - workspaceLayoutDefaults.minDraftWidth,
+        );
+        setEvidenceWidth(nextEvidenceWidth);
+        setDraftWidth(Math.max(workspaceLayoutDefaults.minDraftWidth, Math.round(availablePanelWidth - nextEvidenceWidth)));
         return;
       }
-      setDraftWidth(clampWorkspaceWidth(
+      const nextDraftWidth = clampWorkspaceWidth(
         startingDraftWidth - delta,
         workspaceLayoutDefaults.minDraftWidth,
-        getWorkspacePanelMaxWidth({
-          queueCollapsed,
-          siblingMinimum: Math.max(workspaceLayoutDefaults.minEvidenceWidth, evidenceWidth),
-          workspaceWidth,
-        }),
-      ));
+        availablePanelWidth - workspaceLayoutDefaults.minEvidenceWidth,
+      );
+      setDraftWidth(nextDraftWidth);
+      setEvidenceWidth(Math.max(workspaceLayoutDefaults.minEvidenceWidth, Math.round(availablePanelWidth - nextDraftWidth)));
     };
 
     const onMouseUp = () => {
@@ -1800,6 +1814,9 @@ export default function InboundOrdersPage() {
       || (draftPreviewQuery.error as Error | null),
   );
   const listError = getErrorTone(listQuery.error as Error | null);
+  const queueWidth = getWorkspaceQueueWidth(queueCollapsed);
+  const workspaceGridColumns = `${queueWidth}px ${evidenceWidth}px minmax(${workspaceLayoutDefaults.minDraftWidth}px, 1fr)`;
+  const isDesktopWorkspace = getMeasuredWorkspaceWidth(workspaceWidth) >= workspaceLayoutDefaults.desktopBreakpoint;
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
@@ -1849,14 +1866,18 @@ export default function InboundOrdersPage() {
 
       <div
         ref={workspaceRef}
-        className="flex min-h-0 flex-1 flex-col overflow-hidden min-[1180px]:flex-row"
+        className="grid min-h-0 w-full max-w-none flex-1 grid-cols-1 overflow-hidden"
         data-testid="inbound-review-workspace"
+        style={{
+          "--workspace-grid-columns": workspaceGridColumns,
+          gridTemplateColumns: isDesktopWorkspace ? workspaceGridColumns : "minmax(0, 1fr)",
+        } as CSSProperties}
       >
         <section
           className={cn(
-            "min-w-0 flex-none border-b border-border min-[1180px]:min-h-0 min-[1180px]:border-b-0 min-[1180px]:border-r",
+            "min-w-0 border-b border-border min-[1180px]:min-h-0 min-[1180px]:border-b-0 min-[1180px]:border-r",
             queueCollapsed ? "min-h-[56px]" : "min-h-[300px]",
-            "w-full min-[1180px]:w-[var(--workspace-queue-width)]",
+            "w-full",
           )}
           data-testid="inbound-queue-panel"
           style={{
@@ -1920,7 +1941,7 @@ export default function InboundOrdersPage() {
         </section>
 
         <section
-          className="relative min-h-[360px] min-w-0 flex-none border-b border-border min-[1180px]:min-h-0 min-[1180px]:w-[var(--workspace-evidence-width)] min-[1180px]:border-b-0 min-[1180px]:border-r"
+          className="relative min-h-[360px] min-w-0 border-b border-border min-[1180px]:min-h-0 min-[1180px]:border-b-0 min-[1180px]:border-r"
           data-testid="inbound-evidence-panel"
           style={{ "--workspace-evidence-width": `${evidenceWidth}px` } as CSSProperties}
         >
@@ -1958,7 +1979,7 @@ export default function InboundOrdersPage() {
         </section>
 
         <section
-          className="relative min-h-[320px] min-w-0 flex-none min-[1180px]:min-h-0 min-[1180px]:w-[var(--workspace-draft-width)]"
+          className="relative min-h-[320px] min-w-0 min-[1180px]:min-h-0"
           data-testid="inbound-draft-panel"
           style={{ "--workspace-draft-width": `${draftWidth}px` } as CSSProperties}
         >

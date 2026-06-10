@@ -556,7 +556,13 @@ describe("InboundOrdersPage", () => {
     renderPage();
     await waitForText("Parse with AI");
 
-    expect(container.querySelector("[data-testid='inbound-review-workspace']")).toBeTruthy();
+    const workspace = container.querySelector("[data-testid='inbound-review-workspace']") as HTMLElement;
+    expect(workspace).toBeTruthy();
+    expect(workspace.className).toContain("w-full");
+    expect(workspace.className).toContain("max-w-none");
+    await waitForCondition(() => (
+      workspace.style.gridTemplateColumns.includes("minmax(420px, 1fr)")
+    ), "full-width workspace grid structure");
     const collapseButton = container.querySelector("[aria-label='Collapse inbound queue']") as HTMLButtonElement;
     expect(collapseButton).toBeTruthy();
     act(() => {
@@ -591,7 +597,7 @@ describe("InboundOrdersPage", () => {
     });
     await waitForCondition(() => (
       window.localStorage.getItem("titanos.inboundOrders.evidenceWidth") === "420"
-        && window.localStorage.getItem("titanos.inboundOrders.draftWidth") === "460"
+        && Number(window.localStorage.getItem("titanos.inboundOrders.draftWidth")) >= 460
     ), "layout restore persistence");
   });
 
@@ -628,7 +634,7 @@ describe("InboundOrdersPage", () => {
     await waitForCondition(() => {
       const evidence = Number.parseInt(evidencePanel.style.getPropertyValue("--workspace-evidence-width"), 10);
       const draftWidthValue = Number.parseInt(draftPanel.style.getPropertyValue("--workspace-draft-width"), 10);
-      return evidence >= 400 && draftWidthValue >= 420 && evidence + draftWidthValue <= 968;
+      return evidence >= 400 && draftWidthValue >= 420 && evidence + draftWidthValue <= 1000;
     }, "oversized saved widths reconciled");
 
     expect(container.textContent).toContain("Mark Ready to Convert");
