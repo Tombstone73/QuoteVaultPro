@@ -557,12 +557,15 @@ describe("InboundOrdersPage", () => {
     await waitForText("Parse with AI");
 
     const workspace = container.querySelector("[data-testid='inbound-review-workspace']") as HTMLElement;
+    const queuePanel = container.querySelector("[data-testid='inbound-queue-panel']") as HTMLElement;
     expect(workspace).toBeTruthy();
     expect(workspace.className).toContain("w-full");
     expect(workspace.className).toContain("max-w-none");
     await waitForCondition(() => (
-      workspace.style.gridTemplateColumns.includes("minmax(420px, 1fr)")
+      workspace.style.gridTemplateColumns.startsWith("360px")
+        && workspace.style.gridTemplateColumns.includes("minmax(420px, 1fr)")
     ), "full-width workspace grid structure");
+    expect(queuePanel.style.getPropertyValue("--workspace-queue-width")).toBe("360px");
     const collapseButton = container.querySelector("[aria-label='Collapse inbound queue']") as HTMLButtonElement;
     expect(collapseButton).toBeTruthy();
     act(() => {
@@ -570,6 +573,7 @@ describe("InboundOrdersPage", () => {
     });
     await waitForCondition(() => window.localStorage.getItem("titanos.inboundOrders.queueCollapsed") === "true", "queue collapsed persistence");
     expect(container.querySelector("[aria-label='Collapsed inbound queue']")).toBeTruthy();
+    expect(queuePanel.style.getPropertyValue("--workspace-queue-width")).toBe("56px");
 
     const expandButton = container.querySelector("[aria-label='Expand inbound queue']") as HTMLButtonElement;
     act(() => {

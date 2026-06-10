@@ -106,11 +106,11 @@ const workspaceLayoutStorageKeys = {
 } as const;
 
 const workspaceLayoutDefaults = {
-  queueExpandedWidth: 280,
+  queueExpandedWidth: 360,
   queueCollapsedWidth: 56,
   evidenceWidth: 420,
   draftWidth: 460,
-  minQueueExpandedWidth: 280,
+  minQueueExpandedWidth: 360,
   minEvidenceWidth: 400,
   minDraftWidth: 420,
   desktopBreakpoint: 1180,
@@ -631,6 +631,7 @@ function QueueTriageControls({
             key={button.value}
             type="button"
             size="sm"
+            className="h-auto min-h-8 whitespace-normal"
             variant={filters.statusGroup === button.value ? "default" : "outline"}
             onClick={() => setFilter({ statusGroup: button.value })}
           >
@@ -642,7 +643,7 @@ function QueueTriageControls({
 
       <div className="flex flex-wrap items-center gap-2">
         <select
-          className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+          className="h-8 min-w-[8rem] max-w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
           value={filters.sourceType}
           onChange={(event) => setFilter({ sourceType: event.target.value as QueueFilters["sourceType"] })}
           disabled={isLoading}
@@ -651,7 +652,7 @@ function QueueTriageControls({
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>
-        <label className="flex h-8 items-center gap-2 rounded-md border border-input px-2 text-xs text-foreground">
+        <label className="flex min-h-8 min-w-0 items-center gap-2 rounded-md border border-input px-2 py-1 text-xs text-foreground">
           <input
             type="checkbox"
             checked={filters.hasWarnings}
@@ -661,7 +662,7 @@ function QueueTriageControls({
           Warnings
           <Badge variant="secondary">{summary?.withWarnings ?? 0}</Badge>
         </label>
-        <label className="flex h-8 items-center gap-2 rounded-md border border-input px-2 text-xs text-foreground">
+        <label className="flex min-h-8 min-w-0 items-center gap-2 rounded-md border border-input px-2 py-1 text-xs text-foreground">
           <input
             type="checkbox"
             checked={filters.unconvertedOnly}
@@ -844,16 +845,16 @@ function InboundQueuePanel({
                 </div>
                 <StatusBadge status={record.status} />
               </div>
-              <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-                <div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs min-[1500px]:grid-cols-3">
+                <div className="min-w-0">
                   <div className="text-muted-foreground">Source</div>
                   <div className="truncate font-medium text-foreground">{titleCase(record.sourceType)}</div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-muted-foreground">Reference</div>
                   <div className="truncate font-medium text-foreground">{evidence.reference || "-"}</div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-muted-foreground">Created</div>
                   <div className="truncate font-medium text-foreground">{formatRelative(record.createdAt)}</div>
                 </div>
@@ -861,7 +862,7 @@ function InboundQueuePanel({
               {record.requiresHumanDecision && (
                 <div className="mt-3 flex items-start gap-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span className="line-clamp-2">{record.reviewRequiredReason || "Needs staff review"}</span>
+                  <span className="min-w-0 break-words">{record.reviewRequiredReason || "Needs staff review"}</span>
                 </div>
               )}
             </button>
