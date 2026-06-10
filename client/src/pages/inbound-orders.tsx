@@ -638,11 +638,11 @@ function QueueTriageControls({
   ];
 
   return (
-    <div className="space-y-3 border-b border-border p-3">
+    <div className="max-w-full space-y-3 overflow-x-hidden border-b border-border p-3">
       <label className="relative block">
         <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
         <Input
-          className="pl-8"
+          className="w-full max-w-full pl-8"
           value={filters.search}
           onChange={(event) => setFilter({ search: event.target.value })}
           placeholder="Search reference, sender, notes, subject, body"
@@ -650,13 +650,13 @@ function QueueTriageControls({
         />
       </label>
 
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex max-w-full flex-wrap gap-1.5 overflow-hidden">
         {statusButtons.map((button) => (
           <Button
             key={button.value}
             type="button"
             size="sm"
-            className="h-auto min-h-8 whitespace-normal"
+            className="h-auto min-h-8 min-w-0 max-w-full whitespace-normal"
             variant={filters.statusGroup === button.value ? "default" : "outline"}
             onClick={() => setFilter({ statusGroup: button.value })}
           >
@@ -666,9 +666,9 @@ function QueueTriageControls({
         ))}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex max-w-full flex-wrap items-center gap-2 overflow-hidden">
         <select
-          className="h-8 min-w-[8rem] max-w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
+          className="h-8 min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
           value={filters.sourceType}
           onChange={(event) => setFilter({ sourceType: event.target.value as QueueFilters["sourceType"] })}
           disabled={isLoading}
@@ -677,7 +677,7 @@ function QueueTriageControls({
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>
-        <label className="flex min-h-8 min-w-0 items-center gap-2 rounded-md border border-input px-2 py-1 text-xs text-foreground">
+        <label className="flex min-h-8 min-w-0 max-w-full items-center gap-2 rounded-md border border-input px-2 py-1 text-xs text-foreground">
           <input
             type="checkbox"
             checked={filters.hasWarnings}
@@ -687,7 +687,7 @@ function QueueTriageControls({
           Warnings
           <Badge variant="secondary">{summary?.withWarnings ?? 0}</Badge>
         </label>
-        <label className="flex min-h-8 min-w-0 items-center gap-2 rounded-md border border-input px-2 py-1 text-xs text-foreground">
+        <label className="flex min-h-8 min-w-0 max-w-full items-center gap-2 rounded-md border border-input px-2 py-1 text-xs text-foreground">
           <input
             type="checkbox"
             checked={filters.unconvertedOnly}
@@ -847,8 +847,8 @@ function InboundQueuePanel({
   }
 
   return (
-    <ScrollArea className="h-full">
-      <div className="space-y-2 p-3">
+    <ScrollArea className="h-full max-w-full overflow-x-hidden">
+      <div className="max-w-full space-y-2 overflow-x-hidden p-3">
         {records.map((record) => {
           const evidence = getManualInboundEvidence(record);
           return (
@@ -857,37 +857,39 @@ function InboundQueuePanel({
               type="button"
               onClick={() => onSelect(record.id)}
               className={cn(
-                "w-full rounded-md border p-3 text-left transition-colors",
+                "block w-full max-w-full overflow-hidden rounded-md border p-3 text-left transition-colors",
                 selectedId === record.id
                   ? "border-primary bg-primary/5"
                   : "border-border bg-card hover:bg-muted/50",
               )}
             >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
+              <div className="flex min-w-0 items-start justify-between gap-2 overflow-hidden">
+                <div className="min-w-0 flex-1 overflow-hidden">
                   <div className="truncate text-sm font-semibold text-foreground">{getRecordTitle(record)}</div>
                   <div className="mt-1 truncate text-xs text-muted-foreground">{getSenderLabel(record)}</div>
                 </div>
-                <StatusBadge status={record.status} />
+                <div className="shrink-0">
+                  <StatusBadge status={record.status} />
+                </div>
               </div>
-              <div className="mt-3 grid grid-cols-2 gap-2 text-xs min-[1500px]:grid-cols-3">
-                <div className="min-w-0">
+              <div className="mt-3 grid max-w-full grid-cols-2 gap-2 overflow-hidden text-xs">
+                <div className="min-w-0 overflow-hidden">
                   <div className="text-muted-foreground">Source</div>
                   <div className="truncate font-medium text-foreground">{titleCase(record.sourceType)}</div>
                 </div>
-                <div className="min-w-0">
+                <div className="min-w-0 overflow-hidden">
                   <div className="text-muted-foreground">Reference</div>
                   <div className="truncate font-medium text-foreground">{evidence.reference || "-"}</div>
                 </div>
-                <div className="min-w-0">
+                <div className="min-w-0 overflow-hidden">
                   <div className="text-muted-foreground">Created</div>
                   <div className="truncate font-medium text-foreground">{formatRelative(record.createdAt)}</div>
                 </div>
               </div>
               {record.requiresHumanDecision && (
-                <div className="mt-3 flex items-start gap-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
+                <div className="mt-3 flex max-w-full items-start gap-2 overflow-hidden rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span className="min-w-0 break-words">{record.reviewRequiredReason || "Needs staff review"}</span>
+                  <span className="min-w-0 whitespace-normal break-words">{record.reviewRequiredReason || "Needs staff review"}</span>
                 </div>
               )}
             </button>
