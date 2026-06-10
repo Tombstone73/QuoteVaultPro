@@ -1302,6 +1302,28 @@ function ensurePbv2Selections(value: unknown): LineItemOptionSelectionsV2 {
   return { schemaVersion: 2, selected: {} };
 }
 
+function selectionSourceLabel(source: string | null | undefined, note: string | null | undefined): string {
+  if (source === "product_default" || note === "Default") return "Default";
+  if (source === "source_evidence" || note === "Suggested from PO" || note === "Suggested from inbound source evidence.") return "Suggested from PO";
+  if (source === "customer_history") return "Customer history";
+  if (source === "staff_selected" || note === "Staff selected") return "Staff selected";
+  return "Suggested";
+}
+
+function markChangedPbv2SelectionsAsStaffSelected(
+  next: LineItemOptionSelectionsV2,
+  previous: LineItemOptionSelectionsV2,
+): LineItemOptionSelectionsV2 {
+  return {
+    ...next,
+    selected: Object.fromEntries(Object.entries(next.selected ?? {}).map(([key, entry]) => {
+      const previousValue = previous.selected?.[key]?.value;
+      const changed = JSON.stringify(previousValue ?? null) !== JSON.stringify(entry?.value ?? null);
+      return [key, changed ? { ...entry, note: "Staff selected" } : entry];
+    })),
+  };
+}
+
 function ReviewLineItemProductOptions({
   lineItem,
   index,
@@ -1349,8 +1371,13 @@ function ReviewLineItemProductOptions({
         {config.suggestions.length > 0 && <Badge variant="outline">{config.suggestions.length} suggested</Badge>}
       </div>
       {config.suggestions.length > 0 && (
-        <div className="rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-200">
-          Suggested from source evidence. Review and save before conversion.
+        <div className="space-y-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-200">
+          {config.suggestions.map((suggestion) => (
+            <div key={`${suggestion.selectionKey}-${String(suggestion.value)}`} className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">{selectionSourceLabel(suggestion.source, null)}</Badge>
+              <span>{suggestion.label}: {suggestion.choiceLabel}</span>
+            </div>
+          ))}
         </div>
       )}
       {missing.length > 0 && (
@@ -1361,12 +1388,22 @@ function ReviewLineItemProductOptions({
       <ProductOptionsPanelV2
         tree={config.treeJson}
         selections={selections}
-        onSelectionsChange={(next) => onChange({
-          optionSelectionsJson: next,
-          pbv2TreeVersionId: config.activeTreeVersionId,
-          pbv2OptionSuggestions: config.suggestions,
-        })}
+        onSelectionsChange={(next) => {
+          const marked = markChangedPbv2SelectionsAsStaffSelected(next, selections);
+          onChange({
+            optionSelectionsJson: marked,
+            pbv2TreeVersionId: config.activeTreeVersionId,
+            pbv2OptionSuggestions: config.suggestions,
+          });
+        }}
       />
+      {Object.entries(selections.selected ?? {}).length > 0 && (
+        <div className="flex flex-wrap gap-2 text-xs">
+          {Object.entries(selections.selected).map(([key, entry]) => (
+            <Badge key={key} variant="secondary">{key}: {selectionSourceLabel(null, entry?.note)}</Badge>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1650,10 +1687,20 @@ function DraftBuilderPanel({
               onSearchChange={setCustomerSearch}
               onChange={(customerId) => updateCustomer({
                 selectedCustomerId: customerId,
+                selectedCustomerReason: customerId ? "Staff selected customer." : null,
+                selectedCustomerConfidence: null,
                 selectedContactId: null,
+                selectedContactReason: null,
+                selectedContactConfidence: null,
                 unresolvedCustomer: false,
               })}
             />
+            {form.reviewedCustomerJson.selectedCustomerId && form.reviewedCustomerJson.selectedCustomerReason && (
+              <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                {form.reviewedCustomerJson.selectedCustomerReason}
+                {form.reviewedCustomerJson.selectedCustomerConfidence != null ? ` (${form.reviewedCustomerJson.selectedCustomerConfidence}% confidence)` : ""}
+              </div>
+            )}
             <SearchableReviewSelector
               label="Selected contact"
               searchLabel="Contact search"
@@ -1665,9 +1712,17 @@ function DraftBuilderPanel({
               onSearchChange={setContactSearch}
               onChange={(contactId) => updateCustomer({
                 selectedContactId: contactId,
+                selectedContactReason: contactId ? "Staff selected contact." : null,
+                selectedContactConfidence: null,
                 unresolvedContact: false,
               })}
             />
+            {form.reviewedCustomerJson.selectedContactId && form.reviewedCustomerJson.selectedContactReason && (
+              <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                {form.reviewedCustomerJson.selectedContactReason}
+                {form.reviewedCustomerJson.selectedContactConfidence != null ? ` (${form.reviewedCustomerJson.selectedContactConfidence}% confidence)` : ""}
+              </div>
+            )}
             <label className="flex items-center gap-2 text-sm text-foreground">
               <input
                 type="checkbox"
@@ -1706,7 +1761,7 @@ function DraftBuilderPanel({
           <h3 className="text-sm font-semibold text-foreground">Order Details</h3>
           <div className="mt-3 grid grid-cols-1 gap-3">
             <label className="space-y-1 text-xs text-muted-foreground">PO number<Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} /></label>
-            <label className="space-y-1 text-xs text-muted-foreground">Due date<Input value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} /></label>
+            <label className="space-y-1 text-xs text-muted-foreground">Due date<Input type="date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} /></label>
             <label className="space-y-1 text-xs text-muted-foreground">Ship method<Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: trimToNull(event.target.value) })} /></label>
             <label className="space-y-1 text-xs text-muted-foreground">
               Pickup / shipping
@@ -1732,6 +1787,16 @@ function DraftBuilderPanel({
             ) : (
               form.reviewedLineItemsJson.map((lineItem, index) => {
                 const parsedLine = draft.lineItems[index];
+                const productOptions = mergeReviewOptions(
+                  (parsedLine?.productCandidates ?? []).map(candidateToReviewOption),
+                  lineItem.selectedProductId && !(parsedLine?.productCandidates ?? []).some((candidate) => candidate.id === lineItem.selectedProductId)
+                    ? [{
+                        id: lineItem.selectedProductId,
+                        label: lineItem.productName || lineItem.selectedProductId,
+                        description: lineItem.interpretedProductReason,
+                      }]
+                    : [],
+                );
                 return (
                 <div key={index} className="rounded-md border border-border p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1745,16 +1810,25 @@ function DraftBuilderPanel({
                       Product candidate
                       <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={lineItem.selectedProductId ?? ""} onChange={(event) => updateLineItem(index, {
                         selectedProductId: trimToNull(event.target.value),
+                        interpretedProductId: null,
+                        interpretedProductReason: trimToNull(event.target.value) ? "Staff selected product. Candidate ranking is advisory." : null,
+                        interpretedProductConfidence: null,
                         optionSelectionsJson: null,
                         pbv2TreeVersionId: null,
                         pbv2OptionSuggestions: [],
                       })}>
                         <option value="">Unselected</option>
-                        {(parsedLine?.productCandidates ?? []).map((candidate) => (
-                          <option key={candidate.id} value={candidate.id}>{candidate.label}</option>
+                        {productOptions.map((option) => (
+                          <option key={option.id} value={option.id}>{option.description ? `${option.label} - ${option.description}` : option.label}</option>
                         ))}
                       </select>
                     </label>
+                    {lineItem.selectedProductId && lineItem.interpretedProductReason && (
+                      <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                        {lineItem.interpretedProductReason}
+                        {lineItem.interpretedProductConfidence != null ? ` (${lineItem.interpretedProductConfidence}% confidence)` : ""}
+                      </div>
+                    )}
                     <ReviewLineItemProductOptions
                       lineItem={lineItem}
                       index={index}

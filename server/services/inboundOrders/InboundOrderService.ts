@@ -28,7 +28,7 @@ import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTre
 import {
   getInboundPbv2RequiredOptions,
   getMissingInboundPbv2RequiredOptions,
-  suggestInboundPbv2Options,
+  hydrateInboundPbv2Selections,
 } from "@shared/inboundOrderPbv2Options";
 import {
   inboundOrdersRepository,
@@ -850,7 +850,11 @@ export class InboundOrderService {
       throw new InboundOrderTransitionError("Parse the inbound order before starting editable draft review.", 409);
     }
 
-    const payload = this.buildEditableReviewDraftFromParse(parsedDraft);
+    const payload = await this.buildEditableReviewDraftFromParse({
+      organizationId: args.organizationId,
+      record,
+      draft: parsedDraft,
+    });
     const snapshot = await this.persistEditableReviewDraftSnapshot({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
@@ -884,10 +888,10 @@ export class InboundOrderService {
     }
 
     const sourceAttempt = await this.resolveReviewDraftSourceAttempt(args.organizationId, args.inboundRecordId, existingSnapshot, latestAttempt);
-    const payload = inboundOrderReviewDraftPayloadSchema.parse({
+    const payload = this.normalizeReviewDraftPayload(record, inboundOrderReviewDraftPayloadSchema.parse({
       ...args.draft,
       status: "draft",
-    });
+    }));
     const snapshot = await this.persistEditableReviewDraftSnapshot({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
@@ -922,7 +926,7 @@ export class InboundOrderService {
     }
 
     const sourceAttempt = await this.resolveReviewDraftSourceAttempt(args.organizationId, args.inboundRecordId, existingSnapshot, latestAttempt);
-    const payload = inboundOrderReviewDraftPayloadSchema.parse({
+    const payload = this.normalizeReviewDraftPayload(record, inboundOrderReviewDraftPayloadSchema.parse({
       status: "ready_to_convert",
       reviewedCustomerJson: baseDto.reviewedCustomerJson,
       reviewedOrderJson: baseDto.reviewedOrderJson,
@@ -931,7 +935,7 @@ export class InboundOrderService {
       missingDecisionsJson: baseDto.missingDecisionsJson,
       warningsJson: baseDto.warningsJson,
       reviewNotes: baseDto.reviewNotes,
-    });
+    }));
     const snapshot = await this.persistEditableReviewDraftSnapshot({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
@@ -976,10 +980,10 @@ export class InboundOrderService {
       throw new InboundOrderTransitionError("Latest editable review draft is invalid and cannot be reopened.", 409);
     }
     const sourceAttempt = await this.resolveReviewDraftSourceAttempt(args.organizationId, args.inboundRecordId, existingSnapshot, latestAttempt);
-    const payload = inboundOrderReviewDraftPayloadSchema.parse({
+    const payload = this.normalizeReviewDraftPayload(record, inboundOrderReviewDraftPayloadSchema.parse({
       ...existingPayload,
       status: "draft",
-    });
+    }));
     const snapshot = await this.persistEditableReviewDraftSnapshot({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
@@ -1064,7 +1068,7 @@ export class InboundOrderService {
     }
 
     const treeJson = (result.activeTree?.treeJson ?? null) as OptionTreeV2 | null;
-    const suggestionResult = suggestInboundPbv2Options(
+    const suggestionResult = hydrateInboundPbv2Selections(
       treeJson,
       args.lineItem ? this.lineItemOptionEvidenceText(args.lineItem) : "",
     );
@@ -1584,7 +1588,12 @@ export class InboundOrderService {
     return parsed.success ? parsed.data : null;
   }
 
-  private buildEditableReviewDraftFromParse(draft: InboundOrderParsedDraft): InboundOrderReviewDraftPayload {
+  private async buildEditableReviewDraftFromParse(args: {
+    organizationId: string;
+    record: InboundOrderRecord;
+    draft: InboundOrderParsedDraft;
+  }): Promise<InboundOrderReviewDraftPayload> {
+    const { draft } = args;
     const warnings = [
       ...draft.globalWarnings,
       ...draft.customer.warnings,
@@ -1593,32 +1602,55 @@ export class InboundOrderService {
       ...draft.artwork.flatMap((artwork) => artwork.warnings),
     ];
     const hasArtwork = draft.artwork.length > 0 || draft.lineItems.some((lineItem) => lineItem.artworkRefs.length > 0);
-    return inboundOrderReviewDraftPayloadSchema.parse({
-      status: "draft",
-      reviewedCustomerJson: {
-        sourceName: draft.customer.sourceName,
-        sourceEmail: draft.customer.sourceEmail,
-        sourcePhone: draft.customer.sourcePhone,
-        companyName: draft.customer.companyName,
-        selectedCustomerId: draft.customer.candidateCustomerIds[0] ?? null,
-        selectedContactId: draft.customer.candidateContactIds[0] ?? null,
-        unresolvedCustomer: false,
-        unresolvedContact: false,
-        notes: null,
-      },
-      reviewedOrderJson: {
-        poNumber: draft.order.poNumber,
-        dueDate: draft.order.requestedDueDate,
-        shipMethod: draft.order.requestedShipMethod,
-        fulfillmentType: draft.order.requestedPickup === true ? "pickup" : "unknown",
-        internalNotes: draft.order.notes,
-        customerNotes: null,
-      },
-      reviewedLineItemsJson: draft.lineItems.map((lineItem) => ({
+    const customerInterpretation = await this.interpretCustomerAndContact(args.organizationId, draft);
+    const reviewedLineItemsJson = [];
+    for (const lineItem of draft.lineItems) {
+      const productInterpretation = await this.interpretLineItemProduct(args.organizationId, lineItem);
+      const selectedProductId = productInterpretation?.productId ?? lineItem.candidateProductIds[0] ?? null;
+      let optionSelectionsJson: LineItemOptionSelectionsV2 | null = null;
+      let pbv2TreeVersionId: string | null = null;
+      let pbv2OptionSuggestions: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]["pbv2OptionSuggestions"] = [];
+
+      if (selectedProductId) {
+        const productOptions = await this.repository.getProductActivePbv2Tree(args.organizationId, selectedProductId);
+        const treeJson = (productOptions?.activeTree?.treeJson ?? null) as OptionTreeV2 | null;
+        if (treeJson) {
+          const hydrated = hydrateInboundPbv2Selections(treeJson, this.lineItemOptionEvidenceText({
+            sourceLineItemId: null,
+            sourceText: lineItem.sourceText,
+            productName: lineItem.productName,
+            selectedProductId,
+            interpretedProductId: productInterpretation?.productId ?? null,
+            interpretedProductReason: productInterpretation?.reason ?? null,
+            interpretedProductConfidence: productInterpretation?.confidence ?? null,
+            productUnresolved: false,
+            quantity: lineItem.quantity,
+            width: lineItem.width,
+            height: lineItem.height,
+            dimensionsUnit: lineItem.dimensionsUnit,
+            materialText: lineItem.materialText,
+            printSpecs: lineItem.optionTexts,
+            optionTexts: lineItem.optionTexts,
+            finishingTexts: lineItem.finishingTexts,
+            optionSelectionsJson: null,
+            pbv2TreeVersionId: null,
+            pbv2OptionSuggestions: [],
+            notes: null,
+          }));
+          optionSelectionsJson = Object.keys(hydrated.selections.selected).length > 0 ? hydrated.selections : null;
+          pbv2TreeVersionId = productOptions?.activeTree?.id ?? productOptions?.product.pbv2ActiveTreeVersionId ?? null;
+          pbv2OptionSuggestions = hydrated.suggestions;
+        }
+      }
+
+      reviewedLineItemsJson.push({
         sourceLineItemId: null,
         sourceText: lineItem.sourceText,
-        productName: lineItem.productName,
-        selectedProductId: lineItem.candidateProductIds[0] ?? null,
+        productName: productInterpretation?.label ?? lineItem.productName,
+        selectedProductId,
+        interpretedProductId: productInterpretation?.productId ?? null,
+        interpretedProductReason: productInterpretation?.reason ?? null,
+        interpretedProductConfidence: productInterpretation?.confidence ?? null,
         productUnresolved: false,
         quantity: lineItem.quantity,
         width: lineItem.width,
@@ -1628,11 +1660,39 @@ export class InboundOrderService {
         printSpecs: lineItem.optionTexts,
         optionTexts: lineItem.optionTexts,
         finishingTexts: lineItem.finishingTexts,
-        optionSelectionsJson: null,
-        pbv2TreeVersionId: null,
-        pbv2OptionSuggestions: [],
+        optionSelectionsJson,
+        pbv2TreeVersionId,
+        pbv2OptionSuggestions,
         notes: null,
-      })),
+      });
+    }
+
+    return inboundOrderReviewDraftPayloadSchema.parse({
+      status: "draft",
+      reviewedCustomerJson: {
+        sourceName: draft.customer.sourceName,
+        sourceEmail: draft.customer.sourceEmail,
+        sourcePhone: draft.customer.sourcePhone,
+        companyName: draft.customer.companyName,
+        selectedCustomerId: customerInterpretation.customerId,
+        selectedCustomerReason: customerInterpretation.customerReason,
+        selectedCustomerConfidence: customerInterpretation.customerConfidence,
+        selectedContactId: customerInterpretation.contactId,
+        selectedContactReason: customerInterpretation.contactReason,
+        selectedContactConfidence: customerInterpretation.contactConfidence,
+        unresolvedCustomer: false,
+        unresolvedContact: false,
+        notes: null,
+      },
+      reviewedOrderJson: {
+        poNumber: draft.order.poNumber,
+        dueDate: normalizeInboundReviewedDueDate(draft.order.requestedDueDate, args.record.receivedAt),
+        shipMethod: draft.order.requestedShipMethod,
+        fulfillmentType: draft.order.requestedPickup === true ? "pickup" : "unknown",
+        internalNotes: draft.order.notes,
+        customerNotes: null,
+      },
+      reviewedLineItemsJson,
       reviewedArtworkJson: {
         status: hasArtwork ? "supplied" : "missing",
         refs: draft.artwork.map((artwork) => ({
@@ -1655,6 +1715,192 @@ export class InboundOrderService {
       })),
       reviewNotes: null,
     });
+  }
+
+  private normalizeReviewDraftPayload(
+    record: InboundOrderRecord,
+    payload: InboundOrderReviewDraftPayload,
+  ): InboundOrderReviewDraftPayload {
+    return inboundOrderReviewDraftPayloadSchema.parse({
+      ...payload,
+      reviewedOrderJson: {
+        ...payload.reviewedOrderJson,
+        dueDate: normalizeInboundReviewedDueDate(payload.reviewedOrderJson.dueDate, record.receivedAt),
+      },
+    });
+  }
+
+  private async interpretCustomerAndContact(
+    organizationId: string,
+    draft: InboundOrderParsedDraft,
+  ): Promise<{
+    customerId: string | null;
+    customerReason: string | null;
+    customerConfidence: number | null;
+    contactId: string | null;
+    contactReason: string | null;
+    contactConfidence: number | null;
+  }> {
+    const customerCandidates = new Map<string, { id: string; confidence: number; reason: string }>();
+    for (const candidate of draft.customer.customerCandidates) {
+      customerCandidates.set(candidate.id, {
+        id: candidate.id,
+        confidence: candidate.confidence,
+        reason: candidate.reason || "Matched parsed customer candidate.",
+      });
+    }
+
+    const addCustomerSearchResults = (results: InboundCustomerSearchResult[], confidence: number, reason: string) => {
+      for (const result of results) {
+        const existing = customerCandidates.get(result.id);
+        if (!existing) {
+          customerCandidates.set(result.id, { id: result.id, confidence, reason });
+        } else {
+          customerCandidates.set(result.id, {
+            id: result.id,
+            confidence: Math.max(existing.confidence, confidence),
+            reason: existing.reason.includes(reason) ? existing.reason : `${existing.reason} ${reason}`,
+          });
+        }
+      }
+    };
+
+    const sourceEmail = draft.customer.sourceEmail?.trim() || null;
+    const companyName = draft.customer.companyName?.trim() || draft.customer.sourceName?.trim() || null;
+    if (sourceEmail) {
+      addCustomerSearchResults(
+        await this.repository.searchCustomers(organizationId, sourceEmail, 5),
+        94,
+        "Matched by sender email.",
+      );
+      const domain = sourceEmail.split("@")[1]?.trim();
+      if (domain) {
+        addCustomerSearchResults(
+          await this.repository.searchCustomers(organizationId, domain, 5),
+          88,
+          "Matched by sender domain.",
+        );
+      }
+    }
+    if (companyName) {
+      const matches = await this.repository.searchCustomers(organizationId, companyName, 5);
+      addCustomerSearchResults(
+        matches,
+        matches.length === 1 ? 92 : 84,
+        "Matched by company name.",
+      );
+    }
+
+    const selectedCustomer = this.pickSingleStrongMatch(Array.from(customerCandidates.values()), 88);
+    const selectedCustomerId = selectedCustomer?.id ?? null;
+
+    const contactCandidates = new Map<string, { id: string; confidence: number; reason: string }>();
+    for (const candidate of draft.customer.contactCandidates) {
+      contactCandidates.set(candidate.id, {
+        id: candidate.id,
+        confidence: candidate.confidence,
+        reason: candidate.reason || "Matched parsed contact candidate.",
+      });
+    }
+    const addContactSearchResults = (results: InboundContactSearchResult[], confidence: number, reason: string) => {
+      for (const result of results) {
+        const existing = contactCandidates.get(result.id);
+        if (!existing) {
+          contactCandidates.set(result.id, { id: result.id, confidence, reason });
+        } else {
+          contactCandidates.set(result.id, {
+            id: result.id,
+            confidence: Math.max(existing.confidence, confidence),
+            reason: existing.reason.includes(reason) ? existing.reason : `${existing.reason} ${reason}`,
+          });
+        }
+      }
+    };
+
+    if (selectedCustomerId && sourceEmail) {
+      addContactSearchResults(
+        await this.repository.searchCustomerContacts(organizationId, selectedCustomerId, sourceEmail, 5),
+        97,
+        "Matched by email.",
+      );
+    }
+    if (selectedCustomerId && draft.customer.sourceName) {
+      addContactSearchResults(
+        await this.repository.searchCustomerContacts(organizationId, selectedCustomerId, draft.customer.sourceName, 5),
+        86,
+        "Matched by contact name.",
+      );
+    }
+    if (selectedCustomerId && sourceEmail?.includes("@")) {
+      addContactSearchResults(
+        await this.repository.searchCustomerContacts(organizationId, selectedCustomerId, sourceEmail.split("@")[1], 5),
+        80,
+        "Matched by customer contact domain.",
+      );
+    }
+
+    const selectedContact = selectedCustomerId
+      ? this.pickSingleStrongMatch(Array.from(contactCandidates.values()), 80)
+      : null;
+
+    return {
+      customerId: selectedCustomerId,
+      customerReason: selectedCustomer ? selectedCustomer.reason : null,
+      customerConfidence: selectedCustomer ? selectedCustomer.confidence : null,
+      contactId: selectedContact?.id ?? null,
+      contactReason: selectedContact ? selectedContact.reason : null,
+      contactConfidence: selectedContact ? selectedContact.confidence : null,
+    };
+  }
+
+  private async interpretLineItemProduct(
+    organizationId: string,
+    lineItem: InboundOrderParsedDraft["lineItems"][number],
+  ): Promise<{ productId: string; label: string; confidence: number; reason: string } | null> {
+    const candidates = new Map<string, { productId: string; label: string; confidence: number; reason: string }>();
+    for (const candidate of lineItem.productCandidates) {
+      candidates.set(candidate.id, {
+        productId: candidate.id,
+        label: candidate.label,
+        confidence: candidate.confidence,
+        reason: candidate.reason || "Matched parsed product candidate.",
+      });
+    }
+
+    const canonicalMatches = await this.repository.searchProductCandidates({
+      organizationId,
+      sourceText: lineItem.sourceText,
+      productName: lineItem.productName,
+      materialText: lineItem.materialText,
+      optionTexts: [...lineItem.optionTexts, ...lineItem.artworkRefs],
+      finishingTexts: lineItem.finishingTexts,
+      limit: 5,
+    });
+    for (const match of canonicalMatches) {
+      const existing = candidates.get(match.id);
+      if (!existing || existing.confidence < match.confidence) {
+        candidates.set(match.id, {
+          productId: match.id,
+          label: match.label,
+          confidence: match.confidence,
+          reason: match.reason || "Interpreted from catalog product data.",
+        });
+      }
+    }
+
+    return this.pickSingleStrongMatch(Array.from(candidates.values()), 72);
+  }
+
+  private pickSingleStrongMatch<T extends { confidence: number }>(
+    candidates: T[],
+    minimumConfidence: number,
+  ): T | null {
+    const sorted = candidates
+      .filter((candidate) => Number.isFinite(candidate.confidence) && candidate.confidence >= minimumConfidence)
+      .sort((left, right) => right.confidence - left.confidence);
+    if (sorted.length === 0) return null;
+    if (sorted.length > 1 && sorted[0].confidence - sorted[1].confidence < 6) return null;
+    return sorted[0];
   }
 
   private reviewDraftDtoFromSnapshot(
