@@ -246,6 +246,15 @@ function getMeasuredWorkspaceWidth(workspaceWidth: number): number {
   return window.innerWidth;
 }
 
+function getVisibleWorkspaceWidth(element: HTMLElement | null): number {
+  if (!element || typeof window === "undefined") return 0;
+  const rect = element.getBoundingClientRect();
+  const measuredWidth = rect.width || element.clientWidth;
+  const visibleWidth = Math.max(0, window.innerWidth - Math.max(0, rect.left));
+  const boundedWidth = visibleWidth > 0 ? Math.min(measuredWidth, visibleWidth) : measuredWidth;
+  return Math.max(0, Math.round(boundedWidth));
+}
+
 function getWorkspaceQueueWidth(queueCollapsed: boolean): number {
   return queueCollapsed
     ? workspaceLayoutDefaults.queueCollapsedWidth
@@ -1637,7 +1646,7 @@ export default function InboundOrdersPage() {
 
   useEffect(() => {
     const measureWorkspace = () => {
-      const measuredWidth = workspaceRef.current?.clientWidth ?? 0;
+      const measuredWidth = getVisibleWorkspaceWidth(workspaceRef.current);
       setWorkspaceWidth(measuredWidth > 0 ? measuredWidth : window.innerWidth);
     };
 
@@ -1908,8 +1917,10 @@ export default function InboundOrdersPage() {
           )}
           data-testid="inbound-queue-panel"
           style={{
-            width: "100%",
-            flexBasis: `${queueWidth}px`,
+            width: `${queueWidth}px`,
+            minWidth: `${queueWidth}px`,
+            maxWidth: `${queueWidth}px`,
+            flex: `0 0 ${queueWidth}px`,
           } as CSSProperties}
         >
           {queueCollapsed ? (
