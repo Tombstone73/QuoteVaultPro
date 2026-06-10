@@ -195,6 +195,7 @@ export const inboundOrderReviewedCustomerSchema = z.object({
   selectedCustomerId: z.string().trim().min(1).nullable().default(null),
   selectedContactId: z.string().trim().min(1).nullable().default(null),
   unresolvedCustomer: z.boolean().default(false),
+  unresolvedContact: z.boolean().default(false),
   notes: nullableTextSchema.default(null),
 });
 

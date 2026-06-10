@@ -39,6 +39,8 @@ import {
   type InboundOrdersListResponse,
   type InboundOrderStatusGroup,
   type InboundOrderQueueSummary,
+  type InboundMatchedContactSummary,
+  type InboundMatchedCustomerSummary,
   type ManualInboundOrderCreateRequest,
   type ManualInboundOrderCreateResponse,
 } from "@shared/inboundOrdersApi";
@@ -79,6 +81,20 @@ type ClientInboundOrderParseResponse = Omit<InboundOrderParseResponse, "data"> &
   data: Omit<InboundOrderParseResponse["data"], "record"> & {
     record: ClientInboundOrderRecord;
   };
+};
+
+type InboundCustomerSearchResponse = {
+  success: true;
+  data: InboundMatchedCustomerSummary[];
+};
+
+type InboundContactSearchResponse = {
+  success: true;
+  data: Array<InboundMatchedContactSummary & {
+    firstName?: string | null;
+    lastName?: string | null;
+    isPrimary?: boolean;
+  }>;
 };
 
 type QueueStatusFilter = "all" | InboundOrderStatusGroup;
@@ -152,7 +168,7 @@ function buildInboundOrderListUrl(filters: QueueFilters) {
   if (filters.statusGroup !== "all") params.set("statusGroup", filters.statusGroup);
   if (filters.sourceType !== "all") params.set("sourceType", filters.sourceType);
   if (filters.hasWarnings) params.set("hasWarnings", "true");
-  if (filters.unconvertedOnly) params.set("converted", "false");
+  if (filters.unconvertedOnly && filters.statusGroup !== "converted") params.set("converted", "false");
   if (filters.search.trim()) params.set("search", filters.search.trim());
 
   return `/api/inbound-orders?${params.toString()}`;
@@ -638,7 +654,13 @@ function QueueTriageControls({
 }) {
   const setFilter = (patch: Partial<QueueFilters>) => onChange({ ...filters, ...patch });
   const statusButtons: Array<{ value: QueueStatusFilter; label: string; count: number | null }> = [
-    { value: "all", label: "All", count: null },
+    {
+      value: "all",
+      label: "Active",
+      count: summary
+        ? summary.needsReview + summary.waitingOnCustomer + summary.readyReviewed
+        : null,
+    },
     { value: "needs_review", label: "Needs Review", count: summary?.needsReview ?? 0 },
     { value: "waiting", label: "Waiting", count: summary?.waitingOnCustomer ?? 0 },
     { value: "ready", label: "Ready", count: summary?.readyReviewed ?? 0 },
@@ -667,7 +689,10 @@ function QueueTriageControls({
             size="sm"
             className="h-auto min-h-8 min-w-0 max-w-full whitespace-normal"
             variant={filters.statusGroup === button.value ? "default" : "outline"}
-            onClick={() => setFilter({ statusGroup: button.value })}
+            onClick={() => setFilter({
+              statusGroup: button.value,
+              unconvertedOnly: button.value === "converted" ? false : filters.unconvertedOnly,
+            })}
           >
             {button.label}
             {button.count !== null && <Badge variant="secondary" className="ml-2">{button.count}</Badge>}
@@ -918,7 +943,10 @@ function SourceEvidencePanel({
   parseError,
   isParsing,
   parseDisabled,
+  isRejecting,
+  rejectDisabled,
   onParse,
+  onReject,
 }: {
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
   selectedRecord: ClientInboundOrderRecord | null;
@@ -928,7 +956,10 @@ function SourceEvidencePanel({
   parseError: Error | null;
   isParsing: boolean;
   parseDisabled: boolean;
+  isRejecting: boolean;
+  rejectDisabled: boolean;
   onParse: () => void;
+  onReject: () => void;
 }) {
   if (!selectedRecord) {
     return <EmptyPanel title="Select a record" detail="Source evidence will appear once an inbound item is selected." />;
@@ -965,6 +996,21 @@ function SourceEvidencePanel({
             <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
               <Badge variant="secondary">{titleCase(record.sourceType)}</Badge>
               <StatusBadge status={record.status} />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={onReject}
+                disabled={rejectDisabled}
+                aria-label="Reject inbound record"
+              >
+                {isRejecting ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <AlertTriangle className="mr-2 h-4 w-4" />
+                )}
+                Reject
+              </Button>
               <Button type="button" size="sm" onClick={onParse} disabled={parseDisabled}>
                 {isParsing ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1144,6 +1190,105 @@ function SourceEvidencePanel({
   );
 }
 
+type ReviewSelectOption = {
+  id: string;
+  label: string;
+  description?: string | null;
+};
+
+function candidateToReviewOption(candidate: InboundOrderParsedDraft["customer"]["customerCandidates"][number]): ReviewSelectOption {
+  return {
+    id: candidate.id,
+    label: candidate.label,
+    description: candidate.reason,
+  };
+}
+
+function customerToReviewOption(customer: InboundMatchedCustomerSummary): ReviewSelectOption {
+  return {
+    id: customer.id,
+    label: customer.companyName || customer.email || customer.id,
+    description: [customer.email, customer.phone, customer.status].filter(Boolean).join(" / ") || null,
+  };
+}
+
+function contactToReviewOption(contact: InboundContactSearchResponse["data"][number]): ReviewSelectOption {
+  return {
+    id: contact.id,
+    label: contact.name || contact.email || contact.id,
+    description: [
+      contact.email,
+      contact.phone ?? contact.mobile,
+      contact.isPrimary ? "Primary" : null,
+    ].filter(Boolean).join(" / ") || null,
+  };
+}
+
+function mergeReviewOptions(...groups: ReviewSelectOption[][]): ReviewSelectOption[] {
+  const seen = new Set<string>();
+  const merged: ReviewSelectOption[] = [];
+  groups.flat().forEach((option) => {
+    if (!option.id || seen.has(option.id)) return;
+    seen.add(option.id);
+    merged.push(option);
+  });
+  return merged;
+}
+
+function SearchableReviewSelector({
+  label,
+  searchLabel,
+  searchPlaceholder,
+  value,
+  searchValue,
+  options,
+  isLoading,
+  disabled,
+  onSearchChange,
+  onChange,
+}: {
+  label: string;
+  searchLabel: string;
+  searchPlaceholder: string;
+  value: string | null;
+  searchValue: string;
+  options: ReviewSelectOption[];
+  isLoading: boolean;
+  disabled?: boolean;
+  onSearchChange: (value: string) => void;
+  onChange: (value: string | null) => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-2">
+      <label className="space-y-1 text-xs text-muted-foreground">
+        {searchLabel}
+        <Input
+          value={searchValue}
+          onChange={(event) => onSearchChange(event.target.value)}
+          placeholder={searchPlaceholder}
+          disabled={disabled}
+        />
+      </label>
+      <label className="space-y-1 text-xs text-muted-foreground">
+        {label}
+        <select
+          className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+          value={value ?? ""}
+          onChange={(event) => onChange(trimToNull(event.target.value))}
+          disabled={disabled}
+        >
+          <option value="">{isLoading ? "Searching..." : "Unselected"}</option>
+          {options.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.description ? `${option.label} - ${option.description}` : option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
+  );
+}
+
 function DraftBuilderPanel({
   selectedRecord,
   isLoading,
@@ -1177,6 +1322,8 @@ function DraftBuilderPanel({
 }) {
   const [form, setForm] = useState<ReviewDraftFormState | null>(null);
   const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [contactSearch, setContactSearch] = useState("");
 
   useEffect(() => {
     if (!reviewDraft) {
@@ -1188,6 +1335,33 @@ function DraftBuilderPanel({
     setForm(next);
     setBaseForm(next);
   }, [reviewDraft?.snapshotId, reviewDraft?.updatedAt, reviewDraft?.status]);
+
+  useEffect(() => {
+    setCustomerSearch("");
+    setContactSearch("");
+  }, [selectedRecord?.id]);
+
+  const draftForSelectors = draftPreview?.draft ?? null;
+  const selectedCustomerId = form?.reviewedCustomerJson.selectedCustomerId ?? null;
+  const customerSearchQuery = useQuery({
+    queryKey: ["/api/inbound-orders/customer-search", customerSearch],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: "20" });
+      if (customerSearch.trim()) params.set("search", customerSearch.trim());
+      return readJson<InboundCustomerSearchResponse>(`/api/inbound-orders/customer-search?${params.toString()}`);
+    },
+    enabled: Boolean(selectedRecord && draftForSelectors && reviewDraft),
+  });
+  const contactSearchQuery = useQuery({
+    queryKey: ["/api/inbound-orders/contact-search", selectedCustomerId, contactSearch],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: "20" });
+      if (selectedCustomerId) params.set("customerId", selectedCustomerId);
+      if (contactSearch.trim()) params.set("search", contactSearch.trim());
+      return readJson<InboundContactSearchResponse>(`/api/inbound-orders/contact-search?${params.toString()}`);
+    },
+    enabled: Boolean(selectedRecord && draftForSelectors && reviewDraft),
+  });
 
   if (!selectedRecord) {
     return <EmptyPanel title="Draft builder" detail="Draft builder will appear after parsing." />;
@@ -1258,6 +1432,14 @@ function DraftBuilderPanel({
     ...draft.lineItems.flatMap((lineItem) => lineItem.warnings),
     ...draft.artwork.flatMap((artwork) => artwork.warnings),
   ];
+  const customerOptions = mergeReviewOptions(
+    draft.customer.customerCandidates.map(candidateToReviewOption),
+    (customerSearchQuery.data?.data ?? []).map(customerToReviewOption),
+  );
+  const contactOptions = mergeReviewOptions(
+    draft.customer.contactCandidates.map(candidateToReviewOption),
+    (contactSearchQuery.data?.data ?? []).map(contactToReviewOption),
+  );
   const dirty = !formStatesEqual(form, baseForm);
   const actionPending = isSaving || isMarkingReady || isReopening;
   const validationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
@@ -1353,27 +1535,57 @@ function DraftBuilderPanel({
               Company
               <Input value={form.reviewedCustomerJson.companyName ?? ""} onChange={(event) => updateCustomer({ companyName: trimToNull(event.target.value) })} />
             </label>
-            <label className="space-y-1 text-xs text-muted-foreground">
-              Customer candidate
-              <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedCustomerJson.selectedCustomerId ?? ""} onChange={(event) => updateCustomer({ selectedCustomerId: trimToNull(event.target.value) })}>
-                <option value="">Unselected</option>
-                {draft.customer.customerCandidates.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>{candidate.label}</option>
-                ))}
-              </select>
-            </label>
-            <label className="space-y-1 text-xs text-muted-foreground">
-              Contact candidate
-              <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedCustomerJson.selectedContactId ?? ""} onChange={(event) => updateCustomer({ selectedContactId: trimToNull(event.target.value) })}>
-                <option value="">Unselected</option>
-                {draft.customer.contactCandidates.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>{candidate.label}</option>
-                ))}
-              </select>
+            <SearchableReviewSelector
+              label="Selected customer"
+              searchLabel="Customer search"
+              searchPlaceholder="Search all customers"
+              value={form.reviewedCustomerJson.selectedCustomerId}
+              searchValue={customerSearch}
+              options={customerOptions}
+              isLoading={customerSearchQuery.isFetching}
+              onSearchChange={setCustomerSearch}
+              onChange={(customerId) => updateCustomer({
+                selectedCustomerId: customerId,
+                selectedContactId: null,
+                unresolvedCustomer: false,
+              })}
+            />
+            <SearchableReviewSelector
+              label="Selected contact"
+              searchLabel="Contact search"
+              searchPlaceholder={form.reviewedCustomerJson.selectedCustomerId ? "Search contacts for selected customer" : "Search all contacts"}
+              value={form.reviewedCustomerJson.selectedContactId}
+              searchValue={contactSearch}
+              options={contactOptions}
+              isLoading={contactSearchQuery.isFetching}
+              onSearchChange={setContactSearch}
+              onChange={(contactId) => updateCustomer({
+                selectedContactId: contactId,
+                unresolvedContact: false,
+              })}
+            />
+            <label className="flex items-center gap-2 text-sm text-foreground">
+              <input
+                type="checkbox"
+                checked={form.reviewedCustomerJson.unresolvedCustomer}
+                onChange={(event) => updateCustomer({
+                  unresolvedCustomer: event.target.checked,
+                  selectedCustomerId: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerId,
+                  selectedContactId: event.target.checked ? null : form.reviewedCustomerJson.selectedContactId,
+                })}
+              />
+              Customer unresolved
             </label>
             <label className="flex items-center gap-2 text-sm text-foreground">
-              <input type="checkbox" checked={form.reviewedCustomerJson.unresolvedCustomer} onChange={(event) => updateCustomer({ unresolvedCustomer: event.target.checked })} />
-              Customer unresolved
+              <input
+                type="checkbox"
+                checked={form.reviewedCustomerJson.unresolvedContact ?? false}
+                onChange={(event) => updateCustomer({
+                  unresolvedContact: event.target.checked,
+                  selectedContactId: event.target.checked ? null : form.reviewedCustomerJson.selectedContactId,
+                })}
+              />
+              Contact unresolved
             </label>
             <label className="space-y-1 text-xs text-muted-foreground">
               Customer review notes
@@ -1773,13 +1985,44 @@ export default function InboundOrdersPage() {
     },
   });
 
+  const rejectInboundOrderMutation = useMutation({
+    mutationFn: ({ recordId, reason }: { recordId: string; reason: string | null }) => (
+      postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/reject`, { reason })
+    ),
+    onSuccess: async (response, variables) => {
+      queryClient.setQueryData(["/api/inbound-orders", variables.recordId], response);
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
+      if (queueFilters.statusGroup === "rejected") {
+        setSelectedId(variables.recordId);
+      } else {
+        setSelectedId(null);
+      }
+    },
+  });
+
   const isParseInFlight = Boolean(parsingRecordId) || parseMutation.isPending;
   const isSelectedRecordParsing = Boolean(selectedId && parsingRecordId === selectedId);
+  const selectedRecordIsTerminal = Boolean(
+    selectedRecord
+      && (
+        selectedRecord.status === "terminal"
+        || selectedRecord.status === "submitted"
+        || selectedRecord.status === "approved"
+        || selectedRecord.createdQuoteId
+        || selectedRecord.createdOrderId
+      ),
+  );
   const runParseForSelectedRecord = () => {
     if (!selectedId || parseInFlightRef.current) return;
     parseInFlightRef.current = true;
     setParsingRecordId(selectedId);
     parseMutation.mutate(selectedId);
+  };
+  const rejectSelectedRecord = () => {
+    if (!selectedId || rejectInboundOrderMutation.isPending || selectedRecordIsTerminal) return;
+    const reason = window.prompt("Optional reason for removing this inbound record from the active queue:");
+    if (reason === null) return;
+    rejectInboundOrderMutation.mutate({ recordId: selectedId, reason: trimToNull(reason) });
   };
 
   const startResize = (
@@ -2002,8 +2245,11 @@ export default function InboundOrdersPage() {
               draftPreview={draftPreviewQuery.data?.data}
               parseError={parseMutation.error as Error | null}
               isParsing={isSelectedRecordParsing}
-              parseDisabled={isParseInFlight}
+              parseDisabled={isParseInFlight || selectedRecordIsTerminal}
+              isRejecting={rejectInboundOrderMutation.isPending}
+              rejectDisabled={rejectInboundOrderMutation.isPending || selectedRecordIsTerminal}
               onParse={runParseForSelectedRecord}
+              onReject={rejectSelectedRecord}
             />
           </div>
           <button

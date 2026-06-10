@@ -305,6 +305,7 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
       selectedCustomerId: parsed.customer.candidateCustomerIds?.[0] ?? null,
       selectedContactId: parsed.customer.candidateContactIds?.[0] ?? null,
       unresolvedCustomer: false,
+      unresolvedContact: false,
       notes: null,
     },
     reviewedOrderJson: {
@@ -1158,6 +1159,158 @@ describe("InboundOrdersPage", () => {
       button.textContent?.includes("Order creation starts in Phase 4.")
     ));
     expect(createDraftButton?.disabled).toBe(true);
+  });
+
+  test("searches and saves selected customer and contact in review draft", async () => {
+    const row = record();
+    const draft = parsedDraft();
+    const attempt = parseAttempt({ parsedDraft: draft, confidence: 82, warnings: draft.globalWarnings });
+    let savedBody: any = null;
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview({ draft, latestAttempt: attempt }));
+      }
+      if (path.startsWith("/api/inbound-orders/customer-search")) {
+        return jsonResponse({
+          success: true,
+          data: [{
+            id: "customer_search",
+            companyName: "Acme Print Co",
+            email: "orders@acme.test",
+            phone: "555-0100",
+            status: "active",
+          }],
+        });
+      }
+      if (path.startsWith("/api/inbound-orders/contact-search")) {
+        return jsonResponse({
+          success: true,
+          data: [{
+            id: "contact_search",
+            customerId: path.includes("customer_search") ? "customer_search" : "customer_1",
+            name: "Alex Contact",
+            firstName: "Alex",
+            lastName: "Contact",
+            email: "alex@acme.test",
+            phone: "555-0101",
+            mobile: null,
+            isPrimary: true,
+          }],
+        });
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft" && options?.method === "PUT") {
+        savedBody = JSON.parse(options.body);
+        return jsonResponse({
+          success: true,
+          data: reviewDraft(draft, {
+            ...savedBody,
+            updatedAt: "2026-06-09T12:04:00.000Z",
+          }),
+        });
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({ success: true, data: reviewDraft(draft) });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Save Review Draft");
+
+    act(() => {
+      Simulate.change(labeledControl("Customer search", "input"), { target: { value: "Acme" } } as any);
+    });
+    await waitForText("Acme Print Co");
+    act(() => {
+      Simulate.change(labeledControl("Selected customer", "select"), { target: { value: "customer_search" } } as any);
+    });
+    act(() => {
+      Simulate.change(labeledControl("Contact search", "input"), { target: { value: "Alex" } } as any);
+    });
+    await waitForText("Alex Contact");
+    act(() => {
+      Simulate.change(labeledControl("Selected contact", "select"), { target: { value: "contact_search" } } as any);
+    });
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Save Review Draft")
+    ));
+    await act(async () => {
+      Simulate.click(saveButton!);
+    });
+    await waitForCondition(() => Boolean(savedBody), "review draft PUT with selected customer/contact");
+
+    expect(savedBody.reviewedCustomerJson.selectedCustomerId).toBe("customer_search");
+    expect(savedBody.reviewedCustomerJson.selectedContactId).toBe("contact_search");
+    expect(savedBody.reviewedCustomerJson.unresolvedCustomer).toBe(false);
+    expect(savedBody.reviewedCustomerJson.unresolvedContact).toBe(false);
+    expect(apiFetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/api/orders"), expect.anything());
+    expect(apiFetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/api/customers"), expect.objectContaining({ method: "POST" }));
+  });
+
+  test("rejects an inbound record out of the active queue and shows it under rejected", async () => {
+    const activeRow = record();
+    const rejectedRow = record({
+      status: "terminal",
+      reviewOutcome: "rejected",
+      requiresHumanDecision: false,
+      reviewRequiredReason: null,
+      rejectionReason: "Spam",
+      rejectedAt: "2026-06-09T12:05:00.000Z",
+    });
+    let rejected = false;
+    let rejectBody: any = null;
+    const promptSpy = jest.spyOn(window, "prompt").mockReturnValue("Spam");
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) {
+        if (path.includes("statusGroup=rejected")) return jsonResponse(listResponse(rejected ? [rejectedRow] : []));
+        return jsonResponse(listResponse(rejected ? [] : [activeRow]));
+      }
+      if (path === "/api/inbound-orders/inbound_1") {
+        return jsonResponse({ success: true, data: detail(rejected ? rejectedRow : activeRow) });
+      }
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") return jsonResponse(draftPreview());
+      if (path === "/api/inbound-orders/inbound_1/reject" && options?.method === "POST") {
+        rejectBody = JSON.parse(options.body);
+        rejected = true;
+        return jsonResponse({ success: true, data: detail(rejectedRow) });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    try {
+      renderPage();
+      await waitForCondition(
+        () => Boolean(container.querySelector("button[aria-label='Reject inbound record']")),
+        "reject action button",
+      );
+      const rejectButton = container.querySelector("button[aria-label='Reject inbound record']");
+      await act(async () => {
+        Simulate.click(rejectButton as HTMLButtonElement);
+      });
+      await waitForText("No inbound records");
+
+      expect(rejectBody).toEqual({ reason: "Spam" });
+      expect(promptSpy).toHaveBeenCalled();
+
+      const rejectedFilter = Array.from(container.querySelectorAll("button")).find((button) => (
+        button.textContent?.includes("Rejected")
+      ));
+      act(() => {
+        Simulate.click(rejectedFilter!);
+      });
+      await waitForText("PO-123");
+      expect(container.textContent).toContain("Rejected");
+      expect(apiFetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/api/orders"), expect.anything());
+    } finally {
+      promptSpy.mockRestore();
+    }
   });
 
   test("edits and saves review draft fields without enabling order creation", async () => {

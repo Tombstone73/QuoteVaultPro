@@ -963,18 +963,21 @@ export class InboundOrderService {
 
   async searchCustomerContacts(args: {
     organizationId: string;
-    customerId: string;
+    customerId?: string | null;
     search?: string | null;
     limit: number;
   }): Promise<InboundContactSearchResult[]> {
-    const customer = await this.repository.getCustomer(args.organizationId, args.customerId);
-    if (!customer) {
-      throw new InboundOrderTransitionError("Customer not found for this organization", 404);
+    const customerId = args.customerId?.trim() || null;
+    if (customerId) {
+      const customer = await this.repository.getCustomer(args.organizationId, customerId);
+      if (!customer) {
+        throw new InboundOrderTransitionError("Customer not found for this organization", 404);
+      }
     }
 
     return this.repository.searchCustomerContacts(
       args.organizationId,
-      args.customerId,
+      customerId,
       args.search ?? null,
       args.limit,
     );
@@ -1361,6 +1364,7 @@ export class InboundOrderService {
         selectedCustomerId: draft.customer.candidateCustomerIds[0] ?? null,
         selectedContactId: draft.customer.candidateContactIds[0] ?? null,
         unresolvedCustomer: false,
+        unresolvedContact: false,
         notes: null,
       },
       reviewedOrderJson: {
