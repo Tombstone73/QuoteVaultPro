@@ -543,6 +543,78 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Phase 3: editable review starts after a successful parse.");
   });
 
+  test("keeps long inbound queue card content inside the 360px panel", async () => {
+    const longReference = "PO-THIS-IS-A-VERY-LONG-REFERENCE-WITH-MANY-SEGMENTS-1234567890";
+    const longSender = "A Very Long Sender Name For Queue Width Regression";
+    const longEmail = "very.long.sender.email.address.for.queue.width.regression@example-very-long-domain.test";
+    const longWarning = "Manual TEMP_INBOUND record needs staff review with a long explanation that should wrap inside the queue card instead of clipping past the right edge.";
+    const row = record({
+      externalReference: longReference,
+      reviewRequiredReason: longWarning,
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        reference: longReference,
+        sender: { name: longSender, email: longEmail },
+        subject: "Long queue card regression",
+        bodyText: "Please make queue cards readable.",
+        notes: "Counter intake",
+      },
+    });
+
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") return jsonResponse(draftPreview());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Parse with AI");
+
+    const queuePanel = container.querySelector("[data-testid='inbound-queue-panel']") as HTMLElement;
+    expect(queuePanel).toBeTruthy();
+    expect(queuePanel.style.flexBasis).toBe("360px");
+
+    const searchInput = queuePanel.querySelector("input[placeholder='Search reference, sender, notes, subject, body']") as HTMLInputElement;
+    expect(searchInput.className).toContain("max-w-full");
+
+    const queueCard = Array.from(queuePanel.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes(longReference)
+    )) as HTMLButtonElement;
+    expect(queueCard).toBeTruthy();
+    expect(queueCard.className).toContain("w-full");
+    expect(queueCard.className).toContain("max-w-full");
+    expect(queueCard.className).toContain("overflow-hidden");
+
+    const title = Array.from(queueCard.querySelectorAll("div")).find((element) => (
+      element.textContent === longReference
+    )) as HTMLDivElement;
+    expect(title).toBeTruthy();
+    expect(title.className).toContain("truncate");
+
+    const sender = Array.from(queueCard.querySelectorAll("div")).find((element) => (
+      element.textContent === `${longSender} / ${longEmail}`
+    )) as HTMLDivElement;
+    expect(sender).toBeTruthy();
+    expect(sender.className).toContain("truncate");
+
+    const metadataGrid = Array.from(queueCard.querySelectorAll("div")).find((element) => (
+      element.className.includes("grid-cols-2") && element.textContent?.includes("Reference")
+    )) as HTMLDivElement;
+    expect(metadataGrid).toBeTruthy();
+    expect(metadataGrid.className).toContain("max-w-full");
+    expect(metadataGrid.className).not.toContain("grid-cols-3");
+
+    const warningText = Array.from(queueCard.querySelectorAll("span")).find((element) => (
+      element.textContent === longWarning
+    )) as HTMLSpanElement;
+    expect(warningText).toBeTruthy();
+    expect(warningText.className).toContain("whitespace-normal");
+    expect(warningText.className).toContain("break-words");
+    expect(queueCard.textContent).toContain("Needs Review");
+  });
+
   test("uses a full-width flex workspace and supports queue collapse plus resizing", async () => {
     const row = record();
     apiFetchMock.mockImplementation(async (url: any) => {
