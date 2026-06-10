@@ -856,7 +856,7 @@ function InboundQueuePanel({
   }
 
   return (
-    <ScrollArea className="h-full min-w-0 max-w-full overflow-x-hidden [&_[data-radix-scroll-area-viewport]]:max-w-full [&_[data-radix-scroll-area-viewport]]:overflow-x-hidden">
+    <div className="h-full min-w-0 max-w-full overflow-y-auto overflow-x-hidden">
       <div className="box-border w-full min-w-0 max-w-full space-y-2 overflow-x-hidden p-3">
         {records.map((record) => {
           const evidence = getManualInboundEvidence(record);
@@ -905,7 +905,7 @@ function InboundQueuePanel({
           );
         })}
       </div>
-    </ScrollArea>
+    </div>
   );
 }
 

@@ -602,10 +602,13 @@ describe("InboundOrdersPage", () => {
     expect(queuePanel.style.width).toBe("360px");
     expect(queuePanel.style.flex).toBe("0 0 360px");
 
+    expect(queuePanel.querySelector("[data-radix-scroll-area-viewport]")).toBeNull();
     const queueScrollArea = Array.from(queuePanel.querySelectorAll("div")).find((element) => (
-      element.className.includes("[&_[data-radix-scroll-area-viewport]]:overflow-x-hidden")
+      element.className.includes("overflow-y-auto") && element.className.includes("overflow-x-hidden")
     ));
     expect(queueScrollArea).toBeTruthy();
+    expect(queueScrollArea?.className).toContain("min-w-0");
+    expect(queueScrollArea?.className).toContain("max-w-full");
 
     const searchInput = queuePanel.querySelector("input[placeholder='Search reference, sender, notes, subject, body']") as HTMLInputElement;
     expect(searchInput.className).toContain("max-w-full");
