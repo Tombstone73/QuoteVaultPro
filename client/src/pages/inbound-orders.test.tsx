@@ -576,6 +576,11 @@ describe("InboundOrdersPage", () => {
     expect(queuePanel).toBeTruthy();
     expect(queuePanel.style.flexBasis).toBe("360px");
 
+    const queueScrollArea = Array.from(queuePanel.querySelectorAll("div")).find((element) => (
+      element.className.includes("[&_[data-radix-scroll-area-viewport]]:overflow-x-hidden")
+    ));
+    expect(queueScrollArea).toBeTruthy();
+
     const searchInput = queuePanel.querySelector("input[placeholder='Search reference, sender, notes, subject, body']") as HTMLInputElement;
     expect(searchInput.className).toContain("max-w-full");
 
@@ -585,7 +590,8 @@ describe("InboundOrdersPage", () => {
     expect(queueCard).toBeTruthy();
     expect(queueCard.className).toContain("w-full");
     expect(queueCard.className).toContain("max-w-full");
-    expect(queueCard.className).toContain("overflow-hidden");
+    expect(queueCard.className).toContain("box-border");
+    expect(queueCard.className).toContain("overflow-x-hidden");
 
     const title = Array.from(queueCard.querySelectorAll("div")).find((element) => (
       element.textContent === longReference
@@ -610,6 +616,7 @@ describe("InboundOrdersPage", () => {
       element.textContent === longWarning
     )) as HTMLSpanElement;
     expect(warningText).toBeTruthy();
+    expect(warningText.className).toContain("flex-1");
     expect(warningText.className).toContain("whitespace-normal");
     expect(warningText.className).toContain("break-words");
     expect(queueCard.textContent).toContain("Needs Review");
