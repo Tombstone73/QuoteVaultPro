@@ -293,7 +293,7 @@ const ORDER_ATTACHMENT_SAFE_SELECT = {
     updatedAt: orderAttachments.updatedAt,
 } as const;
 
-type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'requiresProofApproval'> & {
+export type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'requiresProofApproval'> & {
     requiresProofApproval?: boolean;
     variantId?: string | null;
     productName?: string | null;
@@ -1408,7 +1408,10 @@ export class OrdersRepository {
                 const requiresProofApprovalSafe = typeof (li as any).requiresProofApproval === "boolean"
                     ? (li as any).requiresProofApproval
                     : (productProofApprovalMap.get(li.productId) ?? false);
-                const workflowStateSafe = getInitialWorkflowState({
+                const requestedWorkflowState = typeof (li as any).workflowState === "string"
+                    ? (li as any).workflowState
+                    : null;
+                const workflowStateSafe = requestedWorkflowState || getInitialWorkflowState({
                     requiresDesign: requiresDesignSafe,
                     requiresPrepress: requiresPrepressSafe,
                     requiresProofApproval: requiresProofApprovalSafe,

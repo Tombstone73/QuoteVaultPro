@@ -11,6 +11,7 @@ import {
   type InboundOrderSourceType,
   type InboundOrderWarning,
   type Quote,
+  type OrderWithRelations,
 } from "@shared/schema";
 import {
   inboundOrderParsedDraftSchema,
@@ -32,6 +33,10 @@ import {
   type InboundOrderQueueSummary,
   type UpdateInboundOrderRecordValues,
 } from "../../storage/inboundOrders.repo";
+import {
+  OrdersRepository,
+  type CreateOrderLineItemInput,
+} from "../../storage/orders.repo";
 
 export type InboundQuoteSyncStatus =
   | "quote_missing"
@@ -294,6 +299,15 @@ export type CreateQuoteDraftFromInboundResult = {
   inbound: InboundOrderDetail;
 };
 
+export type ConvertInboundReviewDraftToOrderResult = {
+  orderId: string;
+  inboundOrderId: string;
+  convertedAt: string;
+  order: OrderWithRelations;
+  inbound: InboundOrderDetail;
+  alreadyConverted?: boolean;
+};
+
 export class InboundOrderTransitionError extends Error {
   constructor(message: string, public readonly statusCode = 409) {
     super(message);
@@ -309,6 +323,17 @@ export class InboundOrderReviewDraftValidationError extends Error {
   ) {
     super(message);
     this.name = "InboundOrderReviewDraftValidationError";
+  }
+}
+
+export class InboundOrderConversionValidationError extends Error {
+  constructor(
+    message: string,
+    public readonly errors: string[],
+    public readonly statusCode = 400,
+  ) {
+    super(message);
+    this.name = "InboundOrderConversionValidationError";
   }
 }
 
@@ -366,7 +391,10 @@ function formatSkippedLineItemForNote(item: InboundQuoteDraftSkippedLineItem): s
 }
 
 export class InboundOrderService {
-  constructor(private readonly repository = inboundOrdersRepository) {}
+  constructor(
+    private readonly repository = inboundOrdersRepository,
+    private readonly orderRepository = new OrdersRepository(),
+  ) {}
 
   async listInboundOrders(args: {
     organizationId: string;
@@ -1147,6 +1175,127 @@ export class InboundOrderService {
     return detail;
   }
 
+  async convertInboundReviewDraftToOrder(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    actorUserId: string;
+  }): Promise<ConvertInboundReviewDraftToOrderResult> {
+    const detail = await this.getDetail({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+    });
+
+    if (!detail) {
+      throw new InboundOrderTransitionError("Inbound order record not found", 404);
+    }
+
+    if (detail.record.createdOrderId) {
+      const existingOrder = await this.orderRepository.getOrderById(args.organizationId, detail.record.createdOrderId);
+      if (!existingOrder) {
+        throw new InboundOrderTransitionError("Inbound record is linked to an order that could not be loaded.", 409);
+      }
+      return {
+        orderId: existingOrder.id,
+        inboundOrderId: detail.record.id,
+        convertedAt: formatInboundDate(detail.record.submittedAt ?? detail.record.updatedAt) ?? new Date().toISOString(),
+        order: existingOrder,
+        inbound: detail,
+        alreadyConverted: true,
+      };
+    }
+
+    const latestSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
+    const payload = latestSnapshot ? this.reviewDraftPayloadFromSnapshot(latestSnapshot) : null;
+    const validationErrors = await this.validateInboundOrderConversion(detail, payload);
+
+    if (validationErrors.length > 0 || !payload || !latestSnapshot) {
+      const errors = validationErrors.length > 0 ? validationErrors : ["Reviewed draft is missing."];
+      await this.recordConversionValidationFailure(args, errors);
+      throw new InboundOrderConversionValidationError("Inbound review draft is not ready for order conversion.", errors);
+    }
+
+    const claimed = await this.repository.claimInboundOrderForOrderConversion({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+      actorUserId: args.actorUserId,
+    });
+
+    if (!claimed) {
+      const latest = await this.getDetail({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+      });
+      if (latest?.record.createdOrderId) {
+        const existingOrder = await this.orderRepository.getOrderById(args.organizationId, latest.record.createdOrderId);
+        if (!existingOrder) {
+          throw new InboundOrderTransitionError("Inbound record is linked to an order that could not be loaded.", 409);
+        }
+        return {
+          orderId: existingOrder.id,
+          inboundOrderId: latest.record.id,
+          convertedAt: formatInboundDate(latest.record.submittedAt ?? latest.record.updatedAt) ?? new Date().toISOString(),
+          order: existingOrder,
+          inbound: latest,
+          alreadyConverted: true,
+        };
+      }
+      throw new InboundOrderTransitionError("Inbound record is not ready for order conversion.", 409);
+    }
+
+    try {
+      const order = await this.orderRepository.createOrder(args.organizationId, this.buildOrderCreateInputFromInboundReview({
+        detail,
+        snapshotId: latestSnapshot.id,
+        snapshotVersion: latestSnapshot.snapshotVersion,
+        payload,
+        actorUserId: args.actorUserId,
+      }));
+
+      const lineItemLinks = (order.lineItems ?? []).map((lineItem: any, index: number) => ({
+        inboundLineItemId: stringFromUnknown(getPathValue(lineItem.specsJson, "inbound.sourceLineItemId"))
+          ?? payload.reviewedLineItemsJson[index]?.sourceLineItemId
+          ?? null,
+        orderLineItemId: String(lineItem.id),
+      }));
+
+      await this.repository.markInboundOrderConvertedToOrder({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+        actorUserId: args.actorUserId,
+        orderId: order.id,
+        orderNumber: order.orderNumber ?? null,
+        lineItemLinks,
+      });
+
+      const inbound = await this.getDetail({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+      });
+
+      if (!inbound) {
+        throw new InboundOrderTransitionError("Inbound order record not found after conversion", 404);
+      }
+
+      return {
+        orderId: order.id,
+        inboundOrderId: args.inboundRecordId,
+        convertedAt: formatInboundDate(inbound.record.submittedAt ?? inbound.record.updatedAt) ?? new Date().toISOString(),
+        order,
+        inbound,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create draft order from inbound review.";
+      await this.repository.markInboundOrderConversionFailed({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+        actorUserId: args.actorUserId,
+        message,
+        errors: [message],
+      });
+      throw error;
+    }
+  }
+
   async createQuoteDraftFromInbound(args: {
     organizationId: string;
     inboundRecordId: string;
@@ -1469,6 +1618,191 @@ export class InboundOrderService {
     if (!options.allowReady && record.status === reviewedStatus) {
       throw new InboundOrderTransitionError("Ready inbound review drafts must be reopened before editing.");
     }
+  }
+
+  private async recordConversionValidationFailure(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    actorUserId: string;
+  }, errors: string[]) {
+    await this.repository.createEvent({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+      actorUserId: args.actorUserId,
+      actorType: "user",
+      eventType: "convert.failed",
+      fromStatus: null,
+      toStatus: null,
+      message: "Inbound review draft failed conversion validation.",
+      metadataJson: {
+        phase: "inbound_orders_phase_4",
+        errors,
+      },
+    });
+  }
+
+  private async validateInboundOrderConversion(
+    detail: InboundOrderDetail,
+    payload: InboundOrderReviewDraftPayload | null,
+  ): Promise<string[]> {
+    const errors: string[] = [];
+    const { record } = detail;
+
+    if (record.createdOrderId) return errors;
+    if (record.createdQuoteId) errors.push("Inbound record has already been converted to a quote draft.");
+    if (record.status !== reviewedStatus) errors.push("Inbound record must be ready before order conversion.");
+    if (!payload) {
+      errors.push("Reviewed draft is missing.");
+      return Array.from(new Set(errors));
+    }
+    if (payload.status !== "ready_to_convert") {
+      errors.push("Reviewed draft must be marked ready to convert.");
+    }
+
+    const selectedCustomerId = payload.reviewedCustomerJson.selectedCustomerId;
+    if (!selectedCustomerId) {
+      errors.push("Select an existing customer before creating a draft order.");
+    } else {
+      const customer = await this.repository.getCustomer(record.organizationId, selectedCustomerId);
+      if (!customer) errors.push("Selected customer was not found for this organization.");
+    }
+
+    const selectedContactId = payload.reviewedCustomerJson.selectedContactId;
+    if (selectedCustomerId && selectedContactId) {
+      const contact = await this.repository.getContactForCustomer(record.organizationId, selectedCustomerId, selectedContactId);
+      if (!contact) errors.push("Selected contact does not belong to the selected customer.");
+    }
+
+    if (payload.reviewedLineItemsJson.length === 0) {
+      errors.push("At least one reviewed line item is required.");
+    }
+
+    for (let index = 0; index < payload.reviewedLineItemsJson.length; index += 1) {
+      const lineItem = payload.reviewedLineItemsJson[index];
+      const label = lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`;
+      if (!lineItem.selectedProductId) {
+        errors.push(`${label}: select an existing product before order conversion.`);
+      } else {
+        const product = await this.repository.getProduct(record.organizationId, lineItem.selectedProductId);
+        if (!product) errors.push(`${label}: selected product was not found for this organization.`);
+      }
+      if (!lineItem.quantity) {
+        errors.push(`${label}: quantity is required.`);
+      }
+      if (this.lineItemRequiresDimensions(lineItem) && (!lineItem.width || !lineItem.height)) {
+        errors.push(`${label}: width and height are required for this product type.`);
+      }
+    }
+
+    payload.missingDecisionsJson.forEach((decision) => {
+      if (decision.status !== "still_blocking") return;
+      if (decision.severity === "blocking") {
+        errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
+      }
+    });
+
+    return Array.from(new Set(errors));
+  }
+
+  private buildOrderCreateInputFromInboundReview(args: {
+    detail: InboundOrderDetail;
+    snapshotId: string;
+    snapshotVersion: number;
+    payload: InboundOrderReviewDraftPayload;
+    actorUserId: string;
+  }): Parameters<OrdersRepository["createOrder"]>[1] {
+    const { detail, payload } = args;
+    const order = payload.reviewedOrderJson;
+    const customer = payload.reviewedCustomerJson;
+    const artwork = payload.reviewedArtworkJson;
+    const reference = order.poNumber || detail.record.externalReference || detail.record.id.slice(0, 8);
+    const reviewedNotes = [
+      "Created from inbound reviewed draft.",
+      `Inbound record: ${detail.record.id}`,
+      `Source: ${detail.record.sourceLabel ?? detail.record.sourceType}`,
+      detail.record.externalReference ? `Reference: ${detail.record.externalReference}` : null,
+      order.internalNotes ? `Internal notes: ${order.internalNotes}` : null,
+      order.customerNotes ? `Customer notes: ${order.customerNotes}` : null,
+      payload.reviewNotes ? `Review notes: ${payload.reviewNotes}` : null,
+      artwork.status === "to_follow" ? "Artwork: to follow." : null,
+      artwork.status === "missing" ? "Artwork: missing at conversion." : null,
+      artwork.notes ? `Artwork notes: ${artwork.notes}` : null,
+    ].filter(Boolean).join("\n");
+
+    const lineItems: CreateOrderLineItemInput[] = payload.reviewedLineItemsJson.map((lineItem, index) => {
+      const description = lineItem.productName || lineItem.sourceText || `Inbound reviewed item ${index + 1}`;
+      return {
+        productId: lineItem.selectedProductId!,
+        productType: "wide_roll",
+        description,
+        productName: description,
+        width: lineItem.width ?? null,
+        height: lineItem.height ?? null,
+        quantity: lineItem.quantity ?? 1,
+        sqft: null,
+        unitPrice: 0,
+        totalPrice: 0,
+        status: "new",
+        workflowState: "new",
+        requiresDesign: false,
+        requiresPrepress: false,
+        requiresProofApproval: false,
+        productionNotes: lineItem.notes ?? null,
+        specsJson: {
+          inbound: {
+            recordId: detail.record.id,
+            sourceLineItemId: lineItem.sourceLineItemId,
+            reviewSnapshotId: args.snapshotId,
+            reviewSnapshotVersion: args.snapshotVersion,
+            sourceText: lineItem.sourceText,
+            dimensionsUnit: lineItem.dimensionsUnit,
+            materialText: lineItem.materialText,
+            printSpecs: lineItem.printSpecs,
+            optionTexts: lineItem.optionTexts,
+            finishingTexts: lineItem.finishingTexts,
+            artworkStatus: artwork.status,
+            artworkReferences: artwork.refs,
+          },
+          staffReviewedDraft: lineItem,
+        },
+        selectedOptions: [],
+        optionSelectionsJson: null,
+        pbv2SnapshotJson: {},
+        materialUsages: [],
+        sortOrder: index,
+        taxAmount: 0,
+        isTaxableSnapshot: true,
+      } as unknown as CreateOrderLineItemInput;
+    });
+
+    const shippingMethod = order.fulfillmentType === "pickup"
+      ? "pickup"
+      : order.fulfillmentType === "shipping"
+        ? "ship"
+        : null;
+
+    return {
+      customerId: customer.selectedCustomerId!,
+      contactId: customer.selectedContactId ?? null,
+      label: `Inbound ${reference}`,
+      poNumber: order.poNumber ?? detail.record.externalReference ?? null,
+      status: "new",
+      priority: "normal",
+      dueDate: order.dueDate ?? null,
+      requestedDueDate: order.dueDate ?? null,
+      notesInternal: reviewedNotes,
+      createdByUserId: args.actorUserId,
+      lineItems,
+      taxRate: 0,
+      taxAmount: 0,
+      taxableSubtotal: 0,
+      shippingMethod,
+      shippingMode: shippingMethod ? "single_shipment" : null,
+      billToName: customer.sourceName ?? null,
+      billToCompany: customer.companyName ?? null,
+      billToEmail: customer.sourceEmail ?? null,
+      billToPhone: customer.sourcePhone ?? null,
+    };
   }
 
   private async reviewDraftSourceMetadata(

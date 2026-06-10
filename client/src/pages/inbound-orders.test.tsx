@@ -44,6 +44,12 @@ jest.mock("@/components/ui/textarea", () => ({
   Textarea: (props: any) => <textarea {...props} />,
 }));
 
+const mockToast = jest.fn();
+
+jest.mock("@/hooks/use-toast", () => ({
+  useToast: () => ({ toast: mockToast }),
+}));
+
 const apiFetchMock = jest.mocked(apiFetch);
 
 let container: HTMLDivElement;
@@ -431,6 +437,7 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   apiFetchMock.mockReset();
+  mockToast.mockReset();
   window.localStorage.clear();
 });
 
@@ -562,11 +569,11 @@ describe("InboundOrdersPage", () => {
     await waitForText("Parse with AI");
 
     const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes("Order creation starts in Phase 4.")
+      button.textContent?.includes("Create Draft Order")
     ));
     expect(createDraftButton).toBeTruthy();
     expect(createDraftButton?.disabled).toBe(true);
-    expect(container.textContent).toContain("Phase 3: editable review starts after a successful parse.");
+    expect(container.textContent).toContain("Phase 4 conversion starts after a successful parse and ready review.");
   });
 
   test("keeps long inbound queue card content inside the 360px panel", async () => {
@@ -773,7 +780,7 @@ describe("InboundOrdersPage", () => {
     expect(actionFooter).toBeTruthy();
     expect(container.textContent).toContain("Mark Ready to Convert");
     const phaseFourButton = Array.from(container.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes("Order creation starts in Phase 4.")
+      button.textContent?.includes("Create Draft Order")
     ));
     expect(phaseFourButton).toBeTruthy();
     expect(phaseFourButton?.disabled).toBe(true);
@@ -1117,7 +1124,7 @@ describe("InboundOrdersPage", () => {
       Simulate.click(parseButton!);
     });
 
-    await waitForText("Phase 3: editable review only.");
+    await waitForText("Phase 4: Create draft order from reviewed inbound record.");
     expect(container.textContent).toContain("Brainstorm Print PO.pdf");
     expect(container.textContent).toContain("Purchase Order");
     expect(container.textContent).toContain("98%");
@@ -1150,13 +1157,13 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).not.toContain("Installation needed");
     expect(container.textContent).not.toContain("Confirm final banner size before conversion.");
     expect(container.textContent).toContain("82% confidence");
-    expect(container.textContent).toContain("Order creation starts in Phase 4.");
+    expect(container.textContent).toContain("Create Draft Order");
     expect(labeledControl("Due date", "input")).toHaveProperty("value", "2026-06-11");
     expect(labeledControl("Quantity", "input")).toHaveProperty("value", "3");
     expect(labeledControl("Material", "input")).toHaveProperty("value", "3mm White PVC");
 
     const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes("Order creation starts in Phase 4.")
+      button.textContent?.includes("Create Draft Order")
     ));
     expect(createDraftButton?.disabled).toBe(true);
   });
@@ -1313,6 +1320,161 @@ describe("InboundOrdersPage", () => {
     }
   });
 
+  test("converts a ready review draft to a draft order and removes it from the default queue", async () => {
+    const activeRow = record({
+      status: "ready",
+      reviewOutcome: "ready_to_convert",
+      requiresHumanDecision: false,
+      reviewRequiredReason: null,
+    });
+    const convertedRow = record({
+      ...activeRow,
+      status: "submitted",
+      reviewOutcome: "order_created",
+      createdOrderId: "order_1",
+      matchedOrderId: "order_1",
+      submittedAt: "2026-06-09T12:30:00.000Z",
+      submittedByUserId: "user_1",
+    });
+    const draft = parsedDraft({ missingDecisions: [], globalWarnings: [] });
+    const readyDraft = reviewDraft(draft, { status: "ready_to_convert", validationErrors: [] });
+    let converted = false;
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) {
+        if (path.includes("statusGroup=converted")) return jsonResponse(listResponse(converted ? [convertedRow] : []));
+        return jsonResponse(listResponse(converted ? [] : [activeRow]));
+      }
+      if (path === "/api/inbound-orders/inbound_1") {
+        return jsonResponse({ success: true, data: detail(converted ? convertedRow : activeRow) });
+      }
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview({ draft, latestAttempt: parseAttempt({ parsedDraft: draft }) }));
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({ success: true, data: readyDraft });
+      }
+      if (path.startsWith("/api/inbound-orders/customer-search") || path.startsWith("/api/inbound-orders/contact-search")) {
+        return jsonResponse({ success: true, data: [] });
+      }
+      if (path === "/api/inbound-orders/inbound_1/convert-to-order" && options?.method === "POST") {
+        converted = true;
+        return jsonResponse({
+          success: true,
+          data: {
+            orderId: "order_1",
+            inboundOrderId: "inbound_1",
+            convertedAt: "2026-06-09T12:30:00.000Z",
+            alreadyConverted: false,
+            order: {
+              id: "order_1",
+              orderNumber: "1001",
+              status: "new",
+              lineItems: [],
+            },
+            inbound: detail(convertedRow),
+          },
+        });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    try {
+      renderPage();
+      await waitForText("Phase 4: Create draft order from reviewed inbound record.");
+
+      const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
+        button.textContent?.includes("Create Draft Order")
+      ));
+      expect(createDraftButton).toBeTruthy();
+      expect(createDraftButton?.disabled).toBe(false);
+
+      await act(async () => {
+        Simulate.click(createDraftButton!);
+      });
+      await waitForText("Open created order");
+
+      expect(confirmSpy).toHaveBeenCalled();
+      expect(apiFetchMock).toHaveBeenCalledWith(
+        "/api/inbound-orders/inbound_1/convert-to-order",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({}) }),
+      );
+      expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Draft order created" }));
+      expect(container.querySelector("a[href='/orders/order_1']")).toBeTruthy();
+      await waitForText("No inbound records");
+
+      const convertedFilter = Array.from(container.querySelectorAll("button")).find((button) => (
+        button.textContent?.includes("Converted")
+      ));
+      act(() => {
+        Simulate.click(convertedFilter!);
+      });
+      await waitForText("PO-123");
+      expect(container.textContent).toContain("Converted");
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  test("shows conversion validation errors and re-enables draft order retry", async () => {
+    const row = record({
+      status: "ready",
+      reviewOutcome: "ready_to_convert",
+      requiresHumanDecision: false,
+      reviewRequiredReason: null,
+    });
+    const draft = parsedDraft({ missingDecisions: [], globalWarnings: [] });
+    const readyDraft = reviewDraft(draft, { status: "ready_to_convert", validationErrors: [] });
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview({ draft, latestAttempt: parseAttempt({ parsedDraft: draft }) }));
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({ success: true, data: readyDraft });
+      }
+      if (path.startsWith("/api/inbound-orders/customer-search") || path.startsWith("/api/inbound-orders/contact-search")) {
+        return jsonResponse({ success: true, data: [] });
+      }
+      if (path === "/api/inbound-orders/inbound_1/convert-to-order" && options?.method === "POST") {
+        return jsonResponse({
+          success: false,
+          message: "Inbound review draft is not ready for order conversion.",
+          errors: ["Select an existing customer before creating a draft order."],
+        }, false, 400);
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    try {
+      renderPage();
+      await waitForText("Phase 4: Create draft order from reviewed inbound record.");
+
+      const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
+        button.textContent?.includes("Create Draft Order")
+      ));
+      await act(async () => {
+        Simulate.click(createDraftButton!);
+      });
+
+      await waitForText("Draft order creation failed");
+      expect(container.textContent).toContain("Select an existing customer before creating a draft order.");
+      const retryButton = Array.from(container.querySelectorAll("button")).find((button) => (
+        button.textContent?.includes("Create Draft Order")
+      ));
+      expect(retryButton?.disabled).toBe(false);
+      expect(confirmSpy).toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
   test("edits and saves review draft fields without enabling order creation", async () => {
     const row = record();
     const draft = parsedDraft();
@@ -1396,7 +1558,7 @@ describe("InboundOrdersPage", () => {
     expect(markReadyCalled).toBe(true);
 
     const orderCreationButton = Array.from(container.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes("Order creation starts in Phase 4.")
+      button.textContent?.includes("Create Draft Order")
     ));
     expect(orderCreationButton?.disabled).toBe(true);
   });

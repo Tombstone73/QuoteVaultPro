@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import {
@@ -39,6 +40,7 @@ import {
   type InboundOrdersListResponse,
   type InboundOrderStatusGroup,
   type InboundOrderQueueSummary,
+  type InboundOrderConvertToOrderResponse,
   type InboundMatchedContactSummary,
   type InboundMatchedCustomerSummary,
   type ManualInboundOrderCreateRequest,
@@ -1299,11 +1301,14 @@ function DraftBuilderPanel({
   isSaving,
   isMarkingReady,
   isReopening,
+  isConverting,
   saveError,
   markReadyError,
+  convertError,
   onSave,
   onMarkReady,
   onReopen,
+  onConvert,
 }: {
   selectedRecord: ClientInboundOrderRecord | null;
   isLoading: boolean;
@@ -1314,11 +1319,14 @@ function DraftBuilderPanel({
   isSaving: boolean;
   isMarkingReady: boolean;
   isReopening: boolean;
+  isConverting: boolean;
   saveError: Error | null;
   markReadyError: (Error & { errors?: string[] }) | null;
+  convertError: (Error & { errors?: string[] }) | null;
   onSave: (draft: ReviewDraftFormState) => Promise<void>;
   onMarkReady: (draft: ReviewDraftFormState, dirty: boolean) => Promise<void>;
   onReopen: () => Promise<void>;
+  onConvert: () => Promise<void>;
 }) {
   const [form, setForm] = useState<ReviewDraftFormState | null>(null);
   const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
@@ -1402,15 +1410,15 @@ function DraftBuilderPanel({
         </div>
         <div className="mt-4 text-sm font-semibold text-foreground">Draft builder will appear after parsing.</div>
         <div className="mt-1 max-w-sm text-sm text-muted-foreground">
-          Phase 3: editable review starts after a successful parse.
+          Phase 4 conversion starts after a successful parse and ready review.
         </div>
         {latestAttempt?.status === "failed" && (
           <div className="mt-3 max-w-sm rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             Last parse failed. Source evidence remains available for retry.
           </div>
         )}
-        <Button type="button" className="mt-4" disabled title="Order creation starts in Phase 4.">
-          Order creation starts in Phase 4.
+        <Button type="button" className="mt-4" disabled title="Create Draft Order is available after ready review.">
+          Create Draft Order
         </Button>
       </div>
     );
@@ -1441,8 +1449,12 @@ function DraftBuilderPanel({
     (contactSearchQuery.data?.data ?? []).map(contactToReviewOption),
   );
   const dirty = !formStatesEqual(form, baseForm);
-  const actionPending = isSaving || isMarkingReady || isReopening;
+  const actionPending = isSaving || isMarkingReady || isReopening || isConverting;
   const validationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
+  const conversionErrors = convertError?.errors ?? [];
+  const canCreateDraftOrder = selectedRecord.status === "ready"
+    && reviewDraft.status === "ready_to_convert"
+    && validationErrors.length === 0;
   const updateForm = (patch: Partial<ReviewDraftFormState>) => {
     setForm((current) => current ? { ...current, ...patch } : current);
   };
@@ -1479,9 +1491,9 @@ function DraftBuilderPanel({
       <div className="space-y-4 p-4">
         <Alert>
           <Sparkles className="h-4 w-4" />
-          <AlertTitle>Phase 3: editable review only.</AlertTitle>
+          <AlertTitle>Phase 4: Create draft order from reviewed inbound record.</AlertTitle>
           <AlertDescription>
-            Staff edits are saved to inbound review draft storage only. Order creation starts in Phase 4.
+            This creates a real draft order only. It does not release production, create proofs, invoices, fulfillment, or payments.
           </AlertDescription>
         </Alert>
         {reviewDraft.hasNewerParse && (
@@ -1498,6 +1510,18 @@ function DraftBuilderPanel({
             <AlertTriangle className="h-4 w-4" />
             <AlertTitle>Review draft action failed</AlertTitle>
             <AlertDescription>{(markReadyError ?? saveError)?.message}</AlertDescription>
+          </Alert>
+        )}
+        {convertError && (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Draft order creation failed</AlertTitle>
+            <AlertDescription>{convertError.message}</AlertDescription>
+            {conversionErrors.length > 0 && (
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-sm">
+                {conversionErrors.map((error) => <li key={error}>{error}</li>)}
+              </ul>
+            )}
           </Alert>
         )}
 
@@ -1783,8 +1807,15 @@ function DraftBuilderPanel({
               </Button>
             )}
           </div>
-          <Button type="button" className="mt-3 w-full" disabled title="Order creation starts in Phase 4.">
-            Order creation starts in Phase 4.
+          <Button
+            type="button"
+            className="mt-3 w-full"
+            onClick={() => { void onConvert().catch(() => undefined); }}
+            disabled={!canCreateDraftOrder || actionPending}
+            title={canCreateDraftOrder ? "Create a draft order from this reviewed inbound record." : "Mark the inbound draft ready and resolve validation errors first."}
+          >
+            {isConverting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {isConverting ? "Creating Draft Order..." : "Create Draft Order"}
           </Button>
         </section>
       </div>
@@ -1794,10 +1825,12 @@ function DraftBuilderPanel({
 
 export default function InboundOrdersPage() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [queueFilters, setQueueFilters] = useState<QueueFilters>(defaultQueueFilters);
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
   const [parsingRecordId, setParsingRecordId] = useState<string | null>(null);
+  const [lastConvertedOrderId, setLastConvertedOrderId] = useState<string | null>(null);
   const [queueCollapsed, setQueueCollapsed] = useState(() => (
     readStoredBoolean(workspaceLayoutStorageKeys.queueCollapsed, false)
   ));
@@ -2000,6 +2033,33 @@ export default function InboundOrdersPage() {
     },
   });
 
+  const convertToOrderMutation = useMutation({
+    mutationFn: (recordId: string) => (
+      postJson<InboundOrderConvertToOrderResponse>(`/api/inbound-orders/${recordId}/convert-to-order`, {})
+    ),
+    onSuccess: async (response, recordId) => {
+      const orderId = response.data.orderId;
+      setLastConvertedOrderId(orderId);
+      if (response.data.inbound) {
+        queryClient.setQueryData(["/api/inbound-orders", recordId], {
+          success: true,
+          data: response.data.inbound as any,
+        } satisfies ClientInboundOrderDetailResponse);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] });
+      toast({
+        title: response.data.alreadyConverted ? "Draft order already exists" : "Draft order created",
+        description: `Order ${orderId.slice(0, 8)} is ready for staff review.`,
+      });
+      if (queueFilters.statusGroup === "converted") {
+        setSelectedId(recordId);
+      } else {
+        setSelectedId(null);
+      }
+    },
+  });
+
   const isParseInFlight = Boolean(parsingRecordId) || parseMutation.isPending;
   const isSelectedRecordParsing = Boolean(selectedId && parsingRecordId === selectedId);
   const selectedRecordIsTerminal = Boolean(
@@ -2023,6 +2083,12 @@ export default function InboundOrdersPage() {
     const reason = window.prompt("Optional reason for removing this inbound record from the active queue:");
     if (reason === null) return;
     rejectInboundOrderMutation.mutate({ recordId: selectedId, reason: trimToNull(reason) });
+  };
+  const convertSelectedRecordToOrder = async () => {
+    if (!selectedId || convertToOrderMutation.isPending) return;
+    const confirmed = window.confirm("Create a draft order from this reviewed inbound record? This will create a real order but will not release production, create proofs, invoices, fulfillment, or payments.");
+    if (!confirmed) return;
+    await convertToOrderMutation.mutateAsync(selectedId);
   };
 
   const startResize = (
@@ -2139,6 +2205,17 @@ export default function InboundOrdersPage() {
             <AlertTriangle className="h-4 w-4" />
             <AlertTitle>Inbound queue unavailable</AlertTitle>
             <AlertDescription>{pageError}</AlertDescription>
+          </Alert>
+        )}
+        {lastConvertedOrderId && (
+          <Alert className="mt-3">
+            <Sparkles className="h-4 w-4" />
+            <AlertTitle>Draft order created</AlertTitle>
+            <AlertDescription>
+              <a className="font-medium text-primary underline" href={`/orders/${lastConvertedOrderId}`}>
+                Open created order
+              </a>
+            </AlertDescription>
           </Alert>
         )}
       </header>
@@ -2286,7 +2363,7 @@ export default function InboundOrdersPage() {
               <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={restoreLayout} aria-label="Restore inbound workspace layout" title="Restore layout">
                 <RotateCcw className="h-4 w-4" />
               </Button>
-              <Badge variant="outline">Phase 3</Badge>
+              <Badge variant="outline">Phase 4</Badge>
             </div>
           </div>
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -2300,8 +2377,10 @@ export default function InboundOrdersPage() {
               isSaving={saveReviewDraftMutation.isPending}
               isMarkingReady={markReviewDraftReadyMutation.isPending}
               isReopening={reopenReviewDraftMutation.isPending}
+              isConverting={convertToOrderMutation.isPending}
               saveError={saveReviewDraftMutation.error as Error | null}
               markReadyError={markReviewDraftReadyMutation.error as (Error & { errors?: string[] }) | null}
+              convertError={convertToOrderMutation.error as (Error & { errors?: string[] }) | null}
               onSave={async (draft) => {
                 if (!selectedId) return;
                 await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft });
@@ -2317,6 +2396,7 @@ export default function InboundOrdersPage() {
                 if (!selectedId) return;
                 await reopenReviewDraftMutation.mutateAsync(selectedId);
               }}
+              onConvert={convertSelectedRecordToOrder}
             />
           </div>
         </section>
