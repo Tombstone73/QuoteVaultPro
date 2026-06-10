@@ -543,7 +543,7 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Phase 3: editable review starts after a successful parse.");
   });
 
-  test("collapses queue and persists resizable workspace layout", async () => {
+  test("uses a full-width flex workspace and supports queue collapse plus resizing", async () => {
     const row = record();
     apiFetchMock.mockImplementation(async (url: any) => {
       const path = String(url);
@@ -561,11 +561,18 @@ describe("InboundOrdersPage", () => {
     expect(workspace).toBeTruthy();
     expect(workspace.className).toContain("w-full");
     expect(workspace.className).toContain("max-w-none");
-    await waitForCondition(() => (
-      workspace.style.gridTemplateColumns.startsWith("360px")
-        && workspace.style.gridTemplateColumns.includes("minmax(420px, 1fr)")
-    ), "full-width workspace grid structure");
-    expect(queuePanel.style.getPropertyValue("--workspace-queue-width")).toBe("360px");
+    expect(workspace.className).toContain("flex");
+    expect(workspace.className).toContain("overflow-hidden");
+    expect(workspace.style.gridTemplateColumns).toBe("");
+    expect(workspace.style.getPropertyValue("--workspace-queue-width")).toBe("360px");
+    expect(queuePanel.style.flexBasis).toBe("360px");
+    expect(queuePanel.className).toContain("min-[1180px]:w-[var(--workspace-queue-width)]");
+
+    const draftPanel = container.querySelector("[data-testid='inbound-draft-panel']") as HTMLElement;
+    expect(draftPanel).toBeTruthy();
+    expect(draftPanel.className).toContain("overflow-hidden");
+    expect(container.textContent).toContain("Draft Builder");
+
     const collapseButton = container.querySelector("[aria-label='Collapse inbound queue']") as HTMLButtonElement;
     expect(collapseButton).toBeTruthy();
     act(() => {
@@ -573,7 +580,8 @@ describe("InboundOrdersPage", () => {
     });
     await waitForCondition(() => window.localStorage.getItem("titanos.inboundOrders.queueCollapsed") === "true", "queue collapsed persistence");
     expect(container.querySelector("[aria-label='Collapsed inbound queue']")).toBeTruthy();
-    expect(queuePanel.style.getPropertyValue("--workspace-queue-width")).toBe("56px");
+    expect(workspace.style.getPropertyValue("--workspace-queue-width")).toBe("56px");
+    expect(queuePanel.style.flexBasis).toBe("56px");
 
     const expandButton = container.querySelector("[aria-label='Expand inbound queue']") as HTMLButtonElement;
     act(() => {
@@ -583,15 +591,17 @@ describe("InboundOrdersPage", () => {
 
     const evidencePanel = container.querySelector("[data-testid='inbound-evidence-panel']") as HTMLElement;
     const evidenceHandle = container.querySelector("[aria-label='Resize evidence panel']") as HTMLButtonElement;
-    const startingEvidenceWidth = Number.parseInt(evidencePanel.style.getPropertyValue("--workspace-evidence-width"), 10);
-    expect(startingEvidenceWidth).toBeGreaterThanOrEqual(400);
+    const startingEvidenceWidth = Number.parseInt(workspace.style.getPropertyValue("--workspace-evidence-width"), 10);
+    expect(startingEvidenceWidth).toBeGreaterThanOrEqual(420);
+    expect(evidencePanel.className).toContain("min-w-0");
+    expect(evidencePanel.className).toContain("flex-col");
     act(() => {
       Simulate.mouseDown(evidenceHandle, { clientX: 500 } as any);
       window.dispatchEvent(new MouseEvent("mousemove", { clientX: 560, bubbles: true }));
       window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     });
     await waitForCondition(() => (
-      evidencePanel.style.getPropertyValue("--workspace-evidence-width") === `${startingEvidenceWidth + 60}px`
+      workspace.style.getPropertyValue("--workspace-evidence-width") === `${startingEvidenceWidth + 60}px`
     ), "evidence width resize");
     expect(window.localStorage.getItem("titanos.inboundOrders.evidenceWidth")).toBe(String(startingEvidenceWidth + 60));
 
@@ -600,12 +610,13 @@ describe("InboundOrdersPage", () => {
       Simulate.click(restoreButton);
     });
     await waitForCondition(() => (
-      window.localStorage.getItem("titanos.inboundOrders.evidenceWidth") === "420"
-        && Number(window.localStorage.getItem("titanos.inboundOrders.draftWidth")) >= 460
+      window.localStorage.getItem("titanos.inboundOrders.evidenceWidth") === "440"
+        && window.localStorage.getItem("titanos.inboundOrders.draftWidth") === "520"
+        && workspace.style.getPropertyValue("--workspace-queue-width") === "360px"
     ), "layout restore persistence");
   });
 
-  test("reconciles oversized saved widths and keeps draft actions visible", async () => {
+  test("clamps oversized saved widths and keeps draft actions visible", async () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       writable: true,
@@ -633,14 +644,22 @@ describe("InboundOrdersPage", () => {
     renderPage();
     await waitForText("Save Review Draft");
 
+    const workspace = container.querySelector("[data-testid='inbound-review-workspace']") as HTMLElement;
     const evidencePanel = container.querySelector("[data-testid='inbound-evidence-panel']") as HTMLElement;
     const draftPanel = container.querySelector("[data-testid='inbound-draft-panel']") as HTMLElement;
     await waitForCondition(() => {
-      const evidence = Number.parseInt(evidencePanel.style.getPropertyValue("--workspace-evidence-width"), 10);
-      const draftWidthValue = Number.parseInt(draftPanel.style.getPropertyValue("--workspace-draft-width"), 10);
-      return evidence >= 400 && draftWidthValue >= 420 && evidence + draftWidthValue <= 1000;
+      const evidence = Number.parseInt(workspace.style.getPropertyValue("--workspace-evidence-width"), 10);
+      const draftWidthValue = Number.parseInt(workspace.style.getPropertyValue("--workspace-draft-width"), 10);
+      return evidence >= 340 && draftWidthValue >= 380 && evidence + draftWidthValue <= 1000;
     }, "oversized saved widths reconciled");
 
+    expect(workspace.className).toContain("flex");
+    expect(evidencePanel.className).toContain("overflow-hidden");
+    expect(draftPanel.className).toContain("min-w-0");
+    const actionFooter = Array.from(container.querySelectorAll("section")).find((section) => (
+      section.className.includes("sticky") && section.textContent?.includes("Save Review Draft")
+    ));
+    expect(actionFooter).toBeTruthy();
     expect(container.textContent).toContain("Mark Ready to Convert");
     const phaseFourButton = Array.from(container.querySelectorAll("button")).find((button) => (
       button.textContent?.includes("Order creation starts in Phase 4.")

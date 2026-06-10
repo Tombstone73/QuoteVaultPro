@@ -108,12 +108,15 @@ const workspaceLayoutStorageKeys = {
 const workspaceLayoutDefaults = {
   queueExpandedWidth: 360,
   queueCollapsedWidth: 56,
-  evidenceWidth: 420,
-  draftWidth: 460,
+  evidenceWidth: 440,
+  draftWidth: 520,
   minQueueExpandedWidth: 360,
-  minEvidenceWidth: 400,
-  minDraftWidth: 420,
+  minEvidenceWidth: 420,
+  minDraftWidth: 480,
+  compactEvidenceWidth: 340,
+  compactDraftWidth: 380,
   desktopBreakpoint: 1180,
+  wideDesktopBreakpoint: 1500,
 } as const;
 
 const statusLabels: Record<InboundOrderRecordStatus, string> = {
@@ -227,10 +230,10 @@ function readStoredBoolean(key: string, fallback: boolean): boolean {
   return window.localStorage.getItem(key) === "true" ? true : fallback;
 }
 
-function readStoredNumber(key: string, fallback: number, minimum: number): number {
+function readStoredNumber(key: string, fallback: number, minimum: number, maximum = 900): number {
   if (typeof window === "undefined") return fallback;
   const value = Number(window.localStorage.getItem(key));
-  return Number.isFinite(value) ? Math.max(minimum, value) : fallback;
+  return Number.isFinite(value) ? clampWorkspaceWidth(value, minimum, maximum) : fallback;
 }
 
 function clampWorkspaceWidth(value: number, minimum: number, maximum = 900): number {
@@ -254,10 +257,21 @@ function getWorkspaceAvailablePanelWidth(args: { queueCollapsed: boolean; worksp
   if (measuredWidth < workspaceLayoutDefaults.desktopBreakpoint) {
     return workspaceLayoutDefaults.evidenceWidth + workspaceLayoutDefaults.draftWidth;
   }
-  return Math.max(
-    workspaceLayoutDefaults.minEvidenceWidth + workspaceLayoutDefaults.minDraftWidth,
-    measuredWidth - getWorkspaceQueueWidth(args.queueCollapsed),
-  );
+  return Math.max(0, measuredWidth - getWorkspaceQueueWidth(args.queueCollapsed));
+}
+
+function getWorkspacePanelMinimums(args: { queueCollapsed: boolean; workspaceWidth: number }) {
+  const availableWidth = getWorkspaceAvailablePanelWidth(args);
+  if (args.workspaceWidth >= workspaceLayoutDefaults.wideDesktopBreakpoint || availableWidth >= 980) {
+    return {
+      evidence: workspaceLayoutDefaults.minEvidenceWidth,
+      draft: workspaceLayoutDefaults.minDraftWidth,
+    };
+  }
+  return {
+    evidence: Math.min(workspaceLayoutDefaults.minEvidenceWidth, workspaceLayoutDefaults.compactEvidenceWidth),
+    draft: Math.min(workspaceLayoutDefaults.minDraftWidth, workspaceLayoutDefaults.compactDraftWidth),
+  };
 }
 
 function reconcileWorkspacePanelWidths(args: {
@@ -267,15 +281,26 @@ function reconcileWorkspacePanelWidths(args: {
   workspaceWidth: number;
 }) {
   const availableWidth = getWorkspaceAvailablePanelWidth(args);
-  const maxEvidenceWidth = availableWidth - workspaceLayoutDefaults.minDraftWidth;
+  const minimums = getWorkspacePanelMinimums(args);
+  if (availableWidth <= 0) {
+    return {
+      evidenceWidth: workspaceLayoutDefaults.evidenceWidth,
+      draftWidth: workspaceLayoutDefaults.draftWidth,
+    };
+  }
+  const maxEvidenceWidth = Math.max(minimums.evidence, availableWidth - minimums.draft);
   const evidenceWidth = clampWorkspaceWidth(
     args.evidenceWidth,
-    workspaceLayoutDefaults.minEvidenceWidth,
+    minimums.evidence,
     maxEvidenceWidth,
   );
   return {
     evidenceWidth,
-    draftWidth: Math.max(workspaceLayoutDefaults.minDraftWidth, Math.round(availableWidth - evidenceWidth)),
+    draftWidth: clampWorkspaceWidth(
+      args.draftWidth,
+      minimums.draft,
+      Math.max(minimums.draft, availableWidth - evidenceWidth),
+    ),
   };
 }
 
@@ -1557,14 +1582,14 @@ export default function InboundOrdersPage() {
     readStoredNumber(
       workspaceLayoutStorageKeys.evidenceWidth,
       workspaceLayoutDefaults.evidenceWidth,
-      workspaceLayoutDefaults.minEvidenceWidth,
+      workspaceLayoutDefaults.compactEvidenceWidth,
     )
   ));
   const [draftWidth, setDraftWidth] = useState(() => (
     readStoredNumber(
       workspaceLayoutStorageKeys.draftWidth,
       workspaceLayoutDefaults.draftWidth,
-      workspaceLayoutDefaults.minDraftWidth,
+      workspaceLayoutDefaults.compactDraftWidth,
     )
   ));
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
@@ -1759,23 +1784,24 @@ export default function InboundOrdersPage() {
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const delta = moveEvent.clientX - startX;
+      const minimums = getWorkspacePanelMinimums({ queueCollapsed, workspaceWidth: measuredWidth });
       if (panel === "evidence") {
         const nextEvidenceWidth = clampWorkspaceWidth(
           startingEvidenceWidth + delta,
-          workspaceLayoutDefaults.minEvidenceWidth,
-          availablePanelWidth - workspaceLayoutDefaults.minDraftWidth,
+          minimums.evidence,
+          Math.max(minimums.evidence, availablePanelWidth - minimums.draft),
         );
         setEvidenceWidth(nextEvidenceWidth);
-        setDraftWidth(Math.max(workspaceLayoutDefaults.minDraftWidth, Math.round(availablePanelWidth - nextEvidenceWidth)));
+        setDraftWidth(Math.max(minimums.draft, Math.round(availablePanelWidth - nextEvidenceWidth)));
         return;
       }
       const nextDraftWidth = clampWorkspaceWidth(
         startingDraftWidth - delta,
-        workspaceLayoutDefaults.minDraftWidth,
-        availablePanelWidth - workspaceLayoutDefaults.minEvidenceWidth,
+        minimums.draft,
+        Math.max(minimums.draft, availablePanelWidth - minimums.evidence),
       );
       setDraftWidth(nextDraftWidth);
-      setEvidenceWidth(Math.max(workspaceLayoutDefaults.minEvidenceWidth, Math.round(availablePanelWidth - nextDraftWidth)));
+      setEvidenceWidth(Math.max(minimums.evidence, Math.round(availablePanelWidth - nextDraftWidth)));
     };
 
     const onMouseUp = () => {
@@ -1816,12 +1842,10 @@ export default function InboundOrdersPage() {
   );
   const listError = getErrorTone(listQuery.error as Error | null);
   const queueWidth = getWorkspaceQueueWidth(queueCollapsed);
-  const workspaceGridColumns = `${queueWidth}px ${evidenceWidth}px minmax(${workspaceLayoutDefaults.minDraftWidth}px, 1fr)`;
-  const isDesktopWorkspace = getMeasuredWorkspaceWidth(workspaceWidth) >= workspaceLayoutDefaults.desktopBreakpoint;
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
-      <header className="border-b border-border px-4 py-3">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
+      <header className="shrink-0 border-b border-border px-4 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
@@ -1867,22 +1891,23 @@ export default function InboundOrdersPage() {
 
       <div
         ref={workspaceRef}
-        className="grid min-h-0 w-full max-w-none flex-1 grid-cols-1 overflow-hidden"
+        className="flex min-h-0 w-full max-w-none flex-1 flex-col overflow-hidden min-[1180px]:flex-row"
         data-testid="inbound-review-workspace"
         style={{
-          "--workspace-grid-columns": workspaceGridColumns,
-          gridTemplateColumns: isDesktopWorkspace ? workspaceGridColumns : "minmax(0, 1fr)",
+          "--workspace-queue-width": `${queueWidth}px`,
+          "--workspace-evidence-width": `${evidenceWidth}px`,
+          "--workspace-draft-width": `${draftWidth}px`,
         } as CSSProperties}
       >
         <section
           className={cn(
-            "min-w-0 border-b border-border min-[1180px]:min-h-0 min-[1180px]:border-b-0 min-[1180px]:border-r",
-            queueCollapsed ? "min-h-[56px]" : "min-h-[300px]",
-            "w-full",
+            "flex min-w-0 shrink-0 flex-col overflow-hidden border-b border-border min-[1180px]:h-full min-[1180px]:w-[var(--workspace-queue-width)] min-[1180px]:min-w-[var(--workspace-queue-width)] min-[1180px]:max-w-[var(--workspace-queue-width)] min-[1180px]:border-b-0 min-[1180px]:border-r",
+            queueCollapsed ? "h-14 min-[1180px]:h-full" : "min-h-[300px] flex-1 min-[1180px]:min-h-0 min-[1180px]:flex-none",
           )}
           data-testid="inbound-queue-panel"
           style={{
-            "--workspace-queue-width": `${queueCollapsed ? workspaceLayoutDefaults.queueCollapsedWidth : workspaceLayoutDefaults.queueExpandedWidth}px`,
+            width: "100%",
+            flexBasis: `${queueWidth}px`,
           } as CSSProperties}
         >
           {queueCollapsed ? (
@@ -1922,7 +1947,7 @@ export default function InboundOrdersPage() {
                   </Button>
                 </div>
               </div>
-              <div className="flex h-[calc(100%-3rem)] min-h-0 flex-col">
+              <div className="flex min-h-0 flex-1 flex-col">
                 <QueueTriageControls
                   filters={queueFilters}
                   summary={queueSummary}
@@ -1942,11 +1967,11 @@ export default function InboundOrdersPage() {
         </section>
 
         <section
-          className="relative min-h-[360px] min-w-0 border-b border-border min-[1180px]:min-h-0 min-[1180px]:border-b-0 min-[1180px]:border-r"
+          className="relative flex min-h-[360px] min-w-0 flex-1 flex-col overflow-hidden border-b border-border min-[1180px]:h-full min-[1180px]:min-h-0 min-[1180px]:basis-[var(--workspace-evidence-width)] min-[1180px]:border-b-0 min-[1180px]:border-r min-[1500px]:min-w-[420px]"
           data-testid="inbound-evidence-panel"
-          style={{ "--workspace-evidence-width": `${evidenceWidth}px` } as CSSProperties}
+          style={{ flex: `1 1 ${evidenceWidth}px` } as CSSProperties}
         >
-          <div className="flex h-12 items-center justify-between gap-2 border-b border-border px-4">
+          <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
             <div className="text-sm font-semibold text-foreground">Source Evidence</div>
             <div className="flex items-center gap-2">
               {selectedRecord && <Badge variant="secondary">{titleCase(selectedRecord.sourceType)}</Badge>}
@@ -1955,7 +1980,7 @@ export default function InboundOrdersPage() {
               </Button>
             </div>
           </div>
-          <div className="h-[calc(100%-3rem)]">
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
             <SourceEvidencePanel
               detail={detailQuery.data?.data}
               selectedRecord={selectedRecord}
@@ -1980,9 +2005,9 @@ export default function InboundOrdersPage() {
         </section>
 
         <section
-          className="relative min-h-[320px] min-w-0 min-[1180px]:min-h-0"
+          className="relative flex min-h-[320px] min-w-0 flex-[1.1_1_0] flex-col overflow-hidden min-[1180px]:h-full min-[1180px]:min-h-0 min-[1180px]:basis-[var(--workspace-draft-width)] min-[1500px]:min-w-[480px]"
           data-testid="inbound-draft-panel"
-          style={{ "--workspace-draft-width": `${draftWidth}px` } as CSSProperties}
+          style={{ flex: `1.1 1 ${draftWidth}px` } as CSSProperties}
         >
           <button
             type="button"
@@ -1993,7 +2018,7 @@ export default function InboundOrdersPage() {
           >
             <GripVertical className="h-4 w-4" />
           </button>
-          <div className="flex h-12 items-center justify-between gap-2 border-b border-border px-4">
+          <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
             <div className="text-sm font-semibold text-foreground">Draft Builder</div>
             <div className="flex items-center gap-2">
               <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={expandDraftBuilder} aria-label="Expand draft builder panel" title="Expand draft builder">
@@ -2005,7 +2030,7 @@ export default function InboundOrdersPage() {
               <Badge variant="outline">Phase 3</Badge>
             </div>
           </div>
-          <div className="h-[calc(100%-3rem)] min-w-0 overflow-hidden">
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
             <DraftBuilderPanel
               selectedRecord={selectedRecord}
               isLoading={detailQuery.isLoading || draftPreviewQuery.isLoading || reviewDraftQuery.isLoading}
