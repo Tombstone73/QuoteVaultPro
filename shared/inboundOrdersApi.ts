@@ -176,6 +176,119 @@ export const inboundOrderParsedDraftSchema = z.object({
   }).default({ items: [], conflicts: [] }),
 });
 
+export const inboundOrderReviewDraftStatusValues = ["draft", "ready_to_convert", "rejected"] as const;
+export const inboundOrderReviewDraftStatusSchema = z.enum(inboundOrderReviewDraftStatusValues);
+
+export const inboundOrderReviewDecisionStatusValues = ["resolved", "acknowledged", "still_blocking"] as const;
+export const inboundOrderReviewDecisionStatusSchema = z.enum(inboundOrderReviewDecisionStatusValues);
+
+export const inboundOrderArtworkReviewStatusValues = ["supplied", "to_follow", "missing", "not_required"] as const;
+export const inboundOrderArtworkReviewStatusSchema = z.enum(inboundOrderArtworkReviewStatusValues);
+
+const nullableTextSchema = z.string().trim().max(10000).optional().nullable();
+
+export const inboundOrderReviewedCustomerSchema = z.object({
+  sourceName: z.string().trim().max(255).nullable().default(null),
+  sourceEmail: z.string().trim().max(255).nullable().default(null),
+  sourcePhone: z.string().trim().max(80).nullable().default(null),
+  companyName: z.string().trim().max(255).nullable().default(null),
+  selectedCustomerId: z.string().trim().min(1).nullable().default(null),
+  selectedContactId: z.string().trim().min(1).nullable().default(null),
+  unresolvedCustomer: z.boolean().default(false),
+  notes: nullableTextSchema.default(null),
+});
+
+export const inboundOrderReviewedOrderSchema = z.object({
+  poNumber: z.string().trim().max(255).nullable().default(null),
+  dueDate: z.string().trim().max(80).nullable().default(null),
+  shipMethod: z.string().trim().max(160).nullable().default(null),
+  fulfillmentType: z.enum(["pickup", "shipping", "unknown"]).default("unknown"),
+  internalNotes: nullableTextSchema.default(null),
+  customerNotes: nullableTextSchema.default(null),
+});
+
+export const inboundOrderReviewedLineItemSchema = z.object({
+  sourceLineItemId: z.string().trim().min(1).nullable().default(null),
+  sourceText: z.string().trim().max(5000).nullable().default(null),
+  productName: z.string().trim().max(255).nullable().default(null),
+  selectedProductId: z.string().trim().min(1).nullable().default(null),
+  productUnresolved: z.boolean().default(false),
+  quantity: z.number().positive().nullable().default(null),
+  width: z.number().positive().nullable().default(null),
+  height: z.number().positive().nullable().default(null),
+  dimensionsUnit: z.string().trim().max(40).nullable().default(null),
+  materialText: z.string().trim().max(255).nullable().default(null),
+  printSpecs: z.array(z.string().trim().min(1).max(255)).default([]),
+  optionTexts: stringArraySchema,
+  finishingTexts: stringArraySchema,
+  notes: nullableTextSchema.default(null),
+});
+
+export const inboundOrderReviewedArtworkSchema = z.object({
+  status: inboundOrderArtworkReviewStatusSchema.default("missing"),
+  refs: z.array(z.object({
+    filename: z.string().trim().max(512).nullable().default(null),
+    sourceReference: z.string().trim().max(512).nullable().default(null),
+    likelyLineItemIndex: z.number().int().min(0).nullable().default(null),
+    purpose: z.enum(["artwork", "proof", "reference", "unknown"]).default("unknown"),
+  })).default([]),
+  notes: nullableTextSchema.default(null),
+});
+
+export const inboundOrderReviewedMissingDecisionSchema = z.object({
+  field: z.string().trim().min(1).max(255),
+  label: z.string().trim().min(1).max(255),
+  reason: z.string().trim().min(1).max(1000),
+  severity: z.enum(["info", "warning", "blocking"]).default("warning"),
+  status: inboundOrderReviewDecisionStatusSchema.default("still_blocking"),
+  resolutionNote: nullableTextSchema.default(null),
+});
+
+export const inboundOrderReviewedWarningSchema = inboundOrderParseWarningSchema.extend({
+  acknowledged: z.boolean().default(false),
+  acknowledgementNote: nullableTextSchema.default(null),
+});
+
+export const inboundOrderReviewDraftPayloadSchema = z.object({
+  status: inboundOrderReviewDraftStatusSchema.default("draft"),
+  reviewedCustomerJson: inboundOrderReviewedCustomerSchema,
+  reviewedOrderJson: inboundOrderReviewedOrderSchema,
+  reviewedLineItemsJson: z.array(inboundOrderReviewedLineItemSchema).default([]),
+  reviewedArtworkJson: inboundOrderReviewedArtworkSchema,
+  missingDecisionsJson: z.array(inboundOrderReviewedMissingDecisionSchema).default([]),
+  warningsJson: z.array(inboundOrderReviewedWarningSchema).default([]),
+  reviewNotes: nullableTextSchema.default(null),
+});
+
+export const inboundOrderReviewDraftSaveSchema = inboundOrderReviewDraftPayloadSchema.omit({ status: true }).extend({
+  status: z.literal("draft").optional().default("draft"),
+});
+
+export type InboundOrderReviewDraftStatus = z.infer<typeof inboundOrderReviewDraftStatusSchema>;
+export type InboundOrderReviewDecisionStatus = z.infer<typeof inboundOrderReviewDecisionStatusSchema>;
+export type InboundOrderArtworkReviewStatus = z.infer<typeof inboundOrderArtworkReviewStatusSchema>;
+export type InboundOrderReviewDraftPayload = z.infer<typeof inboundOrderReviewDraftPayloadSchema>;
+export type InboundOrderReviewDraftSaveRequest = z.infer<typeof inboundOrderReviewDraftSaveSchema>;
+
+export type InboundOrderReviewDraftDto = InboundOrderReviewDraftPayload & {
+  id: string | null;
+  snapshotId: string | null;
+  snapshotVersion: number | null;
+  inboundOrderRecordId: string;
+  organizationId: string;
+  sourceParseAttemptId: string | null;
+  sourceParseAttemptCreatedAt: string | null;
+  latestParseAttemptId: string | null;
+  latestParseAttemptCreatedAt: string | null;
+  hasNewerParse: boolean;
+  initializedFromParse: boolean;
+  createdByUserId: string | null;
+  updatedByUserId: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  validationErrors: string[];
+};
+
 export type InboundOrderParseAttemptStatus = z.infer<typeof inboundOrderParseAttemptStatusSchema>;
 export type InboundOrderParsedDraft = z.infer<typeof inboundOrderParsedDraftSchema>;
 export type InboundOrderParseWarning = z.infer<typeof inboundOrderParseWarningSchema>;
@@ -300,6 +413,11 @@ export type InboundOrderParseResponse = {
 export type InboundOrderParseAttemptsResponse = {
   success: true;
   data: InboundOrderParseAttemptDto[];
+};
+
+export type InboundOrderReviewDraftResponse = {
+  success: true;
+  data: InboundOrderReviewDraftDto;
 };
 
 export function normalizeInboundOrderStatusForStorage(

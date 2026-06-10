@@ -12,11 +12,13 @@ import { fromZodError } from "zod-validation-error";
 
 import {
   inboundOrderListQuerySchema,
+  inboundOrderReviewDraftSaveSchema,
   inboundOrderStatusUpdateSchema,
   manualInboundOrderCreateSchema,
   normalizeInboundOrderStatusForStorage,
 } from "@shared/inboundOrdersApi";
 import {
+  InboundOrderReviewDraftValidationError,
   InboundOrderTransitionError,
   inboundOrderService,
 } from "../services/inboundOrders/InboundOrderService";
@@ -366,6 +368,140 @@ export function registerInboundOrderRoutes(
 
       console.error("Error loading inbound order draft preview:", error);
       res.status(500).json({ message: "Failed to load inbound order draft preview" });
+    }
+  });
+
+  app.get("/api/inbound-orders/:id/review-draft", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const draft = await service.getReviewDraft({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
+      });
+
+      res.json({ success: true, data: draft });
+    } catch (error) {
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+
+      if (isMissingInboundSchemaError(error)) {
+        return sendInboundSchemaUnavailable(res);
+      }
+
+      console.error("Error loading inbound order review draft:", error);
+      res.status(500).json({ message: "Failed to load inbound order review draft" });
+    }
+  });
+
+  app.put("/api/inbound-orders/:id/review-draft", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const draftInput = inboundOrderReviewDraftSaveSchema.parse(req.body ?? {});
+      const draft = await service.saveReviewDraft({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
+        draft: draftInput,
+      });
+
+      res.json({ success: true, data: draft });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+
+      if (isMissingInboundSchemaError(error)) {
+        return sendInboundSchemaUnavailable(res);
+      }
+
+      console.error("Error saving inbound order review draft:", error);
+      res.status(500).json({ message: "Failed to save inbound order review draft" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/review-draft/mark-ready", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const draft = await service.markReviewDraftReady({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
+      });
+
+      res.json({ success: true, data: draft });
+    } catch (error) {
+      if (error instanceof InboundOrderReviewDraftValidationError) {
+        return res.status(error.statusCode).json({ message: error.message, errors: error.errors });
+      }
+
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+
+      if (isMissingInboundSchemaError(error)) {
+        return sendInboundSchemaUnavailable(res);
+      }
+
+      console.error("Error marking inbound order review draft ready:", error);
+      res.status(500).json({ message: "Failed to mark inbound order review draft ready" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/review-draft/reopen", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const draft = await service.reopenReviewDraft({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
+      });
+
+      res.json({ success: true, data: draft });
+    } catch (error) {
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+
+      if (isMissingInboundSchemaError(error)) {
+        return sendInboundSchemaUnavailable(res);
+      }
+
+      console.error("Error reopening inbound order review draft:", error);
+      res.status(500).json({ message: "Failed to reopen inbound order review draft" });
     }
   });
 

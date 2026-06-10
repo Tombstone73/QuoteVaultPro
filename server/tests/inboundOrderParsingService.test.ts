@@ -480,7 +480,7 @@ describe("InboundOrderParsingService", () => {
     });
     expect(fields.dateCandidates[0]).toMatchObject({
       parsedDate: "2026-06-11",
-      classification: "ARRIVAL_DATE",
+      classification: "DUE_DATE",
       sourceText: "Arrival Due Date MUST EOD 6/11",
     });
     expect(fields.fieldSources.dueDate).toMatchObject({
@@ -490,8 +490,60 @@ describe("InboundOrderParsingService", () => {
     });
   });
 
+  test("extracts Brainstorm PO fields from collapsed PDF text with explicit PO number labels", () => {
+    const poText = [
+      "Customer: Brainstorm Print Contact: Shawn Fears Purchase Order No. 151661 Purchase Order Date: 06/08/26 Arrival Due Date: MUST EOD 6/11",
+      "Qty Item Description 3 PVC Signs 24x36 3mm White PVC",
+    ].join(" ");
+
+    const fields = extractPurchaseOrderFields({
+      text: poText,
+      receivedAt: "2026-06-08T12:00:00.000Z",
+    });
+
+    expect(fields).toMatchObject({
+      poNumber: "151661",
+      customer: "Brainstorm Print",
+      contact: "Shawn Fears",
+      dueDate: "2026-06-11",
+      quantity: 3,
+      productDescription: "PVC Signs",
+      material: "3mm White PVC",
+      dimensions: "24x36",
+    });
+    expect(fields.dateCandidates[0]).toMatchObject({
+      parsedDate: "2026-06-11",
+      classification: "DUE_DATE",
+      sourceText: "Arrival Due Date: MUST EOD 6/11",
+    });
+    expect(fields.fieldSources.dueDate).toMatchObject({
+      value: "2026-06-11",
+      sourceDocument: "Purchase Order 151661",
+      sourceText: "Arrival Due Date: MUST EOD 6/11",
+    });
+    expect(fields.dateCandidates.some((candidate) => (
+      candidate.parsedDate === "2026-06-08" && candidate.classification === "PO_DATE"
+    ))).toBe(true);
+  });
+
+  test("does not treat purchase order label words as the PO number", () => {
+    expect(extractPurchaseOrderFields({
+      text: "Purchase Order Number: 151661",
+      receivedAt: "2026-06-08T12:00:00.000Z",
+    }).poNumber).toBe("151661");
+    expect(extractPurchaseOrderFields({
+      text: "Purchase Order No. 151661",
+      receivedAt: "2026-06-08T12:00:00.000Z",
+    }).poNumber).toBe("151661");
+    expect(extractPurchaseOrderFields({
+      text: "Purchase Order Date: 06/08/26 Arrival Due Date: MUST EOD 6/11",
+      receivedAt: "2026-06-08T12:00:00.000Z",
+    }).poNumber).toBeNull();
+  });
+
   test("classifies dates before choosing requested due date", () => {
     expect(classifyDateSourceText("PO Date 6/8")).toBe("PO_DATE");
+    expect(classifyDateSourceText("Arrival Due Date; MUST EOD 6/11")).toBe("DUE_DATE");
     expect(classifyDateSourceText("Need by Friday")).toBe("DUE_DATE");
     expect(classifyDateSourceText("Ship Date 6/10")).toBe("SHIP_DATE");
 
@@ -502,7 +554,25 @@ describe("InboundOrderParsingService", () => {
 
     expect(candidates[0]).toMatchObject({
       parsedDate: "2026-06-11",
-      classification: "ARRIVAL_DATE",
+      classification: "DUE_DATE",
+    });
+  });
+
+  test("classifies separate dates when PDF extraction collapses PO and arrival dates into one line", () => {
+    const candidates = extractClassifiedDates({
+      text: "Purchase Order Date: 06/08/26 Arrival Due Date: MUST EOD 6/11",
+      receivedAt: "2026-06-08T12:00:00.000Z",
+    });
+
+    expect(candidates[0]).toMatchObject({
+      parsedDate: "2026-06-11",
+      classification: "DUE_DATE",
+      sourceText: "Arrival Due Date: MUST EOD 6/11",
+    });
+    expect(candidates[1]).toMatchObject({
+      parsedDate: "2026-06-08",
+      classification: "PO_DATE",
+      sourceText: "Purchase Order Date: 06/08/26",
     });
   });
 
@@ -602,6 +672,111 @@ describe("InboundOrderParsingService", () => {
       width: 24,
       height: 36,
     });
+  });
+
+  test("persists purchase order field sources in the review-only parsed draft", async () => {
+    const { repo, attempts } = makeRepository();
+    const poSummary = extractPurchaseOrderFields({
+      text: [
+        "Customer: Brainstorm Print Contact: Shawn Fears Purchase Order No. 151661",
+        "Purchase Order Date: 06/08/26 Arrival Due Date; MUST EOD 6/11",
+        "Qty Item Description 3 PVC Signs 24x36 Stock: 3mm White PVC",
+      ].join(" "),
+      receivedAt: "2026-06-08T12:00:00.000Z",
+    });
+    const evidenceBundle: InboundOrderEvidenceBundle = {
+      items: [{
+        type: "PDF_ATTACHMENT",
+        label: "Brainstorm Print PO.pdf",
+        sourceId: "file_1",
+        fileName: "Brainstorm Print PO.pdf",
+        mimeType: "application/pdf",
+        rawText: "Brainstorm PO text",
+        pageCount: 1,
+        documentType: "purchase_order",
+        documentConfidence: 98,
+        extractionStatus: "successful",
+        poSummary,
+        warnings: [],
+      }],
+      conflicts: [],
+    };
+    const evidenceService = {
+      buildEvidenceBundle: jest.fn(async () => evidenceBundle),
+    };
+    const provider = makeProvider(JSON.stringify(parsedDraft({
+      order: {
+        ...parsedDraft().order,
+        requestedDueDate: "2026-06-08",
+      },
+      lineItems: [],
+    })));
+    const service = new InboundOrderParsingService(repo as any, () => provider, evidenceService as any);
+
+    const result = await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(result.draft?.order.requestedDueDate).toBe("2026-06-11");
+    expect(attempts[0].parsedDraft.evidence.items[0].poSummary.fieldSources).toMatchObject({
+      poNumber: {
+        value: "151661",
+        sourceDocument: "Purchase Order 151661",
+      },
+      dueDate: {
+        value: "2026-06-11",
+        sourceType: "PDF_ATTACHMENT",
+        sourceDocument: "Purchase Order 151661",
+        sourceText: "Arrival Due Date; MUST EOD 6/11",
+      },
+      quantity: { value: 3 },
+      dimensions: { value: "24x36" },
+      material: { value: "3mm White PVC" },
+      productDescription: { value: "PVC Signs" },
+    });
+    expect(result.draft?.missingDecisions).toEqual([expect.objectContaining({
+      field: "lineItems.0.artwork",
+      severity: "warning",
+    })]);
+    expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
+    expect(repo.matchCustomerWithEvent).not.toHaveBeenCalled();
+    expect(repo.matchLineItemProductWithEvent).not.toHaveBeenCalled();
+  });
+
+  test("product ranking prioritizes exact material match over generic description text", () => {
+    const matches = scoreProductKnowledgeCandidates(
+      { sourceText: "PVC Signs 24x36 Stock: 3mm White PVC", productName: "PVC Signs", materialText: "3mm White PVC" },
+      [
+        {
+          id: "acm",
+          name: "ACM / Dibond / Max Metal",
+          description: "Rigid sign panels for outdoor signs, retail signs, PVC signs, and display graphics.",
+          category: "Rigid Signs",
+          materialName: "Aluminum Composite Material",
+          materialCategory: "ACM",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "pvc",
+          name: "PVC",
+          description: "Printable PVC signs and rigid display panels.",
+          category: "Rigid Signs",
+          materialName: "3mm White PVC",
+          materialCategory: "PVC",
+          metadataText: "{}",
+          isService: false,
+        },
+      ],
+      5,
+    );
+
+    expect(matches[0].id).toBe("pvc");
+    expect(matches[0].metadata.matchBreakdown.materialScore).toBeGreaterThan(matches[1].metadata.matchBreakdown.materialScore);
+    expect(matches[0].metadata.matchBreakdown.combinedConfidence).toBeGreaterThan(matches[1].metadata.matchBreakdown.combinedConfidence);
+    expect(matches[0].metadata.matchBreakdown.keywordScore).toBeDefined();
   });
 
   test("product ranking favors printable material/category/description over accessories", () => {

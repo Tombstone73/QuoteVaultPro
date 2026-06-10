@@ -3,6 +3,7 @@ import {
   type InboundOrderEvent,
   type InboundOrderFile,
   type InboundOrderLineItem,
+  type InboundOrderParseAttempt,
   type InboundOrderRecord,
   type InboundOrderRecordStatus,
   type InboundOrderReviewSnapshot,
@@ -11,7 +12,16 @@ import {
   type InboundOrderWarning,
   type Quote,
 } from "@shared/schema";
-import type { ManualInboundOrderCreateRequest } from "@shared/inboundOrdersApi";
+import {
+  inboundOrderParsedDraftSchema,
+  inboundOrderReviewDraftPayloadSchema,
+  type InboundOrderParsedDraft,
+  type InboundOrderReviewDraftDto,
+  type InboundOrderReviewDraftPayload,
+  type InboundOrderReviewDraftSaveRequest,
+  type InboundOrderReviewDraftStatus,
+  type ManualInboundOrderCreateRequest,
+} from "@shared/inboundOrdersApi";
 import {
   inboundOrdersRepository,
   type CreateInboundOrderEventValues,
@@ -152,6 +162,16 @@ export type SaveInboundOrderReviewSnapshotInput = {
   draft: InboundOrderReviewDraftSnapshot;
 };
 
+export type InboundOrderReviewDraftInput = {
+  organizationId: string;
+  inboundRecordId: string;
+  actorUserId: string;
+};
+
+export type SaveInboundOrderEditableReviewDraftInput = InboundOrderReviewDraftInput & {
+  draft: InboundOrderReviewDraftSaveRequest;
+};
+
 export type MatchInboundLineItemProductInput = {
   organizationId: string;
   inboundRecordId: string;
@@ -281,11 +301,23 @@ export class InboundOrderTransitionError extends Error {
   }
 }
 
+export class InboundOrderReviewDraftValidationError extends Error {
+  constructor(
+    message: string,
+    public readonly errors: string[],
+    public readonly statusCode = 400,
+  ) {
+    super(message);
+    this.name = "InboundOrderReviewDraftValidationError";
+  }
+}
+
 const reviewedStatus: InboundOrderRecordStatus = "ready";
 const needsClarificationStatus: InboundOrderRecordStatus = "waiting_on_customer";
 const rejectedStatus: InboundOrderRecordStatus = "terminal";
 const reopenedStatus: InboundOrderRecordStatus = "needs_review";
 const originalInboundQuoteStatus = "draft";
+const editableReviewDraftKind = "editable_review_draft";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -730,6 +762,181 @@ export class InboundOrderService {
     return detail;
   }
 
+  async getReviewDraft(args: InboundOrderReviewDraftInput): Promise<InboundOrderReviewDraftDto> {
+    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) {
+      throw new InboundOrderTransitionError("Inbound order record not found", 404);
+    }
+
+    const latestAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
+    const existingSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
+    if (existingSnapshot) {
+      return this.reviewDraftDtoFromSnapshot(record, existingSnapshot, latestAttempt, false);
+    }
+
+    this.assertReviewDraftEditable(record);
+    const parsedDraft = this.parsedDraftFromAttempt(latestAttempt);
+    if (!latestAttempt || !parsedDraft) {
+      throw new InboundOrderTransitionError("Parse the inbound order before starting editable draft review.", 409);
+    }
+
+    const payload = this.buildEditableReviewDraftFromParse(parsedDraft);
+    const snapshot = await this.persistEditableReviewDraftSnapshot({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+      actorUserId: args.actorUserId,
+      record,
+      latestAttempt,
+      payload,
+      status: "draft",
+      eventType: "review_draft.initialized",
+      message: "Editable review draft initialized from latest parse.",
+      initializedFromParse: true,
+    });
+
+    return this.reviewDraftDtoFromSnapshot(record, snapshot, latestAttempt, true);
+  }
+
+  async saveReviewDraft(args: SaveInboundOrderEditableReviewDraftInput): Promise<InboundOrderReviewDraftDto> {
+    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) {
+      throw new InboundOrderTransitionError("Inbound order record not found", 404);
+    }
+    this.assertReviewDraftEditable(record);
+
+    const latestAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
+    const existingSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
+    if (existingSnapshot) {
+      const existingStatus = this.reviewDraftPayloadFromSnapshot(existingSnapshot)?.status;
+      if (existingStatus === "ready_to_convert") {
+        throw new InboundOrderTransitionError("Ready review drafts must be reopened before staff edits can be saved.", 409);
+      }
+    }
+
+    const sourceAttempt = await this.resolveReviewDraftSourceAttempt(args.organizationId, args.inboundRecordId, existingSnapshot, latestAttempt);
+    const payload = inboundOrderReviewDraftPayloadSchema.parse({
+      ...args.draft,
+      status: "draft",
+    });
+    const snapshot = await this.persistEditableReviewDraftSnapshot({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+      actorUserId: args.actorUserId,
+      record,
+      latestAttempt: sourceAttempt,
+      payload,
+      status: "draft",
+      eventType: "review_draft.saved",
+      message: payload.reviewNotes,
+      initializedFromParse: false,
+    });
+
+    return this.reviewDraftDtoFromSnapshot(record, snapshot, latestAttempt, false);
+  }
+
+  async markReviewDraftReady(args: InboundOrderReviewDraftInput): Promise<InboundOrderReviewDraftDto> {
+    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) {
+      throw new InboundOrderTransitionError("Inbound order record not found", 404);
+    }
+    this.assertReviewDraftEditable(record);
+
+    const latestAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
+    const existingSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
+    const baseDto = existingSnapshot
+      ? this.reviewDraftDtoFromSnapshot(record, existingSnapshot, latestAttempt, false)
+      : await this.getReviewDraft(args);
+    const errors = this.validateReviewDraftReady(baseDto);
+    if (errors.length > 0) {
+      throw new InboundOrderReviewDraftValidationError("Review draft is not ready to convert.", errors);
+    }
+
+    const sourceAttempt = await this.resolveReviewDraftSourceAttempt(args.organizationId, args.inboundRecordId, existingSnapshot, latestAttempt);
+    const payload = inboundOrderReviewDraftPayloadSchema.parse({
+      status: "ready_to_convert",
+      reviewedCustomerJson: baseDto.reviewedCustomerJson,
+      reviewedOrderJson: baseDto.reviewedOrderJson,
+      reviewedLineItemsJson: baseDto.reviewedLineItemsJson,
+      reviewedArtworkJson: baseDto.reviewedArtworkJson,
+      missingDecisionsJson: baseDto.missingDecisionsJson,
+      warningsJson: baseDto.warningsJson,
+      reviewNotes: baseDto.reviewNotes,
+    });
+    const snapshot = await this.persistEditableReviewDraftSnapshot({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+      actorUserId: args.actorUserId,
+      record,
+      latestAttempt: sourceAttempt,
+      payload,
+      status: "ready_to_convert",
+      eventType: "review_draft.marked_ready",
+      message: "Editable review draft marked ready to convert. No order was created.",
+      initializedFromParse: false,
+      recordPatch: {
+        status: reviewedStatus,
+        reviewOutcome: "reviewed",
+        requiresHumanDecision: false,
+        reviewRequiredReason: null,
+        approvedAt: new Date(),
+      },
+    });
+
+    const refreshedRecord = await this.repository.getRecord(args.organizationId, args.inboundRecordId) ?? {
+      ...record,
+      status: reviewedStatus,
+    };
+    return this.reviewDraftDtoFromSnapshot(refreshedRecord, snapshot, latestAttempt, false);
+  }
+
+  async reopenReviewDraft(args: InboundOrderReviewDraftInput): Promise<InboundOrderReviewDraftDto> {
+    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) {
+      throw new InboundOrderTransitionError("Inbound order record not found", 404);
+    }
+    this.assertReviewDraftEditable(record, { allowReady: true });
+
+    const latestAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
+    const existingSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
+    if (!existingSnapshot) {
+      throw new InboundOrderTransitionError("No editable review draft exists to reopen.", 404);
+    }
+    const existingPayload = this.reviewDraftPayloadFromSnapshot(existingSnapshot);
+    if (!existingPayload) {
+      throw new InboundOrderTransitionError("Latest editable review draft is invalid and cannot be reopened.", 409);
+    }
+    const sourceAttempt = await this.resolveReviewDraftSourceAttempt(args.organizationId, args.inboundRecordId, existingSnapshot, latestAttempt);
+    const payload = inboundOrderReviewDraftPayloadSchema.parse({
+      ...existingPayload,
+      status: "draft",
+    });
+    const snapshot = await this.persistEditableReviewDraftSnapshot({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+      actorUserId: args.actorUserId,
+      record,
+      latestAttempt: sourceAttempt,
+      payload,
+      status: "draft",
+      eventType: "review_draft.reopened",
+      message: "Editable review draft reopened for staff edits.",
+      initializedFromParse: false,
+      recordPatch: {
+        status: reopenedStatus,
+        reviewOutcome: null,
+        requiresHumanDecision: true,
+        reviewRequiredReason: "Editable review draft reopened for staff review.",
+        approvedAt: null,
+      },
+    });
+
+    const refreshedRecord = await this.repository.getRecord(args.organizationId, args.inboundRecordId) ?? {
+      ...record,
+      status: reopenedStatus,
+    };
+    return this.reviewDraftDtoFromSnapshot(refreshedRecord, snapshot, latestAttempt, false);
+  }
+
   async getQuoteDraftPreview(args: {
     organizationId: string;
     inboundRecordId: string;
@@ -1112,6 +1319,307 @@ export class InboundOrderService {
       },
       inbound: refreshedDetail,
     };
+  }
+
+  private async getLatestEditableReviewDraftSnapshot(
+    organizationId: string,
+    inboundRecordId: string,
+  ): Promise<InboundOrderReviewSnapshot | null> {
+    const snapshots = await this.repository.listReviewSnapshots(organizationId, inboundRecordId);
+    return snapshots.find((snapshot) => (
+      stringFromUnknown(getPathValue(snapshot.payloadJson, "metadata.snapshotKind")) === editableReviewDraftKind
+    )) ?? null;
+  }
+
+  private parsedDraftFromAttempt(attempt: InboundOrderParseAttempt | null): InboundOrderParsedDraft | null {
+    if (!attempt?.parsedDraft) return null;
+    const parsed = inboundOrderParsedDraftSchema.safeParse(attempt.parsedDraft);
+    return parsed.success ? parsed.data : null;
+  }
+
+  private reviewDraftPayloadFromSnapshot(snapshot: InboundOrderReviewSnapshot): InboundOrderReviewDraftPayload | null {
+    const parsed = inboundOrderReviewDraftPayloadSchema.safeParse(snapshot.payloadJson);
+    return parsed.success ? parsed.data : null;
+  }
+
+  private buildEditableReviewDraftFromParse(draft: InboundOrderParsedDraft): InboundOrderReviewDraftPayload {
+    const warnings = [
+      ...draft.globalWarnings,
+      ...draft.customer.warnings,
+      ...draft.order.warnings,
+      ...draft.lineItems.flatMap((lineItem) => lineItem.warnings),
+      ...draft.artwork.flatMap((artwork) => artwork.warnings),
+    ];
+    const hasArtwork = draft.artwork.length > 0 || draft.lineItems.some((lineItem) => lineItem.artworkRefs.length > 0);
+    return inboundOrderReviewDraftPayloadSchema.parse({
+      status: "draft",
+      reviewedCustomerJson: {
+        sourceName: draft.customer.sourceName,
+        sourceEmail: draft.customer.sourceEmail,
+        sourcePhone: draft.customer.sourcePhone,
+        companyName: draft.customer.companyName,
+        selectedCustomerId: draft.customer.candidateCustomerIds[0] ?? null,
+        selectedContactId: draft.customer.candidateContactIds[0] ?? null,
+        unresolvedCustomer: false,
+        notes: null,
+      },
+      reviewedOrderJson: {
+        poNumber: draft.order.poNumber,
+        dueDate: draft.order.requestedDueDate,
+        shipMethod: draft.order.requestedShipMethod,
+        fulfillmentType: draft.order.requestedPickup === true ? "pickup" : "unknown",
+        internalNotes: draft.order.notes,
+        customerNotes: null,
+      },
+      reviewedLineItemsJson: draft.lineItems.map((lineItem) => ({
+        sourceLineItemId: null,
+        sourceText: lineItem.sourceText,
+        productName: lineItem.productName,
+        selectedProductId: lineItem.candidateProductIds[0] ?? null,
+        productUnresolved: false,
+        quantity: lineItem.quantity,
+        width: lineItem.width,
+        height: lineItem.height,
+        dimensionsUnit: lineItem.dimensionsUnit,
+        materialText: lineItem.materialText,
+        printSpecs: lineItem.optionTexts,
+        optionTexts: lineItem.optionTexts,
+        finishingTexts: lineItem.finishingTexts,
+        notes: null,
+      })),
+      reviewedArtworkJson: {
+        status: hasArtwork ? "supplied" : "missing",
+        refs: draft.artwork.map((artwork) => ({
+          filename: artwork.filename,
+          sourceReference: artwork.sourceReference,
+          likelyLineItemIndex: artwork.likelyLineItemIndex,
+          purpose: artwork.purpose,
+        })),
+        notes: null,
+      },
+      missingDecisionsJson: draft.missingDecisions.map((decision) => ({
+        ...decision,
+        status: "still_blocking",
+        resolutionNote: null,
+      })),
+      warningsJson: warnings.map((item) => ({
+        ...item,
+        acknowledged: false,
+        acknowledgementNote: null,
+      })),
+      reviewNotes: null,
+    });
+  }
+
+  private reviewDraftDtoFromSnapshot(
+    record: InboundOrderRecord,
+    snapshot: InboundOrderReviewSnapshot,
+    latestAttempt: InboundOrderParseAttempt | null,
+    initializedFromParse: boolean,
+  ): InboundOrderReviewDraftDto {
+    const payload = this.reviewDraftPayloadFromSnapshot(snapshot);
+    if (!payload) {
+      throw new InboundOrderTransitionError("Editable review draft snapshot is invalid.", 500);
+    }
+    const sourceParseAttemptId = stringFromUnknown(getPathValue(snapshot.payloadJson, "metadata.sourceParseAttemptId"));
+    const sourceParseAttemptCreatedAt = stringFromUnknown(getPathValue(snapshot.payloadJson, "metadata.sourceParseAttemptCreatedAt"));
+    const latestParseAttemptCreatedAt = formatInboundDate(latestAttempt?.createdAt);
+    const sourceDate = sourceParseAttemptCreatedAt ? new Date(sourceParseAttemptCreatedAt) : null;
+    const latestDate = latestParseAttemptCreatedAt ? new Date(latestParseAttemptCreatedAt) : null;
+    const hasNewerParse = Boolean(
+      latestAttempt?.id
+      && sourceParseAttemptId
+      && latestAttempt.id !== sourceParseAttemptId
+      && latestDate
+      && sourceDate
+      && latestDate.getTime() > sourceDate.getTime(),
+    );
+    return {
+      ...payload,
+      id: snapshot.id,
+      snapshotId: snapshot.id,
+      snapshotVersion: snapshot.snapshotVersion,
+      inboundOrderRecordId: snapshot.inboundRecordId,
+      organizationId: snapshot.organizationId,
+      sourceParseAttemptId: sourceParseAttemptId ?? null,
+      sourceParseAttemptCreatedAt: sourceParseAttemptCreatedAt ?? null,
+      latestParseAttemptId: latestAttempt?.id ?? null,
+      latestParseAttemptCreatedAt,
+      hasNewerParse,
+      initializedFromParse,
+      createdByUserId: snapshot.createdByUserId ?? null,
+      updatedByUserId: stringFromUnknown(getPathValue(snapshot.payloadJson, "metadata.updatedByUserId")) ?? snapshot.createdByUserId ?? null,
+      createdAt: formatInboundDate(snapshot.createdAt),
+      updatedAt: formatInboundDate(snapshot.createdAt),
+      validationErrors: this.validateReviewDraftReady(payload),
+    };
+  }
+
+  private assertReviewDraftEditable(record: InboundOrderRecord, options: { allowReady?: boolean } = {}) {
+    if (record.createdQuoteId || record.createdOrderId || record.status === "submitted" || record.status === "approved") {
+      throw new InboundOrderTransitionError("Converted inbound records cannot be edited during Phase 3.");
+    }
+    if (record.status === rejectedStatus || record.reviewOutcome === "rejected") {
+      throw new InboundOrderTransitionError("Rejected inbound records must be reopened by the safe review workflow before editing.");
+    }
+    if (!options.allowReady && record.status === reviewedStatus) {
+      throw new InboundOrderTransitionError("Ready inbound review drafts must be reopened before editing.");
+    }
+  }
+
+  private async reviewDraftSourceMetadata(
+    existingSnapshot: InboundOrderReviewSnapshot | null,
+    latestAttempt: InboundOrderParseAttempt | null,
+  ): Promise<{ id: string | null; createdAt: string | null }> {
+    const existingId = existingSnapshot ? stringFromUnknown(getPathValue(existingSnapshot.payloadJson, "metadata.sourceParseAttemptId")) : null;
+    const existingCreatedAt = existingSnapshot ? stringFromUnknown(getPathValue(existingSnapshot.payloadJson, "metadata.sourceParseAttemptCreatedAt")) : null;
+    return {
+      id: existingId ?? latestAttempt?.id ?? null,
+      createdAt: existingCreatedAt ?? formatInboundDate(latestAttempt?.createdAt),
+    };
+  }
+
+  private async resolveReviewDraftSourceAttempt(
+    organizationId: string,
+    inboundRecordId: string,
+    existingSnapshot: InboundOrderReviewSnapshot | null,
+    latestAttempt: InboundOrderParseAttempt | null,
+  ): Promise<{ id: string | null; createdAt: string | null }> {
+    return this.reviewDraftSourceMetadata(
+      existingSnapshot ?? await this.getLatestEditableReviewDraftSnapshot(organizationId, inboundRecordId),
+      latestAttempt,
+    );
+  }
+
+  private async persistEditableReviewDraftSnapshot(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    actorUserId: string;
+    record: InboundOrderRecord;
+    latestAttempt: { id: string | null; createdAt: string | null | Date } | null;
+    payload: InboundOrderReviewDraftPayload;
+    status: InboundOrderReviewDraftStatus;
+    eventType: string;
+    message: string | null;
+    initializedFromParse: boolean;
+    recordPatch?: UpdateInboundOrderRecordValues;
+  }): Promise<InboundOrderReviewSnapshot> {
+    const latestSnapshot = await this.repository.getLatestReviewSnapshot(args.organizationId, args.inboundRecordId);
+    const snapshotVersion = (latestSnapshot?.snapshotVersion ?? 0) + 1;
+    const sourceParseAttemptId = args.latestAttempt?.id ?? null;
+    const sourceParseAttemptCreatedAt = formatInboundDate(args.latestAttempt?.createdAt);
+    const { snapshot } = await this.repository.createReviewSnapshotWithEvent({
+      snapshot: {
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+        snapshotType: "approval",
+        snapshotVersion,
+        payloadJson: {
+          ...args.payload,
+          status: args.status,
+          metadata: {
+            snapshotKind: editableReviewDraftKind,
+            source: "inbound_order_editable_review",
+            sourceParseAttemptId,
+            sourceParseAttemptCreatedAt,
+            updatedByUserId: args.actorUserId,
+            initializedFromParse: args.initializedFromParse,
+            savedAt: new Date().toISOString(),
+          },
+        },
+        createdByUserId: args.actorUserId,
+      },
+      event: {
+        actorUserId: args.actorUserId,
+        actorType: "user",
+        eventType: args.eventType,
+        fromStatus: args.record.status,
+        toStatus: args.recordPatch?.status ?? args.record.status,
+        message: args.message,
+        metadataJson: {
+          phase: "inbound_orders_phase_3",
+          snapshotVersion,
+          snapshotKind: editableReviewDraftKind,
+          reviewDraftStatus: args.status,
+          reviewOnly: true,
+          createsDownstreamRecords: false,
+        },
+      },
+    });
+
+    if (args.recordPatch) {
+      await this.repository.updateRecordWithEvent({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+        patch: args.recordPatch,
+        event: {
+          actorUserId: args.actorUserId,
+          actorType: "user",
+          eventType: `${args.eventType}.status_updated`,
+          fromStatus: args.record.status,
+          toStatus: args.recordPatch.status ?? args.record.status,
+          message: args.message,
+          metadataJson: {
+            phase: "inbound_orders_phase_3",
+            snapshotId: snapshot.id,
+            reviewDraftStatus: args.status,
+            reviewOnly: true,
+            createsDownstreamRecords: false,
+          },
+        },
+      });
+    }
+
+    return snapshot;
+  }
+
+  private validateReviewDraftReady(draft: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): string[] {
+    const errors: string[] = [];
+    const customer = draft.reviewedCustomerJson;
+    if (!customer.selectedCustomerId && !customer.unresolvedCustomer) {
+      errors.push("Select a customer candidate or mark the customer unresolved.");
+    }
+
+    if (draft.reviewedLineItemsJson.length === 0) {
+      errors.push("At least one line item is required.");
+    }
+
+    draft.reviewedLineItemsJson.forEach((lineItem, index) => {
+      const label = lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`;
+      if (!lineItem.quantity) {
+        errors.push(`${label}: quantity is required.`);
+      }
+      if (!lineItem.selectedProductId && !lineItem.productUnresolved) {
+        errors.push(`${label}: select a product candidate or mark product unresolved.`);
+      }
+      if (this.lineItemRequiresDimensions(lineItem) && (!lineItem.width || !lineItem.height)) {
+        errors.push(`${label}: width and height are required for this product type.`);
+      }
+    });
+
+    draft.missingDecisionsJson.forEach((decision) => {
+      if (decision.status !== "still_blocking") return;
+      if (decision.severity === "blocking") {
+        errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
+      } else if (/artwork/i.test(decision.field) || /artwork/i.test(decision.label)) {
+        errors.push(`${decision.label}: acknowledge artwork status before marking ready.`);
+      }
+    });
+
+    return Array.from(new Set(errors));
+  }
+
+  private lineItemRequiresDimensions(lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]): boolean {
+    if (lineItem.width && lineItem.height) return false;
+    const text = [
+      lineItem.sourceText,
+      lineItem.productName,
+      lineItem.materialText,
+      ...lineItem.optionTexts,
+      ...lineItem.finishingTexts,
+    ].filter(Boolean).join(" ").toLowerCase();
+    return /\b(yard|lawn|political|realtor|event)\s+signs?\b/.test(text)
+      || /\b(custom\s+size|banner|banners|sign|signs|pvc|coroplast|window\s+perf|magnet|magnets?)\b/.test(text);
   }
 
   private buildQuoteDraftPreview(detail: InboundOrderDetail): InboundQuoteDraftPreview {

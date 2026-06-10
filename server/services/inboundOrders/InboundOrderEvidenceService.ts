@@ -31,6 +31,8 @@ const DATE_CLASSIFICATION_PRIORITY: DateClassification[] = [
   "ORDER_DATE",
   "UNKNOWN",
 ];
+const DATE_LABEL_PATTERN = /\b(?:arrival\s+due\s+date|arrival\s+due|due\s+date|need(?:ed)?\s+by|in\s+hands?(?:\s+by)?|ship\s+date|event\s+date|purchase\s+order\s+date|po\s+date|order\s+date)\b/gi;
+const NON_DATE_PO_SECTION_PATTERN = /\s+\b(?:qty|quantity|item\s+description|stock|material|customer|contact|attn|attention|ship\s+to|bill\s+to)\b/i;
 
 function warning(code: string, message: string, severity: InboundOrderParseWarning["severity"] = "warning", fieldPath?: string): InboundOrderParseWarning {
   return { code, message, severity, fieldPath: fieldPath ?? null };
@@ -54,6 +56,27 @@ function firstMatchWithSource(text: string, patterns: RegExp[]): { value: string
     if (match?.[1]) return { value: match[1].trim(), sourceText: (match[0] ?? match[1]).trim() };
   }
   return null;
+}
+
+function extractDateSourceSegments(text: string): string[] {
+  const lines = normalizeWhitespace(text).split("\n").map((line) => line.trim()).filter(Boolean);
+  const segments: string[] = [];
+  for (const line of lines) {
+    const matches = Array.from(line.matchAll(DATE_LABEL_PATTERN));
+    if (matches.length === 0) {
+      segments.push(line);
+      continue;
+    }
+    for (let index = 0; index < matches.length; index += 1) {
+      const start = matches[index].index ?? 0;
+      const end = matches[index + 1]?.index ?? line.length;
+      const rawSegment = line.slice(start, end).trim();
+      const sectionMatch = rawSegment.match(NON_DATE_PO_SECTION_PATTERN);
+      const segment = (sectionMatch?.index ? rawSegment.slice(0, sectionMatch.index) : rawSegment).trim();
+      if (segment) segments.push(segment);
+    }
+  }
+  return segments;
 }
 
 function numberValue(value: string | null): number | null {
@@ -116,8 +139,8 @@ function source(value: string | number | boolean | null, sourceText: string | nu
 
 export function classifyDateSourceText(sourceText: string): DateClassification {
   const normalized = sourceText.toLowerCase();
-  if (/arrival\s+due|arrival|must\s+eod|must\s+arrive/.test(normalized)) return "ARRIVAL_DATE";
-  if (/need(?:ed)?\s+by|due\s+date|\bdue\b|in\s+hands?|in\s+hand/.test(normalized)) return "DUE_DATE";
+  if (/arrival\s+due|need(?:ed)?\s+by|due\s+date|\bdue\b|in\s+hands?|in\s+hand|must\s+eod/.test(normalized)) return "DUE_DATE";
+  if (/arrival|must\s+arrive/.test(normalized)) return "ARRIVAL_DATE";
   if (/ship\s+date|\bship\b/.test(normalized)) return "SHIP_DATE";
   if (/event\s+date|\bevent\b/.test(normalized)) return "EVENT_DATE";
   if (/(?:purchase\s+order|po)\s+date/.test(normalized)) return "PO_DATE";
@@ -129,24 +152,23 @@ export function extractClassifiedDates(args: {
   text: string;
   receivedAt?: Date | string | null;
 }): DateCandidate[] {
-  const lines = normalizeWhitespace(args.text).split("\n").map((line) => line.trim()).filter(Boolean);
   const candidates: DateCandidate[] = [];
   const seen = new Set<string>();
-  for (const line of lines) {
-    if (!/(?:\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|january|february|march|april|may|june|july|august|september|october|november|december|monday|tuesday|wednesday|thursday|friday|saturday|sunday|must\s+eod)/i.test(line)) {
+  for (const segment of extractDateSourceSegments(args.text)) {
+    if (!/(?:\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|january|february|march|april|may|june|july|august|september|october|november|december|monday|tuesday|wednesday|thursday|friday|saturday|sunday|must\s+eod)/i.test(segment)) {
       continue;
     }
-    const inferred = inferInboundRequestedDate({ text: line, receivedAt: args.receivedAt });
+    const inferred = inferInboundRequestedDate({ text: segment, receivedAt: args.receivedAt });
     if (!inferred) continue;
-    const classification = classifyDateSourceText(line);
-    const key = `${inferred.parsedDate}:${classification}:${line}`;
+    const classification = classifyDateSourceText(segment);
+    const key = `${inferred.parsedDate}:${classification}:${segment}`;
     if (seen.has(key)) continue;
     seen.add(key);
     candidates.push({
       parsedDate: inferred.parsedDate,
-      sourceText: line,
+      sourceText: segment,
       classification,
-      confidence: Math.min(99, inferred.confidence + (classification === "ARRIVAL_DATE" || classification === "DUE_DATE" ? 8 : 0)),
+      confidence: Math.min(99, inferred.confidence + (classification === "ARRIVAL_DATE" || classification === "DUE_DATE" ? 14 : 0)),
     });
   }
   return candidates.sort((left, right) => {
@@ -186,9 +208,10 @@ export function extractPurchaseOrderFields(args: {
   const dimensions = extractDimensionsWithSource(text);
   const quantity = extractQuantityWithSource(text);
   const poNumber = firstMatchWithSource(text, [
-    /\bpurchase\s+order\s*#?\s*([A-Z0-9-]+)/i,
-    /\bpo\s*(?:number|no\.?|#|:)?\s*[:#]?\s*([A-Z0-9-]{3,})/i,
+    /\bpurchase\s+order\s*(?:number|no\.?|#|:)?\s*[:#]?\s*(?!date\b)([A-Z0-9-]{3,})/i,
+    /\bpo\s*(?:number|no\.?|#|:)?\s*[:#]?\s*(?!date\b)([A-Z0-9-]{3,})/i,
   ]);
+  const sourceDocument = poNumber?.value ? `Purchase Order ${poNumber.value}` : args.sourceDocument;
   const material = firstMatchWithSource(text, [
     /\b(\d+(?:\.\d+)?\s*mm\s+(?:white\s+)?PVC)\b/i,
     /\b(\d+(?:\.\d+)?\s*mm\s+coroplast)\b/i,
@@ -197,16 +220,36 @@ export function extractPurchaseOrderFields(args: {
     /\b((?:white\s+)?PVC)\b/i,
     /\b(coroplast)\b/i,
   ]);
-  const productDescription = firstMatchWithSource(text, [
+  const productFromQuantity = quantity
+    ? { match: quantity.sourceText.match(/^\s*\d+(?:,\d{3})*\s+(.{3,120})$/i), sourceText: quantity.sourceText }
+    : null;
+  const productDescription = productFromQuantity?.match?.[1]
+    ? { value: productFromQuantity.match[1].trim(), sourceText: productFromQuantity.sourceText }
+    : firstMatchWithSource(text, [
     /^\s*\d+(?:,\d{3})*\s+(.{3,120}?(?:signs?|banners?|posters?|decals?|stickers?|prints?))\b/im,
     /\bitem\s+description\s*[:#]?\s*(.{3,120})/i,
     /\bproduct\s*[:#]?\s*(.{3,120})/i,
   ]);
   const customer = firstMatchWithSource(text, [
+    /\bcustomer\s+name\s*[:#]?\s*(.{3,120}?)(?=\s+(?:contact|attn|attention|purchase\s+order|po|arrival\s+due|qty|item\s+description)\b|$)/i,
+    /\bcustomer\s*[:#]?\s*(.{3,120}?)(?=\s+(?:contact|attn|attention|purchase\s+order|po|arrival\s+due|qty|item\s+description)\b|$)/i,
+    /\bcustomer\s+name\s*[:#]?\s*(.{3,120})/i,
     /\bcustomer\s*[:#]?\s*(.{3,120})/i,
     /\bbill\s+to\s*[:#]?\s*(.{3,120})/i,
+    /\bship\s+to\s*[:#]?\s*(.{3,120})/i,
   ]);
-  const contact = firstMatchWithSource(text, [/\bcontact\s*[:#]?\s*(.{3,120})/i]);
+  const contact = firstMatchWithSource(text, [
+    /\bcontact\s+name\s*[:#]?\s*(.{3,120}?)(?=\s+(?:purchase\s+order|po|arrival\s+due|qty|item\s+description|customer)\b|$)/i,
+    /\bcontact\s*[:#]?\s*(.{3,120}?)(?=\s+(?:purchase\s+order|po|arrival\s+due|qty|item\s+description|customer)\b|$)/i,
+    /\battn\.?\s*[:#]?\s*(.{3,120}?)(?=\s+(?:purchase\s+order|po|arrival\s+due|qty|item\s+description|customer)\b|$)/i,
+    /\battention\s*[:#]?\s*(.{3,120}?)(?=\s+(?:purchase\s+order|po|arrival\s+due|qty|item\s+description|customer)\b|$)/i,
+    /\bordered\s+by\s*[:#]?\s*(.{3,120}?)(?=\s+(?:purchase\s+order|po|arrival\s+due|qty|item\s+description|customer)\b|$)/i,
+    /\bcontact\s+name\s*[:#]?\s*(.{3,120})/i,
+    /\bcontact\s*[:#]?\s*(.{3,120})/i,
+    /\battn\.?\s*[:#]?\s*(.{3,120})/i,
+    /\battention\s*[:#]?\s*(.{3,120})/i,
+    /\bordered\s+by\s*[:#]?\s*(.{3,120})/i,
+  ]);
   const shippingNotes = firstMatchWithSource(text, [
     /\bship(?:ping)?\s*(?:notes?)?\s*[:#]?\s*(.{3,200})/i,
     /\bdeliver(?:y)?\s*[:#]?\s*(.{3,200})/i,
@@ -214,19 +257,19 @@ export function extractPurchaseOrderFields(args: {
   const price = firstMatchWithSource(text, [/(\$\s*\d+(?:,\d{3})*(?:\.\d{2})?)/]);
   const versionCount = firstMatchWithSource(text, [/\b(\d+)\s+versions?\b/i]);
   const fieldSources: PurchaseOrderSummary["fieldSources"] = {};
-  if (poNumber) fieldSources.poNumber = source(poNumber.value, poNumber.sourceText, 98, args.sourceDocument);
-  if (selectedDate) fieldSources.dueDate = source(selectedDate.parsedDate, selectedDate.sourceText, selectedDate.confidence, args.sourceDocument);
-  if (quantity) fieldSources.quantity = source(quantity.value, quantity.sourceText, 98, args.sourceDocument);
-  if (productDescription) fieldSources.productDescription = source(productDescription.value, productDescription.sourceText, 90, args.sourceDocument);
-  if (material) fieldSources.material = source(material.value, material.sourceText, 92, args.sourceDocument);
-  if (dimensions) fieldSources.dimensions = source(dimensions.value, dimensions.sourceText, 95, args.sourceDocument);
-  if (customer) fieldSources.customer = source(customer.value, customer.sourceText, 80, args.sourceDocument);
-  if (contact) fieldSources.contact = source(contact.value, contact.sourceText, 80, args.sourceDocument);
-  if (shippingNotes) fieldSources.shippingNotes = source(shippingNotes.value, shippingNotes.sourceText, 78, args.sourceDocument);
-  if (price) fieldSources.price = source(price.value, price.sourceText, 76, args.sourceDocument);
+  if (poNumber) fieldSources.poNumber = source(poNumber.value, poNumber.sourceText, 98, sourceDocument);
+  if (selectedDate) fieldSources.dueDate = source(selectedDate.parsedDate, selectedDate.sourceText, selectedDate.confidence, sourceDocument);
+  if (quantity) fieldSources.quantity = source(quantity.value, quantity.sourceText, 98, sourceDocument);
+  if (productDescription) fieldSources.productDescription = source(productDescription.value, productDescription.sourceText, 90, sourceDocument);
+  if (material) fieldSources.material = source(material.value, material.sourceText, 92, sourceDocument);
+  if (dimensions) fieldSources.dimensions = source(dimensions.value, dimensions.sourceText, 95, sourceDocument);
+  if (customer) fieldSources.customer = source(customer.value, customer.sourceText, 80, sourceDocument);
+  if (contact) fieldSources.contact = source(contact.value, contact.sourceText, 80, sourceDocument);
+  if (shippingNotes) fieldSources.shippingNotes = source(shippingNotes.value, shippingNotes.sourceText, 78, sourceDocument);
+  if (price) fieldSources.price = source(price.value, price.sourceText, 76, sourceDocument);
   if (versionCount) {
     const value = numberValue(versionCount.value);
-    if (value) fieldSources.versionCount = source(value, versionCount.sourceText, 78, args.sourceDocument);
+    if (value) fieldSources.versionCount = source(value, versionCount.sourceText, 78, sourceDocument);
   }
 
   return {

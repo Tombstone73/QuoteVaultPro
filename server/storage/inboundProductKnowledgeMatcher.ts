@@ -29,10 +29,12 @@ export type ProductKnowledgeMatch = {
     matchReasons: string[];
     matchBreakdown: {
       nameScore: number;
+      keywordScore: number;
       descriptionScore: number;
       categoryScore: number;
       materialScore: number;
       metadataScore: number;
+      accessoryPenalty: number;
       combinedConfidence: number;
     };
   };
@@ -127,6 +129,34 @@ function scoreField(field: string, phrases: string[], queryTokens: string[]): { 
   return { score: Math.min(100, score), reasons: Array.from(new Set(reasons)) };
 }
 
+function priorityWeightedConfidence(args: {
+  materialScore: number;
+  categoryScore: number;
+  descriptionScore: number;
+  keywordScore: number;
+  metadataScore: number;
+  accessoryPenalty: number;
+}): number {
+  const weighted = Math.round(
+    args.materialScore * 0.5
+    + args.categoryScore * 0.2
+    + args.descriptionScore * 0.16
+    + args.keywordScore * 0.1
+    + args.metadataScore * 0.04,
+  );
+  const priorityFloor = Math.max(
+    args.materialScore >= 90 ? 94 : 0,
+    args.materialScore >= 72 ? 84 : 0,
+    args.categoryScore >= 90 ? 78 : 0,
+    args.categoryScore >= 72 ? 72 : 0,
+    args.descriptionScore >= 90 ? 68 : 0,
+    args.descriptionScore >= 72 ? 60 : 0,
+    args.keywordScore >= 90 ? 58 : 0,
+    args.keywordScore >= 72 ? 52 : 0,
+  );
+  return Math.max(0, Math.min(100, Math.max(weighted, priorityFloor) - args.accessoryPenalty));
+}
+
 export function buildProductKnowledgeSearchTerms(input: ProductKnowledgeMatchInput): string[] {
   const source = [
     input.sourceText,
@@ -173,14 +203,14 @@ export function scoreProductKnowledgeCandidates(
         || /\b(accessor(?:y|ies)|hardware|stake|stakes|grommet|fee|setup|install|installation|design)\b/i.test(`${candidate.name} ${candidate.category ?? ""}`)
         ? 18
         : 0;
-      const combinedConfidence = Math.max(0, Math.min(100, Math.round(Math.max(
-        name.score * 0.72,
-        description.score,
-        category.score * 0.98,
-        material.score,
-        metadata.score * 0.86,
-        name.score * 0.18 + description.score * 0.38 + category.score * 0.22 + material.score * 0.22,
-      ) - accessoryPenalty)));
+      const combinedConfidence = priorityWeightedConfidence({
+        materialScore: material.score,
+        categoryScore: category.score,
+        descriptionScore: description.score,
+        keywordScore: name.score,
+        metadataScore: metadata.score,
+        accessoryPenalty,
+      });
       const reasons = [
         ...name.reasons.map((reason) => `name ${reason}`),
         ...description.reasons.map((reason) => `description ${reason}`),
@@ -201,6 +231,7 @@ export function scoreProductKnowledgeCandidates(
           matchReasons: reasons,
           matchBreakdown: {
             nameScore: name.score,
+            keywordScore: name.score,
             descriptionScore: description.score,
             categoryScore: category.score,
             materialScore: material.score,

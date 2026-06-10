@@ -3,7 +3,10 @@ import express from "express";
 import request from "supertest";
 
 import { registerInboundOrderRoutes } from "../routes/inboundOrders.routes";
-import { InboundOrderTransitionError } from "../services/inboundOrders/InboundOrderService";
+import {
+  InboundOrderReviewDraftValidationError,
+  InboundOrderTransitionError,
+} from "../services/inboundOrders/InboundOrderService";
 
 function inboundRecord(overrides: Record<string, any> = {}) {
   const now = new Date("2026-06-09T12:00:00.000Z");
@@ -169,6 +172,74 @@ function parsedDraft(overrides: Record<string, any> = {}) {
   };
 }
 
+function reviewDraft(overrides: Record<string, any> = {}) {
+  return {
+    id: "snapshot_1",
+    snapshotId: "snapshot_1",
+    snapshotVersion: 1,
+    inboundOrderRecordId: "inbound_1",
+    organizationId: "org_1",
+    sourceParseAttemptId: "attempt_1",
+    sourceParseAttemptCreatedAt: "2026-06-09T12:01:00.000Z",
+    latestParseAttemptId: "attempt_1",
+    latestParseAttemptCreatedAt: "2026-06-09T12:01:00.000Z",
+    hasNewerParse: false,
+    initializedFromParse: false,
+    status: "draft",
+    reviewedCustomerJson: {
+      sourceName: "Shawn Fears",
+      sourceEmail: "shawn@example.com",
+      sourcePhone: null,
+      companyName: "Brainstorm Print",
+      selectedCustomerId: "customer_1",
+      selectedContactId: "contact_1",
+      unresolvedCustomer: false,
+      notes: null,
+    },
+    reviewedOrderJson: {
+      poNumber: "151661",
+      dueDate: "2026-06-11",
+      shipMethod: null,
+      fulfillmentType: "unknown",
+      internalNotes: null,
+      customerNotes: null,
+    },
+    reviewedLineItemsJson: [{
+      sourceLineItemId: null,
+      sourceText: "3 PVC Signs 24x36",
+      productName: "PVC Signs",
+      selectedProductId: "product_pvc",
+      productUnresolved: false,
+      quantity: 3,
+      width: 24,
+      height: 36,
+      dimensionsUnit: "in",
+      materialText: "3mm White PVC",
+      printSpecs: [],
+      optionTexts: [],
+      finishingTexts: [],
+      notes: null,
+    }],
+    reviewedArtworkJson: { status: "missing", refs: [], notes: null },
+    missingDecisionsJson: [{
+      field: "lineItems.0.artwork",
+      label: "Is artwork supplied for this item?",
+      reason: "No artwork file or artwork reference was detected.",
+      severity: "warning",
+      status: "still_blocking",
+      resolutionNote: null,
+    }],
+    warningsJson: [],
+    reviewNotes: null,
+    createdByUserId: "user_1",
+    updatedByUserId: "user_1",
+    createdAt: "2026-06-09T12:02:00.000Z",
+    updatedAt: "2026-06-09T12:02:00.000Z",
+    validationErrors: ["Is artwork supplied for this item?: acknowledge artwork status before marking ready."],
+    ...overrides,
+  };
+}
+
 function buildApp(
   service: Record<string, any>,
   options: { orgId?: string; internal?: boolean; parsingService?: Record<string, any> } = {},
@@ -219,6 +290,10 @@ describe("inbound order routes", () => {
     resolveWarning: jest.fn(),
     resolveDecisionFlag: jest.fn(),
     createQuoteDraftFromInbound: jest.fn(),
+    getReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
+    saveReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
+    markReviewDraftReady: jest.fn<(...args: any[]) => Promise<any>>(),
+    reopenReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
   };
   const parsingService = {
     parseInboundOrderRecord: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -391,7 +466,52 @@ describe("inbound order routes", () => {
   });
 
   test("returns latest parsed draft preview", async () => {
-    const draft = parsedDraft();
+    const draft = parsedDraft({
+      order: {
+        ...parsedDraft().order,
+        requestedDueDate: "2026-06-11",
+      },
+      evidence: {
+        items: [{
+          type: "PDF_ATTACHMENT",
+          label: "Brainstorm Print PO.pdf",
+          sourceId: "file_1",
+          fileName: "Brainstorm Print PO.pdf",
+          mimeType: "application/pdf",
+          rawText: "Purchase Order 151661\nArrival Due Date; MUST EOD 6/11\n3 PVC Signs\n24x36\n3mm White PVC",
+          pageCount: 1,
+          documentType: "purchase_order",
+          documentConfidence: 98,
+          extractionStatus: "successful",
+          poSummary: {
+            poNumber: "151661",
+            dueDate: "2026-06-11",
+            quantity: 3,
+            productDescription: "PVC Signs",
+            material: "3mm White PVC",
+            dimensions: "24x36",
+            printSpecs: [],
+            dateCandidates: [{
+              parsedDate: "2026-06-11",
+              sourceText: "Arrival Due Date; MUST EOD 6/11",
+              classification: "DUE_DATE",
+              confidence: 98,
+            }],
+            fieldSources: {
+              dueDate: {
+                value: "2026-06-11",
+                sourceType: "PDF_ATTACHMENT",
+                sourceDocument: "Purchase Order 151661",
+                sourceText: "Arrival Due Date; MUST EOD 6/11",
+                confidence: 98,
+              },
+            },
+          },
+          warnings: [],
+        }],
+        conflicts: [],
+      },
+    });
     const attempt = parseAttempt({ parsedDraft: draft });
     parsingService.getDraftPreview.mockResolvedValue({ draft, latestAttempt: attempt });
 
@@ -400,10 +520,92 @@ describe("inbound order routes", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.data.draft.lineItems[0].productName).toBe("Banner");
+    expect(response.body.data.draft.order.requestedDueDate).toBe("2026-06-11");
+    expect(response.body.data.draft.evidence.items[0].poSummary.dateCandidates[0].classification).toBe("DUE_DATE");
+    expect(response.body.data.draft.evidence.items[0].poSummary.fieldSources.dueDate).toMatchObject({
+      value: "2026-06-11",
+      sourceDocument: "Purchase Order 151661",
+      sourceText: "Arrival Due Date; MUST EOD 6/11",
+      confidence: 98,
+    });
     expect(response.body.data.latestAttempt.confidence).toBe(88);
     expect(parsingService.getDraftPreview).toHaveBeenCalledWith({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
+    });
+  });
+
+  test("loads an editable review draft", async () => {
+    service.getReviewDraft.mockResolvedValue(reviewDraft());
+
+    const response = await request(buildApp(service))
+      .get("/api/inbound-orders/inbound_1/review-draft");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.reviewedOrderJson.dueDate).toBe("2026-06-11");
+    expect(service.getReviewDraft).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+  });
+
+  test("saves an editable review draft", async () => {
+    const saved = reviewDraft({
+      reviewedLineItemsJson: [{ ...reviewDraft().reviewedLineItemsJson[0], quantity: 4 }],
+      validationErrors: [],
+    });
+    service.saveReviewDraft.mockResolvedValue(saved);
+
+    const response = await request(buildApp(service))
+      .put("/api/inbound-orders/inbound_1/review-draft")
+      .send({
+        reviewedCustomerJson: saved.reviewedCustomerJson,
+        reviewedOrderJson: saved.reviewedOrderJson,
+        reviewedLineItemsJson: saved.reviewedLineItemsJson,
+        reviewedArtworkJson: saved.reviewedArtworkJson,
+        missingDecisionsJson: saved.missingDecisionsJson,
+        warningsJson: saved.warningsJson,
+        reviewNotes: "Saved edits",
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.reviewedLineItemsJson[0].quantity).toBe(4);
+    expect(service.saveReviewDraft).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    }));
+    expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+  });
+
+  test("returns review draft validation errors when mark ready fails", async () => {
+    service.markReviewDraftReady.mockRejectedValue(new InboundOrderReviewDraftValidationError(
+      "Review draft is not ready to convert.",
+      ["Select a customer candidate or mark the customer unresolved."],
+    ));
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/inbound_1/review-draft/mark-ready")
+      .send({});
+
+    expect(response.status).toBe(400);
+    expect(response.body.errors).toEqual(["Select a customer candidate or mark the customer unresolved."]);
+  });
+
+  test("reopens a ready review draft", async () => {
+    service.reopenReviewDraft.mockResolvedValue(reviewDraft({ status: "draft", validationErrors: [] }));
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/inbound_1/review-draft/reopen")
+      .send({});
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe("draft");
+    expect(service.reopenReviewDraft).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
     });
   });
 

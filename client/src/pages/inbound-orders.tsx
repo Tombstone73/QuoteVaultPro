@@ -28,6 +28,9 @@ import {
   type InboundOrderDraftPreviewResponse,
   type InboundOrderParsedDraft,
   type InboundOrderParseResponse,
+  type InboundOrderReviewDraftDto,
+  type InboundOrderReviewDraftResponse,
+  type InboundOrderReviewDraftSaveRequest,
   type InboundOrdersListResponse,
   type InboundOrderStatusGroup,
   type InboundOrderQueueSummary,
@@ -64,6 +67,8 @@ type ClientInboundOrderDetailResponse = Omit<InboundOrderDetailResponse, "data">
 type ClientInboundOrderParseAttempt = NonNullable<InboundOrderDraftPreviewResponse["data"]["latestAttempt"]>;
 
 type ClientInboundOrderDraftPreviewResponse = InboundOrderDraftPreviewResponse;
+type ClientInboundOrderReviewDraftResponse = InboundOrderReviewDraftResponse;
+type ReviewDraftFormState = InboundOrderReviewDraftSaveRequest;
 
 type ClientInboundOrderParseResponse = Omit<InboundOrderParseResponse, "data"> & {
   data: Omit<InboundOrderParseResponse["data"], "record"> & {
@@ -138,7 +143,9 @@ async function readJson<T>(url: string): Promise<T> {
       : typeof json?.error === "string"
         ? json.error
         : "Request failed";
-    throw new Error(message);
+    const error = new Error(message) as Error & { errors?: string[] };
+    if (Array.isArray(json?.errors)) error.errors = json.errors.filter((item: unknown): item is string => typeof item === "string");
+    throw error;
   }
 
   return json as T;
@@ -158,7 +165,31 @@ async function postJson<T>(url: string, payload: unknown): Promise<T> {
       : typeof json?.error === "string"
         ? json.error
         : "Request failed";
-    throw new Error(message);
+    const error = new Error(message) as Error & { errors?: string[] };
+    if (Array.isArray(json?.errors)) error.errors = json.errors.filter((item: unknown): item is string => typeof item === "string");
+    throw error;
+  }
+
+  return json as T;
+}
+
+async function putJson<T>(url: string, payload: unknown): Promise<T> {
+  const response = await apiFetch(url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const json = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const message = typeof json?.message === "string"
+      ? json.message
+      : typeof json?.error === "string"
+        ? json.error
+        : "Request failed";
+    const error = new Error(message) as Error & { errors?: string[] };
+    if (Array.isArray(json?.errors)) error.errors = json.errors.filter((item: unknown): item is string => typeof item === "string");
+    throw error;
   }
 
   return json as T;
@@ -167,6 +198,29 @@ async function postJson<T>(url: string, payload: unknown): Promise<T> {
 function trimToNull(value: string) {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
+}
+
+function cloneReviewDraft(draft: InboundOrderReviewDraftDto): ReviewDraftFormState {
+  return JSON.parse(JSON.stringify({
+    status: "draft",
+    reviewedCustomerJson: draft.reviewedCustomerJson,
+    reviewedOrderJson: draft.reviewedOrderJson,
+    reviewedLineItemsJson: draft.reviewedLineItemsJson,
+    reviewedArtworkJson: draft.reviewedArtworkJson,
+    missingDecisionsJson: draft.missingDecisionsJson,
+    warningsJson: draft.warningsJson,
+    reviewNotes: draft.reviewNotes,
+  })) as ReviewDraftFormState;
+}
+
+function formStatesEqual(left: ReviewDraftFormState | null, right: ReviewDraftFormState | null): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function optionalNumber(value: string): number | null {
+  if (!value.trim()) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
 }
 
 function formatRelative(value: string | Date | null | undefined) {
@@ -379,10 +433,12 @@ function ProductMatchReasoning({ candidates }: { candidates: InboundOrderParsedD
                 )}
                 {breakdown && (
                   <div className="mt-2 grid grid-cols-2 gap-1 text-xs text-muted-foreground">
-                    <span>Name {String(breakdown.nameScore ?? 0)}</span>
-                    <span>Description {String(breakdown.descriptionScore ?? 0)}</span>
-                    <span>Category {String(breakdown.categoryScore ?? 0)}</span>
-                    <span>Material {String(breakdown.materialScore ?? 0)}</span>
+                    <span>Final Score {String(breakdown.combinedConfidence ?? candidate.confidence)}</span>
+                    <span>Material Score {String(breakdown.materialScore ?? 0)}</span>
+                    <span>Category Score {String(breakdown.categoryScore ?? 0)}</span>
+                    <span>Description Score {String(breakdown.descriptionScore ?? 0)}</span>
+                    <span>Keyword Score {String(breakdown.keywordScore ?? breakdown.nameScore ?? 0)}</span>
+                    <span>Metadata Score {String(breakdown.metadataScore ?? 0)}</span>
                   </div>
                 )}
               </div>
@@ -442,9 +498,11 @@ function FieldSourceSection({ draft }: { draft: InboundOrderParsedDraft }) {
                 <Badge variant="secondary">{source.confidence}%</Badge>
               </div>
               <div className="mt-2 grid grid-cols-1 gap-2 text-xs text-muted-foreground">
+                <div>Value: {String(source.value ?? "-")}</div>
                 <div>Source: {evidenceSourceLabel(source.sourceType)}</div>
                 {source.sourceDocument && <div>Document: {source.sourceDocument}</div>}
                 {source.sourceText && <div>Source Text: {source.sourceText}</div>}
+                <div>Confidence: {source.confidence}%</div>
               </div>
             </div>
           ))
@@ -974,13 +1032,47 @@ function DraftBuilderPanel({
   selectedRecord,
   isLoading,
   draftPreview,
+  reviewDraft,
   previewError,
+  reviewDraftError,
+  isSaving,
+  isMarkingReady,
+  isReopening,
+  saveError,
+  markReadyError,
+  onSave,
+  onMarkReady,
+  onReopen,
 }: {
   selectedRecord: ClientInboundOrderRecord | null;
   isLoading: boolean;
   draftPreview: ClientInboundOrderDraftPreviewResponse["data"] | undefined;
+  reviewDraft: InboundOrderReviewDraftDto | undefined;
   previewError: Error | null;
+  reviewDraftError: Error | null;
+  isSaving: boolean;
+  isMarkingReady: boolean;
+  isReopening: boolean;
+  saveError: Error | null;
+  markReadyError: (Error & { errors?: string[] }) | null;
+  onSave: (draft: ReviewDraftFormState) => Promise<void>;
+  onMarkReady: (draft: ReviewDraftFormState, dirty: boolean) => Promise<void>;
+  onReopen: () => Promise<void>;
 }) {
+  const [form, setForm] = useState<ReviewDraftFormState | null>(null);
+  const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
+
+  useEffect(() => {
+    if (!reviewDraft) {
+      setForm(null);
+      setBaseForm(null);
+      return;
+    }
+    const next = cloneReviewDraft(reviewDraft);
+    setForm(next);
+    setBaseForm(next);
+  }, [reviewDraft?.snapshotId, reviewDraft?.updatedAt, reviewDraft?.status]);
+
   if (!selectedRecord) {
     return <EmptyPanel title="Draft builder" detail="Draft builder will appear after parsing." />;
   }
@@ -994,16 +1086,16 @@ function DraftBuilderPanel({
     );
   }
 
-  if (previewError) {
+  if (previewError || reviewDraftError) {
     return (
       <div className="p-4">
         <Alert variant="destructive">
           <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>Draft preview unavailable</AlertTitle>
-          <AlertDescription>{previewError.message}</AlertDescription>
+          <AlertTitle>Draft review unavailable</AlertTitle>
+          <AlertDescription>{previewError?.message ?? reviewDraftError?.message}</AlertDescription>
         </Alert>
         <div className="mt-4 rounded-md border border-border p-3 text-sm text-muted-foreground">
-          Phase 2: parsing only. Order creation is disabled.
+          Order creation starts in Phase 4.
         </div>
       </div>
     );
@@ -1020,16 +1112,25 @@ function DraftBuilderPanel({
         </div>
         <div className="mt-4 text-sm font-semibold text-foreground">Draft builder will appear after parsing.</div>
         <div className="mt-1 max-w-sm text-sm text-muted-foreground">
-          Phase 2: parsing only. Order creation is disabled.
+          Phase 3: editable review starts after a successful parse.
         </div>
         {latestAttempt?.status === "failed" && (
           <div className="mt-3 max-w-sm rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             Last parse failed. Source evidence remains available for retry.
           </div>
         )}
-        <Button type="button" className="mt-4" disabled>
-          Create Draft Order
+        <Button type="button" className="mt-4" disabled title="Order creation starts in Phase 4.">
+          Order creation starts in Phase 4.
         </Button>
+      </div>
+    );
+  }
+
+  if (!reviewDraft || !form) {
+    return (
+      <div className="space-y-3 p-4">
+        <Skeleton className="h-5 w-1/2" />
+        <Skeleton className="h-28 w-full" />
       </div>
     );
   }
@@ -1041,23 +1142,74 @@ function DraftBuilderPanel({
     ...draft.lineItems.flatMap((lineItem) => lineItem.warnings),
     ...draft.artwork.flatMap((artwork) => artwork.warnings),
   ];
+  const dirty = !formStatesEqual(form, baseForm);
+  const actionPending = isSaving || isMarkingReady || isReopening;
+  const validationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
+  const updateForm = (patch: Partial<ReviewDraftFormState>) => {
+    setForm((current) => current ? { ...current, ...patch } : current);
+  };
+  const updateCustomer = (patch: Partial<ReviewDraftFormState["reviewedCustomerJson"]>) => {
+    updateForm({ reviewedCustomerJson: { ...form.reviewedCustomerJson, ...patch } });
+  };
+  const updateOrder = (patch: Partial<ReviewDraftFormState["reviewedOrderJson"]>) => {
+    updateForm({ reviewedOrderJson: { ...form.reviewedOrderJson, ...patch } });
+  };
+  const updateLineItem = (index: number, patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => {
+    updateForm({
+      reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, itemIndex) => (
+        itemIndex === index ? { ...item, ...patch } : item
+      )),
+    });
+  };
+  const updateDecision = (index: number, patch: Partial<ReviewDraftFormState["missingDecisionsJson"][number]>) => {
+    updateForm({
+      missingDecisionsJson: form.missingDecisionsJson.map((item, itemIndex) => (
+        itemIndex === index ? { ...item, ...patch } : item
+      )),
+    });
+  };
+  const updateWarning = (index: number, patch: Partial<ReviewDraftFormState["warningsJson"][number]>) => {
+    updateForm({
+      warningsJson: form.warningsJson.map((item, itemIndex) => (
+        itemIndex === index ? { ...item, ...patch } : item
+      )),
+    });
+  };
 
   return (
     <ScrollArea className="h-full">
       <div className="space-y-4 p-4">
         <Alert>
           <Sparkles className="h-4 w-4" />
-          <AlertTitle>Phase 2: parsing only. Order creation is disabled.</AlertTitle>
+          <AlertTitle>Phase 3: editable review only.</AlertTitle>
           <AlertDescription>
-            Review candidate matches and missing decisions here. This panel does not create customers, products, orders, production jobs, fulfillment, or invoices.
+            Staff edits are saved to inbound review draft storage only. Order creation starts in Phase 4.
           </AlertDescription>
         </Alert>
+        {reviewDraft.hasNewerParse && (
+          <Alert>
+            <RefreshCw className="h-4 w-4" />
+            <AlertTitle>Newer parse available.</AlertTitle>
+            <AlertDescription>
+              Existing staff edits are preserved. Refresh review draft from latest parse is intentionally manual and not automatic.
+            </AlertDescription>
+          </Alert>
+        )}
+        {(saveError || markReadyError) && (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Review draft action failed</AlertTitle>
+            <AlertDescription>{(markReadyError ?? saveError)?.message}</AlertDescription>
+          </Alert>
+        )}
 
         <section className="rounded-md border border-border p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-foreground">Parse Summary</h3>
             <div className="flex flex-wrap gap-2">
               <Badge variant="secondary">{latestAttempt?.confidence ?? 0}% confidence</Badge>
+              <Badge variant={reviewDraft.status === "ready_to_convert" ? "default" : "outline"}>{titleCase(reviewDraft.status)}</Badge>
+              {dirty && <Badge variant="outline">Unsaved changes</Badge>}
               <Badge variant="outline">{allWarnings.length} warnings</Badge>
               <Badge variant="outline">{draft.missingDecisions.length} missing decisions</Badge>
             </div>
@@ -1071,11 +1223,46 @@ function DraftBuilderPanel({
         <FieldSourceSection draft={draft} />
 
         <section className="rounded-md border border-border p-3">
-          <h3 className="text-sm font-semibold text-foreground">Customer Match Candidates</h3>
-          <div className="mt-3 grid grid-cols-1 gap-2">
-            <InlineField label="Source name" value={draft.customer.sourceName} />
-            <InlineField label="Source email" value={draft.customer.sourceEmail} />
-            <InlineField label="Company" value={draft.customer.companyName} />
+          <h3 className="text-sm font-semibold text-foreground">Customer</h3>
+          <div className="mt-3 grid grid-cols-1 gap-3">
+            <label className="space-y-1 text-xs text-muted-foreground">
+              Source name
+              <Input value={form.reviewedCustomerJson.sourceName ?? ""} onChange={(event) => updateCustomer({ sourceName: trimToNull(event.target.value) })} />
+            </label>
+            <label className="space-y-1 text-xs text-muted-foreground">
+              Source email
+              <Input value={form.reviewedCustomerJson.sourceEmail ?? ""} onChange={(event) => updateCustomer({ sourceEmail: trimToNull(event.target.value) })} />
+            </label>
+            <label className="space-y-1 text-xs text-muted-foreground">
+              Company
+              <Input value={form.reviewedCustomerJson.companyName ?? ""} onChange={(event) => updateCustomer({ companyName: trimToNull(event.target.value) })} />
+            </label>
+            <label className="space-y-1 text-xs text-muted-foreground">
+              Customer candidate
+              <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedCustomerJson.selectedCustomerId ?? ""} onChange={(event) => updateCustomer({ selectedCustomerId: trimToNull(event.target.value) })}>
+                <option value="">Unselected</option>
+                {draft.customer.customerCandidates.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>{candidate.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1 text-xs text-muted-foreground">
+              Contact candidate
+              <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedCustomerJson.selectedContactId ?? ""} onChange={(event) => updateCustomer({ selectedContactId: trimToNull(event.target.value) })}>
+                <option value="">Unselected</option>
+                {draft.customer.contactCandidates.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>{candidate.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-foreground">
+              <input type="checkbox" checked={form.reviewedCustomerJson.unresolvedCustomer} onChange={(event) => updateCustomer({ unresolvedCustomer: event.target.checked })} />
+              Customer unresolved
+            </label>
+            <label className="space-y-1 text-xs text-muted-foreground">
+              Customer review notes
+              <Textarea value={form.reviewedCustomerJson.notes ?? ""} onChange={(event) => updateCustomer({ notes: trimToNull(event.target.value) })} />
+            </label>
           </div>
           <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
             <CandidateList title="Customers" candidates={draft.customer.customerCandidates} />
@@ -1085,17 +1272,21 @@ function DraftBuilderPanel({
 
         <section className="rounded-md border border-border p-3">
           <h3 className="text-sm font-semibold text-foreground">Order Details</h3>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <InlineField label="PO number" value={draft.order.poNumber} />
-            <InlineField label="Due date" value={draft.order.requestedDueDate} />
-            <InlineField label="Ship method" value={draft.order.requestedShipMethod} />
-            <InlineField label="Pickup" value={draft.order.requestedPickup} />
+          <div className="mt-3 grid grid-cols-1 gap-3">
+            <label className="space-y-1 text-xs text-muted-foreground">PO number<Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} /></label>
+            <label className="space-y-1 text-xs text-muted-foreground">Due date<Input value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} /></label>
+            <label className="space-y-1 text-xs text-muted-foreground">Ship method<Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: trimToNull(event.target.value) })} /></label>
+            <label className="space-y-1 text-xs text-muted-foreground">
+              Pickup / shipping
+              <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedOrderJson.fulfillmentType} onChange={(event) => updateOrder({ fulfillmentType: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["fulfillmentType"] })}>
+                <option value="unknown">Unknown</option>
+                <option value="pickup">Pickup</option>
+                <option value="shipping">Shipping</option>
+              </select>
+            </label>
+            <label className="space-y-1 text-xs text-muted-foreground">Internal notes<Textarea value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: trimToNull(event.target.value) })} /></label>
+            <label className="space-y-1 text-xs text-muted-foreground">Customer notes<Textarea value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: trimToNull(event.target.value) })} /></label>
           </div>
-          {draft.order.notes && (
-            <div className="mt-3 whitespace-pre-wrap rounded-md border border-border bg-muted/20 p-3 text-sm text-foreground">
-              {draft.order.notes}
-            </div>
-          )}
         </section>
 
         <section className="rounded-md border border-border p-3">
@@ -1107,33 +1298,45 @@ function DraftBuilderPanel({
             {draft.lineItems.length === 0 ? (
               <div className="text-sm text-muted-foreground">No line items detected.</div>
             ) : (
-              draft.lineItems.map((lineItem, index) => (
+              form.reviewedLineItemsJson.map((lineItem, index) => {
+                const parsedLine = draft.lineItems[index];
+                return (
                 <div key={index} className="rounded-md border border-border p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h4 className="text-sm font-semibold text-foreground">
                       {lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`}
                     </h4>
-                    <Badge variant="secondary">{lineItem.confidence}% confidence</Badge>
+                    {parsedLine && <Badge variant="secondary">{parsedLine.confidence}% confidence</Badge>}
                   </div>
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    <InlineField label="Quantity" value={lineItem.quantity} />
-                    <InlineField
-                      label="Dimensions"
-                      value={lineItem.width && lineItem.height
-                        ? `${lineItem.width} x ${lineItem.height}${lineItem.dimensionsUnit ? ` ${lineItem.dimensionsUnit}` : ""}`
-                        : null}
-                    />
-                    <InlineField label="Material" value={lineItem.materialText} />
-                    <InlineField label="Artwork refs" value={lineItem.artworkRefs.join(", ") || null} />
+                  <div className="mt-3 grid grid-cols-1 gap-3">
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      Product candidate
+                      <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={lineItem.selectedProductId ?? ""} onChange={(event) => updateLineItem(index, { selectedProductId: trimToNull(event.target.value) })}>
+                        <option value="">Unselected</option>
+                        {(parsedLine?.productCandidates ?? []).map((candidate) => (
+                          <option key={candidate.id} value={candidate.id}>{candidate.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-2 text-sm text-foreground">
+                      <input type="checkbox" checked={lineItem.productUnresolved} onChange={(event) => updateLineItem(index, { productUnresolved: event.target.checked })} />
+                      Product unresolved
+                    </label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Quantity<Input value={lineItem.quantity ?? ""} onChange={(event) => updateLineItem(index, { quantity: optionalNumber(event.target.value) })} /></label>
+                    <div className="grid grid-cols-3 gap-2">
+                      <label className="space-y-1 text-xs text-muted-foreground">Width<Input value={lineItem.width ?? ""} onChange={(event) => updateLineItem(index, { width: optionalNumber(event.target.value) })} /></label>
+                      <label className="space-y-1 text-xs text-muted-foreground">Height<Input value={lineItem.height ?? ""} onChange={(event) => updateLineItem(index, { height: optionalNumber(event.target.value) })} /></label>
+                      <label className="space-y-1 text-xs text-muted-foreground">Unit<Input value={lineItem.dimensionsUnit ?? ""} onChange={(event) => updateLineItem(index, { dimensionsUnit: trimToNull(event.target.value) })} /></label>
+                    </div>
+                    <label className="space-y-1 text-xs text-muted-foreground">Material<Input value={lineItem.materialText ?? ""} onChange={(event) => updateLineItem(index, { materialText: trimToNull(event.target.value) })} /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Print specs<Input value={lineItem.printSpecs.join(", ")} onChange={(event) => updateLineItem(index, { printSpecs: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Options<Input value={lineItem.optionTexts.join(", ")} onChange={(event) => updateLineItem(index, { optionTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Finishing<Input value={lineItem.finishingTexts.join(", ")} onChange={(event) => updateLineItem(index, { finishingTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Line item notes<Textarea value={lineItem.notes ?? ""} onChange={(event) => updateLineItem(index, { notes: trimToNull(event.target.value) })} /></label>
                   </div>
-                  <div className="mt-3">
-                    <CandidateList title="Products" candidates={lineItem.productCandidates} />
-                  </div>
-                  <div className="mt-3">
-                    <ProductMatchReasoning candidates={lineItem.productCandidates} />
-                  </div>
+                  {parsedLine && <div className="mt-3"><ProductMatchReasoning candidates={parsedLine.productCandidates} /></div>}
                 </div>
-              ))
+              );})
             )}
           </div>
         </section>
@@ -1144,18 +1347,28 @@ function DraftBuilderPanel({
             <Badge variant="outline">{draft.artwork.length}</Badge>
           </div>
           <div className="mt-3 space-y-2">
-            {draft.artwork.length === 0 ? (
+            {form.reviewedArtworkJson.refs.length === 0 ? (
               <div className="text-sm text-muted-foreground">No artwork references detected.</div>
             ) : (
-              draft.artwork.map((artwork, index) => (
+              form.reviewedArtworkJson.refs.map((artwork, index) => (
                 <div key={index} className="rounded-md border border-border bg-muted/20 px-3 py-2">
                   <div className="text-sm font-medium text-foreground">{artwork.filename || artwork.sourceReference || `Artwork ${index + 1}`}</div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    {titleCase(artwork.purpose)} / line {artwork.likelyLineItemIndex !== null ? artwork.likelyLineItemIndex + 1 : "-"} / {artwork.confidence}% confidence
+                    {titleCase(artwork.purpose)} / line {artwork.likelyLineItemIndex !== null ? artwork.likelyLineItemIndex + 1 : "-"}
                   </div>
                 </div>
               ))
             )}
+            <label className="mt-3 block space-y-1 text-xs text-muted-foreground">
+              Artwork status
+              <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedArtworkJson.status} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: event.target.value as ReviewDraftFormState["reviewedArtworkJson"]["status"] } })}>
+                <option value="supplied">Supplied</option>
+                <option value="to_follow">To follow</option>
+                <option value="missing">Missing</option>
+                <option value="not_required">Not required</option>
+              </select>
+            </label>
+            <label className="mt-3 block space-y-1 text-xs text-muted-foreground">Artwork notes<Textarea value={form.reviewedArtworkJson.notes ?? ""} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, notes: trimToNull(event.target.value) } })} /></label>
           </div>
         </section>
 
@@ -1165,10 +1378,10 @@ function DraftBuilderPanel({
             <Badge variant="outline">{draft.missingDecisions.length}</Badge>
           </div>
           <div className="mt-3 space-y-2">
-            {draft.missingDecisions.length === 0 ? (
+            {form.missingDecisionsJson.length === 0 ? (
               <div className="text-sm text-muted-foreground">No missing decisions detected.</div>
             ) : (
-              draft.missingDecisions.map((decision) => (
+              form.missingDecisionsJson.map((decision, index) => (
                 <div key={decision.field} className="rounded-md border border-border bg-muted/20 px-3 py-2">
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-sm font-medium text-foreground">{decision.label}</div>
@@ -1177,6 +1390,14 @@ function DraftBuilderPanel({
                     </Badge>
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">{decision.reason}</div>
+                  <div className="mt-2 grid grid-cols-1 gap-2">
+                    <select className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground" value={decision.status} onChange={(event) => updateDecision(index, { status: event.target.value as ReviewDraftFormState["missingDecisionsJson"][number]["status"] })}>
+                      <option value="resolved">Resolved</option>
+                      <option value="acknowledged">Acknowledged</option>
+                      <option value="still_blocking">Still blocking</option>
+                    </select>
+                    <Textarea value={decision.resolutionNote ?? ""} onChange={(event) => updateDecision(index, { resolutionNote: trimToNull(event.target.value) })} placeholder="Resolution note" />
+                  </div>
                 </div>
               ))
             )}
@@ -1188,11 +1409,56 @@ function DraftBuilderPanel({
             <h3 className="text-sm font-semibold text-foreground">Warnings</h3>
             <Badge variant="outline">{allWarnings.length}</Badge>
           </div>
-          <WarningList warnings={allWarnings} />
+          <div className="space-y-2">
+            {form.warningsJson.length === 0 ? (
+              <div className="text-sm text-muted-foreground">No warnings.</div>
+            ) : (
+              form.warningsJson.map((warning, index) => (
+                <div key={`${warning.code}-${index}`} className="rounded-md border border-border bg-muted/20 px-3 py-2">
+                  <div className="text-sm font-medium text-foreground">{warning.code}</div>
+                  <div className="text-xs text-muted-foreground">{warning.message}</div>
+                  <label className="mt-2 flex items-center gap-2 text-sm text-foreground">
+                    <input type="checkbox" checked={warning.acknowledged} onChange={(event) => updateWarning(index, { acknowledged: event.target.checked })} />
+                    Acknowledged
+                  </label>
+                </div>
+              ))
+            )}
+          </div>
         </section>
 
-        <Button type="button" className="w-full" disabled>
-          Create Draft Order
+        {validationErrors.length > 0 && (
+          <section className="rounded-md border border-destructive/30 bg-destructive/10 p-3">
+            <h3 className="text-sm font-semibold text-destructive">Ready validation</h3>
+            <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-destructive">
+              {validationErrors.map((error) => <li key={error}>{error}</li>)}
+            </ul>
+          </section>
+        )}
+
+        <section className="rounded-md border border-border p-3">
+          <label className="space-y-1 text-xs text-muted-foreground">Review notes<Textarea value={form.reviewNotes ?? ""} onChange={(event) => updateForm({ reviewNotes: trimToNull(event.target.value) })} /></label>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button type="button" onClick={() => { void onSave(form).catch(() => undefined); }} disabled={!dirty || actionPending}>
+              {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save Review Draft
+            </Button>
+            {reviewDraft.status === "ready_to_convert" ? (
+              <Button type="button" variant="outline" onClick={() => { void onReopen().catch(() => undefined); }} disabled={actionPending}>
+                {isReopening && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Reopen Draft
+              </Button>
+            ) : (
+              <Button type="button" variant="outline" onClick={() => { void onMarkReady(form, dirty).catch(() => undefined); }} disabled={actionPending}>
+                {isMarkingReady && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Mark Ready to Convert
+              </Button>
+            )}
+          </div>
+        </section>
+
+        <Button type="button" className="w-full" disabled title="Order creation starts in Phase 4.">
+          Order creation starts in Phase 4.
         </Button>
       </div>
     </ScrollArea>
@@ -1249,6 +1515,12 @@ export default function InboundOrdersPage() {
     enabled: Boolean(selectedId),
   });
 
+  const reviewDraftQuery = useQuery({
+    queryKey: ["/api/inbound-orders", selectedId, "review-draft"],
+    queryFn: () => readJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${selectedId}/review-draft`),
+    enabled: Boolean(selectedId && draftPreviewQuery.data?.data.draft),
+  });
+
   const createManualMutation = useMutation({
     mutationFn: (payload: ManualInboundOrderCreateRequest) => (
       postJson<ManualInboundOrderCreateResponse>("/api/inbound-orders/manual", payload)
@@ -1268,6 +1540,7 @@ export default function InboundOrdersPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] }),
         queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] }),
       ]);
       queryClient.setQueryData(["/api/inbound-orders", parsedRecordId, "draft-preview"], {
         success: true,
@@ -1281,6 +1554,38 @@ export default function InboundOrdersPage() {
     onSettled: () => {
       parseInFlightRef.current = false;
       setParsingRecordId(null);
+    },
+  });
+
+  const saveReviewDraftMutation = useMutation({
+    mutationFn: ({ recordId, draft }: { recordId: string; draft: ReviewDraftFormState }) => (
+      putJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft`, draft)
+    ),
+    onSuccess: async (response, variables) => {
+      queryClient.setQueryData(["/api/inbound-orders", variables.recordId, "review-draft"], response);
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId] });
+    },
+  });
+
+  const markReviewDraftReadyMutation = useMutation({
+    mutationFn: (recordId: string) => postJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft/mark-ready`, {}),
+    onSuccess: async (response, recordId) => {
+      queryClient.setQueryData(["/api/inbound-orders", recordId, "review-draft"], response);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] }),
+      ]);
+    },
+  });
+
+  const reopenReviewDraftMutation = useMutation({
+    mutationFn: (recordId: string) => postJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft/reopen`, {}),
+    onSuccess: async (response, recordId) => {
+      queryClient.setQueryData(["/api/inbound-orders", recordId, "review-draft"], response);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] }),
+      ]);
     },
   });
 
@@ -1324,10 +1629,11 @@ export default function InboundOrdersPage() {
                 listQuery.refetch();
                 if (selectedId) detailQuery.refetch();
                 if (selectedId) draftPreviewQuery.refetch();
+                if (selectedId) reviewDraftQuery.refetch();
               }}
-              disabled={listQuery.isFetching || detailQuery.isFetching || draftPreviewQuery.isFetching}
+              disabled={listQuery.isFetching || detailQuery.isFetching || draftPreviewQuery.isFetching || reviewDraftQuery.isFetching}
             >
-              {listQuery.isFetching || detailQuery.isFetching || draftPreviewQuery.isFetching ? (
+              {listQuery.isFetching || detailQuery.isFetching || draftPreviewQuery.isFetching || reviewDraftQuery.isFetching ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
                 <RefreshCw className="mr-2 h-4 w-4" />
@@ -1391,14 +1697,36 @@ export default function InboundOrdersPage() {
         <section className="min-h-[320px] min-w-0 lg:min-h-0">
           <div className="flex h-12 items-center justify-between border-b border-border px-4">
             <div className="text-sm font-semibold text-foreground">Draft Builder</div>
-            <Badge variant="outline">Phase 2</Badge>
+            <Badge variant="outline">Phase 3</Badge>
           </div>
           <div className="h-[calc(100%-3rem)]">
             <DraftBuilderPanel
               selectedRecord={selectedRecord}
-              isLoading={detailQuery.isLoading || draftPreviewQuery.isLoading}
+              isLoading={detailQuery.isLoading || draftPreviewQuery.isLoading || reviewDraftQuery.isLoading}
               draftPreview={draftPreviewQuery.data?.data}
+              reviewDraft={reviewDraftQuery.data?.data}
               previewError={draftPreviewQuery.error as Error | null}
+              reviewDraftError={reviewDraftQuery.error as Error | null}
+              isSaving={saveReviewDraftMutation.isPending}
+              isMarkingReady={markReviewDraftReadyMutation.isPending}
+              isReopening={reopenReviewDraftMutation.isPending}
+              saveError={saveReviewDraftMutation.error as Error | null}
+              markReadyError={markReviewDraftReadyMutation.error as (Error & { errors?: string[] }) | null}
+              onSave={async (draft) => {
+                if (!selectedId) return;
+                await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft });
+              }}
+              onMarkReady={async (draft, dirty) => {
+                if (!selectedId) return;
+                if (dirty) {
+                  await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft });
+                }
+                await markReviewDraftReadyMutation.mutateAsync(selectedId);
+              }}
+              onReopen={async () => {
+                if (!selectedId) return;
+                await reopenReviewDraftMutation.mutateAsync(selectedId);
+              }}
             />
           </div>
         </section>
