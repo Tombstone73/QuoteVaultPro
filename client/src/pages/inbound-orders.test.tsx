@@ -450,6 +450,8 @@ describe("InboundOrdersPage", () => {
   });
 
   test("creates manual intake, refreshes the queue, selects it, and renders source evidence", async () => {
+    window.localStorage.setItem("titanos.inboundOrders.evidenceWidth", "900");
+    window.localStorage.setItem("titanos.inboundOrders.draftWidth", "900");
     const created = record();
     let listCalls = 0;
 
@@ -473,6 +475,22 @@ describe("InboundOrdersPage", () => {
 
     renderPage();
     await flush();
+    const workspace = container.querySelector("[data-testid='inbound-review-workspace']") as HTMLElement;
+    const queuePanel = container.querySelector("[data-testid='inbound-queue-panel']") as HTMLElement;
+    expect(workspace).toBeTruthy();
+    expect(queuePanel).toBeTruthy();
+    await waitForCondition(() => {
+      const evidence = Number.parseInt(workspace.style.getPropertyValue("--workspace-evidence-width"), 10);
+      const draftWidthValue = Number.parseInt(workspace.style.getPropertyValue("--workspace-draft-width"), 10);
+      return evidence >= 340 && draftWidthValue >= 380 && evidence + draftWidthValue <= 1006;
+    }, "initial layout widths clamped");
+    const initialEvidenceWidth = workspace.style.getPropertyValue("--workspace-evidence-width");
+    const initialDraftWidth = workspace.style.getPropertyValue("--workspace-draft-width");
+    expect(workspace.style.getPropertyValue("--workspace-queue-width")).toBe("360px");
+    expect(queuePanel.style.width).toBe("360px");
+    expect(queuePanel.style.minWidth).toBe("360px");
+    expect(queuePanel.style.maxWidth).toBe("360px");
+    expect(queuePanel.style.flex).toBe("0 0 360px");
 
     const addButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Add"));
     expect(addButton).toBeTruthy();
@@ -520,6 +538,13 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Ada Lovelace / ada@example.com");
     expect(container.textContent).toContain("Please make two banners.");
     expect(container.textContent).toContain("Draft builder will appear after parsing.");
+    expect(workspace.style.getPropertyValue("--workspace-queue-width")).toBe("360px");
+    expect(queuePanel.style.width).toBe("360px");
+    expect(queuePanel.style.flex).toBe("0 0 360px");
+    expect(workspace.style.getPropertyValue("--workspace-evidence-width")).toBe(initialEvidenceWidth);
+    expect(workspace.style.getPropertyValue("--workspace-draft-width")).toBe(initialDraftWidth);
+    expect(window.localStorage.getItem("titanos.inboundOrders.evidenceWidth")).toBe(String(Number.parseInt(initialEvidenceWidth, 10)));
+    expect(window.localStorage.getItem("titanos.inboundOrders.draftWidth")).toBe(String(Number.parseInt(initialDraftWidth, 10)));
   });
 
   test("renders parse action and disabled draft order control for a selected record", async () => {
@@ -574,7 +599,8 @@ describe("InboundOrdersPage", () => {
 
     const queuePanel = container.querySelector("[data-testid='inbound-queue-panel']") as HTMLElement;
     expect(queuePanel).toBeTruthy();
-    expect(queuePanel.style.flexBasis).toBe("360px");
+    expect(queuePanel.style.width).toBe("360px");
+    expect(queuePanel.style.flex).toBe("0 0 360px");
 
     const queueScrollArea = Array.from(queuePanel.querySelectorAll("div")).find((element) => (
       element.className.includes("[&_[data-radix-scroll-area-viewport]]:overflow-x-hidden")
@@ -644,7 +670,8 @@ describe("InboundOrdersPage", () => {
     expect(workspace.className).toContain("overflow-hidden");
     expect(workspace.style.gridTemplateColumns).toBe("");
     expect(workspace.style.getPropertyValue("--workspace-queue-width")).toBe("360px");
-    expect(queuePanel.style.flexBasis).toBe("360px");
+    expect(queuePanel.style.width).toBe("360px");
+    expect(queuePanel.style.flex).toBe("0 0 360px");
     expect(queuePanel.className).toContain("min-[1180px]:w-[var(--workspace-queue-width)]");
 
     const draftPanel = container.querySelector("[data-testid='inbound-draft-panel']") as HTMLElement;
@@ -660,7 +687,8 @@ describe("InboundOrdersPage", () => {
     await waitForCondition(() => window.localStorage.getItem("titanos.inboundOrders.queueCollapsed") === "true", "queue collapsed persistence");
     expect(container.querySelector("[aria-label='Collapsed inbound queue']")).toBeTruthy();
     expect(workspace.style.getPropertyValue("--workspace-queue-width")).toBe("56px");
-    expect(queuePanel.style.flexBasis).toBe("56px");
+    expect(queuePanel.style.width).toBe("56px");
+    expect(queuePanel.style.flex).toBe("0 0 56px");
 
     const expandButton = container.querySelector("[aria-label='Expand inbound queue']") as HTMLButtonElement;
     act(() => {
