@@ -272,6 +272,84 @@ function parsedDraft(overrides: Record<string, any> = {}) {
   };
 }
 
+function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}) {
+  const reviewedLineItemsJson = parsed.lineItems.map((lineItem: any, index: number) => ({
+    sourceLineItemIndex: index,
+    sourceText: lineItem.sourceText ?? null,
+    productName: lineItem.productName ?? null,
+    selectedProductId: lineItem.candidateProductIds?.[0] ?? lineItem.productCandidates?.[0]?.id ?? null,
+    productUnresolved: false,
+    quantity: lineItem.quantity ?? null,
+    width: lineItem.width ?? null,
+    height: lineItem.height ?? null,
+    dimensionsUnit: lineItem.dimensionsUnit ?? null,
+    materialText: lineItem.materialText ?? null,
+    printSpecs: lineItem.printSpecs ?? [],
+    optionTexts: lineItem.optionTexts ?? [],
+    finishingTexts: lineItem.finishingTexts ?? [],
+    notes: null,
+  }));
+
+  return {
+    id: "review_snapshot_1",
+    snapshotId: "review_snapshot_1",
+    inboundOrderRecordId: "inbound_1",
+    organizationId: "org_1",
+    sourceParseAttemptId: "attempt_1",
+    sourceParseAttemptCreatedAt: "2026-06-09T12:01:00.000Z",
+    status: "draft",
+    reviewedCustomerJson: {
+      sourceName: parsed.customer.sourceName ?? null,
+      sourceEmail: parsed.customer.sourceEmail ?? null,
+      companyName: parsed.customer.companyName ?? null,
+      selectedCustomerId: parsed.customer.candidateCustomerIds?.[0] ?? null,
+      selectedContactId: parsed.customer.candidateContactIds?.[0] ?? null,
+      unresolvedCustomer: false,
+      notes: null,
+    },
+    reviewedOrderJson: {
+      poNumber: parsed.order.poNumber ?? null,
+      dueDate: parsed.order.requestedDueDate ?? null,
+      shipMethod: parsed.order.requestedShipMethod ?? null,
+      fulfillmentType: parsed.order.requestedPickup ? "pickup" : "unknown",
+      internalNotes: null,
+      customerNotes: parsed.order.notes ?? null,
+    },
+    reviewedLineItemsJson,
+    reviewedArtworkJson: {
+      status: parsed.artwork.length > 0 ? "supplied" : "missing",
+      refs: parsed.artwork.map((artwork: any) => ({
+        filename: artwork.filename ?? null,
+        sourceReference: artwork.sourceReference ?? null,
+        likelyLineItemIndex: artwork.likelyLineItemIndex ?? null,
+        purpose: artwork.purpose ?? null,
+      })),
+      notes: null,
+    },
+    missingDecisionsJson: parsed.missingDecisions.map((decision: any) => ({
+      field: decision.field,
+      label: decision.label,
+      reason: decision.reason,
+      severity: decision.severity,
+      status: "still_blocking",
+      resolutionNote: null,
+    })),
+    warningsJson: parsed.globalWarnings.map((warning: any) => ({
+      code: warning.code,
+      message: warning.message,
+      severity: warning.severity,
+      fieldPath: warning.fieldPath ?? null,
+      acknowledged: false,
+    })),
+    reviewNotes: null,
+    validationErrors: [],
+    hasNewerParse: false,
+    createdAt: "2026-06-09T12:02:00.000Z",
+    updatedAt: "2026-06-09T12:02:00.000Z",
+    ...overrides,
+  };
+}
+
 function parseAttempt(overrides: Record<string, any> = {}) {
   return {
     id: "attempt_1",
@@ -307,6 +385,14 @@ async function waitForText(text: string) {
   throw new Error(`Timed out waiting for text: ${text}`);
 }
 
+async function waitForCondition(predicate: () => boolean, label: string) {
+  for (let index = 0; index < 20; index += 1) {
+    await flush();
+    if (predicate()) return;
+  }
+  throw new Error(`Timed out waiting for: ${label}`);
+}
+
 function renderPage() {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -322,6 +408,15 @@ function renderPage() {
       </QueryClientProvider>,
     );
   });
+}
+
+function labeledControl(labelText: string, selector: string) {
+  const label = Array.from(container.querySelectorAll("label")).find((element) => (
+    element.textContent?.includes(labelText)
+  ));
+  const control = label?.querySelector(selector);
+  if (!control) throw new Error(`Missing ${selector} for label: ${labelText}`);
+  return control as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 }
 
 beforeEach(() => {
@@ -435,11 +530,11 @@ describe("InboundOrdersPage", () => {
     await waitForText("Parse with AI");
 
     const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes("Create Draft Order")
+      button.textContent?.includes("Order creation starts in Phase 4.")
     ));
     expect(createDraftButton).toBeTruthy();
     expect(createDraftButton?.disabled).toBe(true);
-    expect(container.textContent).toContain("Phase 2: parsing only. Order creation is disabled.");
+    expect(container.textContent).toContain("Phase 3: editable review starts after a successful parse.");
   });
 
   test("shows parse loading and error states", async () => {
@@ -535,6 +630,9 @@ describe("InboundOrdersPage", () => {
       if (path === "/api/inbound-orders/inbound_1/draft-preview") {
         return jsonResponse(draftPreview({ draft: previousDraft, latestAttempt: previousAttempt }));
       }
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({ success: true, data: reviewDraft(previousDraft) });
+      }
       if (path === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST") {
         return await new Promise((resolve) => {
           resolveParse = resolve;
@@ -600,11 +698,68 @@ describe("InboundOrdersPage", () => {
       },
       lineItems: [{
         ...parsedDraft().lineItems[0],
+        sourceText: "3 PVC Signs 24x36 3mm White PVC",
         productName: "PVC Signs",
+        candidateProductIds: ["product_pvc", "product_acm"],
+        productCandidates: [
+          {
+            id: "product_pvc",
+            label: "PVC",
+            confidence: 94,
+            reason: "material matched \"3mm white pvc\"; category matched \"rigid signs\"",
+            metadata: {
+              matchReasons: [
+                "material matched \"3mm white pvc\"",
+                "description matched \"pvc signs\"",
+              ],
+              matchBreakdown: {
+                nameScore: 72,
+                keywordScore: 72,
+                descriptionScore: 92,
+                categoryScore: 76,
+                materialScore: 100,
+                metadataScore: 0,
+                accessoryPenalty: 0,
+                combinedConfidence: 94,
+              },
+            },
+          },
+          {
+            id: "product_acm",
+            label: "ACM / Dibond / Max Metal",
+            confidence: 68,
+            reason: "description matched \"pvc signs\"",
+            metadata: {
+              matchReasons: [
+                "description matched \"pvc signs\"",
+              ],
+              matchBreakdown: {
+                nameScore: 0,
+                keywordScore: 0,
+                descriptionScore: 92,
+                categoryScore: 76,
+                materialScore: 0,
+                metadataScore: 0,
+                accessoryPenalty: 0,
+                combinedConfidence: 68,
+              },
+            },
+          },
+        ],
         quantity: 3,
         width: 24,
         height: 36,
         materialText: "3mm White PVC",
+        optionTexts: [],
+        artworkRefs: [],
+      }],
+      artwork: [],
+      globalWarnings: [],
+      missingDecisions: [{
+        field: "lineItems.0.artwork",
+        label: "Is artwork supplied for this item?",
+        reason: "No artwork file or artwork reference was detected in the source evidence.",
+        severity: "warning",
       }],
       evidence: {
         items: [{
@@ -629,7 +784,7 @@ describe("InboundOrdersPage", () => {
             dateCandidates: [{
               parsedDate: "2026-06-11",
               sourceText: "Arrival Due Date; MUST EOD 6/11",
-              classification: "ARRIVAL_DATE",
+              classification: "DUE_DATE",
               confidence: 98,
             }],
             fieldSources: {
@@ -694,6 +849,9 @@ describe("InboundOrdersPage", () => {
       if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
       if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row, { files: [attachmentFile] }) });
       if (path === "/api/inbound-orders/inbound_1/draft-preview") return jsonResponse(draftPreview());
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({ success: true, data: reviewDraft(draft) });
+      }
       if (path === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST") {
         return jsonResponse({
           success: true,
@@ -717,7 +875,7 @@ describe("InboundOrdersPage", () => {
       Simulate.click(parseButton!);
     });
 
-    await waitForText("Customer Match Candidates");
+    await waitForText("Phase 3: editable review only.");
     expect(container.textContent).toContain("Brainstorm Print PO.pdf");
     expect(container.textContent).toContain("Purchase Order");
     expect(container.textContent).toContain("98%");
@@ -725,9 +883,12 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Extraction: Successful");
     expect(container.textContent).toContain("PO Extraction Summary");
     expect(container.textContent).toContain("Field Sources");
+    expect(container.textContent).not.toContain("No field source details available.");
+    expect(container.textContent).toContain("Value: 2026-06-11");
     expect(container.textContent).toContain("Source: PDF Attachment");
     expect(container.textContent).toContain("Document: Purchase Order 151661");
     expect(container.textContent).toContain("Source Text: Arrival Due Date; MUST EOD 6/11");
+    expect(container.textContent).toContain("Confidence: 98%");
     expect(container.textContent).toContain("151661");
     expect(container.textContent).toContain("3mm White PVC");
     expect(container.textContent).toContain("24x36");
@@ -735,17 +896,114 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Ada Signs");
     expect(container.textContent).toContain("PVC Signs");
     expect(container.textContent).toContain("Product Match Reasoning");
-    expect(container.textContent).toContain("description matched \"banner\"");
-    expect(container.textContent).toContain("Description 92");
+    expect(container.textContent).toContain("material matched \"3mm white pvc\"");
+    expect(container.textContent).toContain("Final Score 94");
+    expect(container.textContent).toContain("Material Score 100");
+    expect(container.textContent).toContain("Category Score 76");
+    expect(container.textContent).toContain("Description Score 92");
+    expect(container.textContent).toContain("Keyword Score 72");
+    expect((container.textContent ?? "").indexOf("PVC")).toBeLessThan((container.textContent ?? "").indexOf("ACM / Dibond / Max Metal"));
     expect(container.textContent).toContain("2026-06-11");
-    expect(container.textContent).toContain("Installation needed");
-    expect(container.textContent).toContain("Confirm final banner size before conversion.");
+    expect(container.textContent).toContain("Is artwork supplied for this item?");
+    expect(container.textContent).not.toContain("Installation needed");
+    expect(container.textContent).not.toContain("Confirm final banner size before conversion.");
     expect(container.textContent).toContain("82% confidence");
-    expect(container.textContent).toContain("Phase 2: parsing only. Order creation is disabled.");
+    expect(container.textContent).toContain("Order creation starts in Phase 4.");
+    expect(labeledControl("Due date", "input")).toHaveProperty("value", "2026-06-11");
+    expect(labeledControl("Quantity", "input")).toHaveProperty("value", "3");
+    expect(labeledControl("Material", "input")).toHaveProperty("value", "3mm White PVC");
 
     const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes("Create Draft Order")
+      button.textContent?.includes("Order creation starts in Phase 4.")
     ));
     expect(createDraftButton?.disabled).toBe(true);
+  });
+
+  test("edits and saves review draft fields without enabling order creation", async () => {
+    const row = record();
+    const draft = parsedDraft();
+    const attempt = parseAttempt({ parsedDraft: draft, confidence: 82, warnings: draft.globalWarnings });
+    let savedBody: any = null;
+    let markReadyCalled = false;
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview({ draft, latestAttempt: attempt }));
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft" && options?.method === "PUT") {
+        savedBody = JSON.parse(options.body);
+        return jsonResponse({
+          success: true,
+          data: reviewDraft(draft, {
+            ...savedBody,
+            updatedAt: "2026-06-09T12:03:00.000Z",
+            hasNewerParse: false,
+          }),
+        });
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({ success: true, data: reviewDraft(draft, { hasNewerParse: true }) });
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft/mark-ready" && options?.method === "POST") {
+        markReadyCalled = true;
+        return jsonResponse({
+          message: "Review draft is not ready to convert.",
+          errors: ["Artwork missing must be acknowledged before ready."],
+        }, false, 400);
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Newer parse available.");
+    expect(container.textContent).toContain("Existing staff edits are preserved.");
+    expect(container.textContent).toContain("Save Review Draft");
+    expect(container.textContent).toContain("Mark Ready to Convert");
+
+    const artworkStatus = labeledControl("Artwork status", "select") as HTMLSelectElement;
+    act(() => {
+      Simulate.change(artworkStatus, { target: { value: "to_follow" } } as any);
+    });
+    const decisionStatus = Array.from(container.querySelectorAll("select")).find((select) => (
+      (select as HTMLSelectElement).value === "still_blocking"
+    )) as HTMLSelectElement;
+    expect(decisionStatus).toBeTruthy();
+    act(() => {
+      Simulate.change(decisionStatus, { target: { value: "acknowledged" } } as any);
+    });
+    act(() => {
+      Simulate.change(labeledControl("Review notes", "textarea"), { target: { value: "Reviewed by staff." } } as any);
+    });
+
+    await waitForText("Unsaved changes");
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Save Review Draft")
+    ));
+    expect(saveButton?.disabled).toBe(false);
+    await act(async () => {
+      Simulate.click(saveButton!);
+    });
+    await waitForCondition(() => Boolean(savedBody), "review draft PUT body");
+
+    expect(savedBody.reviewedArtworkJson.status).toBe("to_follow");
+    expect(savedBody.missingDecisionsJson[0].status).toBe("acknowledged");
+    expect(savedBody.reviewNotes).toBe("Reviewed by staff.");
+
+    const markReadyButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Mark Ready to Convert")
+    ));
+    await act(async () => {
+      Simulate.click(markReadyButton!);
+    });
+    await waitForText("Artwork missing must be acknowledged before ready.");
+    expect(markReadyCalled).toBe(true);
+
+    const orderCreationButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Order creation starts in Phase 4.")
+    ));
+    expect(orderCreationButton?.disabled).toBe(true);
   });
 });
