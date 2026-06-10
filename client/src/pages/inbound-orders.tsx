@@ -638,8 +638,8 @@ function QueueTriageControls({
   ];
 
   return (
-    <div className="max-w-full space-y-3 overflow-x-hidden border-b border-border p-3">
-      <label className="relative block">
+    <div className="box-border min-w-0 max-w-full space-y-3 overflow-x-hidden border-b border-border p-3">
+      <label className="relative block min-w-0 max-w-full">
         <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
         <Input
           className="w-full max-w-full pl-8"
@@ -847,8 +847,8 @@ function InboundQueuePanel({
   }
 
   return (
-    <ScrollArea className="h-full max-w-full overflow-x-hidden">
-      <div className="max-w-full space-y-2 overflow-x-hidden p-3">
+    <ScrollArea className="h-full min-w-0 max-w-full overflow-x-hidden [&_[data-radix-scroll-area-viewport]]:max-w-full [&_[data-radix-scroll-area-viewport]]:overflow-x-hidden">
+      <div className="box-border w-full min-w-0 max-w-full space-y-2 overflow-x-hidden p-3">
         {records.map((record) => {
           const evidence = getManualInboundEvidence(record);
           return (
@@ -857,16 +857,16 @@ function InboundQueuePanel({
               type="button"
               onClick={() => onSelect(record.id)}
               className={cn(
-                "block w-full max-w-full overflow-hidden rounded-md border p-3 text-left transition-colors",
+                "block box-border w-full min-w-0 max-w-full overflow-x-hidden rounded-md border p-3 text-left transition-colors",
                 selectedId === record.id
                   ? "border-primary bg-primary/5"
                   : "border-border bg-card hover:bg-muted/50",
               )}
             >
-              <div className="flex min-w-0 items-start justify-between gap-2 overflow-hidden">
+              <div className="flex min-w-0 max-w-full items-start justify-between gap-2 overflow-hidden">
                 <div className="min-w-0 flex-1 overflow-hidden">
-                  <div className="truncate text-sm font-semibold text-foreground">{getRecordTitle(record)}</div>
-                  <div className="mt-1 truncate text-xs text-muted-foreground">{getSenderLabel(record)}</div>
+                  <div className="block max-w-full truncate text-sm font-semibold text-foreground">{getRecordTitle(record)}</div>
+                  <div className="mt-1 block max-w-full truncate text-xs text-muted-foreground">{getSenderLabel(record)}</div>
                 </div>
                 <div className="shrink-0">
                   <StatusBadge status={record.status} />
@@ -887,9 +887,9 @@ function InboundQueuePanel({
                 </div>
               </div>
               {record.requiresHumanDecision && (
-                <div className="mt-3 flex max-w-full items-start gap-2 overflow-hidden rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
+                <div className="mt-3 flex min-w-0 max-w-full items-start gap-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs leading-snug text-amber-900">
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span className="min-w-0 whitespace-normal break-words">{record.reviewRequiredReason || "Needs staff review"}</span>
+                  <span className="min-w-0 flex-1 whitespace-normal break-words">{record.reviewRequiredReason || "Needs staff review"}</span>
                 </div>
               )}
             </button>
