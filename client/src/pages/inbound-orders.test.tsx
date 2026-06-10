@@ -420,6 +420,7 @@ function pbv2OptionsResponse(overrides: Record<string, any> = {}) {
         label: "Thickness",
         value: "3mm_white",
         choiceLabel: "3mm White PVC",
+        source: "source_evidence",
         confidence: 80,
         reason: "Matched source evidence.",
       }],
@@ -1358,7 +1359,7 @@ describe("InboundOrdersPage", () => {
 
     renderPage();
     await waitForText("Product options");
-    await waitForText("Suggested from source evidence");
+    await waitForText("Suggested from PO");
     await waitForText("Missing required options: Sides");
 
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) => (

@@ -219,6 +219,31 @@ function makeRepository(record = inboundRecord(), latestAttempt = parseAttempt()
           }
         : null
     )),
+    searchCustomers: jest.fn(async (_organizationId: string, search: string | null) => {
+      const value = String(search ?? "").toLowerCase();
+      if (value.includes("brainstorm") || value.includes("shawn@example.com")) {
+        return [{ id: "customer_1", companyName: "Brainstorm Print", email: "billing@example.com", phone: null, status: "active" }];
+      }
+      return [];
+    }),
+    searchCustomerContacts: jest.fn(async (_organizationId: string, customerId: string | null, search: string | null) => {
+      const value = String(search ?? "").toLowerCase();
+      if (customerId === "customer_1" && (value.includes("shawn") || value.includes("shawn@example.com"))) {
+        return [{
+          id: "contact_1",
+          customerId: "customer_1",
+          name: "Shawn Fears",
+          firstName: "Shawn",
+          lastName: "Fears",
+          email: "shawn@example.com",
+          phone: null,
+          mobile: null,
+          isPrimary: true,
+        }];
+      }
+      return [];
+    }),
+    searchProductCandidates: jest.fn(async () => []),
     claimInboundOrderForOrderConversion: jest.fn(async () => {
       if (currentRecord.status !== "ready" || currentRecord.createdOrderId || currentRecord.createdQuoteId) return null;
       currentRecord = { ...currentRecord, status: "processing", reviewOutcome: "order_conversion_requested" };
@@ -312,7 +337,7 @@ function requiredPbv2Tree() {
         id: "contour",
         kind: "question",
         label: "Contour Cutting",
-        input: { type: "select", required: true, selectionKey: "contour_cutting" },
+        input: { type: "select", required: true, selectionKey: "contour_cutting", defaultValue: "none" },
         choices: [{ id: "none", value: "none", label: "No Contour Cutting" }],
       },
     },
@@ -351,13 +376,113 @@ describe("InboundOrderService editable review draft", () => {
     expect(draft.sourceParseAttemptId).toBe("attempt_1");
     expect(draft.reviewedCustomerJson.companyName).toBe("Brainstorm Print");
     expect(draft.reviewedLineItemsJson[0]).toMatchObject({
-      productName: "PVC Signs",
+      productName: "PVC",
       selectedProductId: "product_pvc",
       quantity: 3,
       width: 24,
       height: 36,
     });
     expect(snapshots[0].payloadJson.metadata.snapshotKind).toBe("editable_review_draft");
+    expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
+  });
+
+  test("initializes a CSR-ready interpreted draft with customer, contact, date, product, and PBV2 defaults", async () => {
+    const attempt = parseAttempt({
+      parsedDraft: parsedDraft({
+        customer: {
+          ...parsedDraft().customer,
+          sourceEmail: "shawn@brainstormprint.com",
+          candidateCustomerIds: [],
+          candidateContactIds: [],
+          customerCandidates: [],
+          contactCandidates: [],
+        },
+        order: {
+          ...parsedDraft().order,
+          requestedDueDate: "Arrival Due Date; MUST EOD 6/11",
+        },
+        lineItems: [{
+          ...parsedDraft().lineItems[0],
+          sourceText: "PVC Signs 24 x 36 Prints: 4/0",
+          productName: "PVC Signs",
+          candidateProductIds: ["product_pvc"],
+          productCandidates: [{ id: "product_pvc", label: "PVC Signs", confidence: 82, reason: "Parsed literal PVC text", metadata: {} }],
+          optionTexts: ["4/0"],
+        }],
+      }),
+    });
+    const { repo } = makeRepository(inboundRecord(), attempt);
+    repo.searchCustomers.mockImplementation(async (_organizationId: string, search: string | null) => {
+      const value = String(search ?? "").toLowerCase();
+      if (value.includes("brainstorm") || value.includes("brainstormprint.com")) {
+        return [{ id: "customer_1", companyName: "Brainstorm Print", email: "billing@example.com", phone: null, status: "active" }];
+      }
+      return [];
+    });
+    repo.searchCustomerContacts.mockImplementation(async (_organizationId: string, customerId: string | null, search: string | null) => {
+      const value = String(search ?? "").toLowerCase();
+      if (customerId === "customer_1" && (value.includes("shawn") || value.includes("brainstormprint.com"))) {
+        return [{
+          id: "contact_1",
+          customerId: "customer_1",
+          name: "Shawn Fears",
+          firstName: "Shawn",
+          lastName: "Fears",
+          email: "shawn@brainstormprint.com",
+          phone: null,
+          mobile: null,
+          isPrimary: true,
+        }];
+      }
+      return [];
+    });
+    (repo.searchProductCandidates as any).mockResolvedValue([{
+      id: "product_acm",
+      label: "ACM Signs",
+      confidence: 100,
+      reason: "catalog material and customer history matched ACM signs",
+      metadata: {},
+    }]);
+    (repo.getProductActivePbv2Tree as any).mockImplementation(async (_organizationId: string, productId: string) => (
+      productId === "product_acm"
+        ? {
+            product: { id: "product_acm", name: "ACM Signs", pbv2ActiveTreeVersionId: "tree_acm" },
+            activeTree: { id: "tree_acm", treeJson: requiredPbv2Tree() },
+          }
+        : null
+    ));
+    const service = new InboundOrderService(repo as any);
+
+    const draft = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(draft.reviewedCustomerJson).toMatchObject({
+      selectedCustomerId: "customer_1",
+      selectedContactId: "contact_1",
+    });
+    expect(draft.reviewedCustomerJson.selectedCustomerReason).toEqual(expect.stringContaining("Matched by company name."));
+    expect(draft.reviewedCustomerJson.selectedContactReason).toEqual(expect.stringContaining("Matched by email."));
+    expect(draft.reviewedOrderJson.dueDate).toBe("2026-06-11");
+    expect(draft.reviewedLineItemsJson[0]).toMatchObject({
+      selectedProductId: "product_acm",
+      interpretedProductId: "product_acm",
+      interpretedProductReason: "catalog material and customer history matched ACM signs",
+      pbv2TreeVersionId: "tree_acm",
+    });
+    expect(draft.reviewedLineItemsJson[0].optionSelectionsJson).toMatchObject({
+      schemaVersion: 2,
+      selected: {
+        sides: { value: "single" },
+        contour_cutting: { value: "none", note: "Default" },
+      },
+    });
+    expect(draft.reviewedLineItemsJson[0].pbv2OptionSuggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ selectionKey: "contour_cutting", source: "product_default" }),
+      expect.objectContaining({ selectionKey: "sides", source: "source_evidence" }),
+    ]));
     expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
   });
 
@@ -464,7 +589,21 @@ describe("InboundOrderService editable review draft", () => {
       actorUserId: "user_1",
       draft: {
         status: "draft",
-        reviewedCustomerJson: { sourceName: null, sourceEmail: null, sourcePhone: null, companyName: null, selectedCustomerId: null, selectedContactId: null, unresolvedCustomer: true, unresolvedContact: true, notes: null },
+        reviewedCustomerJson: {
+          sourceName: null,
+          sourceEmail: null,
+          sourcePhone: null,
+          companyName: null,
+          selectedCustomerId: null,
+          selectedCustomerReason: null,
+          selectedCustomerConfidence: null,
+          selectedContactId: null,
+          selectedContactReason: null,
+          selectedContactConfidence: null,
+          unresolvedCustomer: true,
+          unresolvedContact: true,
+          notes: null,
+        },
         reviewedOrderJson: { poNumber: null, dueDate: null, shipMethod: null, fulfillmentType: "unknown", internalNotes: null, customerNotes: null },
         reviewedLineItemsJson: [],
         reviewedArtworkJson: { status: "missing", refs: [], notes: null },
@@ -592,7 +731,11 @@ describe("InboundOrderService editable review draft", () => {
           sourcePhone: null,
           companyName: "Ada Signs",
           selectedCustomerId: null,
+          selectedCustomerReason: null,
+          selectedCustomerConfidence: null,
           selectedContactId: null,
+          selectedContactReason: null,
+          selectedContactConfidence: null,
           unresolvedCustomer: true,
           unresolvedContact: true,
           notes: null,
@@ -610,6 +753,9 @@ describe("InboundOrderService editable review draft", () => {
           sourceText: "3 PVC Signs",
           productName: "PVC Signs",
           selectedProductId: null,
+          interpretedProductId: null,
+          interpretedProductReason: null,
+          interpretedProductConfidence: null,
           productUnresolved: true,
           quantity: null,
           width: 24,
@@ -687,7 +833,7 @@ describe("InboundOrderService editable review draft", () => {
       inboundRecordId: "inbound_1",
       actorUserId: "user_1",
     })).rejects.toMatchObject({
-      errors: expect.arrayContaining(["PVC Signs requires Thickness, Sides, and Contour Cutting before conversion."]),
+      errors: expect.arrayContaining(["PVC requires Sides before conversion."]),
     });
   });
 
@@ -713,7 +859,7 @@ describe("InboundOrderService editable review draft", () => {
       inboundRecordId: "inbound_1",
       actorUserId: "user_1",
     })).rejects.toMatchObject({
-      errors: expect.arrayContaining(["PVC Signs: pricing could not calculate a non-zero total. Review required product options before conversion."]),
+      errors: expect.arrayContaining(["PVC: pricing could not calculate a non-zero total. Review required product options before conversion."]),
     });
     expect(orderRepo.createOrder).not.toHaveBeenCalled();
   });
