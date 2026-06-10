@@ -421,6 +421,11 @@ function labeledControl(labelText: string, selector: string) {
 
 beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    writable: true,
+    value: 1366,
+  });
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -585,9 +590,53 @@ describe("InboundOrdersPage", () => {
       Simulate.click(restoreButton);
     });
     await waitForCondition(() => (
-      window.localStorage.getItem("titanos.inboundOrders.evidenceWidth") === "480"
-        && window.localStorage.getItem("titanos.inboundOrders.draftWidth") === "480"
+      window.localStorage.getItem("titanos.inboundOrders.evidenceWidth") === "420"
+        && window.localStorage.getItem("titanos.inboundOrders.draftWidth") === "460"
     ), "layout restore persistence");
+  });
+
+  test("reconciles oversized saved widths and keeps draft actions visible", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: 1280,
+    });
+    window.localStorage.setItem("titanos.inboundOrders.evidenceWidth", "900");
+    window.localStorage.setItem("titanos.inboundOrders.draftWidth", "900");
+
+    const row = record();
+    const draft = parsedDraft();
+    const attempt = parseAttempt({ parsedDraft: draft, confidence: 82, warnings: draft.globalWarnings });
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview({ draft, latestAttempt: attempt }));
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({ success: true, data: reviewDraft(draft) });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Save Review Draft");
+
+    const evidencePanel = container.querySelector("[data-testid='inbound-evidence-panel']") as HTMLElement;
+    const draftPanel = container.querySelector("[data-testid='inbound-draft-panel']") as HTMLElement;
+    await waitForCondition(() => {
+      const evidence = Number.parseInt(evidencePanel.style.getPropertyValue("--workspace-evidence-width"), 10);
+      const draftWidthValue = Number.parseInt(draftPanel.style.getPropertyValue("--workspace-draft-width"), 10);
+      return evidence >= 400 && draftWidthValue >= 420 && evidence + draftWidthValue <= 968;
+    }, "oversized saved widths reconciled");
+
+    expect(container.textContent).toContain("Mark Ready to Convert");
+    const phaseFourButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Order creation starts in Phase 4.")
+    ));
+    expect(phaseFourButton).toBeTruthy();
+    expect(phaseFourButton?.disabled).toBe(true);
   });
 
   test("shows parse loading and error states", async () => {

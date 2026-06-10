@@ -108,11 +108,12 @@ const workspaceLayoutStorageKeys = {
 const workspaceLayoutDefaults = {
   queueExpandedWidth: 280,
   queueCollapsedWidth: 56,
-  evidenceWidth: 480,
-  draftWidth: 480,
+  evidenceWidth: 420,
+  draftWidth: 460,
   minQueueExpandedWidth: 280,
   minEvidenceWidth: 400,
-  minDraftWidth: 400,
+  minDraftWidth: 420,
+  desktopBreakpoint: 1180,
 } as const;
 
 const statusLabels: Record<InboundOrderRecordStatus, string> = {
@@ -236,16 +237,17 @@ function clampWorkspaceWidth(value: number, minimum: number, maximum = 900): num
   return Math.min(maximum, Math.max(minimum, Math.round(value)));
 }
 
-function getWorkspacePanelMaxWidth(args: { queueCollapsed: boolean; siblingMinimum: number }): number {
+function getWorkspacePanelMaxWidth(args: { queueCollapsed: boolean; siblingMinimum: number; workspaceWidth: number }): number {
   if (typeof window === "undefined") return 900;
-  if (window.innerWidth < 1280) return 900;
+  const measuredWidth = args.workspaceWidth || window.innerWidth;
+  if (measuredWidth < workspaceLayoutDefaults.desktopBreakpoint) return 900;
   const queueWidth = args.queueCollapsed
     ? workspaceLayoutDefaults.queueCollapsedWidth
     : workspaceLayoutDefaults.queueExpandedWidth;
   const gutterAllowance = 32;
   return Math.max(
     args.siblingMinimum,
-    window.innerWidth - queueWidth - args.siblingMinimum - gutterAllowance,
+    measuredWidth - queueWidth - args.siblingMinimum - gutterAllowance,
   );
 }
 
@@ -1536,6 +1538,8 @@ export default function InboundOrdersPage() {
       workspaceLayoutDefaults.minDraftWidth,
     )
   ));
+  const [workspaceWidth, setWorkspaceWidth] = useState(0);
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
   const parseInFlightRef = useRef(false);
   const listUrl = useMemo(() => buildInboundOrderListUrl(queueFilters), [queueFilters]);
 
@@ -1576,12 +1580,31 @@ export default function InboundOrdersPage() {
   }, [draftWidth]);
 
   useEffect(() => {
+    const measureWorkspace = () => {
+      const measuredWidth = workspaceRef.current?.clientWidth ?? 0;
+      setWorkspaceWidth(measuredWidth > 0 ? measuredWidth : window.innerWidth);
+    };
+
+    measureWorkspace();
+    const observer = typeof ResizeObserver !== "undefined" && workspaceRef.current
+      ? new ResizeObserver(measureWorkspace)
+      : null;
+    if (workspaceRef.current) observer?.observe(workspaceRef.current);
+    window.addEventListener("resize", measureWorkspace);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measureWorkspace);
+    };
+  }, []);
+
+  useEffect(() => {
     const reconcileToViewport = () => {
-      if (window.innerWidth < 1280) return;
+      const measuredWidth = workspaceWidth || window.innerWidth;
+      if (measuredWidth < workspaceLayoutDefaults.desktopBreakpoint) return;
       const queueWidth = queueCollapsed
         ? workspaceLayoutDefaults.queueCollapsedWidth
         : workspaceLayoutDefaults.queueExpandedWidth;
-      const availableWidth = window.innerWidth - queueWidth - 32;
+      const availableWidth = measuredWidth - queueWidth - 32;
       let nextEvidenceWidth = clampWorkspaceWidth(evidenceWidth, workspaceLayoutDefaults.minEvidenceWidth);
       let nextDraftWidth = clampWorkspaceWidth(draftWidth, workspaceLayoutDefaults.minDraftWidth);
       let overflow = nextEvidenceWidth + nextDraftWidth - availableWidth;
@@ -1604,7 +1627,7 @@ export default function InboundOrdersPage() {
     reconcileToViewport();
     window.addEventListener("resize", reconcileToViewport);
     return () => window.removeEventListener("resize", reconcileToViewport);
-  }, [queueCollapsed, evidenceWidth, draftWidth]);
+  }, [queueCollapsed, evidenceWidth, draftWidth, workspaceWidth]);
 
   const selectedRecord = useMemo(
     () => records.find((record) => record.id === selectedId) ?? null,
@@ -1724,6 +1747,7 @@ export default function InboundOrdersPage() {
           getWorkspacePanelMaxWidth({
             queueCollapsed,
             siblingMinimum: Math.max(workspaceLayoutDefaults.minDraftWidth, draftWidth),
+            workspaceWidth,
           }),
         ));
         return;
@@ -1734,6 +1758,7 @@ export default function InboundOrdersPage() {
         getWorkspacePanelMaxWidth({
           queueCollapsed,
           siblingMinimum: Math.max(workspaceLayoutDefaults.minEvidenceWidth, evidenceWidth),
+          workspaceWidth,
         }),
       ));
     };
@@ -1823,13 +1848,15 @@ export default function InboundOrdersPage() {
       </header>
 
       <div
-        className="flex min-h-0 flex-1 flex-col overflow-hidden xl:flex-row"
+        ref={workspaceRef}
+        className="flex min-h-0 flex-1 flex-col overflow-hidden min-[1180px]:flex-row"
         data-testid="inbound-review-workspace"
       >
         <section
           className={cn(
-            "min-h-[300px] min-w-0 flex-none border-b border-border xl:min-h-0 xl:border-b-0 xl:border-r",
-            "w-full xl:w-[var(--workspace-queue-width)]",
+            "min-w-0 flex-none border-b border-border min-[1180px]:min-h-0 min-[1180px]:border-b-0 min-[1180px]:border-r",
+            queueCollapsed ? "min-h-[56px]" : "min-h-[300px]",
+            "w-full min-[1180px]:w-[var(--workspace-queue-width)]",
           )}
           data-testid="inbound-queue-panel"
           style={{
@@ -1837,7 +1864,7 @@ export default function InboundOrdersPage() {
           } as CSSProperties}
         >
           {queueCollapsed ? (
-            <div className="hidden h-full flex-col items-center gap-3 px-2 py-3 xl:flex" aria-label="Collapsed inbound queue">
+            <div className="flex h-14 items-center gap-3 px-3 py-2 min-[1180px]:h-full min-[1180px]:flex-col min-[1180px]:px-2 min-[1180px]:py-3" aria-label="Collapsed inbound queue">
               <Button
                 type="button"
                 variant="ghost"
@@ -1864,7 +1891,7 @@ export default function InboundOrdersPage() {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="hidden h-8 w-8 p-0 xl:inline-flex"
+                    className="h-8 w-8 p-0"
                     onClick={() => setQueueCollapsed(true)}
                     aria-label="Collapse inbound queue"
                     title="Collapse queue"
@@ -1893,7 +1920,7 @@ export default function InboundOrdersPage() {
         </section>
 
         <section
-          className="relative min-h-[360px] min-w-0 flex-none border-b border-border xl:min-h-0 xl:w-[var(--workspace-evidence-width)] xl:border-b-0 xl:border-r"
+          className="relative min-h-[360px] min-w-0 flex-none border-b border-border min-[1180px]:min-h-0 min-[1180px]:w-[var(--workspace-evidence-width)] min-[1180px]:border-b-0 min-[1180px]:border-r"
           data-testid="inbound-evidence-panel"
           style={{ "--workspace-evidence-width": `${evidenceWidth}px` } as CSSProperties}
         >
@@ -1901,7 +1928,7 @@ export default function InboundOrdersPage() {
             <div className="text-sm font-semibold text-foreground">Source Evidence</div>
             <div className="flex items-center gap-2">
               {selectedRecord && <Badge variant="secondary">{titleCase(selectedRecord.sourceType)}</Badge>}
-              <Button type="button" variant="ghost" size="sm" className="hidden h-8 w-8 p-0 xl:inline-flex" onClick={expandEvidence} aria-label="Expand evidence panel" title="Expand evidence">
+              <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={expandEvidence} aria-label="Expand evidence panel" title="Expand evidence">
                 <Maximize2 className="h-4 w-4" />
               </Button>
             </div>
@@ -1921,7 +1948,7 @@ export default function InboundOrdersPage() {
           </div>
           <button
             type="button"
-            className="absolute right-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 xl:flex"
+            className="absolute right-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 min-[1180px]:flex"
             onMouseDown={(event) => startResize("evidence", event)}
             aria-label="Resize evidence panel"
             title="Drag to resize evidence"
@@ -1931,13 +1958,13 @@ export default function InboundOrdersPage() {
         </section>
 
         <section
-          className="relative min-h-[320px] min-w-0 flex-none xl:min-h-0 xl:w-[var(--workspace-draft-width)]"
+          className="relative min-h-[320px] min-w-0 flex-none min-[1180px]:min-h-0 min-[1180px]:w-[var(--workspace-draft-width)]"
           data-testid="inbound-draft-panel"
           style={{ "--workspace-draft-width": `${draftWidth}px` } as CSSProperties}
         >
           <button
             type="button"
-            className="absolute left-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 xl:flex"
+            className="absolute left-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 min-[1180px]:flex"
             onMouseDown={(event) => startResize("draft", event)}
             aria-label="Resize draft builder panel"
             title="Drag to resize draft builder"
@@ -1947,10 +1974,10 @@ export default function InboundOrdersPage() {
           <div className="flex h-12 items-center justify-between gap-2 border-b border-border px-4">
             <div className="text-sm font-semibold text-foreground">Draft Builder</div>
             <div className="flex items-center gap-2">
-              <Button type="button" variant="ghost" size="sm" className="hidden h-8 w-8 p-0 xl:inline-flex" onClick={expandDraftBuilder} aria-label="Expand draft builder panel" title="Expand draft builder">
+              <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={expandDraftBuilder} aria-label="Expand draft builder panel" title="Expand draft builder">
                 <Maximize2 className="h-4 w-4" />
               </Button>
-              <Button type="button" variant="ghost" size="sm" className="hidden h-8 w-8 p-0 xl:inline-flex" onClick={restoreLayout} aria-label="Restore inbound workspace layout" title="Restore layout">
+              <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={restoreLayout} aria-label="Restore inbound workspace layout" title="Restore layout">
                 <RotateCcw className="h-4 w-4" />
               </Button>
               <Badge variant="outline">Phase 3</Badge>
