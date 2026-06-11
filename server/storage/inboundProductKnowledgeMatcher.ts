@@ -10,9 +10,11 @@ export type ProductKnowledgeCandidateInput = {
   id: string;
   name: string;
   description: string | null;
+  aiParsingDescription?: string | null;
   category: string | null;
   materialName?: string | null;
   materialCategory?: string | null;
+  materialAiParsingDescription?: string | null;
   metadataText?: string | null;
   isService?: boolean | null;
 };
@@ -30,9 +32,11 @@ export type ProductKnowledgeMatch = {
     matchBreakdown: {
       nameScore: number;
       keywordScore: number;
+      aiParsingScore: number;
       descriptionScore: number;
       categoryScore: number;
       materialScore: number;
+      materialAiParsingScore: number;
       metadataScore: number;
       accessoryPenalty: number;
       combinedConfidence: number;
@@ -130,31 +134,51 @@ function scoreField(field: string, phrases: string[], queryTokens: string[]): { 
 }
 
 function priorityWeightedConfidence(args: {
+  nameScore: number;
+  aiParsingScore: number;
   materialScore: number;
   categoryScore: number;
   descriptionScore: number;
-  keywordScore: number;
   metadataScore: number;
   accessoryPenalty: number;
 }): number {
   const weighted = Math.round(
-    args.materialScore * 0.5
-    + args.categoryScore * 0.2
-    + args.descriptionScore * 0.16
-    + args.keywordScore * 0.1
-    + args.metadataScore * 0.04,
+    args.nameScore * 0.34
+    + args.aiParsingScore * 0.28
+    + args.categoryScore * 0.14
+    + args.materialScore * 0.12
+    + args.metadataScore * 0.08
+    + args.descriptionScore * 0.04,
   );
   const priorityFloor = Math.max(
-    args.materialScore >= 90 ? 94 : 0,
-    args.materialScore >= 72 ? 84 : 0,
-    args.categoryScore >= 90 ? 78 : 0,
+    args.nameScore >= 90 ? 98 : 0,
+    args.nameScore >= 72 ? 88 : 0,
+    args.aiParsingScore >= 90 ? 94 : 0,
+    args.aiParsingScore >= 72 ? 82 : 0,
+    args.categoryScore >= 90 ? 80 : 0,
     args.categoryScore >= 72 ? 72 : 0,
-    args.descriptionScore >= 90 ? 68 : 0,
-    args.descriptionScore >= 72 ? 60 : 0,
-    args.keywordScore >= 90 ? 58 : 0,
-    args.keywordScore >= 72 ? 52 : 0,
+    args.materialScore >= 90 ? 76 : 0,
+    args.materialScore >= 72 ? 68 : 0,
+    args.metadataScore >= 90 ? 64 : 0,
+    args.metadataScore >= 72 ? 58 : 0,
+    args.descriptionScore >= 90 ? 54 : 0,
+    args.descriptionScore >= 72 ? 46 : 0,
   );
   return Math.max(0, Math.min(100, Math.max(weighted, priorityFloor) - args.accessoryPenalty));
+}
+
+export function resolveAiParsingDescription(args: {
+  aiParsingDescription?: string | null;
+  aiParsingDescriptionLinkedToDescription?: boolean | null;
+  description?: string | null;
+}): string | null {
+  const explicit = String(args.aiParsingDescription ?? "").trim();
+  if (explicit) return explicit;
+  if (args.aiParsingDescriptionLinkedToDescription) {
+    const linked = String(args.description ?? "").trim();
+    return linked || null;
+  }
+  return null;
 }
 
 export function buildProductKnowledgeSearchTerms(input: ProductKnowledgeMatchInput): string[] {
@@ -195,28 +219,34 @@ export function scoreProductKnowledgeCandidates(
   return candidates
     .map((candidate) => {
       const name = scoreField(candidate.name, phrases, queryTokens);
+      const aiParsing = scoreField(candidate.aiParsingDescription ?? "", phrases, queryTokens);
       const description = scoreField(candidate.description ?? "", phrases, queryTokens);
       const category = scoreField(candidate.category ?? "", phrases, queryTokens);
       const material = scoreField([candidate.materialName, candidate.materialCategory].filter(Boolean).join(" "), phrases, queryTokens);
+      const materialAiParsing = scoreField(candidate.materialAiParsingDescription ?? "", phrases, queryTokens);
       const metadata = scoreField(candidate.metadataText ?? "", phrases, queryTokens);
+      const aiParsingScore = Math.max(aiParsing.score, materialAiParsing.score);
       const accessoryPenalty = candidate.isService
         || /\b(accessor(?:y|ies)|hardware|stake|stakes|grommet|fee|setup|install|installation|design)\b/i.test(`${candidate.name} ${candidate.category ?? ""}`)
         ? 18
         : 0;
       const combinedConfidence = priorityWeightedConfidence({
+        nameScore: name.score,
+        aiParsingScore,
         materialScore: material.score,
         categoryScore: category.score,
         descriptionScore: description.score,
-        keywordScore: name.score,
         metadataScore: metadata.score,
         accessoryPenalty,
       });
       const reasons = [
         ...name.reasons.map((reason) => `name ${reason}`),
-        ...description.reasons.map((reason) => `description ${reason}`),
+        ...aiParsing.reasons.map((reason) => `AI parsing description ${reason}`),
         ...category.reasons.map((reason) => `category ${reason}`),
         ...material.reasons.map((reason) => `material ${reason}`),
+        ...materialAiParsing.reasons.map((reason) => `material AI parsing description ${reason}`),
         ...metadata.reasons.map((reason) => `metadata ${reason}`),
+        ...description.reasons.map((reason) => `customer-facing description ${reason}`),
       ];
 
       return {
@@ -232,9 +262,11 @@ export function scoreProductKnowledgeCandidates(
           matchBreakdown: {
             nameScore: name.score,
             keywordScore: name.score,
+            aiParsingScore,
             descriptionScore: description.score,
             categoryScore: category.score,
             materialScore: material.score,
+            materialAiParsingScore: materialAiParsing.score,
             metadataScore: metadata.score,
             accessoryPenalty,
             combinedConfidence,

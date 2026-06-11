@@ -14,7 +14,7 @@ import {
   type InboundOrderEvidenceBundle,
 } from "../services/inboundOrders/InboundOrderEvidenceService";
 import { inferInboundRequestedDate } from "../services/inboundOrders/inboundOrderDateInference";
-import { scoreProductKnowledgeCandidates } from "../storage/inboundProductKnowledgeMatcher";
+import { resolveAiParsingDescription, scoreProductKnowledgeCandidates } from "../storage/inboundProductKnowledgeMatcher";
 
 function inboundRecord(overrides: Record<string, any> = {}) {
   const now = new Date("2026-06-09T12:00:00.000Z");
@@ -777,6 +777,56 @@ describe("InboundOrderParsingService", () => {
     expect(matches[0].metadata.matchBreakdown.materialScore).toBeGreaterThan(matches[1].metadata.matchBreakdown.materialScore);
     expect(matches[0].metadata.matchBreakdown.combinedConfidence).toBeGreaterThan(matches[1].metadata.matchBreakdown.combinedConfidence);
     expect(matches[0].metadata.matchBreakdown.keywordScore).toBeDefined();
+  });
+
+  test("product ranking uses AI parsing description before customer-facing description fallback", () => {
+    const matches = scoreProductKnowledgeCandidates(
+      { sourceText: "3 PVC Signs 24x36 3mm White PVC", productName: "PVC Signs", materialText: "3mm White PVC" },
+      [
+        {
+          id: "acm",
+          name: "ACM / Dibond / Max Metal",
+          description: "Rigid sign panels with aluminum faces and a PVC core.",
+          aiParsingDescription: "Use for aluminum composite, ACM, Dibond, MaxMetal, or metal faced sign panels.",
+          category: "Rigid Signs",
+          materialName: "Aluminum Composite Material",
+          materialCategory: "ACM",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "pvc",
+          name: "Rigid Sheet Sign",
+          description: "Short-term indoor and outdoor rigid panel.",
+          aiParsingDescription: "Use for PVC signs, Sintra, foam PVC, 3mm white PVC, and plastic sign panels.",
+          category: "Rigid Signs",
+          materialName: "3mm White PVC",
+          materialCategory: "PVC",
+          metadataText: "{}",
+          isService: false,
+        },
+      ],
+      5,
+    );
+
+    expect(matches[0].id).toBe("pvc");
+    expect(matches[0].metadata.matchBreakdown.aiParsingScore).toBeGreaterThan(0);
+    expect(matches[0].metadata.matchBreakdown.aiParsingScore).toBeGreaterThanOrEqual(matches[1].metadata.matchBreakdown.descriptionScore);
+    expect(matches[0].metadata.matchReasons.join(" ")).toContain("AI parsing description");
+  });
+
+  test("linked AI parsing flag resolves description as parsing text", () => {
+    expect(resolveAiParsingDescription({
+      aiParsingDescription: "",
+      aiParsingDescriptionLinkedToDescription: true,
+      description: "Use for PVC signs and Sintra panels.",
+    })).toBe("Use for PVC signs and Sintra panels.");
+
+    expect(resolveAiParsingDescription({
+      aiParsingDescription: "Prefer this explicit parsing hint.",
+      aiParsingDescriptionLinkedToDescription: true,
+      description: "Customer-facing text.",
+    })).toBe("Prefer this explicit parsing hint.");
   });
 
   test("product ranking favors printable material/category/description over accessories", () => {

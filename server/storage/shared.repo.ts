@@ -267,6 +267,8 @@ export class SharedRepository {
         const newProductData: Omit<InsertProduct, 'organizationId'> = {
             name: `${originalProduct.name} (Copy)`,
             description: originalProduct.description,
+            aiParsingDescription: originalProduct.aiParsingDescription ?? null,
+            aiParsingDescriptionLinkedToDescription: originalProduct.aiParsingDescriptionLinkedToDescription ?? false,
             requiresProductionJob: originalProduct.requiresProductionJob,
             productTypeId: originalProduct.productTypeId,
             pricingFormula: originalProduct.pricingFormula,

@@ -203,6 +203,8 @@ const ProductEditorPage = () => {
     defaultValues: {
       name: "",
       description: "",
+      aiParsingDescription: null,
+      aiParsingDescriptionLinkedToDescription: false,
       category: "",
       pricingFormula: "",
       pricingMode: "area",
@@ -276,6 +278,8 @@ const ProductEditorPage = () => {
       const nextValues: ProductFormData = {
         name: product.name,
         description: product.description || "",
+        aiParsingDescription: product.aiParsingDescription || null,
+        aiParsingDescriptionLinkedToDescription: product.aiParsingDescriptionLinkedToDescription ?? false,
         category: product.category || "",
         pricingFormula: product.pricingFormula || "",
         pricingMode: product.pricingMode || "area",

@@ -191,6 +191,8 @@ export default function ProductsPage() {
     defaultValues: {
       name: "",
       description: "",
+      aiParsingDescription: null,
+      aiParsingDescriptionLinkedToDescription: false,
       category: "",
       pricingFormula: "sqft * p * q",
       pricingMode: "area",

@@ -1138,6 +1138,8 @@ export default function AdminSettings() {
     defaultValues: {
       name: "",
       description: "",
+      aiParsingDescription: null,
+      aiParsingDescriptionLinkedToDescription: false,
       category: "",
       pricingFormula: "sqft * p * q",
       storeUrl: "",
@@ -1717,6 +1719,8 @@ export default function AdminSettings() {
     editProductForm.reset({
       name: product.name,
       description: product.description,
+      aiParsingDescription: product.aiParsingDescription ?? null,
+      aiParsingDescriptionLinkedToDescription: product.aiParsingDescriptionLinkedToDescription ?? false,
       category: product.category || "",
       pricingFormula: product.pricingFormula,
       storeUrl: product.storeUrl || "",

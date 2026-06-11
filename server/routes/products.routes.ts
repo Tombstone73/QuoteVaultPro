@@ -450,6 +450,8 @@ export function registerProductRoutes(
           const insertPayload: InsertProductWithoutOrgId = {
             name: productName,
             description: row['Product Description']?.trim() || '',
+            aiParsingDescription: null,
+            aiParsingDescriptionLinkedToDescription: false,
             pricingProfileKey: "default",
             pricingMode: "area",
             isService: false,

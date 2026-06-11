@@ -666,6 +666,13 @@
       "when": 1783296000000,
       "tag": "0099_inbound_order_parse_attempts",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1783382400000,
+      "tag": "0100_product_material_ai_parsing_descriptions",
+      "breakpoints": true
     }
   ]
 }
