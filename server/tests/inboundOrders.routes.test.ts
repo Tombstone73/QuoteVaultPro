@@ -237,6 +237,14 @@ function reviewDraft(overrides: Record<string, any> = {}) {
     createdAt: "2026-06-09T12:02:00.000Z",
     updatedAt: "2026-06-09T12:02:00.000Z",
     validationErrors: ["Is artwork supplied for this item?: acknowledge artwork status before marking ready."],
+    readinessScore: {
+      overall: 92,
+      customer: 100,
+      contact: 100,
+      product: 95,
+      options: 90,
+      artwork: { score: 60, status: "missing", label: "Missing" },
+    },
     ...overrides,
   };
 }

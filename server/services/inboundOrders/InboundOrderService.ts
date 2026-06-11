@@ -19,6 +19,7 @@ import {
   type InboundOrderParsedDraft,
   type InboundOrderReviewDraftDto,
   type InboundOrderReviewDraftPayload,
+  type InboundOrderReviewReadinessScore,
   type InboundOrderReviewDraftSaveRequest,
   type InboundOrderReviewDraftStatus,
   type InboundOrderProductOptionsResponse,
@@ -403,6 +404,12 @@ function formatRequiredOptionList(labels: string[]): string {
   if (unique.length <= 1) return unique[0] ?? "required options";
   if (unique.length === 2) return `${unique[0]} and ${unique[1]}`;
   return `${unique.slice(0, -1).join(", ")}, and ${unique[unique.length - 1]}`;
+}
+
+function formatReadinessLabel(value: string): string {
+  return value
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function normalizeInboundReviewedDueDate(value: string | null | undefined, receivedAt: Date | string | null | undefined): string | null {
@@ -1859,11 +1866,17 @@ export class InboundOrderService {
   ): Promise<{ productId: string; label: string; confidence: number; reason: string } | null> {
     const candidates = new Map<string, { productId: string; label: string; confidence: number; reason: string }>();
     for (const candidate of lineItem.productCandidates) {
+      const adjusted = this.adjustProductInterpretationConfidence({
+        label: candidate.label,
+        reason: candidate.reason,
+        confidence: candidate.confidence,
+        lineItem,
+      });
       candidates.set(candidate.id, {
         productId: candidate.id,
         label: candidate.label,
-        confidence: candidate.confidence,
-        reason: candidate.reason || "Matched parsed product candidate.",
+        confidence: adjusted.confidence,
+        reason: adjusted.reason || candidate.reason || "Matched parsed product candidate.",
       });
     }
 
@@ -1877,18 +1890,68 @@ export class InboundOrderService {
       limit: 5,
     });
     for (const match of canonicalMatches) {
+      const adjusted = this.adjustProductInterpretationConfidence({
+        label: match.label,
+        reason: match.reason,
+        confidence: match.confidence,
+        lineItem,
+      });
       const existing = candidates.get(match.id);
-      if (!existing || existing.confidence < match.confidence) {
+      if (!existing || existing.confidence < adjusted.confidence) {
         candidates.set(match.id, {
           productId: match.id,
           label: match.label,
-          confidence: match.confidence,
-          reason: match.reason || "Interpreted from catalog product data.",
+          confidence: adjusted.confidence,
+          reason: adjusted.reason || match.reason || "Interpreted from catalog product data.",
         });
       }
     }
 
     return this.pickSingleStrongMatch(Array.from(candidates.values()), 72);
+  }
+
+  private adjustProductInterpretationConfidence(args: {
+    label: string;
+    reason?: string | null;
+    confidence: number;
+    lineItem: InboundOrderParsedDraft["lineItems"][number];
+  }): { confidence: number; reason: string | null } {
+    const evidenceText = [
+      args.lineItem.sourceText,
+      args.lineItem.productName,
+      args.lineItem.materialText,
+      ...args.lineItem.optionTexts,
+      ...args.lineItem.finishingTexts,
+    ].filter(Boolean).join(" ").toLowerCase();
+    const candidateText = [args.label, args.reason].filter(Boolean).join(" ").toLowerCase();
+    const rules = [
+      { token: "PVC", positive: /\bpvc\b/, conflicts: /\b(acm|dibond|max\s*metal|aluminum|coroplast|magnet|magnetic)\b/ },
+      { token: "Coroplast", positive: /\b(coroplast|corrugated\s+plastic)\b/, conflicts: /\b(pvc|acm|dibond|max\s*metal|magnet|magnetic)\b/ },
+      { token: "ACM", positive: /\b(acm|dibond|max\s*metal|aluminum\s+composite)\b/, conflicts: /\b(pvc|coroplast|magnet|magnetic)\b/ },
+      { token: "Magnetic", positive: /\b(magnet|magnetic)\b/, conflicts: /\b(pvc|coroplast|acm|dibond|max\s*metal)\b/ },
+    ];
+
+    for (const rule of rules) {
+      if (!rule.positive.test(evidenceText)) continue;
+      if (rule.positive.test(candidateText)) {
+        return {
+          confidence: Math.min(98, Math.max(args.confidence, 95)),
+          reason: args.reason
+            ? `${args.reason} Exact material evidence matched ${rule.token}.`
+            : `Exact material evidence matched ${rule.token}.`,
+        };
+      }
+      if (rule.conflicts.test(candidateText)) {
+        return {
+          confidence: Math.min(args.confidence, 62),
+          reason: args.reason
+            ? `${args.reason} Penalized because source material indicates ${rule.token}.`
+            : `Penalized because source material indicates ${rule.token}.`,
+        };
+      }
+    }
+
+    return { confidence: args.confidence, reason: args.reason ?? null };
   }
 
   private pickSingleStrongMatch<T extends { confidence: number }>(
@@ -1944,6 +2007,62 @@ export class InboundOrderService {
       createdAt: formatInboundDate(snapshot.createdAt),
       updatedAt: formatInboundDate(snapshot.createdAt),
       validationErrors: this.validateReviewDraftReady(payload),
+      readinessScore: this.calculateReviewReadinessScore(payload),
+    };
+  }
+
+  private calculateReviewReadinessScore(
+    draft: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto,
+  ): InboundOrderReviewReadinessScore {
+    const customer = draft.reviewedCustomerJson.selectedCustomerId
+      ? 100
+      : draft.reviewedCustomerJson.unresolvedCustomer
+        ? 70
+        : 0;
+    const contact = draft.reviewedCustomerJson.selectedContactId
+      ? 100
+      : draft.reviewedCustomerJson.unresolvedContact
+        ? 70
+        : 0;
+    const productScores = draft.reviewedLineItemsJson.map((lineItem) => (
+      lineItem.selectedProductId
+        ? Math.max(80, Math.min(100, lineItem.interpretedProductConfidence ?? 90))
+        : lineItem.productUnresolved
+          ? 70
+          : 0
+    ));
+    const product = productScores.length
+      ? Math.round(productScores.reduce((sum, score) => sum + score, 0) / productScores.length)
+      : 0;
+    const optionScores = draft.reviewedLineItemsJson.map((lineItem) => {
+      const suggestions = lineItem.pbv2OptionSuggestions ?? [];
+      const selectedCount = Object.keys(lineItem.optionSelectionsJson?.selected ?? {}).length;
+      if (suggestions.length === 0 && selectedCount === 0) return lineItem.selectedProductId ? 80 : 0;
+      if (suggestions.length === 0) return 85;
+      return Math.round(suggestions.reduce((sum, suggestion) => sum + suggestion.confidence, 0) / suggestions.length);
+    });
+    const options = optionScores.length
+      ? Math.round(optionScores.reduce((sum, score) => sum + score, 0) / optionScores.length)
+      : 0;
+    const artworkStatus = draft.reviewedArtworkJson.status;
+    const artworkScore = artworkStatus === "supplied" || artworkStatus === "not_required"
+      ? 100
+      : artworkStatus === "to_follow"
+        ? 80
+        : 60;
+    const overall = Math.round((customer * 0.2) + (contact * 0.1) + (product * 0.3) + (options * 0.3) + (artworkScore * 0.1));
+
+    return {
+      overall,
+      customer,
+      contact,
+      product,
+      options,
+      artwork: {
+        score: artworkScore,
+        status: artworkStatus,
+        label: formatReadinessLabel(artworkStatus),
+      },
     };
   }
 

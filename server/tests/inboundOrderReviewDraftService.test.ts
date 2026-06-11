@@ -5,6 +5,7 @@ import {
   InboundOrderService,
   InboundOrderTransitionError,
 } from "../services/inboundOrders/InboundOrderService";
+import { hydrateInboundPbv2Selections } from "@shared/inboundOrderPbv2Options";
 
 const mockPriceLineItem = jest.fn<(...args: any[]) => Promise<any>>();
 
@@ -331,7 +332,10 @@ function requiredPbv2Tree() {
         kind: "question",
         label: "Sides",
         input: { type: "select", required: true, selectionKey: "sides" },
-        choices: [{ id: "single", value: "single", label: "Single Sided / 4/0" }],
+        choices: [
+          { id: "single", value: "single", label: "Single Sided / 4/0" },
+          { id: "double", value: "double", label: "Double Sided" },
+        ],
       },
       contour: {
         id: "contour",
@@ -436,18 +440,27 @@ describe("InboundOrderService editable review draft", () => {
       }
       return [];
     });
-    (repo.searchProductCandidates as any).mockResolvedValue([{
-      id: "product_acm",
-      label: "ACM Signs",
-      confidence: 100,
-      reason: "catalog material and customer history matched ACM signs",
-      metadata: {},
-    }]);
+    (repo.searchProductCandidates as any).mockResolvedValue([
+      {
+        id: "product_acm",
+        label: "ACM Signs",
+        confidence: 100,
+        reason: "catalog material and customer history matched ACM signs",
+        metadata: {},
+      },
+      {
+        id: "product_pvc",
+        label: "PVC",
+        confidence: 86,
+        reason: "catalog product name matched PVC signage",
+        metadata: {},
+      },
+    ]);
     (repo.getProductActivePbv2Tree as any).mockImplementation(async (_organizationId: string, productId: string) => (
-      productId === "product_acm"
+      productId === "product_pvc"
         ? {
-            product: { id: "product_acm", name: "ACM Signs", pbv2ActiveTreeVersionId: "tree_acm" },
-            activeTree: { id: "tree_acm", treeJson: requiredPbv2Tree() },
+            product: { id: "product_pvc", name: "PVC", pbv2ActiveTreeVersionId: "tree_pvc" },
+            activeTree: { id: "tree_pvc", treeJson: requiredPbv2Tree() },
           }
         : null
     ));
@@ -467,23 +480,52 @@ describe("InboundOrderService editable review draft", () => {
     expect(draft.reviewedCustomerJson.selectedContactReason).toEqual(expect.stringContaining("Matched by email."));
     expect(draft.reviewedOrderJson.dueDate).toBe("2026-06-11");
     expect(draft.reviewedLineItemsJson[0]).toMatchObject({
-      selectedProductId: "product_acm",
-      interpretedProductId: "product_acm",
-      interpretedProductReason: "catalog material and customer history matched ACM signs",
-      pbv2TreeVersionId: "tree_acm",
+      selectedProductId: "product_pvc",
+      interpretedProductId: "product_pvc",
+      interpretedProductConfidence: 95,
+      pbv2TreeVersionId: "tree_pvc",
     });
+    expect(draft.reviewedLineItemsJson[0].interpretedProductReason).toEqual(expect.stringContaining("Exact material evidence matched PVC."));
     expect(draft.reviewedLineItemsJson[0].optionSelectionsJson).toMatchObject({
       schemaVersion: 2,
       selected: {
-        sides: { value: "single" },
+        sides: { value: "single", note: "Deterministic print spec rule" },
         contour_cutting: { value: "none", note: "Default" },
       },
     });
     expect(draft.reviewedLineItemsJson[0].pbv2OptionSuggestions).toEqual(expect.arrayContaining([
       expect.objectContaining({ selectionKey: "contour_cutting", source: "product_default" }),
-      expect.objectContaining({ selectionKey: "sides", source: "source_evidence" }),
+      expect.objectContaining({ selectionKey: "sides", source: "deterministic_print_spec_rule", confidence: 100 }),
     ]));
+    expect(draft.readinessScore).toMatchObject({
+      customer: 100,
+      contact: 100,
+      product: 95,
+      artwork: { status: "missing" },
+    });
     expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["4/0", "single"],
+    ["1/0", "single"],
+    ["4/1", "double"],
+    ["4/4", "double"],
+    ["1/1", "double"],
+  ])("maps print notation %s deterministically for PBV2 sides", (_notation, expectedValue) => {
+    const hydrated = hydrateInboundPbv2Selections(requiredPbv2Tree() as any, `PVC Signs Prints: ${_notation}`);
+
+    expect(hydrated.selections.selected.sides).toMatchObject({
+      value: expectedValue,
+      note: "Deterministic print spec rule",
+    });
+    expect(hydrated.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        selectionKey: "sides",
+        source: "deterministic_print_spec_rule",
+        confidence: 100,
+      }),
+    ]));
   });
 
   test("saves staff edits without creating downstream records", async () => {
