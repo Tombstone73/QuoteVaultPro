@@ -42,6 +42,8 @@ export interface Material {
   vendorLastPriceCents?: number | null;
   vendorLastPriceUpdatedAt?: string | null;
   specsJson?: Record<string, any> | null;
+  aiParsingDescription?: string | null;
+  aiParsingDescriptionLinkedToDescription?: boolean | null;
   // Roll-specific fields
   rollLengthFt?: string | null;
   costPerRoll?: string | null;

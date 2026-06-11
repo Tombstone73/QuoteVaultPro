@@ -47,6 +47,7 @@ import {
 } from "../services/documentNumberingService";
 import {
   buildProductKnowledgeSearchTerms,
+  resolveAiParsingDescription,
   scoreProductKnowledgeCandidates,
 } from "./inboundProductKnowledgeMatcher";
 
@@ -1114,8 +1115,10 @@ export class InboundOrdersRepository {
         ${products.name} ilike ${pattern}
         or ${products.category} ilike ${pattern}
         or ${products.description} ilike ${pattern}
+        or ${products.aiParsingDescription} ilike ${pattern}
         or ${materials.name} ilike ${pattern}
         or ${materials.category} ilike ${pattern}
+        or ${materials.aiParsingDescription} ilike ${pattern}
       )`;
     });
     predicates.push(sql`(${sql.join(termPredicates, sql` or `)})`);
@@ -1126,6 +1129,8 @@ export class InboundOrdersRepository {
         name: products.name,
         category: products.category,
         description: products.description,
+        aiParsingDescription: products.aiParsingDescription,
+        aiParsingDescriptionLinkedToDescription: products.aiParsingDescriptionLinkedToDescription,
         optionsJson: products.optionsJson,
         pricingProfileConfig: products.pricingProfileConfig,
         pricingProfileKey: products.pricingProfileKey,
@@ -1133,6 +1138,8 @@ export class InboundOrdersRepository {
         isService: products.isService,
         materialName: materials.name,
         materialCategory: materials.category,
+        materialAiParsingDescription: materials.aiParsingDescription,
+        materialAiParsingDescriptionLinkedToDescription: materials.aiParsingDescriptionLinkedToDescription,
         materialSpecsJson: materials.specsJson,
       })
       .from(products)
@@ -1154,8 +1161,20 @@ export class InboundOrdersRepository {
         name: row.name,
         category: row.category,
         description: row.description,
+        aiParsingDescription: resolveAiParsingDescription({
+          aiParsingDescription: row.aiParsingDescription,
+          aiParsingDescriptionLinkedToDescription: row.aiParsingDescriptionLinkedToDescription,
+          description: row.description,
+        }),
         materialName: row.materialName,
         materialCategory: row.materialCategory,
+        materialAiParsingDescription: resolveAiParsingDescription({
+          aiParsingDescription: row.materialAiParsingDescription,
+          aiParsingDescriptionLinkedToDescription: row.materialAiParsingDescriptionLinkedToDescription,
+          description: typeof row.materialSpecsJson === "object" && row.materialSpecsJson && !Array.isArray(row.materialSpecsJson)
+            ? String((row.materialSpecsJson as Record<string, unknown>).description ?? "")
+            : null,
+        }),
         isService: row.isService,
         metadataText: JSON.stringify({
           optionsJson: row.optionsJson ?? null,

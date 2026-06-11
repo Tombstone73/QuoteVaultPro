@@ -1,5 +1,6 @@
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -115,6 +116,7 @@ export const ProductForm = ({
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
+  const aiParsingLinkedToDescription = Boolean(form.watch("aiParsingDescriptionLinkedToDescription"));
 
   // Shipping config local state — synced from treeMeta
   // CRITICAL: Also use setValue to mark form dirty when shipping fields change
@@ -282,6 +284,59 @@ export const ProductForm = ({
             />
           </div>
         </div>
+      </div>
+
+      <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4 space-y-4 mt-4">
+        <div>
+          <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">AI Parsing Description</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            Internal matching guidance for inbound parsing. This does not change customer-facing product copy.
+          </p>
+        </div>
+        <FormField
+          control={form.control}
+          name="aiParsingDescriptionLinkedToDescription"
+          render={({ field }) => (
+            <FormItem className="flex flex-row items-start gap-3 rounded-md border border-slate-700/70 bg-slate-950/30 p-3">
+              <FormControl>
+                <Checkbox
+                  checked={Boolean(field.value)}
+                  onCheckedChange={(checked) => field.onChange(Boolean(checked))}
+                />
+              </FormControl>
+              <div className="space-y-1 leading-none">
+                <FormLabel className="text-sm text-slate-200">Use product description for AI parsing</FormLabel>
+                <FormDescription className="text-xs text-slate-500">
+                  Keep AI matching tied to the normal product description when a separate internal hint is not needed.
+                </FormDescription>
+              </div>
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="aiParsingDescription"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-xs text-slate-400">AI Parsing Description</FormLabel>
+              <FormControl>
+                <Textarea
+                  placeholder="Internal phrases, aliases, and ordering language staff expect AI parsing to match."
+                  {...field}
+                  value={field.value || ""}
+                  disabled={aiParsingLinkedToDescription}
+                  className={`min-h-[96px] ${aiParsingLinkedToDescription ? "opacity-60" : ""}`}
+                />
+              </FormControl>
+              <FormDescription className="text-xs text-slate-500">
+                {aiParsingLinkedToDescription
+                  ? "The product description will be used as the AI parsing description."
+                  : "Use this for alternate terms or staff-only matching guidance. Product name remains the strongest match signal."}
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
       </div>
 
       <Separator className="bg-slate-700/60 my-0" />

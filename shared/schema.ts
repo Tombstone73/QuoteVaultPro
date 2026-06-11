@@ -689,6 +689,8 @@ export const products = pgTable("products", {
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description").notNull(),
+  aiParsingDescription: text("ai_parsing_description"),
+  aiParsingDescriptionLinkedToDescription: boolean("ai_parsing_description_linked_to_description").default(false).notNull(),
   productTypeId: varchar("product_type_id").references(() => productTypes.id, { onDelete: 'restrict' }),
   pricingFormula: text("pricing_formula"), // Made optional - not required when using nesting calculator
   variantLabel: varchar("variant_label", { length: 100 }).default("Variant"),
@@ -1170,6 +1172,15 @@ const pricingProfileConfigSchema = z.union([
   z.record(z.any()), // Allow any object for future profile types
 ]).optional().nullable();
 
+const optionalAiParsingDescriptionSchema = z.preprocess(
+  (v) => {
+    if (typeof v !== "string") return v == null ? undefined : v;
+    const trimmed = v.trim();
+    return trimmed ? trimmed : null;
+  },
+  z.string().max(10000).optional().nullable()
+);
+
 export const insertProductSchema = createInsertSchema(products).omit({
   id: true,
   createdAt: true,
@@ -1190,6 +1201,8 @@ export const insertProductSchema = createInsertSchema(products).omit({
   sheetHeight: z.coerce.number().positive().optional().nullable(),
   minPricePerItem: z.coerce.number().positive().optional().nullable(),
   requiresProductionJob: z.boolean().default(true),
+  aiParsingDescription: optionalAiParsingDescriptionSchema,
+  aiParsingDescriptionLinkedToDescription: z.boolean().default(false),
 });
 
 export const updateProductSchema = createInsertSchema(products).omit({
@@ -1212,6 +1225,8 @@ export const updateProductSchema = createInsertSchema(products).omit({
   sheetHeight: z.coerce.number().positive().optional().nullable(),
   minPricePerItem: z.coerce.number().positive().optional().nullable(),
   requiresProductionJob: z.boolean().optional(),
+  aiParsingDescription: optionalAiParsingDescriptionSchema,
+  aiParsingDescriptionLinkedToDescription: z.boolean().optional(),
 }).partial();
 
 export type InsertProduct = z.infer<typeof insertProductSchema>;
@@ -5234,6 +5249,8 @@ export const materials = pgTable("materials", {
   edgeWasteInPerSide: decimal("edge_waste_in_per_side", { precision: 10, scale: 2 }), // edge waste per side in inches
   leadWasteFt: decimal("lead_waste_ft", { precision: 10, scale: 2 }).default("0"), // lead waste in feet
   tailWasteFt: decimal("tail_waste_ft", { precision: 10, scale: 2 }).default("0"), // tail waste in feet
+  aiParsingDescription: text("ai_parsing_description"),
+  aiParsingDescriptionLinkedToDescription: boolean("ai_parsing_description_linked_to_description").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -5399,6 +5416,8 @@ const materialBaseSchema = createInsertSchema(materials).omit({
     (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
     z.coerce.number().nonnegative().default(0).optional().nullable()
   ),
+  aiParsingDescription: optionalAiParsingDescriptionSchema,
+  aiParsingDescriptionLinkedToDescription: z.boolean().default(false),
   linkedProductIds: z.array(z.string().trim().min(1)).optional(),
 });
 

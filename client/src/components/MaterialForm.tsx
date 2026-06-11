@@ -131,6 +131,8 @@ const materialSchema = z
   thicknessUnit: z.enum(["in", "mm", "mil", "gauge"]).optional().nullable(),
   color: z.string().optional(),
   specsJson: z.string().optional(), // JSON string editable
+  aiParsingDescription: z.string().optional().nullable(),
+  aiParsingDescriptionLinkedToDescription: z.boolean().default(false),
   preferredVendorId: z.string().optional().nullable().or(z.literal("")).transform(v=> v? v: null),
   preferredVendorName: z.string().optional(),
   vendorSku: z.string().optional(),
@@ -224,6 +226,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       thicknessUnit: material.thicknessUnit || undefined,
       color: material.color || "",
       specsJson: material.specsJson ? JSON.stringify(material.specsJson, null, 2) : "",
+      aiParsingDescription: material.aiParsingDescription || "",
+      aiParsingDescriptionLinkedToDescription: Boolean(material.aiParsingDescriptionLinkedToDescription),
       preferredVendorId: material.preferredVendorId || "",
       preferredVendorName: material.preferredVendorName || "",
       vendorSku: material.vendorSku || "",
@@ -268,6 +272,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       thicknessUnit: undefined,
       color: "",
       specsJson: "",
+      aiParsingDescription: "",
+      aiParsingDescriptionLinkedToDescription: false,
       preferredVendorId: "",
       preferredVendorName: "",
       vendorSku: "",
@@ -337,6 +343,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       thickness: values.thickness !== undefined ? values.thickness.toString() : undefined,
       thicknessUnit: values.thicknessUnit || undefined,
       specsJson: values.specsJson ? safeParseJSON(values.specsJson) : undefined,
+      aiParsingDescription: nullableTrimmed(values.aiParsingDescription),
+      aiParsingDescriptionLinkedToDescription: Boolean(values.aiParsingDescriptionLinkedToDescription),
       preferredVendorId: values.preferredVendorId || null,
       preferredVendorName: nullableTrimmed(values.preferredVendorName),
       vendorSku: nullableTrimmed(values.vendorSku),
@@ -394,6 +402,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
     Number.isFinite(stockQuantityNumber) &&
     stockQuantityNumber > 0;
   const showSheetSqftWarning = materialType === "sheet" && (inventoryUnit || unitOfMeasure) === "sqft";
+  const aiParsingLinkedToDescription = Boolean(form.watch("aiParsingDescriptionLinkedToDescription"));
   const linkedProductIds = form.watch("linkedProductIds") || [];
   const linkedProductIdSet = useMemo(() => new Set(linkedProductIds), [linkedProductIds]);
   const selectedLinkedProducts = useMemo(
@@ -1015,6 +1024,44 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                 </CardHeader>
                 <CardContent>
                   <Textarea rows={6} {...form.register("specsJson")}/>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">AI Parsing Description</CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Internal matching guidance for inbound parsing. This does not change customer-facing material behavior.
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <label className="flex items-start gap-3 rounded-md border p-3">
+                    <Checkbox
+                      checked={aiParsingLinkedToDescription}
+                      onCheckedChange={(checked) => form.setValue("aiParsingDescriptionLinkedToDescription", Boolean(checked), { shouldDirty: true })}
+                    />
+                    <span className="space-y-1">
+                      <span className="block text-sm font-medium">Use material description for AI parsing</span>
+                      <span className="block text-xs text-muted-foreground">
+                        Keep AI matching tied to the material description when a separate internal hint is not needed.
+                      </span>
+                    </span>
+                  </label>
+                  <div>
+                    <label className="text-sm font-medium">AI Parsing Description</label>
+                    <Textarea
+                      rows={5}
+                      placeholder="Internal phrases, aliases, supplier terms, and ordering language staff expect AI parsing to match."
+                      {...form.register("aiParsingDescription")}
+                      disabled={aiParsingLinkedToDescription}
+                      className={aiParsingLinkedToDescription ? "opacity-60" : ""}
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {aiParsingLinkedToDescription
+                        ? "The material description will be used as the AI parsing description."
+                        : "Use this for alternate terms or staff-only matching guidance. Material name remains the strongest match signal."}
+                    </p>
+                  </div>
                 </CardContent>
               </Card>
             </div>
