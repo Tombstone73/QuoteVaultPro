@@ -15,7 +15,7 @@ export type InboundPbv2OptionSuggestion = {
   label: string;
   value: unknown;
   choiceLabel: string;
-  source: "product_default" | "source_evidence" | "customer_history" | "staff_selected";
+  source: "product_default" | "source_evidence" | "deterministic_print_spec_rule" | "customer_history" | "staff_selected";
   confidence: number;
   reason: string;
 };
@@ -135,6 +135,61 @@ function hasDistinctiveTokenMatch(haystack: string, candidate: string): boolean 
     .some((token) => haystack.includes(token));
 }
 
+function deterministicPrintSideFromEvidence(evidenceText: string): "single" | "double" | null {
+  if (/\b(?:4\/0|1\/0)\b/.test(evidenceText)) return "single";
+  if (/\b(?:4\/1|4\/4|1\/1)\b/.test(evidenceText)) return "double";
+  return null;
+}
+
+function isPrintedSidesNode(node: OptionNodeV2): boolean {
+  const selectionKey = normalizeForMatch(getPbv2SelectionKey(node));
+  const label = normalizeForMatch(getNodeLabel(node, getPbv2SelectionKey(node)));
+  return /\b(sides?|print side|printed sides?)\b/.test(`${selectionKey} ${label}`);
+}
+
+function choiceMatchesPrintSide(choice: unknown, side: "single" | "double"): boolean {
+  const text = normalizeForMatch(`${choiceLabel(choice)} ${String(choiceValue(choice) ?? "")}`);
+  return side === "single"
+    ? /\b(single|one|1\s*sided|ss|4\/0|1\/0)\b/.test(text)
+    : /\b(double|two|2\s*sided|ds|4\/1|4\/4|1\/1)\b/.test(text);
+}
+
+function deterministicPrintSpecSuggestions(
+  tree: OptionTreeV2 | null | undefined,
+  evidenceText: string,
+): { selections: LineItemOptionSelectionsV2; suggestions: InboundPbv2OptionSuggestion[] } {
+  const selections: LineItemOptionSelectionsV2 = { schemaVersion: 2, selected: {} };
+  const haystack = normalizeForMatch(evidenceText);
+  const side = deterministicPrintSideFromEvidence(haystack);
+  if (!side || !tree || !isRecord(tree.nodes)) return { selections, suggestions: [] };
+
+  const suggestions: InboundPbv2OptionSuggestion[] = [];
+  for (const node of Object.values(tree.nodes)) {
+    if (!isPbv2QuestionNode(node) || !isRenderableQuestion(node) || !isPrintedSidesNode(node)) continue;
+    const inputType = getInputType(node);
+    if (inputType !== "select" && inputType !== "radio") continue;
+    const choice = (Array.isArray((node as any).choices) ? (node as any).choices : [])
+      .find((candidate: unknown) => choiceMatchesPrintSide(candidate, side));
+    if (!choice) continue;
+
+    const selectionKey = getPbv2SelectionKey(node);
+    const value = choiceValue(choice);
+    selections.selected[selectionKey] = { value, note: "Deterministic print spec rule" };
+    suggestions.push({
+      selectionKey,
+      nodeId: node.id,
+      label: getNodeLabel(node, selectionKey),
+      value,
+      choiceLabel: choiceLabel(choice),
+      source: "deterministic_print_spec_rule",
+      confidence: 100,
+      reason: `Mapped print notation to ${side === "single" ? "Single Sided" : "Double Sided"}.`,
+    });
+  }
+
+  return { selections, suggestions };
+}
+
 export function suggestInboundPbv2Options(
   tree: OptionTreeV2 | null | undefined,
   evidenceText: string,
@@ -222,13 +277,14 @@ export function hydrateInboundPbv2Selections(
         value: entry.value,
         choiceLabel: getChoiceLabelForValue(node, entry.value),
         source: "product_default",
-        confidence: 60,
+        confidence: 100,
         reason: "Applied product default.",
       });
     }
   }
 
   const evidence = suggestInboundPbv2Options(tree, evidenceText);
+  const deterministic = deterministicPrintSpecSuggestions(tree, evidenceText);
   const selected = {
     ...defaultSelections.selected,
     ...Object.fromEntries(
@@ -237,14 +293,17 @@ export function hydrateInboundPbv2Selections(
         { ...entry, note: "Suggested from PO" },
       ]),
     ),
+    ...deterministic.selections.selected,
   };
   const evidenceKeys = new Set(Object.keys(evidence.selections.selected));
+  const deterministicKeys = new Set(Object.keys(deterministic.selections.selected));
 
   return {
     selections: { schemaVersion: 2, selected },
     suggestions: [
-      ...defaultSuggestions.filter((suggestion) => !evidenceKeys.has(suggestion.selectionKey)),
-      ...evidence.suggestions,
+      ...defaultSuggestions.filter((suggestion) => !evidenceKeys.has(suggestion.selectionKey) && !deterministicKeys.has(suggestion.selectionKey)),
+      ...evidence.suggestions.filter((suggestion) => !deterministicKeys.has(suggestion.selectionKey)),
+      ...deterministic.suggestions,
     ],
   };
 }

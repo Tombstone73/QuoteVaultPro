@@ -246,7 +246,7 @@ export const inboundOrderReviewedLineItemSchema = z.object({
     label: z.string().trim().min(1),
     value: z.unknown(),
     choiceLabel: z.string().trim().min(1),
-    source: z.enum(["product_default", "source_evidence", "customer_history", "staff_selected"]).default("source_evidence"),
+    source: z.enum(["product_default", "source_evidence", "deterministic_print_spec_rule", "customer_history", "staff_selected"]).default("source_evidence"),
     confidence: z.number().min(0).max(100),
     reason: z.string().trim().min(1).max(1000),
   })).default([]),
@@ -299,6 +299,19 @@ export type InboundOrderArtworkReviewStatus = z.infer<typeof inboundOrderArtwork
 export type InboundOrderReviewDraftPayload = z.infer<typeof inboundOrderReviewDraftPayloadSchema>;
 export type InboundOrderReviewDraftSaveRequest = z.infer<typeof inboundOrderReviewDraftSaveSchema>;
 
+export type InboundOrderReviewReadinessScore = {
+  overall: number;
+  customer: number;
+  contact: number;
+  product: number;
+  options: number;
+  artwork: {
+    score: number;
+    status: InboundOrderArtworkReviewStatus;
+    label: string;
+  };
+};
+
 export type InboundOrderReviewDraftDto = InboundOrderReviewDraftPayload & {
   id: string | null;
   snapshotId: string | null;
@@ -316,6 +329,7 @@ export type InboundOrderReviewDraftDto = InboundOrderReviewDraftPayload & {
   createdAt: string | null;
   updatedAt: string | null;
   validationErrors: string[];
+  readinessScore: InboundOrderReviewReadinessScore;
 };
 
 export type InboundOrderParseAttemptStatus = z.infer<typeof inboundOrderParseAttemptStatusSchema>;

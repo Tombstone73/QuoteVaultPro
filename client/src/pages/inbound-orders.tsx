@@ -1304,6 +1304,7 @@ function ensurePbv2Selections(value: unknown): LineItemOptionSelectionsV2 {
 
 function selectionSourceLabel(source: string | null | undefined, note: string | null | undefined): string {
   if (source === "product_default" || note === "Default") return "Default";
+  if (source === "deterministic_print_spec_rule" || note === "Deterministic print spec rule") return "Print rule";
   if (source === "source_evidence" || note === "Suggested from PO" || note === "Suggested from inbound source evidence.") return "Suggested from PO";
   if (source === "customer_history") return "Customer history";
   if (source === "staff_selected" || note === "Staff selected") return "Staff selected";
@@ -1659,6 +1660,20 @@ function DraftBuilderPanel({
           </div>
         </section>
 
+        <section className="rounded-md border border-border p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-foreground">Review Readiness</h3>
+            <Badge variant="secondary">{reviewDraft.readinessScore.overall}% overall</Badge>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+            <span>Customer {reviewDraft.readinessScore.customer}%</span>
+            <span>Contact {reviewDraft.readinessScore.contact}%</span>
+            <span>Product {reviewDraft.readinessScore.product}%</span>
+            <span>Options {reviewDraft.readinessScore.options}%</span>
+            <span>Artwork {reviewDraft.readinessScore.artwork.label}</span>
+          </div>
+        </section>
+
         <FieldSourceSection draft={draft} />
 
         <section className="rounded-md border border-border p-3">
@@ -1787,6 +1802,8 @@ function DraftBuilderPanel({
             ) : (
               form.reviewedLineItemsJson.map((lineItem, index) => {
                 const parsedLine = draft.lineItems[index];
+                const primaryInterpretedProductId = lineItem.interpretedProductId ?? lineItem.selectedProductId;
+                const primaryInterpretedProductLabel = lineItem.productName || primaryInterpretedProductId;
                 const productOptions = mergeReviewOptions(
                   (parsedLine?.productCandidates ?? []).map(candidateToReviewOption),
                   lineItem.selectedProductId && !(parsedLine?.productCandidates ?? []).some((candidate) => candidate.id === lineItem.selectedProductId)
@@ -1823,8 +1840,10 @@ function DraftBuilderPanel({
                         ))}
                       </select>
                     </label>
-                    {lineItem.selectedProductId && lineItem.interpretedProductReason && (
+                    {primaryInterpretedProductId && lineItem.interpretedProductReason && (
                       <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                        <div className="mb-1 font-semibold text-foreground">Primary Interpreted Product</div>
+                        <div>{primaryInterpretedProductLabel}</div>
                         {lineItem.interpretedProductReason}
                         {lineItem.interpretedProductConfidence != null ? ` (${lineItem.interpretedProductConfidence}% confidence)` : ""}
                       </div>

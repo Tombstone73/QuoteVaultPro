@@ -284,6 +284,9 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
     sourceText: lineItem.sourceText ?? null,
     productName: lineItem.productName ?? null,
     selectedProductId: lineItem.candidateProductIds?.[0] ?? lineItem.productCandidates?.[0]?.id ?? null,
+    interpretedProductId: lineItem.interpretedProductId ?? lineItem.candidateProductIds?.[0] ?? lineItem.productCandidates?.[0]?.id ?? null,
+    interpretedProductReason: lineItem.interpretedProductReason ?? lineItem.productCandidates?.[0]?.reason ?? null,
+    interpretedProductConfidence: lineItem.interpretedProductConfidence ?? lineItem.productCandidates?.[0]?.confidence ?? null,
     productUnresolved: false,
     quantity: lineItem.quantity ?? null,
     width: lineItem.width ?? null,
@@ -350,6 +353,14 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
     })),
     reviewNotes: null,
     validationErrors: [],
+    readinessScore: {
+      overall: 92,
+      customer: 100,
+      contact: 100,
+      product: 95,
+      options: 90,
+      artwork: { score: 60, status: "missing", label: "Missing" },
+    },
     hasNewerParse: false,
     createdAt: "2026-06-09T12:02:00.000Z",
     updatedAt: "2026-06-09T12:02:00.000Z",
@@ -1177,6 +1188,10 @@ describe("InboundOrdersPage", () => {
     });
 
     await waitForText("Phase 4: Create draft order from reviewed inbound record.");
+    expect(container.textContent).toContain("Review Readiness");
+    expect(container.textContent).toContain("92% overall");
+    expect(container.textContent).toContain("Customer 100%");
+    expect(container.textContent).toContain("Contact 100%");
     expect(container.textContent).toContain("Brainstorm Print PO.pdf");
     expect(container.textContent).toContain("Purchase Order");
     expect(container.textContent).toContain("98%");
@@ -1196,6 +1211,7 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Quantity mismatch between email (50) and purchase order (3).");
     expect(container.textContent).toContain("Ada Signs");
     expect(container.textContent).toContain("PVC Signs");
+    expect(container.textContent).toContain("Primary Interpreted Product");
     expect(container.textContent).toContain("Product Match Reasoning");
     expect(container.textContent).toContain("material matched \"3mm white pvc\"");
     expect(container.textContent).toContain("Final Score 94");
