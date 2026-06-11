@@ -312,7 +312,13 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
       sourceEmail: parsed.customer.sourceEmail ?? null,
       companyName: parsed.customer.companyName ?? null,
       selectedCustomerId: parsed.customer.candidateCustomerIds?.[0] ?? null,
+      selectedCustomerSource: parsed.customer.candidateCustomerIds?.[0] ? "interpreted_customer_match" : null,
+      selectedCustomerReason: parsed.customer.candidateCustomerIds?.[0] ? "Matched by company name and sender domain." : null,
+      selectedCustomerConfidence: parsed.customer.candidateCustomerIds?.[0] ? 92 : null,
       selectedContactId: parsed.customer.candidateContactIds?.[0] ?? null,
+      selectedContactSource: parsed.customer.candidateContactIds?.[0] ? "interpreted_contact_match" : null,
+      selectedContactReason: parsed.customer.candidateContactIds?.[0] ? "Matched by email." : null,
+      selectedContactConfidence: parsed.customer.candidateContactIds?.[0] ? 100 : null,
       unresolvedCustomer: false,
       unresolvedContact: false,
       notes: null,
@@ -1210,6 +1216,12 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("24x36");
     expect(container.textContent).toContain("Quantity mismatch between email (50) and purchase order (3).");
     expect(container.textContent).toContain("Ada Signs");
+    expect(container.textContent).toContain("Auto-selected customer");
+    expect(container.textContent).toContain("Matched by company name and sender domain.");
+    expect(container.textContent).toContain("Confidence 92%.");
+    expect(container.textContent).toContain("Auto-selected contact");
+    expect(container.textContent).toContain("Matched by email.");
+    expect(container.textContent).toContain("Confidence 100%.");
     expect(container.textContent).toContain("PVC Signs");
     expect(container.textContent).toContain("Primary Interpreted Product");
     expect(container.textContent).toContain("Product Match Reasoning");
@@ -1320,7 +1332,9 @@ describe("InboundOrdersPage", () => {
     await waitForCondition(() => Boolean(savedBody), "review draft PUT with selected customer/contact");
 
     expect(savedBody.reviewedCustomerJson.selectedCustomerId).toBe("customer_search");
+    expect(savedBody.reviewedCustomerJson.selectedCustomerSource).toBe("staff_selected");
     expect(savedBody.reviewedCustomerJson.selectedContactId).toBe("contact_search");
+    expect(savedBody.reviewedCustomerJson.selectedContactSource).toBe("staff_selected");
     expect(savedBody.reviewedCustomerJson.unresolvedCustomer).toBe(false);
     expect(savedBody.reviewedCustomerJson.unresolvedContact).toBe(false);
     expect(apiFetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/api/orders"), expect.anything());

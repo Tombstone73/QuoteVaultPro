@@ -474,10 +474,13 @@ describe("InboundOrderService editable review draft", () => {
 
     expect(draft.reviewedCustomerJson).toMatchObject({
       selectedCustomerId: "customer_1",
+      selectedCustomerSource: "interpreted_customer_match",
       selectedContactId: "contact_1",
+      selectedContactSource: "interpreted_contact_match",
     });
     expect(draft.reviewedCustomerJson.selectedCustomerReason).toEqual(expect.stringContaining("Matched by company name."));
     expect(draft.reviewedCustomerJson.selectedContactReason).toEqual(expect.stringContaining("Matched by email."));
+    expect(draft.reviewedCustomerJson.selectedContactConfidence).toBe(100);
     expect(draft.reviewedOrderJson.dueDate).toBe("2026-06-11");
     expect(draft.reviewedLineItemsJson[0]).toMatchObject({
       selectedProductId: "product_pvc",
@@ -503,6 +506,94 @@ describe("InboundOrderService editable review draft", () => {
       product: 95,
       artwork: { status: "missing" },
     });
+    expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
+  });
+
+  test("leaves ambiguous customer matches unselected for staff review", async () => {
+    const ambiguousDraft = parsedDraft({
+      customer: {
+        ...parsedDraft().customer,
+        sourceEmail: null,
+        candidateCustomerIds: [],
+        candidateContactIds: [],
+        customerCandidates: [],
+        contactCandidates: [],
+      },
+    });
+    const { repo } = makeRepository(inboundRecord(), parseAttempt({ parsedDraft: ambiguousDraft }));
+    (repo.searchCustomers as any).mockImplementation(async (_organizationId: string, search: string | null) => {
+      const value = String(search ?? "").toLowerCase();
+      if (value.includes("brainstorm")) {
+        return [
+          { id: "customer_1", companyName: "Brainstorm Print", email: "billing@example.com", phone: null, status: "active" },
+          { id: "customer_2", companyName: "Brainstorm Print West", email: "west@example.com", phone: null, status: "active" },
+        ];
+      }
+      return [];
+    });
+    const service = new InboundOrderService(repo as any);
+
+    const draft = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(draft.reviewedCustomerJson.selectedCustomerId).toBeNull();
+    expect(draft.reviewedCustomerJson.selectedCustomerSource).toBeNull();
+    expect(draft.reviewedCustomerJson.selectedContactId).toBeNull();
+    expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
+  });
+
+  test("backfills interpreted customer and contact on older unselected review drafts", async () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderService(repo as any);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: {
+          ...initialized.reviewedCustomerJson,
+          selectedCustomerId: null,
+          selectedCustomerSource: null,
+          selectedCustomerReason: null,
+          selectedCustomerConfidence: null,
+          selectedContactId: null,
+          selectedContactSource: null,
+          selectedContactReason: null,
+          selectedContactConfidence: null,
+        },
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: initialized.reviewedLineItemsJson,
+        reviewedArtworkJson: initialized.reviewedArtworkJson,
+        missingDecisionsJson: initialized.missingDecisionsJson,
+        warningsJson: initialized.warningsJson,
+        reviewNotes: "Older draft without interpreted selections",
+      },
+    });
+
+    const backfilled = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(backfilled.reviewedCustomerJson).toMatchObject({
+      selectedCustomerId: "customer_1",
+      selectedCustomerSource: "interpreted_customer_match",
+      selectedCustomerConfidence: 94,
+      selectedContactId: "contact_1",
+      selectedContactSource: "interpreted_contact_match",
+      selectedContactConfidence: 100,
+    });
+    expect(repo.createReviewSnapshotWithEvent).toHaveBeenCalledTimes(3);
     expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
   });
 
@@ -637,9 +728,11 @@ describe("InboundOrderService editable review draft", () => {
           sourcePhone: null,
           companyName: null,
           selectedCustomerId: null,
+          selectedCustomerSource: null,
           selectedCustomerReason: null,
           selectedCustomerConfidence: null,
           selectedContactId: null,
+          selectedContactSource: null,
           selectedContactReason: null,
           selectedContactConfidence: null,
           unresolvedCustomer: true,
@@ -773,9 +866,11 @@ describe("InboundOrderService editable review draft", () => {
           sourcePhone: null,
           companyName: "Ada Signs",
           selectedCustomerId: null,
+          selectedCustomerSource: null,
           selectedCustomerReason: null,
           selectedCustomerConfidence: null,
           selectedContactId: null,
+          selectedContactSource: null,
           selectedContactReason: null,
           selectedContactConfidence: null,
           unresolvedCustomer: true,

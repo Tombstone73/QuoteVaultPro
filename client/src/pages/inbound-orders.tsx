@@ -1311,6 +1311,12 @@ function selectionSourceLabel(source: string | null | undefined, note: string | 
   return "Suggested";
 }
 
+function customerSelectionIntro(source: string | null | undefined): string {
+  if (source === "interpreted_customer_match" || source === "interpreted_contact_match") return "Auto-selected";
+  if (source === "staff_selected") return "Staff selected";
+  return "Selection";
+}
+
 function markChangedPbv2SelectionsAsStaffSelected(
   next: LineItemOptionSelectionsV2,
   previous: LineItemOptionSelectionsV2,
@@ -1702,9 +1708,11 @@ function DraftBuilderPanel({
               onSearchChange={setCustomerSearch}
               onChange={(customerId) => updateCustomer({
                 selectedCustomerId: customerId,
+                selectedCustomerSource: customerId ? "staff_selected" : null,
                 selectedCustomerReason: customerId ? "Staff selected customer." : null,
                 selectedCustomerConfidence: null,
                 selectedContactId: null,
+                selectedContactSource: null,
                 selectedContactReason: null,
                 selectedContactConfidence: null,
                 unresolvedCustomer: false,
@@ -1712,8 +1720,11 @@ function DraftBuilderPanel({
             />
             {form.reviewedCustomerJson.selectedCustomerId && form.reviewedCustomerJson.selectedCustomerReason && (
               <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                {form.reviewedCustomerJson.selectedCustomerReason}
-                {form.reviewedCustomerJson.selectedCustomerConfidence != null ? ` (${form.reviewedCustomerJson.selectedCustomerConfidence}% confidence)` : ""}
+                <div className="font-medium text-foreground">{customerSelectionIntro(form.reviewedCustomerJson.selectedCustomerSource)} customer</div>
+                <div>
+                  {form.reviewedCustomerJson.selectedCustomerReason}
+                  {form.reviewedCustomerJson.selectedCustomerConfidence != null ? ` Confidence ${form.reviewedCustomerJson.selectedCustomerConfidence}%.` : ""}
+                </div>
               </div>
             )}
             <SearchableReviewSelector
@@ -1727,6 +1738,7 @@ function DraftBuilderPanel({
               onSearchChange={setContactSearch}
               onChange={(contactId) => updateCustomer({
                 selectedContactId: contactId,
+                selectedContactSource: contactId ? "staff_selected" : null,
                 selectedContactReason: contactId ? "Staff selected contact." : null,
                 selectedContactConfidence: null,
                 unresolvedContact: false,
@@ -1734,8 +1746,11 @@ function DraftBuilderPanel({
             />
             {form.reviewedCustomerJson.selectedContactId && form.reviewedCustomerJson.selectedContactReason && (
               <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                {form.reviewedCustomerJson.selectedContactReason}
-                {form.reviewedCustomerJson.selectedContactConfidence != null ? ` (${form.reviewedCustomerJson.selectedContactConfidence}% confidence)` : ""}
+                <div className="font-medium text-foreground">{customerSelectionIntro(form.reviewedCustomerJson.selectedContactSource)} contact</div>
+                <div>
+                  {form.reviewedCustomerJson.selectedContactReason}
+                  {form.reviewedCustomerJson.selectedContactConfidence != null ? ` Confidence ${form.reviewedCustomerJson.selectedContactConfidence}%.` : ""}
+                </div>
               </div>
             )}
             <label className="flex items-center gap-2 text-sm text-foreground">
@@ -1745,7 +1760,13 @@ function DraftBuilderPanel({
                 onChange={(event) => updateCustomer({
                   unresolvedCustomer: event.target.checked,
                   selectedCustomerId: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerId,
+                  selectedCustomerSource: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerSource,
+                  selectedCustomerReason: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerReason,
+                  selectedCustomerConfidence: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerConfidence,
                   selectedContactId: event.target.checked ? null : form.reviewedCustomerJson.selectedContactId,
+                  selectedContactSource: event.target.checked ? null : form.reviewedCustomerJson.selectedContactSource,
+                  selectedContactReason: event.target.checked ? null : form.reviewedCustomerJson.selectedContactReason,
+                  selectedContactConfidence: event.target.checked ? null : form.reviewedCustomerJson.selectedContactConfidence,
                 })}
               />
               Customer unresolved
@@ -1757,6 +1778,9 @@ function DraftBuilderPanel({
                 onChange={(event) => updateCustomer({
                   unresolvedContact: event.target.checked,
                   selectedContactId: event.target.checked ? null : form.reviewedCustomerJson.selectedContactId,
+                  selectedContactSource: event.target.checked ? null : form.reviewedCustomerJson.selectedContactSource,
+                  selectedContactReason: event.target.checked ? null : form.reviewedCustomerJson.selectedContactReason,
+                  selectedContactConfidence: event.target.checked ? null : form.reviewedCustomerJson.selectedContactConfidence,
                 })}
               />
               Contact unresolved
