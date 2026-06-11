@@ -848,7 +848,15 @@ export class InboundOrderService {
     const latestAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
     const existingSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
     if (existingSnapshot) {
-      return this.reviewDraftDtoFromSnapshot(record, existingSnapshot, latestAttempt, false);
+      const hydratedSnapshot = await this.backfillInterpretedCustomerContactSelection({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+        actorUserId: args.actorUserId,
+        record,
+        snapshot: existingSnapshot,
+        latestAttempt,
+      });
+      return this.reviewDraftDtoFromSnapshot(record, hydratedSnapshot, latestAttempt, false);
     }
 
     this.assertReviewDraftEditable(record);
@@ -1682,9 +1690,11 @@ export class InboundOrderService {
         sourcePhone: draft.customer.sourcePhone,
         companyName: draft.customer.companyName,
         selectedCustomerId: customerInterpretation.customerId,
+        selectedCustomerSource: customerInterpretation.customerSource,
         selectedCustomerReason: customerInterpretation.customerReason,
         selectedCustomerConfidence: customerInterpretation.customerConfidence,
         selectedContactId: customerInterpretation.contactId,
+        selectedContactSource: customerInterpretation.contactSource,
         selectedContactReason: customerInterpretation.contactReason,
         selectedContactConfidence: customerInterpretation.contactConfidence,
         unresolvedCustomer: false,
@@ -1737,14 +1747,88 @@ export class InboundOrderService {
     });
   }
 
+  private async backfillInterpretedCustomerContactSelection(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    actorUserId: string;
+    record: InboundOrderRecord;
+    snapshot: InboundOrderReviewSnapshot;
+    latestAttempt: InboundOrderParseAttempt | null;
+  }): Promise<InboundOrderReviewSnapshot> {
+    const payload = this.reviewDraftPayloadFromSnapshot(args.snapshot);
+    const parsedDraft = this.parsedDraftFromAttempt(args.latestAttempt);
+    if (!payload || !parsedDraft || payload.status !== "draft") return args.snapshot;
+
+    const snapshotSourceAttemptId = stringFromUnknown(getPathValue(args.snapshot.payloadJson, "metadata.sourceParseAttemptId"));
+    if (snapshotSourceAttemptId && args.latestAttempt?.id && snapshotSourceAttemptId !== args.latestAttempt.id) {
+      return args.snapshot;
+    }
+
+    const interpreted = await this.interpretCustomerAndContact(args.organizationId, parsedDraft);
+    const customer = { ...payload.reviewedCustomerJson };
+    let changed = false;
+
+    if (!customer.selectedCustomerId && !customer.unresolvedCustomer && interpreted.customerId) {
+      customer.selectedCustomerId = interpreted.customerId;
+      customer.selectedCustomerSource = interpreted.customerSource;
+      customer.selectedCustomerReason = interpreted.customerReason;
+      customer.selectedCustomerConfidence = interpreted.customerConfidence;
+      changed = true;
+    }
+
+    const customerMatchesInterpreted = Boolean(
+      customer.selectedCustomerId
+      && interpreted.customerId
+      && customer.selectedCustomerId === interpreted.customerId,
+    );
+    if (
+      customerMatchesInterpreted
+      && !customer.selectedContactId
+      && !customer.unresolvedContact
+      && interpreted.contactId
+    ) {
+      customer.selectedContactId = interpreted.contactId;
+      customer.selectedContactSource = interpreted.contactSource;
+      customer.selectedContactReason = interpreted.contactReason;
+      customer.selectedContactConfidence = interpreted.contactConfidence;
+      changed = true;
+    }
+
+    if (!changed) return args.snapshot;
+
+    const sourceAttempt = await this.resolveReviewDraftSourceAttempt(
+      args.organizationId,
+      args.inboundRecordId,
+      args.snapshot,
+      args.latestAttempt,
+    );
+    return this.persistEditableReviewDraftSnapshot({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+      actorUserId: args.actorUserId,
+      record: args.record,
+      latestAttempt: sourceAttempt,
+      payload: {
+        ...payload,
+        reviewedCustomerJson: customer,
+      },
+      status: payload.status,
+      eventType: "review_draft.interpreted_customer_contact_backfilled",
+      message: "Interpreted customer/contact selections backfilled into editable review draft.",
+      initializedFromParse: false,
+    });
+  }
+
   private async interpretCustomerAndContact(
     organizationId: string,
     draft: InboundOrderParsedDraft,
   ): Promise<{
     customerId: string | null;
+    customerSource: "interpreted_customer_match" | null;
     customerReason: string | null;
     customerConfidence: number | null;
     contactId: string | null;
+    contactSource: "interpreted_contact_match" | null;
     contactReason: string | null;
     contactConfidence: number | null;
   }> {
@@ -1827,13 +1911,14 @@ export class InboundOrderService {
     if (selectedCustomerId && sourceEmail) {
       addContactSearchResults(
         await this.repository.searchCustomerContacts(organizationId, selectedCustomerId, sourceEmail, 5),
-        97,
+        100,
         "Matched by email.",
       );
     }
-    if (selectedCustomerId && draft.customer.sourceName) {
+    const contactName = draft.customer.sourceName?.trim() || null;
+    if (selectedCustomerId && contactName) {
       addContactSearchResults(
-        await this.repository.searchCustomerContacts(organizationId, selectedCustomerId, draft.customer.sourceName, 5),
+        await this.repository.searchCustomerContacts(organizationId, selectedCustomerId, contactName, 5),
         86,
         "Matched by contact name.",
       );
@@ -1852,9 +1937,11 @@ export class InboundOrderService {
 
     return {
       customerId: selectedCustomerId,
+      customerSource: selectedCustomer ? "interpreted_customer_match" : null,
       customerReason: selectedCustomer ? selectedCustomer.reason : null,
       customerConfidence: selectedCustomer ? selectedCustomer.confidence : null,
       contactId: selectedContact?.id ?? null,
+      contactSource: selectedContact ? "interpreted_contact_match" : null,
       contactReason: selectedContact ? selectedContact.reason : null,
       contactConfidence: selectedContact ? selectedContact.confidence : null,
     };
