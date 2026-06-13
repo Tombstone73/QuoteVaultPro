@@ -2,6 +2,8 @@ import type { LineItemOptionSelectionsV2, OptionNodeV2, OptionTreeV2 } from "./o
 import { buildPbv2DefaultSelections } from "./pbv2OrderEntryRuntime";
 import { normalizeSelectionMap, resolveRuntimeVisibility } from "./optionTreeV2Runtime";
 
+export type InboundOptionOrigin = "DEFAULT" | "AI_INFERRED" | "SOURCE_EVIDENCE" | "USER_SELECTED";
+
 export type InboundPbv2RequiredOption = {
   nodeId: string;
   selectionKey: string;
@@ -16,6 +18,10 @@ export type InboundPbv2OptionSuggestion = {
   value: unknown;
   choiceLabel: string;
   source: "product_default" | "source_evidence" | "deterministic_print_spec_rule" | "customer_history" | "staff_selected";
+  origin: InboundOptionOrigin;
+  evidence: string | null;
+  conflictsWithDefault: boolean;
+  defaultChoiceLabel: string | null;
   confidence: number;
   reason: string;
 };
@@ -135,9 +141,49 @@ function hasDistinctiveTokenMatch(haystack: string, candidate: string): boolean 
     .some((token) => haystack.includes(token));
 }
 
-function deterministicPrintSideFromEvidence(evidenceText: string): "single" | "double" | null {
-  if (/\b(?:4\/0|1\/0)\b/.test(evidenceText)) return "single";
-  if (/\b(?:4\/1|4\/4|1\/1)\b/.test(evidenceText)) return "double";
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function evidenceSpanForPhrase(sourceText: string, phrase: string): string | null {
+  const normalizedPhrase = normalizeForMatch(phrase);
+  if (!normalizedPhrase) return null;
+  const tokens = normalizedPhrase.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return null;
+  const pattern = tokens.map(escapeRegExp).join("[\\s\\-_/]+");
+  const match = sourceText.match(new RegExp(`\\b${pattern}\\b`, "i"));
+  return match?.[0] ?? null;
+}
+
+function choiceEvidencePhrases(choice: unknown): string[] {
+  const rawParts = [choiceLabel(choice), String(choiceValue(choice) ?? "")].filter(Boolean);
+  return Array.from(new Set(rawParts
+    .flatMap((part) => part.split(/[|,()]+/))
+    .map((part) => part.trim())
+    .filter(Boolean)));
+}
+
+function choiceEvidenceMatch(sourceText: string, choice: unknown): string | null {
+  const haystack = normalizeForMatch(sourceText);
+  if (!haystack) return null;
+  for (const phrase of choiceEvidencePhrases(choice)) {
+    const normalizedPhrase = normalizeForMatch(phrase);
+    if (!normalizedPhrase) continue;
+    const tokens = normalizedPhrase.split(/\s+/).filter(Boolean);
+    const meaningful = tokens.length >= 2 || tokens.some((token) => token.includes("/") || /\d/.test(token));
+    if (!meaningful) continue;
+    const matched = haystack.includes(normalizedPhrase) || hasDistinctiveTokenMatch(haystack, normalizedPhrase);
+    if (!matched) continue;
+    return evidenceSpanForPhrase(sourceText, phrase) ?? phrase;
+  }
+  return null;
+}
+
+function deterministicPrintSideFromEvidence(evidenceText: string): { side: "single" | "double"; evidence: string } | null {
+  const single = evidenceText.match(/\b(?:single[\s-]?sided|one[\s-]?sided|1\s*sided|1-sided|4\/0|1\/0)\b/i);
+  if (single) return { side: "single", evidence: single[0] };
+  const double = evidenceText.match(/\b(?:double[\s-]?sided|two[\s-]?sided|2\s*sided|2-sided|4\/1|4\/4|1\/1)\b/i);
+  if (double) return { side: "double", evidence: double[0] };
   return null;
 }
 
@@ -159,9 +205,8 @@ function deterministicPrintSpecSuggestions(
   evidenceText: string,
 ): { selections: LineItemOptionSelectionsV2; suggestions: InboundPbv2OptionSuggestion[] } {
   const selections: LineItemOptionSelectionsV2 = { schemaVersion: 2, selected: {} };
-  const haystack = normalizeForMatch(evidenceText);
-  const side = deterministicPrintSideFromEvidence(haystack);
-  if (!side || !tree || !isRecord(tree.nodes)) return { selections, suggestions: [] };
+  const match = deterministicPrintSideFromEvidence(evidenceText);
+  if (!match || !tree || !isRecord(tree.nodes)) return { selections, suggestions: [] };
 
   const suggestions: InboundPbv2OptionSuggestion[] = [];
   for (const node of Object.values(tree.nodes)) {
@@ -169,12 +214,12 @@ function deterministicPrintSpecSuggestions(
     const inputType = getInputType(node);
     if (inputType !== "select" && inputType !== "radio") continue;
     const choice = (Array.isArray((node as any).choices) ? (node as any).choices : [])
-      .find((candidate: unknown) => choiceMatchesPrintSide(candidate, side));
+      .find((candidate: unknown) => choiceMatchesPrintSide(candidate, match.side));
     if (!choice) continue;
 
     const selectionKey = getPbv2SelectionKey(node);
     const value = choiceValue(choice);
-    selections.selected[selectionKey] = { value, note: "Deterministic print spec rule" };
+    selections.selected[selectionKey] = { value, note: "Source evidence", origin: "SOURCE_EVIDENCE", evidence: match.evidence };
     suggestions.push({
       selectionKey,
       nodeId: node.id,
@@ -182,8 +227,12 @@ function deterministicPrintSpecSuggestions(
       value,
       choiceLabel: choiceLabel(choice),
       source: "deterministic_print_spec_rule",
+      origin: "SOURCE_EVIDENCE",
+      evidence: match.evidence,
+      conflictsWithDefault: false,
+      defaultChoiceLabel: null,
       confidence: 100,
-      reason: `Mapped print notation to ${side === "single" ? "Single Sided" : "Double Sided"}.`,
+      reason: `Mapped "${match.evidence}" to ${match.side === "single" ? "Single Sided" : "Double Sided"}.`,
     });
   }
 
@@ -209,16 +258,10 @@ export function suggestInboundPbv2Options(
     const selectionKey = getPbv2SelectionKey(node);
     for (const choice of choices) {
       const label = choiceLabel(choice);
-      const normalizedLabel = normalizeForMatch(label);
-      const normalizedValue = normalizeForMatch(choiceValue(choice));
-      if (!normalizedLabel && !normalizedValue) continue;
-      const matched = (normalizedLabel && haystack.includes(normalizedLabel))
-        || (normalizedValue && haystack.includes(normalizedValue))
-        || (normalizedLabel && hasDistinctiveTokenMatch(haystack, normalizedLabel))
-        || (normalizedValue && hasDistinctiveTokenMatch(haystack, normalizedValue));
-      if (!matched) continue;
+      const evidence = choiceEvidenceMatch(evidenceText, choice);
+      if (!evidence) continue;
       const value = choiceValue(choice);
-      selections.selected[selectionKey] = { value, note: "Suggested from inbound source evidence." };
+      selections.selected[selectionKey] = { value, note: "Source evidence", origin: "SOURCE_EVIDENCE", evidence };
       suggestions.push({
         selectionKey,
         nodeId: node.id,
@@ -226,8 +269,12 @@ export function suggestInboundPbv2Options(
         value,
         choiceLabel: label,
         source: "source_evidence",
+        origin: "SOURCE_EVIDENCE",
+        evidence,
+        conflictsWithDefault: false,
+        defaultChoiceLabel: null,
         confidence: 80,
-        reason: `Matched "${label}" in source evidence.`,
+        reason: `Matched "${evidence}" in source evidence.`,
       });
       break;
     }
@@ -237,7 +284,10 @@ export function suggestInboundPbv2Options(
     selections: {
       ...selections,
       selected: Object.fromEntries(
-        Object.entries(normalizeSelectionMap(selections)).map(([key, value]) => [key, { value }]),
+        Object.entries(normalizeSelectionMap(selections)).map(([key, value]) => {
+          const entry = selections.selected[key];
+          return [key, { value, note: entry?.note, origin: entry?.origin, evidence: entry?.evidence ?? null }];
+        }),
       ),
     },
     suggestions,
@@ -270,6 +320,8 @@ export function hydrateInboundPbv2Selections(
       const entry = defaultSelections.selected[selectionKey];
       if (!entry || entry.value === undefined || entry.value === null || String(entry.value).trim() === "") continue;
       entry.note = "Default";
+      entry.origin = "DEFAULT";
+      entry.evidence = null;
       defaultSuggestions.push({
         selectionKey,
         nodeId: node.id,
@@ -277,6 +329,10 @@ export function hydrateInboundPbv2Selections(
         value: entry.value,
         choiceLabel: getChoiceLabelForValue(node, entry.value),
         source: "product_default",
+        origin: "DEFAULT",
+        evidence: null,
+        conflictsWithDefault: false,
+        defaultChoiceLabel: null,
         confidence: 100,
         reason: "Applied product default.",
       });
@@ -285,25 +341,38 @@ export function hydrateInboundPbv2Selections(
 
   const evidence = suggestInboundPbv2Options(tree, evidenceText);
   const deterministic = deterministicPrintSpecSuggestions(tree, evidenceText);
+  const defaultChoiceLabels = new Map(defaultSuggestions.map((suggestion) => [suggestion.selectionKey, suggestion.choiceLabel]));
   const selected = {
     ...defaultSelections.selected,
     ...Object.fromEntries(
       Object.entries(evidence.selections.selected).map(([key, entry]) => [
         key,
-        { ...entry, note: "Suggested from PO" },
+        { ...entry, note: "Source evidence" },
       ]),
     ),
     ...deterministic.selections.selected,
   };
   const evidenceKeys = new Set(Object.keys(evidence.selections.selected));
   const deterministicKeys = new Set(Object.keys(deterministic.selections.selected));
+  const evidenceSuggestions = evidence.suggestions.map((suggestion) => ({
+    ...suggestion,
+    conflictsWithDefault: defaultChoiceLabels.has(suggestion.selectionKey)
+      && defaultChoiceLabels.get(suggestion.selectionKey) !== suggestion.choiceLabel,
+    defaultChoiceLabel: defaultChoiceLabels.get(suggestion.selectionKey) ?? null,
+  }));
+  const deterministicSuggestions = deterministic.suggestions.map((suggestion) => ({
+    ...suggestion,
+    conflictsWithDefault: defaultChoiceLabels.has(suggestion.selectionKey)
+      && defaultChoiceLabels.get(suggestion.selectionKey) !== suggestion.choiceLabel,
+    defaultChoiceLabel: defaultChoiceLabels.get(suggestion.selectionKey) ?? null,
+  }));
 
   return {
     selections: { schemaVersion: 2, selected },
     suggestions: [
       ...defaultSuggestions.filter((suggestion) => !evidenceKeys.has(suggestion.selectionKey) && !deterministicKeys.has(suggestion.selectionKey)),
-      ...evidence.suggestions.filter((suggestion) => !deterministicKeys.has(suggestion.selectionKey)),
-      ...deterministic.suggestions,
+      ...evidenceSuggestions.filter((suggestion) => !deterministicKeys.has(suggestion.selectionKey)),
+      ...deterministicSuggestions,
     ],
   };
 }

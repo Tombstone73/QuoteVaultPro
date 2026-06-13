@@ -1302,7 +1302,11 @@ function ensurePbv2Selections(value: unknown): LineItemOptionSelectionsV2 {
   return { schemaVersion: 2, selected: {} };
 }
 
-function selectionSourceLabel(source: string | null | undefined, note: string | null | undefined): string {
+function selectionSourceLabel(source: string | null | undefined, note: string | null | undefined, origin?: string | null): string {
+  if (origin === "DEFAULT") return "Default";
+  if (origin === "SOURCE_EVIDENCE") return "Source evidence";
+  if (origin === "AI_INFERRED") return "AI inferred";
+  if (origin === "USER_SELECTED") return "Staff selected";
   if (source === "product_default" || note === "Default") return "Default";
   if (source === "deterministic_print_spec_rule" || note === "Deterministic print spec rule") return "Print rule";
   if (source === "source_evidence" || note === "Suggested from PO" || note === "Suggested from inbound source evidence.") return "Suggested from PO";
@@ -1326,7 +1330,7 @@ function markChangedPbv2SelectionsAsStaffSelected(
     selected: Object.fromEntries(Object.entries(next.selected ?? {}).map(([key, entry]) => {
       const previousValue = previous.selected?.[key]?.value;
       const changed = JSON.stringify(previousValue ?? null) !== JSON.stringify(entry?.value ?? null);
-      return [key, changed ? { ...entry, note: "Staff selected" } : entry];
+      return [key, changed ? { ...entry, note: "Staff selected", origin: "USER_SELECTED", evidence: null } : entry];
     })),
   };
 }
@@ -1381,8 +1385,12 @@ function ReviewLineItemProductOptions({
         <div className="space-y-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-200">
           {config.suggestions.map((suggestion) => (
             <div key={`${suggestion.selectionKey}-${String(suggestion.value)}`} className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline">{selectionSourceLabel(suggestion.source, null)}</Badge>
+              <Badge variant="outline">{selectionSourceLabel(suggestion.source, null, suggestion.origin)}</Badge>
               <span>{suggestion.label}: {suggestion.choiceLabel}</span>
+              {suggestion.evidence && <span className="text-blue-100/80">Evidence: "{suggestion.evidence}"</span>}
+              {suggestion.conflictsWithDefault && suggestion.defaultChoiceLabel && (
+                <span className="text-amber-200">Default was {suggestion.defaultChoiceLabel}</span>
+              )}
             </div>
           ))}
         </div>
@@ -1407,7 +1415,10 @@ function ReviewLineItemProductOptions({
       {Object.entries(selections.selected ?? {}).length > 0 && (
         <div className="flex flex-wrap gap-2 text-xs">
           {Object.entries(selections.selected).map(([key, entry]) => (
-            <Badge key={key} variant="secondary">{key}: {selectionSourceLabel(null, entry?.note)}</Badge>
+            <Badge key={key} variant="secondary">
+              {key}: {selectionSourceLabel(null, entry?.note, entry?.origin)}
+              {entry?.evidence ? ` - "${entry.evidence}"` : ""}
+            </Badge>
           ))}
         </div>
       )}
@@ -1669,13 +1680,13 @@ function DraftBuilderPanel({
         <section className="rounded-md border border-border p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-foreground">Review Readiness</h3>
-            <Badge variant="secondary">{reviewDraft.readinessScore.overall}% overall</Badge>
+            <Badge variant="secondary">{reviewDraft.interpretationConfidence.overall}% overall confidence</Badge>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
             <span>Customer {reviewDraft.readinessScore.customer}%</span>
             <span>Contact {reviewDraft.readinessScore.contact}%</span>
-            <span>Product {reviewDraft.readinessScore.product}%</span>
-            <span>Options {reviewDraft.readinessScore.options}%</span>
+            <span>Product Confidence {reviewDraft.interpretationConfidence.product}%</span>
+            <span>Option Confidence {reviewDraft.interpretationConfidence.options}%</span>
             <span>Artwork {reviewDraft.readinessScore.artwork.label}</span>
           </div>
         </section>

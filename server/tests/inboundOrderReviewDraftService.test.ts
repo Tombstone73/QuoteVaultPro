@@ -492,13 +492,13 @@ describe("InboundOrderService editable review draft", () => {
     expect(draft.reviewedLineItemsJson[0].optionSelectionsJson).toMatchObject({
       schemaVersion: 2,
       selected: {
-        sides: { value: "single", note: "Deterministic print spec rule" },
-        contour_cutting: { value: "none", note: "Default" },
+        sides: { value: "single", note: "Source evidence", origin: "SOURCE_EVIDENCE", evidence: "4/0" },
+        contour_cutting: { value: "none", note: "Default", origin: "DEFAULT" },
       },
     });
     expect(draft.reviewedLineItemsJson[0].pbv2OptionSuggestions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ selectionKey: "contour_cutting", source: "product_default" }),
-      expect.objectContaining({ selectionKey: "sides", source: "deterministic_print_spec_rule", confidence: 100 }),
+      expect.objectContaining({ selectionKey: "contour_cutting", source: "product_default", origin: "DEFAULT", evidence: null }),
+      expect.objectContaining({ selectionKey: "sides", source: "deterministic_print_spec_rule", origin: "SOURCE_EVIDENCE", evidence: "4/0", confidence: 100 }),
     ]));
     expect(draft.readinessScore).toMatchObject({
       customer: 100,
@@ -608,14 +608,65 @@ describe("InboundOrderService editable review draft", () => {
 
     expect(hydrated.selections.selected.sides).toMatchObject({
       value: expectedValue,
-      note: "Deterministic print spec rule",
+      note: "Source evidence",
+      origin: "SOURCE_EVIDENCE",
+      evidence: _notation,
     });
     expect(hydrated.suggestions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         selectionKey: "sides",
         source: "deterministic_print_spec_rule",
+        origin: "SOURCE_EVIDENCE",
+        evidence: _notation,
         confidence: 100,
       }),
+    ]));
+  });
+
+  test("source evidence single sided overrides a double-sided product default", () => {
+    const tree = requiredPbv2Tree();
+    (tree.nodes.sides.input as any).defaultValue = "double";
+
+    const hydrated = hydrateInboundPbv2Selections(tree as any, "PVC Signs 24x36 single sided");
+
+    expect(hydrated.selections.selected.sides).toMatchObject({
+      value: "single",
+      origin: "SOURCE_EVIDENCE",
+      evidence: "single sided",
+    });
+    expect(hydrated.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        selectionKey: "sides",
+        choiceLabel: "Single Sided / 4/0",
+        origin: "SOURCE_EVIDENCE",
+        evidence: "single sided",
+        conflictsWithDefault: true,
+        defaultChoiceLabel: "Double Sided",
+      }),
+    ]));
+    expect(hydrated.suggestions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ selectionKey: "sides", source: "product_default" }),
+    ]));
+  });
+
+  test("does not label unmatched defaults as source evidence", () => {
+    const hydrated = hydrateInboundPbv2Selections(requiredPbv2Tree() as any, "PVC Signs 24x36 single sided");
+
+    expect(hydrated.selections.selected.contour_cutting).toMatchObject({
+      value: "none",
+      origin: "DEFAULT",
+      evidence: null,
+    });
+    expect(hydrated.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        selectionKey: "contour_cutting",
+        source: "product_default",
+        origin: "DEFAULT",
+        evidence: null,
+      }),
+    ]));
+    expect(hydrated.suggestions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ selectionKey: "contour_cutting", origin: "SOURCE_EVIDENCE" }),
     ]));
   });
 

@@ -367,6 +367,11 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
       options: 90,
       artwork: { score: 60, status: "missing", label: "Missing" },
     },
+    interpretationConfidence: {
+      overall: 92,
+      product: 95,
+      options: 90,
+    },
     hasNewerParse: false,
     createdAt: "2026-06-09T12:02:00.000Z",
     updatedAt: "2026-06-09T12:02:00.000Z",
@@ -428,7 +433,7 @@ function pbv2OptionsResponse(overrides: Record<string, any> = {}) {
       suggestedSelections: {
         schemaVersion: 2,
         selected: {
-          thickness: { value: "3mm_white", note: "Suggested from inbound source evidence." },
+          thickness: { value: "3mm_white", note: "Source evidence", origin: "SOURCE_EVIDENCE", evidence: "3mm White PVC" },
         },
       },
       suggestions: [{
@@ -438,6 +443,10 @@ function pbv2OptionsResponse(overrides: Record<string, any> = {}) {
         value: "3mm_white",
         choiceLabel: "3mm White PVC",
         source: "source_evidence",
+        origin: "SOURCE_EVIDENCE",
+        evidence: "3mm White PVC",
+        conflictsWithDefault: false,
+        defaultChoiceLabel: null,
         confidence: 80,
         reason: "Matched source evidence.",
       }],
@@ -1195,7 +1204,9 @@ describe("InboundOrdersPage", () => {
 
     await waitForText("Phase 4: Create draft order from reviewed inbound record.");
     expect(container.textContent).toContain("Review Readiness");
-    expect(container.textContent).toContain("92% overall");
+    expect(container.textContent).toContain("92% overall confidence");
+    expect(container.textContent).toContain("Product Confidence 95%");
+    expect(container.textContent).toContain("Option Confidence 90%");
     expect(container.textContent).toContain("Customer 100%");
     expect(container.textContent).toContain("Contact 100%");
     expect(container.textContent).toContain("Brainstorm Print PO.pdf");
@@ -1389,7 +1400,8 @@ describe("InboundOrdersPage", () => {
 
     renderPage();
     await waitForText("Product options");
-    await waitForText("Suggested from PO");
+    await waitForText("Source evidence");
+    await waitForText("Evidence: \"3mm White PVC\"");
     await waitForText("Missing required options: Sides");
 
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) => (
@@ -1403,7 +1415,7 @@ describe("InboundOrdersPage", () => {
     expect(savedBody.reviewedLineItemsJson[0].optionSelectionsJson).toMatchObject({
       schemaVersion: 2,
       selected: {
-        thickness: { value: "3mm_white" },
+        thickness: { value: "3mm_white", origin: "SOURCE_EVIDENCE", evidence: "3mm White PVC" },
       },
     });
     expect(savedBody.reviewedLineItemsJson[0].pbv2TreeVersionId).toBe("tree_1");

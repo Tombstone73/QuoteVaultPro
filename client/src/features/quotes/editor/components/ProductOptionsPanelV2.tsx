@@ -79,7 +79,12 @@ function toSelectionRecord(selected: Record<string, unknown>, prior: LineItemOpt
   for (const [selectionKey, value] of Object.entries(selected)) {
     if (value === undefined) continue;
     const priorEntry = prior?.[selectionKey];
-    next[selectionKey] = priorEntry?.note ? { value, note: priorEntry.note } : { value };
+    next[selectionKey] = {
+      value,
+      ...(priorEntry?.note ? { note: priorEntry.note } : {}),
+      ...(priorEntry?.origin ? { origin: priorEntry.origin } : {}),
+      ...(priorEntry && Object.prototype.hasOwnProperty.call(priorEntry, "evidence") ? { evidence: priorEntry.evidence ?? null } : {}),
+    };
   }
   return next;
 }

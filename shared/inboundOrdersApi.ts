@@ -238,6 +238,8 @@ export const inboundOrderReviewedLineItemSchema = z.object({
     selected: z.record(z.object({
       value: z.unknown(),
       note: z.string().trim().max(1000).optional(),
+      origin: z.enum(["DEFAULT", "AI_INFERRED", "SOURCE_EVIDENCE", "USER_SELECTED"]).optional(),
+      evidence: z.string().trim().max(1000).nullable().optional(),
     })).default({}),
     resolved: z.record(z.unknown()).optional(),
   }).nullable().default(null),
@@ -249,6 +251,10 @@ export const inboundOrderReviewedLineItemSchema = z.object({
     value: z.unknown(),
     choiceLabel: z.string().trim().min(1),
     source: z.enum(["product_default", "source_evidence", "deterministic_print_spec_rule", "customer_history", "staff_selected"]).default("source_evidence"),
+    origin: z.enum(["DEFAULT", "AI_INFERRED", "SOURCE_EVIDENCE", "USER_SELECTED"]).default("SOURCE_EVIDENCE"),
+    evidence: z.string().trim().max(1000).nullable().default(null),
+    conflictsWithDefault: z.boolean().default(false),
+    defaultChoiceLabel: z.string().trim().max(255).nullable().default(null),
     confidence: z.number().min(0).max(100),
     reason: z.string().trim().min(1).max(1000),
   })).default([]),
@@ -314,6 +320,12 @@ export type InboundOrderReviewReadinessScore = {
   };
 };
 
+export type InboundOrderInterpretationConfidence = {
+  product: number;
+  options: number;
+  overall: number;
+};
+
 export type InboundOrderReviewDraftDto = InboundOrderReviewDraftPayload & {
   id: string | null;
   snapshotId: string | null;
@@ -332,6 +344,7 @@ export type InboundOrderReviewDraftDto = InboundOrderReviewDraftPayload & {
   updatedAt: string | null;
   validationErrors: string[];
   readinessScore: InboundOrderReviewReadinessScore;
+  interpretationConfidence: InboundOrderInterpretationConfidence;
 };
 
 export type InboundOrderParseAttemptStatus = z.infer<typeof inboundOrderParseAttemptStatusSchema>;
