@@ -2068,6 +2068,7 @@ export class InboundOrderService {
     const latestParseAttemptCreatedAt = formatInboundDate(latestAttempt?.createdAt);
     const sourceDate = sourceParseAttemptCreatedAt ? new Date(sourceParseAttemptCreatedAt) : null;
     const latestDate = latestParseAttemptCreatedAt ? new Date(latestParseAttemptCreatedAt) : null;
+    const readinessScore = this.calculateReviewReadinessScore(payload);
     const hasNewerParse = Boolean(
       latestAttempt?.id
       && sourceParseAttemptId
@@ -2094,7 +2095,12 @@ export class InboundOrderService {
       createdAt: formatInboundDate(snapshot.createdAt),
       updatedAt: formatInboundDate(snapshot.createdAt),
       validationErrors: this.validateReviewDraftReady(payload),
-      readinessScore: this.calculateReviewReadinessScore(payload),
+      readinessScore,
+      interpretationConfidence: {
+        product: readinessScore.product,
+        options: readinessScore.options,
+        overall: readinessScore.overall,
+      },
     };
   }
 

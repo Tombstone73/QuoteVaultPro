@@ -423,7 +423,7 @@ export type OptionTreeV2 = {
 
 export type LineItemOptionSelectionsV2 = {
   schemaVersion: 2;
-  selected: Record<string, { value?: any; note?: string }>;
+  selected: Record<string, { value?: any; note?: string; origin?: "DEFAULT" | "AI_INFERRED" | "SOURCE_EVIDENCE" | "USER_SELECTED"; evidence?: string | null }>;
   resolved?: {
     visibleNodeIds?: string[];
     pathTags?: string[];
@@ -841,7 +841,12 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
 
 export const lineItemOptionSelectionsV2Schema: z.ZodType<LineItemOptionSelectionsV2> = z.object({
   schemaVersion: z.literal(2),
-  selected: z.record(z.object({ value: z.any(), note: z.string().optional() })),
+  selected: z.record(z.object({
+    value: z.any(),
+    note: z.string().optional(),
+    origin: z.enum(["DEFAULT", "AI_INFERRED", "SOURCE_EVIDENCE", "USER_SELECTED"]).optional(),
+    evidence: z.string().nullable().optional(),
+  })),
   resolved: z
     .object({
       visibleNodeIds: z.array(z.string()).optional(),

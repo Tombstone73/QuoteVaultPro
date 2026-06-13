@@ -252,6 +252,11 @@ function reviewDraft(overrides: Record<string, any> = {}) {
       options: 90,
       artwork: { score: 60, status: "missing", label: "Missing" },
     },
+    interpretationConfidence: {
+      overall: 92,
+      product: 95,
+      options: 90,
+    },
     ...overrides,
   };
 }
