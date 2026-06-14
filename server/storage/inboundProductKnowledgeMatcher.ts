@@ -38,7 +38,9 @@ export type ProductKnowledgeMatch = {
       materialScore: number;
       materialAiParsingScore: number;
       metadataScore: number;
+      positiveEvidenceBoost: number;
       accessoryPenalty: number;
+      negativeEvidencePenalty: number;
       combinedConfidence: number;
     };
   };
@@ -63,6 +65,22 @@ const STOP_WORDS = new Set([
   "the",
   "to",
   "with",
+]);
+
+const GENERIC_RANKING_TERMS = new Set([
+  "board",
+  "boards",
+  "display",
+  "displays",
+  "graphic",
+  "graphics",
+  "print",
+  "printed",
+  "quote",
+  "quotes",
+  "sign",
+  "signage",
+  "signs",
 ]);
 
 const SEMANTIC_EXPANSIONS: Array<{ patterns: RegExp[]; terms: string[]; label: string }> = [
@@ -110,6 +128,16 @@ function tokens(value: string): string[] {
   return unique(value.split(/\s+/).filter((token) => token.length > 2 && !STOP_WORDS.has(token)));
 }
 
+function isGenericRankingTerm(value: string): boolean {
+  return GENERIC_RANKING_TERMS.has(normalize(value));
+}
+
+function phraseSpecificity(phrase: string): "generic" | "specific" {
+  const phraseTokens = normalize(phrase).split(/\s+/).filter(Boolean);
+  if (phraseTokens.length === 0) return "generic";
+  return phraseTokens.every((token) => isGenericRankingTerm(token)) ? "generic" : "specific";
+}
+
 function scoreField(field: string, phrases: string[], queryTokens: string[]): { score: number; reasons: string[] } {
   const normalizedField = normalize(field);
   if (!normalizedField) return { score: 0, reasons: [] };
@@ -118,19 +146,121 @@ function scoreField(field: string, phrases: string[], queryTokens: string[]): { 
   const reasons: string[] = [];
   for (const phrase of phrases) {
     if (phrase.length > 2 && normalizedField.includes(phrase)) {
-      score = Math.max(score, phrase.includes(" ") ? 92 : 72);
+      const specificity = phraseSpecificity(phrase);
+      score = Math.max(score, specificity === "specific" ? (phrase.includes(" ") ? 92 : 72) : 24);
       reasons.push(`matched "${phrase}"`);
     }
   }
 
-  const matchedTokens = queryTokens.filter((token) => normalizedField.includes(token));
-  if (matchedTokens.length > 0) {
-    const ratio = matchedTokens.length / Math.max(1, queryTokens.length);
+  const specificQueryTokens = queryTokens.filter((token) => !isGenericRankingTerm(token));
+  const matchedSpecificTokens = specificQueryTokens.filter((token) => normalizedField.includes(token));
+  if (matchedSpecificTokens.length > 0) {
+    const ratio = matchedSpecificTokens.length / Math.max(1, specificQueryTokens.length);
     score = Math.max(score, Math.round(45 + ratio * 40));
-    reasons.push(`matched ${matchedTokens.slice(0, 4).map((token) => `"${token}"`).join(", ")}`);
+    reasons.push(`matched ${matchedSpecificTokens.slice(0, 4).map((token) => `"${token}"`).join(", ")}`);
+  }
+
+  const matchedGenericTokens = queryTokens
+    .filter((token) => isGenericRankingTerm(token) && normalizedField.includes(token));
+  if (matchedGenericTokens.length > 0) {
+    score = Math.max(score, Math.min(28, 12 + matchedGenericTokens.length * 4));
+    reasons.push(`matched generic ${matchedGenericTokens.slice(0, 4).map((token) => `"${token}"`).join(", ")}`);
   }
 
   return { score: Math.min(100, score), reasons: Array.from(new Set(reasons)) };
+}
+
+type NegativeEvidenceResult = {
+  penalty: number;
+  cap: number;
+  reasons: string[];
+};
+
+const MATERIAL_SEPARATION_RULES: Array<{
+  key: string;
+  evidence: RegExp;
+  strictEvidence?: RegExp;
+  compatible: RegExp;
+  conflicts: Array<{ label: string; pattern: RegExp; penalty: number; cap: number; strictCap?: number; strictPenalty?: number }>;
+}> = [
+  {
+    key: "ACM/aluminum",
+    evidence: /\b(acm|aluminum|aluminium|dibond|di\s*bond|polymetal|poly\s*metal|max\s*metal|maxmetal|aluminum\s+composite)\b/i,
+    strictEvidence: /\b(acm|dibond|di\s*bond|polymetal|poly\s*metal|max\s*metal|maxmetal|aluminum\s+composite)\b/i,
+    compatible: /\b(acm|aluminum|aluminium|dibond|di\s*bond|polymetal|poly\s*metal|max\s*metal|maxmetal|aluminum\s+composite)\b/i,
+    conflicts: [
+      { label: "PVC", pattern: /\b(pvc|sintra|expanded\s+pvc|palight|foam\s*pvc)\b/i, penalty: 58, cap: 35, strictPenalty: 75, strictCap: 15 },
+      { label: "vinyl", pattern: /\b(vinyl|decal|sticker|adhesive)\b/i, penalty: 70, cap: 20, strictPenalty: 88, strictCap: 5 },
+      { label: "foam board", pattern: /\b(foam\s*board|gator\s*board|ultra\s*board)\b/i, penalty: 52, cap: 35, strictPenalty: 68, strictCap: 20 },
+      { label: "coroplast", pattern: /\b(coroplast|corrugated\s+plastic|coro)\b/i, penalty: 58, cap: 30, strictPenalty: 72, strictCap: 15 },
+      { label: "accessory hardware", pattern: /\b(stake|stakes|hardware|accessor(?:y|ies))\b/i, penalty: 72, cap: 10, strictPenalty: 82, strictCap: 5 },
+    ],
+  },
+  {
+    key: "PVC/Sintra",
+    evidence: /\b(pvc|sintra|expanded\s+pvc|palight|foam\s*pvc)\b/i,
+    strictEvidence: /\b(sintra|expanded\s+pvc|palight|foam\s*pvc)\b/i,
+    compatible: /\b(pvc|sintra|expanded\s+pvc|palight|foam\s*pvc)\b/i,
+    conflicts: [
+      { label: "ACM/aluminum", pattern: /\b(acm|aluminum|aluminium|dibond|di\s*bond|polymetal|poly\s*metal|max\s*metal|maxmetal|aluminum\s+composite)\b/i, penalty: 70, cap: 25, strictPenalty: 76, strictCap: 20 },
+      { label: "vinyl", pattern: /\b(vinyl|decal|sticker|adhesive)\b/i, penalty: 78, cap: 15, strictPenalty: 84, strictCap: 10 },
+      { label: "foam board", pattern: /\b(foam\s*board|gator\s*board|ultra\s*board)\b/i, penalty: 42, cap: 45, strictPenalty: 52, strictCap: 40 },
+      { label: "coroplast", pattern: /\b(coroplast|corrugated\s+plastic|coro)\b/i, penalty: 54, cap: 35, strictPenalty: 62, strictCap: 30 },
+      { label: "accessory hardware", pattern: /\b(stake|stakes|hardware|accessor(?:y|ies))\b/i, penalty: 74, cap: 10, strictPenalty: 82, strictCap: 5 },
+    ],
+  },
+  {
+    key: "foam board",
+    evidence: /\b(foam\s*board|gator\s*board|ultra\s*board)\b/i,
+    compatible: /\b(foam\s*board|gator\s*board|ultra\s*board)\b/i,
+    conflicts: [
+      { label: "ACM/aluminum", pattern: /\b(acm|aluminum|aluminium|dibond|di\s*bond|polymetal|poly\s*metal|max\s*metal|maxmetal|aluminum\s+composite)\b/i, penalty: 58, cap: 35 },
+      { label: "PVC", pattern: /\b(pvc|sintra|expanded\s+pvc|palight|foam\s*pvc)\b/i, penalty: 44, cap: 45 },
+      { label: "vinyl", pattern: /\b(vinyl|decal|sticker|adhesive)\b/i, penalty: 70, cap: 20 },
+    ],
+  },
+  {
+    key: "coroplast",
+    evidence: /\b(coroplast|corrugated\s+plastic|coro|yard\s+signs?|lawn\s+signs?)\b/i,
+    compatible: /\b(coroplast|corrugated\s+plastic|coro|yard\s+signs?|lawn\s+signs?)\b/i,
+    conflicts: [
+      { label: "ACM/aluminum", pattern: /\b(acm|aluminum|aluminium|dibond|di\s*bond|polymetal|poly\s*metal|max\s*metal|maxmetal|aluminum\s+composite)\b/i, penalty: 58, cap: 35 },
+      { label: "PVC", pattern: /\b(pvc|sintra|expanded\s+pvc|palight|foam\s*pvc)\b/i, penalty: 48, cap: 40 },
+      { label: "vinyl", pattern: /\b(vinyl|decal|sticker|adhesive)\b/i, penalty: 68, cap: 20 },
+    ],
+  },
+];
+
+function negativeEvidencePenalty(source: string, candidateText: string, candidateIdentityText: string): NegativeEvidenceResult {
+  const reasons: string[] = [];
+  let penalty = 0;
+  let cap = 100;
+
+  for (const rule of MATERIAL_SEPARATION_RULES) {
+    if (!rule.evidence.test(source)) continue;
+    if (rule.compatible.test(candidateIdentityText)) continue;
+    const strict = rule.strictEvidence?.test(source) ?? false;
+    for (const conflict of rule.conflicts) {
+      if (!conflict.pattern.test(candidateText)) continue;
+      const nextPenalty = strict ? conflict.strictPenalty ?? conflict.penalty : conflict.penalty;
+      const nextCap = strict ? conflict.strictCap ?? conflict.cap : conflict.cap;
+      penalty = Math.max(penalty, nextPenalty);
+      cap = Math.min(cap, nextCap);
+      reasons.push(`penalized ${conflict.label} because source evidence indicates ${rule.key}`);
+    }
+  }
+
+  return { penalty, cap, reasons };
+}
+
+function positiveEvidenceBoost(source: string, candidateIdentityText: string): number {
+  let boost = 0;
+  for (const rule of MATERIAL_SEPARATION_RULES) {
+    if (!rule.evidence.test(source) || !rule.compatible.test(candidateIdentityText)) continue;
+    const strict = rule.strictEvidence?.test(source) ?? false;
+    boost = Math.max(boost, strict ? 98 : 94);
+  }
+  return boost;
 }
 
 function priorityWeightedConfidence(args: {
@@ -140,15 +270,18 @@ function priorityWeightedConfidence(args: {
   categoryScore: number;
   descriptionScore: number;
   metadataScore: number;
+  positiveEvidenceBoost: number;
   accessoryPenalty: number;
+  negativeEvidencePenalty: number;
+  negativeEvidenceCap: number;
 }): number {
   const weighted = Math.round(
-    args.nameScore * 0.34
-    + args.aiParsingScore * 0.28
-    + args.categoryScore * 0.14
-    + args.materialScore * 0.12
+    args.nameScore * 0.22
+    + args.aiParsingScore * 0.30
+    + args.materialScore * 0.22
+    + args.categoryScore * 0.12
     + args.metadataScore * 0.08
-    + args.descriptionScore * 0.04,
+    + args.descriptionScore * 0.06,
   );
   const priorityFloor = Math.max(
     args.nameScore >= 90 ? 98 : 0,
@@ -163,8 +296,10 @@ function priorityWeightedConfidence(args: {
     args.metadataScore >= 72 ? 58 : 0,
     args.descriptionScore >= 90 ? 54 : 0,
     args.descriptionScore >= 72 ? 46 : 0,
+    args.positiveEvidenceBoost,
   );
-  return Math.max(0, Math.min(100, Math.max(weighted, priorityFloor) - args.accessoryPenalty));
+  const penalized = Math.max(weighted, priorityFloor) - args.accessoryPenalty - args.negativeEvidencePenalty;
+  return Math.max(0, Math.min(100, args.negativeEvidenceCap, penalized));
 }
 
 export function resolveAiParsingDescription(args: {
@@ -215,9 +350,28 @@ export function scoreProductKnowledgeCandidates(
   ].filter(Boolean).join(" ");
   const phrases = buildProductKnowledgeSearchTerms(input);
   const queryTokens = tokens(source);
+  const normalizedSource = normalize(source);
 
   return candidates
     .map((candidate) => {
+      const candidateText = normalize([
+        candidate.name,
+        candidate.aiParsingDescription,
+        candidate.description,
+        candidate.category,
+        candidate.materialName,
+        candidate.materialCategory,
+        candidate.materialAiParsingDescription,
+        candidate.metadataText,
+      ].filter(Boolean).join(" "));
+      const candidateIdentityText = normalize([
+        candidate.name,
+        candidate.aiParsingDescription,
+        candidate.materialName,
+        candidate.materialCategory,
+        candidate.materialAiParsingDescription,
+        candidate.metadataText,
+      ].filter(Boolean).join(" "));
       const name = scoreField(candidate.name, phrases, queryTokens);
       const aiParsing = scoreField(candidate.aiParsingDescription ?? "", phrases, queryTokens);
       const description = scoreField(candidate.description ?? "", phrases, queryTokens);
@@ -230,6 +384,8 @@ export function scoreProductKnowledgeCandidates(
         || /\b(accessor(?:y|ies)|hardware|stake|stakes|grommet|fee|setup|install|installation|design)\b/i.test(`${candidate.name} ${candidate.category ?? ""}`)
         ? 18
         : 0;
+      const negativeEvidence = negativeEvidencePenalty(normalizedSource, candidateText, candidateIdentityText);
+      const positiveBoost = positiveEvidenceBoost(normalizedSource, candidateIdentityText);
       const combinedConfidence = priorityWeightedConfidence({
         nameScore: name.score,
         aiParsingScore,
@@ -237,7 +393,10 @@ export function scoreProductKnowledgeCandidates(
         categoryScore: category.score,
         descriptionScore: description.score,
         metadataScore: metadata.score,
+        positiveEvidenceBoost: positiveBoost,
         accessoryPenalty,
+        negativeEvidencePenalty: negativeEvidence.penalty,
+        negativeEvidenceCap: negativeEvidence.cap,
       });
       const reasons = [
         ...name.reasons.map((reason) => `name ${reason}`),
@@ -247,6 +406,7 @@ export function scoreProductKnowledgeCandidates(
         ...materialAiParsing.reasons.map((reason) => `material AI parsing description ${reason}`),
         ...metadata.reasons.map((reason) => `metadata ${reason}`),
         ...description.reasons.map((reason) => `customer-facing description ${reason}`),
+        ...negativeEvidence.reasons,
       ];
 
       return {
@@ -268,7 +428,9 @@ export function scoreProductKnowledgeCandidates(
             materialScore: material.score,
             materialAiParsingScore: materialAiParsing.score,
             metadataScore: metadata.score,
+            positiveEvidenceBoost: positiveBoost,
             accessoryPenalty,
+            negativeEvidencePenalty: negativeEvidence.penalty,
             combinedConfidence,
           },
         },
