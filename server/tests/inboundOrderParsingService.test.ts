@@ -773,9 +773,10 @@ describe("InboundOrderParsingService", () => {
       5,
     );
 
+    const byId = Object.fromEntries(matches.map((match) => [match.id, match]));
     expect(matches[0].id).toBe("pvc");
-    expect(matches[0].metadata.matchBreakdown.materialScore).toBeGreaterThan(matches[1].metadata.matchBreakdown.materialScore);
-    expect(matches[0].metadata.matchBreakdown.combinedConfidence).toBeGreaterThan(matches[1].metadata.matchBreakdown.combinedConfidence);
+    expect(matches[0].metadata.matchBreakdown.materialScore).toBeGreaterThan(byId.acm?.metadata.matchBreakdown.materialScore ?? 0);
+    expect(matches[0].metadata.matchBreakdown.combinedConfidence).toBeGreaterThan(byId.acm?.metadata.matchBreakdown.combinedConfidence ?? 0);
     expect(matches[0].metadata.matchBreakdown.keywordScore).toBeDefined();
   });
 
@@ -809,9 +810,10 @@ describe("InboundOrderParsingService", () => {
       5,
     );
 
+    const byId = Object.fromEntries(matches.map((match) => [match.id, match]));
     expect(matches[0].id).toBe("pvc");
     expect(matches[0].metadata.matchBreakdown.aiParsingScore).toBeGreaterThan(0);
-    expect(matches[0].metadata.matchBreakdown.aiParsingScore).toBeGreaterThanOrEqual(matches[1].metadata.matchBreakdown.descriptionScore);
+    expect(matches[0].metadata.matchBreakdown.aiParsingScore).toBeGreaterThanOrEqual(byId.acm?.metadata.matchBreakdown.descriptionScore ?? 0);
     expect(matches[0].metadata.matchReasons.join(" ")).toContain("AI parsing description");
   });
 
@@ -859,5 +861,178 @@ describe("InboundOrderParsingService", () => {
 
     expect(matches[0].id).toBe("printable_pvc");
     expect(matches[0].metadata.matchBreakdown.materialScore).toBeGreaterThan(0);
+  });
+
+  test("candidate separation penalizes incompatible products when aluminum evidence is strong", () => {
+    const matches = scoreProductKnowledgeCandidates(
+      {
+        sourceText: "Please quote 3 aluminum signs, 24x36, printed single sided.",
+        productName: "Aluminum Signs",
+        materialText: "aluminum",
+      },
+      [
+        {
+          id: "acm",
+          name: "ACM / Dibond / Max Metal",
+          description: "Rigid aluminum composite sign panels for outdoor business signs and displays.",
+          aiParsingDescription: "Use for aluminum signs, ACM, Dibond, polymetal, MaxMetal, and metal faced sign panels.",
+          category: "Rigid Signs",
+          materialName: "Aluminum Composite Material",
+          materialCategory: "ACM",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "sign_vinyl",
+          name: "Sign Vinyl",
+          description: "Printed adhesive vinyl graphics for signs, windows, and decals.",
+          aiParsingDescription: "Use for vinyl decals, adhesive sign vinyl, stickers, and window graphics.",
+          category: "Vinyl Graphics",
+          materialName: "Adhesive Vinyl",
+          materialCategory: "Vinyl",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "pvc",
+          name: "PVC",
+          description: "Printable PVC signs and rigid display panels.",
+          aiParsingDescription: "Use for PVC signs, Sintra, foam PVC, expanded PVC, and plastic sign panels.",
+          category: "Rigid Signs",
+          materialName: "3mm White PVC",
+          materialCategory: "PVC",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "yard_stakes",
+          name: "Yard Stakes",
+          description: "Hardware accessory stakes for yard signs.",
+          category: "Accessories",
+          materialName: "Steel Stake",
+          materialCategory: "Hardware",
+          metadataText: "{}",
+          isService: false,
+        },
+      ],
+      5,
+    );
+
+    const byId = Object.fromEntries(matches.map((match) => [match.id, match]));
+    const confidence = (id: string) => byId[id]?.confidence ?? 0;
+    expect(matches[0].id).toBe("acm");
+    expect(confidence("acm")).toBeGreaterThanOrEqual(90);
+    expect(confidence("pvc")).toBeLessThanOrEqual(35);
+    expect(confidence("sign_vinyl")).toBeLessThanOrEqual(20);
+    expect(confidence("yard_stakes")).toBeLessThanOrEqual(10);
+    if (byId.pvc) expect(byId.pvc.metadata.matchBreakdown.negativeEvidencePenalty).toBeGreaterThan(0);
+    if (byId.sign_vinyl) expect(byId.sign_vinyl.metadata.matchBreakdown.negativeEvidencePenalty).toBeGreaterThan(0);
+  });
+
+  test("candidate separation favors PVC for Sintra and separates ACM/vinyl false positives", () => {
+    const matches = scoreProductKnowledgeCandidates(
+      { sourceText: "Need three Sintra signs 24x36 single sided.", productName: "Sintra Signs", materialText: "Sintra" },
+      [
+        {
+          id: "pvc",
+          name: "PVC",
+          description: "Printable PVC signs and rigid display panels.",
+          aiParsingDescription: "Use for PVC signs, Sintra, foam PVC, expanded PVC, PALIGHT, and plastic sign panels.",
+          category: "Rigid Signs",
+          materialName: "3mm White PVC",
+          materialCategory: "PVC",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "foam_board",
+          name: "Foam Board",
+          description: "Lightweight foam board display panels and indoor presentation boards.",
+          category: "Display Boards",
+          materialName: "Foam Board",
+          materialCategory: "Foam Board",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "acm",
+          name: "ACM / Dibond / Max Metal",
+          description: "Rigid aluminum composite sign panels for outdoor business signs and displays.",
+          aiParsingDescription: "Use for aluminum signs, ACM, Dibond, polymetal, MaxMetal, and metal faced sign panels.",
+          category: "Rigid Signs",
+          materialName: "Aluminum Composite Material",
+          materialCategory: "ACM",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "vinyl",
+          name: "Sign Vinyl",
+          description: "Printed adhesive vinyl graphics for signs, windows, and decals.",
+          category: "Vinyl Graphics",
+          materialName: "Adhesive Vinyl",
+          materialCategory: "Vinyl",
+          metadataText: "{}",
+          isService: false,
+        },
+      ],
+      5,
+    );
+
+    const byId = Object.fromEntries(matches.map((match) => [match.id, match]));
+    const confidence = (id: string) => byId[id]?.confidence ?? 0;
+    expect(matches[0].id).toBe("pvc");
+    expect(confidence("pvc")).toBeGreaterThanOrEqual(90);
+    expect(confidence("foam_board")).toBeLessThanOrEqual(45);
+    expect(confidence("acm")).toBeLessThanOrEqual(20);
+    expect(confidence("vinyl")).toBeLessThanOrEqual(10);
+  });
+
+  test("candidate separation strongly favors ACM for Dibond brand evidence", () => {
+    const matches = scoreProductKnowledgeCandidates(
+      { sourceText: "Quote Dibond panels 24x36 printed single sided.", productName: "Dibond Panels", materialText: "Dibond" },
+      [
+        {
+          id: "acm",
+          name: "ACM / Dibond / Max Metal",
+          description: "Rigid aluminum composite sign panels for outdoor business signs and displays.",
+          aiParsingDescription: "Use for aluminum signs, ACM, Dibond, polymetal, MaxMetal, and metal faced sign panels.",
+          category: "Rigid Signs",
+          materialName: "Aluminum Composite Material",
+          materialCategory: "ACM",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "pvc",
+          name: "PVC",
+          description: "Printable PVC signs and rigid display panels.",
+          aiParsingDescription: "Use for PVC signs, Sintra, foam PVC, expanded PVC, and plastic sign panels.",
+          category: "Rigid Signs",
+          materialName: "3mm White PVC",
+          materialCategory: "PVC",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "vinyl",
+          name: "Sign Vinyl",
+          description: "Printed adhesive vinyl graphics for signs, windows, and decals.",
+          category: "Vinyl Graphics",
+          materialName: "Adhesive Vinyl",
+          materialCategory: "Vinyl",
+          metadataText: "{}",
+          isService: false,
+        },
+      ],
+      5,
+    );
+
+    const byId = Object.fromEntries(matches.map((match) => [match.id, match]));
+    const confidence = (id: string) => byId[id]?.confidence ?? 0;
+    expect(matches[0].id).toBe("acm");
+    expect(confidence("acm")).toBeGreaterThanOrEqual(90);
+    expect(confidence("pvc")).toBeLessThanOrEqual(15);
+    expect(confidence("vinyl")).toBeLessThanOrEqual(5);
   });
 });
