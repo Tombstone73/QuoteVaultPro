@@ -317,6 +317,7 @@ describe("inbound order routes", () => {
     saveReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
     markReviewDraftReady: jest.fn<(...args: any[]) => Promise<any>>(),
     reopenReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
+    refreshReviewDraftFromLatestParse: jest.fn<(...args: any[]) => Promise<any>>(),
   };
   const parsingService = {
     parseInboundOrderRecord: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -746,6 +747,30 @@ describe("inbound order routes", () => {
       inboundRecordId: "inbound_1",
       actorUserId: "user_1",
     });
+  });
+
+  test("refreshes an editable review draft from the latest parse by explicit staff action", async () => {
+    service.refreshReviewDraftFromLatestParse.mockResolvedValue(reviewDraft({
+      snapshotId: "snapshot_2",
+      id: "snapshot_2",
+      initializedFromParse: true,
+      hasNewerParse: false,
+      validationErrors: [],
+    }));
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/inbound_1/review-draft/refresh-from-latest-parse")
+      .send({});
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.snapshotId).toBe("snapshot_2");
+    expect(response.body.data.initializedFromParse).toBe(true);
+    expect(service.refreshReviewDraftFromLatestParse).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
   });
 
   test("converts a ready inbound review draft to a real draft order", async () => {

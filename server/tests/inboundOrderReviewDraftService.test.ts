@@ -882,6 +882,53 @@ describe("InboundOrderService editable review draft", () => {
     expect(repo.createReviewSnapshotWithEvent).toHaveBeenCalledTimes(2);
   });
 
+  test("refreshes an existing staff draft from the latest parse only when explicitly requested", async () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderService(repo as any);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: { ...initialized.reviewedCustomerJson, companyName: "Staff Edited Brainstorm" },
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: initialized.reviewedLineItemsJson,
+        reviewedArtworkJson: initialized.reviewedArtworkJson,
+        missingDecisionsJson: initialized.missingDecisionsJson,
+        warningsJson: initialized.warningsJson,
+        reviewNotes: "Do not overwrite me",
+      },
+    });
+    repo.setLatestParseAttempt(parseAttempt({
+      id: "attempt_2",
+      parsedDraft: parsedDraft({ customer: { ...parsedDraft().customer, companyName: "New Parse Brainstorm" } }),
+      createdAt: new Date("2026-06-09T12:20:00.000Z"),
+    }));
+
+    const refreshed = await service.refreshReviewDraftFromLatestParse({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(refreshed.reviewedCustomerJson.companyName).toBe("New Parse Brainstorm");
+    expect(refreshed.sourceParseAttemptId).toBe("attempt_2");
+    expect(refreshed.hasNewerParse).toBe(false);
+    expect(refreshed.initializedFromParse).toBe(true);
+    expect(repo.createReviewSnapshotWithEvent).toHaveBeenCalledTimes(3);
+    expect(repo.createReviewSnapshotWithEvent).toHaveBeenLastCalledWith(expect.objectContaining({
+      event: expect.objectContaining({
+        eventType: "review_draft.refreshed_from_latest_parse",
+      }),
+    }));
+  });
+
   async function prepareReadyDraft(service: InboundOrderService, overrides: {
     lineItem?: Record<string, unknown>;
     order?: Record<string, unknown>;

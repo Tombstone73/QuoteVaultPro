@@ -531,6 +531,37 @@ export function registerInboundOrderRoutes(
     }
   });
 
+  app.post("/api/inbound-orders/:id/review-draft/refresh-from-latest-parse", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const draft = await service.refreshReviewDraftFromLatestParse({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
+      });
+
+      res.json({ success: true, data: draft });
+    } catch (error) {
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+
+      if (isMissingInboundSchemaError(error)) {
+        return sendInboundSchemaUnavailable(res);
+      }
+
+      console.error("Error refreshing inbound order review draft from latest parse:", error);
+      res.status(500).json({ message: "Failed to refresh inbound order review draft from latest parse" });
+    }
+  });
+
   const handleReviewAction = (
     action: "mark-reviewed" | "needs-clarification" | "reject" | "reopen",
   ) => async (req: any, res: any) => {

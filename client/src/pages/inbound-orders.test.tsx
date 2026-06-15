@@ -1644,6 +1644,7 @@ describe("InboundOrdersPage", () => {
     const attempt = parseAttempt({ parsedDraft: draft, confidence: 82, warnings: draft.globalWarnings });
     let savedBody: any = null;
     let markReadyCalled = false;
+    let refreshFromLatestParseCalled = false;
 
     apiFetchMock.mockImplementation(async (url: any, options?: any) => {
       const path = String(url);
@@ -1666,6 +1667,18 @@ describe("InboundOrdersPage", () => {
       if (path === "/api/inbound-orders/inbound_1/review-draft") {
         return jsonResponse({ success: true, data: reviewDraft(draft, { hasNewerParse: true }) });
       }
+      if (path === "/api/inbound-orders/inbound_1/review-draft/refresh-from-latest-parse" && options?.method === "POST") {
+        refreshFromLatestParseCalled = true;
+        return jsonResponse({
+          success: true,
+          data: reviewDraft(draft, {
+            snapshotId: "snapshot_refreshed",
+            id: "snapshot_refreshed",
+            hasNewerParse: false,
+            initializedFromParse: true,
+          }),
+        });
+      }
       if (path === "/api/inbound-orders/inbound_1/review-draft/mark-ready" && options?.method === "POST") {
         markReadyCalled = true;
         return jsonResponse({
@@ -1677,10 +1690,19 @@ describe("InboundOrdersPage", () => {
     });
 
     renderPage();
-    await waitForText("Newer parse available.");
-    expect(container.textContent).toContain("Existing staff edits are preserved.");
+    await waitForText("Current draft is older than the latest parse.");
+    expect(container.textContent).toContain("Latest Parse Suggestions may differ from Current Draft Selections below.");
+    const refreshButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Refresh from Latest Parse")
+    ));
+    expect(refreshButton).toBeTruthy();
     expect(container.textContent).toContain("Save Review Draft");
     expect(container.textContent).toContain("Mark Ready to Convert");
+
+    await act(async () => {
+      Simulate.click(refreshButton!);
+    });
+    await waitForCondition(() => refreshFromLatestParseCalled, "refresh from latest parse called");
 
     const artworkStatus = labeledControl("Artwork status", "select") as HTMLSelectElement;
     act(() => {
