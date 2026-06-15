@@ -670,6 +670,47 @@ describe("InboundOrderService editable review draft", () => {
     ]));
   });
 
+  test("does not treat generated PBV2 choice identifiers as source evidence", () => {
+    const tree = {
+      schemaVersion: 2,
+      rootNodeIds: ["finish"],
+      nodes: {
+        finish: {
+          id: "finish",
+          kind: "question",
+          label: "Finish",
+          input: { type: "select", required: false, selectionKey: "finish", defaultValue: "choice_1" },
+          choices: [
+            { value: "choice_1", label: "Matte" },
+            { value: "choice_2", label: "Gloss" },
+            { value: "choice_3", label: "Satin" },
+          ],
+        },
+      },
+    };
+
+    const hydrated = hydrateInboundPbv2Selections(tree as any, "Please quote 3 aluminum signs, 24x36, printed single sided.");
+
+    expect(hydrated.selections.selected.finish).toMatchObject({
+      value: "choice_1",
+      origin: "DEFAULT",
+      evidence: null,
+    });
+    expect(hydrated.suggestions).toEqual([
+      expect.objectContaining({
+        selectionKey: "finish",
+        value: "choice_1",
+        choiceLabel: "Matte",
+        source: "product_default",
+        origin: "DEFAULT",
+        evidence: null,
+      }),
+    ]);
+    expect(hydrated.suggestions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "source_evidence" }),
+    ]));
+  });
+
   test("saves staff edits without creating downstream records", async () => {
     const { repo } = makeRepository();
     const service = new InboundOrderService(repo as any);
