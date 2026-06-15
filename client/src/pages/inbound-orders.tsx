@@ -1352,6 +1352,7 @@ function ReviewLineItemProductOptions({
   });
   const config = query.data?.data ?? null;
   const selections = ensurePbv2Selections(lineItem.optionSelectionsJson);
+  const userEditedPbv2Ref = useRef(false);
 
   useEffect(() => {
     if (!config || lineItem.optionSelectionsJson) return;
@@ -1383,6 +1384,7 @@ function ReviewLineItemProductOptions({
       </div>
       {config.suggestions.length > 0 && (
         <div className="space-y-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-200">
+          <div className="font-semibold text-blue-100">Latest Parse Suggestions</div>
           {config.suggestions.map((suggestion) => (
             <div key={`${suggestion.selectionKey}-${String(suggestion.value)}`} className="flex flex-wrap items-center gap-2">
               <Badge variant="outline">{selectionSourceLabel(suggestion.source, null, suggestion.origin)}</Badge>
@@ -1403,8 +1405,14 @@ function ReviewLineItemProductOptions({
       <ProductOptionsPanelV2
         tree={config.treeJson}
         selections={selections}
+        onUserEdit={() => {
+          userEditedPbv2Ref.current = true;
+        }}
         onSelectionsChange={(next) => {
-          const marked = markChangedPbv2SelectionsAsStaffSelected(next, selections);
+          const marked = userEditedPbv2Ref.current
+            ? markChangedPbv2SelectionsAsStaffSelected(next, selections)
+            : next;
+          userEditedPbv2Ref.current = false;
           onChange({
             optionSelectionsJson: marked,
             pbv2TreeVersionId: config.activeTreeVersionId,
@@ -1413,13 +1421,16 @@ function ReviewLineItemProductOptions({
         }}
       />
       {Object.entries(selections.selected ?? {}).length > 0 && (
-        <div className="flex flex-wrap gap-2 text-xs">
+        <div className="space-y-1 text-xs">
+          <div className="font-semibold text-muted-foreground">Current Draft Selections</div>
+          <div className="flex flex-wrap gap-2">
           {Object.entries(selections.selected).map(([key, entry]) => (
             <Badge key={key} variant="secondary">
               {key}: {selectionSourceLabel(null, entry?.note, entry?.origin)}
               {entry?.evidence ? ` - "${entry.evidence}"` : ""}
             </Badge>
           ))}
+          </div>
         </div>
       )}
     </div>
@@ -1436,6 +1447,7 @@ function DraftBuilderPanel({
   isSaving,
   isMarkingReady,
   isReopening,
+  isRefreshingFromLatestParse,
   isConverting,
   saveError,
   markReadyError,
@@ -1443,6 +1455,7 @@ function DraftBuilderPanel({
   onSave,
   onMarkReady,
   onReopen,
+  onRefreshFromLatestParse,
   onConvert,
 }: {
   selectedRecord: ClientInboundOrderRecord | null;
@@ -1454,6 +1467,7 @@ function DraftBuilderPanel({
   isSaving: boolean;
   isMarkingReady: boolean;
   isReopening: boolean;
+  isRefreshingFromLatestParse: boolean;
   isConverting: boolean;
   saveError: Error | null;
   markReadyError: (Error & { errors?: string[] }) | null;
@@ -1461,6 +1475,7 @@ function DraftBuilderPanel({
   onSave: (draft: ReviewDraftFormState) => Promise<void>;
   onMarkReady: (draft: ReviewDraftFormState, dirty: boolean) => Promise<void>;
   onReopen: () => Promise<void>;
+  onRefreshFromLatestParse: () => Promise<void>;
   onConvert: () => Promise<void>;
 }) {
   const [form, setForm] = useState<ReviewDraftFormState | null>(null);
@@ -1584,7 +1599,7 @@ function DraftBuilderPanel({
     (contactSearchQuery.data?.data ?? []).map(contactToReviewOption),
   );
   const dirty = !formStatesEqual(form, baseForm);
-  const actionPending = isSaving || isMarkingReady || isReopening || isConverting;
+  const actionPending = isSaving || isMarkingReady || isReopening || isRefreshingFromLatestParse || isConverting;
   const validationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
   const conversionErrors = convertError?.errors ?? [];
   const canCreateDraftOrder = selectedRecord.status === "ready"
@@ -1634,10 +1649,22 @@ function DraftBuilderPanel({
         {reviewDraft.hasNewerParse && (
           <Alert>
             <RefreshCw className="h-4 w-4" />
-            <AlertTitle>Newer parse available.</AlertTitle>
+            <AlertTitle>Current draft is older than the latest parse.</AlertTitle>
             <AlertDescription>
-              Existing staff edits are preserved. Refresh review draft from latest parse is intentionally manual and not automatic.
+              Latest Parse Suggestions may differ from Current Draft Selections below. Existing staff edits are preserved until you refresh from the latest parse.
             </AlertDescription>
+            <div className="mt-3">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => { void onRefreshFromLatestParse().catch(() => undefined); }}
+                disabled={actionPending}
+              >
+                {isRefreshingFromLatestParse && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Refresh from Latest Parse
+              </Button>
+            </div>
           </Alert>
         )}
         {(saveError || markReadyError) && (
@@ -2236,6 +2263,18 @@ export default function InboundOrdersPage() {
     },
   });
 
+  const refreshReviewDraftFromLatestParseMutation = useMutation({
+    mutationFn: (recordId: string) => postJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft/refresh-from-latest-parse`, {}),
+    onSuccess: async (response, recordId) => {
+      queryClient.setQueryData(["/api/inbound-orders", recordId, "review-draft"], response);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId, "draft-preview"] }),
+      ]);
+    },
+  });
+
   const rejectInboundOrderMutation = useMutation({
     mutationFn: ({ recordId, reason }: { recordId: string; reason: string | null }) => (
       postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/reject`, { reason })
@@ -2595,8 +2634,9 @@ export default function InboundOrdersPage() {
               isSaving={saveReviewDraftMutation.isPending}
               isMarkingReady={markReviewDraftReadyMutation.isPending}
               isReopening={reopenReviewDraftMutation.isPending}
+              isRefreshingFromLatestParse={refreshReviewDraftFromLatestParseMutation.isPending}
               isConverting={convertToOrderMutation.isPending}
-              saveError={saveReviewDraftMutation.error as Error | null}
+              saveError={(saveReviewDraftMutation.error ?? refreshReviewDraftFromLatestParseMutation.error) as Error | null}
               markReadyError={markReviewDraftReadyMutation.error as (Error & { errors?: string[] }) | null}
               convertError={convertToOrderMutation.error as (Error & { errors?: string[] }) | null}
               onSave={async (draft) => {
@@ -2613,6 +2653,10 @@ export default function InboundOrdersPage() {
               onReopen={async () => {
                 if (!selectedId) return;
                 await reopenReviewDraftMutation.mutateAsync(selectedId);
+              }}
+              onRefreshFromLatestParse={async () => {
+                if (!selectedId) return;
+                await refreshReviewDraftFromLatestParseMutation.mutateAsync(selectedId);
               }}
               onConvert={convertSelectedRecordToOrder}
             />

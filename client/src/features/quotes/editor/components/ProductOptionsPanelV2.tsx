@@ -62,6 +62,43 @@ function getSelectionKey(node: OptionNodeV2): string {
   return (node.input as any)?.selectionKey || (node as any).key || node.id;
 }
 
+function canonicalizeSelectionKeys(
+  tree: OptionTreeV2,
+  selections: LineItemOptionSelectionsV2,
+): LineItemOptionSelectionsV2 {
+  const selected = selections.selected ?? {};
+  const recognizedKeys = new Set<string>();
+  const canonicalSelected: LineItemOptionSelectionsV2["selected"] = {};
+
+  for (const node of Object.values(tree.nodes)) {
+    if (!isQuestionNodeEnabled(node as OptionNodeV2)) continue;
+
+    const optionNode = node as OptionNodeV2;
+    const selectionKey = getSelectionKey(optionNode);
+    const possibleKeys = [selectionKey, (optionNode as any).key, optionNode.id]
+      .filter((key): key is string => typeof key === "string" && key.trim().length > 0);
+
+    for (const key of possibleKeys) recognizedKeys.add(key);
+
+    const sourceKey = possibleKeys.find((key) => selected[key]?.value !== undefined);
+    if (sourceKey) {
+      canonicalSelected[selectionKey] = { ...selected[sourceKey] };
+    }
+  }
+
+  for (const [key, entry] of Object.entries(selected)) {
+    if (!recognizedKeys.has(key)) {
+      canonicalSelected[key] = entry;
+    }
+  }
+
+  return {
+    schemaVersion: 2,
+    selected: canonicalSelected,
+    ...(selections.resolved ? { resolved: selections.resolved } : {}),
+  };
+}
+
 function getOptionRules(tree: OptionTreeV2): ProductOptionRule[] {
   const rawTree = tree as any;
   const rules = Array.isArray(rawTree?.rules)
@@ -188,9 +225,9 @@ export function ProductOptionsPanelV2({
   const graph = useMemo(() => validateOptionTreeV2(tree), [tree]);
 
   const safeSelections: LineItemOptionSelectionsV2 = useMemo(() => {
-    if (isTreeV2Selections(selections)) return selections;
-    return { schemaVersion: 2, selected: {} };
-  }, [selections]);
+    const next = isTreeV2Selections(selections) ? selections : { schemaVersion: 2 as const, selected: {} };
+    return canonicalizeSelectionKeys(tree, next);
+  }, [selections, tree]);
 
   const visibleNodeIds = useMemo(() => {
     try {

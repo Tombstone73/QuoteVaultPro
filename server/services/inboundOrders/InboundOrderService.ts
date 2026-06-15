@@ -1026,6 +1026,54 @@ export class InboundOrderService {
     return this.reviewDraftDtoFromSnapshot(refreshedRecord, snapshot, latestAttempt, false);
   }
 
+  async refreshReviewDraftFromLatestParse(args: InboundOrderReviewDraftInput): Promise<InboundOrderReviewDraftDto> {
+    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) {
+      throw new InboundOrderTransitionError("Inbound order record not found", 404);
+    }
+    this.assertReviewDraftEditable(record, { allowReady: true });
+
+    const latestAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
+    const parsedDraft = this.parsedDraftFromAttempt(latestAttempt);
+    if (!latestAttempt || !parsedDraft) {
+      throw new InboundOrderTransitionError("Parse the inbound order before refreshing the review draft.", 409);
+    }
+
+    const payload = await this.buildEditableReviewDraftFromParse({
+      organizationId: args.organizationId,
+      record,
+      draft: parsedDraft,
+    });
+
+    const snapshot = await this.persistEditableReviewDraftSnapshot({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+      actorUserId: args.actorUserId,
+      record,
+      latestAttempt,
+      payload,
+      status: "draft",
+      eventType: "review_draft.refreshed_from_latest_parse",
+      message: "Editable review draft refreshed from latest parse. Previous staff draft remains in snapshot history.",
+      initializedFromParse: true,
+      recordPatch: record.status === "ready"
+        ? {
+            status: "needs_review",
+            reviewOutcome: null,
+            requiresHumanDecision: true,
+            reviewRequiredReason: "Editable review draft refreshed from latest parse.",
+            approvedAt: null,
+          }
+        : undefined,
+    });
+
+    const refreshedRecord = record.status === "ready"
+      ? await this.repository.getRecord(args.organizationId, args.inboundRecordId) ?? { ...record, status: "needs_review" as const }
+      : record;
+
+    return this.reviewDraftDtoFromSnapshot(refreshedRecord, snapshot, latestAttempt, true);
+  }
+
   async getQuoteDraftPreview(args: {
     organizationId: string;
     inboundRecordId: string;
