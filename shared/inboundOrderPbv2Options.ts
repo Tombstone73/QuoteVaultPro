@@ -133,6 +133,13 @@ function choiceLabel(choice: unknown): string {
   return String((choice as any).label ?? (choice as any).name ?? (choice as any).value ?? (choice as any).id ?? "");
 }
 
+function isInternalChoiceIdentifier(value: unknown): boolean {
+  const text = String(value ?? "").trim();
+  return /^choice[_-]?\d+$/i.test(text)
+    || /^choice[_-][a-z0-9_-]+$/i.test(text)
+    || /^opt[_-][a-z0-9_-]+$/i.test(text);
+}
+
 function hasDistinctiveTokenMatch(haystack: string, candidate: string): boolean {
   return candidate
     .split(/\s+/)
@@ -156,7 +163,12 @@ function evidenceSpanForPhrase(sourceText: string, phrase: string): string | nul
 }
 
 function choiceEvidencePhrases(choice: unknown): string[] {
-  const rawParts = [choiceLabel(choice), String(choiceValue(choice) ?? "")].filter(Boolean);
+  if (!isRecord(choice)) return [];
+  const rawParts = [
+    (choice as any).label,
+    (choice as any).name,
+    isInternalChoiceIdentifier((choice as any).value) ? null : (choice as any).value,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
   return Array.from(new Set(rawParts
     .flatMap((part) => part.split(/[|,()]+/))
     .map((part) => part.trim())
@@ -174,7 +186,9 @@ function choiceEvidenceMatch(sourceText: string, choice: unknown): string | null
     if (!meaningful) continue;
     const matched = haystack.includes(normalizedPhrase) || hasDistinctiveTokenMatch(haystack, normalizedPhrase);
     if (!matched) continue;
-    return evidenceSpanForPhrase(sourceText, phrase) ?? phrase;
+    const evidence = evidenceSpanForPhrase(sourceText, phrase);
+    if (!evidence) continue;
+    return evidence;
   }
   return null;
 }
