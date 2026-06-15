@@ -1405,6 +1405,7 @@ function ReviewLineItemProductOptions({
       <ProductOptionsPanelV2
         tree={config.treeJson}
         selections={selections}
+        persistAutomaticSelections={false}
         onUserEdit={() => {
           userEditedPbv2Ref.current = true;
         }}
