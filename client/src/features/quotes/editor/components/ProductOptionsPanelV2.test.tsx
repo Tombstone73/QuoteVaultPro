@@ -114,4 +114,88 @@ describe("ProductOptionsPanelV2", () => {
     expect(controls[0].value).toBe("3_16");
     expect(controls[1].value).toBe("single");
   });
+
+  test("normalizes draft selections stored as choice labels before rendering controls", () => {
+    const tree: OptionTreeV2 = {
+      schemaVersion: 2,
+      rootNodeIds: ["thickness_node", "grommet_node"],
+      nodes: {
+        thickness_node: {
+          id: "thickness_node",
+          kind: "question",
+          label: "Thickness",
+          input: { type: "select", required: true, selectionKey: "thickness", defaultValue: "half" },
+          choices: [
+            { value: "three_sixteenth", label: "3/16\"" },
+            { value: "half", label: "1/2\"" },
+          ],
+        },
+        grommet_node: {
+          id: "grommet_node",
+          kind: "question",
+          label: "Grommet Placement",
+          input: { type: "select", required: false, selectionKey: "grommets", defaultValue: "every_2_feet" },
+          choices: [
+            { value: "none", label: "None" },
+            { value: "every_2_feet", label: "Every 2 Feet" },
+          ],
+        },
+      },
+    };
+    const selections: LineItemOptionSelectionsV2 = {
+      schemaVersion: 2,
+      selected: {
+        thickness: { value: "3/16\"", note: "Default", origin: "DEFAULT", evidence: null },
+        grommets: { value: "None", note: "Default", origin: "DEFAULT", evidence: null },
+      },
+    };
+
+    act(() => {
+      root.render(
+        <ProductOptionsPanelV2
+          tree={tree}
+          selections={selections}
+          onSelectionsChange={jest.fn()}
+        />,
+      );
+    });
+
+    const controls = Array.from(container.querySelectorAll("select")) as HTMLSelectElement[];
+    expect(controls).toHaveLength(2);
+    expect(controls[0].value).toBe("three_sixteenth");
+    expect(controls[1].value).toBe("none");
+  });
+
+  test("can render inbound review controls without persisting automatic defaults", () => {
+    const tree: OptionTreeV2 = {
+      schemaVersion: 2,
+      rootNodeIds: ["thickness_node"],
+      nodes: {
+        thickness_node: {
+          id: "thickness_node",
+          kind: "question",
+          label: "Thickness",
+          input: { type: "select", required: true, selectionKey: "thickness", defaultValue: "half" },
+          choices: [
+            { value: "three_sixteenth", label: "3/16\"" },
+            { value: "half", label: "1/2\"" },
+          ],
+        },
+      },
+    };
+    const onSelectionsChange = jest.fn();
+
+    act(() => {
+      root.render(
+        <ProductOptionsPanelV2
+          tree={tree}
+          selections={{ schemaVersion: 2, selected: {} }}
+          onSelectionsChange={onSelectionsChange}
+          persistAutomaticSelections={false}
+        />,
+      );
+    });
+
+    expect(onSelectionsChange).not.toHaveBeenCalled();
+  });
 });

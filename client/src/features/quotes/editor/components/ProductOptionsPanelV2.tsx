@@ -21,6 +21,7 @@ type ProductOptionsPanelV2Props = {
   selections: LineItemOptionSelectionsV2;
   onSelectionsChange: (next: LineItemOptionSelectionsV2) => void;
   onUserEdit?: () => void;
+  persistAutomaticSelections?: boolean;
   onValidityChange?: (isValid: boolean) => void;
   onRenderStatsChange?: (stats: ProductOptionsPanelV2RenderStats) => void;
   className?: string;
@@ -62,6 +63,39 @@ function getSelectionKey(node: OptionNodeV2): string {
   return (node.input as any)?.selectionKey || (node as any).key || node.id;
 }
 
+function normalizeComparableValue(value: unknown): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/["']/g, "")
+    .replace(/[^a-z0-9/]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeChoiceValue(node: OptionNodeV2, value: unknown): unknown {
+  const choices = Array.isArray(node.choices) ? node.choices : [];
+  if (choices.length === 0 || value === undefined) return value;
+
+  const exact = choices.find((choice) => String(choice.value) === String(value));
+  if (exact) return exact.value;
+
+  const normalizedValue = normalizeComparableValue(value);
+  if (!normalizedValue) return value;
+
+  const matched = choices.find((choice) => {
+    const aliases = [
+      choice.value,
+      choice.label,
+      (choice as any).id,
+      (choice as any).key,
+      (choice as any).name,
+    ];
+    return aliases.some((alias) => normalizeComparableValue(alias) === normalizedValue);
+  });
+
+  return matched?.value ?? value;
+}
+
 function canonicalizeSelectionKeys(
   tree: OptionTreeV2,
   selections: LineItemOptionSelectionsV2,
@@ -82,7 +116,10 @@ function canonicalizeSelectionKeys(
 
     const sourceKey = possibleKeys.find((key) => selected[key]?.value !== undefined);
     if (sourceKey) {
-      canonicalSelected[selectionKey] = { ...selected[sourceKey] };
+      canonicalSelected[selectionKey] = {
+        ...selected[sourceKey],
+        value: normalizeChoiceValue(optionNode, selected[sourceKey].value),
+      };
     }
   }
 
@@ -124,6 +161,29 @@ function toSelectionRecord(selected: Record<string, unknown>, prior: LineItemOpt
     };
   }
   return next;
+}
+
+function preferExplicitSelectionsForRenderedControls(
+  renderedNodeIds: string[],
+  nodes: Record<string, OptionNodeV2>,
+  displaySelections: LineItemOptionSelectionsV2,
+  explicitSelections: LineItemOptionSelectionsV2,
+): LineItemOptionSelectionsV2 {
+  const nextSelected = { ...(displaySelections.selected ?? {}) };
+
+  for (const nodeId of renderedNodeIds) {
+    const node = nodes[nodeId];
+    if (!node || !isPbv2QuestionNode(node) || !node.input) continue;
+    const selectionKey = getSelectionKey(node);
+    const explicit = explicitSelections.selected?.[selectionKey];
+    if (!explicit || explicit.value === undefined) continue;
+    nextSelected[selectionKey] = explicit;
+  }
+
+  return {
+    ...displaySelections,
+    selected: nextSelected,
+  };
 }
 
 function stableSelectionJson(value: unknown): string {
@@ -214,6 +274,7 @@ export function ProductOptionsPanelV2({
   selections,
   onSelectionsChange,
   onUserEdit,
+  persistAutomaticSelections = true,
   onValidityChange,
   onRenderStatsChange,
   className,
@@ -393,14 +454,17 @@ export function ProductOptionsPanelV2({
     onRenderStatsChange?.(renderStats);
   }, [onRenderStatsChange, renderStats]);
 
-  const displaySelections = useMemo<LineItemOptionSelectionsV2>(() => ({
-    schemaVersion: 2,
-    selected: toSelectionRecord(ruleEvaluation.effectiveSelections, safeSelections.selected ?? {}),
-    resolved: {
-      ...(safeSelections.resolved ?? {}),
-      visibleNodeIds: renderedNodeIds,
-    },
-  }), [renderedNodeIds, ruleEvaluation.effectiveSelections, safeSelections.resolved, safeSelections.selected]);
+  const displaySelections = useMemo<LineItemOptionSelectionsV2>(() => {
+    const resolvedSelections: LineItemOptionSelectionsV2 = {
+      schemaVersion: 2,
+      selected: toSelectionRecord(ruleEvaluation.effectiveSelections, safeSelections.selected ?? {}),
+      resolved: {
+        ...(safeSelections.resolved ?? {}),
+        visibleNodeIds: renderedNodeIds,
+      },
+    };
+    return preferExplicitSelectionsForRenderedControls(renderedNodeIds, tree.nodes, resolvedSelections, safeSelections);
+  }, [renderedNodeIds, ruleEvaluation.effectiveSelections, safeSelections, tree.nodes]);
 
   // Prune selections for hidden/missing nodes and store resolved.visibleNodeIds canonically.
   useEffect(() => {
@@ -466,7 +530,7 @@ export function ProductOptionsPanelV2({
         }
       : safeSelections;
 
-    if (next !== safeSelections) {
+    if (next !== safeSelections && persistAutomaticSelections) {
       onSelectionsChange(next);
     }
 
@@ -487,6 +551,7 @@ export function ProductOptionsPanelV2({
     graph.ok,
     onSelectionsChange,
     onValidityChange,
+    persistAutomaticSelections,
     optionRules.length,
     requiredOptionGroupSet,
     matrixDimensionKeys,
