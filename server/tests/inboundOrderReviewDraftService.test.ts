@@ -1217,6 +1217,7 @@ describe("InboundOrderService editable review draft", () => {
   async function prepareReadyDraft(service: InboundOrderService, overrides: {
     lineItem?: Record<string, unknown>;
     order?: Record<string, unknown>;
+    unsupportedRequests?: any[];
   } = {}) {
     const initialized = await service.getReviewDraft({
       organizationId: "org_1",
@@ -1237,6 +1238,7 @@ describe("InboundOrderService editable review draft", () => {
         reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: "to_follow" },
         missingDecisionsJson: initialized.missingDecisionsJson.map((decision) => ({ ...decision, status: "acknowledged", resolutionNote: "Artwork to follow" })),
         warningsJson: initialized.warningsJson,
+        unsupportedRequestsJson: overrides.unsupportedRequests ?? initialized.unsupportedRequestsJson,
         reviewNotes: "Ready for order conversion",
       },
     });
@@ -1437,6 +1439,15 @@ describe("InboundOrderService editable review draft", () => {
       order: {
         dueDate: "6/11",
       },
+      unsupportedRequests: [{
+        type: "UNSUPPORTED_REQUEST",
+        requestedText: "grommets in the corners",
+        category: "grommets",
+        matchedProduct: "PVC",
+        reason: "Customer requested grommets in the corners, but the selected product only supports grommet choices: None, Every 2 Feet.",
+        severity: "review_required",
+        suggestedAction: "Review manually before conversion.",
+      }],
     });
 
     const result = await service.convertInboundReviewDraftToOrder({
@@ -1458,6 +1469,7 @@ describe("InboundOrderService editable review draft", () => {
       customerId: "customer_1",
       contactId: "contact_1",
       status: "new",
+      notesInternal: expect.stringContaining("Unsupported request (grommets): grommets in the corners"),
       lineItems: [expect.objectContaining({
         productId: "product_pvc",
         quantity: 3,
@@ -1470,6 +1482,14 @@ describe("InboundOrderService editable review draft", () => {
         workflowState: "new",
         requiresPrepress: false,
         requiresProofApproval: false,
+        specsJson: expect.objectContaining({
+          inbound: expect.objectContaining({
+            unsupportedRequests: [expect.objectContaining({
+              requestedText: "grommets in the corners",
+              category: "grommets",
+            })],
+          }),
+        }),
       })],
       dueDate: "2026-06-11",
     }));
@@ -1495,6 +1515,38 @@ describe("InboundOrderService editable review draft", () => {
     expect(repo.markInboundOrderConvertedToOrder).toHaveBeenCalledWith(expect.objectContaining({
       orderId: "order_1",
       actorUserId: "user_1",
+    }));
+  });
+
+  test("uses transaction-scoped repositories for draft order conversion when available", async () => {
+    const { repo } = makeRepository();
+    const baseOrderRepo = makeOrderRepository();
+    const transactionalOrderRepo = makeOrderRepository({ order: { id: "order_tx" } });
+    const tx = { transaction: jest.fn(async (callback: any) => callback(tx)) };
+    (repo as any).transaction = jest.fn(async (callback: any) => callback(tx, repo));
+    (baseOrderRepo as any).withExecutor = jest.fn(() => transactionalOrderRepo);
+    const service = new InboundOrderService(repo as any, baseOrderRepo as any, mockPriceLineItem);
+
+    await prepareReadyDraft(service, {
+      lineItem: {
+        optionSelectionsJson: completePbv2Selections(),
+        pbv2TreeVersionId: "tree_pvc",
+      },
+    });
+
+    const result = await service.convertInboundReviewDraftToOrder({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(result.orderId).toBe("order_tx");
+    expect((repo as any).transaction).toHaveBeenCalledTimes(1);
+    expect((baseOrderRepo as any).withExecutor).toHaveBeenCalledWith(tx);
+    expect(baseOrderRepo.createOrder).not.toHaveBeenCalled();
+    expect(transactionalOrderRepo.createOrder).toHaveBeenCalledWith("org_1", expect.objectContaining({
+      status: "new",
+      lineItems: expect.any(Array),
     }));
   });
 

@@ -1353,79 +1353,102 @@ export class InboundOrderService {
       throw new InboundOrderConversionValidationError("Inbound review draft is not ready for order conversion.", errors);
     }
 
-    const claimed = await this.repository.claimInboundOrderForOrderConversion({
-      organizationId: args.organizationId,
-      inboundRecordId: args.inboundRecordId,
-      actorUserId: args.actorUserId,
-    });
-
-    if (!claimed) {
-      const latest = await this.getDetail({
-        organizationId: args.organizationId,
-        inboundRecordId: args.inboundRecordId,
-      });
-      if (latest?.record.createdOrderId) {
-        const existingOrder = await this.orderRepository.getOrderById(args.organizationId, latest.record.createdOrderId);
-        if (!existingOrder) {
-          throw new InboundOrderTransitionError("Inbound record is linked to an order that could not be loaded.", 409);
-        }
-        return {
-          orderId: existingOrder.id,
-          inboundOrderId: latest.record.id,
-          convertedAt: formatInboundDate(latest.record.submittedAt ?? latest.record.updatedAt) ?? new Date().toISOString(),
-          order: existingOrder,
-          inbound: latest,
-          alreadyConverted: true,
-        };
-      }
-      throw new InboundOrderTransitionError("Inbound record is not ready for order conversion.", 409);
-    }
-
     try {
-      const orderInput = await this.buildOrderCreateInputFromInboundReview({
-        detail,
-        snapshotId: latestSnapshot.id,
-        snapshotVersion: latestSnapshot.snapshotVersion,
-        payload,
-        actorUserId: args.actorUserId,
-      });
-      const order = await this.orderRepository.createOrder(args.organizationId, orderInput);
-
-      const lineItemLinks = (order.lineItems ?? []).map((lineItem: any, index: number) => ({
-        inboundLineItemId: stringFromUnknown(getPathValue(lineItem.specsJson, "inbound.sourceLineItemId"))
-          ?? payload.reviewedLineItemsJson[index]?.sourceLineItemId
-          ?? null,
-        orderLineItemId: String(lineItem.id),
-      }));
-
-      await this.repository.markInboundOrderConvertedToOrder({
-        organizationId: args.organizationId,
-        inboundRecordId: args.inboundRecordId,
-        actorUserId: args.actorUserId,
-        orderId: order.id,
-        orderNumber: order.orderNumber ?? null,
-        lineItemLinks,
-      });
-
       const latestParseAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
-      await this.orderRepository.createOrderAuditLog({
-        orderId: order.id,
-        userId: args.actorUserId,
-        userName: null,
-        actionType: "inbound_order_converted",
-        fromStatus: null,
-        toStatus: "new",
-        note: "Inbound order converted to draft order.",
-        metadata: {
+      const convertWithRepositories = async (
+        conversionRepository: typeof this.repository,
+        orderRepository: typeof this.orderRepository,
+      ): Promise<OrderWithRelations | null> => {
+        const claimed = await conversionRepository.claimInboundOrderForOrderConversion({
+          organizationId: args.organizationId,
           inboundRecordId: args.inboundRecordId,
-          inboundReference: detail.record.externalReference ?? null,
-          sourceSubject: stringFromUnknown(getPathValue(detail.record.rawPayloadJson, "subject")),
-          sourceReference: detail.record.externalReference ?? null,
-          convertedAt: new Date().toISOString(),
-          parseConfidence: latestParseAttempt?.confidence ?? null,
-          poNumber: payload.reviewedOrderJson.poNumber ?? null,
-        },
-      } as any);
+          actorUserId: args.actorUserId,
+        });
+
+        if (!claimed) return null;
+
+        const orderInput = await this.buildOrderCreateInputFromInboundReview({
+          detail,
+          snapshotId: latestSnapshot.id,
+          snapshotVersion: latestSnapshot.snapshotVersion,
+          payload,
+          actorUserId: args.actorUserId,
+        });
+        const order = await orderRepository.createOrder(args.organizationId, orderInput);
+
+        const lineItemLinks = (order.lineItems ?? []).map((lineItem: any, index: number) => ({
+          inboundLineItemId: stringFromUnknown(getPathValue(lineItem.specsJson, "inbound.sourceLineItemId"))
+            ?? payload.reviewedLineItemsJson[index]?.sourceLineItemId
+            ?? null,
+          orderLineItemId: String(lineItem.id),
+        }));
+
+        await conversionRepository.markInboundOrderConvertedToOrder({
+          organizationId: args.organizationId,
+          inboundRecordId: args.inboundRecordId,
+          actorUserId: args.actorUserId,
+          orderId: order.id,
+          orderNumber: order.orderNumber ?? null,
+          lineItemLinks,
+        });
+
+        await orderRepository.createOrderAuditLog({
+          orderId: order.id,
+          userId: args.actorUserId,
+          userName: null,
+          actionType: "inbound_order_converted",
+          fromStatus: null,
+          toStatus: "new",
+          note: "Inbound order converted to draft order.",
+          metadata: {
+            inboundRecordId: args.inboundRecordId,
+            inboundReference: detail.record.externalReference ?? null,
+            sourceSubject: stringFromUnknown(getPathValue(detail.record.rawPayloadJson, "subject")),
+            sourceReference: detail.record.externalReference ?? null,
+            convertedAt: new Date().toISOString(),
+            parseConfidence: latestParseAttempt?.confidence ?? null,
+            poNumber: payload.reviewedOrderJson.poNumber ?? null,
+            releasesProduction: false,
+            createsProofs: false,
+            createsInvoices: false,
+            createsFulfillment: false,
+            createsPayments: false,
+          },
+        } as any);
+
+        return order;
+      };
+
+      const order = typeof (this.repository as any).transaction === "function"
+        ? await (this.repository as any).transaction(async (tx: any, conversionRepository: typeof this.repository) => {
+          const orderRepository = typeof (this.orderRepository as any).withExecutor === "function"
+            ? (this.orderRepository as any).withExecutor(tx)
+            : this.orderRepository;
+          return convertWithRepositories(conversionRepository, orderRepository);
+        })
+        : await convertWithRepositories(this.repository, this.orderRepository);
+
+      if (!order) {
+        const latest = await this.getDetail({
+          organizationId: args.organizationId,
+          inboundRecordId: args.inboundRecordId,
+        });
+        if (latest?.record.createdOrderId) {
+          const existingOrder = await this.orderRepository.getOrderById(args.organizationId, latest.record.createdOrderId);
+          if (!existingOrder) {
+            throw new InboundOrderTransitionError("Inbound record is linked to an order that could not be loaded.", 409);
+          }
+          return {
+            orderId: existingOrder.id,
+            inboundOrderId: latest.record.id,
+            convertedAt: formatInboundDate(latest.record.submittedAt ?? latest.record.updatedAt) ?? new Date().toISOString(),
+            order: existingOrder,
+            inbound: latest,
+            alreadyConverted: true,
+          };
+        }
+        throw new InboundOrderTransitionError("Inbound record is not ready for order conversion.", 409);
+      }
 
       const inbound = await this.getDetail({
         organizationId: args.organizationId,
@@ -2328,6 +2351,13 @@ export class InboundOrderService {
     const customer = payload.reviewedCustomerJson;
     const artwork = payload.reviewedArtworkJson;
     const reference = order.poNumber || detail.record.externalReference || detail.record.id.slice(0, 8);
+    const unsupportedRequestNotes = payload.unsupportedRequestsJson
+      .map((finding) => {
+        const requestedText = stringFromUnknown((finding as any).requestedText) ?? "Unsupported request";
+        const category = stringFromUnknown((finding as any).category);
+        const reason = stringFromUnknown((finding as any).reason);
+        return `Unsupported request${category ? ` (${category})` : ""}: ${requestedText}${reason ? ` - ${reason}` : ""}`;
+      });
     const reviewedNotes = [
       "Created from inbound reviewed draft.",
       `Inbound record: ${detail.record.id}`,
@@ -2339,6 +2369,7 @@ export class InboundOrderService {
       artwork.status === "to_follow" ? "Artwork: to follow." : null,
       artwork.status === "missing" ? "Artwork: missing at conversion." : null,
       artwork.notes ? `Artwork notes: ${artwork.notes}` : null,
+      ...unsupportedRequestNotes,
     ].filter(Boolean).join("\n");
 
     const lineItems: CreateOrderLineItemInput[] = [];
@@ -2393,6 +2424,7 @@ export class InboundOrderService {
             finishingTexts: lineItem.finishingTexts,
             artworkStatus: artwork.status,
             artworkReferences: artwork.refs,
+            unsupportedRequests: payload.unsupportedRequestsJson,
           },
           staffReviewedDraft: lineItem,
         },

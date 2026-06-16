@@ -6,6 +6,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Clock,
+  ExternalLink,
   FileText,
   GripVertical,
   Inbox,
@@ -1624,6 +1625,8 @@ function DraftBuilderPanel({
   const validationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
   const conversionErrors = convertError?.errors ?? [];
   const unsupportedRequests = form.unsupportedRequestsJson ?? [];
+  const convertedOrderId = selectedRecord.createdOrderId ?? null;
+  const hasConvertedOrder = Boolean(convertedOrderId);
   const canCreateDraftOrder = selectedRecord.status === "ready"
     && reviewDraft.status === "ready_to_convert"
     && validationErrors.length === 0;
@@ -2100,16 +2103,30 @@ function DraftBuilderPanel({
               </Button>
             )}
           </div>
-          <Button
-            type="button"
-            className="mt-3 w-full"
-            onClick={() => { void onConvert().catch(() => undefined); }}
-            disabled={!canCreateDraftOrder || actionPending}
-            title={canCreateDraftOrder ? "Create a draft order from this reviewed inbound record." : "Mark the inbound draft ready and resolve validation errors first."}
-          >
-            {isConverting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {isConverting ? "Creating Draft Order..." : "Create Draft Order"}
-          </Button>
+          {hasConvertedOrder ? (
+            <div className="mt-3 space-y-2">
+              <Button type="button" asChild className="w-full">
+                <a href={`/orders/${convertedOrderId}`}>
+                  <ExternalLink className="mr-2 h-4 w-4" />
+                  View Draft Order
+                </a>
+              </Button>
+              <Button type="button" variant="outline" className="w-full" disabled>
+                Draft Order Created
+              </Button>
+            </div>
+          ) : (
+            <Button
+              type="button"
+              className="mt-3 w-full"
+              onClick={() => { void onConvert().catch(() => undefined); }}
+              disabled={!canCreateDraftOrder || actionPending}
+              title={canCreateDraftOrder ? "Create a draft order from this reviewed inbound record." : "Mark the inbound draft ready and resolve validation errors first."}
+            >
+              {isConverting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {isConverting ? "Creating Draft Order..." : "Create Draft Order"}
+            </Button>
+          )}
         </section>
       </div>
     </ScrollArea>

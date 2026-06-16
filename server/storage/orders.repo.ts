@@ -322,6 +322,10 @@ function formatProductionStationLabel(value: unknown): string {
 export class OrdersRepository {
     constructor(private readonly dbInstance = db) { }
 
+    withExecutor(executor: any): OrdersRepository {
+        return new OrdersRepository(executor as typeof db);
+    }
+
     private normalizeWorkflowStateForSummary(value: unknown): string {
         const normalized = String(value ?? "").trim().toLowerCase();
         if (!normalized) return "new";

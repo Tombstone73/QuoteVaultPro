@@ -1835,6 +1835,8 @@ describe("InboundOrdersPage", () => {
       });
       await waitForText("PO-123");
       expect(container.textContent).toContain("Converted");
+      await waitForText("View Draft Order");
+      expect(container.querySelector("a[href='/orders/order_1']")).toBeTruthy();
     } finally {
       confirmSpy.mockRestore();
     }
