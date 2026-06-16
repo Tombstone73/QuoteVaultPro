@@ -208,6 +208,10 @@ export type ResolveInboundDecisionFlagInput = {
 export class InboundOrdersRepository {
   constructor(private readonly dbInstance = db) {}
 
+  async transaction<T>(callback: (tx: any, repository: InboundOrdersRepository) => Promise<T>): Promise<T> {
+    return this.dbInstance.transaction(async (tx: any) => callback(tx, new InboundOrdersRepository(tx as typeof db)));
+  }
+
   async listInboundOrders(
     organizationId: string,
     filters: InboundOrderListFilters,
