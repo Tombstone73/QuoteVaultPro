@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -14,8 +15,13 @@ import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Edit, Mail, FileText, Plus } from "lucide-react";
+import { Edit, Mail, FileText, Plus, Inbox, PauseCircle } from "lucide-react";
 import { useState, useEffect } from "react";
+import {
+  defaultInboundEmailIntakeSettings,
+  inboundEmailIntakeSettingsSchema,
+  type InboundEmailIntakeSettings,
+} from "@shared/inboundEmailIntakeSettings";
 
 // Schema for email templates
 const emailTemplatesSchema = z.object({
@@ -27,6 +33,122 @@ const emailTemplatesSchema = z.object({
 });
 
 type EmailTemplatesFormData = z.infer<typeof emailTemplatesSchema>;
+
+function normalizeInboundEmailSettings(raw: unknown): InboundEmailIntakeSettings {
+  const parsed = inboundEmailIntakeSettingsSchema.safeParse(raw);
+  return parsed.success ? parsed.data : defaultInboundEmailIntakeSettings;
+}
+
+function InboundEmailIntakeControls() {
+  const { toast } = useToast();
+
+  const { data: preferences, isLoading } = useQuery({
+    queryKey: ["/api/organization/preferences"],
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/organization/preferences");
+      return await response.json();
+    },
+  });
+
+  const settings = normalizeInboundEmailSettings((preferences as any)?.inboundEmail);
+  const updateMutation = useMutation({
+    mutationFn: async (patch: Partial<InboundEmailIntakeSettings>) => {
+      const response = await apiRequest("PATCH", "/api/organization/preferences/inbound-email-intake", patch);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/organization/preferences"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email-settings"] });
+      toast({
+        title: "Inbound email settings updated",
+        description: "Feature controls have been saved.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to update inbound email settings",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Inbound Email Intake</CardTitle>
+          <CardDescription>Loading...</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Skeleton className="h-28 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Inbox className="h-5 w-5" />
+              Inbound Email Intake
+            </CardTitle>
+            <CardDescription>
+              Control email-based TEMP_INBOUND intake without deleting existing review records.
+            </CardDescription>
+          </div>
+          {!settings.inboundEmailIntakeEnabled ? (
+            <Badge variant="destructive">Disabled</Badge>
+          ) : settings.inboundEmailPullPaused ? (
+            <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800">Pulling Paused</Badge>
+          ) : (
+            <Badge variant="secondary">Enabled</Badge>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="flex items-start justify-between gap-4 rounded-md border border-border p-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+              <Inbox className="h-4 w-4 text-muted-foreground" />
+              Enable Inbound Email Intake
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              When disabled, manual and scheduled email pulls are stopped and the Inbound Orders navigation is hidden.
+            </p>
+          </div>
+          <Switch
+            checked={settings.inboundEmailIntakeEnabled}
+            disabled={updateMutation.isPending}
+            onCheckedChange={(checked) => updateMutation.mutate({ inboundEmailIntakeEnabled: checked })}
+            aria-label="Enable Inbound Email Intake"
+          />
+        </div>
+
+        <div className="flex items-start justify-between gap-4 rounded-md border border-border p-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+              <PauseCircle className="h-4 w-4 text-muted-foreground" />
+              Pause Email Pulling
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Temporarily stops new email pulls while keeping existing inbound records available for review.
+            </p>
+          </div>
+          <Switch
+            checked={settings.inboundEmailPullPaused}
+            disabled={updateMutation.isPending || !settings.inboundEmailIntakeEnabled}
+            onCheckedChange={(checked) => updateMutation.mutate({ inboundEmailPullPaused: checked })}
+            aria-label="Pause Email Pulling"
+          />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 // Available template variables
 const QUOTE_VARIABLES = [
@@ -398,6 +520,7 @@ export function EmailSettings() {
         <div className="h-px bg-titan-border-subtle" />
         
         <div className="space-y-4">
+          <InboundEmailIntakeControls />
           <EmailSettingsTab />
           <EmailTemplatesCard />
         </div>

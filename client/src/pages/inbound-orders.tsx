@@ -27,6 +27,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { ProductOptionsPanelV2 } from "@/features/quotes/editor/components/ProductOptionsPanelV2";
+import { useInboundEmailIntakeSettings, usePullLatestInboundEmails } from "@/hooks/useInboundEmailIntakeSettings";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
@@ -2136,6 +2137,8 @@ function DraftBuilderPanel({
 export default function InboundOrdersPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const inboundEmailSettingsQuery = useInboundEmailIntakeSettings();
+  const pullLatestEmailsMutation = usePullLatestInboundEmails();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [queueFilters, setQueueFilters] = useState<QueueFilters>(defaultQueueFilters);
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
@@ -2164,10 +2167,15 @@ export default function InboundOrdersPage() {
   const parseInFlightRef = useRef(false);
   const keepCurrentDraftAfterParseRef = useRef(false);
   const listUrl = useMemo(() => buildInboundOrderListUrl(queueFilters), [queueFilters]);
+  const inboundEmailFeatureDisabled = inboundEmailSettingsQuery.isSuccess
+    && inboundEmailSettingsQuery.data?.inboundEmailIntakeEnabled === false;
+  const inboundEmailSettingsReady = inboundEmailSettingsQuery.isSuccess || inboundEmailSettingsQuery.isError;
+  const inboundEmailPullPaused = inboundEmailSettingsQuery.data?.inboundEmailPullPaused === true;
 
   const listQuery = useQuery({
     queryKey: ["/api/inbound-orders", queueFilters],
     queryFn: () => readJson<ClientInboundOrdersListResponse>(listUrl),
+    enabled: inboundEmailSettingsReady && !inboundEmailFeatureDisabled,
   });
 
   const records = listQuery.data?.data ?? [];
@@ -2503,6 +2511,22 @@ export default function InboundOrdersPage() {
   );
   const listError = getErrorTone(listQuery.error as Error | null);
   const queueWidth = getWorkspaceQueueWidth(queueCollapsed);
+  const pullLatestEmails = async () => {
+    if (inboundEmailFeatureDisabled || inboundEmailPullPaused || pullLatestEmailsMutation.isPending) return;
+    try {
+      await pullLatestEmailsMutation.mutateAsync();
+      toast({
+        title: "Email pull complete",
+        description: "Inbound email intake queue refreshed.",
+      });
+    } catch (error) {
+      toast({
+        title: "Email pull unavailable",
+        description: error instanceof Error ? error.message : "Failed to pull latest inbound emails.",
+        variant: "destructive",
+      });
+    }
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
@@ -2516,7 +2540,31 @@ export default function InboundOrdersPage() {
             <p className="mt-1 text-sm text-muted-foreground">TEMP_INBOUND review queue</p>
           </div>
           <div className="flex items-center gap-2">
-            <Button type="button" size="sm" onClick={() => setManualDialogOpen(true)} disabled={Boolean(listError)}>
+            {inboundEmailPullPaused && (
+              <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800">Email Pull Paused</Badge>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => { void pullLatestEmails(); }}
+              disabled={inboundEmailFeatureDisabled || inboundEmailPullPaused || pullLatestEmailsMutation.isPending}
+              title={
+                inboundEmailFeatureDisabled
+                  ? "Inbound email intake is disabled for this organization."
+                  : inboundEmailPullPaused
+                    ? "Inbound email pulling is paused."
+                    : "Pull latest inbound emails."
+              }
+            >
+              {pullLatestEmailsMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 h-4 w-4" />
+              )}
+              {inboundEmailPullPaused ? "Email Pull Paused" : "Pull Latest Emails"}
+            </Button>
+            <Button type="button" size="sm" onClick={() => setManualDialogOpen(true)} disabled={inboundEmailFeatureDisabled || Boolean(listError)}>
               <Plus className="mr-2 h-4 w-4" />
               Add
             </Button>
@@ -2530,7 +2578,7 @@ export default function InboundOrdersPage() {
                 if (selectedId) draftPreviewQuery.refetch();
                 if (selectedId) reviewDraftQuery.refetch();
               }}
-              disabled={listQuery.isFetching || detailQuery.isFetching || draftPreviewQuery.isFetching || reviewDraftQuery.isFetching}
+              disabled={inboundEmailFeatureDisabled || listQuery.isFetching || detailQuery.isFetching || draftPreviewQuery.isFetching || reviewDraftQuery.isFetching}
             >
               {listQuery.isFetching || detailQuery.isFetching || draftPreviewQuery.isFetching || reviewDraftQuery.isFetching ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -2548,6 +2596,24 @@ export default function InboundOrdersPage() {
             <AlertDescription>{pageError}</AlertDescription>
           </Alert>
         )}
+        {inboundEmailFeatureDisabled && (
+          <Alert className="mt-3">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Inbound email intake disabled</AlertTitle>
+            <AlertDescription>
+              Inbound email intake is disabled for this organization. Email pulls are stopped and the review workspace is unavailable until an admin enables the feature.
+            </AlertDescription>
+          </Alert>
+        )}
+        {!inboundEmailFeatureDisabled && inboundEmailPullPaused && (
+          <Alert className="mt-3 border-amber-200 bg-amber-50 text-amber-900">
+            <Clock className="h-4 w-4" />
+            <AlertTitle>Email Pull Paused</AlertTitle>
+            <AlertDescription>
+              New email pulling is paused for testing or maintenance. Existing inbound records remain available for review, parsing, and conversion.
+            </AlertDescription>
+          </Alert>
+        )}
         {lastConvertedOrderId && (
           <Alert className="mt-3">
             <Sparkles className="h-4 w-4" />
@@ -2561,6 +2627,18 @@ export default function InboundOrdersPage() {
         )}
       </header>
 
+      {inboundEmailFeatureDisabled ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-6">
+          <div className="max-w-lg rounded-md border border-border bg-muted/20 p-6 text-center">
+            <Inbox className="mx-auto h-8 w-8 text-muted-foreground" />
+            <h2 className="mt-4 text-base font-semibold text-foreground">Inbound intake is disabled</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              No scheduled or manual email pulls will run. Existing TEMP_INBOUND records are retained and can be accessed again after the feature is enabled.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <>
       <div
         ref={workspaceRef}
         className="flex min-h-0 w-full max-w-none flex-1 flex-col overflow-hidden min-[1180px]:flex-row"
@@ -2756,6 +2834,8 @@ export default function InboundOrdersPage() {
         onClose={() => setManualDialogOpen(false)}
         onCreate={(payload) => createManualMutation.mutateAsync(payload).then(() => undefined)}
       />
+        </>
+      )}
     </div>
   );
 }

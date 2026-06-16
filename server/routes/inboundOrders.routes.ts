@@ -24,6 +24,7 @@ import {
   inboundOrderService,
 } from "../services/inboundOrders/InboundOrderService";
 import { inboundOrderParsingService } from "../services/inboundOrders/InboundOrderParsingService";
+import { inboundEmailIntakeSettingsService } from "../services/inboundEmailIntakeSettingsService";
 import { getRequestOrganizationId } from "../tenantContext";
 
 function getUserId(user: any): string | undefined {
@@ -127,11 +128,65 @@ export function registerInboundOrderRoutes(
     assertInternalUser: (req: any, res: any) => boolean;
     inboundOrderService?: typeof inboundOrderService;
     inboundOrderParsingService?: typeof inboundOrderParsingService;
+    inboundEmailIntakeSettingsService?: typeof inboundEmailIntakeSettingsService;
   },
 ): void {
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
   const service = middleware.inboundOrderService ?? inboundOrderService;
   const parsingService = middleware.inboundOrderParsingService ?? inboundOrderParsingService;
+  const emailSettingsService = middleware.inboundEmailIntakeSettingsService ?? inboundEmailIntakeSettingsService;
+
+  app.get("/api/inbound-orders/email-settings", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const settings = await emailSettingsService.getSettings(organizationId);
+      res.json({ success: true, data: settings });
+    } catch (error: any) {
+      if (error?.statusCode === 404) {
+        return res.status(404).json({ success: false, message: "Organization not found" });
+      }
+
+      console.error("Error loading inbound email intake settings:", error);
+      res.status(500).json({ success: false, message: "Failed to load inbound email intake settings" });
+    }
+  });
+
+  app.post("/api/inbound-orders/email/pull-latest", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const guard = await emailSettingsService.getPullGuard(organizationId);
+      if (!guard.allowed) {
+        return res.status(409).json({
+          success: false,
+          code: guard.reason === "disabled" ? "INBOUND_EMAIL_INTAKE_DISABLED" : "INBOUND_EMAIL_PULL_PAUSED",
+          message: guard.message,
+          data: guard.settings,
+        });
+      }
+
+      res.status(501).json({
+        success: false,
+        code: "INBOUND_EMAIL_PULL_NOT_CONFIGURED",
+        message: "Inbound email pulling is enabled, but no email pull worker is configured in this environment.",
+        data: guard.settings,
+      });
+    } catch (error: any) {
+      if (error?.statusCode === 404) {
+        return res.status(404).json({ success: false, message: "Organization not found" });
+      }
+
+      console.error("Error pulling latest inbound emails:", error);
+      res.status(500).json({ success: false, message: "Failed to pull latest inbound emails" });
+    }
+  });
 
   app.get("/api/inbound-orders", isAuthenticated, tenantContext, async (req: any, res) => {
     try {

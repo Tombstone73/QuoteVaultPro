@@ -539,6 +539,58 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Draft builder will appear after parsing.");
   });
 
+  test("shows disabled state and does not load the queue when inbound email intake is off", async () => {
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path === "/api/inbound-orders/email-settings") {
+        return jsonResponse({
+          success: true,
+          data: {
+            inboundEmailIntakeEnabled: false,
+            inboundEmailPullPaused: false,
+          },
+        });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Inbound intake is disabled");
+
+    expect(container.textContent).toContain("Inbound email intake is disabled for this organization.");
+    expect(apiFetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/api\/inbound-orders\?/), expect.anything());
+  });
+
+  test("shows paused email pull state while keeping existing records usable", async () => {
+    const row = record();
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path === "/api/inbound-orders/email-settings") {
+        return jsonResponse({
+          success: true,
+          data: {
+            inboundEmailIntakeEnabled: true,
+            inboundEmailPullPaused: true,
+          },
+        });
+      }
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") return jsonResponse(draftPreview());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Email Pull Paused");
+    await waitForText("PO-123");
+
+    const pausedButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Email Pull Paused")
+    ));
+    expect(pausedButton?.disabled).toBe(true);
+    expect(container.textContent).toContain("Existing inbound records remain available for review, parsing, and conversion.");
+  });
+
   test("creates manual intake, refreshes the queue, selects it, and renders source evidence", async () => {
     window.localStorage.setItem("titanos.inboundOrders.evidenceWidth", "900");
     window.localStorage.setItem("titanos.inboundOrders.draftWidth", "900");

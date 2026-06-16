@@ -263,7 +263,12 @@ function reviewDraft(overrides: Record<string, any> = {}) {
 
 function buildApp(
   service: Record<string, any>,
-  options: { orgId?: string; internal?: boolean; parsingService?: Record<string, any> } = {},
+  options: {
+    orgId?: string;
+    internal?: boolean;
+    parsingService?: Record<string, any>;
+    inboundEmailIntakeSettingsService?: Record<string, any>;
+  } = {},
 ) {
   const app = express();
   app.use(express.json());
@@ -290,6 +295,7 @@ function buildApp(
     assertInternalUser,
     inboundOrderService: service as any,
     inboundOrderParsingService: options.parsingService as any,
+    inboundEmailIntakeSettingsService: options.inboundEmailIntakeSettingsService as any,
   });
   return app;
 }
@@ -324,9 +330,79 @@ describe("inbound order routes", () => {
     listParseAttempts: jest.fn<(...args: any[]) => Promise<any>>(),
     getDraftPreview: jest.fn<(...args: any[]) => Promise<any>>(),
   };
+  const inboundEmailIntakeSettingsService = {
+    getSettings: jest.fn<(...args: any[]) => Promise<any>>(),
+    getPullGuard: jest.fn<(...args: any[]) => Promise<any>>(),
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  test("returns inbound email intake feature settings", async () => {
+    inboundEmailIntakeSettingsService.getSettings.mockResolvedValue({
+      inboundEmailIntakeEnabled: false,
+      inboundEmailPullPaused: false,
+    });
+
+    const response = await request(buildApp(service, { inboundEmailIntakeSettingsService }))
+      .get("/api/inbound-orders/email-settings");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      success: true,
+      data: {
+        inboundEmailIntakeEnabled: false,
+        inboundEmailPullPaused: false,
+      },
+    });
+    expect(inboundEmailIntakeSettingsService.getSettings).toHaveBeenCalledWith("org_1");
+  });
+
+  test("manual email pull fails safely when inbound email intake is disabled", async () => {
+    inboundEmailIntakeSettingsService.getPullGuard.mockResolvedValue({
+      allowed: false,
+      reason: "disabled",
+      message: "Inbound email intake is disabled for this organization.",
+      settings: {
+        inboundEmailIntakeEnabled: false,
+        inboundEmailPullPaused: false,
+      },
+    });
+
+    const response = await request(buildApp(service, { inboundEmailIntakeSettingsService }))
+      .post("/api/inbound-orders/email/pull-latest")
+      .send({});
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      success: false,
+      code: "INBOUND_EMAIL_INTAKE_DISABLED",
+      message: "Inbound email intake is disabled for this organization.",
+    });
+  });
+
+  test("manual email pull fails safely when inbound email pulling is paused", async () => {
+    inboundEmailIntakeSettingsService.getPullGuard.mockResolvedValue({
+      allowed: false,
+      reason: "paused",
+      message: "Inbound email pulling is paused for this organization.",
+      settings: {
+        inboundEmailIntakeEnabled: true,
+        inboundEmailPullPaused: true,
+      },
+    });
+
+    const response = await request(buildApp(service, { inboundEmailIntakeSettingsService }))
+      .post("/api/inbound-orders/email/pull-latest")
+      .send({});
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      success: false,
+      code: "INBOUND_EMAIL_PULL_PAUSED",
+      message: "Inbound email pulling is paused for this organization.",
+    });
   });
 
   test("creates a manual TEMP inbound record with needs_review status", async () => {
