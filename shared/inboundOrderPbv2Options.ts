@@ -339,23 +339,44 @@ type UnsupportedRequestRule = {
   category: string;
   requestPattern: RegExp;
   supportAliases: string[];
+  specificChoiceAliases?: (requestedText: string) => string[] | null;
 };
 
 const unsupportedRequestRules: UnsupportedRequestRule[] = [
   {
     category: "grommets",
-    requestPattern: /\b(?:corner\s+)?grommets?\b(?:\s+(?:in|on|at)\s+(?:the\s+)?corners?)?|\bgrommets?\s+(?:in|on|at)\s+(?:the\s+)?corners?\b/i,
+    requestPattern: /\b(?:corner\s+)?grommets?\b(?:\s+(?:in|on|at|every)\s+(?:the\s+)?(?:corners?|2\s*(?:feet|ft)|two\s*(?:feet|ft)|24\s*(?:inches|inch|in|")))?|\bgrommets?\s+(?:in|on|at|every)\s+(?:the\s+)?(?:corners?|2\s*(?:feet|ft)|two\s*(?:feet|ft)|24\s*(?:inches|inch|in|"))\b/i,
     supportAliases: ["grommet", "grommets", "eyelet", "eyelets"],
+    specificChoiceAliases: (requestedText) => {
+      const normalized = normalizeForMatch(requestedText);
+      if (/\bcorner/.test(normalized)) {
+        return ["corners", "corner", "four corners", "4 corners", "all corners", "corner grommets", "grommets in corners"];
+      }
+      if (/\b(?:2 feet|2 ft|two feet|two ft|24 inches|24 inch|24 in|24)\b/.test(normalized)) {
+        return ["every 2 feet", "every 2 ft", "2 feet", "2 ft", "two feet", "every 24 inches", "24 inches", "24 inch", "24 in", "24\""];
+      }
+      return null;
+    },
   },
   {
     category: "pole_pockets",
-    requestPattern: /\bpole\s+pockets?\b|\b(?:top|bottom)\s+pockets?\b/i,
+    requestPattern: /\bpole\s+pockets?(?:\s+(?:top\s+(?:and|&)\s+bottom|top|bottom))?\b|\b(?:top\s+(?:and|&)\s+bottom|top|bottom)\s+pockets?\b/i,
     supportAliases: ["pole pocket", "pole pockets", "pocket"],
+    specificChoiceAliases: (requestedText) => {
+      const normalized = normalizeForMatch(requestedText);
+      if (/\btop\b/.test(normalized) && /\bbottom\b/.test(normalized)) {
+        return ["top and bottom", "top bottom", "top & bottom", "both", "both sides"];
+      }
+      if (/\btop\b/.test(normalized)) return ["top", "top only"];
+      if (/\bbottom\b/.test(normalized)) return ["bottom", "bottom only"];
+      return null;
+    },
   },
   {
     category: "rounded_corners",
     requestPattern: /\brounded\s+corners?\b|\bcorner\s+radius\b|\bradius\s+corners?\b/i,
     supportAliases: ["rounded corner", "rounded corners", "corner radius", "radius corner", "radius corners"],
+    specificChoiceAliases: () => ["rounded corner", "rounded corners", "corner radius", "radius corner", "radius corners"],
   },
   {
     category: "contour_cutting",
@@ -371,6 +392,7 @@ const unsupportedRequestRules: UnsupportedRequestRule[] = [
     category: "h_stakes",
     requestPattern: /\bh[\s-]?stakes?\b|\byard\s+stakes?\b/i,
     supportAliases: ["h stake", "h stakes", "h-stake", "h-stakes", "yard stake", "yard stakes", "stake", "stakes"],
+    specificChoiceAliases: () => ["h stake", "h stakes", "h-stake", "h-stakes", "yard stake", "yard stakes", "stake", "stakes"],
   },
   {
     category: "white_ink",
@@ -399,28 +421,104 @@ const unsupportedRequestRules: UnsupportedRequestRule[] = [
   },
 ];
 
-function pbv2TreeSupportsRequest(tree: OptionTreeV2 | null | undefined, aliases: string[]): boolean {
-  if (!tree || !isRecord(tree.nodes)) return false;
+type Pbv2RequestSupport = {
+  supported: boolean;
+  compatibleNodeFound: boolean;
+  choiceLabels: string[];
+};
+
+function displayChoiceLabel(choice: unknown): string | null {
+  if (!isRecord(choice)) return null;
+  const label = choiceLabel(choice).trim();
+  if (label) return label;
+  const value = choiceValue(choice);
+  return value == null ? null : String(value);
+}
+
+function choiceText(choice: unknown): string {
+  if (!isRecord(choice)) return "";
+  return normalizeForMatch([
+    (choice as any).label,
+    (choice as any).name,
+    (choice as any).value,
+    (choice as any).id,
+    (choice as any).key,
+  ].filter(Boolean).join(" "));
+}
+
+function isNonSupportChoice(choice: unknown): boolean {
+  const text = choiceText(choice);
+  return /\b(?:none|no|not applicable|n\/a|without)\b/.test(text);
+}
+
+function isAffirmativeSupportChoice(choice: unknown): boolean {
+  const text = choiceText(choice);
+  return /\b(?:yes|true|add|added|include|included|with)\b/.test(text);
+}
+
+function pbv2TreeSupportsRequest(
+  tree: OptionTreeV2 | null | undefined,
+  aliases: string[],
+  specificChoiceAliases?: string[] | null,
+): Pbv2RequestSupport {
+  if (!tree || !isRecord(tree.nodes)) {
+    return { supported: false, compatibleNodeFound: false, choiceLabels: [] };
+  }
   const normalizedAliases = aliases.map(normalizeForMatch).filter(Boolean);
-  if (normalizedAliases.length === 0) return false;
+  const normalizedSpecificAliases = (specificChoiceAliases ?? []).map(normalizeForMatch).filter(Boolean);
+  if (normalizedAliases.length === 0) return { supported: false, compatibleNodeFound: false, choiceLabels: [] };
+
+  const compatibleChoices: Array<{ choice: unknown; baseNodeText: string }> = [];
 
   for (const node of Object.values(tree.nodes)) {
     if (!isPbv2QuestionNode(node) || !isRenderableQuestion(node)) continue;
-    const nodeText = normalizeForMatch([
+    const baseNodeText = normalizeForMatch([
       node.id,
       getPbv2SelectionKey(node),
       (node as any).key,
       (node as any).label,
       (node.input as any)?.label,
       (node.input as any)?.selectionKey,
-      ...(Array.isArray((node as any).choices)
-        ? (node as any).choices.flatMap((choice: any) => [choice?.label, choice?.name, choice?.value, choice?.id, choice?.key])
-        : []),
     ].filter(Boolean).join(" "));
-    if (normalizedAliases.some((alias) => nodeText.includes(alias))) return true;
+    const choices: unknown[] = Array.isArray((node as any).choices) ? (node as any).choices : [];
+    const choiceTexts: string[] = choices.map(choiceText);
+    const nodeMatchesCategory = normalizedAliases.some((alias) => baseNodeText.includes(alias) || choiceTexts.some((text) => text.includes(alias)));
+
+    if (!nodeMatchesCategory) continue;
+    compatibleChoices.push(...choices.map((choice) => ({ choice, baseNodeText })));
   }
 
-  return false;
+  const choiceLabels = Array.from(new Set(
+    compatibleChoices
+      .map((entry) => displayChoiceLabel(entry.choice))
+      .filter((label): label is string => Boolean(label)),
+  ));
+  const supportChoices = compatibleChoices.filter(({ choice }) => !isNonSupportChoice(choice));
+  if (supportChoices.length === 0) {
+    return { supported: false, compatibleNodeFound: compatibleChoices.length > 0, choiceLabels };
+  }
+
+  if (normalizedSpecificAliases.length > 0) {
+    return {
+      supported: supportChoices.some(({ choice, baseNodeText }) => {
+        const text = choiceText(choice);
+        const choiceMatchesSpecificRequest = normalizedSpecificAliases.some((alias) => text.includes(alias) || alias.includes(text));
+        const nodeMatchesSpecificRequest = normalizedSpecificAliases.some((alias) => baseNodeText.includes(alias));
+        return choiceMatchesSpecificRequest || (nodeMatchesSpecificRequest && isAffirmativeSupportChoice(choice));
+      }),
+      compatibleNodeFound: true,
+      choiceLabels,
+    };
+  }
+
+  return { supported: true, compatibleNodeFound: true, choiceLabels };
+}
+
+function unsupportedRequestReason(requestedText: string, support: Pbv2RequestSupport, category: string): string {
+  if (support.compatibleNodeFound && support.choiceLabels.length > 0) {
+    return `Customer requested "${requestedText}", but the selected product only supports ${category.replace(/_/g, " ")} choices: ${support.choiceLabels.join(", ")}.`;
+  }
+  return "No compatible PBV2 option found.";
 }
 
 export function detectUnsupportedInboundRequests(
@@ -434,7 +532,12 @@ export function detectUnsupportedInboundRequests(
   for (const rule of unsupportedRequestRules) {
     const requestedText = evidenceSpanForPattern(evidenceText, rule.requestPattern);
     if (!requestedText) continue;
-    if (pbv2TreeSupportsRequest(tree, rule.supportAliases)) continue;
+    const support = pbv2TreeSupportsRequest(
+      tree,
+      rule.supportAliases,
+      rule.specificChoiceAliases?.(requestedText) ?? null,
+    );
+    if (support.supported) continue;
 
     const key = `${rule.category}:${normalizeForMatch(requestedText)}`;
     if (seen.has(key)) continue;
@@ -444,7 +547,7 @@ export function detectUnsupportedInboundRequests(
       requestedText,
       category: rule.category,
       matchedProduct,
-      reason: "No compatible PBV2 option found.",
+      reason: unsupportedRequestReason(requestedText, support, rule.category),
       severity: "review_required",
       suggestedAction: "Add manually or select a different product.",
     });

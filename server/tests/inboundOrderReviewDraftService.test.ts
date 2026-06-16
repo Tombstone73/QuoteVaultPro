@@ -373,6 +373,30 @@ function finishingOptionTree(args: {
   };
 }
 
+function finishingOptionTreeWithChoices(args: {
+  selectionKey: string;
+  label: string;
+  choices: Array<{ label: string; value: string }>;
+}) {
+  return {
+    schemaVersion: 2,
+    rootNodeIds: [args.selectionKey],
+    nodes: {
+      [args.selectionKey]: {
+        id: args.selectionKey,
+        kind: "question",
+        label: args.label,
+        input: { type: "select", required: false, selectionKey: args.selectionKey },
+        choices: args.choices.map((choice) => ({
+          id: choice.value,
+          value: choice.value,
+          label: choice.label,
+        })),
+      },
+    },
+  };
+}
+
 function treeWithoutFinishingSupport() {
   return {
     schemaVersion: 2,
@@ -612,6 +636,54 @@ describe("InboundOrderService editable review draft", () => {
     ]);
   });
 
+  test("flags PVC grommets in corners when only generic grommet spacing choices exist", async () => {
+    const draft = await buildDraftForUnsupportedRequestCase({
+      productId: "product_pvc",
+      productLabel: "PVC",
+      sourceText: "Please quote 3 signs, 24x36, printed double sided, 3mm white PVC, with grommets in the corners.",
+      finishingTexts: ["grommets in the corners"],
+      treeJson: finishingOptionTreeWithChoices({
+        selectionKey: "grommet_placement",
+        label: "Grommet Placement",
+        choices: [
+          { value: "none", label: "None" },
+          { value: "every_2_feet", label: "Every 2 Feet" },
+        ],
+      }),
+    });
+
+    expect(draft.unsupportedRequestsJson).toEqual([
+      expect.objectContaining({
+        type: "UNSUPPORTED_REQUEST",
+        requestedText: "grommets in the corners",
+        category: "grommets",
+        matchedProduct: "PVC",
+        severity: "review_required",
+        suggestedAction: "Add manually or select a different product.",
+      }),
+    ]);
+    expect(draft.unsupportedRequestsJson[0].reason).toContain("only supports grommets choices: None, Every 2 Feet");
+  });
+
+  test("does not flag PVC grommets every 2 feet when matching spacing choice exists", async () => {
+    const draft = await buildDraftForUnsupportedRequestCase({
+      productId: "product_pvc",
+      productLabel: "PVC",
+      sourceText: "PVC sign with grommets every 2 feet",
+      finishingTexts: ["grommets every 2 feet"],
+      treeJson: finishingOptionTreeWithChoices({
+        selectionKey: "grommet_placement",
+        label: "Grommet Placement",
+        choices: [
+          { value: "none", label: "None" },
+          { value: "every_2_feet", label: "Every 2 Feet" },
+        ],
+      }),
+    });
+
+    expect(draft.unsupportedRequestsJson).toEqual([]);
+  });
+
   test("flags PVC rounded corners when no corner-radius option exists", async () => {
     const draft = await buildDraftForUnsupportedRequestCase({
       productId: "product_pvc",
@@ -628,6 +700,31 @@ describe("InboundOrderService editable review draft", () => {
         matchedProduct: "PVC",
       }),
     ]);
+  });
+
+  test("flags rounded corners when corner option has no rounded-corner choice", async () => {
+    const draft = await buildDraftForUnsupportedRequestCase({
+      productId: "product_pvc",
+      productLabel: "PVC",
+      sourceText: "PVC sign with rounded corners",
+      finishingTexts: ["rounded corners"],
+      treeJson: finishingOptionTreeWithChoices({
+        selectionKey: "corner_radius",
+        label: "Corner Radius",
+        choices: [
+          { value: "square", label: "Square Corners" },
+        ],
+      }),
+    });
+
+    expect(draft.unsupportedRequestsJson).toEqual([
+      expect.objectContaining({
+        requestedText: "rounded corners",
+        category: "rounded_corners",
+        matchedProduct: "PVC",
+      }),
+    ]);
+    expect(draft.unsupportedRequestsJson[0].reason).toContain("only supports rounded corners choices: Square Corners");
   });
 
   test("does not flag banner pole pockets when the PBV2 tree supports them", async () => {
