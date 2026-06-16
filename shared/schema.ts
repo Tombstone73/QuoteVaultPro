@@ -7374,6 +7374,30 @@ export const inboundOrderSources = pgTable("inbound_order_sources", {
   uniqueIndex("inbound_order_sources_org_type_name_uidx").on(table.organizationId, table.sourceType, table.name),
 ]);
 
+export const inboundEmailMailboxes = pgTable("inbound_email_mailboxes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  sourceId: varchar("source_id").references(() => inboundOrderSources.id, { onDelete: "set null" }),
+  provider: varchar("provider", { length: 50 }).notNull().default("gmail"),
+  name: varchar("name", { length: 255 }).notNull(),
+  emailAddress: varchar("email_address", { length: 255 }).notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  isDefault: boolean("is_default").notNull().default(true),
+  authJson: jsonb("auth_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  settingsJson: jsonb("settings_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  lastPulledAt: timestamp("last_pulled_at", { withTimezone: true }),
+  lastPullStatus: varchar("last_pull_status", { length: 50 }),
+  lastPullError: text("last_pull_error"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("inbound_email_mailboxes_org_enabled_idx").on(table.organizationId, table.enabled),
+  index("inbound_email_mailboxes_org_provider_idx").on(table.organizationId, table.provider),
+  index("inbound_email_mailboxes_org_source_idx").on(table.organizationId, table.sourceId),
+  uniqueIndex("inbound_email_mailboxes_org_email_uidx").on(table.organizationId, table.emailAddress),
+]);
+
 export const inboundOrderRecords = pgTable("inbound_order_records", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -7698,6 +7722,23 @@ export const updateInboundOrderSourceSchema = insertInboundOrderSourceSchema.par
   id: z.string(),
 });
 
+export const insertInboundEmailMailboxSchema = createInsertSchema(inboundEmailMailboxes).omit({
+  id: true,
+  organizationId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  provider: z.enum(["gmail"]).default("gmail"),
+  name: z.string().trim().min(1).max(255),
+  emailAddress: z.string().email(),
+  enabled: z.boolean().default(true),
+  isDefault: z.boolean().default(true),
+});
+
+export const updateInboundEmailMailboxSchema = insertInboundEmailMailboxSchema.partial().extend({
+  id: z.string(),
+});
+
 export const insertInboundOrderRecordSchema = createInsertSchema(inboundOrderRecords).omit({
   id: true,
   organizationId: true,
@@ -7818,6 +7859,11 @@ export type SelectInboundOrderSource = typeof inboundOrderSources.$inferSelect;
 export type InsertInboundOrderSource = z.infer<typeof insertInboundOrderSourceSchema>;
 export type UpdateInboundOrderSource = z.infer<typeof updateInboundOrderSourceSchema>;
 export type InboundOrderSource = SelectInboundOrderSource;
+
+export type SelectInboundEmailMailbox = typeof inboundEmailMailboxes.$inferSelect;
+export type InsertInboundEmailMailbox = z.infer<typeof insertInboundEmailMailboxSchema>;
+export type UpdateInboundEmailMailbox = z.infer<typeof updateInboundEmailMailboxSchema>;
+export type InboundEmailMailbox = SelectInboundEmailMailbox;
 
 export type SelectInboundOrderRecord = typeof inboundOrderRecords.$inferSelect;
 export type InsertInboundOrderRecord = z.infer<typeof insertInboundOrderRecordSchema>;

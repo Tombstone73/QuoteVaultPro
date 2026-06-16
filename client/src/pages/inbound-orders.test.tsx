@@ -591,6 +591,59 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Existing inbound records remain available for review, parsing, and conversion.");
   });
 
+  test("runs manual email pull and displays result summary", async () => {
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path === "/api/inbound-orders/email-settings") {
+        return jsonResponse({
+          success: true,
+          data: {
+            inboundEmailIntakeEnabled: true,
+            inboundEmailPullPaused: false,
+          },
+        });
+      }
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([]));
+      if (path === "/api/inbound-orders/email/pull-latest" && options?.method === "POST") {
+        return jsonResponse({
+          success: true,
+          data: {
+            summary: { created: 1, skippedDuplicates: 2, ignored: 3, failed: 4 },
+            createdRecordIds: ["inbound_new"],
+            mailboxResults: [{
+              mailboxId: "mailbox_1",
+              mailboxName: "Orders Inbox",
+              provider: "gmail",
+              created: 1,
+              skippedDuplicates: 2,
+              ignored: 3,
+              failed: 4,
+              error: null,
+            }],
+          },
+        });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("No inbound records");
+    const pullButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Pull Latest Emails")
+    ));
+    expect(pullButton?.disabled).toBe(false);
+
+    await act(async () => {
+      Simulate.click(pullButton!);
+    });
+
+    await waitForText("Latest email pull complete");
+    expect(container.textContent).toContain("1 created");
+    expect(container.textContent).toContain("2 duplicate(s) skipped");
+    expect(container.textContent).toContain("3 ignored");
+    expect(container.textContent).toContain("4 failed");
+  });
+
   test("creates manual intake, refreshes the queue, selects it, and renders source evidence", async () => {
     window.localStorage.setItem("titanos.inboundOrders.evidenceWidth", "900");
     window.localStorage.setItem("titanos.inboundOrders.draftWidth", "900");

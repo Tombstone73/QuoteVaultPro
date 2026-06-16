@@ -11,6 +11,7 @@ import {
   GripVertical,
   Inbox,
   Loader2,
+  Mail,
   Maximize2,
   Plus,
   RefreshCw,
@@ -50,6 +51,7 @@ import {
   type ManualInboundOrderCreateRequest,
   type ManualInboundOrderCreateResponse,
 } from "@shared/inboundOrdersApi";
+import type { InboundEmailPullResult } from "@shared/inboundEmailIngestion";
 import type { LineItemOptionSelectionsV2 } from "@shared/optionTreeV2";
 import { getMissingInboundPbv2RequiredOptions } from "@shared/inboundOrderPbv2Options";
 import type {
@@ -2144,6 +2146,7 @@ export default function InboundOrdersPage() {
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
   const [parsingRecordId, setParsingRecordId] = useState<string | null>(null);
   const [lastConvertedOrderId, setLastConvertedOrderId] = useState<string | null>(null);
+  const [lastEmailPullResult, setLastEmailPullResult] = useState<InboundEmailPullResult | null>(null);
   const [reviewDraftDirtyByRecordId, setReviewDraftDirtyByRecordId] = useState<Record<string, boolean>>({});
   const [queueCollapsed, setQueueCollapsed] = useState(() => (
     readStoredBoolean(workspaceLayoutStorageKeys.queueCollapsed, false)
@@ -2514,10 +2517,11 @@ export default function InboundOrdersPage() {
   const pullLatestEmails = async () => {
     if (inboundEmailFeatureDisabled || inboundEmailPullPaused || pullLatestEmailsMutation.isPending) return;
     try {
-      await pullLatestEmailsMutation.mutateAsync();
+      const result = await pullLatestEmailsMutation.mutateAsync();
+      setLastEmailPullResult(result);
       toast({
         title: "Email pull complete",
-        description: "Inbound email intake queue refreshed.",
+        description: `${result.summary.created} created, ${result.summary.skippedDuplicates} duplicate(s) skipped, ${result.summary.ignored} ignored, ${result.summary.failed} failed.`,
       });
     } catch (error) {
       toast({
@@ -2611,6 +2615,18 @@ export default function InboundOrdersPage() {
             <AlertTitle>Email Pull Paused</AlertTitle>
             <AlertDescription>
               New email pulling is paused for testing or maintenance. Existing inbound records remain available for review, parsing, and conversion.
+            </AlertDescription>
+          </Alert>
+        )}
+        {!inboundEmailFeatureDisabled && lastEmailPullResult && (
+          <Alert className="mt-3">
+            <Mail className="h-4 w-4" />
+            <AlertTitle>Latest email pull complete</AlertTitle>
+            <AlertDescription>
+              {lastEmailPullResult.summary.created} created,{" "}
+              {lastEmailPullResult.summary.skippedDuplicates} duplicate(s) skipped,{" "}
+              {lastEmailPullResult.summary.ignored} ignored,{" "}
+              {lastEmailPullResult.summary.failed} failed.
             </AlertDescription>
           </Alert>
         )}
