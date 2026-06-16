@@ -286,6 +286,16 @@ export const inboundOrderReviewedWarningSchema = inboundOrderParseWarningSchema.
   acknowledgementNote: nullableTextSchema.default(null),
 });
 
+export const inboundOrderUnsupportedRequestFindingSchema = z.object({
+  type: z.literal("UNSUPPORTED_REQUEST"),
+  requestedText: z.string().trim().min(1).max(1000),
+  category: z.string().trim().min(1).max(100),
+  matchedProduct: z.string().trim().max(255).nullable().default(null),
+  reason: z.string().trim().min(1).max(1000),
+  severity: z.literal("review_required").default("review_required"),
+  suggestedAction: z.string().trim().min(1).max(1000),
+});
+
 export const inboundOrderReviewDraftPayloadSchema = z.object({
   status: inboundOrderReviewDraftStatusSchema.default("draft"),
   reviewedCustomerJson: inboundOrderReviewedCustomerSchema,
@@ -294,6 +304,7 @@ export const inboundOrderReviewDraftPayloadSchema = z.object({
   reviewedArtworkJson: inboundOrderReviewedArtworkSchema,
   missingDecisionsJson: z.array(inboundOrderReviewedMissingDecisionSchema).default([]),
   warningsJson: z.array(inboundOrderReviewedWarningSchema).default([]),
+  unsupportedRequestsJson: z.array(inboundOrderUnsupportedRequestFindingSchema).default([]),
   reviewNotes: nullableTextSchema.default(null),
 });
 
@@ -305,7 +316,10 @@ export type InboundOrderReviewDraftStatus = z.infer<typeof inboundOrderReviewDra
 export type InboundOrderReviewDecisionStatus = z.infer<typeof inboundOrderReviewDecisionStatusSchema>;
 export type InboundOrderArtworkReviewStatus = z.infer<typeof inboundOrderArtworkReviewStatusSchema>;
 export type InboundOrderReviewDraftPayload = z.infer<typeof inboundOrderReviewDraftPayloadSchema>;
-export type InboundOrderReviewDraftSaveRequest = z.infer<typeof inboundOrderReviewDraftSaveSchema>;
+export type InboundOrderUnsupportedRequestFinding = z.infer<typeof inboundOrderUnsupportedRequestFindingSchema>;
+export type InboundOrderReviewDraftSaveRequest = Omit<z.infer<typeof inboundOrderReviewDraftSaveSchema>, "unsupportedRequestsJson"> & {
+  unsupportedRequestsJson?: InboundOrderUnsupportedRequestFinding[];
+};
 
 export type InboundOrderReviewReadinessScore = {
   overall: number;

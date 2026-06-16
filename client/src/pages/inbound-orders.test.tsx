@@ -296,6 +296,9 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
     printSpecs: lineItem.printSpecs ?? [],
     optionTexts: lineItem.optionTexts ?? [],
     finishingTexts: lineItem.finishingTexts ?? [],
+    optionSelectionsJson: lineItem.optionSelectionsJson ?? null,
+    pbv2TreeVersionId: lineItem.pbv2TreeVersionId ?? null,
+    pbv2OptionSuggestions: lineItem.pbv2OptionSuggestions ?? [],
     notes: null,
   }));
 
@@ -357,6 +360,7 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
       fieldPath: warning.fieldPath ?? null,
       acknowledged: false,
     })),
+    unsupportedRequestsJson: (parsed as any).unsupportedRequests ?? overrides.unsupportedRequestsJson ?? [],
     reviewNotes: null,
     validationErrors: [],
     readinessScore: {
@@ -960,6 +964,9 @@ describe("InboundOrdersPage", () => {
       if (path === "/api/inbound-orders/inbound_1/review-draft") {
         return jsonResponse({ success: true, data: reviewDraft(previousDraft) });
       }
+      if (path === "/api/inbound-orders/inbound_1/review-draft/refresh-from-latest-parse" && options?.method === "POST") {
+        return jsonResponse({ success: true, data: reviewDraft(nextDraft, { id: "review_snapshot_2", snapshotId: "review_snapshot_2", sourceParseAttemptId: "attempt_2" }) });
+      }
       if (path === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST") {
         return await new Promise((resolve) => {
           resolveParse = resolve;
@@ -1170,6 +1177,7 @@ describe("InboundOrdersPage", () => {
       },
     });
     const attempt = parseAttempt({ parsedDraft: draft, confidence: 82, warnings: draft.globalWarnings });
+    let refreshFromLatestParseCalled = false;
 
     apiFetchMock.mockImplementation(async (url: any, options?: any) => {
       const path = String(url);
@@ -1178,6 +1186,17 @@ describe("InboundOrdersPage", () => {
       if (path === "/api/inbound-orders/inbound_1/draft-preview") return jsonResponse(draftPreview());
       if (path === "/api/inbound-orders/inbound_1/review-draft") {
         return jsonResponse({ success: true, data: reviewDraft(draft) });
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft/refresh-from-latest-parse" && options?.method === "POST") {
+        refreshFromLatestParseCalled = true;
+        return jsonResponse({
+          success: true,
+          data: reviewDraft(draft, {
+            id: "review_snapshot_after_parse",
+            snapshotId: "review_snapshot_after_parse",
+            initializedFromParse: true,
+          }),
+        });
       }
       if (path === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST") {
         return jsonResponse({
@@ -1203,6 +1222,7 @@ describe("InboundOrdersPage", () => {
     });
 
     await waitForText("Phase 4: Create draft order from reviewed inbound record.");
+    await waitForCondition(() => refreshFromLatestParseCalled, "review draft refreshed after parse");
     expect(container.textContent).toContain("Review Readiness");
     expect(container.textContent).toContain("92% overall confidence");
     expect(container.textContent).toContain("Product Confidence 95%");
@@ -1257,6 +1277,245 @@ describe("InboundOrdersPage", () => {
       button.textContent?.includes("Create Draft Order")
     ));
     expect(createDraftButton?.disabled).toBe(true);
+  });
+
+  test("automatically applies the latest parse to stale editable review controls", async () => {
+    const row = record();
+    const staleDraft = parsedDraft({
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: "old aluminum signs",
+        productName: "ACM Signs",
+        candidateProductIds: ["product_acm"],
+        productCandidates: [{ id: "product_acm", label: "ACM", confidence: 78, reason: "Old parse", metadata: {} }],
+        materialText: "6mm ACM",
+        optionSelectionsJson: {
+          schemaVersion: 2,
+          selected: {
+            thickness: { value: "6mm", note: "Staff selected", origin: "USER_SELECTED", evidence: null },
+            sides: { value: "double", note: "Staff selected", origin: "USER_SELECTED", evidence: null },
+          },
+        },
+      }],
+    });
+    const latestDraft = parsedDraft({
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: "Please quote 3 signs, 24x36, printed single sided, 3mm white PVC.",
+        productName: "PVC",
+        candidateProductIds: ["product_pvc"],
+        productCandidates: [{ id: "product_pvc", label: "PVC", confidence: 96, reason: "Matched 3mm white PVC", metadata: {} }],
+        quantity: 3,
+        materialText: "3mm white PVC",
+        optionSelectionsJson: {
+          schemaVersion: 2,
+          selected: {
+            thickness: { value: "3mm_white", note: "Default", origin: "DEFAULT", evidence: null },
+            sides: { value: "single", note: "Deterministic print spec rule", origin: "SOURCE_EVIDENCE", evidence: "single sided" },
+          },
+        },
+        pbv2TreeVersionId: "tree_pvc",
+        pbv2OptionSuggestions: [
+          {
+            selectionKey: "sides",
+            nodeId: "sides",
+            label: "Sides",
+            value: "single",
+            choiceLabel: "Single Sided 4/0",
+            source: "deterministic_print_spec_rule",
+            origin: "SOURCE_EVIDENCE",
+            evidence: "single sided",
+            conflictsWithDefault: false,
+            defaultChoiceLabel: null,
+            confidence: 100,
+            reason: "Mapped 4/0/single sided source text.",
+          },
+        ],
+      }],
+      missingDecisions: [],
+      globalWarnings: [],
+    });
+    const latestAttempt = parseAttempt({ id: "attempt_2", parsedDraft: latestDraft, confidence: 96, warnings: [] });
+    let refreshFromLatestParseCalled = false;
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview({ draft: staleDraft, latestAttempt: parseAttempt({ parsedDraft: staleDraft }) }));
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({ success: true, data: reviewDraft(staleDraft) });
+      }
+      if (path === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST") {
+        return jsonResponse({
+          success: true,
+          data: {
+            draft: latestDraft,
+            latestAttempt,
+            record: { ...row, status: "needs_review", parsedAt: "2026-06-09T12:05:00.000Z" },
+          },
+        });
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft/refresh-from-latest-parse" && options?.method === "POST") {
+        refreshFromLatestParseCalled = true;
+        return jsonResponse({
+          success: true,
+          data: reviewDraft(latestDraft, {
+            id: "review_snapshot_latest",
+            snapshotId: "review_snapshot_latest",
+            sourceParseAttemptId: "attempt_2",
+            sourceParseAttemptCreatedAt: "2026-06-09T12:01:00.000Z",
+            initializedFromParse: true,
+          }),
+        });
+      }
+      if (path === "/api/inbound-orders/product-options/product_pvc" && options?.method === "POST") {
+        return jsonResponse(pbv2OptionsResponse({
+          productId: "product_pvc",
+          productName: "PVC",
+          activeTreeVersionId: "tree_pvc",
+          suggestedSelections: (latestDraft.lineItems[0] as any).optionSelectionsJson,
+          suggestions: (latestDraft.lineItems[0] as any).pbv2OptionSuggestions,
+        }));
+      }
+      if (path.startsWith("/api/inbound-orders/customer-search") || path.startsWith("/api/inbound-orders/contact-search")) {
+        return jsonResponse({ success: true, data: [] });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("ACM Signs");
+
+    const parseButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Parse with AI")
+    ));
+    await act(async () => {
+      Simulate.click(parseButton!);
+    });
+
+    await waitForCondition(() => refreshFromLatestParseCalled, "latest parse auto-applied to review draft");
+    await waitForCondition(
+      () => (labeledControl("Material", "input") as HTMLInputElement).value === "3mm white PVC",
+      "latest parsed material in editable control",
+    );
+    expect(labeledControl("Product candidate", "select")).toHaveProperty("value", "product_pvc");
+    expect(labeledControl("Material", "input")).toHaveProperty("value", "3mm white PVC");
+    expect(container.textContent).toContain("Single Sided 4/0");
+    expect(container.textContent).toContain("thickness: Default");
+    expect(container.textContent).not.toContain("6mm ACM");
+  });
+
+  test("warns before applying a latest parse over unsaved staff edits", async () => {
+    const row = record();
+    const currentDraft = parsedDraft();
+    const latestDraft = parsedDraft({
+      order: { ...parsedDraft().order, poNumber: "PO-LATEST" },
+    });
+    const latestAttempt = parseAttempt({ id: "attempt_2", parsedDraft: latestDraft, confidence: 91, warnings: [] });
+    let parseCalled = false;
+    let refreshFromLatestParseCalled = false;
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(false);
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview({ draft: currentDraft, latestAttempt: parseAttempt({ parsedDraft: currentDraft }) }));
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({ success: true, data: reviewDraft(currentDraft, { hasNewerParse: parseCalled }) });
+      }
+      if (path === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST") {
+        parseCalled = true;
+        return jsonResponse({
+          success: true,
+          data: {
+            draft: latestDraft,
+            latestAttempt,
+            record: { ...row, status: "needs_review", parsedAt: "2026-06-09T12:06:00.000Z" },
+          },
+        });
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft/refresh-from-latest-parse" && options?.method === "POST") {
+        refreshFromLatestParseCalled = true;
+        return jsonResponse({ success: true, data: reviewDraft(latestDraft) });
+      }
+      if (path.startsWith("/api/inbound-orders/customer-search") || path.startsWith("/api/inbound-orders/contact-search")) {
+        return jsonResponse({ success: true, data: [] });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    try {
+      renderPage();
+      await waitForText("Phase 4: Create draft order from reviewed inbound record.");
+      act(() => {
+        Simulate.change(labeledControl("Review notes", "textarea"), { target: { value: "Staff edited this draft." } } as any);
+      });
+      await waitForText("Unsaved changes");
+
+      const parseButton = Array.from(container.querySelectorAll("button")).find((button) => (
+        button.textContent?.includes("Parse with AI")
+      ));
+      await act(async () => {
+        Simulate.click(parseButton!);
+      });
+
+      await waitForCondition(() => parseCalled, "parse called after keeping current draft");
+      await waitForText("Current draft is older than the latest parse.");
+      expect(confirmSpy).toHaveBeenCalledWith("Applying the latest parse will overwrite your draft changes.");
+      expect(refreshFromLatestParseCalled).toBe(false);
+      expect(labeledControl("Review notes", "textarea")).toHaveProperty("value", "Staff edited this draft.");
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  test("renders unsupported request findings in the editable review workspace", async () => {
+    const row = record();
+    const draft = parsedDraft({ missingDecisions: [], globalWarnings: [] });
+    const attempt = parseAttempt({ parsedDraft: draft, confidence: 92, warnings: [] });
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview({ draft, latestAttempt: attempt }));
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({
+          success: true,
+          data: reviewDraft(draft, {
+            unsupportedRequestsJson: [{
+              type: "UNSUPPORTED_REQUEST",
+              requestedText: "grommets in the corners",
+              category: "grommets",
+              matchedProduct: "PVC",
+              reason: "No compatible PBV2 option found.",
+              severity: "review_required",
+              suggestedAction: "Add manually or select a different product.",
+            }],
+          }),
+        });
+      }
+      if (path.startsWith("/api/inbound-orders/customer-search") || path.startsWith("/api/inbound-orders/contact-search")) {
+        return jsonResponse({ success: true, data: [] });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Unsupported Requests");
+    expect(container.textContent).toContain("grommets in the corners");
+    expect(container.textContent).toContain("Review Required");
+    expect(container.textContent).toContain("No compatible PBV2 option found.");
+    expect(container.textContent).toContain("Add manually or select a different product.");
+    expect(container.textContent).toContain("Create Draft Order");
   });
 
   test("searches and saves selected customer and contact in review draft", async () => {
