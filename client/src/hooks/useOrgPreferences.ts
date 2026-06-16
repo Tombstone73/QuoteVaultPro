@@ -8,6 +8,7 @@ import { useToast } from "./use-toast";
 import type { QuickBooksSyncPolicy } from "@shared/quickBooksPreferences";
 import type { ProductionDocumentNumberDisplayMode } from "@shared/documentNumbering";
 import type { BillingInvoiceTriggerPolicy } from "@shared/billingInvoicePolicy";
+import type { InboundEmailIntakeSettings } from "@shared/inboundEmailIntakeSettings";
 
 export interface OrgPreferences {
   prepressDefaultEnabled?: boolean;
@@ -47,6 +48,8 @@ export interface OrgPreferences {
   quickBooks?: {
     syncPolicy?: QuickBooksSyncPolicy;
   };
+
+  inboundEmail?: InboundEmailIntakeSettings;
 
   billingInvoiceTriggerPolicy?: BillingInvoiceTriggerPolicy;
 

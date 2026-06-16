@@ -39,6 +39,7 @@ export type NavItemConfig = {
   conditional?: {
     requireApproval?: boolean;
     approverOnly?: boolean;
+    requireInboundEmailIntake?: boolean;
   };
 };
 
@@ -76,6 +77,9 @@ export const NAV_CONFIG: NavSectionConfig[] = [
         icon: Inbox,
         path: ROUTES.inboundOrders.list,
         badge: true,
+        conditional: {
+          requireInboundEmailIntake: true,
+        },
       },
     ],
   },
@@ -141,7 +145,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
 export function filterNavByRole(
   sections: NavSectionConfig[],
   role?: string | null,
-  orgPreferences?: { quotes?: { requireApproval?: boolean } },
+  orgPreferences?: { quotes?: { requireApproval?: boolean }; inboundEmail?: { inboundEmailIntakeEnabled?: boolean } },
   isPlatformAdmin?: boolean,
   isPlatformDeveloper?: boolean,
 ): NavSectionConfig[] {
@@ -169,6 +173,7 @@ export function filterNavByRole(
         if (item.conditional) {
           if (item.conditional.requireApproval && !requireApproval) return false;
           if (item.conditional.approverOnly && !isApprover) return false;
+          if (item.conditional.requireInboundEmailIntake && orgPreferences?.inboundEmail?.inboundEmailIntakeEnabled === false) return false;
         }
 
         return true;

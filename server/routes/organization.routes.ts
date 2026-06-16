@@ -44,6 +44,11 @@ import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBoo
 import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/materialsOverrideMode";
 import { resolveBillingInvoiceTriggerPolicyFromOrgPreferences } from "@shared/billingInvoicePolicy";
 import { resolveProofApprovalLockEnabledFromOrgPreferences } from "@shared/proofApprovalLock";
+import {
+  inboundEmailIntakeSettingsPatchSchema,
+  resolveInboundEmailIntakeSettingsFromPreferences,
+} from "@shared/inboundEmailIntakeSettings";
+import { inboundEmailIntakeSettingsService } from "../services/inboundEmailIntakeSettingsService";
 import { resetTransactionalData, resetQuickBooksImportData } from "../services/orgResetService";
 import { resolveFileUploadNamingPolicyFromPreferences } from "../prepressFileService";
 
@@ -172,6 +177,7 @@ export function registerOrganizationRoutes(
 
       // Ensure stable defaults for QuickBooks preferences
       const quickBooks = resolveQuickBooksPreferencesFromOrgPreferences(preferences);
+      const inboundEmail = resolveInboundEmailIntakeSettingsFromPreferences(preferences);
 
       const materialsOverrideMode = resolveMaterialsOverrideModeFromOrgPreferences(preferences);
       const fileUploadNaming = resolveFileUploadNamingPolicyFromPreferences(preferences, organizationId);
@@ -207,6 +213,7 @@ export function registerOrganizationRoutes(
         },
         inventoryPolicy,
         quickBooks,
+        inboundEmail,
         emailTemplates,
       });
     } catch (error) {
@@ -250,9 +257,13 @@ export function registerOrganizationRoutes(
 
       // Merge new preferences into existing settings
       const currentSettings = (org.settings || {}) as any;
+      const currentPreferences = (currentSettings.preferences && typeof currentSettings.preferences === "object")
+        ? currentSettings.preferences
+        : {};
+      const nextPreferences = Object.keys(otherPreferences).length > 0 ? otherPreferences : currentPreferences;
       const updatedSettings = {
         ...currentSettings,
-        preferences: otherPreferences,
+        preferences: nextPreferences,
         ...(emailTemplates && { emailTemplates }),
       };
 
@@ -268,7 +279,7 @@ export function registerOrganizationRoutes(
 
       res.json({
         success: true,
-        preferences: otherPreferences,
+        preferences: nextPreferences,
         emailTemplates,
         prepressDefaultEnabled:
           typeof prepressDefaultEnabled === "boolean"
@@ -278,6 +289,41 @@ export function registerOrganizationRoutes(
     } catch (error) {
       console.error("Error updating organization preferences:", error);
       res.status(500).json({ message: "Failed to update preferences" });
+    }
+  });
+
+  app.patch('/api/organization/preferences/inbound-email-intake', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ success: false, message: "No organization context" });
+      }
+
+      const userRole = req.user?.role || 'customer';
+      if (!['owner', 'admin'].includes(userRole)) {
+        return res.status(403).json({ success: false, message: "Only owners and admins can update inbound email intake settings" });
+      }
+
+      const patch = inboundEmailIntakeSettingsPatchSchema.parse(req.body ?? {});
+      const updated = await inboundEmailIntakeSettingsService.updateSettings(organizationId, patch, {
+        userId: getUserId(req.user) ?? null,
+        userName: req.user?.email ?? null,
+        ipAddress: req.ip ?? null,
+        userAgent: req.get?.("user-agent") ?? null,
+      });
+
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+
+      if (error?.statusCode === 404) {
+        return res.status(404).json({ success: false, message: "Organization not found" });
+      }
+
+      console.error("Error updating inbound email intake settings:", error);
+      res.status(500).json({ success: false, message: "Failed to update inbound email intake settings" });
     }
   });
 
