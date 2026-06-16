@@ -6,6 +6,10 @@ import {
   inboundEmailIntakeSettingsSchema,
   type InboundEmailIntakeSettings,
 } from "@shared/inboundEmailIntakeSettings";
+import {
+  inboundEmailPullResultSchema,
+  type InboundEmailPullResult,
+} from "@shared/inboundEmailIngestion";
 
 type InboundEmailSettingsResponse = {
   success: boolean;
@@ -49,7 +53,11 @@ export function usePullLatestInboundEmails() {
           data: payload.data,
         });
       }
-      return payload;
+      const parsed = inboundEmailPullResultSchema.safeParse(payload.data);
+      if (!parsed.success) {
+        throw new Error("Inbound email pull returned an invalid response.");
+      }
+      return parsed.data as InboundEmailPullResult;
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });

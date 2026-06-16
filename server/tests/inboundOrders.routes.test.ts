@@ -4,6 +4,9 @@ import request from "supertest";
 
 import { registerInboundOrderRoutes } from "../routes/inboundOrders.routes";
 import {
+  InboundEmailIngestionError,
+} from "../services/inboundEmailIngestionService";
+import {
   InboundOrderConversionValidationError,
   InboundOrderReviewDraftValidationError,
   InboundOrderTransitionError,
@@ -268,6 +271,7 @@ function buildApp(
     internal?: boolean;
     parsingService?: Record<string, any>;
     inboundEmailIntakeSettingsService?: Record<string, any>;
+    inboundEmailIngestionService?: Record<string, any>;
   } = {},
 ) {
   const app = express();
@@ -296,6 +300,7 @@ function buildApp(
     inboundOrderService: service as any,
     inboundOrderParsingService: options.parsingService as any,
     inboundEmailIntakeSettingsService: options.inboundEmailIntakeSettingsService as any,
+    inboundEmailIngestionService: options.inboundEmailIngestionService as any,
   });
   return app;
 }
@@ -333,6 +338,9 @@ describe("inbound order routes", () => {
   const inboundEmailIntakeSettingsService = {
     getSettings: jest.fn<(...args: any[]) => Promise<any>>(),
     getPullGuard: jest.fn<(...args: any[]) => Promise<any>>(),
+  };
+  const inboundEmailIngestionService = {
+    pullLatestEmails: jest.fn<(...args: any[]) => Promise<any>>(),
   };
 
   beforeEach(() => {
@@ -403,6 +411,75 @@ describe("inbound order routes", () => {
       code: "INBOUND_EMAIL_PULL_PAUSED",
       message: "Inbound email pulling is paused for this organization.",
     });
+  });
+
+  test("manual email pull reports missing inbound mailbox configuration", async () => {
+    inboundEmailIntakeSettingsService.getPullGuard.mockResolvedValue({
+      allowed: true,
+      settings: {
+        inboundEmailIntakeEnabled: true,
+        inboundEmailPullPaused: false,
+      },
+    });
+    inboundEmailIngestionService.pullLatestEmails.mockRejectedValue(new InboundEmailIngestionError(
+      "INBOUND_EMAIL_MAILBOX_NOT_CONFIGURED",
+      "No enabled inbound mailbox is configured for this organization.",
+      409,
+    ));
+
+    const response = await request(buildApp(service, { inboundEmailIntakeSettingsService, inboundEmailIngestionService }))
+      .post("/api/inbound-orders/email/pull-latest")
+      .send({ limit: 10 });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      success: false,
+      code: "INBOUND_EMAIL_MAILBOX_NOT_CONFIGURED",
+      message: "No enabled inbound mailbox is configured for this organization.",
+    });
+  });
+
+  test("manual email pull returns candidate creation summary", async () => {
+    inboundEmailIntakeSettingsService.getPullGuard.mockResolvedValue({
+      allowed: true,
+      settings: {
+        inboundEmailIntakeEnabled: true,
+        inboundEmailPullPaused: false,
+      },
+    });
+    inboundEmailIngestionService.pullLatestEmails.mockResolvedValue({
+      summary: { created: 2, skippedDuplicates: 1, ignored: 3, failed: 0 },
+      createdRecordIds: ["inbound_quote", "inbound_order"],
+      mailboxResults: [{
+        mailboxId: "mailbox_1",
+        mailboxName: "Orders Inbox",
+        provider: "gmail",
+        created: 2,
+        skippedDuplicates: 1,
+        ignored: 3,
+        failed: 0,
+        error: null,
+      }],
+    });
+
+    const response = await request(buildApp(service, { inboundEmailIntakeSettingsService, inboundEmailIngestionService }))
+      .post("/api/inbound-orders/email/pull-latest")
+      .send({ limit: 7 });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      success: true,
+      data: {
+        summary: { created: 2, skippedDuplicates: 1, ignored: 3, failed: 0 },
+        createdRecordIds: ["inbound_quote", "inbound_order"],
+      },
+    });
+    expect(inboundEmailIngestionService.pullLatestEmails).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      limit: 7,
+    });
+    expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
   });
 
   test("creates a manual TEMP inbound record with needs_review status", async () => {

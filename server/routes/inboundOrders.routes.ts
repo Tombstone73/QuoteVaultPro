@@ -25,6 +25,10 @@ import {
 } from "../services/inboundOrders/InboundOrderService";
 import { inboundOrderParsingService } from "../services/inboundOrders/InboundOrderParsingService";
 import { inboundEmailIntakeSettingsService } from "../services/inboundEmailIntakeSettingsService";
+import {
+  InboundEmailIngestionError,
+  inboundEmailIngestionService,
+} from "../services/inboundEmailIngestionService";
 import { getRequestOrganizationId } from "../tenantContext";
 
 function getUserId(user: any): string | undefined {
@@ -120,6 +124,10 @@ const customerMatchSchema = z.object({
   staffNote: z.string().trim().max(2000).optional().nullable(),
 });
 
+const inboundEmailPullLatestSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(25).optional(),
+});
+
 export function registerInboundOrderRoutes(
   app: Express,
   middleware: {
@@ -129,12 +137,14 @@ export function registerInboundOrderRoutes(
     inboundOrderService?: typeof inboundOrderService;
     inboundOrderParsingService?: typeof inboundOrderParsingService;
     inboundEmailIntakeSettingsService?: typeof inboundEmailIntakeSettingsService;
+    inboundEmailIngestionService?: typeof inboundEmailIngestionService;
   },
 ): void {
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
   const service = middleware.inboundOrderService ?? inboundOrderService;
   const parsingService = middleware.inboundOrderParsingService ?? inboundOrderParsingService;
   const emailSettingsService = middleware.inboundEmailIntakeSettingsService ?? inboundEmailIntakeSettingsService;
+  const emailIngestionService = middleware.inboundEmailIngestionService ?? inboundEmailIngestionService;
 
   app.get("/api/inbound-orders/email-settings", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -172,13 +182,26 @@ export function registerInboundOrderRoutes(
         });
       }
 
-      res.status(501).json({
-        success: false,
-        code: "INBOUND_EMAIL_PULL_NOT_CONFIGURED",
-        message: "Inbound email pulling is enabled, but no email pull worker is configured in this environment.",
-        data: guard.settings,
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: "User ID not found" });
+
+      const input = inboundEmailPullLatestSchema.parse(req.body ?? {});
+      const result = await emailIngestionService.pullLatestEmails({
+        organizationId,
+        actorUserId,
+        limit: input.limit,
       });
+
+      res.json({ success: true, data: result });
     } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+
+      if (error instanceof InboundEmailIngestionError) {
+        return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+      }
+
       if (error?.statusCode === 404) {
         return res.status(404).json({ success: false, message: "Organization not found" });
       }
