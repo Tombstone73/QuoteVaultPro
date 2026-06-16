@@ -348,6 +348,87 @@ function requiredPbv2Tree() {
   };
 }
 
+function finishingOptionTree(args: {
+  selectionKey: string;
+  label: string;
+  choiceLabel: string;
+  choiceValue?: string;
+}) {
+  return {
+    schemaVersion: 2,
+    rootNodeIds: [args.selectionKey],
+    nodes: {
+      [args.selectionKey]: {
+        id: args.selectionKey,
+        kind: "question",
+        label: args.label,
+        input: { type: "select", required: false, selectionKey: args.selectionKey },
+        choices: [{
+          id: args.choiceValue ?? args.selectionKey,
+          value: args.choiceValue ?? args.selectionKey,
+          label: args.choiceLabel,
+        }],
+      },
+    },
+  };
+}
+
+function treeWithoutFinishingSupport() {
+  return {
+    schemaVersion: 2,
+    rootNodeIds: ["thickness"],
+    nodes: {
+      thickness: {
+        id: "thickness",
+        kind: "question",
+        label: "Thickness",
+        input: { type: "select", required: false, selectionKey: "thickness", defaultValue: "3mm" },
+        choices: [{ id: "3mm", value: "3mm", label: "3mm" }],
+      },
+    },
+  };
+}
+
+async function buildDraftForUnsupportedRequestCase(args: {
+  productId: string;
+  productLabel: string;
+  sourceText: string;
+  finishingTexts?: string[];
+  treeJson: Record<string, unknown>;
+}) {
+  const attempt = parseAttempt({
+    parsedDraft: parsedDraft({
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: args.sourceText,
+        productName: args.productLabel,
+        candidateProductIds: [args.productId],
+        productCandidates: [{ id: args.productId, label: args.productLabel, confidence: 94, reason: "Controlled product match", metadata: {} }],
+        materialText: args.productLabel,
+        optionTexts: [],
+        finishingTexts: args.finishingTexts ?? [],
+      }],
+      missingDecisions: [],
+      globalWarnings: [],
+    }),
+  });
+  const { repo } = makeRepository(inboundRecord(), attempt);
+  (repo.getProductActivePbv2Tree as any).mockImplementation(async (_organizationId: string, productId: string) => (
+    productId === args.productId
+      ? {
+          product: { id: args.productId, name: args.productLabel, pbv2ActiveTreeVersionId: `tree_${args.productId}` },
+          activeTree: { id: `tree_${args.productId}`, treeJson: args.treeJson },
+        }
+      : null
+  ));
+  const service = new InboundOrderService(repo as any);
+  return service.getReviewDraft({
+    organizationId: "org_1",
+    inboundRecordId: "inbound_1",
+    actorUserId: "user_1",
+  });
+}
+
 function completePbv2Selections() {
   return {
     schemaVersion: 2 as const,
@@ -507,6 +588,113 @@ describe("InboundOrderService editable review draft", () => {
       artwork: { status: "missing" },
     });
     expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
+  });
+
+  test("flags PVC grommets when the selected product tree has no matching option", async () => {
+    const draft = await buildDraftForUnsupportedRequestCase({
+      productId: "product_pvc",
+      productLabel: "PVC",
+      sourceText: "PVC sign with grommets in the corners",
+      finishingTexts: ["grommets in the corners"],
+      treeJson: treeWithoutFinishingSupport(),
+    });
+
+    expect(draft.unsupportedRequestsJson).toEqual([
+      expect.objectContaining({
+        type: "UNSUPPORTED_REQUEST",
+        requestedText: "grommets in the corners",
+        category: "grommets",
+        matchedProduct: "PVC",
+        reason: "No compatible PBV2 option found.",
+        severity: "review_required",
+        suggestedAction: "Add manually or select a different product.",
+      }),
+    ]);
+  });
+
+  test("flags PVC rounded corners when no corner-radius option exists", async () => {
+    const draft = await buildDraftForUnsupportedRequestCase({
+      productId: "product_pvc",
+      productLabel: "PVC",
+      sourceText: "PVC sign with rounded corners",
+      finishingTexts: ["rounded corners"],
+      treeJson: treeWithoutFinishingSupport(),
+    });
+
+    expect(draft.unsupportedRequestsJson).toEqual([
+      expect.objectContaining({
+        requestedText: "rounded corners",
+        category: "rounded_corners",
+        matchedProduct: "PVC",
+      }),
+    ]);
+  });
+
+  test("does not flag banner pole pockets when the PBV2 tree supports them", async () => {
+    const draft = await buildDraftForUnsupportedRequestCase({
+      productId: "product_banner",
+      productLabel: "Banner",
+      sourceText: "Banner with pole pockets",
+      finishingTexts: ["pole pockets"],
+      treeJson: finishingOptionTree({
+        selectionKey: "pole_pockets",
+        label: "Pole Pockets",
+        choiceLabel: "Pole Pockets",
+      }),
+    });
+
+    expect(draft.unsupportedRequestsJson).toEqual([]);
+    expect(draft.reviewedLineItemsJson[0].pbv2OptionSuggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        selectionKey: "pole_pockets",
+        source: "source_evidence",
+        origin: "SOURCE_EVIDENCE",
+        evidence: "pole pockets",
+      }),
+    ]));
+  });
+
+  test("does not flag coroplast H-stakes when the PBV2 tree supports them", async () => {
+    const draft = await buildDraftForUnsupportedRequestCase({
+      productId: "product_coroplast",
+      productLabel: "Coroplast",
+      sourceText: "Coroplast sign with H-stakes",
+      finishingTexts: ["H-stakes"],
+      treeJson: finishingOptionTree({
+        selectionKey: "stakes",
+        label: "Stakes",
+        choiceLabel: "H-Stakes",
+        choiceValue: "h_stakes",
+      }),
+    });
+
+    expect(draft.unsupportedRequestsJson).toEqual([]);
+    expect(draft.reviewedLineItemsJson[0].pbv2OptionSuggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        selectionKey: "stakes",
+        source: "source_evidence",
+        origin: "SOURCE_EVIDENCE",
+        evidence: "H-stakes",
+      }),
+    ]));
+  });
+
+  test("flags ACM drill holes when no drill-hole option exists", async () => {
+    const draft = await buildDraftForUnsupportedRequestCase({
+      productId: "product_acm",
+      productLabel: "ACM",
+      sourceText: "ACM sign with drill holes",
+      finishingTexts: ["drill holes"],
+      treeJson: treeWithoutFinishingSupport(),
+    });
+
+    expect(draft.unsupportedRequestsJson).toEqual([
+      expect.objectContaining({
+        requestedText: "drill holes",
+        category: "drill_holes",
+        matchedProduct: "ACM",
+      }),
+    ]);
   });
 
   test("leaves ambiguous customer matches unselected for staff review", async () => {

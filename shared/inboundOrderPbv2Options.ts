@@ -26,6 +26,16 @@ export type InboundPbv2OptionSuggestion = {
   reason: string;
 };
 
+export type InboundUnsupportedRequestFinding = {
+  type: "UNSUPPORTED_REQUEST";
+  requestedText: string;
+  category: string;
+  matchedProduct: string | null;
+  reason: string;
+  severity: "review_required";
+  suggestedAction: string;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -160,6 +170,11 @@ function evidenceSpanForPhrase(sourceText: string, phrase: string): string | nul
   const pattern = tokens.map(escapeRegExp).join("[\\s\\-_/]+");
   const match = sourceText.match(new RegExp(`\\b${pattern}\\b`, "i"));
   return match?.[0] ?? null;
+}
+
+function evidenceSpanForPattern(sourceText: string, pattern: RegExp): string | null {
+  const match = sourceText.match(pattern);
+  return match?.[0]?.trim() || null;
 }
 
 function choiceEvidencePhrases(choice: unknown): string[] {
@@ -318,6 +333,124 @@ function getChoiceLabelForValue(node: OptionNodeV2, value: unknown): string {
     if (String(choiceValue(choice)) === String(value)) return choiceLabel(choice);
   }
   return String(value ?? "");
+}
+
+type UnsupportedRequestRule = {
+  category: string;
+  requestPattern: RegExp;
+  supportAliases: string[];
+};
+
+const unsupportedRequestRules: UnsupportedRequestRule[] = [
+  {
+    category: "grommets",
+    requestPattern: /\b(?:corner\s+)?grommets?\b(?:\s+(?:in|on|at)\s+(?:the\s+)?corners?)?|\bgrommets?\s+(?:in|on|at)\s+(?:the\s+)?corners?\b/i,
+    supportAliases: ["grommet", "grommets", "eyelet", "eyelets"],
+  },
+  {
+    category: "pole_pockets",
+    requestPattern: /\bpole\s+pockets?\b|\b(?:top|bottom)\s+pockets?\b/i,
+    supportAliases: ["pole pocket", "pole pockets", "pocket"],
+  },
+  {
+    category: "rounded_corners",
+    requestPattern: /\brounded\s+corners?\b|\bcorner\s+radius\b|\bradius\s+corners?\b/i,
+    supportAliases: ["rounded corner", "rounded corners", "corner radius", "radius corner", "radius corners"],
+  },
+  {
+    category: "contour_cutting",
+    requestPattern: /\bcontour\s+cut(?:ting)?\b|\bdie\s*cut(?:ting)?\b|\bshape\s*cut(?:ting)?\b/i,
+    supportAliases: ["contour cut", "contour cutting", "die cut", "die cutting", "shape cut", "shape cutting"],
+  },
+  {
+    category: "lamination",
+    requestPattern: /\blaminat(?:e|ed|ion)\b|\bmatte\s+laminat(?:e|ion)\b|\bgloss\s+laminat(?:e|ion)\b/i,
+    supportAliases: ["laminate", "laminated", "lamination", "matte laminate", "gloss laminate"],
+  },
+  {
+    category: "h_stakes",
+    requestPattern: /\bh[\s-]?stakes?\b|\byard\s+stakes?\b/i,
+    supportAliases: ["h stake", "h stakes", "h-stake", "h-stakes", "yard stake", "yard stakes", "stake", "stakes"],
+  },
+  {
+    category: "white_ink",
+    requestPattern: /\bwhite\s+ink\b|\bwhite\s+under(?:print|base)\b/i,
+    supportAliases: ["white ink", "white underprint", "white underbase"],
+  },
+  {
+    category: "spot_varnish",
+    requestPattern: /\bspot\s+varnish\b|\bspot\s+uv\b|\buv\s+varnish\b/i,
+    supportAliases: ["spot varnish", "spot uv", "uv varnish"],
+  },
+  {
+    category: "drill_holes",
+    requestPattern: /\bdrill(?:ed|ing)?\s+holes?\b|\bholes?\s+drill(?:ed|ing)?\b|\bmounting\s+holes?\b/i,
+    supportAliases: ["drill hole", "drill holes", "drilled holes", "mounting holes"],
+  },
+  {
+    category: "routing",
+    requestPattern: /\brout(?:e|ed|ing)\b|\bcnc\s+rout(?:e|ed|ing)\b/i,
+    supportAliases: ["route", "routed", "routing", "cnc routing"],
+  },
+  {
+    category: "mounting_hardware",
+    requestPattern: /\bmounting\s+hardware\b|\bstandoffs?\b|\bspacers?\b/i,
+    supportAliases: ["mounting hardware", "standoff", "standoffs", "spacer", "spacers"],
+  },
+];
+
+function pbv2TreeSupportsRequest(tree: OptionTreeV2 | null | undefined, aliases: string[]): boolean {
+  if (!tree || !isRecord(tree.nodes)) return false;
+  const normalizedAliases = aliases.map(normalizeForMatch).filter(Boolean);
+  if (normalizedAliases.length === 0) return false;
+
+  for (const node of Object.values(tree.nodes)) {
+    if (!isPbv2QuestionNode(node) || !isRenderableQuestion(node)) continue;
+    const nodeText = normalizeForMatch([
+      node.id,
+      getPbv2SelectionKey(node),
+      (node as any).key,
+      (node as any).label,
+      (node.input as any)?.label,
+      (node.input as any)?.selectionKey,
+      ...(Array.isArray((node as any).choices)
+        ? (node as any).choices.flatMap((choice: any) => [choice?.label, choice?.name, choice?.value, choice?.id, choice?.key])
+        : []),
+    ].filter(Boolean).join(" "));
+    if (normalizedAliases.some((alias) => nodeText.includes(alias))) return true;
+  }
+
+  return false;
+}
+
+export function detectUnsupportedInboundRequests(
+  tree: OptionTreeV2 | null | undefined,
+  evidenceText: string,
+  matchedProduct: string | null,
+): InboundUnsupportedRequestFinding[] {
+  const findings: InboundUnsupportedRequestFinding[] = [];
+  const seen = new Set<string>();
+
+  for (const rule of unsupportedRequestRules) {
+    const requestedText = evidenceSpanForPattern(evidenceText, rule.requestPattern);
+    if (!requestedText) continue;
+    if (pbv2TreeSupportsRequest(tree, rule.supportAliases)) continue;
+
+    const key = `${rule.category}:${normalizeForMatch(requestedText)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    findings.push({
+      type: "UNSUPPORTED_REQUEST",
+      requestedText,
+      category: rule.category,
+      matchedProduct,
+      reason: "No compatible PBV2 option found.",
+      severity: "review_required",
+      suggestedAction: "Add manually or select a different product.",
+    });
+  }
+
+  return findings;
 }
 
 export function hydrateInboundPbv2Selections(

@@ -1,4 +1,4 @@
-import { type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
@@ -180,6 +180,14 @@ function buildInboundOrderListUrl(filters: QueueFilters) {
   return `/api/inbound-orders?${params.toString()}`;
 }
 
+function isInboundOrderListQuery(query: { queryKey: readonly unknown[] }) {
+  const key = query.queryKey;
+  return key[0] === "/api/inbound-orders"
+    && key.length === 2
+    && typeof key[1] === "object"
+    && key[1] !== null;
+}
+
 async function readJson<T>(url: string): Promise<T> {
   const response = await apiFetch(url);
   const json = await response.json().catch(() => ({}));
@@ -344,6 +352,7 @@ function cloneReviewDraft(draft: InboundOrderReviewDraftDto): ReviewDraftFormSta
     reviewedArtworkJson: draft.reviewedArtworkJson,
     missingDecisionsJson: draft.missingDecisionsJson,
     warningsJson: draft.warningsJson,
+    unsupportedRequestsJson: draft.unsupportedRequestsJson ?? [],
     reviewNotes: draft.reviewNotes,
   })) as ReviewDraftFormState;
 }
@@ -1458,6 +1467,7 @@ function DraftBuilderPanel({
   onReopen,
   onRefreshFromLatestParse,
   onConvert,
+  onDirtyChange,
 }: {
   selectedRecord: ClientInboundOrderRecord | null;
   isLoading: boolean;
@@ -1478,9 +1488,11 @@ function DraftBuilderPanel({
   onReopen: () => Promise<void>;
   onRefreshFromLatestParse: () => Promise<void>;
   onConvert: () => Promise<void>;
+  onDirtyChange: (recordId: string | null, dirty: boolean) => void;
 }) {
   const [form, setForm] = useState<ReviewDraftFormState | null>(null);
   const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
+  const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
   const [contactSearch, setContactSearch] = useState("");
 
@@ -1521,6 +1533,15 @@ function DraftBuilderPanel({
     },
     enabled: Boolean(selectedRecord && draftForSelectors && reviewDraft),
   });
+  const dirty = Boolean(form && baseForm && !formStatesEqual(form, baseForm));
+
+  useEffect(() => {
+    const recordId = selectedRecord?.id ?? null;
+    const previous = lastReportedDirtyRef.current;
+    if (previous?.recordId === recordId && previous.dirty === dirty) return;
+    lastReportedDirtyRef.current = { recordId, dirty };
+    onDirtyChange(recordId, dirty);
+  }, [dirty, onDirtyChange, selectedRecord?.id]);
 
   if (!selectedRecord) {
     return <EmptyPanel title="Draft builder" detail="Draft builder will appear after parsing." />;
@@ -1599,10 +1620,10 @@ function DraftBuilderPanel({
     draft.customer.contactCandidates.map(candidateToReviewOption),
     (contactSearchQuery.data?.data ?? []).map(contactToReviewOption),
   );
-  const dirty = !formStatesEqual(form, baseForm);
   const actionPending = isSaving || isMarkingReady || isReopening || isRefreshingFromLatestParse || isConverting;
   const validationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
   const conversionErrors = convertError?.errors ?? [];
+  const unsupportedRequests = form.unsupportedRequestsJson ?? [];
   const canCreateDraftOrder = selectedRecord.status === "ready"
     && reviewDraft.status === "ready_to_convert"
     && validationErrors.length === 0;
@@ -1972,6 +1993,32 @@ function DraftBuilderPanel({
 
         <section className="rounded-md border border-border p-3">
           <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-foreground">Unsupported Requests</h3>
+            <Badge variant="outline">{unsupportedRequests.length}</Badge>
+          </div>
+          <div className="mt-3 space-y-2">
+            {unsupportedRequests.length === 0 ? (
+              <div className="text-sm text-muted-foreground">No unsupported requests detected.</div>
+            ) : (
+              unsupportedRequests.map((finding, index) => (
+                <div key={`${finding.category}-${index}`} className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm font-medium text-foreground">{finding.requestedText}</div>
+                    <Badge variant="outline">Review Required</Badge>
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {titleCase(finding.category)} / {finding.matchedProduct || "Selected product"}
+                  </div>
+                  <div className="mt-2 text-xs text-muted-foreground">{finding.reason}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">{finding.suggestedAction}</div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-md border border-border p-3">
+          <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-foreground">Missing Decisions</h3>
             <Badge variant="outline">{draft.missingDecisions.length}</Badge>
           </div>
@@ -2077,6 +2124,7 @@ export default function InboundOrdersPage() {
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
   const [parsingRecordId, setParsingRecordId] = useState<string | null>(null);
   const [lastConvertedOrderId, setLastConvertedOrderId] = useState<string | null>(null);
+  const [reviewDraftDirtyByRecordId, setReviewDraftDirtyByRecordId] = useState<Record<string, boolean>>({});
   const [queueCollapsed, setQueueCollapsed] = useState(() => (
     readStoredBoolean(workspaceLayoutStorageKeys.queueCollapsed, false)
   ));
@@ -2097,6 +2145,7 @@ export default function InboundOrdersPage() {
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const parseInFlightRef = useRef(false);
+  const keepCurrentDraftAfterParseRef = useRef(false);
   const listUrl = useMemo(() => buildInboundOrderListUrl(queueFilters), [queueFilters]);
 
   const listQuery = useQuery({
@@ -2208,14 +2257,24 @@ export default function InboundOrdersPage() {
     },
   });
 
+  const refreshReviewDraftFromLatestParseMutation = useMutation({
+    mutationFn: (recordId: string) => postJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft/refresh-from-latest-parse`, {}),
+    onSuccess: async (response, recordId) => {
+      queryClient.setQueryData(["/api/inbound-orders", recordId, "review-draft"], response);
+      await Promise.all([
+        queryClient.invalidateQueries({ predicate: isInboundOrderListQuery }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId], exact: true }),
+      ]);
+    },
+  });
+
   const parseMutation = useMutation({
     mutationFn: (recordId: string) => postJson<ClientInboundOrderParseResponse>(`/api/inbound-orders/${recordId}/parse`, {}),
     onSuccess: async (response) => {
       const parsedRecordId = response.data.record.id;
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] }),
-        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId] }),
-        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] }),
+        queryClient.invalidateQueries({ predicate: isInboundOrderListQuery }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId], exact: true }),
       ]);
       queryClient.setQueryData(["/api/inbound-orders", parsedRecordId, "draft-preview"], {
         success: true,
@@ -2224,10 +2283,16 @@ export default function InboundOrdersPage() {
           latestAttempt: response.data.latestAttempt,
         },
       } satisfies ClientInboundOrderDraftPreviewResponse);
+      if (keepCurrentDraftAfterParseRef.current) {
+        await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] });
+      } else {
+        await refreshReviewDraftFromLatestParseMutation.mutateAsync(parsedRecordId);
+      }
       setSelectedId(parsedRecordId);
     },
     onSettled: () => {
       parseInFlightRef.current = false;
+      keepCurrentDraftAfterParseRef.current = false;
       setParsingRecordId(null);
     },
   });
@@ -2260,18 +2325,6 @@ export default function InboundOrdersPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] }),
         queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] }),
-      ]);
-    },
-  });
-
-  const refreshReviewDraftFromLatestParseMutation = useMutation({
-    mutationFn: (recordId: string) => postJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft/refresh-from-latest-parse`, {}),
-    onSuccess: async (response, recordId) => {
-      queryClient.setQueryData(["/api/inbound-orders", recordId, "review-draft"], response);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] }),
-        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] }),
-        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId, "draft-preview"] }),
       ]);
     },
   });
@@ -2330,8 +2383,21 @@ export default function InboundOrdersPage() {
         || selectedRecord.createdOrderId
       ),
   );
+  const selectedReviewDraftHasUnsavedEdits = Boolean(selectedId && reviewDraftDirtyByRecordId[selectedId]);
+  const handleReviewDraftDirtyChange = useCallback((recordId: string | null, dirty: boolean) => {
+    if (!recordId) return;
+    setReviewDraftDirtyByRecordId((current) => (
+      current[recordId] === dirty ? current : { ...current, [recordId]: dirty }
+    ));
+  }, []);
   const runParseForSelectedRecord = () => {
     if (!selectedId || parseInFlightRef.current) return;
+    if (selectedReviewDraftHasUnsavedEdits) {
+      const applyLatestParse = window.confirm("Applying the latest parse will overwrite your draft changes.");
+      keepCurrentDraftAfterParseRef.current = !applyLatestParse;
+    } else {
+      keepCurrentDraftAfterParseRef.current = false;
+    }
     parseInFlightRef.current = true;
     setParsingRecordId(selectedId);
     parseMutation.mutate(selectedId);
@@ -2660,6 +2726,7 @@ export default function InboundOrdersPage() {
                 await refreshReviewDraftFromLatestParseMutation.mutateAsync(selectedId);
               }}
               onConvert={convertSelectedRecordToOrder}
+              onDirtyChange={handleReviewDraftDirtyChange}
             />
           </div>
         </section>

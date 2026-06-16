@@ -27,9 +27,11 @@ import {
 } from "@shared/inboundOrdersApi";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import {
+  detectUnsupportedInboundRequests,
   getInboundPbv2RequiredOptions,
   getMissingInboundPbv2RequiredOptions,
   hydrateInboundPbv2Selections,
+  type InboundUnsupportedRequestFinding,
 } from "@shared/inboundOrderPbv2Options";
 import {
   inboundOrdersRepository,
@@ -949,6 +951,7 @@ export class InboundOrderService {
       reviewedArtworkJson: baseDto.reviewedArtworkJson,
       missingDecisionsJson: baseDto.missingDecisionsJson,
       warningsJson: baseDto.warningsJson,
+      unsupportedRequestsJson: baseDto.unsupportedRequestsJson,
       reviewNotes: baseDto.reviewNotes,
     }));
     const snapshot = await this.persistEditableReviewDraftSnapshot({
@@ -1667,6 +1670,7 @@ export class InboundOrderService {
     const hasArtwork = draft.artwork.length > 0 || draft.lineItems.some((lineItem) => lineItem.artworkRefs.length > 0);
     const customerInterpretation = await this.interpretCustomerAndContact(args.organizationId, draft);
     const reviewedLineItemsJson = [];
+    const unsupportedRequestsJson: InboundUnsupportedRequestFinding[] = [];
     for (const lineItem of draft.lineItems) {
       const productInterpretation = await this.interpretLineItemProduct(args.organizationId, lineItem);
       const selectedProductId = productInterpretation?.productId ?? lineItem.candidateProductIds[0] ?? null;
@@ -1677,33 +1681,39 @@ export class InboundOrderService {
       if (selectedProductId) {
         const productOptions = await this.repository.getProductActivePbv2Tree(args.organizationId, selectedProductId);
         const treeJson = (productOptions?.activeTree?.treeJson ?? null) as OptionTreeV2 | null;
+        const optionEvidenceText = this.lineItemOptionEvidenceText({
+          sourceLineItemId: null,
+          sourceText: lineItem.sourceText,
+          productName: lineItem.productName,
+          selectedProductId,
+          interpretedProductId: productInterpretation?.productId ?? null,
+          interpretedProductReason: productInterpretation?.reason ?? null,
+          interpretedProductConfidence: productInterpretation?.confidence ?? null,
+          productUnresolved: false,
+          quantity: lineItem.quantity,
+          width: lineItem.width,
+          height: lineItem.height,
+          dimensionsUnit: lineItem.dimensionsUnit,
+          materialText: lineItem.materialText,
+          printSpecs: lineItem.optionTexts,
+          optionTexts: lineItem.optionTexts,
+          finishingTexts: lineItem.finishingTexts,
+          optionSelectionsJson: null,
+          pbv2TreeVersionId: null,
+          pbv2OptionSuggestions: [],
+          notes: null,
+        });
         if (treeJson) {
-          const hydrated = hydrateInboundPbv2Selections(treeJson, this.lineItemOptionEvidenceText({
-            sourceLineItemId: null,
-            sourceText: lineItem.sourceText,
-            productName: lineItem.productName,
-            selectedProductId,
-            interpretedProductId: productInterpretation?.productId ?? null,
-            interpretedProductReason: productInterpretation?.reason ?? null,
-            interpretedProductConfidence: productInterpretation?.confidence ?? null,
-            productUnresolved: false,
-            quantity: lineItem.quantity,
-            width: lineItem.width,
-            height: lineItem.height,
-            dimensionsUnit: lineItem.dimensionsUnit,
-            materialText: lineItem.materialText,
-            printSpecs: lineItem.optionTexts,
-            optionTexts: lineItem.optionTexts,
-            finishingTexts: lineItem.finishingTexts,
-            optionSelectionsJson: null,
-            pbv2TreeVersionId: null,
-            pbv2OptionSuggestions: [],
-            notes: null,
-          }));
+          const hydrated = hydrateInboundPbv2Selections(treeJson, optionEvidenceText);
           optionSelectionsJson = Object.keys(hydrated.selections.selected).length > 0 ? hydrated.selections : null;
           pbv2TreeVersionId = productOptions?.activeTree?.id ?? productOptions?.product.pbv2ActiveTreeVersionId ?? null;
           pbv2OptionSuggestions = hydrated.suggestions;
         }
+        unsupportedRequestsJson.push(...detectUnsupportedInboundRequests(
+          treeJson,
+          optionEvidenceText,
+          productInterpretation?.label ?? productOptions?.product.name ?? lineItem.productName ?? selectedProductId,
+        ));
       }
 
       reviewedLineItemsJson.push({
@@ -1778,6 +1788,7 @@ export class InboundOrderService {
         acknowledged: false,
         acknowledgementNote: null,
       })),
+      unsupportedRequestsJson,
       reviewNotes: null,
     });
   }
