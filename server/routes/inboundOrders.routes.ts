@@ -17,6 +17,7 @@ import {
   manualInboundOrderCreateSchema,
   normalizeInboundOrderStatusForStorage,
 } from "@shared/inboundOrdersApi";
+import { inboundEmailMailboxViewSchema } from "@shared/inboundEmailMailboxes";
 import {
   InboundOrderConversionValidationError,
   InboundOrderReviewDraftValidationError,
@@ -29,6 +30,7 @@ import {
   InboundEmailIngestionError,
   inboundEmailIngestionService,
 } from "../services/inboundEmailIngestionService";
+import { inboundEmailMailboxSettingsService } from "../services/inboundEmailMailboxSettingsService";
 import { getRequestOrganizationId } from "../tenantContext";
 
 function getUserId(user: any): string | undefined {
@@ -128,6 +130,23 @@ const inboundEmailPullLatestSchema = z.object({
   limit: z.coerce.number().int().min(1).max(25).optional(),
 });
 
+const inboundEmailMailboxParamsSchema = z.object({
+  id: z.string().trim().min(1),
+});
+
+const inboundEmailMailboxEnabledSchema = z.object({
+  enabled: z.boolean(),
+});
+
+function assertOwnerOrAdmin(req: any, res: any): boolean {
+  const role = req.user?.role || "customer";
+  if (!["owner", "admin"].includes(role)) {
+    res.status(403).json({ success: false, message: "Only owners and admins can manage inbound mailboxes" });
+    return false;
+  }
+  return true;
+}
+
 export function registerInboundOrderRoutes(
   app: Express,
   middleware: {
@@ -138,6 +157,7 @@ export function registerInboundOrderRoutes(
     inboundOrderParsingService?: typeof inboundOrderParsingService;
     inboundEmailIntakeSettingsService?: typeof inboundEmailIntakeSettingsService;
     inboundEmailIngestionService?: typeof inboundEmailIngestionService;
+    inboundEmailMailboxSettingsService?: typeof inboundEmailMailboxSettingsService;
   },
 ): void {
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
@@ -145,6 +165,7 @@ export function registerInboundOrderRoutes(
   const parsingService = middleware.inboundOrderParsingService ?? inboundOrderParsingService;
   const emailSettingsService = middleware.inboundEmailIntakeSettingsService ?? inboundEmailIntakeSettingsService;
   const emailIngestionService = middleware.inboundEmailIngestionService ?? inboundEmailIngestionService;
+  const emailMailboxSettingsService = middleware.inboundEmailMailboxSettingsService ?? inboundEmailMailboxSettingsService;
 
   app.get("/api/inbound-orders/email-settings", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -208,6 +229,99 @@ export function registerInboundOrderRoutes(
 
       console.error("Error pulling latest inbound emails:", error);
       res.status(500).json({ success: false, message: "Failed to pull latest inbound emails" });
+    }
+  });
+
+  app.get("/api/inbound-orders/email/mailboxes", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const mailboxes = (await emailMailboxSettingsService.listMailboxes(organizationId))
+        .map((mailbox) => inboundEmailMailboxViewSchema.parse(mailbox));
+      res.json({ success: true, data: { mailboxes } });
+    } catch (error) {
+      console.error("Error listing inbound email mailboxes:", error);
+      res.status(500).json({ success: false, message: "Failed to list inbound email mailboxes" });
+    }
+  });
+
+  app.patch("/api/inbound-orders/email/mailboxes/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      if (!assertOwnerOrAdmin(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { id } = inboundEmailMailboxParamsSchema.parse(req.params);
+      const { enabled } = inboundEmailMailboxEnabledSchema.parse(req.body ?? {});
+      const mailbox = inboundEmailMailboxViewSchema.parse(
+        await emailMailboxSettingsService.updateMailboxEnabled(organizationId, id, enabled),
+      );
+      res.json({ success: true, data: mailbox });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      if (error?.statusCode === 404) {
+        return res.status(404).json({ success: false, message: "Inbound mailbox not found" });
+      }
+
+      console.error("Error updating inbound email mailbox:", error);
+      res.status(500).json({ success: false, message: "Failed to update inbound email mailbox" });
+    }
+  });
+
+  app.post("/api/inbound-orders/email/mailboxes/:id/default", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      if (!assertOwnerOrAdmin(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { id } = inboundEmailMailboxParamsSchema.parse(req.params);
+      const mailbox = inboundEmailMailboxViewSchema.parse(
+        await emailMailboxSettingsService.setDefaultMailbox(organizationId, id),
+      );
+      res.json({ success: true, data: mailbox });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      if (error?.statusCode === 404) {
+        return res.status(404).json({ success: false, message: "Inbound mailbox not found" });
+      }
+
+      console.error("Error setting default inbound email mailbox:", error);
+      res.status(500).json({ success: false, message: "Failed to set default inbound email mailbox" });
+    }
+  });
+
+  app.delete("/api/inbound-orders/email/mailboxes/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      if (!assertOwnerOrAdmin(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { id } = inboundEmailMailboxParamsSchema.parse(req.params);
+      const result = await emailMailboxSettingsService.deleteMailbox(organizationId, id);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      if (error?.statusCode === 404) {
+        return res.status(404).json({ success: false, message: "Inbound mailbox not found" });
+      }
+
+      console.error("Error deleting inbound email mailbox:", error);
+      res.status(500).json({ success: false, message: "Failed to delete inbound email mailbox" });
     }
   });
 

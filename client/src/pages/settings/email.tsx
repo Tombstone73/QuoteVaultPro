@@ -15,8 +15,14 @@ import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Edit, Mail, FileText, Plus, Inbox, PauseCircle } from "lucide-react";
+import { Edit, Mail, FileText, Plus, Inbox, PauseCircle, Trash2, Star } from "lucide-react";
 import { useState, useEffect } from "react";
+import {
+  useDeleteInboundEmailMailbox,
+  useInboundEmailMailboxes,
+  useSetDefaultInboundEmailMailbox,
+  useUpdateInboundEmailMailboxEnabled,
+} from "@/hooks/useInboundEmailIntakeSettings";
 import {
   defaultInboundEmailIntakeSettings,
   inboundEmailIntakeSettingsSchema,
@@ -145,6 +151,200 @@ function InboundEmailIntakeControls() {
             aria-label="Pause Email Pulling"
           />
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function formatMailboxDate(value: string | null): string {
+  if (!value) return "Never";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown";
+  return date.toLocaleString();
+}
+
+function InboundEmailMailboxSettingsCard() {
+  const { toast } = useToast();
+  const mailboxesQuery = useInboundEmailMailboxes();
+  const updateEnabled = useUpdateInboundEmailMailboxEnabled();
+  const setDefault = useSetDefaultInboundEmailMailbox();
+  const deleteMailbox = useDeleteInboundEmailMailbox();
+  const isMutating = updateEnabled.isPending || setDefault.isPending || deleteMailbox.isPending;
+  const mailboxes = mailboxesQuery.data?.mailboxes ?? [];
+
+  const handleDelete = (mailboxId: string, label: string) => {
+    if (!window.confirm(`Delete inbound mailbox configuration for ${label}? Existing TEMP_INBOUND records will remain.`)) {
+      return;
+    }
+    deleteMailbox.mutate(mailboxId, {
+      onSuccess: () => {
+        toast({
+          title: "Inbound mailbox deleted",
+          description: "Mailbox configuration was removed. Existing inbound records were not deleted.",
+        });
+      },
+      onError: (error: Error) => {
+        toast({
+          title: "Failed to delete inbound mailbox",
+          description: error.message,
+          variant: "destructive",
+        });
+      },
+    });
+  };
+
+  const handleEnabledChange = (mailboxId: string, enabled: boolean) => {
+    updateEnabled.mutate({ mailboxId, enabled }, {
+      onSuccess: () => {
+        toast({
+          title: enabled ? "Inbound mailbox enabled" : "Inbound mailbox disabled",
+          description: enabled ? "This mailbox can be used by manual email pulls." : "Manual email pulls will skip this mailbox.",
+        });
+      },
+      onError: (error: Error) => {
+        toast({
+          title: "Failed to update inbound mailbox",
+          description: error.message,
+          variant: "destructive",
+        });
+      },
+    });
+  };
+
+  const handleSetDefault = (mailboxId: string) => {
+    setDefault.mutate(mailboxId, {
+      onSuccess: () => {
+        toast({
+          title: "Default inbound mailbox updated",
+          description: "Manual email pull defaults have been saved.",
+        });
+      },
+      onError: (error: Error) => {
+        toast({
+          title: "Failed to set default inbound mailbox",
+          description: error.message,
+          variant: "destructive",
+        });
+      },
+    });
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Mail className="h-5 w-5" />
+              Inbound Email Mailboxes
+            </CardTitle>
+            <CardDescription>
+              Dedicated inbound mailbox configuration for creating TEMP_INBOUND review records.
+            </CardDescription>
+          </div>
+          <Button type="button" disabled variant="outline">
+            <Plus className="mr-2 h-4 w-4" />
+            Connect Gmail Inbound Mailbox
+          </Button>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Gmail inbound connection setup is coming next. This does not use the outbound Gmail sending connection.
+        </p>
+      </CardHeader>
+      <CardContent>
+        {mailboxesQuery.isLoading ? (
+          <Skeleton className="h-40 w-full" />
+        ) : mailboxesQuery.isError ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+            Failed to load inbound mailbox settings.
+          </div>
+        ) : mailboxes.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border p-6 text-sm text-muted-foreground">
+            No inbound mailboxes are configured yet.
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-md border border-border">
+            <table className="w-full min-w-[860px] text-sm">
+              <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Provider</th>
+                  <th className="px-4 py-3 font-medium">Email Address</th>
+                  <th className="px-4 py-3 font-medium">Enabled</th>
+                  <th className="px-4 py-3 font-medium">Default</th>
+                  <th className="px-4 py-3 font-medium">Last Pull</th>
+                  <th className="px-4 py-3 font-medium">Status</th>
+                  <th className="px-4 py-3 font-medium">Last Error</th>
+                  <th className="px-4 py-3 text-right font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mailboxes.map((mailbox) => (
+                  <tr key={mailbox.id} className="border-t border-border align-top">
+                    <td className="px-4 py-3">
+                      <Badge variant="secondary" className="capitalize">{mailbox.provider}</Badge>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-foreground">{mailbox.emailAddress}</div>
+                      <div className="text-xs text-muted-foreground">{mailbox.name}</div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={mailbox.enabled}
+                          disabled={isMutating}
+                          onCheckedChange={(checked) => handleEnabledChange(mailbox.id, checked)}
+                          aria-label={`Enable inbound mailbox ${mailbox.emailAddress}`}
+                        />
+                        <span className="text-xs text-muted-foreground">{mailbox.enabled ? "Enabled" : "Disabled"}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      {mailbox.isDefault ? (
+                        <Badge>Default</Badge>
+                      ) : (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={isMutating}
+                          onClick={() => handleSetDefault(mailbox.id)}
+                        >
+                          <Star className="mr-2 h-3.5 w-3.5" />
+                          Set Default
+                        </Button>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{formatMailboxDate(mailbox.lastPulledAt)}</td>
+                    <td className="px-4 py-3">
+                      {mailbox.lastPullStatus ? (
+                        <Badge variant={mailbox.lastPullStatus === "success" ? "secondary" : "outline"}>
+                          {mailbox.lastPullStatus}
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground">None</span>
+                      )}
+                    </td>
+                    <td className="max-w-[220px] px-4 py-3 text-muted-foreground">
+                      <span className="block whitespace-normal break-words">{mailbox.lastPullError || "None"}</span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={isMutating}
+                        onClick={() => handleDelete(mailbox.id, mailbox.emailAddress)}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -521,6 +721,7 @@ export function EmailSettings() {
         
         <div className="space-y-4">
           <InboundEmailIntakeControls />
+          <InboundEmailMailboxSettingsCard />
           <EmailSettingsTab />
           <EmailTemplatesCard />
         </div>

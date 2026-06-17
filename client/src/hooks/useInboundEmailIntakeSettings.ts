@@ -10,6 +10,12 @@ import {
   inboundEmailPullResultSchema,
   type InboundEmailPullResult,
 } from "@shared/inboundEmailIngestion";
+import {
+  inboundEmailMailboxListResponseSchema,
+  inboundEmailMailboxViewSchema,
+  type InboundEmailMailboxListResponse,
+  type InboundEmailMailboxView,
+} from "@shared/inboundEmailMailboxes";
 
 type InboundEmailSettingsResponse = {
   success: boolean;
@@ -28,12 +34,102 @@ async function readInboundEmailSettings(): Promise<InboundEmailIntakeSettings> {
   return parsed.success ? parsed.data : defaultInboundEmailIntakeSettings;
 }
 
+async function readInboundEmailMailboxes(): Promise<InboundEmailMailboxListResponse> {
+  const response = await apiFetch("/api/inbound-orders/email/mailboxes");
+  const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.message || "Failed to load inbound email mailboxes");
+  }
+
+  const parsed = inboundEmailMailboxListResponseSchema.safeParse(payload.data);
+  if (!parsed.success) {
+    throw new Error("Inbound email mailbox list returned an invalid response.");
+  }
+  return parsed.data;
+}
+
 export function useInboundEmailIntakeSettings() {
   return useQuery<InboundEmailIntakeSettings>({
     queryKey: ["/api/inbound-orders/email-settings"],
     queryFn: readInboundEmailSettings,
     staleTime: 60_000,
     retry: false,
+  });
+}
+
+export function useInboundEmailMailboxes() {
+  return useQuery<InboundEmailMailboxListResponse>({
+    queryKey: ["/api/inbound-orders/email/mailboxes"],
+    queryFn: readInboundEmailMailboxes,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export function useUpdateInboundEmailMailboxEnabled() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ mailboxId, enabled }: { mailboxId: string; enabled: boolean }) => {
+      const response = await apiFetch(`/api/inbound-orders/email/mailboxes/${encodeURIComponent(mailboxId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || "Failed to update inbound email mailbox");
+      }
+      const parsed = inboundEmailMailboxViewSchema.safeParse(payload.data);
+      if (!parsed.success) {
+        throw new Error("Inbound email mailbox update returned an invalid response.");
+      }
+      return parsed.data as InboundEmailMailboxView;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/mailboxes"] });
+    },
+  });
+}
+
+export function useSetDefaultInboundEmailMailbox() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (mailboxId: string) => {
+      const response = await apiFetch(`/api/inbound-orders/email/mailboxes/${encodeURIComponent(mailboxId)}/default`, {
+        method: "POST",
+      });
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || "Failed to set default inbound email mailbox");
+      }
+      const parsed = inboundEmailMailboxViewSchema.safeParse(payload.data);
+      if (!parsed.success) {
+        throw new Error("Inbound email mailbox update returned an invalid response.");
+      }
+      return parsed.data as InboundEmailMailboxView;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/mailboxes"] });
+    },
+  });
+}
+
+export function useDeleteInboundEmailMailbox() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (mailboxId: string) => {
+      const response = await apiFetch(`/api/inbound-orders/email/mailboxes/${encodeURIComponent(mailboxId)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || "Failed to delete inbound email mailbox");
+      }
+      return payload.data as { id: string };
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/mailboxes"] });
+    },
   });
 }
 
