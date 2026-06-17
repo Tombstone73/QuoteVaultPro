@@ -350,6 +350,7 @@ describe("inbound order routes", () => {
     updateMailboxEnabled: jest.fn<(...args: any[]) => Promise<any>>(),
     setDefaultMailbox: jest.fn<(...args: any[]) => Promise<any>>(),
     deleteMailbox: jest.fn<(...args: any[]) => Promise<any>>(),
+    connectGmailMailbox: jest.fn<(...args: any[]) => Promise<any>>(),
   };
 
   beforeEach(() => {
@@ -489,6 +490,100 @@ describe("inbound order routes", () => {
       limit: 7,
     });
     expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
+  });
+
+  test("manual email pull runs after an enabled inbound mailbox is connected", async () => {
+    inboundEmailIntakeSettingsService.getPullGuard.mockResolvedValue({
+      allowed: true,
+      settings: {
+        inboundEmailIntakeEnabled: true,
+        inboundEmailPullPaused: false,
+      },
+    });
+    inboundEmailMailboxSettingsService.listMailboxes.mockResolvedValue([{
+      id: "mailbox_connected",
+      provider: "gmail",
+      name: "Orders Inbox",
+      emailAddress: "orders@example.com",
+      enabled: true,
+      isDefault: true,
+      lastPulledAt: null,
+      lastPullStatus: null,
+      lastPullError: null,
+      createdAt: "2026-06-09T12:00:00.000Z",
+      updatedAt: "2026-06-09T12:00:00.000Z",
+    }]);
+    inboundEmailIngestionService.pullLatestEmails.mockResolvedValue({
+      summary: { created: 1, skippedDuplicates: 0, ignored: 0, failed: 0 },
+      createdRecordIds: ["inbound_email_1"],
+      mailboxResults: [{
+        mailboxId: "mailbox_connected",
+        mailboxName: "Orders Inbox",
+        provider: "gmail",
+        created: 1,
+        skippedDuplicates: 0,
+        ignored: 0,
+        failed: 0,
+        error: null,
+      }],
+    });
+
+    const response = await request(buildApp(service, {
+      inboundEmailIntakeSettingsService,
+      inboundEmailIngestionService,
+      inboundEmailMailboxSettingsService,
+    }))
+      .post("/api/inbound-orders/email/pull-latest")
+      .send({});
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.summary.created).toBe(1);
+    expect(inboundEmailIngestionService.pullLatestEmails).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      limit: undefined,
+    });
+    expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
+  });
+
+  test("starts inbound Gmail OAuth without using the outbound Gmail connection", async () => {
+    const restoreEnv = (key: string, value: string | undefined) => {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    };
+    const originalSessionSecret = process.env.SESSION_SECRET;
+    const originalClientId = process.env.GOOGLE_CLIENT_ID;
+    const originalClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    const originalAppUrl = process.env.APP_URL;
+    const originalInboundRedirect = process.env.GOOGLE_INBOUND_OAUTH_REDIRECT_URI;
+    process.env.SESSION_SECRET = "test_session_secret";
+    process.env.GOOGLE_CLIENT_ID = "client_123";
+    process.env.GOOGLE_CLIENT_SECRET = "client_secret";
+    process.env.APP_URL = "https://dev.printershero.com";
+    delete process.env.GOOGLE_INBOUND_OAUTH_REDIRECT_URI;
+
+    try {
+      const response = await request(buildApp(service))
+        .get("/api/inbound-orders/email/mailboxes/gmail/start?reconnectMailboxId=mailbox_1");
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      const url = String(response.body.data.url);
+      expect(url).toContain("accounts.google.com");
+      expect(decodeURIComponent(url)).toContain("https://www.googleapis.com/auth/gmail.readonly");
+      expect(decodeURIComponent(url)).toContain("/api/inbound-orders/email/mailboxes/gmail/callback");
+      expect(decodeURIComponent(url)).toContain("inbound_gmail");
+      expect(url).not.toContain("/api/email/google/callback");
+    } finally {
+      restoreEnv("SESSION_SECRET", originalSessionSecret);
+      restoreEnv("GOOGLE_CLIENT_ID", originalClientId);
+      restoreEnv("GOOGLE_CLIENT_SECRET", originalClientSecret);
+      restoreEnv("APP_URL", originalAppUrl);
+      restoreEnv("GOOGLE_INBOUND_OAUTH_REDIRECT_URI", originalInboundRedirect);
+    }
   });
 
   test("lists no configured inbound email mailboxes", async () => {

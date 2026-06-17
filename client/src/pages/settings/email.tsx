@@ -21,6 +21,7 @@ import {
   useDeleteInboundEmailMailbox,
   useInboundEmailMailboxes,
   useSetDefaultInboundEmailMailbox,
+  useStartInboundGmailMailboxOAuth,
   useUpdateInboundEmailMailboxEnabled,
 } from "@/hooks/useInboundEmailIntakeSettings";
 import {
@@ -169,8 +170,43 @@ function InboundEmailMailboxSettingsCard() {
   const updateEnabled = useUpdateInboundEmailMailboxEnabled();
   const setDefault = useSetDefaultInboundEmailMailbox();
   const deleteMailbox = useDeleteInboundEmailMailbox();
-  const isMutating = updateEnabled.isPending || setDefault.isPending || deleteMailbox.isPending;
+  const startGmailOAuth = useStartInboundGmailMailboxOAuth();
+  const isMutating = updateEnabled.isPending || setDefault.isPending || deleteMailbox.isPending || startGmailOAuth.isPending;
   const mailboxes = mailboxesQuery.data?.mailboxes ?? [];
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get("inboundGmailConnected");
+    const error = params.get("inboundGmailError");
+
+    if (connected === "true") {
+      window.history.replaceState({}, "", window.location.pathname);
+      queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/mailboxes"] });
+      toast({
+        title: "Inbound Gmail mailbox connected",
+        description: "The mailbox is ready for manual inbound email pulls.",
+      });
+    } else if (error) {
+      const messages: Record<string, string> = {
+        cancelled: "Authorization was cancelled.",
+        duplicate_email: "Another inbound mailbox is already connected for that Gmail address.",
+        invalid_state: "Security check failed. Please try again.",
+        mailbox_not_found: "The mailbox selected for reconnect was not found.",
+        missing_code: "Authorization code missing. Please try again.",
+        no_refresh_token: "Google did not return a refresh token. Please try connecting again.",
+        platform_not_configured: "Inbound Gmail OAuth is not configured on this platform.",
+        profile_lookup_failed: "Could not retrieve a verified Gmail address from Google.",
+        storage_failed: "Failed to save the inbound mailbox connection.",
+        token_exchange_failed: "Failed to exchange the authorization code. Please try again.",
+      };
+      window.history.replaceState({}, "", window.location.pathname);
+      toast({
+        title: "Inbound Gmail connection failed",
+        description: messages[error] || `Unexpected error: ${error}`,
+        variant: "destructive",
+      });
+    }
+  }, [toast]);
 
   const handleDelete = (mailboxId: string, label: string) => {
     if (!window.confirm(`Delete inbound mailbox configuration for ${label}? Existing TEMP_INBOUND records will remain.`)) {
@@ -229,6 +265,21 @@ function InboundEmailMailboxSettingsCard() {
     });
   };
 
+  const handleConnect = (mailboxId?: string) => {
+    startGmailOAuth.mutate(mailboxId ?? null, {
+      onSuccess: (url) => {
+        window.location.href = url;
+      },
+      onError: (error: Error) => {
+        toast({
+          title: "Failed to start inbound Gmail connection",
+          description: error.message,
+          variant: "destructive",
+        });
+      },
+    });
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -242,13 +293,18 @@ function InboundEmailMailboxSettingsCard() {
               Dedicated inbound mailbox configuration for creating TEMP_INBOUND review records.
             </CardDescription>
           </div>
-          <Button type="button" disabled variant="outline">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={isMutating}
+            onClick={() => handleConnect()}
+          >
             <Plus className="mr-2 h-4 w-4" />
-            Connect Gmail Inbound Mailbox
+            {startGmailOAuth.isPending ? "Connecting..." : "Connect Gmail Inbound Mailbox"}
           </Button>
         </div>
         <p className="text-sm text-muted-foreground">
-          Gmail inbound connection setup is coming next. This does not use the outbound Gmail sending connection.
+          This creates a dedicated inbound Gmail mailbox and does not use the outbound Gmail sending connection.
         </p>
       </CardHeader>
       <CardContent>
@@ -328,16 +384,27 @@ function InboundEmailMailboxSettingsCard() {
                       <span className="block whitespace-normal break-words">{mailbox.lastPullError || "None"}</span>
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        disabled={isMutating}
-                        onClick={() => handleDelete(mailbox.id, mailbox.emailAddress)}
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete
-                      </Button>
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={isMutating}
+                          onClick={() => handleConnect(mailbox.id)}
+                        >
+                          Reconnect
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          disabled={isMutating}
+                          onClick={() => handleDelete(mailbox.id, mailbox.emailAddress)}
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Delete
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
