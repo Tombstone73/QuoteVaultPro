@@ -272,13 +272,15 @@ function buildApp(
     parsingService?: Record<string, any>;
     inboundEmailIntakeSettingsService?: Record<string, any>;
     inboundEmailIngestionService?: Record<string, any>;
+    inboundEmailMailboxSettingsService?: Record<string, any>;
+    userRole?: string;
   } = {},
 ) {
   const app = express();
   app.use(express.json());
 
   const isAuthenticated = (req: any, _res: any, next: any) => {
-    req.user = { id: "user_1", email: "staff@example.com" };
+    req.user = { id: "user_1", email: "staff@example.com", role: options.userRole ?? "admin" };
     next();
   };
   const tenantContext = (req: any, _res: any, next: any) => {
@@ -301,6 +303,7 @@ function buildApp(
     inboundOrderParsingService: options.parsingService as any,
     inboundEmailIntakeSettingsService: options.inboundEmailIntakeSettingsService as any,
     inboundEmailIngestionService: options.inboundEmailIngestionService as any,
+    inboundEmailMailboxSettingsService: options.inboundEmailMailboxSettingsService as any,
   });
   return app;
 }
@@ -341,6 +344,12 @@ describe("inbound order routes", () => {
   };
   const inboundEmailIngestionService = {
     pullLatestEmails: jest.fn<(...args: any[]) => Promise<any>>(),
+  };
+  const inboundEmailMailboxSettingsService = {
+    listMailboxes: jest.fn<(...args: any[]) => Promise<any>>(),
+    updateMailboxEnabled: jest.fn<(...args: any[]) => Promise<any>>(),
+    setDefaultMailbox: jest.fn<(...args: any[]) => Promise<any>>(),
+    deleteMailbox: jest.fn<(...args: any[]) => Promise<any>>(),
   };
 
   beforeEach(() => {
@@ -480,6 +489,104 @@ describe("inbound order routes", () => {
       limit: 7,
     });
     expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
+  });
+
+  test("lists no configured inbound email mailboxes", async () => {
+    inboundEmailMailboxSettingsService.listMailboxes.mockResolvedValue([]);
+
+    const response = await request(buildApp(service, { inboundEmailMailboxSettingsService }))
+      .get("/api/inbound-orders/email/mailboxes");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      success: true,
+      data: { mailboxes: [] },
+    });
+    expect(inboundEmailMailboxSettingsService.listMailboxes).toHaveBeenCalledWith("org_1");
+  });
+
+  test("lists a disabled inbound email mailbox", async () => {
+    inboundEmailMailboxSettingsService.listMailboxes.mockResolvedValue([{
+      id: "mailbox_disabled",
+      provider: "gmail",
+      name: "Orders Inbox",
+      emailAddress: "orders@example.com",
+      enabled: false,
+      isDefault: true,
+      lastPulledAt: null,
+      lastPullStatus: null,
+      lastPullError: null,
+      createdAt: "2026-06-09T12:00:00.000Z",
+      updatedAt: "2026-06-09T12:00:00.000Z",
+      authJson: { refreshToken: "secret_refresh_token" },
+      refreshToken: "secret_refresh_token",
+    }]);
+
+    const response = await request(buildApp(service, { inboundEmailMailboxSettingsService }))
+      .get("/api/inbound-orders/email/mailboxes");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.mailboxes[0]).toMatchObject({
+      id: "mailbox_disabled",
+      provider: "gmail",
+      emailAddress: "orders@example.com",
+      enabled: false,
+      isDefault: true,
+    });
+  });
+
+  test("lists an enabled inbound email mailbox", async () => {
+    inboundEmailMailboxSettingsService.listMailboxes.mockResolvedValue([{
+      id: "mailbox_enabled",
+      provider: "gmail",
+      name: "Quotes Inbox",
+      emailAddress: "quotes@example.com",
+      enabled: true,
+      isDefault: false,
+      lastPulledAt: "2026-06-09T12:05:00.000Z",
+      lastPullStatus: "success",
+      lastPullError: null,
+      createdAt: "2026-06-09T12:00:00.000Z",
+      updatedAt: "2026-06-09T12:05:00.000Z",
+    }]);
+
+    const response = await request(buildApp(service, { inboundEmailMailboxSettingsService }))
+      .get("/api/inbound-orders/email/mailboxes");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.mailboxes[0]).toMatchObject({
+      id: "mailbox_enabled",
+      provider: "gmail",
+      emailAddress: "quotes@example.com",
+      enabled: true,
+      isDefault: false,
+      lastPullStatus: "success",
+    });
+  });
+
+  test("redacts inbound mailbox auth data from list responses", async () => {
+    inboundEmailMailboxSettingsService.listMailboxes.mockResolvedValue([{
+      id: "mailbox_safe",
+      provider: "gmail",
+      name: "Safe Inbox",
+      emailAddress: "safe@example.com",
+      enabled: true,
+      isDefault: true,
+      lastPulledAt: null,
+      lastPullStatus: null,
+      lastPullError: null,
+      createdAt: "2026-06-09T12:00:00.000Z",
+      updatedAt: "2026-06-09T12:00:00.000Z",
+    }]);
+
+    const response = await request(buildApp(service, { inboundEmailMailboxSettingsService }))
+      .get("/api/inbound-orders/email/mailboxes");
+
+    expect(response.status).toBe(200);
+    const serialized = JSON.stringify(response.body);
+    expect(serialized).not.toContain("authJson");
+    expect(serialized).not.toContain("refreshToken");
+    expect(serialized).not.toContain("secret_refresh_token");
   });
 
   test("creates a manual TEMP inbound record with needs_review status", async () => {
