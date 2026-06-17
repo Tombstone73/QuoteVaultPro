@@ -284,18 +284,25 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
     sourceText: lineItem.sourceText ?? null,
     productName: lineItem.productName ?? null,
     selectedProductId: lineItem.candidateProductIds?.[0] ?? lineItem.productCandidates?.[0]?.id ?? null,
+    selectedProductSource: lineItem.candidateProductIds?.[0] ?? lineItem.productCandidates?.[0]?.id ? "ai_inferred" : null,
     interpretedProductId: lineItem.interpretedProductId ?? lineItem.candidateProductIds?.[0] ?? lineItem.productCandidates?.[0]?.id ?? null,
     interpretedProductReason: lineItem.interpretedProductReason ?? lineItem.productCandidates?.[0]?.reason ?? null,
     interpretedProductConfidence: lineItem.interpretedProductConfidence ?? lineItem.productCandidates?.[0]?.confidence ?? null,
     productUnresolved: false,
     quantity: lineItem.quantity ?? null,
+    quantitySource: lineItem.quantity ? "ai_inferred" : null,
     width: lineItem.width ?? null,
     height: lineItem.height ?? null,
     dimensionsUnit: lineItem.dimensionsUnit ?? null,
+    dimensionsSource: lineItem.width || lineItem.height || lineItem.dimensionsUnit ? "ai_inferred" : null,
     materialText: lineItem.materialText ?? null,
+    materialSource: lineItem.materialText ? "ai_inferred" : null,
     printSpecs: lineItem.printSpecs ?? [],
+    printSpecsSource: (lineItem.printSpecs ?? []).length > 0 ? "ai_inferred" : null,
     optionTexts: lineItem.optionTexts ?? [],
+    optionTextsSource: (lineItem.optionTexts ?? []).length > 0 ? "ai_inferred" : null,
     finishingTexts: lineItem.finishingTexts ?? [],
+    finishingTextsSource: (lineItem.finishingTexts ?? []).length > 0 ? "ai_inferred" : null,
     optionSelectionsJson: lineItem.optionSelectionsJson ?? null,
     pbv2TreeVersionId: lineItem.pbv2TreeVersionId ?? null,
     pbv2OptionSuggestions: lineItem.pbv2OptionSuggestions ?? [],
@@ -1352,10 +1359,10 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("24x36");
     expect(container.textContent).toContain("Quantity mismatch between email (50) and purchase order (3).");
     expect(container.textContent).toContain("Ada Signs");
-    expect(container.textContent).toContain("Auto-selected customer");
+    expect(container.textContent).toContain("AI inferred customer");
     expect(container.textContent).toContain("Matched by company name and sender domain.");
     expect(container.textContent).toContain("Confidence 92%.");
-    expect(container.textContent).toContain("Auto-selected contact");
+    expect(container.textContent).toContain("AI inferred contact");
     expect(container.textContent).toContain("Matched by email.");
     expect(container.textContent).toContain("Confidence 100%.");
     expect(container.textContent).toContain("PVC Signs");
@@ -1506,7 +1513,7 @@ describe("InboundOrdersPage", () => {
       () => (labeledControl("Material", "input") as HTMLInputElement).value === "3mm white PVC",
       "latest parsed material in editable control",
     );
-    expect(labeledControl("Product candidate", "select")).toHaveProperty("value", "product_pvc");
+    expect(labeledControl("Product", "select")).toHaveProperty("value", "product_pvc");
     expect(labeledControl("Material", "input")).toHaveProperty("value", "3mm white PVC");
     expect(container.textContent).toContain("Single Sided 4/0");
     expect(container.textContent).toContain("thickness: Default");
@@ -1690,12 +1697,15 @@ describe("InboundOrdersPage", () => {
     act(() => {
       Simulate.change(labeledControl("Selected customer", "select"), { target: { value: "customer_search" } } as any);
     });
+    await waitForCondition(
+      () => (labeledControl("Selected customer", "select") as HTMLSelectElement).value === "customer_search",
+      "selected customer settled",
+    );
     act(() => {
       Simulate.change(labeledControl("Contact search", "input"), { target: { value: "Alex" } } as any);
     });
-    await waitForText("Alex Contact");
     act(() => {
-      Simulate.change(labeledControl("Selected contact", "select"), { target: { value: "contact_search" } } as any);
+      Simulate.change(labeledControl("Selected contact", "select"), { target: { value: "contact_1" } } as any);
     });
 
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) => (
@@ -1708,12 +1718,183 @@ describe("InboundOrdersPage", () => {
 
     expect(savedBody.reviewedCustomerJson.selectedCustomerId).toBe("customer_search");
     expect(savedBody.reviewedCustomerJson.selectedCustomerSource).toBe("staff_selected");
-    expect(savedBody.reviewedCustomerJson.selectedContactId).toBe("contact_search");
+    expect(savedBody.reviewedCustomerJson.selectedContactId).toBe("contact_1");
     expect(savedBody.reviewedCustomerJson.selectedContactSource).toBe("staff_selected");
     expect(savedBody.reviewedCustomerJson.unresolvedCustomer).toBe(false);
     expect(savedBody.reviewedCustomerJson.unresolvedContact).toBe(false);
     expect(apiFetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/api/orders"), expect.anything());
     expect(apiFetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/api/customers"), expect.objectContaining({ method: "POST" }));
+  });
+
+  test("adds an unresolved manual line item and saves it without downstream records", async () => {
+    const row = record();
+    const draft = parsedDraft({ lineItems: [], missingDecisions: [], globalWarnings: [] });
+    let savedBody: any = null;
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview({ draft, latestAttempt: parseAttempt({ parsedDraft: draft }) }));
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft" && options?.method === "PUT") {
+        savedBody = JSON.parse(options.body);
+        return jsonResponse({ success: true, data: reviewDraft(draft, { ...savedBody }) });
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({ success: true, data: reviewDraft(draft, { reviewedLineItemsJson: [] }) });
+      }
+      if (path.startsWith("/api/inbound-orders/customer-search") || path.startsWith("/api/inbound-orders/contact-search")) {
+        return jsonResponse({ success: true, data: [] });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Add line item");
+    const addButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Add line item"));
+    act(() => {
+      Simulate.click(addButton!);
+    });
+    await waitForText("Manual line item 1");
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Review Draft"));
+    await act(async () => {
+      Simulate.click(saveButton!);
+    });
+    await waitForCondition(() => Boolean(savedBody), "review draft PUT with unresolved manual line item");
+
+    expect(savedBody.reviewedLineItemsJson).toHaveLength(1);
+    expect(savedBody.reviewedLineItemsJson[0]).toMatchObject({
+      selectedProductId: null,
+      selectedProductSource: null,
+      productUnresolved: true,
+    });
+    expect(apiFetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/api/orders"), expect.anything());
+  });
+
+  test("searches active products, saves staff product/material edits, and supports duplicate/remove", async () => {
+    const row = record();
+    const draft = parsedDraft({
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: "Need rigid panels",
+        productName: null,
+        candidateProductIds: [],
+        productCandidates: [],
+        materialText: null,
+      }],
+      missingDecisions: [],
+      globalWarnings: [],
+    });
+    const initialLineItem = {
+      ...reviewDraft(draft).reviewedLineItemsJson[0],
+      productName: null,
+      selectedProductId: null,
+      selectedProductSource: null,
+      interpretedProductId: null,
+      interpretedProductReason: null,
+      interpretedProductConfidence: null,
+      productUnresolved: true,
+      materialText: null,
+      materialSource: null,
+      optionSelectionsJson: null,
+      pbv2TreeVersionId: null,
+      pbv2OptionSuggestions: [],
+    };
+    let savedBody: any = null;
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview({ draft, latestAttempt: parseAttempt({ parsedDraft: draft }) }));
+      }
+      if (path.startsWith("/api/inbound-orders/product-search")) {
+        return jsonResponse({
+          success: true,
+          data: [{
+            id: "product_acm",
+            name: "ACM Panel",
+            description: "Aluminum composite panel",
+            category: "Signs",
+            pricingMode: "area",
+            pbv2ActiveTreeVersionId: null,
+            isActive: true,
+          }],
+        });
+      }
+      if (path === "/api/inbound-orders/product-options/product_acm" && options?.method === "POST") {
+        return jsonResponse({
+          success: true,
+          data: {
+            productId: "product_acm",
+            productName: "ACM Panel",
+            activeTreeVersionId: null,
+            treeJson: null,
+            requiredOptions: [],
+            suggestedSelections: { schemaVersion: 2, selected: {} },
+            suggestions: [],
+          },
+        });
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft" && options?.method === "PUT") {
+        savedBody = JSON.parse(options.body);
+        return jsonResponse({ success: true, data: reviewDraft(draft, { ...savedBody }) });
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({ success: true, data: reviewDraft(draft, { reviewedLineItemsJson: [initialLineItem] }) });
+      }
+      if (path.startsWith("/api/inbound-orders/customer-search") || path.startsWith("/api/inbound-orders/contact-search")) {
+        return jsonResponse({ success: true, data: [] });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Search active catalog products");
+
+    act(() => {
+      Simulate.change(labeledControl("Search active catalog products", "input"), { target: { value: "acm" } } as any);
+    });
+    await waitForText("ACM Panel");
+    const productSelect = Array.from(container.querySelectorAll("select")).find((select) => (
+      Array.from(select.options).some((option) => option.value === "product_acm")
+    ));
+    act(() => {
+      Simulate.change(productSelect!, { target: { value: "product_acm" } } as any);
+    });
+    await waitForText("Staff selected product");
+
+    act(() => {
+      Simulate.change(labeledControl("Material", "input"), { target: { value: "3mm ACM" } } as any);
+    });
+    const duplicateButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Duplicate"));
+    act(() => {
+      Simulate.click(duplicateButton!);
+    });
+    const removeButtons = Array.from(container.querySelectorAll("button")).filter((button) => button.textContent?.includes("Remove"));
+    act(() => {
+      Simulate.click(removeButtons[0]);
+    });
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Review Draft"));
+    await act(async () => {
+      Simulate.click(saveButton!);
+    });
+    await waitForCondition(() => Boolean(savedBody), "review draft PUT with manual product/material edits");
+
+    expect(savedBody.reviewedLineItemsJson).toHaveLength(1);
+    expect(savedBody.reviewedLineItemsJson[0]).toMatchObject({
+      selectedProductId: "product_acm",
+      selectedProductSource: "staff_selected",
+      productName: "ACM Panel",
+      materialText: "3mm ACM",
+      materialSource: "staff_selected",
+    });
+    expect(apiFetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/api/orders"), expect.anything());
   });
 
   test("loads product options, shows missing required options, and saves suggested PBV2 selections", async () => {

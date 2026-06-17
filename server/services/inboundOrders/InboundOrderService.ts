@@ -38,6 +38,7 @@ import {
   type CreateInboundOrderEventValues,
   type InboundContactSearchResult,
   type InboundCustomerSearchResult,
+  type InboundProductSearchResult,
   type InboundQuoteDraftLineInput,
   type InboundOrderListFilters,
   type InboundOrderQueueSummary,
@@ -1123,6 +1124,14 @@ export class InboundOrderService {
     );
   }
 
+  async searchProducts(args: {
+    organizationId: string;
+    search?: string | null;
+    limit: number;
+  }): Promise<InboundProductSearchResult[]> {
+    return this.repository.searchActiveProducts(args.organizationId, args.search ?? null, args.limit);
+  }
+
   async getProductOptionsForReview(args: {
     organizationId: string;
     productId: string;
@@ -1696,7 +1705,7 @@ export class InboundOrderService {
     const unsupportedRequestsJson: InboundUnsupportedRequestFinding[] = [];
     for (const lineItem of draft.lineItems) {
       const productInterpretation = await this.interpretLineItemProduct(args.organizationId, lineItem);
-      const selectedProductId = productInterpretation?.productId ?? lineItem.candidateProductIds[0] ?? null;
+      const selectedProductId = productInterpretation?.productId ?? null;
       let optionSelectionsJson: LineItemOptionSelectionsV2 | null = null;
       let pbv2TreeVersionId: string | null = null;
       let pbv2OptionSuggestions: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]["pbv2OptionSuggestions"] = [];
@@ -1709,18 +1718,25 @@ export class InboundOrderService {
           sourceText: lineItem.sourceText,
           productName: lineItem.productName,
           selectedProductId,
+          selectedProductSource: productInterpretation ? "ai_inferred" : null,
           interpretedProductId: productInterpretation?.productId ?? null,
           interpretedProductReason: productInterpretation?.reason ?? null,
           interpretedProductConfidence: productInterpretation?.confidence ?? null,
           productUnresolved: false,
           quantity: lineItem.quantity,
+          quantitySource: lineItem.quantity ? "ai_inferred" : null,
           width: lineItem.width,
           height: lineItem.height,
           dimensionsUnit: lineItem.dimensionsUnit,
+          dimensionsSource: lineItem.width || lineItem.height || lineItem.dimensionsUnit ? "ai_inferred" : null,
           materialText: lineItem.materialText,
+          materialSource: lineItem.materialText ? "ai_inferred" : null,
           printSpecs: lineItem.optionTexts,
+          printSpecsSource: lineItem.optionTexts.length > 0 ? "ai_inferred" : null,
           optionTexts: lineItem.optionTexts,
+          optionTextsSource: lineItem.optionTexts.length > 0 ? "ai_inferred" : null,
           finishingTexts: lineItem.finishingTexts,
+          finishingTextsSource: lineItem.finishingTexts.length > 0 ? "ai_inferred" : null,
           optionSelectionsJson: null,
           pbv2TreeVersionId: null,
           pbv2OptionSuggestions: [],
@@ -1744,18 +1760,25 @@ export class InboundOrderService {
         sourceText: lineItem.sourceText,
         productName: productInterpretation?.label ?? lineItem.productName,
         selectedProductId,
+        selectedProductSource: productInterpretation ? "ai_inferred" : null,
         interpretedProductId: productInterpretation?.productId ?? null,
         interpretedProductReason: productInterpretation?.reason ?? null,
         interpretedProductConfidence: productInterpretation?.confidence ?? null,
-        productUnresolved: false,
+        productUnresolved: !selectedProductId,
         quantity: lineItem.quantity,
+        quantitySource: lineItem.quantity ? "ai_inferred" : null,
         width: lineItem.width,
         height: lineItem.height,
         dimensionsUnit: lineItem.dimensionsUnit,
+        dimensionsSource: lineItem.width || lineItem.height || lineItem.dimensionsUnit ? "ai_inferred" : null,
         materialText: lineItem.materialText,
+        materialSource: lineItem.materialText ? "ai_inferred" : null,
         printSpecs: lineItem.optionTexts,
+        printSpecsSource: lineItem.optionTexts.length > 0 ? "ai_inferred" : null,
         optionTexts: lineItem.optionTexts,
+        optionTextsSource: lineItem.optionTexts.length > 0 ? "ai_inferred" : null,
         finishingTexts: lineItem.finishingTexts,
+        finishingTextsSource: lineItem.finishingTexts.length > 0 ? "ai_inferred" : null,
         optionSelectionsJson,
         pbv2TreeVersionId,
         pbv2OptionSuggestions,
@@ -1778,8 +1801,8 @@ export class InboundOrderService {
         selectedContactSource: customerInterpretation.contactSource,
         selectedContactReason: customerInterpretation.contactReason,
         selectedContactConfidence: customerInterpretation.contactConfidence,
-        unresolvedCustomer: false,
-        unresolvedContact: false,
+        unresolvedCustomer: !customerInterpretation.customerId,
+        unresolvedContact: !customerInterpretation.contactId,
         notes: null,
       },
       reviewedOrderJson: {
@@ -1906,20 +1929,21 @@ export class InboundOrderService {
     draft: InboundOrderParsedDraft,
   ): Promise<{
     customerId: string | null;
-    customerSource: "interpreted_customer_match" | null;
+    customerSource: "ai_inferred" | "crm_match" | null;
     customerReason: string | null;
     customerConfidence: number | null;
     contactId: string | null;
-    contactSource: "interpreted_contact_match" | null;
+    contactSource: "ai_inferred" | "crm_match" | null;
     contactReason: string | null;
     contactConfidence: number | null;
   }> {
-    const customerCandidates = new Map<string, { id: string; confidence: number; reason: string }>();
+    const customerCandidates = new Map<string, { id: string; confidence: number; reason: string; source: "ai_inferred" | "crm_match" }>();
     for (const candidate of draft.customer.customerCandidates) {
       customerCandidates.set(candidate.id, {
         id: candidate.id,
         confidence: candidate.confidence,
         reason: candidate.reason || "Matched parsed customer candidate.",
+        source: "ai_inferred",
       });
     }
 
@@ -1927,29 +1951,31 @@ export class InboundOrderService {
       for (const result of results) {
         const existing = customerCandidates.get(result.id);
         if (!existing) {
-          customerCandidates.set(result.id, { id: result.id, confidence, reason });
+          customerCandidates.set(result.id, { id: result.id, confidence, reason, source: "crm_match" });
         } else {
           customerCandidates.set(result.id, {
             id: result.id,
             confidence: Math.max(existing.confidence, confidence),
             reason: existing.reason.includes(reason) ? existing.reason : `${existing.reason} ${reason}`,
+            source: existing.source === "ai_inferred" && existing.confidence >= confidence ? existing.source : "crm_match",
           });
         }
       }
     };
 
     const sourceEmail = draft.customer.sourceEmail?.trim() || null;
-    const companyName = draft.customer.companyName?.trim() || draft.customer.sourceName?.trim() || null;
+    const companyName = draft.customer.companyName?.trim() || null;
+    const sourceName = draft.customer.sourceName?.trim() || null;
+    const emailDomain = sourceEmail?.split("@")[1]?.trim() || null;
     if (sourceEmail) {
       addCustomerSearchResults(
         await this.repository.searchCustomers(organizationId, sourceEmail, 5),
         94,
         "Matched by sender email.",
       );
-      const domain = sourceEmail.split("@")[1]?.trim();
-      if (domain) {
+      if (emailDomain) {
         addCustomerSearchResults(
-          await this.repository.searchCustomers(organizationId, domain, 5),
+          await this.repository.searchCustomers(organizationId, emailDomain, 5),
           88,
           "Matched by sender domain.",
         );
@@ -1963,32 +1989,76 @@ export class InboundOrderService {
         "Matched by company name.",
       );
     }
+    if (sourceName && sourceName !== companyName) {
+      const matches = await this.repository.searchCustomers(organizationId, sourceName, 5);
+      addCustomerSearchResults(
+        matches,
+        matches.length === 1 ? 88 : 80,
+        "Matched by sender name.",
+      );
+    }
 
-    const selectedCustomer = this.pickSingleStrongMatch(Array.from(customerCandidates.values()), 88);
-    const selectedCustomerId = selectedCustomer?.id ?? null;
-
-    const contactCandidates = new Map<string, { id: string; confidence: number; reason: string }>();
+    const contactCandidates = new Map<string, { id: string; customerId: string | null; confidence: number; reason: string; source: "ai_inferred" | "crm_match" }>();
     for (const candidate of draft.customer.contactCandidates) {
       contactCandidates.set(candidate.id, {
         id: candidate.id,
+        customerId: null,
         confidence: candidate.confidence,
         reason: candidate.reason || "Matched parsed contact candidate.",
+        source: "ai_inferred",
       });
     }
     const addContactSearchResults = (results: InboundContactSearchResult[], confidence: number, reason: string) => {
       for (const result of results) {
         const existing = contactCandidates.get(result.id);
         if (!existing) {
-          contactCandidates.set(result.id, { id: result.id, confidence, reason });
+          contactCandidates.set(result.id, { id: result.id, customerId: result.customerId, confidence, reason, source: "crm_match" });
         } else {
           contactCandidates.set(result.id, {
             id: result.id,
+            customerId: existing.customerId ?? result.customerId,
             confidence: Math.max(existing.confidence, confidence),
             reason: existing.reason.includes(reason) ? existing.reason : `${existing.reason} ${reason}`,
+            source: existing.source === "ai_inferred" && existing.confidence >= confidence ? existing.source : "crm_match",
           });
         }
       }
     };
+
+    if (sourceEmail) {
+      addContactSearchResults(
+        await this.repository.searchCustomerContacts(organizationId, null, sourceEmail, 5),
+        100,
+        "Matched by contact email.",
+      );
+    }
+    if (sourceName) {
+      addContactSearchResults(
+        await this.repository.searchCustomerContacts(organizationId, null, sourceName, 5),
+        88,
+        "Matched by sender name.",
+      );
+    }
+    if (emailDomain) {
+      addContactSearchResults(
+        await this.repository.searchCustomerContacts(organizationId, null, emailDomain, 5),
+        84,
+        "Matched by contact email domain.",
+      );
+    }
+
+    const selectedContactBeforeCustomer = this.pickSingleStrongMatch(Array.from(contactCandidates.values()), 88);
+    if (selectedContactBeforeCustomer?.customerId && !customerCandidates.has(selectedContactBeforeCustomer.customerId)) {
+      customerCandidates.set(selectedContactBeforeCustomer.customerId, {
+        id: selectedContactBeforeCustomer.customerId,
+        confidence: Math.max(90, selectedContactBeforeCustomer.confidence - 4),
+        reason: "Matched through sender contact CRM link.",
+        source: "crm_match",
+      });
+    }
+
+    const selectedCustomer = this.pickSingleStrongMatch(Array.from(customerCandidates.values()), 88);
+    const selectedCustomerId = selectedCustomer?.id ?? null;
 
     if (selectedCustomerId && sourceEmail) {
       addContactSearchResults(
@@ -1997,33 +2067,35 @@ export class InboundOrderService {
         "Matched by email.",
       );
     }
-    const contactName = draft.customer.sourceName?.trim() || null;
-    if (selectedCustomerId && contactName) {
+    if (selectedCustomerId && sourceName) {
       addContactSearchResults(
-        await this.repository.searchCustomerContacts(organizationId, selectedCustomerId, contactName, 5),
+        await this.repository.searchCustomerContacts(organizationId, selectedCustomerId, sourceName, 5),
         86,
         "Matched by contact name.",
       );
     }
-    if (selectedCustomerId && sourceEmail?.includes("@")) {
+    if (selectedCustomerId && emailDomain) {
       addContactSearchResults(
-        await this.repository.searchCustomerContacts(organizationId, selectedCustomerId, sourceEmail.split("@")[1], 5),
+        await this.repository.searchCustomerContacts(organizationId, selectedCustomerId, emailDomain, 5),
         80,
         "Matched by customer contact domain.",
       );
     }
 
     const selectedContact = selectedCustomerId
-      ? this.pickSingleStrongMatch(Array.from(contactCandidates.values()), 80)
-      : null;
+      ? this.pickSingleStrongMatch(
+        Array.from(contactCandidates.values()).filter((candidate) => !candidate.customerId || candidate.customerId === selectedCustomerId),
+        80,
+      )
+      : selectedContactBeforeCustomer;
 
     return {
       customerId: selectedCustomerId,
-      customerSource: selectedCustomer ? "interpreted_customer_match" : null,
+      customerSource: selectedCustomer ? selectedCustomer.source : null,
       customerReason: selectedCustomer ? selectedCustomer.reason : null,
       customerConfidence: selectedCustomer ? selectedCustomer.confidence : null,
       contactId: selectedContact?.id ?? null,
-      contactSource: selectedContact ? "interpreted_contact_match" : null,
+      contactSource: selectedContact ? selectedContact.source : null,
       contactReason: selectedContact ? selectedContact.reason : null,
       contactConfidence: selectedContact ? selectedContact.confidence : null,
     };

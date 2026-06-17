@@ -188,6 +188,13 @@ export const inboundOrderArtworkReviewStatusValues = ["supplied", "to_follow", "
 export const inboundOrderArtworkReviewStatusSchema = z.enum(inboundOrderArtworkReviewStatusValues);
 
 const nullableTextSchema = z.string().trim().max(10000).optional().nullable();
+export const inboundOrderReviewValueSourceSchema = z.enum([
+  "ai_inferred",
+  "crm_match",
+  "catalog_match",
+  "source_evidence",
+  "staff_selected",
+]);
 
 export const inboundOrderReviewedCustomerSchema = z.object({
   sourceName: z.string().trim().max(255).nullable().default(null),
@@ -195,11 +202,11 @@ export const inboundOrderReviewedCustomerSchema = z.object({
   sourcePhone: z.string().trim().max(80).nullable().default(null),
   companyName: z.string().trim().max(255).nullable().default(null),
   selectedCustomerId: z.string().trim().min(1).nullable().default(null),
-  selectedCustomerSource: z.enum(["interpreted_customer_match", "staff_selected"]).nullable().default(null),
+  selectedCustomerSource: z.enum(["interpreted_customer_match", "ai_inferred", "crm_match", "staff_selected"]).nullable().default(null),
   selectedCustomerReason: z.string().trim().max(1000).nullable().default(null),
   selectedCustomerConfidence: z.number().min(0).max(100).nullable().default(null),
   selectedContactId: z.string().trim().min(1).nullable().default(null),
-  selectedContactSource: z.enum(["interpreted_contact_match", "staff_selected"]).nullable().default(null),
+  selectedContactSource: z.enum(["interpreted_contact_match", "ai_inferred", "crm_match", "staff_selected"]).nullable().default(null),
   selectedContactReason: z.string().trim().max(1000).nullable().default(null),
   selectedContactConfidence: z.number().min(0).max(100).nullable().default(null),
   unresolvedCustomer: z.boolean().default(false),
@@ -221,18 +228,25 @@ export const inboundOrderReviewedLineItemSchema = z.object({
   sourceText: z.string().trim().max(5000).nullable().default(null),
   productName: z.string().trim().max(255).nullable().default(null),
   selectedProductId: z.string().trim().min(1).nullable().default(null),
+  selectedProductSource: inboundOrderReviewValueSourceSchema.nullable().default(null),
   interpretedProductId: z.string().trim().min(1).nullable().default(null),
   interpretedProductReason: z.string().trim().max(1000).nullable().default(null),
   interpretedProductConfidence: z.number().min(0).max(100).nullable().default(null),
   productUnresolved: z.boolean().default(false),
   quantity: z.number().positive().nullable().default(null),
+  quantitySource: inboundOrderReviewValueSourceSchema.nullable().default(null),
   width: z.number().positive().nullable().default(null),
   height: z.number().positive().nullable().default(null),
   dimensionsUnit: z.string().trim().max(40).nullable().default(null),
+  dimensionsSource: inboundOrderReviewValueSourceSchema.nullable().default(null),
   materialText: z.string().trim().max(255).nullable().default(null),
+  materialSource: inboundOrderReviewValueSourceSchema.nullable().default(null),
   printSpecs: z.array(z.string().trim().min(1).max(255)).default([]),
+  printSpecsSource: inboundOrderReviewValueSourceSchema.nullable().default(null),
   optionTexts: stringArraySchema,
+  optionTextsSource: inboundOrderReviewValueSourceSchema.nullable().default(null),
   finishingTexts: stringArraySchema,
+  finishingTextsSource: inboundOrderReviewValueSourceSchema.nullable().default(null),
   optionSelectionsJson: z.object({
     schemaVersion: z.literal(2).default(2),
     selected: z.record(z.object({
@@ -315,6 +329,7 @@ export const inboundOrderReviewDraftSaveSchema = inboundOrderReviewDraftPayloadS
 export type InboundOrderReviewDraftStatus = z.infer<typeof inboundOrderReviewDraftStatusSchema>;
 export type InboundOrderReviewDecisionStatus = z.infer<typeof inboundOrderReviewDecisionStatusSchema>;
 export type InboundOrderArtworkReviewStatus = z.infer<typeof inboundOrderArtworkReviewStatusSchema>;
+export type InboundOrderReviewValueSource = z.infer<typeof inboundOrderReviewValueSourceSchema>;
 export type InboundOrderReviewDraftPayload = z.infer<typeof inboundOrderReviewDraftPayloadSchema>;
 export type InboundOrderUnsupportedRequestFinding = z.infer<typeof inboundOrderUnsupportedRequestFindingSchema>;
 export type InboundOrderReviewDraftSaveRequest = Omit<z.infer<typeof inboundOrderReviewDraftSaveSchema>, "unsupportedRequestsJson"> & {
@@ -398,6 +413,21 @@ export type InboundOrderProductOptionsResponse = {
     suggestions: InboundPbv2OptionSuggestion[];
   };
   message?: string;
+};
+
+export type InboundProductSearchResult = {
+  id: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  pricingMode: string | null;
+  pbv2ActiveTreeVersionId: string | null;
+  isActive: boolean;
+};
+
+export type InboundProductSearchResponse = {
+  success: boolean;
+  data: InboundProductSearchResult[];
 };
 
 export type InboundOrderQueueSummary = {

@@ -122,6 +122,11 @@ const inboundContactSearchQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
 
+const inboundProductSearchQuerySchema = z.object({
+  search: z.string().trim().max(255).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+
 const customerMatchSchema = z.object({
   customerId: z.string().trim().min(1),
   contactId: z.string().trim().min(1).optional().nullable(),
@@ -618,6 +623,31 @@ export function registerInboundOrderRoutes(
 
       console.error("Error searching inbound contact matches:", error);
       res.status(500).json({ message: "Failed to search inbound contact matches" });
+    }
+  });
+
+  app.get("/api/inbound-orders/product-search", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const query = inboundProductSearchQuerySchema.parse(req.query);
+      const products = await service.searchProducts({
+        organizationId,
+        search: query.search ?? null,
+        limit: query.limit,
+      });
+
+      res.json({ success: true, data: products });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+
+      console.error("Error searching inbound product catalog:", error);
+      res.status(500).json({ message: "Failed to search inbound product catalog" });
     }
   });
 
