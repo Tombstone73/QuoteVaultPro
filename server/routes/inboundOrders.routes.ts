@@ -13,12 +13,17 @@ import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 
 import {
+  inboundEmailIgnoreRuleCreateSchema,
+  inboundEmailIgnoreRuleUpdateSchema,
+  inboundOrderBulkActionSchema,
+  inboundOrderIgnoreActionSchema,
   inboundOrderListQuerySchema,
   inboundOrderReviewDraftSaveSchema,
   inboundOrderStatusUpdateSchema,
   manualInboundOrderCreateSchema,
   normalizeInboundOrderStatusForStorage,
 } from "@shared/inboundOrdersApi";
+import type { InboundEmailIgnoreRule } from "@shared/schema";
 import { inboundEmailMailboxViewSchema } from "@shared/inboundEmailMailboxes";
 import {
   InboundOrderConversionValidationError,
@@ -145,6 +150,10 @@ const inboundEmailMailboxEnabledSchema = z.object({
   enabled: z.boolean(),
 });
 
+const inboundEmailIgnoreRuleParamsSchema = z.object({
+  id: z.string().trim().min(1),
+});
+
 const inboundGmailStartQuerySchema = z.object({
   reconnectMailboxId: z.string().trim().min(1).optional(),
 });
@@ -235,6 +244,15 @@ function assertOwnerOrAdmin(req: any, res: any): boolean {
     return false;
   }
   return true;
+}
+
+function formatInboundEmailIgnoreRule(rule: InboundEmailIgnoreRule) {
+  return {
+    ...rule,
+    createdAt: rule.createdAt.toISOString(),
+    updatedAt: rule.updatedAt.toISOString(),
+    lastMatchedAt: rule.lastMatchedAt ? rule.lastMatchedAt.toISOString() : null,
+  };
 }
 
 export function registerInboundOrderRoutes(
@@ -335,6 +353,102 @@ export function registerInboundOrderRoutes(
     } catch (error) {
       console.error("Error listing inbound email mailboxes:", error);
       res.status(500).json({ success: false, message: "Failed to list inbound email mailboxes" });
+    }
+  });
+
+  app.get("/api/inbound-orders/email/ignore-rules", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const rules = (await service.listEmailIgnoreRules({ organizationId })).map(formatInboundEmailIgnoreRule);
+      res.json({ success: true, data: { rules } });
+    } catch (error) {
+      console.error("Error listing inbound email ignore rules:", error);
+      res.status(500).json({ success: false, message: "Failed to list inbound email ignore rules" });
+    }
+  });
+
+  app.post("/api/inbound-orders/email/ignore-rules", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      if (!assertOwnerOrAdmin(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: "User ID not found" });
+
+      const input = inboundEmailIgnoreRuleCreateSchema.parse(req.body ?? {});
+      const rule = await service.createEmailIgnoreRule({
+        organizationId,
+        actorUserId,
+        ruleType: input.ruleType,
+        ruleValue: input.ruleValue,
+        notes: input.notes ?? null,
+      });
+      res.status(201).json({ success: true, data: formatInboundEmailIgnoreRule(rule) });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      console.error("Error creating inbound email ignore rule:", error);
+      res.status(500).json({ success: false, message: "Failed to create inbound email ignore rule" });
+    }
+  });
+
+  app.patch("/api/inbound-orders/email/ignore-rules/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      if (!assertOwnerOrAdmin(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { id } = inboundEmailIgnoreRuleParamsSchema.parse(req.params);
+      const input = inboundEmailIgnoreRuleUpdateSchema.parse(req.body ?? {});
+      const rule = await service.updateEmailIgnoreRule({
+        organizationId,
+        id,
+        enabled: input.enabled,
+        notes: input.notes,
+      });
+      res.json({ success: true, data: formatInboundEmailIgnoreRule(rule) });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ success: false, message: error.message });
+      }
+      console.error("Error updating inbound email ignore rule:", error);
+      res.status(500).json({ success: false, message: "Failed to update inbound email ignore rule" });
+    }
+  });
+
+  app.delete("/api/inbound-orders/email/ignore-rules/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      if (!assertOwnerOrAdmin(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { id } = inboundEmailIgnoreRuleParamsSchema.parse(req.params);
+      const rule = await service.deleteEmailIgnoreRule({ organizationId, id });
+      res.json({ success: true, data: formatInboundEmailIgnoreRule(rule) });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ success: false, message: error.message });
+      }
+      console.error("Error deleting inbound email ignore rule:", error);
+      res.status(500).json({ success: false, message: "Failed to delete inbound email ignore rule" });
     }
   });
 
@@ -1045,6 +1159,97 @@ export function registerInboundOrderRoutes(
     tenantContext,
     handleReviewAction("reject"),
   );
+
+  app.post("/api/inbound-orders/:id/ignore", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const input = inboundOrderIgnoreActionSchema.parse(req.body ?? {});
+      const detail = await service.applyIgnoreAction({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
+        action: input.action,
+        note: input.note ?? null,
+      });
+
+      res.json({ success: true, data: detail });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+      console.error("Error ignoring inbound order record:", error);
+      res.status(500).json({ message: "Failed to ignore inbound order record" });
+    }
+  });
+
+  app.delete("/api/inbound-orders/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const input = reviewActionSchema.parse(req.body ?? {});
+      const detail = await service.deleteQueueRecord({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
+        note: input.note ?? input.reason ?? null,
+      });
+
+      res.json({ success: true, data: detail });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+      console.error("Error deleting inbound order queue record:", error);
+      res.status(500).json({ message: "Failed to delete inbound order queue record" });
+    }
+  });
+
+  app.post("/api/inbound-orders/bulk-action", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const input = inboundOrderBulkActionSchema.parse(req.body ?? {});
+      const result = await service.applyBulkQueueAction({
+        organizationId,
+        actorUserId,
+        recordIds: input.recordIds,
+        action: input.action,
+        note: input.note ?? null,
+      });
+      res.json({ success: true, data: result });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error applying inbound order bulk action:", error);
+      res.status(500).json({ message: "Failed to update selected inbound records" });
+    }
+  });
 
   app.post(
     "/api/inbound-orders/:id/reopen",

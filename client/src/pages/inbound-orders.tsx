@@ -113,6 +113,14 @@ type InboundContactSearchResponse = {
 };
 
 type QueueStatusFilter = "all" | InboundOrderStatusGroup;
+type InboundQueueCleanupAction =
+  | "ignore_once"
+  | "ignore_sender"
+  | "ignore_domain"
+  | "ignore_subject"
+  | "ignore_sender_subject"
+  | "delete"
+  | "reject";
 
 type QueueFilters = {
   statusGroup: QueueStatusFilter;
@@ -123,7 +131,7 @@ type QueueFilters = {
 };
 
 const defaultQueueFilters: QueueFilters = {
-  statusGroup: "all",
+  statusGroup: "active",
   sourceType: "all",
   hasWarnings: false,
   unconvertedOnly: true,
@@ -160,6 +168,7 @@ const statusLabels: Record<InboundOrderRecordStatus, string> = {
   submitted: "Converted",
   failed: "Failed",
   terminal: "Rejected",
+  ignored: "Ignored",
 };
 
 const sourceTypeOptions: Array<{ value: QueueFilters["sourceType"]; label: string }> = [
@@ -183,7 +192,7 @@ function buildInboundOrderListUrl(filters: QueueFilters) {
   if (filters.statusGroup !== "all") params.set("statusGroup", filters.statusGroup);
   if (filters.sourceType !== "all") params.set("sourceType", filters.sourceType);
   if (filters.hasWarnings) params.set("hasWarnings", "true");
-  if (filters.unconvertedOnly && filters.statusGroup !== "converted") params.set("converted", "false");
+  if (filters.unconvertedOnly && filters.statusGroup !== "converted" && filters.statusGroup !== "ignored") params.set("converted", "false");
   if (filters.search.trim()) params.set("search", filters.search.trim());
 
   return `/api/inbound-orders?${params.toString()}`;
@@ -679,7 +688,7 @@ function QueueTriageControls({
   const setFilter = (patch: Partial<QueueFilters>) => onChange({ ...filters, ...patch });
   const statusButtons: Array<{ value: QueueStatusFilter; label: string; count: number | null }> = [
     {
-      value: "all",
+      value: "active",
       label: "Active",
       count: summary
         ? summary.needsReview + summary.waitingOnCustomer + summary.readyReviewed
@@ -690,6 +699,7 @@ function QueueTriageControls({
     { value: "ready", label: "Ready", count: summary?.readyReviewed ?? 0 },
     { value: "converted", label: "Converted", count: summary?.convertedSubmitted ?? 0 },
     { value: "rejected", label: "Rejected", count: summary?.rejectedTerminal ?? 0 },
+    { value: "ignored", label: "Ignored", count: summary?.ignored ?? 0 },
   ];
 
   return (
@@ -715,7 +725,7 @@ function QueueTriageControls({
             variant={filters.statusGroup === button.value ? "default" : "outline"}
             onClick={() => setFilter({
               statusGroup: button.value,
-              unconvertedOnly: button.value === "converted" ? false : filters.unconvertedOnly,
+              unconvertedOnly: button.value === "converted" || button.value === "ignored" ? false : filters.unconvertedOnly,
             })}
           >
             {button.label}
@@ -889,11 +899,15 @@ function ManualIntakeDialog({
 function InboundQueuePanel({
   records,
   selectedId,
+  selectedRecordIds,
   onSelect,
+  onToggleSelected,
 }: {
   records: ClientInboundOrderRecord[];
   selectedId: string | null;
+  selectedRecordIds: Set<string>;
   onSelect: (id: string) => void;
+  onToggleSelected: (id: string, selected: boolean) => void;
 }) {
   if (records.length === 0) {
     return (
@@ -910,21 +924,35 @@ function InboundQueuePanel({
         {records.map((record) => {
           const evidence = getManualInboundEvidence(record);
           return (
-            <button
+            <div
               key={record.id}
-              type="button"
               onClick={() => onSelect(record.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") onSelect(record.id);
+              }}
+              role="button"
+              tabIndex={0}
               className={cn(
-                "block box-border w-full min-w-0 max-w-full overflow-x-hidden rounded-md border p-3 text-left transition-colors",
+                "block box-border w-full min-w-0 max-w-full cursor-pointer overflow-x-hidden rounded-md border p-3 text-left transition-colors",
                 selectedId === record.id
                   ? "border-primary bg-primary/5"
                   : "border-border bg-card hover:bg-muted/50",
               )}
             >
               <div className="flex min-w-0 max-w-full items-start justify-between gap-2 overflow-hidden">
-                <div className="min-w-0 flex-1 overflow-hidden">
-                  <div className="block max-w-full truncate text-sm font-semibold text-foreground">{getRecordTitle(record)}</div>
-                  <div className="mt-1 block max-w-full truncate text-xs text-muted-foreground">{getSenderLabel(record)}</div>
+                <div className="flex min-w-0 flex-1 items-start gap-2 overflow-hidden">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-4 w-4 shrink-0"
+                    checked={selectedRecordIds.has(record.id)}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => onToggleSelected(record.id, event.target.checked)}
+                    aria-label={`Select inbound record ${getRecordTitle(record)}`}
+                  />
+                  <div className="min-w-0 flex-1 overflow-hidden">
+                    <div className="block max-w-full truncate text-sm font-semibold text-foreground">{getRecordTitle(record)}</div>
+                    <div className="mt-1 block max-w-full truncate text-xs text-muted-foreground">{getSenderLabel(record)}</div>
+                  </div>
                 </div>
                 <div className="shrink-0">
                   <StatusBadge status={record.status} />
@@ -950,7 +978,7 @@ function InboundQueuePanel({
                   <span className="min-w-0 flex-1 whitespace-normal break-words">{record.reviewRequiredReason || "Needs staff review"}</span>
                 </div>
               )}
-            </button>
+            </div>
           );
         })}
       </div>
@@ -968,9 +996,11 @@ function SourceEvidencePanel({
   isParsing,
   parseDisabled,
   isRejecting,
+  isCleaningUp,
   rejectDisabled,
   onParse,
   onReject,
+  onQueueAction,
 }: {
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
   selectedRecord: ClientInboundOrderRecord | null;
@@ -981,9 +1011,11 @@ function SourceEvidencePanel({
   isParsing: boolean;
   parseDisabled: boolean;
   isRejecting: boolean;
+  isCleaningUp: boolean;
   rejectDisabled: boolean;
   onParse: () => void;
   onReject: () => void;
+  onQueueAction: (action: InboundQueueCleanupAction) => void;
 }) {
   if (!selectedRecord) {
     return <EmptyPanel title="Select a record" detail="Source evidence will appear once an inbound item is selected." />;
@@ -1024,6 +1056,51 @@ function SourceEvidencePanel({
                 type="button"
                 size="sm"
                 variant="outline"
+                onClick={() => onQueueAction("ignore_once")}
+                disabled={rejectDisabled || isCleaningUp}
+                aria-label="Ignore inbound record once"
+              >
+                {isCleaningUp ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <XCircle className="mr-2 h-4 w-4" />
+                )}
+                Ignore Once
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => onQueueAction("ignore_sender")}
+                disabled={rejectDisabled || isCleaningUp}
+                aria-label="Ignore inbound sender"
+              >
+                Ignore Sender
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => onQueueAction("ignore_domain")}
+                disabled={rejectDisabled || isCleaningUp}
+                aria-label="Ignore inbound sender domain"
+              >
+                Ignore Domain
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => onQueueAction("ignore_subject")}
+                disabled={rejectDisabled || isCleaningUp}
+                aria-label="Ignore inbound subject"
+              >
+                Ignore Subject
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
                 onClick={onReject}
                 disabled={rejectDisabled}
                 aria-label="Reject inbound record"
@@ -1034,6 +1111,17 @@ function SourceEvidencePanel({
                   <AlertTriangle className="mr-2 h-4 w-4" />
                 )}
                 Reject
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => onQueueAction("delete")}
+                disabled={rejectDisabled || isCleaningUp}
+                aria-label="Delete inbound queue record"
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete
               </Button>
               <Button type="button" size="sm" onClick={onParse} disabled={parseDisabled}>
                 {isParsing ? (
@@ -2328,6 +2416,7 @@ export default function InboundOrdersPage() {
   const inboundEmailSettingsQuery = useInboundEmailIntakeSettings();
   const pullLatestEmailsMutation = usePullLatestInboundEmails();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedQueueRecordIds, setSelectedQueueRecordIds] = useState<Set<string>>(() => new Set());
   const [queueFilters, setQueueFilters] = useState<QueueFilters>(defaultQueueFilters);
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
   const [parsingRecordId, setParsingRecordId] = useState<string | null>(null);
@@ -2385,6 +2474,14 @@ export default function InboundOrdersPage() {
       setSelectedId(null);
     }
   }, [records, selectedId]);
+
+  useEffect(() => {
+    const recordIds = new Set(records.map((record) => record.id));
+    setSelectedQueueRecordIds((current) => {
+      const next = new Set(Array.from(current).filter((id) => recordIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [records]);
 
   useEffect(() => {
     window.localStorage.setItem(workspaceLayoutStorageKeys.queueCollapsed, String(queueCollapsed));
@@ -2558,6 +2655,73 @@ export default function InboundOrdersPage() {
     },
   });
 
+  const ignoreInboundOrderMutation = useMutation({
+    mutationFn: ({ recordId, action, note }: { recordId: string; action: Exclude<InboundQueueCleanupAction, "delete" | "reject">; note: string | null }) => (
+      postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/ignore`, { action, note })
+    ),
+    onSuccess: async (response, variables) => {
+      queryClient.setQueryData(["/api/inbound-orders", variables.recordId], response);
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
+      if (queueFilters.statusGroup === "ignored") {
+        setSelectedId(variables.recordId);
+      } else {
+        setSelectedId(null);
+      }
+      setSelectedQueueRecordIds((current) => {
+        const next = new Set(current);
+        next.delete(variables.recordId);
+        return next;
+      });
+    },
+  });
+
+  const deleteInboundQueueRecordMutation = useMutation({
+    mutationFn: ({ recordId, note }: { recordId: string; note: string | null }) => (
+      apiFetch(`/api/inbound-orders/${recordId}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note }),
+      }).then(async (response) => {
+        const json = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof json?.message === "string" ? json.message : "Failed to delete inbound record");
+        }
+        return json as ClientInboundOrderDetailResponse;
+      })
+    ),
+    onSuccess: async (_response, variables) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
+      setSelectedId(null);
+      setSelectedQueueRecordIds((current) => {
+        const next = new Set(current);
+        next.delete(variables.recordId);
+        return next;
+      });
+    },
+  });
+
+  const bulkQueueActionMutation = useMutation({
+    mutationFn: ({ recordIds, action, note }: { recordIds: string[]; action: InboundQueueCleanupAction; note: string | null }) => (
+      postJson<{ success: true; data: { updatedIds: string[]; errors: Array<{ id: string; message: string }> } }>(
+        "/api/inbound-orders/bulk-action",
+        { recordIds, action, note },
+      )
+    ),
+    onSuccess: async (response) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
+      setSelectedQueueRecordIds(new Set());
+      if (response.data.errors.length > 0) {
+        toast({
+          title: "Some records were not updated",
+          description: response.data.errors.map((error) => error.message).slice(0, 2).join(" "),
+          variant: "destructive",
+        });
+      }
+    },
+  });
+
   const convertToOrderMutation = useMutation({
     mutationFn: (recordId: string) => (
       postJson<InboundOrderConvertToOrderResponse>(`/api/inbound-orders/${recordId}/convert-to-order`, {})
@@ -2591,6 +2755,7 @@ export default function InboundOrdersPage() {
     selectedRecord
       && (
         selectedRecord.status === "terminal"
+        || selectedRecord.status === "ignored"
         || selectedRecord.status === "submitted"
         || selectedRecord.status === "approved"
         || selectedRecord.createdQuoteId
@@ -2621,6 +2786,49 @@ export default function InboundOrdersPage() {
     const reason = window.prompt("Optional reason for removing this inbound record from the active queue:");
     if (reason === null) return;
     rejectInboundOrderMutation.mutate({ recordId: selectedId, reason: trimToNull(reason) });
+  };
+
+  const runQueueCleanupAction = (action: InboundQueueCleanupAction) => {
+    if (!selectedId || selectedRecordIsTerminal) return;
+    const note = window.prompt("Optional note for this queue cleanup action:");
+    if (note === null) return;
+    const cleanNote = trimToNull(note);
+
+    if (action === "delete") {
+      const confirmed = window.confirm("Remove this TEMP_INBOUND review record from the operational queue? Source email, audit logs, and converted orders will not be deleted.");
+      if (!confirmed) return;
+      deleteInboundQueueRecordMutation.mutate({ recordId: selectedId, note: cleanNote });
+      return;
+    }
+
+    if (action === "reject") {
+      rejectInboundOrderMutation.mutate({ recordId: selectedId, reason: cleanNote });
+      return;
+    }
+
+    ignoreInboundOrderMutation.mutate({ recordId: selectedId, action, note: cleanNote });
+  };
+
+  const toggleQueueRecordSelected = (recordId: string, selected: boolean) => {
+    setSelectedQueueRecordIds((current) => {
+      const next = new Set(current);
+      if (selected) next.add(recordId);
+      else next.delete(recordId);
+      return next;
+    });
+  };
+
+  const runBulkQueueAction = (action: InboundQueueCleanupAction) => {
+    const recordIds = Array.from(selectedQueueRecordIds);
+    if (recordIds.length === 0 || bulkQueueActionMutation.isPending) return;
+    const note = window.prompt(`Optional note for ${recordIds.length} selected inbound record(s):`);
+    if (note === null) return;
+    const cleanNote = trimToNull(note);
+    if (action === "delete") {
+      const confirmed = window.confirm("Remove selected TEMP_INBOUND review records from the operational queue? Source emails, audit logs, and converted orders will not be deleted.");
+      if (!confirmed) return;
+    }
+    bulkQueueActionMutation.mutate({ recordIds, action, note: cleanNote });
   };
   const convertSelectedRecordToOrder = async () => {
     if (!selectedId || convertToOrderMutation.isPending) return;
@@ -2908,11 +3116,70 @@ export default function InboundOrdersPage() {
                   isLoading={listQuery.isFetching}
                   onChange={setQueueFilters}
                 />
+                {selectedQueueRecordIds.size > 0 && (
+                  <div className="border-b border-border bg-muted/30 p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="secondary">{selectedQueueRecordIds.size} selected</Badge>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={bulkQueueActionMutation.isPending}
+                        onClick={() => runBulkQueueAction("ignore_once")}
+                      >
+                        Ignore Once
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={bulkQueueActionMutation.isPending}
+                        onClick={() => runBulkQueueAction("ignore_sender")}
+                      >
+                        Ignore Sender
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={bulkQueueActionMutation.isPending}
+                        onClick={() => runBulkQueueAction("ignore_domain")}
+                      >
+                        Ignore Domain
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={bulkQueueActionMutation.isPending}
+                        onClick={() => runBulkQueueAction("reject")}
+                      >
+                        Reject
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={bulkQueueActionMutation.isPending}
+                        onClick={() => runBulkQueueAction("delete")}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                )}
                 <div className="min-h-0 flex-1">
                   {listQuery.isLoading ? (
                     <QueueSkeleton />
                   ) : (
-                    <InboundQueuePanel records={records} selectedId={selectedId} onSelect={setSelectedId} />
+                    <InboundQueuePanel
+                      records={records}
+                      selectedId={selectedId}
+                      selectedRecordIds={selectedQueueRecordIds}
+                      onSelect={setSelectedId}
+                      onToggleSelected={toggleQueueRecordSelected}
+                    />
                   )}
                 </div>
               </div>
@@ -2945,9 +3212,11 @@ export default function InboundOrdersPage() {
               isParsing={isSelectedRecordParsing}
               parseDisabled={isParseInFlight || selectedRecordIsTerminal}
               isRejecting={rejectInboundOrderMutation.isPending}
-              rejectDisabled={rejectInboundOrderMutation.isPending || selectedRecordIsTerminal}
+              isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
+              rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
               onParse={runParseForSelectedRecord}
               onReject={rejectSelectedRecord}
+              onQueueAction={runQueueCleanupAction}
             />
           </div>
           <button

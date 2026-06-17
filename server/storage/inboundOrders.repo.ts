@@ -5,6 +5,7 @@ import {
   customerContactLinks,
   customerContacts,
   customers,
+  inboundEmailIgnoreRules,
   inboundOrderDecisionFlags,
   inboundOrderEvents,
   inboundOrderFiles,
@@ -32,6 +33,8 @@ import {
   type InboundOrderSource,
   type InboundOrderSourceType,
   type InboundOrderWarning,
+  type InboundEmailIgnoreRule,
+  type InboundEmailIgnoreRuleType,
   type Customer,
   type CustomerContact,
   type Product,
@@ -53,7 +56,7 @@ import {
 
 export type InboundOrderListFilters = {
   status?: InboundOrderRecordStatus;
-  statusGroup?: "needs_review" | "waiting" | "ready" | "converted" | "rejected";
+  statusGroup?: "active" | "needs_review" | "waiting" | "ready" | "converted" | "rejected" | "ignored";
   reviewOutcome?: string;
   sourceType?: InboundOrderSourceType;
   sourceId?: string;
@@ -73,7 +76,17 @@ export type InboundOrderQueueSummary = {
   readyReviewed: number;
   convertedSubmitted: number;
   rejectedTerminal: number;
+  ignored: number;
   withWarnings: number;
+};
+
+export type CreateInboundEmailIgnoreRuleValues = {
+  organizationId: string;
+  ruleType: InboundEmailIgnoreRuleType;
+  ruleValue: string;
+  notes?: string | null;
+  createdByUserId?: string | null;
+  enabled?: boolean;
 };
 
 export type CreateInboundOrderRecordValues = Omit<
@@ -239,9 +252,18 @@ export class InboundOrdersRepository {
     if (filters.status) {
       hasExplicitQueueScope = true;
       predicates.push(eq(inboundOrderRecords.status, filters.status));
+    } else if (filters.statusGroup === "active") {
+      hasExplicitQueueScope = true;
+      predicates.push(sql`(
+        ${inboundOrderRecords.status} in ('received', 'processing', 'needs_review', 'waiting_on_customer', 'ready')
+        and coalesce(${inboundOrderRecords.reviewOutcome}, '') <> 'deleted'
+        and ${inboundOrderRecords.archivedAt} is null
+        and ${inboundOrderRecords.createdQuoteId} is null
+        and ${inboundOrderRecords.createdOrderId} is null
+      )`);
     } else if (filters.statusGroup === "needs_review") {
       hasExplicitQueueScope = true;
-      predicates.push(sql`${inboundOrderRecords.status} in ('received', 'processing', 'needs_review')`);
+      predicates.push(sql`${inboundOrderRecords.status} in ('received', 'processing', 'needs_review') and coalesce(${inboundOrderRecords.reviewOutcome}, '') <> 'deleted'`);
     } else if (filters.statusGroup === "waiting") {
       hasExplicitQueueScope = true;
       predicates.push(eq(inboundOrderRecords.status, "waiting_on_customer"));
@@ -253,12 +275,20 @@ export class InboundOrdersRepository {
       predicates.push(sql`(${inboundOrderRecords.createdQuoteId} is not null or ${inboundOrderRecords.createdOrderId} is not null or ${inboundOrderRecords.status} = 'submitted')`);
     } else if (filters.statusGroup === "rejected") {
       hasExplicitQueueScope = true;
-      predicates.push(sql`(${inboundOrderRecords.status} = 'terminal' or ${inboundOrderRecords.reviewOutcome} = 'rejected')`);
+      predicates.push(sql`(
+        (${inboundOrderRecords.status} = 'terminal' or ${inboundOrderRecords.reviewOutcome} = 'rejected')
+        and coalesce(${inboundOrderRecords.reviewOutcome}, '') <> 'deleted'
+      )`);
+    } else if (filters.statusGroup === "ignored") {
+      hasExplicitQueueScope = true;
+      predicates.push(sql`(${inboundOrderRecords.status} = 'ignored' or ${inboundOrderRecords.reviewOutcome} = 'ignored')`);
     }
 
     if (!hasExplicitQueueScope && filters.converted !== true && !filters.reviewOutcome) {
       predicates.push(sql`(
         ${inboundOrderRecords.status} in ('received', 'processing', 'needs_review', 'waiting_on_customer', 'ready')
+        and coalesce(${inboundOrderRecords.reviewOutcome}, '') <> 'deleted'
+        and ${inboundOrderRecords.archivedAt} is null
         and ${inboundOrderRecords.createdQuoteId} is null
         and ${inboundOrderRecords.createdOrderId} is null
       )`);
@@ -344,7 +374,8 @@ export class InboundOrdersRepository {
         waitingOnCustomer: sql<number>`count(*) filter (where ${inboundOrderRecords.status} = 'waiting_on_customer')`,
         readyReviewed: sql<number>`count(*) filter (where ${inboundOrderRecords.status} = 'ready')`,
         convertedSubmitted: sql<number>`count(*) filter (where ${inboundOrderRecords.createdQuoteId} is not null or ${inboundOrderRecords.createdOrderId} is not null or ${inboundOrderRecords.status} = 'submitted')`,
-        rejectedTerminal: sql<number>`count(*) filter (where ${inboundOrderRecords.status} = 'terminal' or ${inboundOrderRecords.reviewOutcome} = 'rejected')`,
+        rejectedTerminal: sql<number>`count(*) filter (where (${inboundOrderRecords.status} = 'terminal' or ${inboundOrderRecords.reviewOutcome} = 'rejected') and coalesce(${inboundOrderRecords.reviewOutcome}, '') <> 'deleted')`,
+        ignored: sql<number>`count(*) filter (where ${inboundOrderRecords.status} = 'ignored' or ${inboundOrderRecords.reviewOutcome} = 'ignored')`,
         withWarnings: sql<number>`count(*) filter (where exists (
           select 1 from ${inboundOrderWarnings}
           where ${inboundOrderWarnings.organizationId} = ${organizationId}
@@ -360,8 +391,92 @@ export class InboundOrdersRepository {
       readyReviewed: Number(summary?.readyReviewed ?? 0),
       convertedSubmitted: Number(summary?.convertedSubmitted ?? 0),
       rejectedTerminal: Number(summary?.rejectedTerminal ?? 0),
+      ignored: Number(summary?.ignored ?? 0),
       withWarnings: Number(summary?.withWarnings ?? 0),
     };
+  }
+
+  async listEmailIgnoreRules(organizationId: string): Promise<InboundEmailIgnoreRule[]> {
+    return this.dbInstance
+      .select()
+      .from(inboundEmailIgnoreRules)
+      .where(eq(inboundEmailIgnoreRules.organizationId, organizationId))
+      .orderBy(desc(inboundEmailIgnoreRules.enabled), asc(inboundEmailIgnoreRules.ruleType), asc(inboundEmailIgnoreRules.ruleValue));
+  }
+
+  async listEnabledEmailIgnoreRules(organizationId: string): Promise<InboundEmailIgnoreRule[]> {
+    return this.dbInstance
+      .select()
+      .from(inboundEmailIgnoreRules)
+      .where(and(eq(inboundEmailIgnoreRules.organizationId, organizationId), eq(inboundEmailIgnoreRules.enabled, true)))
+      .orderBy(asc(inboundEmailIgnoreRules.ruleType), asc(inboundEmailIgnoreRules.ruleValue));
+  }
+
+  async createEmailIgnoreRule(values: CreateInboundEmailIgnoreRuleValues): Promise<InboundEmailIgnoreRule> {
+    const ruleValue = values.ruleValue.trim();
+    const [created] = await this.dbInstance
+      .insert(inboundEmailIgnoreRules)
+      .values({
+        organizationId: values.organizationId,
+        enabled: values.enabled ?? true,
+        ruleType: values.ruleType,
+        ruleValue,
+        notes: values.notes ?? null,
+        createdByUserId: values.createdByUserId ?? null,
+      })
+      .onConflictDoUpdate({
+        target: [
+          inboundEmailIgnoreRules.organizationId,
+          inboundEmailIgnoreRules.ruleType,
+          inboundEmailIgnoreRules.ruleValue,
+        ],
+        set: {
+          enabled: values.enabled ?? true,
+          notes: values.notes ?? null,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+
+    if (!created) throw new Error("Failed to create inbound email ignore rule");
+    return created;
+  }
+
+  async updateEmailIgnoreRule(args: {
+    organizationId: string;
+    id: string;
+    enabled?: boolean;
+    notes?: string | null;
+  }): Promise<InboundEmailIgnoreRule | null> {
+    const patch: Partial<typeof inboundEmailIgnoreRules.$inferInsert> = { updatedAt: new Date() };
+    if (typeof args.enabled === "boolean") patch.enabled = args.enabled;
+    if ("notes" in args) patch.notes = args.notes ?? null;
+
+    const [updated] = await this.dbInstance
+      .update(inboundEmailIgnoreRules)
+      .set(patch)
+      .where(and(eq(inboundEmailIgnoreRules.organizationId, args.organizationId), eq(inboundEmailIgnoreRules.id, args.id)))
+      .returning();
+    return updated ?? null;
+  }
+
+  async deleteEmailIgnoreRule(organizationId: string, id: string): Promise<InboundEmailIgnoreRule | null> {
+    const [deleted] = await this.dbInstance
+      .delete(inboundEmailIgnoreRules)
+      .where(and(eq(inboundEmailIgnoreRules.organizationId, organizationId), eq(inboundEmailIgnoreRules.id, id)))
+      .returning();
+    return deleted ?? null;
+  }
+
+  async recordEmailIgnoreRuleMatch(ruleId: string): Promise<void> {
+    await this.dbInstance
+      .update(inboundEmailIgnoreRules)
+      .set({
+        matchCount: sql`${inboundEmailIgnoreRules.matchCount} + 1`,
+        lastMatchedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(inboundEmailIgnoreRules.id, ruleId));
   }
 
   async getInboundOrder(organizationId: string, inboundRecordId: string): Promise<InboundOrderRecord | null> {

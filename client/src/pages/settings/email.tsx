@@ -16,12 +16,16 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Edit, Mail, FileText, Plus, Inbox, PauseCircle, Trash2, Star } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, type FormEvent } from "react";
 import {
+  useCreateInboundEmailIgnoreRule,
+  useDeleteInboundEmailIgnoreRule,
   useDeleteInboundEmailMailbox,
+  useInboundEmailIgnoreRules,
   useInboundEmailMailboxes,
   useSetDefaultInboundEmailMailbox,
   useStartInboundGmailMailboxOAuth,
+  useUpdateInboundEmailIgnoreRule,
   useUpdateInboundEmailMailboxEnabled,
 } from "@/hooks/useInboundEmailIntakeSettings";
 import {
@@ -29,6 +33,7 @@ import {
   inboundEmailIntakeSettingsSchema,
   type InboundEmailIntakeSettings,
 } from "@shared/inboundEmailIntakeSettings";
+import type { InboundEmailIgnoreRuleTypeValue } from "@shared/inboundOrdersApi";
 
 // Schema for email templates
 const emailTemplatesSchema = z.object({
@@ -417,6 +422,178 @@ function InboundEmailMailboxSettingsCard() {
   );
 }
 
+const inboundIgnoreRuleTypeLabels: Record<InboundEmailIgnoreRuleTypeValue, string> = {
+  sender_email_exact: "Sender email",
+  sender_domain: "Sender domain",
+  subject_exact: "Subject exact",
+  subject_contains: "Subject contains",
+};
+
+function InboundEmailIgnoreRulesCard() {
+  const { toast } = useToast();
+  const rulesQuery = useInboundEmailIgnoreRules();
+  const createRule = useCreateInboundEmailIgnoreRule();
+  const updateRule = useUpdateInboundEmailIgnoreRule();
+  const deleteRule = useDeleteInboundEmailIgnoreRule();
+  const [ruleType, setRuleType] = useState<InboundEmailIgnoreRuleTypeValue>("sender_email_exact");
+  const [ruleValue, setRuleValue] = useState("");
+  const [notes, setNotes] = useState("");
+  const rules = rulesQuery.data?.rules ?? [];
+  const isMutating = createRule.isPending || updateRule.isPending || deleteRule.isPending;
+
+  const submitRule = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmed = ruleValue.trim();
+    if (!trimmed) return;
+    createRule.mutate({
+      ruleType,
+      ruleValue: trimmed,
+      notes: notes.trim() || null,
+    }, {
+      onSuccess: () => {
+        setRuleValue("");
+        setNotes("");
+        toast({
+          title: "Inbound ignore rule saved",
+          description: "Future matching emails will be skipped before TEMP_INBOUND records are created.",
+        });
+      },
+      onError: (error: Error) => {
+        toast({ title: "Failed to save ignore rule", description: error.message, variant: "destructive" });
+      },
+    });
+  };
+
+  const toggleRule = (ruleId: string, enabled: boolean) => {
+    updateRule.mutate({ ruleId, enabled }, {
+      onError: (error: Error) => {
+        toast({ title: "Failed to update ignore rule", description: error.message, variant: "destructive" });
+      },
+    });
+  };
+
+  const removeRule = (ruleId: string, label: string) => {
+    if (!window.confirm(`Delete inbound ignore rule for ${label}? Source emails and existing records will not be deleted.`)) return;
+    deleteRule.mutate(ruleId, {
+      onSuccess: () => {
+        toast({ title: "Inbound ignore rule deleted", description: "Future email pulls will no longer use that rule." });
+      },
+      onError: (error: Error) => {
+        toast({ title: "Failed to delete ignore rule", description: error.message, variant: "destructive" });
+      },
+    });
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Inbox className="h-5 w-5" />
+          Inbound Ignore Rules
+        </CardTitle>
+        <CardDescription>
+          Skip recurring non-order emails before they create TEMP_INBOUND review records.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <form onSubmit={submitRule} className="grid gap-3 md:grid-cols-[220px_1fr_auto]">
+          <select
+            className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+            value={ruleType}
+            onChange={(event) => setRuleType(event.target.value as InboundEmailIgnoreRuleTypeValue)}
+            disabled={isMutating}
+            aria-label="Ignore rule type"
+          >
+            {Object.entries(inboundIgnoreRuleTypeLabels).map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+          <Input
+            value={ruleValue}
+            onChange={(event) => setRuleValue(event.target.value)}
+            placeholder="notifications@example.com, example.com, Payment Received..."
+            disabled={isMutating}
+          />
+          <Button type="submit" disabled={isMutating || !ruleValue.trim()}>
+            <Plus className="mr-2 h-4 w-4" />
+            Add Rule
+          </Button>
+          <Textarea
+            className="md:col-span-3"
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            placeholder="Optional notes"
+            rows={2}
+            disabled={isMutating}
+          />
+        </form>
+
+        {rulesQuery.isLoading ? (
+          <Skeleton className="h-40 w-full" />
+        ) : rulesQuery.isError ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+            Failed to load inbound ignore rules.
+          </div>
+        ) : rules.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border p-6 text-sm text-muted-foreground">
+            No inbound ignore rules are configured yet.
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-md border border-border">
+            <table className="w-full min-w-[760px] text-sm">
+              <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Enabled</th>
+                  <th className="px-4 py-3 font-medium">Type</th>
+                  <th className="px-4 py-3 font-medium">Value</th>
+                  <th className="px-4 py-3 font-medium">Usage</th>
+                  <th className="px-4 py-3 font-medium">Notes</th>
+                  <th className="px-4 py-3 text-right font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rules.map((rule) => (
+                  <tr key={rule.id} className="border-t border-border align-top">
+                    <td className="px-4 py-3">
+                      <Switch
+                        checked={rule.enabled}
+                        disabled={isMutating}
+                        onCheckedChange={(checked) => toggleRule(rule.id, checked)}
+                        aria-label={`Enable ignore rule ${rule.ruleValue}`}
+                      />
+                    </td>
+                    <td className="px-4 py-3">{inboundIgnoreRuleTypeLabels[rule.ruleType]}</td>
+                    <td className="px-4 py-3 font-medium text-foreground">{rule.ruleValue}</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      <div>{rule.matchCount} match{rule.matchCount === 1 ? "" : "es"}</div>
+                      <div className="text-xs">{rule.lastMatchedAt ? formatMailboxDate(rule.lastMatchedAt) : "Never matched"}</div>
+                    </td>
+                    <td className="max-w-[260px] px-4 py-3 text-muted-foreground">
+                      <span className="block whitespace-normal break-words">{rule.notes || "-"}</span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={isMutating}
+                        onClick={() => removeRule(rule.id, rule.ruleValue)}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // Available template variables
 const QUOTE_VARIABLES = [
   { label: "Quote Number", value: "{quoteNumber}" },
@@ -789,6 +966,7 @@ export function EmailSettings() {
         <div className="space-y-4">
           <InboundEmailIntakeControls />
           <InboundEmailMailboxSettingsCard />
+          <InboundEmailIgnoreRulesCard />
           <EmailSettingsTab />
           <EmailTemplatesCard />
         </div>
