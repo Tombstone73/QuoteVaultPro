@@ -7,11 +7,13 @@ import {
   inboundOrderEvents,
   inboundOrderRecords,
   inboundOrderSources,
+  type InboundEmailIgnoreRule,
   type InboundEmailMailbox,
   type InboundOrderRecord,
   type InboundOrderSource,
 } from "@shared/schema";
 import type { InboundEmailIntent, InboundEmailPullResult } from "@shared/inboundEmailIngestion";
+import { inboundOrdersRepository, type InboundOrdersRepository } from "../storage/inboundOrders.repo";
 
 export type InboundEmailAttachmentMetadata = {
   filename: string | null;
@@ -137,6 +139,45 @@ export function classifyInboundEmailForReview(message: InboundEmailProviderMessa
   return { ignored: false, intent: "UNKNOWN", reason: "Ambiguous inbound request." };
 }
 
+function normalizeText(value: string | null | undefined): string {
+  return String(value ?? "").trim();
+}
+
+function normalizeLower(value: string | null | undefined): string {
+  return normalizeText(value).toLowerCase();
+}
+
+function senderDomainFromEmail(email: string | null | undefined): string {
+  const domain = normalizeLower(email).split("@")[1]?.trim();
+  return domain || "";
+}
+
+export function matchInboundEmailIgnoreRule(
+  rule: Pick<InboundEmailIgnoreRule, "ruleType" | "ruleValue">,
+  message: InboundEmailProviderMessage,
+): boolean {
+  const ruleValue = normalizeLower(rule.ruleValue);
+  if (!ruleValue) return false;
+
+  if (rule.ruleType === "sender_email_exact") {
+    return normalizeLower(message.senderEmail) === ruleValue;
+  }
+
+  if (rule.ruleType === "sender_domain") {
+    return senderDomainFromEmail(message.senderEmail) === ruleValue;
+  }
+
+  if (rule.ruleType === "subject_exact") {
+    return normalizeLower(message.subject) === ruleValue;
+  }
+
+  if (rule.ruleType === "subject_contains") {
+    return normalizeLower(message.subject).includes(ruleValue);
+  }
+
+  return false;
+}
+
 class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
   async listRecentMessages(mailbox: InboundEmailMailbox, limit: number): Promise<InboundEmailProviderMessage[]> {
     const authJson = (mailbox.authJson ?? {}) as Record<string, unknown>;
@@ -237,6 +278,7 @@ export class InboundEmailIngestionService {
   constructor(
     private readonly dbInstance = db,
     private readonly adapterByProvider: Record<string, InboundEmailProviderAdapter> = { gmail: new GmailInboundEmailAdapter() },
+    private readonly inboundRepository: InboundOrdersRepository = inboundOrdersRepository,
   ) {}
 
   async pullLatestEmails(args: {
@@ -383,6 +425,20 @@ export class InboundEmailIngestionService {
       .limit(1);
     if (existing) return { status: "skippedDuplicates" };
 
+    const matchedIgnoreRule = await this.findMatchedIgnoreRule(organizationId, message);
+    if (matchedIgnoreRule) {
+      await this.inboundRepository.recordEmailIgnoreRuleMatch(matchedIgnoreRule.id);
+      console.info("[Inbound Email Pull] Ignored message by rule", {
+        organizationId,
+        mailboxId: mailbox.id,
+        messageId: message.messageId,
+        ruleId: matchedIgnoreRule.id,
+        ruleType: matchedIgnoreRule.ruleType,
+        ruleValue: matchedIgnoreRule.ruleValue,
+      });
+      return { status: "ignored" };
+    }
+
     const classification = classifyInboundEmailForReview(message);
     if (classification.ignored) return { status: "ignored" };
 
@@ -501,6 +557,14 @@ export class InboundEmailIngestionService {
     });
 
     return record ? { status: "created", recordId: record.id } : { status: "skippedDuplicates" };
+  }
+
+  private async findMatchedIgnoreRule(
+    organizationId: string,
+    message: InboundEmailProviderMessage,
+  ): Promise<InboundEmailIgnoreRule | null> {
+    const rules = await this.inboundRepository.listEnabledEmailIgnoreRules(organizationId);
+    return rules.find((rule) => matchInboundEmailIgnoreRule(rule, message)) ?? null;
   }
 
   private async markMailboxPull(mailboxId: string, status: string, error: string | null): Promise<void> {

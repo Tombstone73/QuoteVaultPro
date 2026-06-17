@@ -1,7 +1,10 @@
 import { z } from "zod";
 import {
+  inboundEmailIgnoreRuleTypeSchema,
   inboundOrderRecordStatusSchema,
   inboundOrderSourceTypeSchema,
+  type InboundEmailIgnoreRule,
+  type InboundEmailIgnoreRuleType,
   type InboundOrderParseAttempt,
   type InboundOrderDecisionFlag,
   type InboundOrderEvent,
@@ -18,11 +21,13 @@ import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "./optionTreeV2";
 import type { InboundPbv2OptionSuggestion, InboundPbv2RequiredOption } from "./inboundOrderPbv2Options";
 
 export const inboundOrderStatusGroupSchema = z.enum([
+  "active",
   "needs_review",
   "waiting",
   "ready",
   "converted",
   "rejected",
+  "ignored",
 ]);
 
 export const inboundOrderListQuerySchema = z.object({
@@ -53,8 +58,44 @@ export const manualInboundOrderCreateSchema = z.object({
 export const inboundOrderStatusUpdateSchema = z.object({
   status: z.union([
     inboundOrderRecordStatusSchema,
-    z.enum(["waiting", "converted", "rejected"]),
+    z.enum(["waiting", "converted", "rejected", "ignored"]),
   ]),
+});
+
+export const inboundEmailIgnoreRuleCreateSchema = z.object({
+  ruleType: inboundEmailIgnoreRuleTypeSchema,
+  ruleValue: z.string().trim().min(1).max(500),
+  notes: z.string().trim().max(2000).optional().nullable(),
+});
+
+export const inboundEmailIgnoreRuleUpdateSchema = z.object({
+  enabled: z.boolean().optional(),
+  notes: z.string().trim().max(2000).optional().nullable(),
+});
+
+export const inboundOrderIgnoreActionSchema = z.object({
+  action: z.enum([
+    "ignore_once",
+    "ignore_sender",
+    "ignore_domain",
+    "ignore_subject",
+    "ignore_sender_subject",
+  ]),
+  note: z.string().trim().max(2000).optional().nullable(),
+});
+
+export const inboundOrderBulkActionSchema = z.object({
+  recordIds: z.array(z.string().trim().min(1)).min(1).max(100),
+  action: z.enum([
+    "ignore_once",
+    "ignore_sender",
+    "ignore_domain",
+    "ignore_subject",
+    "ignore_sender_subject",
+    "delete",
+    "reject",
+  ]),
+  note: z.string().trim().max(2000).optional().nullable(),
 });
 
 export const inboundOrderParseAttemptStatusValues = ["success", "failed", "repaired", "fallback"] as const;
@@ -436,8 +477,33 @@ export type InboundOrderQueueSummary = {
   readyReviewed: number;
   convertedSubmitted: number;
   rejectedTerminal: number;
+  ignored: number;
   withWarnings: number;
 };
+
+export type InboundEmailIgnoreRuleDto = Omit<InboundEmailIgnoreRule, "createdAt" | "updatedAt" | "lastMatchedAt"> & {
+  createdAt: string;
+  updatedAt: string;
+  lastMatchedAt: string | null;
+};
+
+export type InboundEmailIgnoreRuleListResponse = {
+  success: true;
+  data: {
+    rules: InboundEmailIgnoreRuleDto[];
+  };
+};
+
+export type InboundEmailIgnoreRuleMutationResponse = {
+  success: true;
+  data: InboundEmailIgnoreRuleDto;
+};
+
+export type InboundEmailIgnoreRuleCreateRequest = z.infer<typeof inboundEmailIgnoreRuleCreateSchema>;
+export type InboundEmailIgnoreRuleUpdateRequest = z.infer<typeof inboundEmailIgnoreRuleUpdateSchema>;
+export type InboundEmailIgnoreRuleTypeValue = InboundEmailIgnoreRuleType;
+export type InboundOrderIgnoreActionRequest = z.infer<typeof inboundOrderIgnoreActionSchema>;
+export type InboundOrderBulkActionRequest = z.infer<typeof inboundOrderBulkActionSchema>;
 
 export type InboundMatchedCustomerSummary = {
   id: string;
@@ -556,6 +622,7 @@ export function normalizeInboundOrderStatusForStorage(
   if (status === "waiting") return "waiting_on_customer";
   if (status === "converted") return "submitted";
   if (status === "rejected") return "terminal";
+  if (status === "ignored") return "ignored";
   return status;
 }
 

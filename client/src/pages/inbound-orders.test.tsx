@@ -815,9 +815,9 @@ describe("InboundOrdersPage", () => {
     const searchInput = queuePanel.querySelector("input[placeholder='Search reference, sender, notes, subject, body']") as HTMLInputElement;
     expect(searchInput.className).toContain("max-w-full");
 
-    const queueCard = Array.from(queuePanel.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes(longReference)
-    )) as HTMLButtonElement;
+    const queueCard = Array.from(queuePanel.querySelectorAll("[role='button']")).find((row) => (
+      row.textContent?.includes(longReference)
+    )) as HTMLElement;
     expect(queueCard).toBeTruthy();
     expect(queueCard.className).toContain("w-full");
     expect(queueCard.className).toContain("max-w-full");

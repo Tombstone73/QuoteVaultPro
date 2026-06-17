@@ -16,6 +16,11 @@ import {
   type InboundEmailMailboxListResponse,
   type InboundEmailMailboxView,
 } from "@shared/inboundEmailMailboxes";
+import type {
+  InboundEmailIgnoreRuleDto,
+  InboundEmailIgnoreRuleListResponse,
+  InboundEmailIgnoreRuleTypeValue,
+} from "@shared/inboundOrdersApi";
 
 type InboundEmailSettingsResponse = {
   success: boolean;
@@ -48,6 +53,16 @@ async function readInboundEmailMailboxes(): Promise<InboundEmailMailboxListRespo
   return parsed.data;
 }
 
+async function readInboundEmailIgnoreRules(): Promise<InboundEmailIgnoreRuleListResponse["data"]> {
+  const response = await apiFetch("/api/inbound-orders/email/ignore-rules");
+  const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.message || "Failed to load inbound email ignore rules");
+  }
+  const data = payload.data as InboundEmailIgnoreRuleListResponse["data"] | undefined;
+  return { rules: Array.isArray(data?.rules) ? data.rules : [] };
+}
+
 export function useInboundEmailIntakeSettings() {
   return useQuery<InboundEmailIntakeSettings>({
     queryKey: ["/api/inbound-orders/email-settings"],
@@ -63,6 +78,76 @@ export function useInboundEmailMailboxes() {
     queryFn: readInboundEmailMailboxes,
     staleTime: 60_000,
     retry: false,
+  });
+}
+
+export function useInboundEmailIgnoreRules() {
+  return useQuery<InboundEmailIgnoreRuleListResponse["data"]>({
+    queryKey: ["/api/inbound-orders/email/ignore-rules"],
+    queryFn: readInboundEmailIgnoreRules,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export function useCreateInboundEmailIgnoreRule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { ruleType: InboundEmailIgnoreRuleTypeValue; ruleValue: string; notes?: string | null }) => {
+      const response = await apiFetch("/api/inbound-orders/email/ignore-rules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || "Failed to create inbound email ignore rule");
+      }
+      return payload.data as InboundEmailIgnoreRuleDto;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
+    },
+  });
+}
+
+export function useUpdateInboundEmailIgnoreRule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ ruleId, enabled, notes }: { ruleId: string; enabled?: boolean; notes?: string | null }) => {
+      const response = await apiFetch(`/api/inbound-orders/email/ignore-rules/${encodeURIComponent(ruleId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled, notes }),
+      });
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || "Failed to update inbound email ignore rule");
+      }
+      return payload.data as InboundEmailIgnoreRuleDto;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
+    },
+  });
+}
+
+export function useDeleteInboundEmailIgnoreRule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (ruleId: string) => {
+      const response = await apiFetch(`/api/inbound-orders/email/ignore-rules/${encodeURIComponent(ruleId)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || "Failed to delete inbound email ignore rule");
+      }
+      return payload.data as InboundEmailIgnoreRuleDto;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
+    },
   });
 }
 

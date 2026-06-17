@@ -680,6 +680,13 @@
       "when": 1783468800000,
       "tag": "0101_inbound_email_mailboxes",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1783555200000,
+      "tag": "0102_inbound_email_ignore_rules",
+      "breakpoints": true
     }
   ]
 }
