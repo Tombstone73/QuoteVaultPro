@@ -220,15 +220,22 @@ function reviewDraft(overrides: Record<string, any> = {}) {
       sourceText: "3 PVC Signs 24x36",
       productName: "PVC Signs",
       selectedProductId: "product_pvc",
+      selectedProductSource: "ai_inferred",
       productUnresolved: false,
       quantity: 3,
+      quantitySource: "ai_inferred",
       width: 24,
       height: 36,
       dimensionsUnit: "in",
+      dimensionsSource: "ai_inferred",
       materialText: "3mm White PVC",
+      materialSource: "ai_inferred",
       printSpecs: [],
+      printSpecsSource: null,
       optionTexts: [],
+      optionTextsSource: null,
       finishingTexts: [],
+      finishingTextsSource: null,
       notes: null,
     }],
     reviewedArtworkJson: { status: "missing", refs: [], notes: null },
@@ -317,6 +324,7 @@ describe("inbound order routes", () => {
     updateInboundOrderStatus: jest.fn<(...args: any[]) => Promise<any>>(),
     searchCustomers: jest.fn(),
     searchCustomerContacts: jest.fn(),
+    searchProducts: jest.fn<(...args: any[]) => Promise<any>>(),
     getProductOptionsForReview: jest.fn<(...args: any[]) => Promise<any>>(),
     applyReviewAction: jest.fn(),
     saveReviewSnapshot: jest.fn(),
@@ -875,15 +883,22 @@ describe("inbound order routes", () => {
       sourceText: "3 PVC Signs",
       productName: "PVC Signs",
       selectedProductId: "product_pvc",
+      selectedProductSource: "ai_inferred",
       productUnresolved: false,
       quantity: 3,
+      quantitySource: "ai_inferred",
       width: 24,
       height: 36,
       dimensionsUnit: "in",
+      dimensionsSource: "ai_inferred",
       materialText: "3mm White PVC",
+      materialSource: "ai_inferred",
       printSpecs: [],
+      printSpecsSource: null,
       optionTexts: [],
+      optionTextsSource: null,
       finishingTexts: [],
+      finishingTextsSource: null,
       optionSelectionsJson: null,
       pbv2TreeVersionId: null,
       pbv2OptionSuggestions: [],
@@ -901,6 +916,32 @@ describe("inbound order routes", () => {
       organizationId: "org_1",
       productId: "product_pvc",
       lineItem,
+    });
+  });
+
+  test("searches active products for inbound review", async () => {
+    service.searchProducts.mockResolvedValue([{
+      id: "product_pvc",
+      name: "PVC Signs",
+      description: "Rigid PVC signs",
+      category: "Signs",
+      pricingMode: "area",
+      pbv2ActiveTreeVersionId: "tree_pvc",
+      isActive: true,
+    }]);
+
+    const response = await request(buildApp(service))
+      .get("/api/inbound-orders/product-search?search=pvc&limit=10");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data[0]).toMatchObject({
+      id: "product_pvc",
+      name: "PVC Signs",
+    });
+    expect(service.searchProducts).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      search: "pvc",
+      limit: 10,
     });
   });
 

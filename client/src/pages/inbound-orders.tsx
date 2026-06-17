@@ -6,6 +6,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Clock,
+  Copy,
   ExternalLink,
   FileText,
   GripVertical,
@@ -18,6 +19,8 @@ import {
   RotateCcw,
   Search,
   Sparkles,
+  Trash2,
+  XCircle,
 } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -46,6 +49,8 @@ import {
   type InboundOrderQueueSummary,
   type InboundOrderConvertToOrderResponse,
   type InboundOrderProductOptionsResponse,
+  type InboundProductSearchResponse,
+  type InboundProductSearchResult,
   type InboundMatchedContactSummary,
   type InboundMatchedCustomerSummary,
   type ManualInboundOrderCreateRequest,
@@ -1243,6 +1248,14 @@ function contactToReviewOption(contact: InboundContactSearchResponse["data"][num
   };
 }
 
+function productToReviewOption(product: InboundProductSearchResult): ReviewSelectOption {
+  return {
+    id: product.id,
+    label: product.name || product.id,
+    description: [product.category, product.pricingMode, product.pbv2ActiveTreeVersionId ? "PBV2" : null].filter(Boolean).join(" / ") || product.description,
+  };
+}
+
 function mergeReviewOptions(...groups: ReviewSelectOption[][]): ReviewSelectOption[] {
   const seen = new Set<string>();
   const merged: ReviewSelectOption[] = [];
@@ -1320,6 +1333,9 @@ function selectionSourceLabel(source: string | null | undefined, note: string | 
   if (origin === "SOURCE_EVIDENCE") return "Source evidence";
   if (origin === "AI_INFERRED") return "AI inferred";
   if (origin === "USER_SELECTED") return "Staff selected";
+  if (source === "ai_inferred") return "AI inferred";
+  if (source === "crm_match") return "CRM match";
+  if (source === "catalog_match") return "Catalog match";
   if (source === "product_default" || note === "Default") return "Default";
   if (source === "deterministic_print_spec_rule" || note === "Deterministic print spec rule") return "Print rule";
   if (source === "source_evidence" || note === "Suggested from PO" || note === "Suggested from inbound source evidence.") return "Suggested from PO";
@@ -1329,9 +1345,65 @@ function selectionSourceLabel(source: string | null | undefined, note: string | 
 }
 
 function customerSelectionIntro(source: string | null | undefined): string {
-  if (source === "interpreted_customer_match" || source === "interpreted_contact_match") return "Auto-selected";
+  if (source === "interpreted_customer_match" || source === "interpreted_contact_match" || source === "ai_inferred") return "AI inferred";
+  if (source === "crm_match") return "CRM matched";
   if (source === "staff_selected") return "Staff selected";
   return "Selection";
+}
+
+function ValueSourceBadge({ source }: { source: string | null | undefined }) {
+  if (!source) return null;
+  return <Badge variant="outline">{selectionSourceLabel(source, null)}</Badge>;
+}
+
+function createBlankReviewLineItem(index: number): ReviewDraftFormState["reviewedLineItemsJson"][number] {
+  return {
+    sourceLineItemId: null,
+    sourceText: `Manual line item ${index + 1}`,
+    productName: null,
+    selectedProductId: null,
+    selectedProductSource: null,
+    interpretedProductId: null,
+    interpretedProductReason: null,
+    interpretedProductConfidence: null,
+    productUnresolved: true,
+    quantity: null,
+    quantitySource: null,
+    width: null,
+    height: null,
+    dimensionsUnit: "in",
+    dimensionsSource: null,
+    materialText: null,
+    materialSource: null,
+    printSpecs: [],
+    printSpecsSource: null,
+    optionTexts: [],
+    optionTextsSource: null,
+    finishingTexts: [],
+    finishingTextsSource: null,
+    optionSelectionsJson: null,
+    pbv2TreeVersionId: null,
+    pbv2OptionSuggestions: [],
+    notes: null,
+  };
+}
+
+function cloneManualReviewLineItem(
+  lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number],
+  index: number,
+): ReviewDraftFormState["reviewedLineItemsJson"][number] {
+  return {
+    ...JSON.parse(JSON.stringify(lineItem)),
+    sourceLineItemId: null,
+    sourceText: lineItem.sourceText ? `${lineItem.sourceText} (copy)` : `Manual line item ${index + 1}`,
+    selectedProductSource: lineItem.selectedProductId ? "staff_selected" : null,
+    materialSource: lineItem.materialText ? "staff_selected" : null,
+    quantitySource: lineItem.quantity ? "staff_selected" : null,
+    dimensionsSource: lineItem.width || lineItem.height || lineItem.dimensionsUnit ? "staff_selected" : null,
+    printSpecsSource: lineItem.printSpecs.length > 0 ? "staff_selected" : null,
+    optionTextsSource: lineItem.optionTexts.length > 0 ? "staff_selected" : null,
+    finishingTextsSource: lineItem.finishingTexts.length > 0 ? "staff_selected" : null,
+  };
 }
 
 function markChangedPbv2SelectionsAsStaffSelected(
@@ -1499,6 +1571,7 @@ function DraftBuilderPanel({
   const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
   const [contactSearch, setContactSearch] = useState("");
+  const [productSearch, setProductSearch] = useState("");
 
   useEffect(() => {
     if (!reviewDraft) {
@@ -1514,6 +1587,7 @@ function DraftBuilderPanel({
   useEffect(() => {
     setCustomerSearch("");
     setContactSearch("");
+    setProductSearch("");
   }, [selectedRecord?.id]);
 
   const draftForSelectors = draftPreview?.draft ?? null;
@@ -1534,6 +1608,15 @@ function DraftBuilderPanel({
       if (selectedCustomerId) params.set("customerId", selectedCustomerId);
       if (contactSearch.trim()) params.set("search", contactSearch.trim());
       return readJson<InboundContactSearchResponse>(`/api/inbound-orders/contact-search?${params.toString()}`);
+    },
+    enabled: Boolean(selectedRecord && draftForSelectors && reviewDraft && productSearch.trim()),
+  });
+  const productSearchQuery = useQuery({
+    queryKey: ["/api/inbound-orders/product-search", productSearch],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: "20" });
+      if (productSearch.trim()) params.set("search", productSearch.trim());
+      return readJson<InboundProductSearchResponse>(`/api/inbound-orders/product-search?${params.toString()}`);
     },
     enabled: Boolean(selectedRecord && draftForSelectors && reviewDraft),
   });
@@ -1624,6 +1707,7 @@ function DraftBuilderPanel({
     draft.customer.contactCandidates.map(candidateToReviewOption),
     (contactSearchQuery.data?.data ?? []).map(contactToReviewOption),
   );
+  const productCatalogOptions = (productSearchQuery.data?.data ?? []).map(productToReviewOption);
   const actionPending = isSaving || isMarkingReady || isReopening || isRefreshingFromLatestParse || isConverting;
   const validationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
   const conversionErrors = convertError?.errors ?? [];
@@ -1647,6 +1731,45 @@ function DraftBuilderPanel({
       reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, itemIndex) => (
         itemIndex === index ? { ...item, ...patch } : item
       )),
+    });
+  };
+  const addLineItem = () => {
+    updateForm({
+      reviewedLineItemsJson: [
+        ...form.reviewedLineItemsJson,
+        createBlankReviewLineItem(form.reviewedLineItemsJson.length),
+      ],
+    });
+  };
+  const duplicateLineItem = (index: number) => {
+    const copy = cloneManualReviewLineItem(form.reviewedLineItemsJson[index], index + 1);
+    updateForm({
+      reviewedLineItemsJson: [
+        ...form.reviewedLineItemsJson.slice(0, index + 1),
+        copy,
+        ...form.reviewedLineItemsJson.slice(index + 1),
+      ],
+    });
+  };
+  const removeLineItem = (index: number) => {
+    updateForm({
+      reviewedLineItemsJson: form.reviewedLineItemsJson.filter((_, itemIndex) => itemIndex !== index),
+    });
+  };
+  const clearLineItemProduct = (index: number) => {
+    updateLineItem(index, {
+      productName: null,
+      selectedProductId: null,
+      selectedProductSource: null,
+      interpretedProductId: null,
+      interpretedProductReason: null,
+      interpretedProductConfidence: null,
+      productUnresolved: true,
+      materialText: null,
+      materialSource: null,
+      optionSelectionsJson: null,
+      pbv2TreeVersionId: null,
+      pbv2OptionSuggestions: [],
     });
   };
   const updateDecision = (index: number, patch: Partial<ReviewDraftFormState["missingDecisionsJson"][number]>) => {
@@ -1884,11 +2007,19 @@ function DraftBuilderPanel({
         <section className="rounded-md border border-border p-3">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-foreground">Line Items</h3>
-            <Badge variant="outline">{draft.lineItems.length}</Badge>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline">{form.reviewedLineItemsJson.length}</Badge>
+              <Button type="button" variant="outline" size="sm" onClick={addLineItem} disabled={actionPending}>
+                <Plus className="mr-2 h-4 w-4" />
+                Add line item
+              </Button>
+            </div>
           </div>
           <div className="mt-3 space-y-3">
-            {draft.lineItems.length === 0 ? (
-              <div className="text-sm text-muted-foreground">No line items detected.</div>
+            {form.reviewedLineItemsJson.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+                No line items in the current review draft. Add a line item to continue manual review.
+              </div>
             ) : (
               form.reviewedLineItemsJson.map((lineItem, index) => {
                 const parsedLine = draft.lineItems[index];
@@ -1896,6 +2027,7 @@ function DraftBuilderPanel({
                 const primaryInterpretedProductLabel = lineItem.productName || primaryInterpretedProductId;
                 const productOptions = mergeReviewOptions(
                   (parsedLine?.productCandidates ?? []).map(candidateToReviewOption),
+                  productCatalogOptions,
                   lineItem.selectedProductId && !(parsedLine?.productCandidates ?? []).some((candidate) => candidate.id === lineItem.selectedProductId)
                     ? [{
                         id: lineItem.selectedProductId,
@@ -1907,24 +2039,60 @@ function DraftBuilderPanel({
                 return (
                 <div key={index} className="rounded-md border border-border p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h4 className="text-sm font-semibold text-foreground">
-                      {lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`}
-                    </h4>
-                    {parsedLine && <Badge variant="secondary">{parsedLine.confidence}% confidence</Badge>}
+                    <div className="min-w-0">
+                      <h4 className="truncate text-sm font-semibold text-foreground">
+                        {lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`}
+                      </h4>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <ValueSourceBadge source={lineItem.selectedProductSource} />
+                        {parsedLine && <Badge variant="secondary">{parsedLine.confidence}% AI confidence</Badge>}
+                        {lineItem.productUnresolved && <Badge variant="outline">Product unresolved</Badge>}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" variant="outline" size="sm" onClick={() => duplicateLineItem(index)} disabled={actionPending}>
+                        <Copy className="mr-2 h-4 w-4" />
+                        Duplicate
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" onClick={() => clearLineItemProduct(index)} disabled={actionPending}>
+                        <XCircle className="mr-2 h-4 w-4" />
+                        Clear product
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" onClick={() => removeLineItem(index)} disabled={actionPending}>
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Remove
+                      </Button>
+                    </div>
                   </div>
                   <div className="mt-3 grid grid-cols-1 gap-3">
                     <label className="space-y-1 text-xs text-muted-foreground">
-                      Product candidate
-                      <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={lineItem.selectedProductId ?? ""} onChange={(event) => updateLineItem(index, {
-                        selectedProductId: trimToNull(event.target.value),
-                        interpretedProductId: null,
-                        interpretedProductReason: trimToNull(event.target.value) ? "Staff selected product. Candidate ranking is advisory." : null,
-                        interpretedProductConfidence: null,
-                        optionSelectionsJson: null,
-                        pbv2TreeVersionId: null,
-                        pbv2OptionSuggestions: [],
-                      })}>
+                      Search active catalog products
+                      <Input
+                        value={productSearch}
+                        onChange={(event) => setProductSearch(event.target.value)}
+                        placeholder="Search product catalog"
+                      />
+                    </label>
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      Product
+                      <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={lineItem.selectedProductId ?? ""} onChange={(event) => {
+                        const productId = trimToNull(event.target.value);
+                        const selectedOption = productOptions.find((option) => option.id === productId);
+                        updateLineItem(index, {
+                          productName: productId ? selectedOption?.label ?? lineItem.productName : null,
+                          selectedProductId: productId,
+                          selectedProductSource: productId ? "staff_selected" : null,
+                          interpretedProductId: null,
+                          interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
+                          interpretedProductConfidence: null,
+                          productUnresolved: !productId,
+                          optionSelectionsJson: null,
+                          pbv2TreeVersionId: null,
+                          pbv2OptionSuggestions: [],
+                        });
+                      }}>
                         <option value="">Unselected</option>
+                        {productSearchQuery.isFetching && <option value="" disabled>Searching catalog...</option>}
                         {productOptions.map((option) => (
                           <option key={option.id} value={option.id}>{option.description ? `${option.label} - ${option.description}` : option.label}</option>
                         ))}
@@ -1947,16 +2115,34 @@ function DraftBuilderPanel({
                       <input type="checkbox" checked={lineItem.productUnresolved} onChange={(event) => updateLineItem(index, { productUnresolved: event.target.checked })} />
                       Product unresolved
                     </label>
-                    <label className="space-y-1 text-xs text-muted-foreground">Quantity<Input value={lineItem.quantity ?? ""} onChange={(event) => updateLineItem(index, { quantity: optionalNumber(event.target.value) })} /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      <span className="flex items-center justify-between gap-2">Quantity<ValueSourceBadge source={lineItem.quantitySource} /></span>
+                      <Input value={lineItem.quantity ?? ""} onChange={(event) => updateLineItem(index, { quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })} />
+                    </label>
                     <div className="grid grid-cols-3 gap-2">
-                      <label className="space-y-1 text-xs text-muted-foreground">Width<Input value={lineItem.width ?? ""} onChange={(event) => updateLineItem(index, { width: optionalNumber(event.target.value) })} /></label>
-                      <label className="space-y-1 text-xs text-muted-foreground">Height<Input value={lineItem.height ?? ""} onChange={(event) => updateLineItem(index, { height: optionalNumber(event.target.value) })} /></label>
-                      <label className="space-y-1 text-xs text-muted-foreground">Unit<Input value={lineItem.dimensionsUnit ?? ""} onChange={(event) => updateLineItem(index, { dimensionsUnit: trimToNull(event.target.value) })} /></label>
+                      <label className="space-y-1 text-xs text-muted-foreground">
+                        <span className="flex items-center justify-between gap-2">Width<ValueSourceBadge source={lineItem.dimensionsSource} /></span>
+                        <Input value={lineItem.width ?? ""} onChange={(event) => updateLineItem(index, { width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
+                      </label>
+                      <label className="space-y-1 text-xs text-muted-foreground">Height<Input value={lineItem.height ?? ""} onChange={(event) => updateLineItem(index, { height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} /></label>
+                      <label className="space-y-1 text-xs text-muted-foreground">Unit<Input value={lineItem.dimensionsUnit ?? ""} onChange={(event) => updateLineItem(index, { dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })} /></label>
                     </div>
-                    <label className="space-y-1 text-xs text-muted-foreground">Material<Input value={lineItem.materialText ?? ""} onChange={(event) => updateLineItem(index, { materialText: trimToNull(event.target.value) })} /></label>
-                    <label className="space-y-1 text-xs text-muted-foreground">Print specs<Input value={lineItem.printSpecs.join(", ")} onChange={(event) => updateLineItem(index, { printSpecs: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} /></label>
-                    <label className="space-y-1 text-xs text-muted-foreground">Options<Input value={lineItem.optionTexts.join(", ")} onChange={(event) => updateLineItem(index, { optionTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} /></label>
-                    <label className="space-y-1 text-xs text-muted-foreground">Finishing<Input value={lineItem.finishingTexts.join(", ")} onChange={(event) => updateLineItem(index, { finishingTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      <span className="flex items-center justify-between gap-2">Material<ValueSourceBadge source={lineItem.materialSource} /></span>
+                      <Input value={lineItem.materialText ?? ""} onChange={(event) => updateLineItem(index, { materialText: trimToNull(event.target.value), materialSource: "staff_selected" })} />
+                    </label>
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      <span className="flex items-center justify-between gap-2">Print specs<ValueSourceBadge source={lineItem.printSpecsSource} /></span>
+                      <Input value={lineItem.printSpecs.join(", ")} onChange={(event) => updateLineItem(index, { printSpecs: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), printSpecsSource: "staff_selected" })} />
+                    </label>
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      <span className="flex items-center justify-between gap-2">Options<ValueSourceBadge source={lineItem.optionTextsSource} /></span>
+                      <Input value={lineItem.optionTexts.join(", ")} onChange={(event) => updateLineItem(index, { optionTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), optionTextsSource: "staff_selected" })} />
+                    </label>
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      <span className="flex items-center justify-between gap-2">Finishing<ValueSourceBadge source={lineItem.finishingTextsSource} /></span>
+                      <Input value={lineItem.finishingTexts.join(", ")} onChange={(event) => updateLineItem(index, { finishingTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), finishingTextsSource: "staff_selected" })} />
+                    </label>
                     <label className="space-y-1 text-xs text-muted-foreground">Line item notes<Textarea value={lineItem.notes ?? ""} onChange={(event) => updateLineItem(index, { notes: trimToNull(event.target.value) })} /></label>
                   </div>
                   {parsedLine && <div className="mt-3"><ProductMatchReasoning candidates={parsedLine.productCandidates} /></div>}

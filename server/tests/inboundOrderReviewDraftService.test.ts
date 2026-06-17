@@ -487,12 +487,45 @@ describe("InboundOrderService editable review draft", () => {
     expect(draft.reviewedLineItemsJson[0]).toMatchObject({
       productName: "PVC",
       selectedProductId: "product_pvc",
+      selectedProductSource: "ai_inferred",
       quantity: 3,
+      quantitySource: "ai_inferred",
       width: 24,
       height: 36,
+      dimensionsSource: "ai_inferred",
     });
     expect(snapshots[0].payloadJson.metadata.snapshotKind).toBe("editable_review_draft");
     expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
+  });
+
+  test("leaves low-confidence product candidates unresolved instead of selecting the first candidate", async () => {
+    const attempt = parseAttempt({
+      parsedDraft: parsedDraft({
+        lineItems: [{
+          ...parsedDraft().lineItems[0],
+          sourceText: "Need a lightweight rigid display board",
+          productName: "Display board",
+          candidateProductIds: ["product_foam"],
+          productCandidates: [{ id: "product_foam", label: "Foam Board", confidence: 62, reason: "Ambiguous display board wording", metadata: {} }],
+        }],
+      }),
+    });
+    const { repo } = makeRepository(inboundRecord(), attempt);
+    (repo.searchProductCandidates as any).mockResolvedValue([]);
+    const service = new InboundOrderService(repo as any);
+
+    const draft = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(draft.reviewedLineItemsJson[0]).toMatchObject({
+      selectedProductId: null,
+      selectedProductSource: null,
+      productUnresolved: true,
+      productName: "Display board",
+    });
   });
 
   test("initializes a CSR-ready interpreted draft with customer, contact, date, product, and PBV2 defaults", async () => {
@@ -579,9 +612,9 @@ describe("InboundOrderService editable review draft", () => {
 
     expect(draft.reviewedCustomerJson).toMatchObject({
       selectedCustomerId: "customer_1",
-      selectedCustomerSource: "interpreted_customer_match",
+      selectedCustomerSource: "crm_match",
       selectedContactId: "contact_1",
-      selectedContactSource: "interpreted_contact_match",
+      selectedContactSource: "crm_match",
     });
     expect(draft.reviewedCustomerJson.selectedCustomerReason).toEqual(expect.stringContaining("Matched by company name."));
     expect(draft.reviewedCustomerJson.selectedContactReason).toEqual(expect.stringContaining("Matched by email."));
@@ -872,10 +905,10 @@ describe("InboundOrderService editable review draft", () => {
 
     expect(backfilled.reviewedCustomerJson).toMatchObject({
       selectedCustomerId: "customer_1",
-      selectedCustomerSource: "interpreted_customer_match",
+      selectedCustomerSource: "crm_match",
       selectedCustomerConfidence: 94,
       selectedContactId: "contact_1",
-      selectedContactSource: "interpreted_contact_match",
+      selectedContactSource: "crm_match",
       selectedContactConfidence: 100,
     });
     expect(repo.createReviewSnapshotWithEvent).toHaveBeenCalledTimes(3);
@@ -1316,18 +1349,25 @@ describe("InboundOrderService editable review draft", () => {
           sourceText: "3 PVC Signs",
           productName: "PVC Signs",
           selectedProductId: null,
+          selectedProductSource: null,
           interpretedProductId: null,
           interpretedProductReason: null,
           interpretedProductConfidence: null,
           productUnresolved: true,
           quantity: null,
+          quantitySource: null,
           width: 24,
           height: 36,
           dimensionsUnit: "in",
+          dimensionsSource: "staff_selected",
           materialText: "3mm White PVC",
+          materialSource: "staff_selected",
           printSpecs: [],
+          printSpecsSource: null,
           optionTexts: [],
+          optionTextsSource: null,
           finishingTexts: [],
+          finishingTextsSource: null,
           optionSelectionsJson: null,
           pbv2TreeVersionId: null,
           pbv2OptionSuggestions: [],

@@ -158,6 +158,16 @@ export type InboundContactSearchResult = {
   isPrimary: boolean;
 };
 
+export type InboundProductSearchResult = {
+  id: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  pricingMode: string | null;
+  pbv2ActiveTreeVersionId: string | null;
+  isActive: boolean;
+};
+
 export type InboundCandidateResult = {
   id: string;
   label: string;
@@ -645,6 +655,43 @@ export class InboundOrdersRepository {
       .innerJoin(customers, eq(customerContactLinks.customerId, customers.id))
       .where(and(...predicates))
       .orderBy(sql`case when ${customerContactLinks.isPrimary} then 0 else 1 end`, asc(customerContacts.lastName), asc(customerContacts.firstName))
+      .limit(limit);
+  }
+
+  async searchActiveProducts(
+    organizationId: string,
+    search: string | null,
+    limit: number,
+  ): Promise<InboundProductSearchResult[]> {
+    const predicates = [
+      eq(products.organizationId, organizationId),
+      eq(products.isActive, true),
+    ];
+    const trimmed = search?.trim();
+
+    if (trimmed) {
+      const pattern = `%${trimmed}%`;
+      predicates.push(sql`(
+        ${products.name} ilike ${pattern}
+        or ${products.description} ilike ${pattern}
+        or ${products.category} ilike ${pattern}
+        or ${products.aiParsingDescription} ilike ${pattern}
+      )`);
+    }
+
+    return this.dbInstance
+      .select({
+        id: products.id,
+        name: products.name,
+        description: products.description,
+        category: products.category,
+        pricingMode: products.pricingMode,
+        pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
+        isActive: products.isActive,
+      })
+      .from(products)
+      .where(and(...predicates))
+      .orderBy(asc(products.name), asc(products.createdAt))
       .limit(limit);
   }
 
