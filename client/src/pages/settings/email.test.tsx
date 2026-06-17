@@ -123,6 +123,14 @@ async function waitForText(text: string) {
   throw new Error(`Expected text not found: ${text}\n${container.textContent}`);
 }
 
+async function waitForCondition(predicate: () => boolean, label: string) {
+  for (let i = 0; i < 20; i += 1) {
+    await flush();
+    if (predicate()) return;
+  }
+  throw new Error(`Expected condition not met: ${label}`);
+}
+
 async function renderEmailSettings(mailboxes: unknown[]) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -137,10 +145,15 @@ async function renderEmailSettings(mailboxes: unknown[]) {
     }
     return jsonResponse({}, false, 404);
   });
-  apiFetchMock.mockResolvedValue(jsonResponse({
-    success: true,
-    data: { mailboxes },
-  }));
+  apiFetchMock.mockImplementation(async (url: string) => {
+    if (String(url).includes("/api/inbound-orders/email/mailboxes/gmail/start")) {
+      return await new Promise(() => undefined) as any;
+    }
+    return jsonResponse({
+      success: true,
+      data: { mailboxes },
+    });
+  });
 
   await act(async () => {
     root.render(
@@ -166,17 +179,17 @@ afterEach(() => {
 });
 
 describe("EmailSettings inbound mailbox settings", () => {
-  test("shows a no-mailbox state and disabled inbound Gmail connect button", async () => {
+  test("shows a no-mailbox state and active inbound Gmail connect button", async () => {
     await renderEmailSettings([]);
 
     await waitForText("Inbound Email Mailboxes");
     await waitForText("No inbound mailboxes are configured yet.");
-    await waitForText("Gmail inbound connection setup is coming next.");
+    await waitForText("This creates a dedicated inbound Gmail mailbox");
 
     const connectButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Connect Gmail Inbound Mailbox"));
     expect(connectButton).toBeTruthy();
-    expect(connectButton).toHaveProperty("disabled", true);
+    expect(connectButton).toHaveProperty("disabled", false);
   });
 
   test("renders disabled and enabled inbound mailbox rows without secret fields", async () => {
@@ -221,5 +234,51 @@ describe("EmailSettings inbound mailbox settings", () => {
     expect(container.textContent).not.toContain("authJson");
     expect(container.textContent).not.toContain("refreshToken");
     expect(container.textContent).not.toContain("secret_refresh_token");
+  });
+
+  test("starts inbound Gmail OAuth for a new mailbox connection", async () => {
+    await renderEmailSettings([]);
+
+    await waitForText("No inbound mailboxes are configured yet.");
+
+    const connectButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Connect Gmail Inbound Mailbox")) as HTMLButtonElement;
+    await act(async () => {
+      connectButton.click();
+    });
+    await waitForCondition(
+      () => apiFetchMock.mock.calls.some(([url]) => String(url) === "/api/inbound-orders/email/mailboxes/gmail/start"),
+      "connect Gmail start request",
+    );
+  });
+
+  test("starts inbound Gmail OAuth for reconnecting an existing mailbox", async () => {
+    await renderEmailSettings([
+      {
+        id: "mailbox_enabled",
+        provider: "gmail",
+        name: "Quotes Inbox",
+        emailAddress: "quotes@example.com",
+        enabled: true,
+        isDefault: true,
+        lastPulledAt: null,
+        lastPullStatus: null,
+        lastPullError: null,
+        createdAt: "2026-06-09T12:00:00.000Z",
+        updatedAt: "2026-06-09T12:00:00.000Z",
+      },
+    ]);
+
+    await waitForText("quotes@example.com");
+
+    const reconnectButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Reconnect") as HTMLButtonElement;
+    await act(async () => {
+      reconnectButton.click();
+    });
+    await waitForCondition(
+      () => apiFetchMock.mock.calls.some(([url]) => String(url) === "/api/inbound-orders/email/mailboxes/gmail/start?reconnectMailboxId=mailbox_enabled"),
+      "reconnect Gmail start request",
+    );
   });
 });

@@ -133,6 +133,20 @@ export function useDeleteInboundEmailMailbox() {
   });
 }
 
+export function useStartInboundGmailMailboxOAuth() {
+  return useMutation({
+    mutationFn: async (reconnectMailboxId?: string | null) => {
+      const query = reconnectMailboxId ? `?reconnectMailboxId=${encodeURIComponent(reconnectMailboxId)}` : "";
+      const response = await apiFetch(`/api/inbound-orders/email/mailboxes/gmail/start${query}`);
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: { url?: string } };
+      if (!response.ok || payload.success === false || !payload.data?.url) {
+        throw new Error(payload.message || "Failed to start inbound Gmail connection");
+      }
+      return payload.data.url;
+    },
+  });
+}
+
 export function usePullLatestInboundEmails() {
   const queryClient = useQueryClient();
   return useMutation({
