@@ -38,6 +38,12 @@ function warning(code: string, message: string, severity: InboundOrderParseWarni
   return { code, message, severity, fieldPath: fieldPath ?? null };
 }
 
+function attachmentDocumentFallback(file: InboundOrderFile): Pick<InboundOrderEvidenceItem, "documentType" | "documentConfidence"> {
+  if (file.role === "po") return { documentType: "purchase_order", documentConfidence: 70 };
+  if (file.role === "artwork") return { documentType: "artwork_reference", documentConfidence: 70 };
+  return { documentType: "unknown", documentConfidence: 0 };
+}
+
 function normalizeWhitespace(value: string): string {
   return value.replace(/\r/g, "\n").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
@@ -434,11 +440,16 @@ export class InboundOrderEvidenceService {
             type: "PDF_ATTACHMENT",
             rawText: null,
             pageCount: null,
-            documentType: "unknown",
-            documentConfidence: 0,
+            ...attachmentDocumentFallback(file),
             extractionStatus: "failed",
             poSummary: null,
-            warnings: [warning("attachment_unreadable", "PDF attachment could not be read for parsing.", "warning")],
+            warnings: [warning(
+              "attachment_unreadable",
+              file.role === "po"
+                ? "PO candidate PDF was stored, but text was not extracted."
+                : "PDF attachment could not be read for parsing.",
+              "warning",
+            )],
           };
         }
         const extracted = await extractMachineReadablePdfText(buffer);
@@ -462,8 +473,7 @@ export class InboundOrderEvidenceService {
           type: "PDF_ATTACHMENT",
           rawText: null,
           pageCount: null,
-          documentType: "unknown",
-          documentConfidence: 0,
+          ...attachmentDocumentFallback(file),
           extractionStatus: "failed",
           poSummary: null,
           warnings: [warning("pdf_text_extraction_failed", error?.message ?? "PDF text extraction failed.", "warning")],
@@ -495,8 +505,7 @@ export class InboundOrderEvidenceService {
       type: "TEXT_ATTACHMENT",
       rawText: file.reviewNotes ?? null,
       pageCount: null,
-      documentType: "unknown",
-      documentConfidence: 0,
+      ...attachmentDocumentFallback(file),
       extractionStatus: "not_attempted",
       poSummary: null,
       warnings: [],

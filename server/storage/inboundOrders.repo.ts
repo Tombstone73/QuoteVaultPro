@@ -99,6 +99,11 @@ export type CreateInboundOrderEventValues = Omit<
   "id" | "createdAt"
 >;
 
+export type CreateInboundOrderFileValues = Omit<
+  typeof inboundOrderFiles.$inferInsert,
+  "id" | "createdAt" | "updatedAt"
+>;
+
 export type CreateInboundOrderReviewSnapshotValues = Omit<
   typeof inboundOrderReviewSnapshots.$inferInsert,
   "id" | "createdAt"
@@ -537,6 +542,34 @@ export class InboundOrdersRepository {
         ),
       )
       .orderBy(asc(inboundOrderFiles.createdAt));
+  }
+
+  async findFileByProviderAttachment(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    providerMessageId: string;
+    providerAttachmentId: string;
+  }): Promise<InboundOrderFile | null> {
+    const [file] = await this.dbInstance
+      .select()
+      .from(inboundOrderFiles)
+      .where(and(
+        eq(inboundOrderFiles.organizationId, args.organizationId),
+        eq(inboundOrderFiles.inboundRecordId, args.inboundRecordId),
+        eq(inboundOrderFiles.providerMessageId, args.providerMessageId),
+        eq(inboundOrderFiles.providerAttachmentId, args.providerAttachmentId),
+      ))
+      .limit(1);
+    return file ?? null;
+  }
+
+  async createFile(values: CreateInboundOrderFileValues, executor: any = this.dbInstance): Promise<InboundOrderFile> {
+    const [created] = await executor
+      .insert(inboundOrderFiles)
+      .values(values)
+      .returning();
+    if (!created) throw new Error("Failed to create inbound order file");
+    return created;
   }
 
   async listWarnings(organizationId: string, inboundRecordId: string): Promise<InboundOrderWarning[]> {

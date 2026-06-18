@@ -7,6 +7,8 @@
  */
 
 import crypto from "crypto";
+import fsPromises from "fs/promises";
+import path from "path";
 import type { Express } from "express";
 import { google } from "googleapis";
 import { z } from "zod";
@@ -38,6 +40,9 @@ import {
   inboundEmailIngestionService,
 } from "../services/inboundEmailIngestionService";
 import { inboundEmailMailboxSettingsService } from "../services/inboundEmailMailboxSettingsService";
+import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
+import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
+import { storageRegistry } from "../services/storage/StorageRegistry";
 import { getRequestOrganizationId } from "../tenantContext";
 
 function getUserId(user: any): string | undefined {
@@ -813,6 +818,59 @@ export function registerInboundOrderRoutes(
 
       console.error("Error fetching inbound order detail:", error);
       res.status(500).json({ message: "Failed to fetch inbound order detail" });
+    }
+  });
+
+  app.get("/api/inbound-orders/:id/files/:fileId/download", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const detail = await service.getInboundOrder({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+      });
+      if (!detail) return res.status(404).json({ message: "Inbound order record not found" });
+
+      const file = detail.files.find((candidate) => candidate.id === String(req.params.fileId));
+      if (!file) return res.status(404).json({ message: "Inbound attachment not found" });
+      if (!file.fileRecordId) return res.status(404).json({ message: "Inbound attachment file is not stored" });
+
+      const resolved = await canonicalFileReadResolver.resolveOriginal(file.fileRecordId);
+      if (resolved.status !== "available" || !resolved.providerConfigId) {
+        return res.status(404).json({ message: "Inbound attachment file is unavailable" });
+      }
+
+      const providerConfig = await storageProviderConfigRepository.getByIdForOrganization(organizationId, resolved.providerConfigId);
+      if (!providerConfig) return res.status(404).json({ message: "Inbound attachment storage provider not found" });
+
+      const handle = await storageRegistry.getAdapter(providerConfig.providerType).getDownloadHandle({
+        providerConfig,
+        objectKey: resolved.objectKey,
+        localPathRef: resolved.localPathRef,
+      });
+      const filename = (file.sourceFilename || "attachment")
+        .replace(/[\r\n\t\0]/g, " ")
+        .replace(/"/g, "'")
+        .slice(0, 240);
+
+      if (handle.kind === "local_path") {
+        await fsPromises.access(handle.value, fsPromises.constants.R_OK);
+        return res.download(path.resolve(handle.value), filename);
+      }
+
+      const upstream = await fetch(handle.value);
+      if (!upstream.ok) {
+        throw new Error(`Attachment fetch failed: ${upstream.status} ${upstream.statusText}`);
+      }
+      res.setHeader("Content-Type", file.mimeType || upstream.headers.get("content-type") || "application/octet-stream");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.send(Buffer.from(await upstream.arrayBuffer()));
+    } catch (error) {
+      console.error("Error downloading inbound order attachment:", error);
+      res.status(500).json({ message: "Failed to download inbound attachment" });
     }
   });
 
