@@ -59,7 +59,6 @@ import {
   type ManualInboundOrderCreateRequest,
   type ManualInboundOrderCreateResponse,
 } from "@shared/inboundOrdersApi";
-import type { InboundEmailPullResult } from "@shared/inboundEmailIngestion";
 import type { LineItemOptionSelectionsV2 } from "@shared/optionTreeV2";
 import { getMissingInboundPbv2RequiredOptions } from "@shared/inboundOrderPbv2Options";
 import type {
@@ -1525,13 +1524,6 @@ function OperationalEmailPanel({
   latestAttempt,
   parseError,
   isParsing,
-  parseDisabled,
-  isRejecting,
-  isCleaningUp,
-  rejectDisabled,
-  onParse,
-  onReject,
-  onQueueAction,
 }: {
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
   selectedRecord: ClientInboundOrderRecord | null;
@@ -1539,13 +1531,6 @@ function OperationalEmailPanel({
   latestAttempt: ClientInboundOrderParseAttempt | null;
   parseError: Error | null;
   isParsing: boolean;
-  parseDisabled: boolean;
-  isRejecting: boolean;
-  isCleaningUp: boolean;
-  rejectDisabled: boolean;
-  onParse: () => void;
-  onReject: () => void;
-  onQueueAction: (action: InboundQueueCleanupAction) => void;
 }) {
   if (!selectedRecord) {
     return <EmptyPanel title="Select a record" detail="The original email and attachments will appear once an inbound item is selected." />;
@@ -1568,15 +1553,15 @@ function OperationalEmailPanel({
 
   return (
     <ScrollArea className="h-full">
-      <div className="space-y-4 p-4" data-testid="inbound-operational-email-panel">
-        <section className="rounded-md border border-border bg-card p-3">
-          <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="space-y-2 p-2" data-testid="inbound-operational-email-panel">
+        <section className="rounded-md border border-border bg-card px-3 py-2">
+          <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <Mail className="h-4 w-4 text-muted-foreground" />
                 <h2 className="truncate text-base font-semibold text-foreground">{evidence.subject || "No subject"}</h2>
               </div>
-              <div className="mt-2 grid gap-2 text-sm text-muted-foreground">
+              <div className="mt-1 grid gap-1 text-xs text-muted-foreground">
                 <div><span className="font-medium text-foreground">From:</span> {getSenderLabel(record)}</div>
                 {evidence.recipients.length > 0 && (
                   <div><span className="font-medium text-foreground">To:</span> {evidence.recipients.join(", ")}</div>
@@ -1598,23 +1583,6 @@ function OperationalEmailPanel({
               <Badge variant="outline">{titleCase(record.sourceType)}</Badge>
             </div>
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Button type="button" size="sm" variant="outline" onClick={() => onQueueAction("ignore_once")} disabled={rejectDisabled || isCleaningUp}>
-              Ignore
-            </Button>
-            <Button type="button" size="sm" variant="outline" onClick={onReject} disabled={rejectDisabled || isCleaningUp} aria-label="Reject inbound record">
-              {isRejecting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Reject
-            </Button>
-            <Button type="button" size="sm" variant="ghost" onClick={() => onQueueAction("delete")} disabled={rejectDisabled || isCleaningUp}>
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete / Archive
-            </Button>
-            <Button type="button" size="sm" onClick={onParse} disabled={parseDisabled}>
-              {isParsing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-              {isParsing ? "Parsing..." : "Parse with AI"}
-            </Button>
-          </div>
           {isParsing && (
             <div className="mt-2 flex items-center gap-2 text-xs font-medium text-primary">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1622,7 +1590,7 @@ function OperationalEmailPanel({
             </div>
           )}
           {!isParsing && (parseError || latestAttempt?.status === "failed") && (
-            <Alert variant="destructive" className="mt-3">
+            <Alert variant="destructive" className="mt-2 py-2">
               <AlertTriangle className="h-4 w-4" />
               <AlertTitle>Parse unavailable</AlertTitle>
               <AlertDescription>
@@ -1635,18 +1603,18 @@ function OperationalEmailPanel({
           )}
         </section>
 
-        <section className="rounded-md border border-border bg-card p-3">
-          <div className="mb-3 flex items-center justify-between gap-3">
+        <section className="rounded-md border border-border bg-card p-2">
+          <div className="mb-2 flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold text-foreground">Original Email</h3>
             <Badge variant="outline">{sanitizedHtml ? "HTML" : "Text"}</Badge>
           </div>
           {sanitizedHtml ? (
             <div
-              className="prose prose-sm max-w-none rounded-md border border-border bg-background p-3 text-foreground [&_*]:max-w-full"
+              className="prose prose-sm max-w-none rounded-md border border-border bg-background p-2 text-foreground [&_*]:max-w-full"
               dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
             />
           ) : evidence.bodyText ? (
-            <div className="whitespace-pre-wrap rounded-md border border-border bg-background p-3 text-sm leading-6 text-foreground">
+            <div className="whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-sm leading-5 text-foreground">
               {evidence.bodyText}
             </div>
           ) : (
@@ -1656,12 +1624,12 @@ function OperationalEmailPanel({
           )}
         </section>
 
-        <section className="rounded-md border border-border bg-card p-3">
+        <section className="rounded-md border border-border bg-card p-2">
           <div className="flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold text-foreground">Attachments</h3>
             <Badge variant="outline">{files.length}</Badge>
           </div>
-          <div className="mt-3 space-y-2">
+          <div className="mt-2 space-y-1.5">
             {files.length === 0 ? (
               <div className="text-sm text-muted-foreground">No attachments linked to this inbound record.</div>
             ) : (
@@ -2041,6 +2009,11 @@ function DraftBuilderPanel({
   onReopen,
   onRefreshFromLatestParse,
   onConvert,
+  isRejecting = false,
+  isCleaningUp = false,
+  rejectDisabled = false,
+  onReject,
+  onQueueAction,
   onDirtyChange,
 }: {
   mode?: InboundReviewWorkspaceMode;
@@ -2064,10 +2037,16 @@ function DraftBuilderPanel({
   onReopen: () => Promise<void>;
   onRefreshFromLatestParse: () => Promise<void>;
   onConvert: () => Promise<void>;
+  isRejecting?: boolean;
+  isCleaningUp?: boolean;
+  rejectDisabled?: boolean;
+  onReject?: () => void;
+  onQueueAction?: (action: InboundQueueCleanupAction) => void;
   onDirtyChange: (recordId: string | null, dirty: boolean) => void;
 }) {
   const [form, setForm] = useState<ReviewDraftFormState | null>(null);
   const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
+  const [reviewNotesExpanded, setReviewNotesExpanded] = useState(false);
   const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
   const [contactSearch, setContactSearch] = useState("");
@@ -2394,26 +2373,22 @@ function DraftBuilderPanel({
     ]),
     ...validationErrors,
   ].filter(Boolean) as string[];
+  const reviewNotesPreview = form.reviewNotes?.trim() ?? "";
 
   return (
     <ScrollArea className="h-full">
-      <div className="space-y-4 p-4">
-        <Alert>
-          <Sparkles className="h-4 w-4" />
-          <AlertTitle>
-            {isOperationalMode ? (
-              <>
-                Operational review: prepare the inbound draft.
-                <span className="sr-only"> Phase 4: Create draft order from reviewed inbound record.</span>
-              </>
-            ) : "Phase 4: Create draft order from reviewed inbound record."}
-          </AlertTitle>
-          <AlertDescription>
-            {isOperationalMode
-              ? "Review the customer, intent, line items, options, and artwork before any explicit conversion action."
-              : "This creates a real draft order only. It does not release production, create proofs, invoices, fulfillment, or payments."}
-          </AlertDescription>
-        </Alert>
+      <div className={isOperationalMode ? "space-y-2 p-2" : "space-y-4 p-4"}>
+        {isOperationalMode ? (
+          <span className="sr-only">Phase 4: Create draft order from reviewed inbound record.</span>
+        ) : (
+          <Alert>
+            <Sparkles className="h-4 w-4" />
+            <AlertTitle>Phase 4: Create draft order from reviewed inbound record.</AlertTitle>
+            <AlertDescription>
+              This creates a real draft order only. It does not release production, create proofs, invoices, fulfillment, or payments.
+            </AlertDescription>
+          </Alert>
+        )}
         {reviewDraft.hasNewerParse && (
           <Alert>
             <RefreshCw className="h-4 w-4" />
@@ -2455,22 +2430,34 @@ function DraftBuilderPanel({
           </Alert>
         )}
 
-        <section className="rounded-md border border-border p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-foreground">{isOperationalMode ? "Review Summary" : "Parse Summary"}</h3>
-            <div className="flex flex-wrap gap-2">
-              {!isOperationalMode && <Badge variant="secondary">{latestAttempt?.confidence ?? 0}% confidence</Badge>}
-              <Badge variant={reviewDraft.status === "ready_to_convert" ? "default" : "outline"}>{titleCase(reviewDraft.status)}</Badge>
-              {dirty && <Badge variant="outline">Unsaved changes</Badge>}
-              <Badge variant="outline">{allWarnings.length} warnings</Badge>
-              <Badge variant="outline">{draft.missingDecisions.length} missing decisions</Badge>
+        {isOperationalMode ? (
+          <section className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
+            <span className="sr-only">Review Summary</span>
+            <span><span className="font-medium text-foreground">Status:</span> {latestAttempt ? titleCase(latestAttempt.status) : "Parsed"}</span>
+            <span><span className="font-medium text-foreground">Intent:</span> {titleCase(reviewIntent)}</span>
+            <span><span className="font-medium text-foreground">Warnings:</span> {allWarnings.length}</span>
+            <span><span className="font-medium text-foreground">Missing:</span> {draft.missingDecisions.length}</span>
+            <Badge variant={reviewDraft.status === "ready_to_convert" ? "default" : "outline"} className="h-5 px-1.5 text-[11px]">{titleCase(reviewDraft.status)}</Badge>
+            {dirty && <Badge variant="outline" className="h-5 px-1.5 text-[11px]">Unsaved changes</Badge>}
+          </section>
+        ) : (
+          <section className="rounded-md border border-border p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-foreground">Parse Summary</h3>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="secondary">{latestAttempt?.confidence ?? 0}% confidence</Badge>
+                <Badge variant={reviewDraft.status === "ready_to_convert" ? "default" : "outline"}>{titleCase(reviewDraft.status)}</Badge>
+                {dirty && <Badge variant="outline">Unsaved changes</Badge>}
+                <Badge variant="outline">{allWarnings.length} warnings</Badge>
+                <Badge variant="outline">{draft.missingDecisions.length} missing decisions</Badge>
+              </div>
             </div>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <InlineField label="Status" value={latestAttempt ? titleCase(latestAttempt.status) : "Parsed"} />
-            <InlineField label={isOperationalMode ? "Intent" : "Parsed"} value={isOperationalMode ? titleCase(reviewIntent) : latestAttempt ? formatTimestamp(latestAttempt.createdAt) : null} />
-          </div>
-        </section>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <InlineField label="Status" value={latestAttempt ? titleCase(latestAttempt.status) : "Parsed"} />
+              <InlineField label="Parsed" value={latestAttempt ? formatTimestamp(latestAttempt.createdAt) : null} />
+            </div>
+          </section>
+        )}
 
         {!isOperationalMode && (
           <>
@@ -3034,10 +3021,24 @@ function DraftBuilderPanel({
           </section>
         )}
 
-        <section className="sticky bottom-0 z-10 rounded-md border border-border bg-background p-3 shadow-[0_-8px_20px_rgba(15,23,42,0.08)]">
-          <label className="space-y-1 text-xs text-muted-foreground">Review notes<Textarea value={form.reviewNotes ?? ""} onChange={(event) => updateForm({ reviewNotes: trimToNull(event.target.value) })} /></label>
-          <div className="mt-3 flex flex-wrap justify-end gap-2">
-            <Button type="button" onClick={() => { void onSave(form).catch(() => undefined); }} disabled={!dirty || actionPending}>
+        <section className="sticky bottom-0 z-10 rounded-md border border-border bg-background px-2 py-2 shadow-[0_-8px_20px_rgba(15,23,42,0.08)]">
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
+            {(reviewNotesExpanded || reviewNotesPreview) && (
+              <div className="mr-auto min-w-[180px] max-w-[360px] truncate text-xs text-muted-foreground">
+                {reviewNotesExpanded ? "Review notes" : reviewNotesPreview}
+              </div>
+            )}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2 text-xs"
+              onClick={() => setReviewNotesExpanded((current) => !current)}
+              aria-expanded={reviewNotesExpanded}
+            >
+              {reviewNotesExpanded ? "Hide Notes" : reviewNotesPreview ? "Edit Notes" : "Add Notes"}
+            </Button>
+            <Button type="button" size="sm" className="h-8 px-2 text-xs" onClick={() => { void onSave(form).catch(() => undefined); }} disabled={!dirty || actionPending}>
               {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {isOperationalMode ? (
                 <>
@@ -3047,50 +3048,72 @@ function DraftBuilderPanel({
               ) : "Save Review Draft"}
             </Button>
             {reviewDraft.status === "ready_to_convert" ? (
-              <Button type="button" variant="outline" onClick={() => { void onReopen().catch(() => undefined); }} disabled={actionPending}>
+              <Button type="button" size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={() => { void onReopen().catch(() => undefined); }} disabled={actionPending}>
                 {isReopening && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Reopen Draft
               </Button>
             ) : (
-              <Button type="button" variant="outline" onClick={() => { void onMarkReady(form, dirty).catch(() => undefined); }} disabled={actionPending}>
+              <Button type="button" size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={() => { void onMarkReady(form, dirty).catch(() => undefined); }} disabled={actionPending}>
                 {isMarkingReady && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Mark Ready to Convert
+                Mark Ready<span className="sr-only"> to Convert</span>
               </Button>
             )}
             {isOperationalMode && (
-              <Button type="button" variant="outline" disabled title="Draft quote conversion is not enabled in Phase 4.0.">
+              <Button type="button" size="sm" className="h-8 px-2 text-xs" variant="outline" disabled title="Draft quote conversion is not enabled in Phase 4.0.">
                 Convert to Draft Quote
               </Button>
             )}
-          </div>
-          {hasConvertedOrder ? (
-            <div className="mt-3 space-y-2">
-              <Button type="button" asChild className="w-full">
+            {hasConvertedOrder ? (
+              <>
+                <Button type="button" asChild size="sm" className="h-8 px-2 text-xs">
                 <a href={`/orders/${convertedOrderId}`}>
                   <ExternalLink className="mr-2 h-4 w-4" />
                   View Draft Order
                 </a>
               </Button>
-              <Button type="button" variant="outline" className="w-full" disabled>
-                Draft Order Created
+                <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs" disabled>
+                  Draft Order Created
+                </Button>
+              </>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 px-2 text-xs"
+                onClick={() => { void onConvert().catch(() => undefined); }}
+                disabled={!canCreateDraftOrder || actionPending}
+                title={canCreateDraftOrder ? "Create a draft order from this reviewed inbound record." : "Mark the inbound draft ready and resolve validation errors first."}
+              >
+                {isConverting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {isConverting ? "Creating..." : isOperationalMode ? (
+                  <>
+                    Convert to Draft Order
+                    <span className="sr-only"> Create Draft Order</span>
+                  </>
+                ) : "Create Draft Order"}
               </Button>
-            </div>
-          ) : (
-            <Button
-              type="button"
-              className="mt-3 w-full"
-              onClick={() => { void onConvert().catch(() => undefined); }}
-              disabled={!canCreateDraftOrder || actionPending}
-              title={canCreateDraftOrder ? "Create a draft order from this reviewed inbound record." : "Mark the inbound draft ready and resolve validation errors first."}
-            >
-              {isConverting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {isConverting ? "Creating Draft Order..." : isOperationalMode ? (
-                <>
-                  Convert to Draft Order
-                  <span className="sr-only"> Create Draft Order</span>
-                </>
-              ) : "Create Draft Order"}
-            </Button>
+            )}
+            {isOperationalMode && (
+              <>
+                <Button type="button" size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={onReject} disabled={!onReject || rejectDisabled || isCleaningUp} aria-label="Reject inbound record from draft toolbar">
+                  {isRejecting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                  Reject
+                </Button>
+                <Button type="button" size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={() => onQueueAction?.("ignore_once")} disabled={!onQueueAction || rejectDisabled || isCleaningUp}>
+                  Ignore
+                </Button>
+              </>
+            )}
+          </div>
+          {reviewNotesExpanded && (
+            <label className="mt-2 block space-y-1 text-xs text-muted-foreground">
+              <span>Review notes</span>
+              <Textarea
+                className="min-h-[72px]"
+                value={form.reviewNotes ?? ""}
+                onChange={(event) => updateForm({ reviewNotes: trimToNull(event.target.value) })}
+              />
+            </label>
           )}
         </section>
       </div>
@@ -3109,7 +3132,6 @@ export default function InboundOrdersPage() {
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
   const [parsingRecordId, setParsingRecordId] = useState<string | null>(null);
   const [lastConvertedOrderId, setLastConvertedOrderId] = useState<string | null>(null);
-  const [lastEmailPullResult, setLastEmailPullResult] = useState<InboundEmailPullResult | null>(null);
   const [reviewDraftDirtyByRecordId, setReviewDraftDirtyByRecordId] = useState<Record<string, boolean>>({});
   const [reviewMode, setReviewMode] = useState<InboundReviewWorkspaceMode>(() => {
     if (typeof window === "undefined") return "operational";
@@ -3608,7 +3630,6 @@ export default function InboundOrdersPage() {
     if (inboundEmailFeatureDisabled || inboundEmailPullPaused || pullLatestEmailsMutation.isPending) return;
     try {
       const result = await pullLatestEmailsMutation.mutateAsync();
-      setLastEmailPullResult(result);
       toast({
         title: "Email pull complete",
         description: `${result.summary.created} created, ${result.summary.skippedDuplicates} duplicate(s) skipped, ${result.summary.ignored} ignored, ${result.summary.failed} failed.`,
@@ -3631,7 +3652,6 @@ export default function InboundOrdersPage() {
               <Inbox className="h-5 w-5 text-muted-foreground" />
               <h1 className="text-xl font-semibold tracking-normal text-foreground">Inbound Orders</h1>
             </div>
-            <p className="mt-1 text-sm text-muted-foreground">TEMP_INBOUND review queue</p>
           </div>
           <div className="flex items-center gap-2">
             {inboundEmailPullPaused && (
@@ -3725,18 +3745,6 @@ export default function InboundOrdersPage() {
             <AlertTitle>Email Pull Paused</AlertTitle>
             <AlertDescription>
               New email pulling is paused for testing or maintenance. Existing inbound records remain available for review, parsing, and conversion.
-            </AlertDescription>
-          </Alert>
-        )}
-        {!inboundEmailFeatureDisabled && lastEmailPullResult && (
-          <Alert className="mt-3">
-            <Mail className="h-4 w-4" />
-            <AlertTitle>Latest email pull complete</AlertTitle>
-            <AlertDescription>
-              {lastEmailPullResult.summary.created} created,{" "}
-              {lastEmailPullResult.summary.skippedDuplicates} duplicate(s) skipped,{" "}
-              {lastEmailPullResult.summary.ignored} ignored,{" "}
-              {lastEmailPullResult.summary.failed} failed.
             </AlertDescription>
           </Alert>
         )}
@@ -3908,7 +3916,7 @@ export default function InboundOrdersPage() {
           data-testid="inbound-evidence-panel"
           style={{ flex: `1 1 ${evidenceWidth}px` } as CSSProperties}
         >
-          <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
+          <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
             <div className="text-sm font-semibold text-foreground">
               {reviewMode === "operational" ? (
                 <>
@@ -3918,6 +3926,25 @@ export default function InboundOrdersPage() {
               ) : "Source Evidence"}
             </div>
             <div className="flex items-center gap-2">
+              {reviewMode === "operational" && selectedRecord && (
+                <div className="flex items-center gap-1">
+                  <Button type="button" size="sm" className="h-7 px-2 text-xs" onClick={runParseForSelectedRecord} disabled={isParseInFlight || selectedRecordIsTerminal}>
+                    {isSelectedRecordParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
+                    Parse<span className="sr-only"> with AI</span>
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => runQueueCleanupAction("ignore_once")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
+                    Ignore
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={rejectSelectedRecord} disabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal} aria-label="Reject inbound record">
+                    {rejectInboundOrderMutation.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                    Reject
+                  </Button>
+                  <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => runQueueCleanupAction("delete")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
+                    <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                    Delete
+                  </Button>
+                </div>
+              )}
               {selectedRecord && <Badge variant="secondary">{titleCase(selectedRecord.sourceType)}</Badge>}
               <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={expandEvidence} aria-label="Expand evidence panel" title={reviewMode === "operational" ? "Expand email" : "Expand evidence"}>
                 <Maximize2 className="h-4 w-4" />
@@ -3933,13 +3960,6 @@ export default function InboundOrdersPage() {
                 latestAttempt={draftPreviewQuery.data?.data.latestAttempt ?? null}
                 parseError={parseMutation.error as Error | null}
                 isParsing={isSelectedRecordParsing}
-                parseDisabled={isParseInFlight || selectedRecordIsTerminal}
-                isRejecting={rejectInboundOrderMutation.isPending}
-                isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
-                rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
-                onParse={runParseForSelectedRecord}
-                onReject={rejectSelectedRecord}
-                onQueueAction={runQueueCleanupAction}
               />
             ) : (
               <SourceEvidencePanel
@@ -3985,7 +4005,7 @@ export default function InboundOrdersPage() {
           >
             <GripVertical className="h-4 w-4" />
           </button>
-          <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
+          <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
             <div className="text-sm font-semibold text-foreground">
               {reviewMode === "operational" ? (
                 <>
@@ -4042,6 +4062,11 @@ export default function InboundOrdersPage() {
                 await refreshReviewDraftFromLatestParseMutation.mutateAsync(selectedId);
               }}
               onConvert={convertSelectedRecordToOrder}
+              isRejecting={rejectInboundOrderMutation.isPending}
+              isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
+              rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
+              onReject={rejectSelectedRecord}
+              onQueueAction={runQueueCleanupAction}
               onDirtyChange={handleReviewDraftDirtyChange}
             />
           </div>
