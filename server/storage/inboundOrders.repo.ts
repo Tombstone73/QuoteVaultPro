@@ -236,6 +236,7 @@ export type InboundEmailPullDiagnosticsRaw = {
   recentIgnoredDiagnostics: Array<Record<string, unknown>>;
   subjectRecords: Array<Record<string, unknown>>;
   subjectFiles: Array<Record<string, unknown>>;
+  subjectPullDiagnostics: Array<Record<string, unknown>>;
 };
 
 export type MatchInboundCustomerInput = {
@@ -786,6 +787,37 @@ export class InboundOrdersRepository {
         .limit(limit)
       : [];
 
+    const subjectPullDiagnostics = subjectPattern
+      ? await this.dbInstance
+        .select({
+          eventId: inboundOrderEvents.id,
+          inboundRecordId: inboundOrderEvents.inboundRecordId,
+          eventType: inboundOrderEvents.eventType,
+          message: inboundOrderEvents.message,
+          metadataJson: inboundOrderEvents.metadataJson,
+          createdAt: inboundOrderEvents.createdAt,
+          recordSubject: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'subject', ${inboundOrderRecords.normalizedPayloadJson}->>'subject', ${inboundOrderRecords.extractedOrderJson}->>'subject', ${inboundOrderRecords.externalReference})`,
+        })
+        .from(inboundOrderEvents)
+        .innerJoin(inboundOrderRecords, eq(inboundOrderEvents.inboundRecordId, inboundOrderRecords.id))
+        .where(and(
+          eq(inboundOrderEvents.organizationId, args.organizationId),
+          eq(inboundOrderRecords.sourceType, "email"),
+          sql`${inboundOrderEvents.eventType} in ('email.attachment_ingestion_diagnostics', 'email.attachment_failed', 'email.attachment_stored')`,
+          sql`(
+            ${inboundOrderRecords.externalReference} ilike ${subjectPattern}
+            or ${inboundOrderRecords.sourceLabel} ilike ${subjectPattern}
+            or ${inboundOrderRecords.sourceRecordId} ilike ${subjectPattern}
+            or ${inboundOrderRecords.sourceMessageId} ilike ${subjectPattern}
+            or ${inboundOrderRecords.rawPayloadJson}::text ilike ${subjectPattern}
+            or ${inboundOrderRecords.normalizedPayloadJson}::text ilike ${subjectPattern}
+            or ${inboundOrderRecords.extractedOrderJson}::text ilike ${subjectPattern}
+          )`,
+        ))
+        .orderBy(desc(inboundOrderEvents.createdAt))
+        .limit(Math.max(limit, 50))
+      : [];
+
     return {
       mailboxes,
       ignoreRules,
@@ -796,6 +828,7 @@ export class InboundOrdersRepository {
       recentIgnoredDiagnostics,
       subjectRecords,
       subjectFiles,
+      subjectPullDiagnostics,
     };
   }
 
