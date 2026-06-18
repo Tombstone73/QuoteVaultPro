@@ -174,6 +174,15 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
           enabledMailboxCount: mailboxes.filter((mailbox: any) => mailbox.enabled).length,
           mailboxes,
           latestPullSummary: null,
+          recentPullMessageDiagnostics: hasSubject ? [{
+            message: "duplicate_message_attachment_backfill",
+            eventType: "email.attachment_ingestion_diagnostics",
+            metadataJson: {
+              attachmentPartsDiscovered: 1,
+              attachmentRowsCreated: 1,
+            },
+            createdAt: "2026-06-18T14:01:00.000Z",
+          }] : [],
           recentFailedMessageDiagnostics: hasSubject ? [{ message: "Attachment download failed", createdAt: "2026-06-18T14:00:00.000Z" }] : [],
           recentIgnoredMessageDiagnostics: [],
           recentCreatedInboundRecords: [{
@@ -181,6 +190,24 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
             status: "needs_review",
             reviewOutcome: null,
             subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+            senderName: "Audrey Powell",
+            senderEmail: "prepress@offsethouse.example",
+            sourceMessageId: "gmail_msg_1",
+            sourceThreadId: "thread_1",
+            receivedAt: "2026-06-18T14:54:00.000Z",
+            attachmentCount: 0,
+            rawGmailPayloadAttachmentIndicators: {
+              rawAttachmentCount: 1,
+              normalizedAttachmentCount: 1,
+              rawAttachmentMetadata: [{ filename: "visual-po.pdf", attachmentId: "att_1" }],
+            },
+            attachmentHints: {
+              mentionsAttached: true,
+              mentionsPo: true,
+              mentionsArtwork: true,
+              hasLinks: true,
+              hasGoogleDriveLinks: true,
+            },
             createdAt: "2026-06-18T14:55:01.000Z",
           }],
           recentInboundFiles: [{
@@ -203,7 +230,17 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
             provided: hasSubject,
             found: hasSubject,
             matchingRecords: hasSubject ? [
-              { id: "inbound_email_1", status: "needs_review", reviewOutcome: null, subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26" },
+              {
+                id: "inbound_email_1",
+                status: "needs_review",
+                reviewOutcome: null,
+                subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+                sourceMessageId: "gmail_msg_1",
+                sourceThreadId: "thread_1",
+                attachmentCount: 0,
+                rawGmailPayloadAttachmentIndicators: { rawAttachmentCount: 1 },
+                attachmentHints: { mentionsAttached: true, mentionsPo: true, mentionsArtwork: true },
+              },
             ] : [],
             matchingFiles: hasSubject ? [
               { id: "file_1", sourceFilename: "po-151753.pdf", role: "po", status: "available" },
@@ -421,6 +458,11 @@ describe("EmailSettings inbound mailbox settings", () => {
     await waitForText("Email Pull Diagnostics");
     await waitForText("invalid_grant");
     await waitForText("Payment Received");
+    await waitForText("Recent Email Records");
+    await waitForText("Audrey Powell");
+    expect(container.textContent).toContain("Files: 0");
+    expect(container.textContent).toContain("Raw Gmail parts: 1");
+    expect(container.textContent).toContain("Attached, Po, Artwork, Links, Google Drive Links");
 
     const subjectInput = container.querySelector("input[aria-label='Email diagnostics subject search']") as HTMLInputElement;
     await setValue(subjectInput, "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26");
@@ -433,11 +475,42 @@ describe("EmailSettings inbound mailbox settings", () => {
     await waitForText("Subject Search");
     await waitForText("Found");
     await waitForText("po-151753.pdf");
+    await waitForText("duplicate_message_attachment_backfill");
     expect(apiFetchMock.mock.calls.some(([url]) => (
       String(url) === "/api/inbound-orders/email/pull-diagnostics?subject=Purchase%20Order%20No%20151753%20Titan%20Compass%20ACM%20Sign%206_18_26"
     ))).toBe(true);
     expect(container.textContent).not.toContain("refreshToken");
     expect(container.textContent).not.toContain("secret_refresh_token");
+  });
+
+  test("collapses active ignore rules in diagnostics when there are many", async () => {
+    await renderEmailSettings([
+      {
+        id: "mailbox_enabled",
+        provider: "gmail",
+        name: "Orders Inbox",
+        emailAddress: "orders@example.com",
+        enabled: true,
+        isDefault: true,
+        lastPulledAt: "2026-06-18T14:55:00.000Z",
+        lastPullStatus: "success",
+        lastPullError: null,
+        createdAt: "2026-06-09T12:00:00.000Z",
+        updatedAt: "2026-06-18T14:55:00.000Z",
+      },
+    ], [
+      ignoreRule({ id: "rule_1", ruleValue: "rule one" }),
+      ignoreRule({ id: "rule_2", ruleValue: "rule two" }),
+      ignoreRule({ id: "rule_3", ruleValue: "rule three" }),
+      ignoreRule({ id: "rule_4", ruleValue: "rule four" }),
+    ]);
+
+    await waitForText("Email Pull Diagnostics");
+    await waitForText("4 active ignore rules hidden.");
+    const toggle = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Active Ignore Rules")) as HTMLButtonElement;
+    expect(toggle).toBeTruthy();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
   });
 
   test("starts inbound Gmail OAuth for a new mailbox connection", async () => {

@@ -469,6 +469,44 @@ function safePullSummaryFromSettings(settings: Record<string, unknown>): unknown
   return summary == null ? null : sanitizeDiagnosticValue(summary);
 }
 
+function detectEmailAttachmentHints(row: Record<string, unknown>): Record<string, boolean> {
+  const text = [
+    row.subject,
+    row.externalReference,
+    row.bodyText,
+    row.bodyHtml,
+  ].filter((value) => typeof value === "string").join("\n").slice(0, 30000);
+  return {
+    mentionsPaperclip: /\bpaperclip\b|📎/i.test(text),
+    mentionsAttached: /\battach(?:ed|ment|ments)?\b/i.test(text),
+    mentionsPo: /\bpo\b|purchase\s*order/i.test(text),
+    mentionsArtwork: /\bart\s*work\b|\bartwork\b|\bart\b/i.test(text),
+    hasLinks: /https?:\/\/|www\./i.test(text),
+    hasGoogleDriveLinks: /drive\.google\.com|docs\.google\.com/i.test(text),
+    hasWeTransferLinks: /wetransfer\.com|we\.tl/i.test(text),
+    hasDropboxLinks: /dropbox\.com/i.test(text),
+  };
+}
+
+function enrichEmailRecordDiagnostic(row: Record<string, unknown>): Record<string, unknown> {
+  const sanitized = sanitizeDiagnosticRow(row);
+  const { bodyText: _bodyText, bodyHtml: _bodyHtml, ...safe } = sanitized;
+  return {
+    ...safe,
+    processingStatus: {
+      status: safe.status ?? null,
+      reviewOutcome: safe.reviewOutcome ?? null,
+      archivedAt: safe.archivedAt ?? null,
+    },
+    rawGmailPayloadAttachmentIndicators: {
+      rawAttachmentCount: safe.rawAttachmentCount ?? 0,
+      normalizedAttachmentCount: safe.normalizedAttachmentCount ?? 0,
+      rawAttachmentMetadata: safe.rawAttachmentMetadata ?? [],
+    },
+    attachmentHints: detectEmailAttachmentHints(row),
+  };
+}
+
 function redactIgnoreRuleValue(rule: Pick<InboundEmailIgnoreRule, "ruleType" | "ruleValue">): string {
   const value = rule.ruleValue;
   if (rule.ruleType === "sender_email_exact") {
@@ -675,8 +713,10 @@ export class InboundOrderService {
         );
       })
       : [];
-    const matchingRecords = raw.subjectRecords.map(sanitizeDiagnosticRow);
+    const matchingRecords = raw.subjectRecords.map(enrichEmailRecordDiagnostic);
     const matchingFiles = raw.subjectFiles.map(sanitizeDiagnosticRow);
+    const recentCreatedInboundRecords = raw.recentCreatedRecords.map(enrichEmailRecordDiagnostic);
+    const recentPullDiagnostics = raw.recentPullDiagnostics.map(sanitizeDiagnosticRow);
 
     return {
       organizationId: args.organizationId,
@@ -686,8 +726,9 @@ export class InboundOrderService {
       mailboxes,
       latestPullSummary: mailboxes.find((mailbox) => mailbox.latestPullSummary != null)?.latestPullSummary ?? null,
       recentFailedMessageDiagnostics: raw.recentFailedDiagnostics.map(sanitizeDiagnosticRow),
+      recentPullMessageDiagnostics: recentPullDiagnostics,
       recentIgnoredMessageDiagnostics: raw.recentIgnoredDiagnostics.map(sanitizeDiagnosticRow),
-      recentCreatedInboundRecords: raw.recentCreatedRecords.map(sanitizeDiagnosticRow),
+      recentCreatedInboundRecords,
       recentInboundFiles: raw.recentFiles.map(sanitizeDiagnosticRow),
       ignoreRuleCount: raw.ignoreRules.length,
       activeIgnoreRules,
@@ -704,9 +745,12 @@ export class InboundOrderService {
       },
       storageNotes: {
         latestPullSummaryStored: mailboxes.some((mailbox) => mailbox.latestPullSummary != null),
-        perMessageFailureDiagnosticsStored: raw.recentFailedDiagnostics.length > 0,
+        perMessageFailureDiagnosticsStored: raw.recentFailedDiagnostics.length > 0 || recentPullDiagnostics.length > 0,
         ignoredMessageDiagnosticsStored: raw.recentIgnoredDiagnostics.length > 0,
-        duplicateSkipDiagnosticsStored: false,
+        duplicateSkipDiagnosticsStored: recentPullDiagnostics.some((item) => {
+          const metadata = asRecord(item.metadataJson);
+          return typeof metadata?.skippedReason === "string" && metadata.skippedReason.includes("duplicate");
+        }),
       },
     };
   }

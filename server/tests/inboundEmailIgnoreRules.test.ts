@@ -243,3 +243,72 @@ describe("inbound email attachment classification", () => {
     }));
   });
 });
+
+describe("inbound email pull diagnostics service", () => {
+  test("reports zero-file email records with raw attachment indicators and body hints", async () => {
+    const service = new InboundOrderService({
+      getEmailPullDiagnostics: jest.fn(async () => ({
+        mailboxes: [],
+        ignoreRules: [],
+        recentCreatedRecords: [{
+          id: "inbound_email_1",
+          status: "needs_review",
+          reviewOutcome: null,
+          subject: "***RUSH*** Robert - Personal Golf Outing Materials",
+          senderName: "Audrey Powell",
+          senderEmail: "prepress@offsethouse.example",
+          sourceMessageId: "gmail_msg_1",
+          sourceThreadId: "thread_1",
+          receivedAt: new Date("2026-06-18T12:00:00.000Z"),
+          attachmentCount: 0,
+          rawAttachmentCount: 2,
+          normalizedAttachmentCount: 2,
+          rawAttachmentMetadata: [{ filename: "visual-po.pdf", attachmentId: "att_1" }],
+          bodyText: "Artwork & Visual PO: attached via Google Drive https://drive.google.com/file/d/example",
+          bodyHtml: null,
+        }],
+        recentFiles: [],
+        recentFailedDiagnostics: [],
+        recentPullDiagnostics: [],
+        recentIgnoredDiagnostics: [],
+        subjectRecords: [{
+          id: "inbound_email_1",
+          status: "needs_review",
+          reviewOutcome: null,
+          subject: "***RUSH*** Robert - Personal Golf Outing Materials",
+          sourceMessageId: "gmail_msg_1",
+          sourceThreadId: "thread_1",
+          attachmentCount: 0,
+          rawAttachmentCount: 2,
+          normalizedAttachmentCount: 2,
+          rawAttachmentMetadata: [{ filename: "visual-po.pdf", attachmentId: "att_1" }],
+          bodyText: "Artwork & Visual PO: attached via Google Drive https://drive.google.com/file/d/example",
+          bodyHtml: null,
+        }],
+        subjectFiles: [],
+      })),
+    } as any);
+
+    const result = await service.getEmailPullDiagnostics({
+      organizationId: "org_1",
+      subject: "***RUSH*** Robert",
+    });
+
+    expect(result.recentCreatedInboundRecords[0]).toEqual(expect.objectContaining({
+      attachmentCount: 0,
+      rawGmailPayloadAttachmentIndicators: expect.objectContaining({
+        rawAttachmentCount: 2,
+        normalizedAttachmentCount: 2,
+      }),
+      attachmentHints: expect.objectContaining({
+        mentionsAttached: true,
+        mentionsPo: true,
+        mentionsArtwork: true,
+        hasGoogleDriveLinks: true,
+      }),
+    }));
+    expect(result.subjectSearch.found).toBe(true);
+    expect(result.subjectSearch.matchingRecords[0].attachmentCount).toBe(0);
+    expect(JSON.stringify(result)).not.toContain("Artwork & Visual PO: attached via Google Drive");
+  });
+});

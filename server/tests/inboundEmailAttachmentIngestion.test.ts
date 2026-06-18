@@ -90,6 +90,7 @@ function serviceHarness() {
   const createdFiles: any[] = [];
   const events: any[] = [];
   const repo = {
+    listFiles: jest.fn(async () => createdFiles),
     findFileByProviderAttachment: jest.fn(async () => null),
     createFile: jest.fn(async (values: any) => {
       const file = { id: `file_${createdFiles.length + 1}`, createdAt: new Date(), updatedAt: new Date(), ...values };
@@ -126,6 +127,22 @@ function serviceHarness() {
   return { service, repo, storage, createdFiles, events };
 }
 
+function duplicateDbHarness(existingRecord: InboundOrderRecord) {
+  let selectCount = 0;
+  return {
+    select: jest.fn(() => ({
+      from: jest.fn(() => ({
+        where: jest.fn(() => ({
+          limit: jest.fn(async () => {
+            selectCount += 1;
+            return selectCount === 1 ? [{ id: existingRecord.id }] : [existingRecord];
+          }),
+        })),
+      })),
+    })),
+  };
+}
+
 describe("InboundEmailIngestionService attachment ingestion", () => {
   test("does nothing for Gmail messages with no attachments", async () => {
     const { service, repo } = serviceHarness();
@@ -136,6 +153,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       message: message(),
       record,
       adapter: {},
+      skippedReason: null,
     });
 
     expect(repo.createFile).not.toHaveBeenCalled();
@@ -171,6 +189,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       }),
       record,
       adapter,
+      skippedReason: null,
     });
 
     expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
@@ -217,6 +236,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
         listRecentMessages: jest.fn(async () => []),
         downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("x"), mimeType: "application/pdf", sizeBytes: 1 })),
       },
+      skippedReason: null,
     });
 
     expect(storage.finalizeUpload).not.toHaveBeenCalled();
@@ -246,6 +266,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       }),
       record,
       adapter,
+      skippedReason: null,
     });
 
     expect(createdFiles[0]).toEqual(expect.objectContaining({
@@ -282,6 +303,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
         listRecentMessages: jest.fn(async () => []),
         downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("x"), mimeType: "application/octet-stream", sizeBytes: 1 })),
       },
+      skippedReason: null,
     });
 
     expect(storage.finalizeUpload).not.toHaveBeenCalled();
@@ -296,6 +318,79 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
       detectedBy: ["filename", "content-disposition:attachment", "mimeType"],
       safeToDownload: false,
+    }));
+  });
+
+  test("backfills attachments for duplicate Gmail records with zero files", async () => {
+    const { repo, storage, createdFiles, events } = serviceHarness();
+    repo.listFiles.mockResolvedValueOnce([]);
+    const service = new InboundEmailIngestionService(duplicateDbHarness(record) as any, {}, repo as any, storage as any);
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => []),
+      downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+    };
+
+    const outcome = await (service as any).processMessage(
+      "org_1",
+      "user_1",
+      mailbox,
+      { id: "source_1" },
+      message({
+        attachments: [{
+          filename: "Purchase Order 151753.pdf",
+          mimeType: "application/pdf",
+          size: 4,
+          attachmentId: "att_backfill",
+        }],
+      }),
+      adapter,
+    );
+
+    expect(outcome).toEqual({ status: "skippedDuplicates" });
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      inboundRecordId: "inbound_1",
+      providerAttachmentId: "att_backfill",
+      status: "available",
+    }));
+    expect(events.some((event) => event.eventType === "email.attachment_ingestion_diagnostics")).toBe(true);
+  });
+
+  test("does not duplicate attachments for duplicate Gmail records that already have provider files", async () => {
+    const { repo, storage, events } = serviceHarness();
+    repo.listFiles.mockResolvedValueOnce([{
+      id: "file_existing",
+      providerAttachmentId: "att_existing",
+    }]);
+    const service = new InboundEmailIngestionService(duplicateDbHarness(record) as any, {}, repo as any, storage as any);
+
+    const outcome = await (service as any).processMessage(
+      "org_1",
+      "user_1",
+      mailbox,
+      { id: "source_1" },
+      message({
+        attachments: [{
+          filename: "Purchase Order 151753.pdf",
+          mimeType: "application/pdf",
+          size: 4,
+          attachmentId: "att_existing",
+        }],
+      }),
+      {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+      },
+    );
+
+    expect(outcome).toEqual({ status: "skippedDuplicates" });
+    expect(storage.finalizeUpload).not.toHaveBeenCalled();
+    expect(repo.createFile).not.toHaveBeenCalled();
+    expect(events[0]).toEqual(expect.objectContaining({
+      eventType: "email.attachment_ingestion_diagnostics",
+      metadataJson: expect.objectContaining({
+        skippedReason: "duplicate_message_existing_files_cover_provider_attachments",
+      }),
     }));
   });
 });

@@ -46,6 +46,19 @@ export type InboundEmailProviderMessage = {
   attachments: InboundEmailAttachmentMetadata[];
 };
 
+type AttachmentIngestionDiagnostics = {
+  messageId: string;
+  subject: string | null;
+  attachmentPartsDiscovered: number;
+  attachmentPartsAttempted: number;
+  attachmentRowsCreated: number;
+  storedRowsCreated: number;
+  metadataOnlyRowsCreated: number;
+  downloadFailures: number;
+  skippedExistingProviderAttachments: number;
+  skippedReason: string | null;
+};
+
 export interface InboundEmailProviderAdapter {
   listRecentMessages(mailbox: InboundEmailMailbox, limit: number): Promise<InboundEmailProviderMessage[]>;
   downloadAttachment?(
@@ -424,7 +437,7 @@ export function matchInboundEmailIgnoreRule(
   return false;
 }
 
-class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
+export class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
   private buildGmailClient(mailbox: InboundEmailMailbox) {
     const authJson = (mailbox.authJson ?? {}) as Record<string, unknown>;
     const refreshToken = stringFromUnknown(authJson.refreshToken);
@@ -674,7 +687,27 @@ export class InboundEmailIngestionService {
         eq(inboundOrderRecords.idempotencyKey, idempotencyKey),
       ))
       .limit(1);
-    if (existing) return { status: "skippedDuplicates" };
+    if (existing) {
+      const [existingRecord] = await this.dbInstance
+        .select()
+        .from(inboundOrderRecords)
+        .where(and(
+          eq(inboundOrderRecords.organizationId, organizationId),
+          eq(inboundOrderRecords.id, existing.id),
+        ))
+        .limit(1);
+      if (existingRecord) {
+        await this.backfillDuplicateAttachmentsIfNeeded({
+          organizationId,
+          actorUserId,
+          mailbox,
+          message,
+          record: existingRecord,
+          adapter,
+        });
+      }
+      return { status: "skippedDuplicates" };
+    }
 
     const matchedIgnoreRule = await this.findMatchedIgnoreRule(organizationId, message);
     if (matchedIgnoreRule) {
@@ -815,8 +848,62 @@ export class InboundEmailIngestionService {
       message,
       record,
       adapter,
+      skippedReason: null,
     });
     return { status: "created", recordId: record.id };
+  }
+
+  private async backfillDuplicateAttachmentsIfNeeded(args: {
+    organizationId: string;
+    actorUserId: string;
+    mailbox: InboundEmailMailbox;
+    message: InboundEmailProviderMessage;
+    record: InboundOrderRecord;
+    adapter: InboundEmailProviderAdapter;
+  }): Promise<void> {
+    const existingFiles = await this.inboundRepository.listFiles(args.organizationId, args.record.id);
+    const existingProviderAttachmentIds = new Set(existingFiles.map((file) => file.providerAttachmentId).filter((value): value is string => Boolean(value)));
+    const messageProviderAttachmentIds = args.message.attachments.map((attachment) => attachment.attachmentId).filter((value): value is string => Boolean(value));
+    const hasMissingProviderAttachment = messageProviderAttachmentIds.some((attachmentId) => !existingProviderAttachmentIds.has(attachmentId));
+    const hasAttachmentsWithoutProviderIds = args.message.attachments.some((attachment) => !attachment.attachmentId);
+    const shouldBackfill = args.message.attachments.length > 0 && (
+      existingFiles.length === 0
+      || hasMissingProviderAttachment
+      || (hasAttachmentsWithoutProviderIds && existingFiles.length === 0)
+    );
+
+    if (!shouldBackfill) {
+      await this.recordAttachmentIngestionDiagnostics({
+        organizationId: args.organizationId,
+        actorUserId: args.actorUserId,
+        record: args.record,
+        diagnostics: {
+          messageId: args.message.messageId,
+          subject: args.message.subject,
+          attachmentPartsDiscovered: args.message.attachments.length,
+          attachmentPartsAttempted: 0,
+          attachmentRowsCreated: 0,
+          storedRowsCreated: 0,
+          metadataOnlyRowsCreated: 0,
+          downloadFailures: 0,
+          skippedExistingProviderAttachments: messageProviderAttachmentIds.length,
+          skippedReason: args.message.attachments.length === 0
+            ? "duplicate_message_no_attachment_parts_discovered"
+            : "duplicate_message_existing_files_cover_provider_attachments",
+        },
+      });
+      return;
+    }
+
+    await this.ingestAttachments({
+      organizationId: args.organizationId,
+      actorUserId: args.actorUserId,
+      mailbox: args.mailbox,
+      message: args.message,
+      record: args.record,
+      adapter: args.adapter,
+      skippedReason: "duplicate_message_attachment_backfill",
+    });
   }
 
   private async ingestAttachments(args: {
@@ -826,8 +913,21 @@ export class InboundEmailIngestionService {
     message: InboundEmailProviderMessage;
     record: InboundOrderRecord;
     adapter: InboundEmailProviderAdapter;
-  }): Promise<void> {
-    if (args.message.attachments.length === 0) return;
+    skippedReason: string | null;
+  }): Promise<AttachmentIngestionDiagnostics> {
+    const diagnostics: AttachmentIngestionDiagnostics = {
+      messageId: args.message.messageId,
+      subject: args.message.subject,
+      attachmentPartsDiscovered: args.message.attachments.length,
+      attachmentPartsAttempted: 0,
+      attachmentRowsCreated: 0,
+      storedRowsCreated: 0,
+      metadataOnlyRowsCreated: 0,
+      downloadFailures: 0,
+      skippedExistingProviderAttachments: 0,
+      skippedReason: args.skippedReason,
+    };
+    if (args.message.attachments.length === 0) return diagnostics;
 
     for (const attachment of args.message.attachments) {
       const providerAttachmentId = attachment.attachmentId ?? null;
@@ -862,9 +962,13 @@ export class InboundEmailIngestionService {
             providerMessageId,
             providerAttachmentId,
           });
-          if (existing) continue;
+          if (existing) {
+            diagnostics.skippedExistingProviderAttachments += 1;
+            continue;
+          }
         }
 
+        diagnostics.attachmentPartsAttempted += 1;
         if (!classification.safeToDownload || !args.adapter.downloadAttachment || !providerAttachmentId) {
           await this.inboundRepository.createFile({
             organizationId: args.organizationId,
@@ -887,6 +991,8 @@ export class InboundEmailIngestionService {
             createdQuoteAttachmentId: null,
             createdOrderAttachmentId: null,
           });
+          diagnostics.attachmentRowsCreated += 1;
+          diagnostics.metadataOnlyRowsCreated += 1;
           continue;
         }
 
@@ -953,6 +1059,8 @@ export class InboundEmailIngestionService {
             createsOrder: false,
           },
         });
+        diagnostics.attachmentRowsCreated += 1;
+        diagnostics.storedRowsCreated += 1;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Attachment download failed.";
         console.warn("[Inbound Email Pull] Attachment ingestion failed", {
@@ -986,6 +1094,9 @@ export class InboundEmailIngestionService {
           createdQuoteAttachmentId: null,
           createdOrderAttachmentId: null,
         });
+        diagnostics.attachmentRowsCreated += 1;
+        diagnostics.metadataOnlyRowsCreated += 1;
+        diagnostics.downloadFailures += 1;
         await this.inboundRepository.createEvent({
           organizationId: args.organizationId,
           inboundRecordId: args.record.id,
@@ -1003,6 +1114,42 @@ export class InboundEmailIngestionService {
         });
       }
     }
+    await this.recordAttachmentIngestionDiagnostics({
+      organizationId: args.organizationId,
+      actorUserId: args.actorUserId,
+      record: args.record,
+      diagnostics,
+    });
+    return diagnostics;
+  }
+
+  private async recordAttachmentIngestionDiagnostics(args: {
+    organizationId: string;
+    actorUserId: string;
+    record: InboundOrderRecord;
+    diagnostics: AttachmentIngestionDiagnostics;
+  }): Promise<void> {
+    await this.inboundRepository.createEvent({
+      organizationId: args.organizationId,
+      inboundRecordId: args.record.id,
+      actorUserId: args.actorUserId,
+      actorType: "system",
+      eventType: "email.attachment_ingestion_diagnostics",
+      fromStatus: null,
+      toStatus: null,
+      message: args.diagnostics.skippedReason ?? "Inbound email attachment ingestion diagnostics.",
+      metadataJson: {
+        ...args.diagnostics,
+        createsQuote: false,
+        createsOrder: false,
+        createsArtwork: false,
+        createsProofs: false,
+        createsProductionJobs: false,
+        createsInvoices: false,
+        createsFulfillment: false,
+        createsPayments: false,
+      },
+    });
   }
 
   private async findMatchedIgnoreRule(

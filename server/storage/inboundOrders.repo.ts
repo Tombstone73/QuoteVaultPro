@@ -232,6 +232,7 @@ export type InboundEmailPullDiagnosticsRaw = {
   recentCreatedRecords: Array<Record<string, unknown>>;
   recentFiles: Array<Record<string, unknown>>;
   recentFailedDiagnostics: Array<Record<string, unknown>>;
+  recentPullDiagnostics: Array<Record<string, unknown>>;
   recentIgnoredDiagnostics: Array<Record<string, unknown>>;
   subjectRecords: Array<Record<string, unknown>>;
   subjectFiles: Array<Record<string, unknown>>;
@@ -590,8 +591,21 @@ export class InboundOrdersRepository {
         archivedAt: inboundOrderRecords.archivedAt,
         createdAt: inboundOrderRecords.createdAt,
         subject: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'subject', ${inboundOrderRecords.normalizedPayloadJson}->>'subject', ${inboundOrderRecords.extractedOrderJson}->>'subject', ${inboundOrderRecords.externalReference})`,
+        senderName: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->'sender'->>'name', ${inboundOrderRecords.normalizedPayloadJson}->'sender'->>'name')`,
         senderEmail: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->'sender'->>'email', ${inboundOrderRecords.normalizedPayloadJson}->'sender'->>'email')`,
         mailboxEmail: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->'mailbox'->>'emailAddress', ${inboundOrderRecords.normalizedPayloadJson}->'source'->>'mailboxEmail')`,
+        sourceThreadId: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'threadId', ${inboundOrderRecords.normalizedPayloadJson}->'source'->>'threadId')`,
+        attachmentCount: sql<number>`(
+          select count(*)::int
+          from ${inboundOrderFiles}
+          where ${inboundOrderFiles.organizationId} = ${inboundOrderRecords.organizationId}
+            and ${inboundOrderFiles.inboundRecordId} = ${inboundOrderRecords.id}
+        )`,
+        rawAttachmentCount: sql<number>`case when jsonb_typeof(${inboundOrderRecords.rawPayloadJson}->'attachments') = 'array' then jsonb_array_length(${inboundOrderRecords.rawPayloadJson}->'attachments') else 0 end`,
+        rawAttachmentMetadata: sql<unknown>`case when jsonb_typeof(${inboundOrderRecords.rawPayloadJson}->'attachments') = 'array' then ${inboundOrderRecords.rawPayloadJson}->'attachments' else '[]'::jsonb end`,
+        normalizedAttachmentCount: sql<number>`case when jsonb_typeof(${inboundOrderRecords.normalizedPayloadJson}->'attachments') = 'array' then jsonb_array_length(${inboundOrderRecords.normalizedPayloadJson}->'attachments') else 0 end`,
+        bodyText: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'bodyText', ${inboundOrderRecords.normalizedPayloadJson}->>'bodyText', ${inboundOrderRecords.extractedOrderJson}->>'bodyText')`,
+        bodyHtml: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'bodyHtml', ${inboundOrderRecords.normalizedPayloadJson}->>'bodyHtml')`,
       })
       .from(inboundOrderRecords)
       .where(and(eq(inboundOrderRecords.organizationId, args.organizationId), eq(inboundOrderRecords.sourceType, "email")))
@@ -610,6 +624,7 @@ export class InboundOrdersRepository {
         status: inboundOrderFiles.status,
         providerAttachmentId: inboundOrderFiles.providerAttachmentId,
         providerMessageId: inboundOrderFiles.providerMessageId,
+        contentDisposition: inboundOrderFiles.contentDisposition,
         metadataJson: inboundOrderFiles.metadataJson,
         reviewNotes: inboundOrderFiles.reviewNotes,
         createdAt: inboundOrderFiles.createdAt,
@@ -635,6 +650,26 @@ export class InboundOrdersRepository {
         eq(inboundOrderEvents.organizationId, args.organizationId),
         eq(inboundOrderRecords.sourceType, "email"),
         sql`${inboundOrderEvents.eventType} in ('email.attachment_failed')`,
+      ))
+      .orderBy(desc(inboundOrderEvents.createdAt))
+      .limit(limit);
+
+    const recentPullDiagnostics = await this.dbInstance
+      .select({
+        eventId: inboundOrderEvents.id,
+        inboundRecordId: inboundOrderEvents.inboundRecordId,
+        eventType: inboundOrderEvents.eventType,
+        message: inboundOrderEvents.message,
+        metadataJson: inboundOrderEvents.metadataJson,
+        createdAt: inboundOrderEvents.createdAt,
+        recordSubject: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'subject', ${inboundOrderRecords.normalizedPayloadJson}->>'subject', ${inboundOrderRecords.extractedOrderJson}->>'subject', ${inboundOrderRecords.externalReference})`,
+      })
+      .from(inboundOrderEvents)
+      .innerJoin(inboundOrderRecords, eq(inboundOrderEvents.inboundRecordId, inboundOrderRecords.id))
+      .where(and(
+        eq(inboundOrderEvents.organizationId, args.organizationId),
+        eq(inboundOrderRecords.sourceType, "email"),
+        sql`${inboundOrderEvents.eventType} in ('email.attachment_ingestion_diagnostics', 'email.attachment_failed', 'email.attachment_stored')`,
       ))
       .orderBy(desc(inboundOrderEvents.createdAt))
       .limit(limit);
@@ -678,8 +713,21 @@ export class InboundOrdersRepository {
           archivedAt: inboundOrderRecords.archivedAt,
           createdAt: inboundOrderRecords.createdAt,
           subject: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'subject', ${inboundOrderRecords.normalizedPayloadJson}->>'subject', ${inboundOrderRecords.extractedOrderJson}->>'subject', ${inboundOrderRecords.externalReference})`,
+          senderName: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->'sender'->>'name', ${inboundOrderRecords.normalizedPayloadJson}->'sender'->>'name')`,
           senderEmail: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->'sender'->>'email', ${inboundOrderRecords.normalizedPayloadJson}->'sender'->>'email')`,
           mailboxEmail: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->'mailbox'->>'emailAddress', ${inboundOrderRecords.normalizedPayloadJson}->'source'->>'mailboxEmail')`,
+          sourceThreadId: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'threadId', ${inboundOrderRecords.normalizedPayloadJson}->'source'->>'threadId')`,
+          attachmentCount: sql<number>`(
+            select count(*)::int
+            from ${inboundOrderFiles}
+            where ${inboundOrderFiles.organizationId} = ${inboundOrderRecords.organizationId}
+              and ${inboundOrderFiles.inboundRecordId} = ${inboundOrderRecords.id}
+          )`,
+          rawAttachmentCount: sql<number>`case when jsonb_typeof(${inboundOrderRecords.rawPayloadJson}->'attachments') = 'array' then jsonb_array_length(${inboundOrderRecords.rawPayloadJson}->'attachments') else 0 end`,
+          rawAttachmentMetadata: sql<unknown>`case when jsonb_typeof(${inboundOrderRecords.rawPayloadJson}->'attachments') = 'array' then ${inboundOrderRecords.rawPayloadJson}->'attachments' else '[]'::jsonb end`,
+          normalizedAttachmentCount: sql<number>`case when jsonb_typeof(${inboundOrderRecords.normalizedPayloadJson}->'attachments') = 'array' then jsonb_array_length(${inboundOrderRecords.normalizedPayloadJson}->'attachments') else 0 end`,
+          bodyText: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'bodyText', ${inboundOrderRecords.normalizedPayloadJson}->>'bodyText', ${inboundOrderRecords.extractedOrderJson}->>'bodyText')`,
+          bodyHtml: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'bodyHtml', ${inboundOrderRecords.normalizedPayloadJson}->>'bodyHtml')`,
         })
         .from(inboundOrderRecords)
         .where(and(
@@ -709,8 +757,10 @@ export class InboundOrdersRepository {
           mimeType: inboundOrderFiles.mimeType,
           sizeBytes: inboundOrderFiles.sizeBytes,
           status: inboundOrderFiles.status,
+          fileRecordId: inboundOrderFiles.fileRecordId,
           providerAttachmentId: inboundOrderFiles.providerAttachmentId,
           providerMessageId: inboundOrderFiles.providerMessageId,
+          contentDisposition: inboundOrderFiles.contentDisposition,
           metadataJson: inboundOrderFiles.metadataJson,
           reviewNotes: inboundOrderFiles.reviewNotes,
           createdAt: inboundOrderFiles.createdAt,
@@ -742,6 +792,7 @@ export class InboundOrdersRepository {
       recentCreatedRecords,
       recentFiles,
       recentFailedDiagnostics,
+      recentPullDiagnostics,
       recentIgnoredDiagnostics,
       subjectRecords,
       subjectFiles,
