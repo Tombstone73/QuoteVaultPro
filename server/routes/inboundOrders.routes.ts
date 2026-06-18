@@ -370,6 +370,13 @@ export function registerInboundOrderRoutes(
         organizationId,
         subject: input.subject ?? null,
       });
+      if (input.subject && typeof emailIngestionService.getGmailPayloadDiagnosticsForSubject === "function") {
+        (diagnostics as any).subjectSearch.gmailPayloadDiagnostics = await emailIngestionService.getGmailPayloadDiagnosticsForSubject({
+          organizationId,
+          subject: input.subject,
+          limit: 3,
+        });
+      }
       res.json({ success: true, data: stripDiagnosticSecrets(diagnostics) });
     } catch (error: any) {
       if (error instanceof z.ZodError) {

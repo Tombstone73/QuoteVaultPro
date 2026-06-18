@@ -738,6 +738,64 @@ function AttachmentPipelineDiagnostics({ record }: { record: Record<string, unkn
   );
 }
 
+function GmailPayloadPartTree({ part, depth = 0 }: { part: Record<string, any>; depth?: number }) {
+  const children = Array.isArray(part.childParts) ? part.childParts : [];
+  return (
+    <div className="rounded border border-border/70 bg-background/70 p-2 text-[11px] text-muted-foreground" style={{ marginLeft: depth ? 12 : 0 }}>
+      <div className="font-medium text-foreground">
+        {formatDiagnosticValue(part.partId ?? "root")} / {formatDiagnosticValue(part.mimeType)}
+      </div>
+      <div className="mt-1 grid gap-1 md:grid-cols-2">
+        <div>Filename present: {formatDiagnosticValue(part.filenamePresent)}</div>
+        <div>Filename: {formatDiagnosticValue(part.filename)}</div>
+        <div>Attachment ID present: {formatDiagnosticValue(part.attachmentIdPresent)}</div>
+        <div>Body size: {formatDiagnosticValue(part.bodySize)}</div>
+        <div>Content-Type: {formatDiagnosticValue(part.headers?.contentType)}</div>
+        <div>Content-Disposition: {formatDiagnosticValue(part.headers?.contentDisposition)}</div>
+        <div>Content-ID: {formatDiagnosticValue(part.headers?.contentId)}</div>
+      </div>
+      {children.length > 0 ? (
+        <div className="mt-2 space-y-2">
+          {children.map((child: Record<string, any>, index: number) => (
+            <GmailPayloadPartTree key={`${child.partId ?? "part"}-${index}`} part={child} depth={depth + 1} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function GmailPayloadDiagnosticsPanel({ diagnostics }: { diagnostics: Array<Record<string, unknown>> }) {
+  if (diagnostics.length === 0) return null;
+  return (
+    <div className="mt-4 rounded-md border border-border p-3">
+      <h5 className="text-sm font-semibold text-foreground">Sanitized Gmail Payload Shape</h5>
+      <div className="mt-2 space-y-3">
+        {diagnostics.map((item, index) => {
+          const payloadTree = item.payloadTree as Record<string, any> | null | undefined;
+          return (
+            <div key={`${formatDiagnosticValue(item.inboundRecordId)}-${index}`} className="rounded-md bg-muted/30 p-2 text-xs">
+              <div className="font-medium text-foreground">{formatDiagnosticValue(item.subject ?? item.sourceMessageId)}</div>
+              <div className="mt-1 text-muted-foreground">
+                Message: {formatDiagnosticValue(item.sourceMessageId)} / Extracted attachments: {formatDiagnosticValue(item.extractedAttachmentCount)}
+              </div>
+              {item.diagnosticError ? (
+                <div className="mt-2 text-destructive">{formatDiagnosticValue(item.diagnosticError)}</div>
+              ) : payloadTree ? (
+                <div className="mt-2">
+                  <GmailPayloadPartTree part={payloadTree} />
+                </div>
+              ) : (
+                <div className="mt-2 text-muted-foreground">No Gmail payload tree returned.</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function EmailPullDiagnosticsPanel() {
   const [subjectInput, setSubjectInput] = useState("");
   const [subject, setSubject] = useState("");
@@ -931,6 +989,7 @@ function EmailPullDiagnosticsPanel() {
                     </div>
                   </div>
                 </div>
+                <GmailPayloadDiagnosticsPanel diagnostics={diagnostics.subjectSearch.gmailPayloadDiagnostics ?? []} />
               </div>
             )}
 

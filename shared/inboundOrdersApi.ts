@@ -549,9 +549,10 @@ export type InboundEmailPullDiagnosticsResponse = {
       provided: boolean;
       found: boolean;
       matchingRecords: Array<Record<string, unknown>>;
-      matchingFiles: Array<Record<string, unknown>>;
-      matchingIgnoreRules: Array<Record<string, unknown>>;
-      duplicateDetection: {
+        matchingFiles: Array<Record<string, unknown>>;
+        matchingIgnoreRules: Array<Record<string, unknown>>;
+        gmailPayloadDiagnostics?: Array<Record<string, unknown>>;
+        duplicateDetection: {
         durableSkippedMessageLogsStored: boolean;
         possibleDuplicateRecords: Array<Record<string, unknown>>;
       };

@@ -211,6 +211,74 @@ describe("Gmail MIME attachment extraction", () => {
     ]);
   });
 
+  test("captures nested attachment ids with blank Gmail filenames", () => {
+    const result = extractGmailBodyAndAttachments({
+      mimeType: "multipart/mixed",
+      parts: [{
+        partId: "0",
+        mimeType: "multipart/related",
+        parts: [{
+          partId: "0.1",
+          filename: "",
+          mimeType: "application/pdf",
+          body: { attachmentId: "blank_filename_att", size: 333 },
+        }],
+      }],
+    });
+
+    expect(result.attachments).toEqual([
+      expect.objectContaining({
+        filename: "attachment-0.1.pdf",
+        attachmentId: "blank_filename_att",
+      }),
+    ]);
+  });
+
+  test("captures nested attachments with filename only in Content-Disposition", () => {
+    const result = extractGmailBodyAndAttachments({
+      mimeType: "multipart/mixed",
+      parts: [{
+        partId: "1",
+        mimeType: "application/pdf",
+        headers: [{ name: "Content-Disposition", value: "attachment; filename=\"disposition-po.pdf\"" }],
+        body: { attachmentId: "disposition_att", size: 444 },
+      }],
+    });
+
+    expect(result.attachments).toEqual([
+      expect.objectContaining({
+        filename: "disposition-po.pdf",
+        attachmentId: "disposition_att",
+      }),
+    ]);
+  });
+
+  test("walks embedded payload containers in forwarded Gmail parts", () => {
+    const result = extractGmailBodyAndAttachments({
+      mimeType: "multipart/mixed",
+      parts: [{
+        partId: "forwarded",
+        mimeType: "message/rfc822",
+        payload: {
+          mimeType: "multipart/mixed",
+          parts: [{
+            partId: "forwarded-payload-1",
+            filename: "forwarded-art.pdf",
+            mimeType: "application/pdf",
+            body: { attachmentId: "forwarded_payload_att", size: 555 },
+          }],
+        },
+      }],
+    });
+
+    expect(result.attachments).toEqual([
+      expect.objectContaining({
+        filename: "forwarded-art.pdf",
+        attachmentId: "forwarded_payload_att",
+      }),
+    ]);
+  });
+
   test("fetches Gmail message details with full payload format for attachment traversal", async () => {
     const list = jest.fn(async () => ({
       data: { messages: [{ id: "gmail_msg_1" }] },
