@@ -868,11 +868,12 @@ describe("InboundOrdersPage", () => {
       Simulate.click(pullButton!);
     });
 
-    await waitForText("Latest email pull complete");
-    expect(container.textContent).toContain("1 created");
-    expect(container.textContent).toContain("2 duplicate(s) skipped");
-    expect(container.textContent).toContain("3 ignored");
-    expect(container.textContent).toContain("4 failed");
+    await waitForCondition(() => mockToast.mock.calls.some(([payload]) => (payload as { title?: string } | undefined)?.title === "Email pull complete"), "email pull toast");
+    expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Email pull complete",
+      description: "1 created, 2 duplicate(s) skipped, 3 ignored, 4 failed.",
+    }));
+    expect(container.textContent).not.toContain("Latest email pull complete");
   });
 
   test("creates manual intake, refreshes the queue, selects it, and renders source evidence", async () => {
@@ -985,13 +986,14 @@ describe("InboundOrdersPage", () => {
 
     renderPage();
     await waitForText("Parse with AI");
+    await waitForText("Draft builder will appear after parsing.");
 
     const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
       button.textContent?.includes("Create Draft Order")
     ));
     expect(createDraftButton).toBeTruthy();
     expect(createDraftButton?.disabled).toBe(true);
-    expect(container.textContent).toContain("Phase 4 conversion starts after a successful parse and ready review.");
+    expect(container.textContent).toContain("Draft builder will appear after parsing.");
   });
 
   test("keeps long inbound queue card content inside the 360px panel", async () => {
@@ -1234,7 +1236,6 @@ describe("InboundOrdersPage", () => {
     act(() => {
       Simulate.click(parseButton!);
     });
-    await waitForText("Parsing...");
     await waitForText("Parsing source evidence...");
     expect(parseButton?.disabled).toBe(true);
 
@@ -1840,6 +1841,13 @@ describe("InboundOrdersPage", () => {
     try {
       renderPage();
       await waitForText("Phase 4: Create draft order from reviewed inbound record.");
+      const notesButton = Array.from(container.querySelectorAll("button")).find((button) => (
+        button.textContent?.includes("Add Notes")
+      ));
+      act(() => {
+        Simulate.click(notesButton!);
+      });
+      await waitForText("Review notes");
       act(() => {
         Simulate.change(labeledControl("Review notes", "textarea"), { target: { value: "Staff edited this draft." } } as any);
       });
@@ -2692,6 +2700,13 @@ describe("InboundOrdersPage", () => {
     act(() => {
       Simulate.change(decisionStatus, { target: { value: "acknowledged" } } as any);
     });
+    const notesButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Add Notes")
+    ));
+    act(() => {
+      Simulate.click(notesButton!);
+    });
+    await waitForText("Review notes");
     act(() => {
       Simulate.change(labeledControl("Review notes", "textarea"), { target: { value: "Reviewed by staff." } } as any);
     });
