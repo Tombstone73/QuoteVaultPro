@@ -457,6 +457,111 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     }));
   });
 
+  test("backfills attachments from stored payload when normalized message candidates are missing", async () => {
+    const { repo, storage, createdFiles, events } = serviceHarness();
+    repo.listFiles.mockResolvedValueOnce([]);
+    const existingRecord = {
+      ...record,
+      rawPayloadJson: {
+        attachments: [{
+          filename: "151753 Titan Compass ACM Sign.pdf",
+          mimeType: "application/pdf",
+          size: 12,
+          attachmentId: "att_151753",
+          contentDisposition: "attachment",
+          partId: "2",
+          detectedBy: ["attachmentId", "content-disposition:attachment"],
+        }],
+      },
+    };
+    const service = new InboundEmailIngestionService(duplicateDbHarness(existingRecord) as any, {}, repo as any, storage as any);
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => []),
+      downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+    };
+
+    const outcome = await (service as any).processMessage(
+      "org_1",
+      "user_1",
+      mailbox,
+      { id: "source_1" },
+      message({
+        subject: "151753 Titan Compass",
+        attachments: [],
+      }),
+      adapter,
+    );
+
+    expect(outcome).toEqual({ status: "skippedDuplicates" });
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(adapter.downloadAttachment).toHaveBeenCalledWith(
+      mailbox,
+      expect.objectContaining({ subject: "151753 Titan Compass" }),
+      expect.objectContaining({ attachmentId: "att_151753" }),
+    );
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      inboundRecordId: "inbound_1",
+      providerAttachmentId: "att_151753",
+      status: "available",
+    }));
+    expect(events.find((event) => event.eventType === "email.attachment_ingestion_diagnostics")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        attachmentCandidatesDiscovered: 1,
+        attachmentPartsAttempted: 1,
+        downloadAttempts: 1,
+        downloadSuccesses: 1,
+        storedRowsCreated: 1,
+      }),
+    }));
+  });
+
+  test("creates metadata-only rows from stored payload candidates without Gmail attachment ids", async () => {
+    const { service, storage, createdFiles, events } = serviceHarness();
+    const recordWithStoredAttachment = {
+      ...record,
+      rawPayloadJson: {
+        attachments: [{
+          filename: "spec-link.url",
+          mimeType: "application/octet-stream",
+          sizeBytes: 42,
+          contentDisposition: "attachment; filename=\"spec-link.url\"",
+        }],
+      },
+    };
+
+    await (service as any).ingestAttachments({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      mailbox,
+      message: message({
+        subject: "Order for Back Lit Signs for Family Church please. 2 different sizes",
+        attachments: [],
+      }),
+      record: recordWithStoredAttachment,
+      adapter: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("x"), mimeType: "application/octet-stream", sizeBytes: 1 })),
+      },
+      skippedReason: null,
+    });
+
+    expect(storage.finalizeUpload).not.toHaveBeenCalled();
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      sourceFilename: "spec-link.url",
+      providerAttachmentId: null,
+      status: "uploaded",
+      fileRecordId: null,
+    }));
+    expect(events.find((event) => event.eventType === "email.attachment_ingestion_diagnostics")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        attachmentCandidatesDiscovered: 1,
+        attachmentPartsAttempted: 1,
+        downloadAttempts: 0,
+        metadataOnlyRowsCreated: 1,
+      }),
+    }));
+  });
+
   test("does not duplicate attachments for duplicate Gmail records that already have provider files", async () => {
     const { repo, storage, events } = serviceHarness();
     repo.listFiles.mockResolvedValueOnce([{
