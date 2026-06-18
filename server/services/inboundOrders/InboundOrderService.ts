@@ -415,6 +415,37 @@ function positiveIntegerFromUnknown(value: unknown): number | null {
   return Math.floor(numeric);
 }
 
+function normalizeArtworkMatchText(value: string | null | undefined): string {
+  return (value ?? "")
+    .toLowerCase()
+    .replace(/[_\-./]+/g, " ")
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function compactArtworkMatchText(value: string | null | undefined): string {
+  return normalizeArtworkMatchText(value).replace(/\s+/g, "");
+}
+
+function artworkMatchTokens(value: string): string[] {
+  const ignored = new Set(["the", "and", "for", "with", "sign", "signs", "print", "prints", "art", "artwork", "final"]);
+  return Array.from(new Set(
+    normalizeArtworkMatchText(value)
+      .split(" ")
+      .filter((token) => token.length >= 3 && !ignored.has(token)),
+  ));
+}
+
+function normalizeDimensionToken(value: number): string | null {
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Number.isInteger(value) ? String(value) : String(value).replace(/\.0+$/, "");
+}
+
+function artworkLinkKey(link: Pick<InboundOrderArtworkLink, "fileId" | "fileRecordId">): string {
+  return link.fileRecordId ? `record:${link.fileRecordId}` : `file:${link.fileId}`;
+}
+
 function quoteReference(quote: Pick<Quote, "id" | "quoteNumber">): string {
   return quote.quoteNumber != null ? `#${quote.quoteNumber}` : quote.id.slice(0, 8);
 }
@@ -2127,6 +2158,181 @@ export class InboundOrderService {
     });
   }
 
+  private suggestArtworkLinksForReviewDraft(args: {
+    draft: InboundOrderParsedDraft;
+    files: InboundOrderFile[];
+    reviewedLineItemsJson: InboundOrderReviewDraftPayload["reviewedLineItemsJson"];
+  }): {
+    reviewedLineItemsJson: InboundOrderReviewDraftPayload["reviewedLineItemsJson"];
+    unassignedAttachments: InboundOrderArtworkLink[];
+  } {
+    const reviewedLineItemsJson = args.reviewedLineItemsJson.map((lineItem) => ({
+      ...lineItem,
+      artworkLinks: [...lineItem.artworkLinks],
+    }));
+    const unassignedAttachments: InboundOrderArtworkLink[] = [];
+
+    for (const file of args.files) {
+      const baseLink = this.artworkLinkFromInboundFile(file, "unresolved", null, "Stored inbound attachment awaiting staff assignment.");
+      const scores = reviewedLineItemsJson.map((lineItem, index) => ({
+        index,
+        score: this.scoreArtworkFileForLineItem(file, args.draft, lineItem, index),
+      }));
+      const ranked = scores.sort((a, b) => b.score.score - a.score.score);
+      const top = ranked[0] ?? null;
+      const runnerUp = ranked[1] ?? null;
+      const confident = Boolean(top && top.score.score >= 70 && (!runnerUp || top.score.score - runnerUp.score.score >= 12));
+
+      if (confident && top) {
+        reviewedLineItemsJson[top.index].artworkLinks.push({
+          ...baseLink,
+          source: "ai_suggested",
+          confidence: Math.min(100, Math.round(top.score.score)),
+          reason: top.score.reason,
+        });
+        continue;
+      }
+
+      unassignedAttachments.push({
+        ...baseLink,
+        confidence: top ? Math.min(100, Math.round(top.score.score)) : null,
+        reason: top?.score.reason ?? "No reliable line-item match was detected.",
+      });
+    }
+
+    return { reviewedLineItemsJson, unassignedAttachments };
+  }
+
+  private artworkLinkFromInboundFile(
+    file: InboundOrderFile,
+    source: InboundOrderArtworkLink["source"],
+    confidence: number | null,
+    reason: string | null,
+  ): InboundOrderArtworkLink {
+    const role: InboundOrderArtworkLink["role"] = file.role === "artwork" || file.role === "po" ? file.role : "other";
+    return {
+      fileId: file.id,
+      fileRecordId: file.fileRecordId ?? null,
+      filename: file.sourceFilename ?? null,
+      mimeType: file.mimeType ?? null,
+      sizeBytes: file.sizeBytes ?? null,
+      role,
+      source,
+      confidence,
+      reason,
+    };
+  }
+
+  private scoreArtworkFileForLineItem(
+    file: InboundOrderFile,
+    draft: InboundOrderParsedDraft,
+    lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number],
+    lineItemIndex: number,
+  ): { score: number; reason: string } {
+    const filename = file.sourceFilename ?? "";
+    const normalizedFilename = normalizeArtworkMatchText(filename);
+    const compactFilename = compactArtworkMatchText(filename);
+    const parsedLineItem = draft.lineItems[lineItemIndex];
+    const parsedArtworkReferences = draft.artwork.filter((artwork) => artwork.likelyLineItemIndex === lineItemIndex);
+    const lineEvidence = [
+      lineItem.sourceText,
+      lineItem.productName,
+      lineItem.materialText,
+      ...lineItem.optionTexts,
+      ...lineItem.finishingTexts,
+      ...(parsedLineItem?.artworkRefs ?? []),
+      ...parsedArtworkReferences.flatMap((artwork) => [artwork.filename, artwork.sourceReference]),
+    ].filter(Boolean).join(" ");
+    const normalizedEvidence = normalizeArtworkMatchText(lineEvidence);
+    const compactEvidence = compactArtworkMatchText(lineEvidence);
+    const reasons: string[] = [];
+    let score = file.role === "po" || file.role === "source_payload" ? 5 : 25;
+
+    for (const artwork of parsedArtworkReferences) {
+      const artworkName = artwork.filename ?? artwork.sourceReference ?? "";
+      const compactArtworkName = compactArtworkMatchText(artworkName);
+      if (compactArtworkName && (compactFilename.includes(compactArtworkName) || compactArtworkName.includes(compactFilename))) {
+        score += 45;
+        reasons.push("filename matches parsed artwork reference");
+        break;
+      }
+    }
+
+    if (lineItem.width && lineItem.height) {
+      const width = normalizeDimensionToken(lineItem.width);
+      const height = normalizeDimensionToken(lineItem.height);
+      if (width && height && compactFilename.includes(width) && compactFilename.includes(height)) {
+        score += 30;
+        reasons.push("filename includes line-item dimensions");
+      }
+    }
+
+    const productTokens = artworkMatchTokens([lineItem.productName, lineItem.materialText].filter(Boolean).join(" "));
+    const matchedProductTokens = productTokens.filter((token) => normalizedFilename.includes(token));
+    if (matchedProductTokens.length > 0) {
+      score += Math.min(30, matchedProductTokens.length * 20);
+      reasons.push("filename matches product or material text");
+    }
+
+    if (lineItem.quantity && normalizedFilename.includes(String(lineItem.quantity))) {
+      score += 5;
+      reasons.push("filename includes quantity");
+    }
+
+    const sourceTokens = artworkMatchTokens(normalizedEvidence);
+    const sharedSourceTokens = sourceTokens.filter((token) => normalizedFilename.includes(token));
+    if (sharedSourceTokens.length > 0) {
+      score += Math.min(15, sharedSourceTokens.length * 3);
+      reasons.push("filename shares parsed source text clues");
+    }
+
+    if (compactEvidence && compactFilename && compactEvidence.includes(compactFilename)) {
+      score += 20;
+      reasons.push("email or PO evidence references filename");
+    }
+
+    return {
+      score,
+      reason: reasons.length > 0 ? reasons.join("; ") : "No strong filename, evidence, product, size, or quantity clue matched this line item.",
+    };
+  }
+
+  private mergeStaffArtworkLinksIntoRefreshedDraft(
+    existingPayload: InboundOrderReviewDraftPayload | null,
+    refreshedPayload: InboundOrderReviewDraftPayload,
+  ): InboundOrderReviewDraftPayload {
+    if (!existingPayload) return refreshedPayload;
+    const reviewedLineItemsJson = refreshedPayload.reviewedLineItemsJson.map((lineItem, index) => {
+      const existingLineItem = existingPayload.reviewedLineItemsJson[index];
+      if (!existingLineItem) return lineItem;
+      const staffLinks = existingLineItem.artworkLinks.filter((link) => (
+        link.source === "staff_selected" || link.source === "staff_removed"
+      ));
+      if (staffLinks.length === 0) return lineItem;
+      const staffKeys = new Set(staffLinks.map((link) => artworkLinkKey(link)));
+      const retainedLinks = lineItem.artworkLinks.filter((link) => !staffKeys.has(artworkLinkKey(link)));
+      return {
+        ...lineItem,
+        artworkLinks: [...retainedLinks, ...staffLinks],
+      };
+    });
+    const staffSelectedKeys = new Set(
+      reviewedLineItemsJson
+        .flatMap((lineItem) => lineItem.artworkLinks)
+        .filter((link) => link.source === "staff_selected")
+        .map((link) => artworkLinkKey(link)),
+    );
+    return inboundOrderReviewDraftPayloadSchema.parse({
+      ...refreshedPayload,
+      reviewedLineItemsJson,
+      reviewedArtworkJson: {
+        ...refreshedPayload.reviewedArtworkJson,
+        unassignedAttachments: refreshedPayload.reviewedArtworkJson.unassignedAttachments
+          .filter((link) => !staffSelectedKeys.has(artworkLinkKey(link))),
+      },
+    });
+  }
+
   private normalizeReviewDraftPayload(
     record: InboundOrderRecord,
     payload: InboundOrderReviewDraftPayload,
@@ -2793,6 +2999,8 @@ export class InboundOrderService {
             finishingTexts: lineItem.finishingTexts,
             artworkStatus: artwork.status,
             artworkReferences: artwork.refs,
+            artworkLinks: lineItem.artworkLinks,
+            unassignedArtworkAttachments: artwork.unassignedAttachments,
             unsupportedRequests: payload.unsupportedRequestsJson,
           },
           staffReviewedDraft: lineItem,

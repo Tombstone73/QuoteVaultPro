@@ -306,6 +306,7 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
     optionSelectionsJson: lineItem.optionSelectionsJson ?? null,
     pbv2TreeVersionId: lineItem.pbv2TreeVersionId ?? null,
     pbv2OptionSuggestions: lineItem.pbv2OptionSuggestions ?? [],
+    artworkLinks: lineItem.artworkLinks ?? [],
     notes: null,
   }));
 
@@ -350,6 +351,7 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
         likelyLineItemIndex: artwork.likelyLineItemIndex ?? null,
         purpose: artwork.purpose ?? null,
       })),
+      unassignedAttachments: overrides.unassignedAttachments ?? [],
       notes: null,
     },
     missingDecisionsJson: parsed.missingDecisions.map((decision: any) => ({
@@ -1809,6 +1811,161 @@ describe("InboundOrdersPage", () => {
       selectedProductSource: null,
       productUnresolved: true,
     });
+    expect(apiFetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/api/orders"), expect.anything());
+  });
+
+  test("links inbound artwork attachments to one or multiple draft line items", async () => {
+    const row = record();
+    const draft = parsedDraft({
+      lineItems: [
+        {
+          ...parsedDraft().lineItems[0],
+          sourceText: "Front PVC sign 24x36",
+          productName: "PVC Sign",
+          materialText: "3mm White PVC",
+          artworkRefs: ["front-panel.pdf"],
+        },
+        {
+          ...parsedDraft().lineItems[0],
+          sourceText: "Rear PVC sign 24x36",
+          productName: "PVC Sign",
+          materialText: "3mm White PVC",
+          artworkRefs: [],
+        },
+      ],
+      missingDecisions: [],
+      globalWarnings: [],
+    });
+    const frontLink = {
+      fileId: "file_front",
+      fileRecordId: "file_rec_front",
+      filename: "front-panel.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 1200,
+      role: "artwork",
+      source: "unresolved",
+      confidence: 64,
+      reason: "Ambiguous artwork candidate.",
+    };
+    const backLink = {
+      fileId: "file_back",
+      fileRecordId: "file_rec_back",
+      filename: "back-panel.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 2200,
+      role: "artwork",
+      source: "unresolved",
+      confidence: 40,
+      reason: "No reliable line-item match was detected.",
+    };
+    const files = [
+      {
+        id: "file_front",
+        organizationId: "org_1",
+        inboundRecordId: "inbound_1",
+        inboundLineItemId: null,
+        fileRecordId: "file_rec_front",
+        sourceFilename: "front-panel.pdf",
+        role: "artwork",
+        mimeType: "application/pdf",
+        sizeBytes: 1200,
+        checksum: null,
+        status: "available",
+        providerAttachmentId: null,
+        providerMessageId: null,
+        contentDisposition: "attachment",
+        metadataJson: {},
+        reviewNotes: null,
+        createdQuoteAttachmentId: null,
+        createdOrderAttachmentId: null,
+        createdAt: "2026-06-09T12:00:00.000Z",
+        updatedAt: "2026-06-09T12:00:00.000Z",
+      },
+      {
+        id: "file_back",
+        organizationId: "org_1",
+        inboundRecordId: "inbound_1",
+        inboundLineItemId: null,
+        fileRecordId: "file_rec_back",
+        sourceFilename: "back-panel.pdf",
+        role: "artwork",
+        mimeType: "application/pdf",
+        sizeBytes: 2200,
+        checksum: null,
+        status: "available",
+        providerAttachmentId: null,
+        providerMessageId: null,
+        contentDisposition: "attachment",
+        metadataJson: {},
+        reviewNotes: null,
+        createdQuoteAttachmentId: null,
+        createdOrderAttachmentId: null,
+        createdAt: "2026-06-09T12:00:00.000Z",
+        updatedAt: "2026-06-09T12:00:00.000Z",
+      },
+    ];
+    let savedBody: any = null;
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row, { files }) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") {
+        return jsonResponse(draftPreview({ draft, latestAttempt: parseAttempt({ parsedDraft: draft }) }));
+      }
+      if (path.startsWith("/api/inbound-orders/product-options")) return jsonResponse(pbv2OptionsResponse());
+      if (path === "/api/inbound-orders/inbound_1/review-draft" && options?.method === "PUT") {
+        savedBody = JSON.parse(options.body);
+        return jsonResponse({ success: true, data: reviewDraft(draft, { ...savedBody }) });
+      }
+      if (path === "/api/inbound-orders/inbound_1/review-draft") {
+        return jsonResponse({ success: true, data: reviewDraft(draft, { unassignedAttachments: [frontLink, backLink] }) });
+      }
+      if (path.startsWith("/api/inbound-orders/customer-search") || path.startsWith("/api/inbound-orders/contact-search") || path.startsWith("/api/inbound-orders/product-search")) {
+        return jsonResponse({ success: true, data: [] });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Unassigned Attachments");
+    await waitForText("front-panel.pdf");
+
+    const assignFront = Array.from(container.querySelectorAll("select")).find((select) => (
+      select.getAttribute("aria-label") === "Assign front-panel.pdf to line item"
+    )) as HTMLSelectElement;
+    act(() => {
+      Simulate.change(assignFront, { target: { value: "0" } } as any);
+    });
+
+    const attachFrontToSecondLine = Array.from(container.querySelectorAll("select")).find((select) => (
+      select.getAttribute("aria-label") === "Attach artwork to line item 2"
+    )) as HTMLSelectElement;
+    act(() => {
+      Simulate.change(attachFrontToSecondLine, { target: { value: "record:file_rec_front" } } as any);
+    });
+
+    const attachBackToFirstLine = Array.from(container.querySelectorAll("select")).find((select) => (
+      select.getAttribute("aria-label") === "Attach artwork to line item 1"
+    )) as HTMLSelectElement;
+    act(() => {
+      Simulate.change(attachBackToFirstLine, { target: { value: "record:file_rec_back" } } as any);
+    });
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Review Draft"));
+    await act(async () => {
+      Simulate.click(saveButton!);
+    });
+    await waitForCondition(() => Boolean(savedBody), "review draft PUT with artwork links");
+
+    expect(savedBody.reviewedLineItemsJson[0].artworkLinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileId: "file_front", source: "staff_selected" }),
+      expect.objectContaining({ fileId: "file_back", source: "staff_selected" }),
+    ]));
+    expect(savedBody.reviewedLineItemsJson[1].artworkLinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileId: "file_front", source: "staff_selected" }),
+    ]));
+    expect(savedBody.reviewedArtworkJson.unassignedAttachments).toEqual([]);
     expect(apiFetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/api/orders"), expect.anything());
   });
 

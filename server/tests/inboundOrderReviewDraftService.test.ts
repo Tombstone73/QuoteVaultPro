@@ -163,6 +163,33 @@ function parseAttempt(overrides: Record<string, any> = {}) {
   };
 }
 
+function inboundFile(overrides: Record<string, any> = {}) {
+  const now = new Date("2026-06-09T12:00:00.000Z");
+  return {
+    id: "file_artwork_1",
+    organizationId: "org_1",
+    inboundRecordId: "inbound_1",
+    inboundLineItemId: null,
+    fileRecordId: "file_record_artwork_1",
+    sourceFilename: "pvc-sign-24x36-artwork.pdf",
+    role: "artwork",
+    mimeType: "application/pdf",
+    sizeBytes: 12345,
+    checksum: null,
+    status: "available",
+    providerAttachmentId: null,
+    providerMessageId: null,
+    contentDisposition: "attachment",
+    metadataJson: {},
+    reviewNotes: null,
+    createdQuoteAttachmentId: null,
+    createdOrderAttachmentId: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
 function makeRepository(record = inboundRecord(), latestAttempt = parseAttempt()) {
   let currentRecord: any = { ...record };
   let currentAttempt = { ...latestAttempt };
@@ -1226,7 +1253,7 @@ describe("InboundOrderService editable review draft", () => {
         },
         reviewedOrderJson: { poNumber: null, dueDate: null, shipMethod: null, fulfillmentType: "unknown", internalNotes: null, customerNotes: null },
         reviewedLineItemsJson: [],
-        reviewedArtworkJson: { status: "missing", refs: [], notes: null },
+        reviewedArtworkJson: { status: "missing", refs: [], unassignedAttachments: [], notes: null },
         missingDecisionsJson: [],
         warningsJson: [],
         reviewNotes: null,
@@ -1320,6 +1347,198 @@ describe("InboundOrderService editable review draft", () => {
         eventType: "review_draft.refreshed_from_latest_parse",
       }),
     }));
+  });
+
+  test("suggests clear artwork attachments and leaves ambiguous artwork unassigned", async () => {
+    const clearFile = inboundFile({
+      id: "file_clear",
+      fileRecordId: "file_record_clear",
+      sourceFilename: "pvc-sign-24x36-artwork.pdf",
+    });
+    const ambiguousFile = inboundFile({
+      id: "file_ambiguous",
+      fileRecordId: "file_record_ambiguous",
+      sourceFilename: "artwork.pdf",
+    });
+    const { repo } = makeRepository();
+    (repo.listFiles as any).mockResolvedValue([clearFile, ambiguousFile]);
+    const service = new InboundOrderService(repo as any);
+
+    const draft = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(draft.reviewedLineItemsJson[0].artworkLinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fileId: "file_clear",
+        role: "artwork",
+        source: "ai_suggested",
+        confidence: expect.any(Number),
+      }),
+    ]));
+    expect(draft.reviewedArtworkJson.unassignedAttachments).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fileId: "file_ambiguous",
+        source: "unresolved",
+      }),
+    ]));
+  });
+
+  test("saves one-to-many and many-to-one artwork links in review draft JSON", async () => {
+    const twoLineDraft = parsedDraft({
+      lineItems: [
+        parsedDraft().lineItems[0],
+        {
+          ...parsedDraft().lineItems[0],
+          sourceText: "3 PVC Signs 24x36 3mm White PVC second set",
+        },
+      ],
+      missingDecisions: [],
+    });
+    const { repo } = makeRepository(inboundRecord(), parseAttempt({ parsedDraft: twoLineDraft }));
+    const service = new InboundOrderService(repo as any);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    const sharedLink = {
+      fileId: "file_shared",
+      fileRecordId: "file_record_shared",
+      filename: "shared-art.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 1000,
+      role: "artwork" as const,
+      source: "staff_selected" as const,
+      confidence: 100,
+      reason: "Staff selected artwork attachment for this line item.",
+    };
+    const secondLink = {
+      ...sharedLink,
+      fileId: "file_second",
+      fileRecordId: "file_record_second",
+      filename: "second-art.pdf",
+    };
+
+    const saved = await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: initialized.reviewedLineItemsJson.map((lineItem, index) => ({
+          ...lineItem,
+          artworkLinks: index === 0 ? [sharedLink, secondLink] : [sharedLink],
+        })),
+        reviewedArtworkJson: { ...initialized.reviewedArtworkJson, unassignedAttachments: [] },
+        missingDecisionsJson: initialized.missingDecisionsJson,
+        warningsJson: initialized.warningsJson,
+        reviewNotes: null,
+      },
+    });
+
+    expect(saved.reviewedLineItemsJson[0].artworkLinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileId: "file_shared", source: "staff_selected" }),
+      expect.objectContaining({ fileId: "file_second", source: "staff_selected" }),
+    ]));
+    expect(saved.reviewedLineItemsJson[1].artworkLinks).toEqual([
+      expect.objectContaining({ fileId: "file_shared", source: "staff_selected" }),
+    ]);
+  });
+
+  test("staff-selected and staff-removed artwork links survive parse refresh", async () => {
+    const twoLineDraft = parsedDraft({
+      lineItems: [
+        parsedDraft().lineItems[0],
+        {
+          ...parsedDraft().lineItems[0],
+          sourceText: "Second PVC Signs 24x36 3mm White PVC",
+        },
+      ],
+      missingDecisions: [],
+    });
+    const file = inboundFile({
+      id: "file_refresh",
+      fileRecordId: "file_record_refresh",
+      sourceFilename: "pvc-sign-24x36-artwork.pdf",
+    });
+    const { repo } = makeRepository(inboundRecord(), parseAttempt({ parsedDraft: twoLineDraft }));
+    (repo.listFiles as any).mockResolvedValue([file]);
+    const service = new InboundOrderService(repo as any);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    const baseLink = {
+      fileId: "file_refresh",
+      fileRecordId: "file_record_refresh",
+      filename: "pvc-sign-24x36-artwork.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 12345,
+      role: "artwork" as const,
+      source: "staff_selected" as const,
+      confidence: 100,
+      reason: "Staff selected artwork attachment for this line item.",
+    };
+    const staffRemoved = {
+      ...baseLink,
+      source: "staff_removed" as const,
+      confidence: 100,
+      reason: "Staff removed artwork link from this line item.",
+    };
+    const staffSelected = {
+      ...baseLink,
+      source: "staff_selected" as const,
+      confidence: 100,
+      reason: "Staff selected artwork attachment for this line item.",
+    };
+    await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: initialized.reviewedLineItemsJson.map((lineItem, index) => ({
+          ...lineItem,
+          artworkLinks: index === 0 ? [staffRemoved] : [staffSelected],
+        })),
+        reviewedArtworkJson: initialized.reviewedArtworkJson,
+        missingDecisionsJson: initialized.missingDecisionsJson,
+        warningsJson: initialized.warningsJson,
+        reviewNotes: null,
+      },
+    });
+    repo.setLatestParseAttempt(parseAttempt({
+      id: "attempt_2",
+      parsedDraft: parsedDraft({
+        ...twoLineDraft,
+        order: { ...twoLineDraft.order, poNumber: "151662" },
+      }),
+      createdAt: new Date("2026-06-09T12:15:00.000Z"),
+    }));
+
+    const refreshed = await service.refreshReviewDraftFromLatestParse({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(refreshed.reviewedLineItemsJson[0].artworkLinks).toEqual([
+      expect.objectContaining({ fileId: "file_refresh", source: "staff_removed" }),
+    ]);
+    expect(refreshed.reviewedLineItemsJson[1].artworkLinks).toEqual([
+      expect.objectContaining({ fileId: "file_refresh", source: "staff_selected" }),
+    ]);
+    expect(refreshed.reviewedArtworkJson.unassignedAttachments).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileId: "file_refresh" }),
+    ]));
   });
 
   async function prepareReadyDraft(service: InboundOrderService, overrides: {
@@ -1446,11 +1665,13 @@ describe("InboundOrderService editable review draft", () => {
           optionSelectionsJson: null,
           pbv2TreeVersionId: null,
           pbv2OptionSuggestions: [],
+          artworkLinks: [],
           notes: null,
         }],
         reviewedArtworkJson: {
           status: "to_follow",
           refs: [],
+          unassignedAttachments: [],
           notes: null,
         },
         missingDecisionsJson: [],
@@ -1550,6 +1771,17 @@ describe("InboundOrderService editable review draft", () => {
       lineItem: {
         optionSelectionsJson: completePbv2Selections(),
         pbv2TreeVersionId: "tree_pvc",
+        artworkLinks: [{
+          fileId: "file_artwork_1",
+          fileRecordId: "file_record_artwork_1",
+          filename: "pvc-sign-artwork.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 12345,
+          role: "artwork",
+          source: "staff_selected",
+          confidence: 100,
+          reason: "Staff selected artwork attachment for this line item.",
+        }],
       },
       order: {
         dueDate: "6/11",
@@ -1599,6 +1831,10 @@ describe("InboundOrderService editable review draft", () => {
         requiresProofApproval: false,
         specsJson: expect.objectContaining({
           inbound: expect.objectContaining({
+            artworkLinks: [expect.objectContaining({
+              fileId: "file_artwork_1",
+              source: "staff_selected",
+            })],
             unsupportedRequests: [expect.objectContaining({
               requestedText: "grommets in the corners",
               category: "grommets",
