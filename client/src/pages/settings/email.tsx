@@ -682,6 +682,62 @@ function formatDiagnosticHints(value: unknown): string {
   return entries.length > 0 ? entries.join(", ") : "No attachment hints detected";
 }
 
+function AttachmentPipelineDiagnostics({ record }: { record: Record<string, unknown> }) {
+  const pipeline = (record.attachmentPipelineDiagnostics ?? {}) as Record<string, any>;
+  const failures = Array.isArray(pipeline.failures) ? pipeline.failures : [];
+  return (
+    <div className="mt-2 rounded-md border border-border bg-background/70 p-2">
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Attachment Diagnostics</div>
+      <div className="mt-2 grid gap-2 text-[11px] text-muted-foreground md:grid-cols-6">
+        <div>
+          <div className="font-semibold text-foreground">Message</div>
+          <div>Gmail parts: {formatDiagnosticValue(pipeline.gmailPartsDiscovered)}</div>
+          <div>IDs: {Array.isArray(pipeline.attachmentIdsDiscovered) && pipeline.attachmentIdsDiscovered.length > 0 ? pipeline.attachmentIdsDiscovered.join(", ") : "-"}</div>
+        </div>
+        <div>
+          <div className="font-semibold text-foreground">Attachment Candidates</div>
+          <div>{formatDiagnosticValue(pipeline.attachmentCandidatesDiscovered)}</div>
+          <div>Attempted: {formatDiagnosticValue(pipeline.attachmentPartsAttempted ?? pipeline.attachmentCandidatesDiscovered)}</div>
+        </div>
+        <div>
+          <div className="font-semibold text-foreground">Downloaded</div>
+          <div>Attempts: {formatDiagnosticValue(pipeline.downloadAttempts)}</div>
+          <div>Successes: {formatDiagnosticValue(pipeline.downloadSuccesses)}</div>
+        </div>
+        <div>
+          <div className="font-semibold text-foreground">Stored</div>
+          <div>{formatDiagnosticValue(pipeline.storedFileRowsCreated)}</div>
+        </div>
+        <div>
+          <div className="font-semibold text-foreground">Metadata Only</div>
+          <div>{formatDiagnosticValue(pipeline.metadataOnlyRowsCreated)}</div>
+        </div>
+        <div>
+          <div className="font-semibold text-foreground">Failed</div>
+          <div>{formatDiagnosticValue(pipeline.downloadFailures)}</div>
+          <div>Skipped: {formatDiagnosticValue(pipeline.skippedExistingProviderAttachments)}</div>
+        </div>
+      </div>
+      {pipeline.skippedReason ? (
+        <div className="mt-2 text-[11px] text-muted-foreground">Skipped reason: {formatDiagnosticValue(pipeline.skippedReason)}</div>
+      ) : null}
+      {failures.length > 0 ? (
+        <div className="mt-2 space-y-1">
+          {failures.map((failure: Record<string, unknown>, index: number) => (
+            <div key={index} className="rounded border border-border/70 bg-muted/30 p-1.5 text-[11px] text-muted-foreground">
+              <div className="font-medium text-foreground">{formatDiagnosticValue(failure.filename ?? failure.providerAttachmentId ?? `Failure ${index + 1}`)}</div>
+              <div>Reason: {formatDiagnosticValue(failure.failureReason)}</div>
+              {failure.gmailApiError ? <div>Gmail API error: {formatDiagnosticValue(failure.gmailApiError)}</div> : null}
+              {failure.storageError ? <div>Storage error: {formatDiagnosticValue(failure.storageError)}</div> : null}
+              {failure.unsupportedMimeReason ? <div>Unsupported MIME reason: {formatDiagnosticValue(failure.unsupportedMimeReason)}</div> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function EmailPullDiagnosticsPanel() {
   const [subjectInput, setSubjectInput] = useState("");
   const [subject, setSubject] = useState("");
@@ -843,6 +899,7 @@ function EmailPullDiagnosticsPanel() {
                           <div className="mt-1 text-muted-foreground">
                             Hints: {formatDiagnosticHints(record.attachmentHints)}
                           </div>
+                          <AttachmentPipelineDiagnostics record={record} />
                         </div>
                       ))}
                     </div>
@@ -895,6 +952,7 @@ function EmailPullDiagnosticsPanel() {
                       <div>Status: {formatDiagnosticValue(record.status)}</div>
                       <div>Hints: {formatDiagnosticHints(record.attachmentHints)}</div>
                     </div>
+                    <AttachmentPipelineDiagnostics record={record} />
                   </div>
                 ))}
               </div>

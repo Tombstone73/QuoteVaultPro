@@ -507,6 +507,70 @@ function enrichEmailRecordDiagnostic(row: Record<string, unknown>): Record<strin
   };
 }
 
+function extractAttachmentIdsFromRawMetadata(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value
+    .map((item) => asRecord(item)?.attachmentId ?? asRecord(item)?.providerAttachmentId)
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)));
+}
+
+function attachmentFailureDetailFromFile(file: Record<string, unknown>): Record<string, unknown> | null {
+  const metadata = asRecord(file.metadataJson);
+  if (!metadata) return null;
+  const unsupportedMimeReason = metadata.unsupportedMimeReason ?? (metadata.safeToDownload === false ? metadata.detectionReason : null);
+  const failureReason = metadata.failureReason ?? metadata.downloadError ?? unsupportedMimeReason ?? file.reviewNotes ?? null;
+  const failed = file.status === "quarantined" || Boolean(metadata.downloadFailed) || Boolean(failureReason);
+  if (!failed) return null;
+  return sanitizeDiagnosticRow({
+    filename: file.sourceFilename ?? metadata.sourceFilename ?? null,
+    providerAttachmentId: file.providerAttachmentId ?? metadata.providerAttachmentId ?? null,
+    mimeType: file.mimeType ?? metadata.mimeType ?? null,
+    failureReason,
+    gmailApiError: metadata.gmailApiError ?? null,
+    storageError: metadata.storageError ?? null,
+    unsupportedMimeReason,
+    status: file.status ?? null,
+  });
+}
+
+function buildAttachmentPipelineDiagnostics(
+  record: Record<string, unknown>,
+  files: Array<Record<string, unknown>>,
+  events: Array<Record<string, unknown>>,
+): Record<string, unknown> {
+  const latestEvent = events.find((event) => event.inboundRecordId === record.id && asRecord(event.metadataJson));
+  const metadata = asRecord(latestEvent?.metadataJson) ?? {};
+  const rawMetadata = Array.isArray(record.rawAttachmentMetadata) ? record.rawAttachmentMetadata : [];
+  const fileFailures = files
+    .filter((file) => file.inboundRecordId === record.id)
+    .map(attachmentFailureDetailFromFile)
+    .filter((item): item is Record<string, unknown> => Boolean(item));
+  const eventFailures = Array.isArray(metadata.failures)
+    ? metadata.failures.map((item) => sanitizeDiagnosticRow(asRecord(item) ?? { value: item }))
+    : [];
+  const recordFiles = files.filter((file) => file.inboundRecordId === record.id);
+  const storedFromFiles = recordFiles.filter((file) => file.fileRecordId && file.status !== "quarantined").length;
+  const metadataOnlyFromFiles = recordFiles.filter((file) => !file.fileRecordId).length;
+  const attachmentIds = Array.isArray(metadata.attachmentIdsDiscovered)
+    ? metadata.attachmentIdsDiscovered.filter((item): item is string => typeof item === "string")
+    : extractAttachmentIdsFromRawMetadata(rawMetadata);
+
+  return sanitizeDiagnosticRow({
+    gmailPartsDiscovered: metadata.attachmentPartsDiscovered ?? record.rawAttachmentCount ?? 0,
+    attachmentCandidatesDiscovered: metadata.attachmentCandidatesDiscovered ?? metadata.attachmentPartsDiscovered ?? record.rawAttachmentCount ?? 0,
+    attachmentIdsDiscovered: attachmentIds,
+    downloadAttempts: metadata.downloadAttempts ?? 0,
+    downloadSuccesses: metadata.downloadSuccesses ?? 0,
+    downloadFailures: metadata.downloadFailures ?? fileFailures.length,
+    metadataOnlyRowsCreated: metadata.metadataOnlyRowsCreated ?? metadataOnlyFromFiles,
+    storedFileRowsCreated: metadata.storedRowsCreated ?? storedFromFiles,
+    attachmentRowsCreated: metadata.attachmentRowsCreated ?? recordFiles.length,
+    skippedExistingProviderAttachments: metadata.skippedExistingProviderAttachments ?? 0,
+    skippedReason: metadata.skippedReason ?? null,
+    failures: [...eventFailures, ...fileFailures],
+  });
+}
+
 function redactIgnoreRuleValue(rule: Pick<InboundEmailIgnoreRule, "ruleType" | "ruleValue">): string {
   const value = rule.ruleValue;
   if (rule.ruleType === "sender_email_exact") {
@@ -713,10 +777,17 @@ export class InboundOrderService {
         );
       })
       : [];
-    const matchingRecords = raw.subjectRecords.map(enrichEmailRecordDiagnostic);
-    const matchingFiles = raw.subjectFiles.map(sanitizeDiagnosticRow);
-    const recentCreatedInboundRecords = raw.recentCreatedRecords.map(enrichEmailRecordDiagnostic);
     const recentPullDiagnostics = raw.recentPullDiagnostics.map(sanitizeDiagnosticRow);
+    const diagnosticFiles = [...raw.recentFiles, ...raw.subjectFiles].map(sanitizeDiagnosticRow);
+    const matchingRecords = raw.subjectRecords.map((record) => ({
+      ...enrichEmailRecordDiagnostic(record),
+      attachmentPipelineDiagnostics: buildAttachmentPipelineDiagnostics(record, diagnosticFiles, recentPullDiagnostics),
+    }));
+    const matchingFiles = raw.subjectFiles.map(sanitizeDiagnosticRow);
+    const recentCreatedInboundRecords = raw.recentCreatedRecords.map((record) => ({
+      ...enrichEmailRecordDiagnostic(record),
+      attachmentPipelineDiagnostics: buildAttachmentPipelineDiagnostics(record, diagnosticFiles, recentPullDiagnostics),
+    }));
 
     return {
       organizationId: args.organizationId,
@@ -740,7 +811,7 @@ export class InboundOrderService {
         matchingIgnoreRules,
         duplicateDetection: {
           durableSkippedMessageLogsStored: false,
-          possibleDuplicateRecords: matchingRecords.filter((record) => record.idempotencyKey),
+          possibleDuplicateRecords: matchingRecords.filter((record) => Boolean((record as Record<string, unknown>).idempotencyKey)),
         },
       },
       storageNotes: {
