@@ -18,6 +18,7 @@ import {
 import {
   inboundOrderParsedDraftSchema,
   inboundOrderReviewDraftPayloadSchema,
+  type InboundEmailPullDiagnosticsResponse,
   type InboundOrderParsedDraft,
   type InboundOrderArtworkLink,
   type InboundOrderReviewDraftDto,
@@ -446,6 +447,38 @@ function artworkLinkKey(link: Pick<InboundOrderArtworkLink, "fileId" | "fileReco
   return link.fileRecordId ? `record:${link.fileRecordId}` : `file:${link.fileId}`;
 }
 
+function sanitizeDiagnosticValue(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map((item) => sanitizeDiagnosticValue(item));
+  const record = asRecord(value);
+  if (!record) return value;
+  return Object.fromEntries(Object.entries(record)
+    .filter(([key]) => !/(auth|token|secret|credential|password)/i.test(key))
+    .map(([key, item]) => [key, sanitizeDiagnosticValue(item)]));
+}
+
+function sanitizeDiagnosticRow(row: Record<string, unknown>): Record<string, unknown> {
+  return sanitizeDiagnosticValue(row) as Record<string, unknown>;
+}
+
+function safePullSummaryFromSettings(settings: Record<string, unknown>): unknown | null {
+  const summary = getPathValue(settings, "lastPullSummary")
+    ?? getPathValue(settings, "latestPullSummary")
+    ?? getPathValue(settings, "lastPullResult")
+    ?? null;
+  return summary == null ? null : sanitizeDiagnosticValue(summary);
+}
+
+function redactIgnoreRuleValue(rule: Pick<InboundEmailIgnoreRule, "ruleType" | "ruleValue">): string {
+  const value = rule.ruleValue;
+  if (rule.ruleType === "sender_email_exact") {
+    const [local, domain] = value.split("@");
+    if (!domain) return value.slice(0, 3) + (value.length > 3 ? "..." : "");
+    return `${local.slice(0, 2)}${local.length > 2 ? "***" : "*"}@${domain}`;
+  }
+  return value.length > 160 ? `${value.slice(0, 157)}...` : value;
+}
+
 function quoteReference(quote: Pick<Quote, "id" | "quoteNumber">): string {
   return quote.quoteNumber != null ? `#${quote.quoteNumber}` : quote.id.slice(0, 8);
 }
@@ -596,6 +629,86 @@ export class InboundOrderService {
 
   async listEmailIgnoreRules(args: { organizationId: string }): Promise<InboundEmailIgnoreRule[]> {
     return this.repository.listEmailIgnoreRules(args.organizationId);
+  }
+
+  async getEmailPullDiagnostics(args: {
+    organizationId: string;
+    subject?: string | null;
+  }): Promise<InboundEmailPullDiagnosticsResponse["data"]> {
+    const subject = args.subject?.trim() || null;
+    const raw = await this.repository.getEmailPullDiagnostics({
+      organizationId: args.organizationId,
+      subject,
+    });
+    const mailboxes = raw.mailboxes.map((mailbox) => ({
+      id: mailbox.id,
+      provider: mailbox.provider,
+      name: mailbox.name,
+      emailAddress: mailbox.emailAddress,
+      enabled: mailbox.enabled,
+      isDefault: mailbox.isDefault,
+      lastPulledAt: formatInboundDate(mailbox.lastPulledAt),
+      lastPullStatus: mailbox.lastPullStatus,
+      lastPullError: mailbox.lastPullError,
+      latestPullSummary: safePullSummaryFromSettings(mailbox.settingsJson),
+    }));
+    const activeIgnoreRules = raw.ignoreRules
+      .filter((rule) => rule.enabled)
+      .map((rule) => ({
+        id: rule.id,
+        ruleType: rule.ruleType,
+        ruleValuePreview: redactIgnoreRuleValue(rule),
+        enabled: rule.enabled,
+        matchCount: rule.matchCount,
+        lastMatchedAt: formatInboundDate(rule.lastMatchedAt),
+        notes: rule.notes ?? null,
+      }));
+    const matchingIgnoreRules = subject
+      ? activeIgnoreRules.filter((rule) => {
+        const original = raw.ignoreRules.find((candidate) => candidate.id === rule.id);
+        if (!original) return false;
+        const normalizedSubject = subject.toLowerCase();
+        const normalizedValue = original.ruleValue.toLowerCase();
+        return (
+          (original.ruleType === "subject_exact" && normalizedSubject === normalizedValue)
+          || (original.ruleType === "subject_contains" && normalizedSubject.includes(normalizedValue))
+        );
+      })
+      : [];
+    const matchingRecords = raw.subjectRecords.map(sanitizeDiagnosticRow);
+    const matchingFiles = raw.subjectFiles.map(sanitizeDiagnosticRow);
+
+    return {
+      organizationId: args.organizationId,
+      generatedAt: new Date().toISOString(),
+      subject,
+      enabledMailboxCount: mailboxes.filter((mailbox) => mailbox.enabled).length,
+      mailboxes,
+      latestPullSummary: mailboxes.find((mailbox) => mailbox.latestPullSummary != null)?.latestPullSummary ?? null,
+      recentFailedMessageDiagnostics: raw.recentFailedDiagnostics.map(sanitizeDiagnosticRow),
+      recentIgnoredMessageDiagnostics: raw.recentIgnoredDiagnostics.map(sanitizeDiagnosticRow),
+      recentCreatedInboundRecords: raw.recentCreatedRecords.map(sanitizeDiagnosticRow),
+      recentInboundFiles: raw.recentFiles.map(sanitizeDiagnosticRow),
+      ignoreRuleCount: raw.ignoreRules.length,
+      activeIgnoreRules,
+      subjectSearch: {
+        provided: Boolean(subject),
+        found: matchingRecords.length > 0 || matchingFiles.length > 0 || matchingIgnoreRules.length > 0,
+        matchingRecords,
+        matchingFiles,
+        matchingIgnoreRules,
+        duplicateDetection: {
+          durableSkippedMessageLogsStored: false,
+          possibleDuplicateRecords: matchingRecords.filter((record) => record.idempotencyKey),
+        },
+      },
+      storageNotes: {
+        latestPullSummaryStored: mailboxes.some((mailbox) => mailbox.latestPullSummary != null),
+        perMessageFailureDiagnosticsStored: raw.recentFailedDiagnostics.length > 0,
+        ignoredMessageDiagnosticsStored: raw.recentIgnoredDiagnostics.length > 0,
+        duplicateSkipDiagnosticsStored: false,
+      },
+    };
   }
 
   async createEmailIgnoreRule(args: {

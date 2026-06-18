@@ -22,6 +22,7 @@ import type {
   InboundEmailIgnoreRuleListResponse,
   InboundEmailIgnoreRuleUpdateRequest,
   InboundEmailIgnoreRuleTypeValue,
+  InboundEmailPullDiagnosticsResponse,
 } from "@shared/inboundOrdersApi";
 
 type InboundEmailSettingsResponse = {
@@ -65,6 +66,16 @@ async function readInboundEmailIgnoreRules(): Promise<InboundEmailIgnoreRuleList
   return { rules: Array.isArray(data?.rules) ? data.rules : [] };
 }
 
+async function readInboundEmailPullDiagnostics(subject: string): Promise<InboundEmailPullDiagnosticsResponse["data"]> {
+  const query = subject.trim() ? `?subject=${encodeURIComponent(subject.trim())}` : "";
+  const response = await apiFetch(`/api/inbound-orders/email/pull-diagnostics${query}`);
+  const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.message || "Failed to load inbound email pull diagnostics");
+  }
+  return payload.data as InboundEmailPullDiagnosticsResponse["data"];
+}
+
 export function useInboundEmailIntakeSettings() {
   return useQuery<InboundEmailIntakeSettings>({
     queryKey: ["/api/inbound-orders/email-settings"],
@@ -88,6 +99,15 @@ export function useInboundEmailIgnoreRules() {
     queryKey: ["/api/inbound-orders/email/ignore-rules"],
     queryFn: readInboundEmailIgnoreRules,
     staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export function useInboundEmailPullDiagnostics(subject = "") {
+  return useQuery<InboundEmailPullDiagnosticsResponse["data"]>({
+    queryKey: ["/api/inbound-orders/email/pull-diagnostics", subject.trim()],
+    queryFn: () => readInboundEmailPullDiagnostics(subject),
+    staleTime: 30_000,
     retry: false,
   });
 }

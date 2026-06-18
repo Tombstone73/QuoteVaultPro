@@ -106,6 +106,74 @@ function inboundEmailIgnoreRule(overrides: Record<string, any> = {}) {
   };
 }
 
+function emailPullDiagnostics(overrides: Record<string, any> = {}) {
+  return {
+    organizationId: "org_1",
+    generatedAt: "2026-06-18T15:00:00.000Z",
+    subject: null,
+    enabledMailboxCount: 1,
+    mailboxes: [{
+      id: "mailbox_1",
+      provider: "gmail",
+      name: "Orders Inbox",
+      emailAddress: "orders@example.com",
+      enabled: true,
+      isDefault: true,
+      lastPulledAt: "2026-06-18T14:55:00.000Z",
+      lastPullStatus: "success",
+      lastPullError: null,
+      latestPullSummary: null,
+    }],
+    latestPullSummary: null,
+    recentFailedMessageDiagnostics: [],
+    recentIgnoredMessageDiagnostics: [],
+    recentCreatedInboundRecords: [{
+      id: "inbound_email_1",
+      status: "needs_review",
+      reviewOutcome: null,
+      subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+      sourceMessageId: "gmail_msg_1",
+      createdAt: "2026-06-18T14:55:01.000Z",
+    }],
+    recentInboundFiles: [{
+      id: "file_1",
+      inboundRecordId: "inbound_email_1",
+      sourceFilename: "po-151753.pdf",
+      role: "po",
+      status: "available",
+      metadataJson: { provider: "gmail" },
+    }],
+    ignoreRuleCount: 1,
+    activeIgnoreRules: [{
+      id: "rule_1",
+      ruleType: "subject_contains",
+      ruleValuePreview: "Payment Received",
+      enabled: true,
+      matchCount: 2,
+      lastMatchedAt: "2026-06-17T12:00:00.000Z",
+      notes: "Processor notices",
+    }],
+    subjectSearch: {
+      provided: false,
+      found: false,
+      matchingRecords: [],
+      matchingFiles: [],
+      matchingIgnoreRules: [],
+      duplicateDetection: {
+        durableSkippedMessageLogsStored: false,
+        possibleDuplicateRecords: [],
+      },
+    },
+    storageNotes: {
+      latestPullSummaryStored: false,
+      perMessageFailureDiagnosticsStored: false,
+      ignoredMessageDiagnosticsStored: false,
+      duplicateSkipDiagnosticsStored: false,
+    },
+    ...overrides,
+  };
+}
+
 function inboundDetail(record = inboundRecord()) {
   return {
     record,
@@ -365,6 +433,7 @@ describe("inbound order routes", () => {
     reopenReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
     refreshReviewDraftFromLatestParse: jest.fn<(...args: any[]) => Promise<any>>(),
     listEmailIgnoreRules: jest.fn<(...args: any[]) => Promise<any>>(),
+    getEmailPullDiagnostics: jest.fn<(...args: any[]) => Promise<any>>(),
     createEmailIgnoreRule: jest.fn<(...args: any[]) => Promise<any>>(),
     updateEmailIgnoreRule: jest.fn<(...args: any[]) => Promise<any>>(),
     deleteEmailIgnoreRule: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -580,6 +649,121 @@ describe("inbound order routes", () => {
       limit: undefined,
     });
     expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
+  });
+
+  test("email pull diagnostics are owner/admin only and do not pull new emails", async () => {
+    service.getEmailPullDiagnostics.mockResolvedValue(emailPullDiagnostics());
+
+    const denied = await request(buildApp(service, { userRole: "member" }))
+      .get("/api/inbound-orders/email/pull-diagnostics");
+
+    expect(denied.status).toBe(403);
+    expect(service.getEmailPullDiagnostics).not.toHaveBeenCalled();
+    expect(inboundEmailIngestionService.pullLatestEmails).not.toHaveBeenCalled();
+
+    const allowed = await request(buildApp(service))
+      .get("/api/inbound-orders/email/pull-diagnostics");
+
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.data.enabledMailboxCount).toBe(1);
+    expect(service.getEmailPullDiagnostics).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      subject: null,
+    });
+    expect(inboundEmailIngestionService.pullLatestEmails).not.toHaveBeenCalled();
+  });
+
+  test("email pull diagnostics redacts secrets and reports last pull errors", async () => {
+    service.getEmailPullDiagnostics.mockResolvedValue(emailPullDiagnostics({
+      mailboxes: [{
+        id: "mailbox_failed",
+        provider: "gmail",
+        name: "Orders Inbox",
+        emailAddress: "orders@example.com",
+        enabled: true,
+        isDefault: true,
+        lastPulledAt: "2026-06-18T14:55:00.000Z",
+        lastPullStatus: "failed",
+        lastPullError: "invalid_grant",
+        latestPullSummary: { failed: 1 },
+        authJson: { refreshToken: "secret_refresh_token" },
+      }],
+      latestPullSummary: { failed: 1 },
+      recentFailedMessageDiagnostics: [{
+        message: "Attachment download failed",
+        metadataJson: {
+          filename: "po.pdf",
+          refreshToken: "secret_refresh_token",
+        },
+      }],
+    }));
+
+    const response = await request(buildApp(service))
+      .get("/api/inbound-orders/email/pull-diagnostics");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.mailboxes[0]).toMatchObject({
+      lastPullStatus: "failed",
+      lastPullError: "invalid_grant",
+    });
+    const serialized = JSON.stringify(response.body);
+    expect(serialized).not.toContain("authJson");
+    expect(serialized).not.toContain("refreshToken");
+    expect(serialized).not.toContain("secret_refresh_token");
+  });
+
+  test("email pull diagnostics subject search includes active and inactive records", async () => {
+    service.getEmailPullDiagnostics.mockResolvedValue(emailPullDiagnostics({
+      subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+      subjectSearch: {
+        provided: true,
+        found: true,
+        matchingRecords: [
+          { id: "active_1", status: "needs_review", reviewOutcome: null, subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26" },
+          { id: "ignored_1", status: "ignored", reviewOutcome: "ignored", subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26" },
+          { id: "rejected_1", status: "terminal", reviewOutcome: "rejected", subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26" },
+          { id: "archived_1", status: "needs_review", reviewOutcome: null, archivedAt: "2026-06-18T15:00:00.000Z", subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26" },
+        ],
+        matchingFiles: [{ id: "file_1", sourceFilename: "Titan Compass ACM Sign.pdf" }],
+        matchingIgnoreRules: [],
+        duplicateDetection: {
+          durableSkippedMessageLogsStored: false,
+          possibleDuplicateRecords: [{ id: "active_1", idempotencyKey: "gmail:gmail_msg_1" }],
+        },
+      },
+    }));
+
+    const response = await request(buildApp(service))
+      .get("/api/inbound-orders/email/pull-diagnostics?subject=Purchase%20Order%20No%20151753%20Titan%20Compass%20ACM%20Sign%206_18_26");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.subjectSearch.found).toBe(true);
+    expect(response.body.data.subjectSearch.matchingRecords.map((record: any) => record.id)).toEqual([
+      "active_1",
+      "ignored_1",
+      "rejected_1",
+      "archived_1",
+    ]);
+    expect(response.body.data.subjectSearch.matchingFiles[0].sourceFilename).toContain("Titan Compass");
+    expect(service.getEmailPullDiagnostics).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+    });
+  });
+
+  test("email pull diagnostics handles no mailbox configured", async () => {
+    service.getEmailPullDiagnostics.mockResolvedValue(emailPullDiagnostics({
+      enabledMailboxCount: 0,
+      mailboxes: [],
+      latestPullSummary: null,
+    }));
+
+    const response = await request(buildApp(service))
+      .get("/api/inbound-orders/email/pull-diagnostics");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.enabledMailboxCount).toBe(0);
+    expect(response.body.data.mailboxes).toEqual([]);
   });
 
   test("starts inbound Gmail OAuth without using the outbound Gmail connection", async () => {
