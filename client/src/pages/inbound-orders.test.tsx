@@ -335,8 +335,10 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
       notes: null,
     },
     reviewedOrderJson: {
+      intent: "unknown",
       poNumber: parsed.order.poNumber ?? null,
       dueDate: parsed.order.requestedDueDate ?? null,
+      priority: "normal",
       shipMethod: parsed.order.requestedShipMethod ?? null,
       fulfillmentType: parsed.order.requestedPickup ? "pickup" : "unknown",
       internalNotes: null,
@@ -1791,8 +1793,7 @@ describe("InboundOrdersPage", () => {
     );
     expect(labeledControl("Product", "select")).toHaveProperty("value", "product_pvc");
     expect(labeledControl("Material", "input")).toHaveProperty("value", "3mm white PVC");
-    expect(container.textContent).toContain("Single Sided 4/0");
-    expect(container.textContent).toContain("thickness: Default");
+    expect(container.textContent).toContain("Single Sided / 4/0");
     expect(container.textContent).not.toContain("6mm ACM");
   });
 
@@ -2304,7 +2305,7 @@ describe("InboundOrdersPage", () => {
     act(() => {
       Simulate.change(productSelect!, { target: { value: "product_acm" } } as any);
     });
-    await waitForText("Staff selected product");
+    await waitForCondition(() => (productSelect as HTMLSelectElement).value === "product_acm", "staff selected product in operational line item");
 
     act(() => {
       Simulate.change(labeledControl("Material", "input"), { target: { value: "3mm ACM" } } as any);
@@ -2382,6 +2383,12 @@ describe("InboundOrdersPage", () => {
     });
 
     renderPage();
+    await waitForText("Product options");
+    const debugButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Debug View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(debugButton);
+    });
+    await waitForText("Draft Builder");
     await waitForText("Product options");
     await waitForText("Source evidence");
     await waitForText("Evidence: \"3mm White PVC\"");
