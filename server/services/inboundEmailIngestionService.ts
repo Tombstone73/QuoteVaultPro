@@ -50,13 +50,18 @@ type AttachmentIngestionDiagnostics = {
   messageId: string;
   subject: string | null;
   attachmentPartsDiscovered: number;
+  attachmentCandidatesDiscovered: number;
+  attachmentIdsDiscovered: string[];
   attachmentPartsAttempted: number;
   attachmentRowsCreated: number;
   storedRowsCreated: number;
   metadataOnlyRowsCreated: number;
+  downloadAttempts: number;
+  downloadSuccesses: number;
   downloadFailures: number;
   skippedExistingProviderAttachments: number;
   skippedReason: string | null;
+  failures: Array<Record<string, unknown>>;
 };
 
 export interface InboundEmailProviderAdapter {
@@ -881,15 +886,20 @@ export class InboundEmailIngestionService {
           messageId: args.message.messageId,
           subject: args.message.subject,
           attachmentPartsDiscovered: args.message.attachments.length,
+          attachmentCandidatesDiscovered: args.message.attachments.length,
+          attachmentIdsDiscovered: messageProviderAttachmentIds,
           attachmentPartsAttempted: 0,
           attachmentRowsCreated: 0,
           storedRowsCreated: 0,
           metadataOnlyRowsCreated: 0,
+          downloadAttempts: 0,
+          downloadSuccesses: 0,
           downloadFailures: 0,
           skippedExistingProviderAttachments: messageProviderAttachmentIds.length,
           skippedReason: args.message.attachments.length === 0
             ? "duplicate_message_no_attachment_parts_discovered"
             : "duplicate_message_existing_files_cover_provider_attachments",
+          failures: [],
         },
       });
       return;
@@ -919,13 +929,18 @@ export class InboundEmailIngestionService {
       messageId: args.message.messageId,
       subject: args.message.subject,
       attachmentPartsDiscovered: args.message.attachments.length,
+      attachmentCandidatesDiscovered: args.message.attachments.length,
+      attachmentIdsDiscovered: args.message.attachments.map((attachment) => attachment.attachmentId).filter((value): value is string => Boolean(value)),
       attachmentPartsAttempted: 0,
       attachmentRowsCreated: 0,
       storedRowsCreated: 0,
       metadataOnlyRowsCreated: 0,
+      downloadAttempts: 0,
+      downloadSuccesses: 0,
       downloadFailures: 0,
       skippedExistingProviderAttachments: 0,
       skippedReason: args.skippedReason,
+      failures: [],
     };
     if (args.message.attachments.length === 0) return diagnostics;
 
@@ -970,6 +985,12 @@ export class InboundEmailIngestionService {
 
         diagnostics.attachmentPartsAttempted += 1;
         if (!classification.safeToDownload || !args.adapter.downloadAttachment || !providerAttachmentId) {
+          const unsupportedMimeReason = classification.safeToDownload ? null : classification.reason;
+          const failureReason = !classification.safeToDownload
+            ? classification.reason
+            : !args.adapter.downloadAttachment
+              ? "Attachment metadata captured; provider download is not available."
+              : "Attachment metadata captured; Gmail attachment id is missing.";
           await this.inboundRepository.createFile({
             organizationId: args.organizationId,
             inboundRecordId: args.record.id,
@@ -984,7 +1005,13 @@ export class InboundEmailIngestionService {
             providerAttachmentId,
             providerMessageId,
             contentDisposition,
-            metadataJson,
+            metadataJson: {
+              ...metadataJson,
+              failureReason,
+              unsupportedMimeReason,
+              gmailApiError: null,
+              storageError: null,
+            },
             reviewNotes: classification.safeToDownload
               ? "Attachment metadata captured; provider download is not available."
               : classification.reason,
@@ -993,10 +1020,22 @@ export class InboundEmailIngestionService {
           });
           diagnostics.attachmentRowsCreated += 1;
           diagnostics.metadataOnlyRowsCreated += 1;
+          diagnostics.failures.push({
+            filename,
+            providerAttachmentId,
+            mimeType: attachment.mimeType ?? null,
+            failureReason,
+            unsupportedMimeReason,
+            gmailApiError: null,
+            storageError: null,
+            metadataOnly: true,
+          });
           continue;
         }
 
+        diagnostics.downloadAttempts += 1;
         const downloaded = await args.adapter.downloadAttachment(args.mailbox, args.message, attachment);
+        diagnostics.downloadSuccesses += 1;
         const storageResult = await this.storageService.finalizeUpload({
           organizationId: args.organizationId,
           createdByUserId: args.actorUserId,
@@ -1063,6 +1102,9 @@ export class InboundEmailIngestionService {
         diagnostics.storedRowsCreated += 1;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Attachment download failed.";
+        const failureStage = diagnostics.downloadSuccesses >= diagnostics.downloadAttempts ? "storage" : "gmail_api";
+        const gmailApiError = failureStage === "gmail_api" ? message : null;
+        const storageError = failureStage === "storage" ? message : null;
         console.warn("[Inbound Email Pull] Attachment ingestion failed", {
           organizationId: args.organizationId,
           inboundRecordId: args.record.id,
@@ -1089,6 +1131,9 @@ export class InboundEmailIngestionService {
             ...metadataJson,
             downloadFailed: true,
             downloadError: message,
+            failureStage,
+            gmailApiError,
+            storageError,
           },
           reviewNotes: `Attachment download failed: ${message}`,
           createdQuoteAttachmentId: null,
@@ -1097,6 +1142,16 @@ export class InboundEmailIngestionService {
         diagnostics.attachmentRowsCreated += 1;
         diagnostics.metadataOnlyRowsCreated += 1;
         diagnostics.downloadFailures += 1;
+        diagnostics.failures.push({
+          filename,
+          providerAttachmentId,
+          mimeType: attachment.mimeType ?? null,
+          failureReason: message,
+          gmailApiError,
+          storageError,
+          unsupportedMimeReason: null,
+          metadataOnly: true,
+        });
         await this.inboundRepository.createEvent({
           organizationId: args.organizationId,
           inboundRecordId: args.record.id,
@@ -1110,6 +1165,9 @@ export class InboundEmailIngestionService {
             providerAttachmentId,
             providerMessageId,
             filename,
+            failureStage,
+            gmailApiError,
+            storageError,
           },
         });
       }

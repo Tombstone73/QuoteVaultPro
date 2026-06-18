@@ -208,6 +208,25 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
               hasLinks: true,
               hasGoogleDriveLinks: true,
             },
+            attachmentPipelineDiagnostics: {
+              gmailPartsDiscovered: 1,
+              attachmentCandidatesDiscovered: 1,
+              attachmentIdsDiscovered: ["att_1"],
+              attachmentPartsAttempted: 1,
+              downloadAttempts: 1,
+              downloadSuccesses: 0,
+              downloadFailures: 1,
+              metadataOnlyRowsCreated: 1,
+              storedFileRowsCreated: 0,
+              skippedExistingProviderAttachments: 0,
+              failures: [{
+                filename: "visual-po.pdf",
+                failureReason: "Gmail attachment unavailable",
+                gmailApiError: "Gmail attachment unavailable",
+                storageError: null,
+                unsupportedMimeReason: null,
+              }],
+            },
             createdAt: "2026-06-18T14:55:01.000Z",
           }],
           recentInboundFiles: [{
@@ -240,6 +259,19 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
                 attachmentCount: 0,
                 rawGmailPayloadAttachmentIndicators: { rawAttachmentCount: 1 },
                 attachmentHints: { mentionsAttached: true, mentionsPo: true, mentionsArtwork: true },
+                attachmentPipelineDiagnostics: {
+                  gmailPartsDiscovered: 1,
+                  attachmentCandidatesDiscovered: 1,
+                  attachmentIdsDiscovered: ["att_1"],
+                  attachmentPartsAttempted: 1,
+                  downloadAttempts: 1,
+                  downloadSuccesses: 0,
+                  downloadFailures: 1,
+                  metadataOnlyRowsCreated: 1,
+                  storedFileRowsCreated: 0,
+                  skippedExistingProviderAttachments: 0,
+                  failures: [{ filename: "visual-po.pdf", failureReason: "Gmail attachment unavailable", gmailApiError: "Gmail attachment unavailable" }],
+                },
               },
             ] : [],
             matchingFiles: hasSubject ? [
@@ -463,6 +495,11 @@ describe("EmailSettings inbound mailbox settings", () => {
     expect(container.textContent).toContain("Files: 0");
     expect(container.textContent).toContain("Raw Gmail parts: 1");
     expect(container.textContent).toContain("Attached, Po, Artwork, Links, Google Drive Links");
+    expect(container.textContent).toContain("Attachment Diagnostics");
+    expect(container.textContent).toContain("Gmail parts: 1");
+    expect(container.textContent).toContain("Attempts: 1");
+    expect(container.textContent).toContain("Successes: 0");
+    expect(container.textContent).toContain("Gmail API error: Gmail attachment unavailable");
 
     const subjectInput = container.querySelector("input[aria-label='Email diagnostics subject search']") as HTMLInputElement;
     await setValue(subjectInput, "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26");

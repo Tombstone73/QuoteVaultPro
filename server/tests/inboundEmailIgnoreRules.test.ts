@@ -306,6 +306,14 @@ describe("inbound email pull diagnostics service", () => {
         mentionsArtwork: true,
         hasGoogleDriveLinks: true,
       }),
+      attachmentPipelineDiagnostics: expect.objectContaining({
+        gmailPartsDiscovered: 2,
+        attachmentCandidatesDiscovered: 2,
+        attachmentIdsDiscovered: ["att_1"],
+        downloadAttempts: 0,
+        storedFileRowsCreated: 0,
+        metadataOnlyRowsCreated: 0,
+      }),
     }));
     expect(result.subjectSearch.found).toBe(true);
     expect(result.subjectSearch.matchingRecords[0].attachmentCount).toBe(0);

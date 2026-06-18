@@ -277,8 +277,26 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
       downloadFailed: true,
       downloadError: "Gmail attachment unavailable",
+      failureStage: "gmail_api",
+      gmailApiError: "Gmail attachment unavailable",
+      storageError: null,
     }));
     expect(events[0]).toEqual(expect.objectContaining({ eventType: "email.attachment_failed" }));
+    expect(events.find((event) => event.eventType === "email.attachment_ingestion_diagnostics")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        attachmentCandidatesDiscovered: 1,
+        attachmentIdsDiscovered: ["att_1"],
+        downloadAttempts: 1,
+        downloadSuccesses: 0,
+        downloadFailures: 1,
+        metadataOnlyRowsCreated: 1,
+        storedRowsCreated: 0,
+        failures: [expect.objectContaining({
+          filename: "Purchase Order 151661.pdf",
+          gmailApiError: "Gmail attachment unavailable",
+        })],
+      }),
+    }));
   });
 
   test("stores metadata-only row when Gmail exposes an attachment part without a download id", async () => {
@@ -318,6 +336,8 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
       detectedBy: ["filename", "content-disposition:attachment", "mimeType"],
       safeToDownload: false,
+      unsupportedMimeReason: "Attachment type is not supported for automatic download.",
+      failureReason: "Attachment type is not supported for automatic download.",
     }));
   });
 
@@ -353,7 +373,17 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       providerAttachmentId: "att_backfill",
       status: "available",
     }));
-    expect(events.some((event) => event.eventType === "email.attachment_ingestion_diagnostics")).toBe(true);
+    expect(events.find((event) => event.eventType === "email.attachment_ingestion_diagnostics")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        attachmentCandidatesDiscovered: 1,
+        attachmentIdsDiscovered: ["att_backfill"],
+        downloadAttempts: 1,
+        downloadSuccesses: 1,
+        downloadFailures: 0,
+        storedRowsCreated: 1,
+        metadataOnlyRowsCreated: 0,
+      }),
+    }));
   });
 
   test("does not duplicate attachments for duplicate Gmail records that already have provider files", async () => {
