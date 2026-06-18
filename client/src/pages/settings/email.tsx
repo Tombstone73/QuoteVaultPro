@@ -697,7 +697,7 @@ function AttachmentPipelineDiagnostics({ record }: { record: Record<string, unkn
         <div>
           <div className="font-semibold text-foreground">Attachment Candidates</div>
           <div>{formatDiagnosticValue(pipeline.attachmentCandidatesDiscovered)}</div>
-          <div>Attempted: {formatDiagnosticValue(pipeline.attachmentPartsAttempted ?? pipeline.attachmentCandidatesDiscovered)}</div>
+          <div>Attempted: {formatDiagnosticValue(pipeline.attachmentPartsAttempted)}</div>
         </div>
         <div>
           <div className="font-semibold text-foreground">Downloaded</div>

@@ -310,6 +310,7 @@ describe("inbound email pull diagnostics service", () => {
         gmailPartsDiscovered: 2,
         attachmentCandidatesDiscovered: 2,
         attachmentIdsDiscovered: ["att_1"],
+        attachmentPartsAttempted: 0,
         downloadAttempts: 0,
         storedFileRowsCreated: 0,
         metadataOnlyRowsCreated: 0,
@@ -318,5 +319,56 @@ describe("inbound email pull diagnostics service", () => {
     expect(result.subjectSearch.found).toBe(true);
     expect(result.subjectSearch.matchingRecords[0].attachmentCount).toBe(0);
     expect(JSON.stringify(result)).not.toContain("Artwork & Visual PO: attached via Google Drive");
+  });
+
+  test("uses only attachment ingestion diagnostics events for pipeline attempt counters", async () => {
+    const service = new InboundOrderService({
+      getEmailPullDiagnostics: jest.fn(async () => ({
+        mailboxes: [],
+        ignoreRules: [],
+        recentCreatedRecords: [{
+          id: "inbound_email_1",
+          status: "needs_review",
+          reviewOutcome: null,
+          subject: "testing the process of an order coming in",
+          sourceMessageId: "gmail_msg_1",
+          attachmentCount: 0,
+          rawAttachmentCount: 3,
+          rawAttachmentMetadata: [
+            { filename: "a.pdf", attachmentId: "att_a" },
+            { filename: "b.pdf", attachmentId: "att_b" },
+            { filename: "c.pdf", attachmentId: "att_c" },
+          ],
+          bodyText: "Attached PO and artwork.",
+          bodyHtml: null,
+        }],
+        recentFiles: [],
+        recentFailedDiagnostics: [],
+        recentPullDiagnostics: [{
+          inboundRecordId: "inbound_email_1",
+          eventType: "email.attachment_stored",
+          metadataJson: {
+            providerAttachmentId: "att_a",
+          },
+        }],
+        recentIgnoredDiagnostics: [],
+        subjectRecords: [],
+        subjectFiles: [],
+      })),
+    } as any);
+
+    const result = await service.getEmailPullDiagnostics({
+      organizationId: "org_1",
+      subject: null,
+    });
+
+    expect(result.recentCreatedInboundRecords[0].attachmentPipelineDiagnostics).toEqual(expect.objectContaining({
+      attachmentCandidatesDiscovered: 3,
+      attachmentIdsDiscovered: ["att_a", "att_b", "att_c"],
+      attachmentPartsAttempted: 0,
+      downloadAttempts: 0,
+      storedFileRowsCreated: 0,
+      metadataOnlyRowsCreated: 0,
+    }));
   });
 });
