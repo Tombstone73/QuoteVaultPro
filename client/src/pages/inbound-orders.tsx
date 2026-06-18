@@ -43,6 +43,7 @@ import {
   type InboundOrderParsedDraft,
   type InboundOrderParseResponse,
   type InboundOrderReviewDraftDto,
+  type InboundOrderArtworkLink,
   type InboundOrderReviewDraftResponse,
   type InboundOrderReviewDraftSaveRequest,
   type InboundOrdersListResponse,
@@ -92,6 +93,7 @@ type ClientInboundOrderParseAttempt = NonNullable<InboundOrderDraftPreviewRespon
 type ClientInboundOrderDraftPreviewResponse = InboundOrderDraftPreviewResponse;
 type ClientInboundOrderReviewDraftResponse = InboundOrderReviewDraftResponse;
 type ReviewDraftFormState = InboundOrderReviewDraftSaveRequest;
+type ClientInboundOrderFile = ClientInboundOrderDetailResponse["data"]["files"][number];
 
 type ClientInboundOrderParseResponse = Omit<InboundOrderParseResponse, "data"> & {
   data: Omit<InboundOrderParseResponse["data"], "record"> & {
@@ -407,6 +409,33 @@ function titleCase(value: string | null | undefined) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ") || "-";
+}
+
+function artworkLinkKey(link: Pick<InboundOrderArtworkLink, "fileId" | "fileRecordId">): string {
+  return link.fileRecordId ? `record:${link.fileRecordId}` : `file:${link.fileId}`;
+}
+
+function artworkLinkFromInboundFile(file: ClientInboundOrderFile, source: InboundOrderArtworkLink["source"]): InboundOrderArtworkLink {
+  return {
+    fileId: file.id,
+    fileRecordId: file.fileRecordId ?? null,
+    filename: file.sourceFilename ?? null,
+    mimeType: file.mimeType ?? null,
+    sizeBytes: file.sizeBytes ?? null,
+    role: file.role === "artwork" || file.role === "po" ? file.role : "other",
+    source,
+    confidence: source === "staff_selected" ? 100 : null,
+    reason: source === "staff_selected" ? "Staff selected artwork attachment for this line item." : null,
+  };
+}
+
+function describeArtworkLink(link: InboundOrderArtworkLink): string {
+  const details = [
+    titleCase(link.role),
+    link.mimeType,
+    link.sizeBytes != null ? formatFileSize(link.sizeBytes) : null,
+  ].filter(Boolean);
+  return details.join(" / ") || "Attachment";
 }
 
 function evidenceSourceLabel(value: string | null | undefined) {
@@ -1705,6 +1734,7 @@ function ReviewLineItemProductOptions({
 
 function DraftBuilderPanel({
   selectedRecord,
+  detail,
   isLoading,
   draftPreview,
   reviewDraft,
@@ -1726,6 +1756,7 @@ function DraftBuilderPanel({
   onDirtyChange,
 }: {
   selectedRecord: ClientInboundOrderRecord | null;
+  detail: ClientInboundOrderDetailResponse["data"] | undefined;
   isLoading: boolean;
   draftPreview: ClientInboundOrderDraftPreviewResponse["data"] | undefined;
   reviewDraft: InboundOrderReviewDraftDto | undefined;
@@ -1911,6 +1942,101 @@ function DraftBuilderPanel({
       reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, itemIndex) => (
         itemIndex === index ? { ...item, ...patch } : item
       )),
+    });
+  };
+  const storedAttachmentLinks = (detail?.files ?? []).map((file) => artworkLinkFromInboundFile(file, "staff_selected"));
+  const allAttachmentLinks = Array.from(new Map([
+    ...storedAttachmentLinks,
+    ...form.reviewedArtworkJson.unassignedAttachments,
+    ...form.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
+  ].map((link) => [artworkLinkKey(link), link])).values());
+  const visibleLinkedArtworkKeys = new Set(
+    form.reviewedLineItemsJson
+      .flatMap((lineItem) => lineItem.artworkLinks)
+      .filter((link) => link.source !== "staff_removed")
+      .map((link) => artworkLinkKey(link)),
+  );
+  const unassignedArtworkLinks = Array.from(new Map([
+    ...form.reviewedArtworkJson.unassignedAttachments,
+    ...allAttachmentLinks.filter((link) => !visibleLinkedArtworkKeys.has(artworkLinkKey(link)) && link.source !== "staff_removed"),
+  ].map((link) => [artworkLinkKey(link), link])).values());
+  const attachmentLinkOptions = allAttachmentLinks.filter((link) => link.source !== "staff_removed");
+  const addArtworkLinkToLineItem = (lineItemIndex: number, link: InboundOrderArtworkLink) => {
+    const key = artworkLinkKey(link);
+    updateForm({
+      reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, index) => {
+        if (index !== lineItemIndex) return item;
+        return {
+          ...item,
+          artworkLinks: [
+            ...item.artworkLinks.filter((candidate) => artworkLinkKey(candidate) !== key),
+            {
+              ...link,
+              source: "staff_selected",
+              confidence: 100,
+              reason: "Staff selected artwork attachment for this line item.",
+            },
+          ],
+        };
+      }),
+      reviewedArtworkJson: {
+        ...form.reviewedArtworkJson,
+        unassignedAttachments: form.reviewedArtworkJson.unassignedAttachments.filter((candidate) => artworkLinkKey(candidate) !== key),
+      },
+    });
+  };
+  const removeArtworkLinkFromLineItem = (lineItemIndex: number, link: InboundOrderArtworkLink) => {
+    const key = artworkLinkKey(link);
+    updateLineItem(lineItemIndex, {
+      artworkLinks: [
+        ...form.reviewedLineItemsJson[lineItemIndex].artworkLinks.filter((candidate) => artworkLinkKey(candidate) !== key),
+        {
+          ...link,
+          source: "staff_removed",
+          confidence: 100,
+          reason: "Staff removed artwork link from this line item.",
+        },
+      ],
+    });
+  };
+  const moveArtworkLink = (fromLineItemIndex: number, toLineItemIndex: number, link: InboundOrderArtworkLink) => {
+    const key = artworkLinkKey(link);
+    updateForm({
+      reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, index) => {
+        if (index === fromLineItemIndex) {
+          return {
+            ...item,
+            artworkLinks: [
+              ...item.artworkLinks.filter((candidate) => artworkLinkKey(candidate) !== key),
+              {
+                ...link,
+                source: "staff_removed",
+                confidence: 100,
+                reason: "Staff moved artwork attachment to another line item.",
+              },
+            ],
+          };
+        }
+        if (index === toLineItemIndex) {
+          return {
+            ...item,
+            artworkLinks: [
+              ...item.artworkLinks.filter((candidate) => artworkLinkKey(candidate) !== key),
+              {
+                ...link,
+                source: "staff_selected",
+                confidence: 100,
+                reason: "Staff moved artwork attachment to this line item.",
+              },
+            ],
+          };
+        }
+        return item;
+      }),
+      reviewedArtworkJson: {
+        ...form.reviewedArtworkJson,
+        unassignedAttachments: form.reviewedArtworkJson.unassignedAttachments.filter((candidate) => artworkLinkKey(candidate) !== key),
+      },
     });
   };
   const addLineItem = () => {
@@ -2325,6 +2451,76 @@ function DraftBuilderPanel({
                       <span className="flex items-center justify-between gap-2">Finishing<ValueSourceBadge source={lineItem.finishingTextsSource} /></span>
                       <Input value={lineItem.finishingTexts.join(", ")} onChange={(event) => updateLineItem(index, { finishingTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), finishingTextsSource: "staff_selected" })} />
                     </label>
+                    <div className="rounded-md border border-border bg-muted/10 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Artwork</div>
+                        <select
+                          className="h-8 min-w-[220px] rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                          aria-label={`Attach artwork to line item ${index + 1}`}
+                          value=""
+                          onChange={(event) => {
+                            const selected = attachmentLinkOptions.find((link) => artworkLinkKey(link) === event.target.value);
+                            if (selected) addArtworkLinkToLineItem(index, selected);
+                          }}
+                          disabled={actionPending || attachmentLinkOptions.length === 0}
+                        >
+                          <option value="">Attach stored file...</option>
+                          {attachmentLinkOptions.map((link) => (
+                            <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>
+                              {link.filename || link.fileId}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="mt-2 space-y-2">
+                        {lineItem.artworkLinks.filter((link) => link.source !== "staff_removed").length === 0 ? (
+                          <div className="text-xs text-muted-foreground">No artwork linked to this line item.</div>
+                        ) : (
+                          lineItem.artworkLinks.filter((link) => link.source !== "staff_removed").map((link) => (
+                            <div key={artworkLinkKey(link)} className="rounded-md border border-border bg-background px-3 py-2">
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-medium text-foreground">{link.filename || link.fileId}</div>
+                                  <div className="mt-1 text-xs text-muted-foreground">
+                                    {describeArtworkLink(link)} / {titleCase(link.source)}
+                                    {link.confidence != null ? ` / ${link.confidence}%` : ""}
+                                  </div>
+                                  {link.reason && <div className="mt-1 text-xs text-muted-foreground">{link.reason}</div>}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {form.reviewedLineItemsJson.length > 1 && (
+                                    <select
+                                      className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                                      aria-label={`Move ${link.filename || link.fileId} to another line item`}
+                                      value=""
+                                      onChange={(event) => {
+                                        const targetIndex = Number(event.target.value);
+                                        if (Number.isInteger(targetIndex) && targetIndex >= 0 && targetIndex !== index) {
+                                          moveArtworkLink(index, targetIndex, link);
+                                        }
+                                      }}
+                                      disabled={actionPending}
+                                    >
+                                      <option value="">Move to...</option>
+                                      {form.reviewedLineItemsJson.map((targetLineItem, targetIndex) => (
+                                        targetIndex === index ? null : (
+                                          <option key={targetIndex} value={targetIndex}>
+                                            Line {targetIndex + 1}: {targetLineItem.productName || targetLineItem.sourceText || "Untitled"}
+                                          </option>
+                                        )
+                                      ))}
+                                    </select>
+                                  )}
+                                  <Button type="button" variant="outline" size="sm" onClick={() => removeArtworkLinkFromLineItem(index, link)} disabled={actionPending}>
+                                    Remove
+                                  </Button>
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
                     <label className="space-y-1 text-xs text-muted-foreground">Line item notes<Textarea value={lineItem.notes ?? ""} onChange={(event) => updateLineItem(index, { notes: trimToNull(event.target.value) })} /></label>
                   </div>
                   {parsedLine && <div className="mt-3"><ProductMatchReasoning candidates={parsedLine.productCandidates} /></div>}
@@ -2352,6 +2548,51 @@ function DraftBuilderPanel({
                 </div>
               ))
             )}
+            <div className="mt-3 rounded-md border border-border bg-muted/10 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Unassigned Attachments</div>
+                <Badge variant="outline">{unassignedArtworkLinks.length}</Badge>
+              </div>
+              <div className="mt-2 space-y-2">
+                {unassignedArtworkLinks.length === 0 ? (
+                  <div className="text-xs text-muted-foreground">No unassigned artwork candidates.</div>
+                ) : (
+                  unassignedArtworkLinks.map((link) => (
+                    <div key={artworkLinkKey(link)} className="rounded-md border border-border bg-background px-3 py-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-foreground">{link.filename || link.fileId}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {describeArtworkLink(link)} / {titleCase(link.source)}
+                            {link.confidence != null ? ` / ${link.confidence}%` : ""}
+                          </div>
+                          {link.reason && <div className="mt-1 text-xs text-muted-foreground">{link.reason}</div>}
+                        </div>
+                        <select
+                          className="h-8 min-w-[220px] rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                          aria-label={`Assign ${link.filename || link.fileId} to line item`}
+                          value=""
+                          onChange={(event) => {
+                            const targetIndex = Number(event.target.value);
+                            if (Number.isInteger(targetIndex) && targetIndex >= 0) {
+                              addArtworkLinkToLineItem(targetIndex, link);
+                            }
+                          }}
+                          disabled={actionPending || form.reviewedLineItemsJson.length === 0}
+                        >
+                          <option value="">Assign to line...</option>
+                          {form.reviewedLineItemsJson.map((lineItem, lineItemIndex) => (
+                            <option key={lineItemIndex} value={lineItemIndex}>
+                              Line {lineItemIndex + 1}: {lineItem.productName || lineItem.sourceText || "Untitled"}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
             <label className="mt-3 block space-y-1 text-xs text-muted-foreground">
               Artwork status
               <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedArtworkJson.status} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: event.target.value as ReviewDraftFormState["reviewedArtworkJson"]["status"] } })}>
@@ -3353,6 +3594,7 @@ export default function InboundOrdersPage() {
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
             <DraftBuilderPanel
               selectedRecord={selectedRecord}
+              detail={detailQuery.data?.data}
               isLoading={detailQuery.isLoading || draftPreviewQuery.isLoading || reviewDraftQuery.isLoading}
               draftPreview={draftPreviewQuery.data?.data}
               reviewDraft={reviewDraftQuery.data?.data}
