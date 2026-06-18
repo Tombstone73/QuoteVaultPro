@@ -394,11 +394,15 @@ export function registerInboundOrderRoutes(
         ruleType: input.ruleType,
         ruleValue: input.ruleValue,
         notes: input.notes ?? null,
+        enabled: input.enabled,
       });
       res.status(201).json({ success: true, data: formatInboundEmailIgnoreRule(rule) });
     } catch (error: any) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error creating inbound email ignore rule:", error);
       res.status(500).json({ success: false, message: "Failed to create inbound email ignore rule" });
@@ -418,6 +422,8 @@ export function registerInboundOrderRoutes(
       const rule = await service.updateEmailIgnoreRule({
         organizationId,
         id,
+        ruleType: input.ruleType,
+        ruleValue: input.ruleValue,
         enabled: input.enabled,
         notes: input.notes,
       });

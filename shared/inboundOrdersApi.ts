@@ -66,9 +66,12 @@ export const inboundEmailIgnoreRuleCreateSchema = z.object({
   ruleType: inboundEmailIgnoreRuleTypeSchema,
   ruleValue: z.string().trim().min(1).max(500),
   notes: z.string().trim().max(2000).optional().nullable(),
+  enabled: z.boolean().optional(),
 });
 
 export const inboundEmailIgnoreRuleUpdateSchema = z.object({
+  ruleType: inboundEmailIgnoreRuleTypeSchema.optional(),
+  ruleValue: z.string().trim().min(1).max(500).optional(),
   enabled: z.boolean().optional(),
   notes: z.string().trim().max(2000).optional().nullable(),
 });

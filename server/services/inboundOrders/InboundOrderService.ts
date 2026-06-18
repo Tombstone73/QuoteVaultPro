@@ -553,6 +553,14 @@ function getIgnoreRuleRequestsForAction(
   return rules;
 }
 
+function normalizeInboundEmailIgnoreRuleValue(ruleType: InboundEmailIgnoreRuleType, value: string): string {
+  const trimmed = value.trim();
+  if (ruleType === "sender_email_exact" || ruleType === "sender_domain") {
+    return trimmed.toLowerCase();
+  }
+  return trimmed;
+}
+
 export class InboundOrderService {
   constructor(
     private readonly repository = inboundOrdersRepository,
@@ -596,23 +604,67 @@ export class InboundOrderService {
     ruleType: InboundEmailIgnoreRuleType;
     ruleValue: string;
     notes?: string | null;
+    enabled?: boolean;
   }): Promise<InboundEmailIgnoreRule> {
+    const ruleValue = normalizeInboundEmailIgnoreRuleValue(args.ruleType, args.ruleValue);
+    if (!ruleValue) throw new InboundOrderTransitionError("Rule value is required.", 400);
+    const existing = await this.repository.getEmailIgnoreRuleByTypeValue?.({
+      organizationId: args.organizationId,
+      ruleType: args.ruleType,
+      ruleValue,
+    });
+    if (existing) {
+      throw new InboundOrderTransitionError(
+        existing.enabled
+          ? "An enabled inbound email ignore rule already exists for this type and value."
+          : "An inbound email ignore rule already exists for this type and value. Edit the existing disabled rule instead.",
+        409,
+      );
+    }
     return this.repository.createEmailIgnoreRule({
       organizationId: args.organizationId,
       ruleType: args.ruleType,
-      ruleValue: args.ruleValue,
+      ruleValue,
       notes: args.notes ?? null,
       createdByUserId: args.actorUserId,
+      enabled: args.enabled ?? true,
     });
   }
 
   async updateEmailIgnoreRule(args: {
     organizationId: string;
     id: string;
+    ruleType?: InboundEmailIgnoreRuleType;
+    ruleValue?: string;
     enabled?: boolean;
     notes?: string | null;
   }): Promise<InboundEmailIgnoreRule> {
-    const rule = await this.repository.updateEmailIgnoreRule(args);
+    const current = (await this.repository.listEmailIgnoreRules(args.organizationId)).find((rule) => rule.id === args.id);
+    if (!current) throw new InboundOrderTransitionError("Inbound email ignore rule not found", 404);
+    const nextRuleType = args.ruleType ?? current.ruleType;
+    const nextRuleValue = typeof args.ruleValue === "string"
+      ? normalizeInboundEmailIgnoreRuleValue(nextRuleType, args.ruleValue)
+      : current.ruleValue;
+    if (!nextRuleValue) throw new InboundOrderTransitionError("Rule value is required.", 400);
+    const nextEnabled = typeof args.enabled === "boolean" ? args.enabled : current.enabled;
+    const duplicate = await this.repository.getEmailIgnoreRuleByTypeValue?.({
+      organizationId: args.organizationId,
+      ruleType: nextRuleType,
+      ruleValue: nextRuleValue,
+    });
+    if (duplicate && duplicate.id !== args.id) {
+      throw new InboundOrderTransitionError(
+        duplicate.enabled && nextEnabled
+          ? "An enabled inbound email ignore rule already exists for this type and value."
+          : "An inbound email ignore rule already exists for this type and value. Edit the existing rule instead.",
+        409,
+      );
+    }
+    const rule = await this.repository.updateEmailIgnoreRule({
+      ...args,
+      ruleType: nextRuleType,
+      ruleValue: nextRuleValue,
+    });
     if (!rule) throw new InboundOrderTransitionError("Inbound email ignore rule not found", 404);
     return rule;
   }

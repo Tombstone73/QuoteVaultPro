@@ -1,10 +1,19 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, jest, test } from "@jest/globals";
 
 import {
   classifyInboundEmailAttachment,
   matchInboundEmailIgnoreRule,
   type InboundEmailProviderMessage,
 } from "../services/inboundEmailIngestionService";
+
+jest.mock("../services/pricing/PricingService", () => ({
+  priceLineItem: jest.fn(),
+}));
+
+import {
+  InboundOrderService,
+  InboundOrderTransitionError,
+} from "../services/inboundOrders/InboundOrderService";
 
 const baseMessage: InboundEmailProviderMessage = {
   provider: "gmail",
@@ -58,6 +67,145 @@ describe("inbound email ignore rule matching", () => {
       ruleType: "subject_contains",
       ruleValue: "new submission from",
     }, baseMessage)).toBe(false);
+  });
+});
+
+function ignoreRule(overrides: Record<string, any> = {}) {
+  return {
+    id: "rule_1",
+    organizationId: "org_1",
+    enabled: true,
+    ruleType: "sender_email_exact",
+    ruleValue: "notifications@example.com",
+    notes: null,
+    matchCount: 0,
+    lastMatchedAt: null,
+    createdByUserId: "user_1",
+    createdAt: new Date("2026-06-17T12:00:00.000Z"),
+    updatedAt: new Date("2026-06-17T12:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function makeIgnoreRuleRepo(overrides: Record<string, any> = {}) {
+  return {
+    listEmailIgnoreRules: jest.fn(async () => []),
+    getEmailIgnoreRuleByTypeValue: jest.fn(async () => null),
+    createEmailIgnoreRule: jest.fn(async (values: Record<string, any>) => ignoreRule(values)),
+    updateEmailIgnoreRule: jest.fn(async (values: Record<string, any>) => ignoreRule(values)),
+    deleteEmailIgnoreRule: jest.fn(),
+    ...overrides,
+  };
+}
+
+describe("inbound email ignore rule management", () => {
+  test("normalizes sender email values when creating manual rules", async () => {
+    const repo = makeIgnoreRuleRepo();
+    const service = new InboundOrderService(repo as any);
+
+    const created = await service.createEmailIgnoreRule({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      ruleType: "sender_email_exact",
+      ruleValue: "  Notifications@Example.COM  ",
+      notes: "Processor notification",
+      enabled: true,
+    });
+
+    expect(created.ruleValue).toBe("notifications@example.com");
+    expect(repo.createEmailIgnoreRule).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1",
+      ruleType: "sender_email_exact",
+      ruleValue: "notifications@example.com",
+      notes: "Processor notification",
+      enabled: true,
+    }));
+  });
+
+  test("normalizes sender domains and rejects blank manual rule values", async () => {
+    const repo = makeIgnoreRuleRepo();
+    const service = new InboundOrderService(repo as any);
+
+    await service.createEmailIgnoreRule({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      ruleType: "sender_domain",
+      ruleValue: "  Payments.Example.COM  ",
+      enabled: false,
+    });
+
+    expect(repo.createEmailIgnoreRule).toHaveBeenCalledWith(expect.objectContaining({
+      ruleValue: "payments.example.com",
+      enabled: false,
+    }));
+
+    await expect(service.createEmailIgnoreRule({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      ruleType: "subject_contains",
+      ruleValue: "   ",
+    })).rejects.toMatchObject({
+      statusCode: 400,
+      message: "Rule value is required.",
+    });
+  });
+
+  test("rejects duplicate manual rules for the same organization, type, and value", async () => {
+    const repo = makeIgnoreRuleRepo({
+      getEmailIgnoreRuleByTypeValue: jest.fn(async () => ignoreRule()),
+    });
+    const service = new InboundOrderService(repo as any);
+
+    await expect(service.createEmailIgnoreRule({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      ruleType: "sender_email_exact",
+      ruleValue: "notifications@example.com",
+    })).rejects.toBeInstanceOf(InboundOrderTransitionError);
+    await expect(service.createEmailIgnoreRule({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      ruleType: "sender_email_exact",
+      ruleValue: "notifications@example.com",
+    })).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(repo.createEmailIgnoreRule).not.toHaveBeenCalled();
+  });
+
+  test("updates rule type, normalized value, notes, and enabled state", async () => {
+    const current = ignoreRule({
+      id: "rule_1",
+      ruleType: "subject_contains",
+      ruleValue: "payment received",
+      enabled: true,
+    });
+    const repo = makeIgnoreRuleRepo({
+      listEmailIgnoreRules: jest.fn(async () => [current]),
+      updateEmailIgnoreRule: jest.fn(async (values: Record<string, any>) => ignoreRule({
+        ...current,
+        ...values,
+      })),
+    });
+    const service = new InboundOrderService(repo as any);
+
+    await service.updateEmailIgnoreRule({
+      organizationId: "org_1",
+      id: "rule_1",
+      ruleType: "sender_domain",
+      ruleValue: "  Payments.Example.COM  ",
+      notes: "Disable processor notices",
+      enabled: false,
+    });
+
+    expect(repo.updateEmailIgnoreRule).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1",
+      id: "rule_1",
+      ruleType: "sender_domain",
+      ruleValue: "payments.example.com",
+      notes: "Disable processor notices",
+      enabled: false,
+    }));
   });
 });
 

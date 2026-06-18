@@ -17,8 +17,10 @@ import {
   type InboundEmailMailboxView,
 } from "@shared/inboundEmailMailboxes";
 import type {
+  InboundEmailIgnoreRuleCreateRequest,
   InboundEmailIgnoreRuleDto,
   InboundEmailIgnoreRuleListResponse,
+  InboundEmailIgnoreRuleUpdateRequest,
   InboundEmailIgnoreRuleTypeValue,
 } from "@shared/inboundOrdersApi";
 
@@ -93,7 +95,7 @@ export function useInboundEmailIgnoreRules() {
 export function useCreateInboundEmailIgnoreRule() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { ruleType: InboundEmailIgnoreRuleTypeValue; ruleValue: string; notes?: string | null }) => {
+    mutationFn: async (input: InboundEmailIgnoreRuleCreateRequest) => {
       const response = await apiFetch("/api/inbound-orders/email/ignore-rules", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -114,11 +116,11 @@ export function useCreateInboundEmailIgnoreRule() {
 export function useUpdateInboundEmailIgnoreRule() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ ruleId, enabled, notes }: { ruleId: string; enabled?: boolean; notes?: string | null }) => {
+    mutationFn: async ({ ruleId, ...input }: { ruleId: string } & InboundEmailIgnoreRuleUpdateRequest) => {
       const response = await apiFetch(`/api/inbound-orders/email/ignore-rules/${encodeURIComponent(ruleId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled, notes }),
+        body: JSON.stringify(input),
       });
       const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
       if (!response.ok || payload.success === false) {
