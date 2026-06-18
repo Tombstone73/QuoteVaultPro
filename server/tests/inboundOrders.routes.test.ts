@@ -2,6 +2,10 @@ import { describe, expect, jest, test, beforeEach } from "@jest/globals";
 import express from "express";
 import request from "supertest";
 
+jest.mock("../services/pricing/PricingService", () => ({
+  priceLineItem: jest.fn(),
+}));
+
 import { registerInboundOrderRoutes } from "../routes/inboundOrders.routes";
 import {
   InboundEmailIngestionError,
