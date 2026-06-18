@@ -1251,7 +1251,7 @@ describe("InboundOrderService editable review draft", () => {
           unresolvedContact: true,
           notes: null,
         },
-        reviewedOrderJson: { poNumber: null, dueDate: null, shipMethod: null, fulfillmentType: "unknown", internalNotes: null, customerNotes: null },
+        reviewedOrderJson: { intent: "unknown", poNumber: null, dueDate: null, shipMethod: null, fulfillmentType: "unknown", internalNotes: null, customerNotes: null },
         reviewedLineItemsJson: [],
         reviewedArtworkJson: { status: "missing", refs: [], unassignedAttachments: [], notes: null },
         missingDecisionsJson: [],
@@ -1631,6 +1631,7 @@ describe("InboundOrderService editable review draft", () => {
           notes: null,
         },
         reviewedOrderJson: {
+          intent: "unknown",
           poNumber: "PO-123",
           dueDate: "2026-06-20",
           shipMethod: "Pickup",

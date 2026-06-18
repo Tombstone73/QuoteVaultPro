@@ -518,6 +518,46 @@ function labeledControl(labelText: string, selector: string) {
   return control as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 }
 
+function setupParsedInboundReview({
+  row = record(),
+  parsed = parsedDraft(),
+  review = reviewDraft(parsed),
+  detailOverrides = {},
+}: {
+  row?: any;
+  parsed?: any;
+  review?: any;
+  detailOverrides?: Record<string, any>;
+} = {}) {
+  const attempt = parseAttempt({ parsedDraft: parsed, confidence: 82, warnings: parsed.globalWarnings });
+  let savedBody: any = null;
+  apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+    const path = String(url);
+    if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+    if (path === `/api/inbound-orders/${row.id}`) return jsonResponse({ success: true, data: detail(row, detailOverrides) });
+    if (path === `/api/inbound-orders/${row.id}/draft-preview`) return jsonResponse(draftPreview({ draft: parsed, latestAttempt: attempt }));
+    if (path === `/api/inbound-orders/${row.id}/review-draft` && options?.method === "PUT") {
+      savedBody = JSON.parse(options.body);
+      return jsonResponse({
+        success: true,
+        data: reviewDraft(parsed, {
+          ...savedBody,
+          updatedAt: "2026-06-09T12:04:00.000Z",
+        }),
+      });
+    }
+    if (path === `/api/inbound-orders/${row.id}/review-draft`) return jsonResponse({ success: true, data: review });
+    if (path === "/api/inbound-orders/customer-search?limit=20") return jsonResponse({ success: true, data: [] });
+    if (path === "/api/inbound-orders/product-search?limit=20") return jsonResponse({ success: true, data: [] });
+    if (path.startsWith("/api/inbound-orders/contact-search?")) return jsonResponse({ success: true, data: [] });
+    if (path.startsWith("/api/inbound-orders/product-options/") && options?.method === "POST") return jsonResponse(pbv2OptionsResponse());
+    return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+  });
+  return {
+    getSavedBody: () => savedBody,
+  };
+}
+
 beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   Object.defineProperty(window, "innerWidth", {
@@ -547,6 +587,187 @@ describe("InboundOrdersPage", () => {
 
     expect(container.textContent).toContain("No inbound records");
     expect(container.textContent).toContain("Draft builder will appear after parsing.");
+  });
+
+  test("defaults to operational view, sanitizes HTML email, renders attachments, and preserves debug view", async () => {
+    const row = record({
+      sourceType: "email",
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        reference: "PO-123",
+        sender: { name: "Shawn Fears", email: "shawn@brainstormprint.com" },
+        to: ["orders@printer.test"],
+        cc: [{ email: "csr@printer.test" }],
+        subject: "PVC Signs PO",
+        receivedAt: "2026-06-09T12:30:00.000Z",
+        bodyText: "Plain fallback should not be primary when HTML exists.",
+        bodyHtml: "<div><p>Hello <strong>CSR</strong></p><script>window.bad=true</script><img src=\"https://tracker.test/pixel.png\" onerror=\"bad()\"><a href=\"javascript:bad()\">bad link</a></div>",
+      },
+    });
+    setupParsedInboundReview({
+      row,
+      detailOverrides: {
+        files: [
+          {
+            id: "file_po",
+            inboundRecordId: row.id,
+            fileRecordId: "file_record_po",
+            role: "po",
+            status: "uploaded",
+            sourceFilename: "Purchase Order 151661.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 1024,
+            providerAttachmentId: "att_po",
+            reviewNotes: null,
+          },
+          {
+            id: "file_art",
+            inboundRecordId: row.id,
+            fileRecordId: "file_record_art",
+            role: "artwork",
+            status: "uploaded",
+            sourceFilename: "artwork.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 2048,
+            providerAttachmentId: "att_art",
+            reviewNotes: null,
+          },
+        ],
+      },
+    });
+
+    renderPage();
+    await waitForText("Operational View");
+    await waitForText("Operational Review");
+    await waitForText("Original Email");
+    await waitForText("Hello CSR");
+    await waitForText("PO candidate");
+    await waitForText("Artwork candidate");
+    expect(container.textContent).toContain("orders@printer.test");
+    expect(container.textContent).toContain("csr@printer.test");
+
+    const emailPanel = container.querySelector("[data-testid='inbound-operational-email-panel']") as HTMLElement;
+    expect(emailPanel).toBeTruthy();
+    expect(emailPanel.innerHTML).not.toContain("<script");
+    expect(emailPanel.innerHTML).not.toContain("onerror");
+    expect(emailPanel.innerHTML).not.toContain("https://tracker.test");
+    expect(emailPanel.querySelectorAll("a[href*='/api/inbound-orders/inbound_1/files/']").length).toBeGreaterThan(0);
+
+    const debugButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Debug View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(debugButton);
+    });
+    await waitForText("Source Evidence");
+    await waitForText("Draft Builder");
+    expect(window.localStorage.getItem("titanos.inboundOrders.reviewMode")).toBe("debug");
+  });
+
+  test("falls back to plain text when original email HTML is missing", async () => {
+    const row = record({
+      sourceType: "email",
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        sender: { name: "Ada Lovelace", email: "ada@example.com" },
+        subject: "Text only request",
+        bodyText: "Please quote 3 aluminum signs, 24x36.",
+      },
+    });
+    setupParsedInboundReview({ row });
+
+    renderPage();
+    await waitForText("Original Email");
+    await waitForText("Please quote 3 aluminum signs, 24x36.");
+    expect(container.textContent).toContain("Text");
+  });
+
+  test("supports operational line item add, duplicate, remove, and product picker rendering", async () => {
+    setupParsedInboundReview();
+
+    renderPage();
+    await waitForText("Operational Review");
+    await waitForText("Add line item");
+    expect(labeledControl("Product", "select")).toHaveProperty("value", "product_1");
+
+    const addButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Add line item")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(addButton);
+    });
+    await waitForText("Manual line item 2");
+
+    const duplicateButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Duplicate")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(duplicateButton);
+    });
+    await waitForCondition(() => (
+      Array.from(container.querySelectorAll("button")).filter((button) => button.textContent?.includes("Remove")).length >= 3
+    ), "duplicated operational line item");
+
+    const removeButtons = Array.from(container.querySelectorAll("button")).filter((button) => button.textContent?.includes("Remove"));
+    act(() => {
+      Simulate.click(removeButtons[removeButtons.length - 1]);
+    });
+    await waitForCondition(() => (
+      Array.from(container.querySelectorAll("button")).filter((button) => button.textContent?.includes("Remove")).length === 2
+    ), "duplicated line removed");
+  });
+
+  test("shows missing conversion reasons and disables conversion when minimum fields are absent", async () => {
+    const parsed = parsedDraft({ lineItems: [], missingDecisions: [] });
+    const review = reviewDraft(parsed, {
+      reviewedCustomerJson: {
+        ...reviewDraft(parsed).reviewedCustomerJson,
+        selectedCustomerId: null,
+        unresolvedCustomer: false,
+      },
+      reviewedLineItemsJson: [],
+      validationErrors: ["Select a customer candidate or mark the customer unresolved."],
+    });
+    setupParsedInboundReview({ parsed, review });
+
+    renderPage();
+    await waitForText("Missing before conversion");
+    await waitForText("Select a customer or mark customer unresolved.");
+    await waitForText("Add at least one line item.");
+
+    const orderButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Convert to Draft Order")) as HTMLButtonElement;
+    const quoteButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Convert to Draft Quote")) as HTMLButtonElement;
+    expect(orderButton.disabled).toBe(true);
+    expect(quoteButton.disabled).toBe(true);
+  });
+
+  test("staff edits survive operational/debug view toggles and save with draft payload", async () => {
+    const { getSavedBody } = setupParsedInboundReview();
+
+    renderPage();
+    await waitForText("Operational Review");
+    await waitForText("PO number");
+    act(() => {
+      Simulate.change(labeledControl("PO number", "input"), { target: { value: "PO-999" } } as any);
+    });
+    act(() => {
+      Simulate.change(labeledControl("Quote / order intent", "select"), { target: { value: "order" } } as any);
+    });
+
+    const debugButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Debug View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(debugButton);
+    });
+    await waitForText("Draft Builder");
+    const operationalButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Operational View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(operationalButton);
+    });
+    await waitForText("Operational Review");
+    expect(labeledControl("PO number", "input")).toHaveProperty("value", "PO-999");
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
+    expect(saveButton.disabled).toBe(false);
+    await act(async () => {
+      Simulate.click(saveButton);
+    });
+    await waitForCondition(() => Boolean(getSavedBody()), "operational review draft saved");
+    expect(getSavedBody().reviewedOrderJson.poNumber).toBe("PO-999");
+    expect(getSavedBody().reviewedOrderJson.intent).toBe("order");
   });
 
   test("shows disabled state and does not load the queue when inbound email intake is off", async () => {
@@ -1116,6 +1337,13 @@ describe("InboundOrdersPage", () => {
     });
 
     await waitForText("Updated Signs");
+    const debugButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Debug View")
+    )) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(debugButton);
+    });
+    await waitForText("Source Evidence");
     expect(container.textContent).toContain("93% confidence");
   });
 
@@ -1360,6 +1588,13 @@ describe("InboundOrdersPage", () => {
 
     await waitForText("Phase 4: Create draft order from reviewed inbound record.");
     await waitForCondition(() => refreshFromLatestParseCalled, "review draft refreshed after parse");
+    const debugButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Debug View")
+    )) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(debugButton);
+    });
+    await waitForText("Source Evidence");
     expect(container.textContent).toContain("Review Readiness");
     expect(container.textContent).toContain("92% overall confidence");
     expect(container.textContent).toContain("Product Confidence 95%");
