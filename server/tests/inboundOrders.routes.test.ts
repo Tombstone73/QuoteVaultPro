@@ -230,8 +230,10 @@ function reviewDraft(overrides: Record<string, any> = {}) {
       notes: null,
     },
     reviewedOrderJson: {
+      intent: "unknown",
       poNumber: "151661",
       dueDate: "2026-06-11",
+      priority: "normal",
       shipMethod: null,
       fulfillmentType: "unknown",
       internalNotes: null,

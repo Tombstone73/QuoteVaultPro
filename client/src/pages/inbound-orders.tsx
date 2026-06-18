@@ -1,8 +1,10 @@
-import { type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
   AlertTriangle,
+  Calendar,
+  ChevronDown,
   ChevronsLeft,
   ChevronsRight,
   Clock,
@@ -15,6 +17,7 @@ import {
   Loader2,
   Mail,
   Maximize2,
+  Paperclip,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -31,6 +34,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { DocumentMetaCard } from "@/components/DocumentMetaCard";
 import { ProductOptionsPanelV2 } from "@/features/quotes/editor/components/ProductOptionsPanelV2";
 import { useInboundEmailIntakeSettings, usePullLatestInboundEmails } from "@/hooks/useInboundEmailIntakeSettings";
 import { useToast } from "@/hooks/use-toast";
@@ -371,7 +375,7 @@ function cloneReviewDraft(draft: InboundOrderReviewDraftDto): ReviewDraftFormSta
   return JSON.parse(JSON.stringify({
     status: "draft",
     reviewedCustomerJson: draft.reviewedCustomerJson,
-    reviewedOrderJson: { ...draft.reviewedOrderJson, intent: draft.reviewedOrderJson.intent ?? "unknown" },
+    reviewedOrderJson: { ...draft.reviewedOrderJson, intent: draft.reviewedOrderJson.intent ?? "unknown", priority: draft.reviewedOrderJson.priority ?? "normal" },
     reviewedLineItemsJson: draft.reviewedLineItemsJson,
     reviewedArtworkJson: draft.reviewedArtworkJson,
     missingDecisionsJson: draft.missingDecisionsJson,
@@ -1819,6 +1823,24 @@ function ValueSourceBadge({ source }: { source: string | null | undefined }) {
   return <Badge variant="outline">{selectionSourceLabel(source, null)}</Badge>;
 }
 
+function OrderEntryField({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
+  return (
+    <label className={cn("space-y-1 text-xs text-muted-foreground", className)}>
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function OrderEntrySectionTitle({ title, count }: { title: string; count?: number }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <h3 className="text-sm font-medium text-foreground">{title}</h3>
+      {typeof count === "number" && <Badge variant="outline">{count}</Badge>}
+    </div>
+  );
+}
+
 function createBlankReviewLineItem(index: number): ReviewDraftFormState["reviewedLineItemsJson"][number] {
   return {
     sourceLineItemId: null,
@@ -1887,10 +1909,12 @@ function markChangedPbv2SelectionsAsStaffSelected(
 function ReviewLineItemProductOptions({
   lineItem,
   index,
+  showDiagnostics = true,
   onChange,
 }: {
   lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
   index: number;
+  showDiagnostics?: boolean;
   onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
 }) {
   const productId = lineItem.selectedProductId;
@@ -1929,9 +1953,9 @@ function ReviewLineItemProductOptions({
     <div className="space-y-3 rounded-md border border-border bg-muted/10 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm font-semibold text-foreground">Product options</div>
-        {config.suggestions.length > 0 && <Badge variant="outline">{config.suggestions.length} suggested</Badge>}
+        {showDiagnostics && config.suggestions.length > 0 && <Badge variant="outline">{config.suggestions.length} suggested</Badge>}
       </div>
-      {config.suggestions.length > 0 && (
+      {showDiagnostics && config.suggestions.length > 0 && (
         <div className="space-y-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-200">
           <div className="font-semibold text-blue-100">Latest Parse Suggestions</div>
           {config.suggestions.map((suggestion) => (
@@ -1970,7 +1994,7 @@ function ReviewLineItemProductOptions({
           });
         }}
       />
-      {Object.entries(selections.selected ?? {}).length > 0 && (
+      {showDiagnostics && Object.entries(selections.selected ?? {}).length > 0 && (
         <div className="space-y-1 text-xs">
           <div className="font-semibold text-muted-foreground">Current Draft Selections</div>
           <div className="flex flex-wrap gap-2">
@@ -2047,6 +2071,7 @@ function DraftBuilderPanel({
   const [form, setForm] = useState<ReviewDraftFormState | null>(null);
   const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
   const [reviewNotesExpanded, setReviewNotesExpanded] = useState(false);
+  const [customerIntelligenceExpanded, setCustomerIntelligenceExpanded] = useState(false);
   const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
   const [contactSearch, setContactSearch] = useState("");
@@ -2362,6 +2387,7 @@ function DraftBuilderPanel({
   };
   const isOperationalMode = mode === "operational";
   const reviewIntent = form.reviewedOrderJson.intent ?? "unknown";
+  const reviewPriority = form.reviewedOrderJson.priority ?? "normal";
   const minimumConversionIssues = [
     !form.reviewedCustomerJson.selectedCustomerId && !form.reviewedCustomerJson.unresolvedCustomer
       ? "Select a customer or mark customer unresolved."
@@ -2374,6 +2400,10 @@ function DraftBuilderPanel({
     ...validationErrors,
   ].filter(Boolean) as string[];
   const reviewNotesPreview = form.reviewNotes?.trim() ?? "";
+  const inboundFiles = detail?.files ?? [];
+  const artworkFiles = inboundFiles.filter((file) => file.role === "artwork");
+  const poFiles = inboundFiles.filter((file) => file.role === "po");
+  const otherFiles = inboundFiles.filter((file) => file.role !== "artwork" && file.role !== "po");
 
   return (
     <ScrollArea className="h-full">
@@ -2481,6 +2511,488 @@ function DraftBuilderPanel({
           </>
         )}
 
+        {isOperationalMode ? (
+          <>
+            <DocumentMetaCard contentClassName="p-3">
+              <div className="grid gap-3 xl:grid-cols-[minmax(260px,0.9fr)_minmax(360px,1.2fr)]">
+                <div className="space-y-2">
+                  <OrderEntrySectionTitle title="Customer" />
+                  <SearchableReviewSelector
+                    label="Selected customer"
+                    searchLabel="Customer search"
+                    searchPlaceholder="Search all customers"
+                    value={form.reviewedCustomerJson.selectedCustomerId}
+                    searchValue={customerSearch}
+                    options={customerOptions}
+                    isLoading={customerSearchQuery.isFetching}
+                    onSearchChange={setCustomerSearch}
+                    onChange={(customerId) => updateCustomer({
+                      selectedCustomerId: customerId,
+                      selectedCustomerSource: customerId ? "staff_selected" : null,
+                      selectedCustomerReason: customerId ? "Staff selected customer." : null,
+                      selectedCustomerConfidence: null,
+                      selectedContactId: null,
+                      selectedContactSource: null,
+                      selectedContactReason: null,
+                      selectedContactConfidence: null,
+                      unresolvedCustomer: false,
+                    })}
+                  />
+                  <SearchableReviewSelector
+                    label="Selected contact"
+                    searchLabel="Contact search"
+                    searchPlaceholder={form.reviewedCustomerJson.selectedCustomerId ? "Search contacts for selected customer" : "Search all contacts"}
+                    value={form.reviewedCustomerJson.selectedContactId}
+                    searchValue={contactSearch}
+                    options={contactOptions}
+                    isLoading={contactSearchQuery.isFetching}
+                    onSearchChange={setContactSearch}
+                    onChange={(contactId) => updateCustomer({
+                      selectedContactId: contactId,
+                      selectedContactSource: contactId ? "staff_selected" : null,
+                      selectedContactReason: contactId ? "Staff selected contact." : null,
+                      selectedContactConfidence: null,
+                      unresolvedContact: false,
+                    })}
+                  />
+                  <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                    <label className="flex items-center gap-2 text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={form.reviewedCustomerJson.unresolvedCustomer}
+                        onChange={(event) => updateCustomer({
+                          unresolvedCustomer: event.target.checked,
+                          selectedCustomerId: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerId,
+                          selectedCustomerSource: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerSource,
+                          selectedCustomerReason: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerReason,
+                          selectedCustomerConfidence: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerConfidence,
+                          selectedContactId: event.target.checked ? null : form.reviewedCustomerJson.selectedContactId,
+                          selectedContactSource: event.target.checked ? null : form.reviewedCustomerJson.selectedContactSource,
+                          selectedContactReason: event.target.checked ? null : form.reviewedCustomerJson.selectedContactReason,
+                          selectedContactConfidence: event.target.checked ? null : form.reviewedCustomerJson.selectedContactConfidence,
+                        })}
+                      />
+                      Customer unresolved
+                    </label>
+                    <label className="flex items-center gap-2 text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={form.reviewedCustomerJson.unresolvedContact ?? false}
+                        onChange={(event) => updateCustomer({
+                          unresolvedContact: event.target.checked,
+                          selectedContactId: event.target.checked ? null : form.reviewedCustomerJson.selectedContactId,
+                          selectedContactSource: event.target.checked ? null : form.reviewedCustomerJson.selectedContactSource,
+                          selectedContactReason: event.target.checked ? null : form.reviewedCustomerJson.selectedContactReason,
+                          selectedContactConfidence: event.target.checked ? null : form.reviewedCustomerJson.selectedContactConfidence,
+                        })}
+                      />
+                      Contact unresolved
+                    </label>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <OrderEntrySectionTitle title="Order Details" />
+                  <div className="grid grid-cols-2 gap-2">
+                    <OrderEntryField label="PO number">
+                      <Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} />
+                    </OrderEntryField>
+                    <OrderEntryField label="Due date">
+                      <div className="relative">
+                        <Input
+                          type="date"
+                          value={form.reviewedOrderJson.dueDate ?? ""}
+                          onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })}
+                          className="pr-9 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:right-0 [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:w-9 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-0"
+                        />
+                        <Calendar className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      </div>
+                    </OrderEntryField>
+                    <OrderEntryField label="Quote / order intent">
+                      <select
+                        className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                        value={reviewIntent}
+                        onChange={(event) => updateOrder({ intent: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["intent"] })}
+                      >
+                        <option value="quote">Quote</option>
+                        <option value="order">Order</option>
+                        <option value="unknown">Unknown</option>
+                      </select>
+                    </OrderEntryField>
+                    <OrderEntryField label="Priority">
+                      <select
+                        className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                        value={reviewPriority}
+                        onChange={(event) => updateOrder({ priority: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["priority"] })}
+                      >
+                        <option value="rush">Rush</option>
+                        <option value="normal">Normal</option>
+                        <option value="low">Low</option>
+                      </select>
+                    </OrderEntryField>
+                    <OrderEntryField label="Fulfillment">
+                      <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedOrderJson.fulfillmentType} onChange={(event) => updateOrder({ fulfillmentType: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["fulfillmentType"] })}>
+                        <option value="unknown">Unknown</option>
+                        <option value="pickup">Pickup</option>
+                        <option value="shipping">Shipping</option>
+                      </select>
+                    </OrderEntryField>
+                    <OrderEntryField label="Ship method">
+                      <Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: trimToNull(event.target.value) })} />
+                    </OrderEntryField>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <OrderEntryField label="Customer notes">
+                      <Textarea className="min-h-[68px]" value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: trimToNull(event.target.value) })} />
+                    </OrderEntryField>
+                    <OrderEntryField label="Internal notes">
+                      <Textarea className="min-h-[68px]" value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: trimToNull(event.target.value) })} />
+                    </OrderEntryField>
+                  </div>
+                </div>
+              </div>
+            </DocumentMetaCard>
+
+            <section className="rounded-xl border border-border/60 bg-card/80 shadow-sm">
+              <div className="flex items-center justify-between gap-2 border-b border-border/50 px-4 py-2">
+                <OrderEntrySectionTitle title="Line Items" count={form.reviewedLineItemsJson.length} />
+                <Button type="button" variant="outline" size="sm" className="h-8" onClick={addLineItem} disabled={actionPending}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add line item
+                </Button>
+              </div>
+              <div className="space-y-2 p-3">
+                {form.reviewedLineItemsJson.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+                    No line items in the current review draft. Add a line item to continue manual review.
+                  </div>
+                ) : (
+                  form.reviewedLineItemsJson.map((lineItem, index) => {
+                    const parsedLine = draft.lineItems[index];
+                    const productOptions = mergeReviewOptions(
+                      (parsedLine?.productCandidates ?? []).map(candidateToReviewOption),
+                      productCatalogOptions,
+                      lineItem.selectedProductId && !(parsedLine?.productCandidates ?? []).some((candidate) => candidate.id === lineItem.selectedProductId)
+                        ? [{ id: lineItem.selectedProductId, label: lineItem.productName || lineItem.selectedProductId, description: null }]
+                        : [],
+                    );
+                    const activeArtworkLinks = lineItem.artworkLinks.filter((link) => link.source !== "staff_removed");
+                    return (
+                      <div key={index} className="group flex gap-3 rounded-lg border border-border/60 bg-background/40 p-3 transition-colors hover:bg-muted/30">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-muted">
+                          <FileText className="h-5 w-5 text-muted-foreground" />
+                        </div>
+                        <div className="min-w-0 flex-1 space-y-3">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium text-foreground">{lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`}</div>
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {lineItem.materialText && <Badge variant="outline" className="py-0 text-[11px]">{lineItem.materialText}</Badge>}
+                                {lineItem.printSpecs.slice(0, 2).map((spec) => <Badge key={spec} variant="outline" className="py-0 text-[11px]">{spec}</Badge>)}
+                                {lineItem.productUnresolved && <Badge variant="outline" className="py-0 text-[11px]">Product unresolved</Badge>}
+                              </div>
+                            </div>
+                            <div className="flex shrink-0 flex-wrap gap-1">
+                              <Button type="button" variant="ghost" size="sm" className="h-8 px-2" onClick={() => duplicateLineItem(index)} disabled={actionPending}>
+                                <Copy className="mr-1.5 h-4 w-4" />
+                                Duplicate
+                              </Button>
+                              <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-destructive hover:text-destructive" onClick={() => removeLineItem(index)} disabled={actionPending}>
+                                <Trash2 className="mr-1.5 h-4 w-4" />
+                                Remove
+                              </Button>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2 text-xs">
+                            <div className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1">
+                              <span className="text-muted-foreground">Size</span>
+                              <span className="font-mono">{lineItem.width && lineItem.height ? `${lineItem.width}x${lineItem.height} ${lineItem.dimensionsUnit ?? ""}` : "-"}</span>
+                            </div>
+                            <div className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1">
+                              <span className="text-muted-foreground">Qty</span>
+                              <span className="font-mono">{lineItem.quantity ?? "-"}</span>
+                            </div>
+                            <div className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1">
+                              <span className="text-muted-foreground">Artwork</span>
+                              <span className="font-mono">{activeArtworkLinks.length || "-"}</span>
+                            </div>
+                          </div>
+
+                          <div className="grid gap-2 lg:grid-cols-2">
+                            <OrderEntryField label="Product">
+                              <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={lineItem.selectedProductId ?? ""} onChange={(event) => {
+                                const productId = trimToNull(event.target.value);
+                                const selectedOption = productOptions.find((option) => option.id === productId);
+                                updateLineItem(index, {
+                                  productName: productId ? selectedOption?.label ?? lineItem.productName : null,
+                                  selectedProductId: productId,
+                                  selectedProductSource: productId ? "staff_selected" : null,
+                                  interpretedProductId: null,
+                                  interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
+                                  interpretedProductConfidence: null,
+                                  productUnresolved: !productId,
+                                  optionSelectionsJson: null,
+                                  pbv2TreeVersionId: null,
+                                  pbv2OptionSuggestions: [],
+                                });
+                              }}>
+                                <option value="">Unselected</option>
+                                {productSearchQuery.isFetching && <option value="" disabled>Searching catalog...</option>}
+                                {productOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                              </select>
+                            </OrderEntryField>
+                            <OrderEntryField label="Search active catalog products">
+                              <Input value={productSearch} onChange={(event) => setProductSearch(event.target.value)} placeholder="Search product catalog" />
+                            </OrderEntryField>
+                            <OrderEntryField label="Material">
+                              <Input value={lineItem.materialText ?? ""} onChange={(event) => updateLineItem(index, { materialText: trimToNull(event.target.value), materialSource: "staff_selected" })} />
+                            </OrderEntryField>
+                            <OrderEntryField label="Quantity">
+                              <Input value={lineItem.quantity ?? ""} onChange={(event) => updateLineItem(index, { quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })} />
+                            </OrderEntryField>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2">
+                            <OrderEntryField label="Width">
+                              <Input value={lineItem.width ?? ""} onChange={(event) => updateLineItem(index, { width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
+                            </OrderEntryField>
+                            <OrderEntryField label="Height">
+                              <Input value={lineItem.height ?? ""} onChange={(event) => updateLineItem(index, { height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
+                            </OrderEntryField>
+                            <OrderEntryField label="Unit">
+                              <Input value={lineItem.dimensionsUnit ?? ""} onChange={(event) => updateLineItem(index, { dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })} />
+                            </OrderEntryField>
+                          </div>
+                          <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={(patch) => updateLineItem(index, patch)} />
+                          <div className="grid gap-2 lg:grid-cols-3">
+                            <OrderEntryField label="Print specs">
+                              <Input value={lineItem.printSpecs.join(", ")} onChange={(event) => updateLineItem(index, { printSpecs: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), printSpecsSource: "staff_selected" })} />
+                            </OrderEntryField>
+                            <OrderEntryField label="Options">
+                              <Input value={lineItem.optionTexts.join(", ")} onChange={(event) => updateLineItem(index, { optionTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), optionTextsSource: "staff_selected" })} />
+                            </OrderEntryField>
+                            <OrderEntryField label="Finishing">
+                              <Input value={lineItem.finishingTexts.join(", ")} onChange={(event) => updateLineItem(index, { finishingTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), finishingTextsSource: "staff_selected" })} />
+                            </OrderEntryField>
+                          </div>
+                          <div className="rounded-md border border-border/60 bg-muted/20 p-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                                <Paperclip className="h-4 w-4" />
+                                Artwork links
+                              </div>
+                              <select
+                                className="h-8 min-w-[220px] rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                                aria-label={`Attach artwork to line item ${index + 1}`}
+                                value=""
+                                onChange={(event) => {
+                                  const selected = attachmentLinkOptions.find((link) => artworkLinkKey(link) === event.target.value);
+                                  if (selected) addArtworkLinkToLineItem(index, selected);
+                                }}
+                                disabled={actionPending || attachmentLinkOptions.length === 0}
+                              >
+                                <option value="">Attach stored file...</option>
+                                {attachmentLinkOptions.map((link) => (
+                                  <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>{link.filename || link.fileId}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {activeArtworkLinks.length === 0 ? (
+                                <span className="text-xs text-muted-foreground">No artwork linked.</span>
+                              ) : activeArtworkLinks.map((link) => (
+                                <Badge key={artworkLinkKey(link)} variant="secondary" className="gap-1">
+                                  {link.filename || link.fileId}
+                                  <button type="button" className="ml-1 text-muted-foreground hover:text-foreground" onClick={() => removeArtworkLinkFromLineItem(index, link)} aria-label={`Remove ${link.filename || link.fileId}`}>
+                                    <XCircle className="h-3 w-3" />
+                                  </button>
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                          <OrderEntryField label="Line item notes">
+                            <Textarea className="min-h-[60px]" value={lineItem.notes ?? ""} onChange={(event) => updateLineItem(index, { notes: trimToNull(event.target.value) })} />
+                          </OrderEntryField>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+
+            <DocumentMetaCard contentClassName="p-3">
+              <OrderEntrySectionTitle title="Attachments" count={inboundFiles.length} />
+              <div className="mt-3 grid gap-3 xl:grid-cols-3">
+                {[
+                  { title: "Artwork", files: artworkFiles },
+                  { title: "PO Documents", files: poFiles },
+                  { title: "Other Attachments", files: otherFiles },
+                ].map((group) => (
+                  <div key={group.title} className="rounded-md border border-border/60 bg-background/40 p-2">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.title}</div>
+                      <Badge variant="outline">{group.files.length}</Badge>
+                    </div>
+                    <div className="space-y-1.5">
+                      {group.files.length === 0 ? (
+                        <div className="text-xs text-muted-foreground">None</div>
+                      ) : group.files.map((file) => {
+                        const downloadUrl = file.fileRecordId && selectedRecord
+                          ? `/api/inbound-orders/${encodeURIComponent(selectedRecord.id)}/files/${encodeURIComponent(file.id)}/download`
+                          : null;
+                        return (
+                          <div key={file.id} className="rounded-md border border-border bg-muted/20 px-2 py-1.5">
+                            <div className="truncate text-xs font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
+                            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                              <span>{formatFileSize(file.sizeBytes)}</span>
+                              <span>{file.mimeType || "unknown"}</span>
+                              {downloadUrl && (
+                                <a className="text-primary underline" href={downloadUrl} target="_blank" rel="noreferrer">Open</a>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 rounded-md border border-border/60 bg-muted/20 p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Unassigned Attachments</div>
+                  <Badge variant="outline">{unassignedArtworkLinks.length}</Badge>
+                </div>
+                <div className="mt-2 space-y-2">
+                  {unassignedArtworkLinks.length === 0 ? (
+                    <div className="text-xs text-muted-foreground">No unassigned artwork candidates.</div>
+                  ) : unassignedArtworkLinks.map((link) => (
+                    <div key={artworkLinkKey(link)} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background px-2 py-1.5">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-foreground">{link.filename || link.fileId}</div>
+                        <div className="text-xs text-muted-foreground">{describeArtworkLink(link)}</div>
+                      </div>
+                      <select
+                        className="h-8 min-w-[220px] rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                        aria-label={`Assign ${link.filename || link.fileId} to line item`}
+                        value=""
+                        onChange={(event) => {
+                          const targetIndex = Number(event.target.value);
+                          if (Number.isInteger(targetIndex) && targetIndex >= 0) addArtworkLinkToLineItem(targetIndex, link);
+                        }}
+                        disabled={actionPending || form.reviewedLineItemsJson.length === 0}
+                      >
+                        <option value="">Assign to line...</option>
+                        {form.reviewedLineItemsJson.map((lineItem, lineItemIndex) => (
+                          <option key={lineItemIndex} value={lineItemIndex}>Line {lineItemIndex + 1}: {lineItem.productName || lineItem.sourceText || "Untitled"}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-[180px_1fr]">
+                  <OrderEntryField label="Artwork status">
+                    <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedArtworkJson.status} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: event.target.value as ReviewDraftFormState["reviewedArtworkJson"]["status"] } })}>
+                      <option value="supplied">Supplied</option>
+                      <option value="to_follow">To follow</option>
+                      <option value="missing">Missing</option>
+                      <option value="not_required">Not required</option>
+                    </select>
+                  </OrderEntryField>
+                  <OrderEntryField label="Artwork notes">
+                    <Input value={form.reviewedArtworkJson.notes ?? ""} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, notes: trimToNull(event.target.value) } })} />
+                  </OrderEntryField>
+                </div>
+              </div>
+              <span className="sr-only">Artwork / References</span>
+            </DocumentMetaCard>
+
+            {(unsupportedRequests.length > 0 || form.missingDecisionsJson.length > 0 || form.warningsJson.length > 0) && (
+              <DocumentMetaCard contentClassName="p-3">
+                <div className="grid gap-3 xl:grid-cols-3">
+                  <div>
+                    <OrderEntrySectionTitle title="Unsupported Requests" count={unsupportedRequests.length} />
+                    <div className="mt-2 space-y-2">
+                      {unsupportedRequests.length === 0 ? (
+                        <div className="text-xs text-muted-foreground">None</div>
+                      ) : unsupportedRequests.map((finding, index) => (
+                        <div key={`${finding.category}-${index}`} className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-sm font-medium text-foreground">{finding.requestedText}</div>
+                            <Badge variant="outline">Review Required</Badge>
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">{finding.reason}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">{finding.suggestedAction}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <OrderEntrySectionTitle title="Missing Decisions" count={form.missingDecisionsJson.length} />
+                    <div className="mt-2 space-y-2">
+                      {form.missingDecisionsJson.length === 0 ? (
+                        <div className="text-xs text-muted-foreground">None</div>
+                      ) : form.missingDecisionsJson.map((decision, index) => (
+                        <div key={decision.field} className="rounded-md border border-border bg-muted/20 px-2 py-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-sm font-medium text-foreground">{decision.label}</div>
+                            <Badge variant={decision.severity === "blocking" ? "destructive" : "outline"}>{titleCase(decision.severity)}</Badge>
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">{decision.reason}</div>
+                          <div className="mt-2 grid gap-2">
+                            <select className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground" value={decision.status} onChange={(event) => updateDecision(index, { status: event.target.value as ReviewDraftFormState["missingDecisionsJson"][number]["status"] })}>
+                              <option value="resolved">Resolved</option>
+                              <option value="acknowledged">Acknowledged</option>
+                              <option value="still_blocking">Still blocking</option>
+                            </select>
+                            <Input value={decision.resolutionNote ?? ""} onChange={(event) => updateDecision(index, { resolutionNote: trimToNull(event.target.value) })} placeholder="Resolution note" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <OrderEntrySectionTitle title="Warnings" count={form.warningsJson.length} />
+                    <div className="mt-2 space-y-2">
+                      {form.warningsJson.length === 0 ? (
+                        <div className="text-xs text-muted-foreground">None</div>
+                      ) : form.warningsJson.map((warning, index) => (
+                        <div key={`${warning.code}-${index}`} className="rounded-md border border-border bg-muted/20 px-2 py-1.5">
+                          <div className="text-sm font-medium text-foreground">{warning.code}</div>
+                          <div className="text-xs text-muted-foreground">{warning.message}</div>
+                          <label className="mt-2 flex items-center gap-2 text-sm text-foreground">
+                            <input type="checkbox" checked={warning.acknowledged} onChange={(event) => updateWarning(index, { acknowledged: event.target.checked })} />
+                            Acknowledged
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </DocumentMetaCard>
+            )}
+
+            {reviewDraft.customerIntelligenceJson && (
+              <DocumentMetaCard contentClassName="p-0">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm font-medium text-foreground"
+                  onClick={() => setCustomerIntelligenceExpanded((current) => !current)}
+                  aria-expanded={customerIntelligenceExpanded}
+                >
+                  Customer Intelligence
+                  <ChevronDown className={cn("h-4 w-4 transition-transform", customerIntelligenceExpanded && "rotate-180")} />
+                </button>
+                {customerIntelligenceExpanded && (
+                  <div className="border-t border-border/60 p-3">
+                    <CustomerIntelligencePanel intelligence={reviewDraft.customerIntelligenceJson} />
+                  </div>
+                )}
+              </DocumentMetaCard>
+            )}
+          </>
+        ) : (
+          <>
         <section className="rounded-md border border-border p-3">
           <h3 className="text-sm font-semibold text-foreground">Customer</h3>
           <div className="mt-3 grid grid-cols-1 gap-3">
@@ -3002,6 +3514,8 @@ function DraftBuilderPanel({
             )}
           </div>
         </section>
+          </>
+        )}
 
         {validationErrors.length > 0 && (
           <section className="rounded-md border border-destructive/30 bg-destructive/10 p-3">
