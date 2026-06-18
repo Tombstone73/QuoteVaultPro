@@ -317,6 +317,24 @@ export const inboundOrderReviewedOrderSchema = z.object({
   customerNotes: nullableTextSchema.default(null),
 });
 
+export const inboundOrderArtworkLinkSourceValues = ["ai_suggested", "staff_selected", "staff_removed", "unresolved"] as const;
+export const inboundOrderArtworkLinkSourceSchema = z.enum(inboundOrderArtworkLinkSourceValues);
+
+export const inboundOrderArtworkAttachmentRoleValues = ["artwork", "po", "other"] as const;
+export const inboundOrderArtworkAttachmentRoleSchema = z.enum(inboundOrderArtworkAttachmentRoleValues);
+
+export const inboundOrderArtworkLinkSchema = z.object({
+  fileId: z.string().trim().min(1),
+  fileRecordId: z.string().trim().min(1).nullable().default(null),
+  filename: z.string().trim().max(512).nullable().default(null),
+  mimeType: z.string().trim().max(255).nullable().default(null),
+  sizeBytes: z.number().int().min(0).nullable().default(null),
+  role: inboundOrderArtworkAttachmentRoleSchema.default("artwork"),
+  source: inboundOrderArtworkLinkSourceSchema.default("ai_suggested"),
+  confidence: z.number().min(0).max(100).nullable().default(null),
+  reason: z.string().trim().max(1000).nullable().default(null),
+});
+
 export const inboundOrderReviewedLineItemSchema = z.object({
   sourceLineItemId: z.string().trim().min(1).nullable().default(null),
   sourceText: z.string().trim().max(5000).nullable().default(null),
@@ -366,6 +384,7 @@ export const inboundOrderReviewedLineItemSchema = z.object({
     confidence: z.number().min(0).max(100),
     reason: z.string().trim().min(1).max(1000),
   })).default([]),
+  artworkLinks: z.array(inboundOrderArtworkLinkSchema).default([]),
   notes: nullableTextSchema.default(null),
 });
 
@@ -377,6 +396,7 @@ export const inboundOrderReviewedArtworkSchema = z.object({
     likelyLineItemIndex: z.number().int().min(0).nullable().default(null),
     purpose: z.enum(["artwork", "proof", "reference", "unknown"]).default("unknown"),
   })).default([]),
+  unassignedAttachments: z.array(inboundOrderArtworkLinkSchema).default([]),
   notes: nullableTextSchema.default(null),
 });
 
@@ -428,6 +448,7 @@ export type InboundOrderReviewValueSource = z.infer<typeof inboundOrderReviewVal
 export type InboundOrderReviewDraftPayload = z.infer<typeof inboundOrderReviewDraftPayloadSchema>;
 export type InboundCustomerIntelligenceSummary = z.infer<typeof inboundCustomerIntelligenceSummarySchema>;
 export type InboundOrderUnsupportedRequestFinding = z.infer<typeof inboundOrderUnsupportedRequestFindingSchema>;
+export type InboundOrderArtworkLink = z.infer<typeof inboundOrderArtworkLinkSchema>;
 export type InboundOrderReviewDraftSaveRequest = Omit<z.infer<typeof inboundOrderReviewDraftSaveSchema>, "unsupportedRequestsJson" | "customerIntelligenceJson"> & {
   unsupportedRequestsJson?: InboundOrderUnsupportedRequestFinding[];
   customerIntelligenceJson?: InboundCustomerIntelligenceSummary | null;

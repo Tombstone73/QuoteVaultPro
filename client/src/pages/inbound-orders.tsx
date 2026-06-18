@@ -1563,6 +1563,7 @@ function createBlankReviewLineItem(index: number): ReviewDraftFormState["reviewe
     optionSelectionsJson: null,
     pbv2TreeVersionId: null,
     pbv2OptionSuggestions: [],
+    artworkLinks: [],
     notes: null,
   };
 }

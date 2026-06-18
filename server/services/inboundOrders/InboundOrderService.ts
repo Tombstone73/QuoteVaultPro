@@ -19,6 +19,7 @@ import {
   inboundOrderParsedDraftSchema,
   inboundOrderReviewDraftPayloadSchema,
   type InboundOrderParsedDraft,
+  type InboundOrderArtworkLink,
   type InboundOrderReviewDraftDto,
   type InboundOrderReviewDraftPayload,
   type InboundOrderReviewReadinessScore,
@@ -1135,6 +1136,7 @@ export class InboundOrderService {
       organizationId: args.organizationId,
       record,
       draft: parsedDraft,
+      files: await this.repository.listFiles(args.organizationId, args.inboundRecordId),
     });
     const snapshot = await this.persistEditableReviewDraftSnapshot({
       organizationId: args.organizationId,
@@ -1306,11 +1308,17 @@ export class InboundOrderService {
       throw new InboundOrderTransitionError("Parse the inbound order before refreshing the review draft.", 409);
     }
 
-    const payload = await this.buildEditableReviewDraftFromParse({
-      organizationId: args.organizationId,
-      record,
-      draft: parsedDraft,
-    });
+    const existingSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
+    const existingPayload = existingSnapshot ? this.reviewDraftPayloadFromSnapshot(existingSnapshot) : null;
+    const payload = this.mergeStaffArtworkLinksIntoRefreshedDraft(
+      existingPayload,
+      await this.buildEditableReviewDraftFromParse({
+        organizationId: args.organizationId,
+        record,
+        draft: parsedDraft,
+        files: await this.repository.listFiles(args.organizationId, args.inboundRecordId),
+      }),
+    );
 
     const snapshot = await this.persistEditableReviewDraftSnapshot({
       organizationId: args.organizationId,
@@ -1953,6 +1961,7 @@ export class InboundOrderService {
     organizationId: string;
     record: InboundOrderRecord;
     draft: InboundOrderParsedDraft;
+    files: InboundOrderFile[];
   }): Promise<InboundOrderReviewDraftPayload> {
     const { draft } = args;
     const warnings = [
@@ -1971,7 +1980,7 @@ export class InboundOrderService {
           customerId: customerInterpretation.customerId,
         })
         : null);
-    const reviewedLineItemsJson = [];
+    const reviewedLineItemsJson: InboundOrderReviewDraftPayload["reviewedLineItemsJson"] = [];
     const unsupportedRequestsJson: InboundUnsupportedRequestFinding[] = [];
     for (const lineItem of draft.lineItems) {
       const productInterpretation = await this.interpretLineItemProduct(args.organizationId, lineItem);
@@ -2010,6 +2019,7 @@ export class InboundOrderService {
           optionSelectionsJson: null,
           pbv2TreeVersionId: null,
           pbv2OptionSuggestions: [],
+          artworkLinks: [],
           notes: null,
         });
         if (treeJson) {
@@ -2052,9 +2062,15 @@ export class InboundOrderService {
         optionSelectionsJson,
         pbv2TreeVersionId,
         pbv2OptionSuggestions,
+        artworkLinks: [],
         notes: null,
       });
     }
+    const artworkLinkSuggestions = this.suggestArtworkLinksForReviewDraft({
+      draft,
+      files: args.files,
+      reviewedLineItemsJson,
+    });
 
     return inboundOrderReviewDraftPayloadSchema.parse({
       status: "draft",
@@ -2083,7 +2099,7 @@ export class InboundOrderService {
         internalNotes: draft.order.notes,
         customerNotes: null,
       },
-      reviewedLineItemsJson,
+      reviewedLineItemsJson: artworkLinkSuggestions.reviewedLineItemsJson,
       reviewedArtworkJson: {
         status: hasArtwork ? "supplied" : "missing",
         refs: draft.artwork.map((artwork) => ({
@@ -2092,6 +2108,7 @@ export class InboundOrderService {
           likelyLineItemIndex: artwork.likelyLineItemIndex,
           purpose: artwork.purpose,
         })),
+        unassignedAttachments: artworkLinkSuggestions.unassignedAttachments,
         notes: null,
       },
       missingDecisionsJson: draft.missingDecisions.map((decision) => ({
