@@ -51,6 +51,7 @@ import {
   type CreateOrderLineItemInput,
 } from "../../storage/orders.repo";
 import { priceLineItem } from "../pricing/PricingService";
+import { CustomerIntelligenceService, customerIntelligenceService } from "./CustomerIntelligenceService";
 
 export type InboundQuoteSyncStatus =
   | "quote_missing"
@@ -525,6 +526,9 @@ export class InboundOrderService {
     private readonly repository = inboundOrdersRepository,
     private readonly orderRepository = new OrdersRepository(),
     private readonly priceLineItemFn = priceLineItem,
+    private readonly customerIntelligence = repository === inboundOrdersRepository
+      ? customerIntelligenceService
+      : new CustomerIntelligenceService(repository as any),
   ) {}
 
   async listInboundOrders(args: {
@@ -1960,6 +1964,13 @@ export class InboundOrderService {
     ];
     const hasArtwork = draft.artwork.length > 0 || draft.lineItems.some((lineItem) => lineItem.artworkRefs.length > 0);
     const customerInterpretation = await this.interpretCustomerAndContact(args.organizationId, draft);
+    const customerIntelligenceJson = draft.customerIntelligence
+      ?? (customerInterpretation.customerId
+        ? await this.customerIntelligence.buildSummary({
+          organizationId: args.organizationId,
+          customerId: customerInterpretation.customerId,
+        })
+        : null);
     const reviewedLineItemsJson = [];
     const unsupportedRequestsJson: InboundUnsupportedRequestFinding[] = [];
     for (const lineItem of draft.lineItems) {
@@ -2094,6 +2105,7 @@ export class InboundOrderService {
         acknowledgementNote: null,
       })),
       unsupportedRequestsJson,
+      customerIntelligenceJson,
       reviewNotes: null,
     });
   }
@@ -2130,6 +2142,13 @@ export class InboundOrderService {
 
     const interpreted = await this.interpretCustomerAndContact(args.organizationId, parsedDraft);
     const customer = { ...payload.reviewedCustomerJson };
+    const customerIntelligenceJson = payload.customerIntelligenceJson
+      ?? (customer.selectedCustomerId || interpreted.customerId
+        ? await this.customerIntelligence.buildSummary({
+          organizationId: args.organizationId,
+          customerId: customer.selectedCustomerId ?? interpreted.customerId!,
+        })
+        : null);
     let changed = false;
 
     if (!customer.selectedCustomerId && !customer.unresolvedCustomer && interpreted.customerId) {
@@ -2158,7 +2177,8 @@ export class InboundOrderService {
       changed = true;
     }
 
-    if (!changed) return args.snapshot;
+    const hasNewCustomerIntelligence = !payload.customerIntelligenceJson && Boolean(customerIntelligenceJson);
+    if (!changed && !hasNewCustomerIntelligence) return args.snapshot;
 
     const sourceAttempt = await this.resolveReviewDraftSourceAttempt(
       args.organizationId,
@@ -2175,6 +2195,7 @@ export class InboundOrderService {
       payload: {
         ...payload,
         reviewedCustomerJson: customer,
+        customerIntelligenceJson,
       },
       status: payload.status,
       eventType: "review_draft.interpreted_customer_contact_backfilled",

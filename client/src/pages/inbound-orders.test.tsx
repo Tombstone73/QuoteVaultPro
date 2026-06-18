@@ -368,6 +368,7 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
       acknowledged: false,
     })),
     unsupportedRequestsJson: (parsed as any).unsupportedRequests ?? overrides.unsupportedRequestsJson ?? [],
+    customerIntelligenceJson: overrides.customerIntelligenceJson ?? (parsed as any).customerIntelligence ?? null,
     reviewNotes: null,
     validationErrors: [],
     readinessScore: {
@@ -1295,6 +1296,20 @@ describe("InboundOrdersPage", () => {
           fieldPath: "lineItems.0.quantity",
         }],
       },
+      customerIntelligence: {
+        customer: { id: "customer_1", companyName: "Ada Signs", email: "billing@adasigns.test" },
+        scopeMonths: 24,
+        maxRecords: 50,
+        recordCount: 3,
+        generatedAt: "2026-06-09T12:00:00.000Z",
+        recentProducts: [{ productId: "product_pvc", label: "PVC Signs", lastSeenAt: "2026-05-01T12:00:00.000Z" }],
+        frequentProducts: [{ productId: "product_pvc", label: "PVC Signs", count: 3, lastSeenAt: "2026-05-01T12:00:00.000Z" }],
+        frequentMaterials: [{ label: "3mm White PVC", count: 3, lastSeenAt: "2026-05-01T12:00:00.000Z" }],
+        frequentDimensions: [{ label: "24x36", width: 24, height: 36, unit: "in", count: 3, lastSeenAt: "2026-05-01T12:00:00.000Z" }],
+        frequentFinishing: [{ label: "Contour Cutting: No", count: 2, lastSeenAt: "2026-05-01T12:00:00.000Z" }],
+        commonTerminology: [{ term: "pvc", count: 3 }],
+        recentOrderReferences: [{ sourceType: "order", sourceId: "order_1", reference: "1001", createdAt: "2026-05-01T12:00:00.000Z", productSummary: "PVC Signs" }],
+      },
     });
     const attempt = parseAttempt({ parsedDraft: draft, confidence: 82, warnings: draft.globalWarnings });
     let refreshFromLatestParseCalled = false;
@@ -1349,6 +1364,14 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Option Confidence 90%");
     expect(container.textContent).toContain("Customer 100%");
     expect(container.textContent).toContain("Contact 100%");
+    expect(container.textContent).toContain("Customer Intelligence");
+    expect(container.textContent).toContain("Ada Signs history, last 24 months");
+    expect(container.textContent).toContain("3 records");
+    expect(container.textContent).toContain("Recent Products");
+    expect(container.textContent).toContain("Frequent Products");
+    expect(container.textContent).toContain("Frequent Materials");
+    expect(container.textContent).toContain("Recent Orders");
+    expect(container.textContent).toContain("1001");
     expect(container.textContent).toContain("Brainstorm Print PO.pdf");
     expect(container.textContent).toContain("PO candidate");
     expect(container.textContent).toContain("11.7 KB");

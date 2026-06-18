@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 
+jest.mock("../services/pricing/PricingService", () => ({
+  priceLineItem: jest.fn(),
+}));
+
 import { AiProviderUnavailableError, type AiProviderAdapter } from "../services/ai/providers/AiProviderAdapter";
 import { InboundOrderParsingService } from "../services/inboundOrders/InboundOrderParsingService";
 import { InboundOrderTransitionError } from "../services/inboundOrders/InboundOrderService";
@@ -223,6 +227,53 @@ describe("InboundOrderParsingService", () => {
     expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
     expect(repo.matchCustomerWithEvent).not.toHaveBeenCalled();
     expect(repo.matchLineItemProductWithEvent).not.toHaveBeenCalled();
+  });
+
+  test("adds compact customer intelligence to parse prompts and stored parsed drafts when customer resolution is confident", async () => {
+    const { repo, attempts } = makeRepository();
+    const provider = makeProvider(JSON.stringify(parsedDraft()));
+    const summary = {
+      customer: { id: "customer_1", companyName: "Ada Signs", email: "billing@example.com" },
+      scopeMonths: 24,
+      maxRecords: 50,
+      recordCount: 2,
+      generatedAt: "2026-06-09T12:00:00.000Z",
+      recentProducts: [{ productId: "product_1", label: "Vinyl Banner", lastSeenAt: "2026-05-01T12:00:00.000Z" }],
+      frequentProducts: [{ productId: "product_1", label: "Vinyl Banner", count: 2, lastSeenAt: "2026-05-01T12:00:00.000Z" }],
+      frequentMaterials: [{ label: "13oz Vinyl", count: 2, lastSeenAt: "2026-05-01T12:00:00.000Z" }],
+      frequentDimensions: [{ label: "24x36", width: 24, height: 36, unit: "in", count: 2, lastSeenAt: "2026-05-01T12:00:00.000Z" }],
+      frequentFinishing: [],
+      commonTerminology: [{ term: "banner", count: 2 }],
+      recentOrderReferences: [{ sourceType: "order", sourceId: "order_1", reference: "1001", createdAt: "2026-05-01T12:00:00.000Z", productSummary: "Vinyl Banner" }],
+    };
+    const customerIntelligence = {
+      buildSummaryForSourceEvidence: jest.fn(async () => summary),
+      buildSummaryForParsedDraft: jest.fn(async () => summary),
+    };
+    const evidenceService = {
+      buildEvidenceBundle: jest.fn(async () => ({ items: [], conflicts: [] })),
+    };
+    const service = new InboundOrderParsingService(repo as any, () => provider, evidenceService as any, customerIntelligence as any);
+
+    await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(customerIntelligence.buildSummaryForSourceEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1",
+      senderEmail: "ada@example.com",
+      senderName: "Ada Lovelace",
+    }));
+    expect(provider.generateJson).toHaveBeenCalledWith(expect.objectContaining({
+      user: expect.stringContaining("Customer intelligence summary"),
+    }));
+    expect(attempts[0].parsedDraft.customerIntelligence).toMatchObject({
+      customer: { id: "customer_1", companyName: "Ada Signs" },
+      frequentProducts: [expect.objectContaining({ label: "Vinyl Banner" })],
+    });
+    expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
   });
 
   test("stores a failed attempt when the provider is unavailable and preserves source evidence", async () => {

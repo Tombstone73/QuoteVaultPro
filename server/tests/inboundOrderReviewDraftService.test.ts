@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 
+jest.mock("../services/pricing/PricingService", () => ({
+  priceLineItem: jest.fn(),
+}));
+
 import {
   InboundOrderReviewDraftValidationError,
   InboundOrderService,
@@ -245,6 +249,23 @@ function makeRepository(record = inboundRecord(), latestAttempt = parseAttempt()
       return [];
     }),
     searchProductCandidates: jest.fn(async () => []),
+    listCustomerHistoricalContext: jest.fn(async () => [{
+      sourceType: "order",
+      sourceId: "order_1",
+      reference: "1001",
+      createdAt: "2026-05-10T12:00:00.000Z",
+      productId: "product_pvc",
+      productName: "PVC Signs",
+      description: "PVC Signs 24x36 3mm White PVC",
+      width: "24.00",
+      height: "36.00",
+      quantity: 3,
+      specsJson: { material: "3mm White PVC" },
+      optionSelectionsJson: null,
+      selectedOptions: [{ optionName: "Contour Cutting", value: "No" }],
+      materialUsages: [{ materialName: "3mm White PVC" }],
+      materialUsageJson: null,
+    }]),
     claimInboundOrderForOrderConversion: jest.fn(async () => {
       if (currentRecord.status !== "ready" || currentRecord.createdOrderId || currentRecord.createdQuoteId) return null;
       currentRecord = { ...currentRecord, status: "processing", reviewOutcome: "order_conversion_requested" };
@@ -496,6 +517,60 @@ describe("InboundOrderService editable review draft", () => {
     });
     expect(snapshots[0].payloadJson.metadata.snapshotKind).toBe("editable_review_draft");
     expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
+  });
+
+  test("persists customer intelligence on initialized review drafts", async () => {
+    const { repo, snapshots } = makeRepository();
+    const service = new InboundOrderService(repo as any);
+
+    const draft = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(draft.customerIntelligenceJson).toMatchObject({
+      customer: { id: "customer_1", companyName: "Brainstorm Print" },
+      recordCount: 1,
+      frequentProducts: [expect.objectContaining({ label: "PVC Signs", count: 1 })],
+      frequentMaterials: [expect.objectContaining({ label: "3mm White PVC", count: 1 })],
+      recentOrderReferences: [expect.objectContaining({ sourceType: "order", reference: "1001" })],
+    });
+    expect(snapshots[0].payloadJson.customerIntelligenceJson).toEqual(draft.customerIntelligenceJson);
+    expect(repo.listCustomerHistoricalContext).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1",
+      customerId: "customer_1",
+    }));
+    expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
+  });
+
+  test("leaves customer intelligence empty when no customer is resolved", async () => {
+    const attempt = parseAttempt({
+      parsedDraft: parsedDraft({
+        customer: {
+          ...parsedDraft().customer,
+          candidateCustomerIds: [],
+          candidateContactIds: [],
+          customerCandidates: [],
+          contactCandidates: [],
+          companyName: "Unknown Buyer",
+          sourceEmail: "unknown@example.com",
+        },
+      }),
+    });
+    const { repo } = makeRepository(inboundRecord(), attempt);
+    repo.searchCustomers.mockResolvedValue([]);
+    const service = new InboundOrderService(repo as any);
+
+    const draft = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(draft.reviewedCustomerJson.selectedCustomerId).toBeNull();
+    expect(draft.customerIntelligenceJson).toBeNull();
+    expect(repo.listCustomerHistoricalContext).not.toHaveBeenCalled();
   });
 
   test("leaves low-confidence product candidates unresolved instead of selecting the first candidate", async () => {
