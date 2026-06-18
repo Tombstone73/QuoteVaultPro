@@ -315,6 +315,7 @@ describe("inbound email pull diagnostics service", () => {
         downloadAttempts: 0,
         storedFileRowsCreated: 0,
         metadataOnlyRowsCreated: 0,
+        skippedReason: "attachment_candidates_discovered_but_no_ingestion_event_recorded",
       }),
     }));
     expect(result.subjectSearch.found).toBe(true);
@@ -371,6 +372,61 @@ describe("inbound email pull diagnostics service", () => {
       downloadAttempts: 0,
       storedFileRowsCreated: 0,
       metadataOnlyRowsCreated: 0,
+      skippedReason: "attachment_candidates_discovered_but_no_ingestion_event_recorded",
+    }));
+  });
+
+  test("reports an explicit reason when candidates exist without processing attempts", async () => {
+    const service = new InboundOrderService({
+      getEmailPullDiagnostics: jest.fn(async () => ({
+        mailboxes: [],
+        ignoreRules: [],
+        recentCreatedRecords: [{
+          id: "inbound_email_1",
+          status: "needs_review",
+          reviewOutcome: null,
+          subject: "654898 new po",
+          sourceMessageId: "gmail_msg_654898",
+          attachmentCount: 0,
+          rawAttachmentCount: 2,
+          rawAttachmentMetadata: [
+            { filename: "654898 new po.pdf", attachmentId: "att_654898_po" },
+            { filename: "654898 artwork.pdf", attachmentId: "att_654898_art" },
+          ],
+          bodyText: "Attached PO.",
+          bodyHtml: null,
+        }],
+        recentFiles: [],
+        recentFailedDiagnostics: [],
+        recentPullDiagnostics: [{
+          inboundRecordId: "inbound_email_1",
+          eventType: "email.attachment_ingestion_diagnostics",
+          metadataJson: {
+            attachmentPartsDiscovered: 2,
+            attachmentCandidatesDiscovered: 2,
+            attachmentIdsDiscovered: ["att_654898_po", "att_654898_art"],
+            attachmentPartsAttempted: 0,
+            downloadAttempts: 0,
+            storedRowsCreated: 0,
+            metadataOnlyRowsCreated: 0,
+          },
+        }],
+        recentIgnoredDiagnostics: [],
+        subjectRecords: [],
+        subjectFiles: [],
+        subjectPullDiagnostics: [],
+      })),
+    } as any);
+
+    const result = await service.getEmailPullDiagnostics({
+      organizationId: "org_1",
+      subject: "654898 new po",
+    });
+
+    expect(result.recentCreatedInboundRecords[0].attachmentPipelineDiagnostics).toEqual(expect.objectContaining({
+      attachmentCandidatesDiscovered: 2,
+      attachmentPartsAttempted: 0,
+      skippedReason: "attachment_candidates_discovered_but_not_processed",
     }));
   });
 

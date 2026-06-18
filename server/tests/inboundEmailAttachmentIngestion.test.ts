@@ -562,6 +562,144 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     }));
   });
 
+  test("processes candidates recovered from normalizedPayloadJson", async () => {
+    const { service, storage, createdFiles, events } = serviceHarness();
+    const recordWithNormalizedAttachment = {
+      ...record,
+      normalizedPayloadJson: {
+        attachments: [{
+          filename: "654898 new po.pdf",
+          mimeType: "application/pdf",
+          size: 6,
+          attachmentId: "att_654898_normalized",
+        }],
+      },
+    };
+
+    await (service as any).ingestAttachments({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      mailbox,
+      message: message({ subject: "654898 new po", attachments: [] }),
+      record: recordWithNormalizedAttachment,
+      adapter: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+      },
+      skippedReason: null,
+    });
+
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      providerAttachmentId: "att_654898_normalized",
+      status: "available",
+    }));
+    expect(events.find((event) => event.eventType === "email.attachment_ingestion_diagnostics")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        attachmentCandidatesDiscovered: 1,
+        attachmentPartsAttempted: 1,
+        downloadAttempts: 1,
+        storedRowsCreated: 1,
+      }),
+    }));
+  });
+
+  test("processes candidates recovered from extractedOrderJson", async () => {
+    const { service, storage, createdFiles, events } = serviceHarness();
+    const recordWithExtractedAttachment = {
+      ...record,
+      extractedOrderJson: {
+        attachments: [{
+          sourceFilename: "654898 artwork.tiff",
+          mimeType: "image/tiff",
+          sizeBytes: 9,
+          providerAttachmentId: "att_654898_extracted",
+        }],
+      },
+    };
+
+    await (service as any).ingestAttachments({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      mailbox,
+      message: message({ subject: "654898 new po", attachments: [] }),
+      record: recordWithExtractedAttachment,
+      adapter: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("TIFF"), mimeType: "image/tiff", sizeBytes: 4 })),
+      },
+      skippedReason: null,
+    });
+
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      providerAttachmentId: "att_654898_extracted",
+      status: "available",
+    }));
+    expect(events.find((event) => event.eventType === "email.attachment_ingestion_diagnostics")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        attachmentCandidatesDiscovered: 1,
+        attachmentPartsAttempted: 1,
+        downloadAttempts: 1,
+        storedRowsCreated: 1,
+      }),
+    }));
+  });
+
+  test("recovers Gmail payload candidates before duplicate backfill processing", async () => {
+    const { repo, storage, createdFiles, events } = serviceHarness();
+    repo.listFiles.mockResolvedValueOnce([]);
+    const service = new InboundEmailIngestionService(duplicateDbHarness(record) as any, {}, repo as any, storage as any);
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => []),
+      getMessagePayloadDiagnostics: jest.fn(async () => ({
+        messageId: "gmail_msg_1",
+        payloadTree: null,
+        extractedAttachmentCount: 1,
+        extractedAttachments: [{
+          filename: "654898 new po.pdf",
+          mimeType: "application/pdf",
+          size: 8,
+          attachmentId: "att_654898",
+        }],
+      })),
+      downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+    };
+
+    const outcome = await (service as any).processMessage(
+      "org_1",
+      "user_1",
+      mailbox,
+      { id: "source_1" },
+      message({ subject: "654898 new po", attachments: [] }),
+      adapter,
+    );
+
+    expect(outcome).toEqual({ status: "skippedDuplicates" });
+    expect(adapter.getMessagePayloadDiagnostics).toHaveBeenCalledWith(mailbox, "gmail_msg_1");
+    expect(adapter.downloadAttachment).toHaveBeenCalledWith(
+      mailbox,
+      expect.objectContaining({
+        subject: "654898 new po",
+        attachments: [expect.objectContaining({ attachmentId: "att_654898" })],
+      }),
+      expect.objectContaining({ attachmentId: "att_654898" }),
+    );
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      providerAttachmentId: "att_654898",
+      status: "available",
+    }));
+    expect(events.find((event) => event.eventType === "email.attachment_ingestion_diagnostics")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        attachmentCandidatesDiscovered: 1,
+        attachmentPartsAttempted: 1,
+        downloadAttempts: 1,
+        storedRowsCreated: 1,
+      }),
+    }));
+  });
+
   test("does not duplicate attachments for duplicate Gmail records that already have provider files", async () => {
     const { repo, storage, events } = serviceHarness();
     repo.listFiles.mockResolvedValueOnce([{

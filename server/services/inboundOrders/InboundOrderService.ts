@@ -410,6 +410,12 @@ function positiveNumberFromUnknown(value: unknown): number | null {
   return numeric;
 }
 
+function nonNegativeNumberFromUnknown(value: unknown): number | null {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return null;
+  return numeric;
+}
+
 function positiveIntegerFromUnknown(value: unknown): number | null {
   const numeric = positiveNumberFromUnknown(value);
   if (numeric == null) return null;
@@ -558,12 +564,28 @@ function buildAttachmentPipelineDiagnostics(
   const attachmentIds = Array.isArray(metadata.attachmentIdsDiscovered)
     ? metadata.attachmentIdsDiscovered.filter((item): item is string => typeof item === "string")
     : extractAttachmentIdsFromRawMetadata(rawMetadata);
+  const hasIngestionDiagnosticsEvent = Boolean(latestEvent);
+  const gmailPartsDiscovered = nonNegativeNumberFromUnknown(metadata.attachmentPartsDiscovered)
+    ?? nonNegativeNumberFromUnknown(record.rawAttachmentCount)
+    ?? 0;
+  const attachmentCandidatesDiscovered = nonNegativeNumberFromUnknown(metadata.attachmentCandidatesDiscovered)
+    ?? nonNegativeNumberFromUnknown(metadata.attachmentPartsDiscovered)
+    ?? nonNegativeNumberFromUnknown(record.rawAttachmentCount)
+    ?? 0;
+  const attachmentPartsAttempted = nonNegativeNumberFromUnknown(metadata.attachmentPartsAttempted) ?? 0;
+  const skippedReason = metadata.skippedReason ?? (
+    attachmentCandidatesDiscovered > 0 && attachmentPartsAttempted === 0
+      ? hasIngestionDiagnosticsEvent
+        ? "attachment_candidates_discovered_but_not_processed"
+        : "attachment_candidates_discovered_but_no_ingestion_event_recorded"
+      : null
+  );
 
   return sanitizeDiagnosticRow({
-    gmailPartsDiscovered: metadata.attachmentPartsDiscovered ?? record.rawAttachmentCount ?? 0,
-    attachmentCandidatesDiscovered: metadata.attachmentCandidatesDiscovered ?? metadata.attachmentPartsDiscovered ?? record.rawAttachmentCount ?? 0,
+    gmailPartsDiscovered,
+    attachmentCandidatesDiscovered,
     attachmentIdsDiscovered: attachmentIds,
-    attachmentPartsAttempted: metadata.attachmentPartsAttempted ?? 0,
+    attachmentPartsAttempted,
     downloadAttempts: metadata.downloadAttempts ?? 0,
     downloadSuccesses: metadata.downloadSuccesses ?? 0,
     downloadFailures: metadata.downloadFailures ?? fileFailures.length,
@@ -571,7 +593,7 @@ function buildAttachmentPipelineDiagnostics(
     storedFileRowsCreated: metadata.storedRowsCreated ?? storedFromFiles,
     attachmentRowsCreated: metadata.attachmentRowsCreated ?? recordFiles.length,
     skippedExistingProviderAttachments: metadata.skippedExistingProviderAttachments ?? 0,
-    skippedReason: metadata.skippedReason ?? null,
+    skippedReason,
     failures: [...eventFailures, ...fileFailures],
   });
 }
