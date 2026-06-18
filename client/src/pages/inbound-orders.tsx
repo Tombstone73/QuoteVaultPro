@@ -1648,11 +1648,15 @@ function OperationalEmailPanel({
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                         <span>{file.mimeType || "unknown type"}</span>
                         <span>{formatFileSize(file.sizeBytes)}</span>
+                        <span>Status: {titleCase(file.status)}</span>
                         <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
                           {inboundAttachmentRoleLabel(file.role)}
                         </Badge>
                         {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
                       </div>
+                      {file.reviewNotes && (
+                        <div className="mt-1 text-xs text-muted-foreground">{file.reviewNotes}</div>
+                      )}
                     </div>
                     {downloadUrl && (
                       <div className="flex shrink-0 gap-2">
