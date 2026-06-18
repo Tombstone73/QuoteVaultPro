@@ -450,6 +450,7 @@ describe("inbound order routes", () => {
   };
   const inboundEmailIngestionService = {
     pullLatestEmails: jest.fn<(...args: any[]) => Promise<any>>(),
+    getGmailPayloadDiagnosticsForSubject: jest.fn<(...args: any[]) => Promise<any>>(),
   };
   const inboundEmailMailboxSettingsService = {
     listMailboxes: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -733,8 +734,23 @@ describe("inbound order routes", () => {
         },
       },
     }));
+    inboundEmailIngestionService.getGmailPayloadDiagnosticsForSubject.mockResolvedValue([{
+      inboundRecordId: "active_1",
+      sourceMessageId: "gmail_msg_1",
+      extractedAttachmentCount: 1,
+      payloadTree: {
+        partId: null,
+        mimeType: "multipart/mixed",
+        filenamePresent: false,
+        filename: null,
+        attachmentIdPresent: false,
+        bodySize: null,
+        headers: { contentType: null, contentDisposition: null, contentId: null },
+        childParts: [],
+      },
+    }]);
 
-    const response = await request(buildApp(service))
+    const response = await request(buildApp(service, { inboundEmailIngestionService }))
       .get("/api/inbound-orders/email/pull-diagnostics?subject=Purchase%20Order%20No%20151753%20Titan%20Compass%20ACM%20Sign%206_18_26");
 
     expect(response.status).toBe(200);
@@ -746,10 +762,21 @@ describe("inbound order routes", () => {
       "archived_1",
     ]);
     expect(response.body.data.subjectSearch.matchingFiles[0].sourceFilename).toContain("Titan Compass");
+    expect(response.body.data.subjectSearch.gmailPayloadDiagnostics[0]).toMatchObject({
+      inboundRecordId: "active_1",
+      sourceMessageId: "gmail_msg_1",
+      extractedAttachmentCount: 1,
+    });
     expect(service.getEmailPullDiagnostics).toHaveBeenCalledWith({
       organizationId: "org_1",
       subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
     });
+    expect(inboundEmailIngestionService.getGmailPayloadDiagnosticsForSubject).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+      limit: 3,
+    });
+    expect(inboundEmailIngestionService.pullLatestEmails).not.toHaveBeenCalled();
   });
 
   test("email pull diagnostics handles no mailbox configured", async () => {

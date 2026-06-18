@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { google } from "googleapis";
 
 import { db } from "../db";
@@ -31,6 +31,21 @@ export type InboundEmailAttachmentContent = {
   buffer: Buffer;
   mimeType: string | null;
   sizeBytes: number;
+};
+
+export type GmailPayloadPartDiagnostic = {
+  partId: string | null;
+  mimeType: string | null;
+  filenamePresent: boolean;
+  filename: string | null;
+  attachmentIdPresent: boolean;
+  bodySize: number | null;
+  headers: {
+    contentType: string | null;
+    contentDisposition: string | null;
+    contentId: string | null;
+  };
+  childParts: GmailPayloadPartDiagnostic[];
 };
 
 export type InboundEmailProviderMessage = {
@@ -66,6 +81,10 @@ type AttachmentIngestionDiagnostics = {
 
 export interface InboundEmailProviderAdapter {
   listRecentMessages(mailbox: InboundEmailMailbox, limit: number): Promise<InboundEmailProviderMessage[]>;
+  getMessagePayloadDiagnostics?(
+    mailbox: InboundEmailMailbox,
+    messageId: string,
+  ): Promise<{ messageId: string; payloadTree: GmailPayloadPartDiagnostic | null; extractedAttachmentCount: number; extractedAttachments: InboundEmailAttachmentMetadata[] }>;
   downloadAttachment?(
     mailbox: InboundEmailMailbox,
     message: InboundEmailProviderMessage,
@@ -331,11 +350,45 @@ export function extractGmailBodyAndAttachments(part: any): { text: string; html:
       html += decodeBase64Url(body.data);
     }
 
-    for (const child of node.parts ?? []) visit(child);
+    for (const child of [
+      ...(Array.isArray(node.parts) ? node.parts : []),
+      ...(node.payload ? [node.payload] : []),
+      ...(node.body?.payload ? [node.body.payload] : []),
+    ]) visit(child);
   };
 
   visit(part);
   return { text: text.trim(), html: html.trim(), attachments };
+}
+
+export function summarizeGmailPayloadPart(part: any): GmailPayloadPartDiagnostic | null {
+  if (!part) return null;
+  const headers = headerMapFromUnknown(part.headers);
+  const body = part.body ?? {};
+  const bodySize = Number(body.size);
+  const filename = stringFromUnknown(part.filename)
+    ?? parseHeaderParameter(headerValue(headers, "content-disposition"), "filename")
+    ?? parseHeaderParameter(headerValue(headers, "content-type"), "name");
+  return {
+    partId: part.partId ? String(part.partId) : null,
+    mimeType: part.mimeType ? String(part.mimeType) : null,
+    filenamePresent: Boolean(filename),
+    filename,
+    attachmentIdPresent: Boolean(body.attachmentId),
+    bodySize: Number.isFinite(bodySize) ? bodySize : null,
+    headers: {
+      contentType: headerValue(headers, "content-type"),
+      contentDisposition: headerValue(headers, "content-disposition"),
+      contentId: headerValue(headers, "content-id"),
+    },
+    childParts: [
+      ...(Array.isArray(part.parts) ? part.parts : []),
+      ...(part.payload ? [part.payload] : []),
+      ...(part.body?.payload ? [part.body.payload] : []),
+    ]
+      .map((child: any) => summarizeGmailPayloadPart(child))
+      .filter((child: GmailPayloadPartDiagnostic | null): child is GmailPayloadPartDiagnostic => Boolean(child)),
+  };
 }
 
 export function classifyInboundEmailAttachment(attachment: Pick<InboundEmailAttachmentMetadata, "filename" | "mimeType">): {
@@ -484,6 +537,21 @@ export class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
     return results;
   }
 
+  async getMessagePayloadDiagnostics(
+    mailbox: InboundEmailMailbox,
+    messageId: string,
+  ): Promise<{ messageId: string; payloadTree: GmailPayloadPartDiagnostic | null; extractedAttachmentCount: number; extractedAttachments: InboundEmailAttachmentMetadata[] }> {
+    const gmail = this.buildGmailClient(mailbox);
+    const detail = await gmail.users.messages.get({ userId: "me", id: messageId, format: "full" });
+    const extracted = extractGmailBodyAndAttachments(detail.data.payload);
+    return {
+      messageId,
+      payloadTree: summarizeGmailPayloadPart(detail.data.payload),
+      extractedAttachmentCount: extracted.attachments.length,
+      extractedAttachments: extracted.attachments,
+    };
+  }
+
   async downloadAttachment(
     mailbox: InboundEmailMailbox,
     message: InboundEmailProviderMessage,
@@ -627,6 +695,102 @@ export class InboundEmailIngestionService {
     }
 
     return { summary, createdRecordIds, mailboxResults };
+  }
+
+  async getGmailPayloadDiagnosticsForSubject(args: {
+    organizationId: string;
+    subject: string;
+    limit?: number;
+  }): Promise<Array<Record<string, unknown>>> {
+    const subject = args.subject.trim();
+    if (!subject) return [];
+    const pattern = `%${subject.replace(/[%_]/g, "\\$&")}%`;
+    const limit = Math.max(1, Math.min(5, Math.round(Number(args.limit ?? 3))));
+    const rows = await this.dbInstance
+      .select({
+        inboundRecordId: inboundOrderRecords.id,
+        sourceMessageId: inboundOrderRecords.sourceMessageId,
+        subject: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'subject', ${inboundOrderRecords.normalizedPayloadJson}->>'subject', ${inboundOrderRecords.extractedOrderJson}->>'subject', ${inboundOrderRecords.externalReference})`,
+        mailboxId: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->'mailbox'->>'id', ${inboundOrderRecords.normalizedPayloadJson}->'source'->>'mailboxId')`,
+        mailboxEmail: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->'mailbox'->>'emailAddress', ${inboundOrderRecords.normalizedPayloadJson}->'source'->>'mailboxEmail')`,
+      })
+      .from(inboundOrderRecords)
+      .where(and(
+        eq(inboundOrderRecords.organizationId, args.organizationId),
+        eq(inboundOrderRecords.sourceType, "email"),
+        sql`(
+          ${inboundOrderRecords.externalReference} ilike ${pattern}
+          or ${inboundOrderRecords.sourceMessageId} ilike ${pattern}
+          or ${inboundOrderRecords.rawPayloadJson}::text ilike ${pattern}
+          or ${inboundOrderRecords.normalizedPayloadJson}::text ilike ${pattern}
+          or ${inboundOrderRecords.extractedOrderJson}::text ilike ${pattern}
+        )`,
+      ))
+      .limit(limit);
+    if (rows.length === 0) return [];
+
+    const mailboxes = await this.dbInstance
+      .select()
+      .from(inboundEmailMailboxes)
+      .where(eq(inboundEmailMailboxes.organizationId, args.organizationId));
+
+    const diagnostics: Array<Record<string, unknown>> = [];
+    for (const row of rows) {
+      const sourceMessageId = String(row.sourceMessageId ?? "").trim();
+      if (!sourceMessageId) {
+        diagnostics.push({
+          inboundRecordId: row.inboundRecordId,
+          sourceMessageId: null,
+          subject: row.subject,
+          diagnosticError: "Inbound record has no sourceMessageId.",
+        });
+        continue;
+      }
+      const mailbox = mailboxes.find((candidate) => (
+        (row.mailboxId && candidate.id === row.mailboxId)
+        || (row.mailboxEmail && candidate.emailAddress.toLowerCase() === row.mailboxEmail.toLowerCase())
+      )) ?? mailboxes.find((candidate) => candidate.provider === "gmail" && candidate.enabled) ?? null;
+      if (!mailbox) {
+        diagnostics.push({
+          inboundRecordId: row.inboundRecordId,
+          sourceMessageId,
+          subject: row.subject,
+          diagnosticError: "No inbound Gmail mailbox was found for this record.",
+        });
+        continue;
+      }
+      const adapter = this.adapterByProvider[mailbox.provider];
+      if (!adapter?.getMessagePayloadDiagnostics) {
+        diagnostics.push({
+          inboundRecordId: row.inboundRecordId,
+          sourceMessageId,
+          subject: row.subject,
+          mailboxId: mailbox.id,
+          diagnosticError: "Inbound provider does not support safe payload diagnostics.",
+        });
+        continue;
+      }
+      try {
+        const payloadDiagnostics = await adapter.getMessagePayloadDiagnostics(mailbox, sourceMessageId);
+        diagnostics.push({
+          inboundRecordId: row.inboundRecordId,
+          sourceMessageId,
+          subject: row.subject,
+          mailboxId: mailbox.id,
+          mailboxEmail: mailbox.emailAddress,
+          ...payloadDiagnostics,
+        });
+      } catch (error) {
+        diagnostics.push({
+          inboundRecordId: row.inboundRecordId,
+          sourceMessageId,
+          subject: row.subject,
+          mailboxId: mailbox.id,
+          diagnosticError: error instanceof Error ? error.message : "Failed to fetch Gmail payload diagnostics.",
+        });
+      }
+    }
+    return diagnostics;
   }
 
   private async ensureSourceForMailbox(mailbox: InboundEmailMailbox): Promise<InboundOrderSource> {

@@ -278,6 +278,35 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
               { id: "file_1", sourceFilename: "po-151753.pdf", role: "po", status: "available" },
             ] : [],
             matchingIgnoreRules: [],
+            gmailPayloadDiagnostics: hasSubject ? [{
+              inboundRecordId: "inbound_email_1",
+              sourceMessageId: "gmail_msg_1",
+              subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+              extractedAttachmentCount: 1,
+              payloadTree: {
+                partId: null,
+                mimeType: "multipart/mixed",
+                filenamePresent: false,
+                filename: null,
+                attachmentIdPresent: false,
+                bodySize: null,
+                headers: { contentType: "multipart/mixed", contentDisposition: null, contentId: null },
+                childParts: [{
+                  partId: "1",
+                  mimeType: "application/pdf",
+                  filenamePresent: true,
+                  filename: "visual-po.pdf",
+                  attachmentIdPresent: true,
+                  bodySize: 4096,
+                  headers: {
+                    contentType: "application/pdf; name=\"visual-po.pdf\"",
+                    contentDisposition: "attachment; filename=\"visual-po.pdf\"",
+                    contentId: null,
+                  },
+                  childParts: [],
+                }],
+              },
+            }] : [],
             duplicateDetection: {
               durableSkippedMessageLogsStored: false,
               possibleDuplicateRecords: [],
@@ -513,6 +542,10 @@ describe("EmailSettings inbound mailbox settings", () => {
     await waitForText("Found");
     await waitForText("po-151753.pdf");
     await waitForText("duplicate_message_attachment_backfill");
+    await waitForText("Sanitized Gmail Payload Shape");
+    await waitForText("Extracted attachments: 1");
+    expect(container.textContent).toContain("application/pdf");
+    expect(container.textContent).toContain("Attachment ID present: true");
     expect(apiFetchMock.mock.calls.some(([url]) => (
       String(url) === "/api/inbound-orders/email/pull-diagnostics?subject=Purchase%20Order%20No%20151753%20Titan%20Compass%20ACM%20Sign%206_18_26"
     ))).toBe(true);
