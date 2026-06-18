@@ -905,6 +905,7 @@ export class InboundEmailIngestionService {
     message: InboundEmailProviderMessage,
     adapter: InboundEmailProviderAdapter,
   ): Promise<{ status: "created"; recordId: string } | { status: "skippedDuplicates" | "ignored"; recordId?: never }> {
+    message = await this.messageWithRecoveredProviderAttachments(mailbox, message, adapter);
     const idempotencyKey = `${message.provider}:${message.messageId}`;
     const [existing] = await this.dbInstance
       .select({ id: inboundOrderRecords.id })
@@ -1173,6 +1174,29 @@ export class InboundEmailIngestionService {
     ]);
   }
 
+  private async messageWithRecoveredProviderAttachments(
+    mailbox: InboundEmailMailbox,
+    message: InboundEmailProviderMessage,
+    adapter: InboundEmailProviderAdapter,
+  ): Promise<InboundEmailProviderMessage> {
+    if (message.attachments.length > 0 || !adapter.getMessagePayloadDiagnostics) return message;
+    try {
+      const payloadDiagnostics = await adapter.getMessagePayloadDiagnostics(mailbox, message.messageId);
+      if (payloadDiagnostics.extractedAttachments.length === 0) return message;
+      return {
+        ...message,
+        attachments: dedupeAttachmentCandidates(payloadDiagnostics.extractedAttachments),
+      };
+    } catch (error) {
+      console.warn("[Inbound Email Pull] Failed to recover Gmail attachment candidates from full payload", {
+        mailboxId: mailbox.id,
+        messageId: message.messageId,
+        error: error instanceof Error ? error.message : "Unknown Gmail payload recovery error.",
+      });
+      return message;
+    }
+  }
+
   private async ingestAttachments(args: {
     organizationId: string;
     actorUserId: string;
@@ -1228,6 +1252,7 @@ export class InboundEmailIngestionService {
       };
 
       try {
+        diagnostics.attachmentPartsAttempted += 1;
         if (providerAttachmentId) {
           const existing = await this.inboundRepository.findFileByProviderAttachment({
             organizationId: args.organizationId,
@@ -1241,7 +1266,6 @@ export class InboundEmailIngestionService {
           }
         }
 
-        diagnostics.attachmentPartsAttempted += 1;
         if (!classification.safeToDownload || !args.adapter.downloadAttachment || !providerAttachmentId) {
           const unsupportedMimeReason = classification.safeToDownload ? null : classification.reason;
           const failureReason = !classification.safeToDownload
