@@ -372,6 +372,7 @@ function cloneReviewDraft(draft: InboundOrderReviewDraftDto): ReviewDraftFormSta
     missingDecisionsJson: draft.missingDecisionsJson,
     warningsJson: draft.warningsJson,
     unsupportedRequestsJson: draft.unsupportedRequestsJson ?? [],
+    customerIntelligenceJson: draft.customerIntelligenceJson ?? null,
     reviewNotes: draft.reviewNotes,
   })) as ReviewDraftFormState;
 }
@@ -555,6 +556,63 @@ function CandidateList({
         </div>
       )}
     </div>
+  );
+}
+
+function CustomerIntelligencePanel({ intelligence }: { intelligence: InboundOrderReviewDraftDto["customerIntelligenceJson"] }) {
+  if (!intelligence) {
+    return (
+      <section className="rounded-md border border-border p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-foreground">Customer Intelligence</h3>
+          <Badge variant="outline">No customer</Badge>
+        </div>
+        <div className="mt-2 text-sm text-muted-foreground">Select or resolve a customer to show historical context.</div>
+      </section>
+    );
+  }
+
+  const renderList = (
+    title: string,
+    items: Array<{ label?: string; reference?: string; productSummary?: string | null; count?: number }>,
+    empty: string,
+  ) => (
+    <div className="min-w-0 rounded-md bg-muted/20 px-3 py-2">
+      <div className="text-xs font-medium text-muted-foreground">{title}</div>
+      {items.length === 0 ? (
+        <div className="mt-2 text-xs text-muted-foreground">{empty}</div>
+      ) : (
+        <div className="mt-2 space-y-1">
+          {items.slice(0, 4).map((item, index) => (
+            <div key={`${title}-${index}`} className="min-w-0 text-sm text-foreground">
+              <span className="truncate">{item.label ?? item.reference}</span>
+              {item.count != null && <span className="ml-1 text-xs text-muted-foreground">x{item.count}</span>}
+              {item.productSummary && <div className="truncate text-xs text-muted-foreground">{item.productSummary}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <section className="rounded-md border border-border p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-foreground">Customer Intelligence</h3>
+          <div className="text-xs text-muted-foreground">
+            {intelligence.customer.companyName} history, last {intelligence.scopeMonths} months
+          </div>
+        </div>
+        <Badge variant="outline">{intelligence.recordCount} records</Badge>
+      </div>
+      <div className="mt-3 grid grid-cols-1 gap-2 xl:grid-cols-2">
+        {renderList("Recent Products", intelligence.recentProducts, "No recent products found.")}
+        {renderList("Frequent Products", intelligence.frequentProducts, "No frequent products found.")}
+        {renderList("Frequent Materials", intelligence.frequentMaterials, "No frequent materials found.")}
+        {renderList("Recent Orders", intelligence.recentOrderReferences, "No recent orders or quotes found.")}
+      </div>
+    </section>
   );
 }
 
@@ -1989,6 +2047,8 @@ function DraftBuilderPanel({
             <span>Artwork {reviewDraft.readinessScore.artwork.label}</span>
           </div>
         </section>
+
+        <CustomerIntelligencePanel intelligence={reviewDraft.customerIntelligenceJson ?? null} />
 
         <FieldSourceSection draft={draft} />
 

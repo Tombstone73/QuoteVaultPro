@@ -160,6 +160,58 @@ export const inboundOrderEvidenceItemSchema = z.object({
 const confidenceSchema = z.number().min(0).max(100).default(0);
 const stringArraySchema = z.array(z.string().trim().min(1).max(500)).default([]);
 
+export const inboundCustomerIntelligenceSummarySchema = z.object({
+  customer: z.object({
+    id: z.string().trim().min(1),
+    companyName: z.string().trim().max(255),
+    email: z.string().trim().max(255).nullable().default(null),
+  }),
+  scopeMonths: z.number().int().positive().default(24),
+  maxRecords: z.number().int().positive().default(50),
+  recordCount: z.number().int().min(0).default(0),
+  generatedAt: z.string().trim().min(1),
+  recentProducts: z.array(z.object({
+    productId: z.string().trim().min(1).nullable().default(null),
+    label: z.string().trim().min(1).max(255),
+    lastSeenAt: z.string().trim().max(80).nullable().default(null),
+  })).default([]),
+  frequentProducts: z.array(z.object({
+    productId: z.string().trim().min(1).nullable().default(null),
+    label: z.string().trim().min(1).max(255),
+    count: z.number().int().min(1),
+    lastSeenAt: z.string().trim().max(80).nullable().default(null),
+  })).default([]),
+  frequentMaterials: z.array(z.object({
+    label: z.string().trim().min(1).max(255),
+    count: z.number().int().min(1),
+    lastSeenAt: z.string().trim().max(80).nullable().default(null),
+  })).default([]),
+  frequentDimensions: z.array(z.object({
+    label: z.string().trim().min(1).max(120),
+    width: z.number().positive().nullable().default(null),
+    height: z.number().positive().nullable().default(null),
+    unit: z.string().trim().max(40).nullable().default(null),
+    count: z.number().int().min(1),
+    lastSeenAt: z.string().trim().max(80).nullable().default(null),
+  })).default([]),
+  frequentFinishing: z.array(z.object({
+    label: z.string().trim().min(1).max(255),
+    count: z.number().int().min(1),
+    lastSeenAt: z.string().trim().max(80).nullable().default(null),
+  })).default([]),
+  commonTerminology: z.array(z.object({
+    term: z.string().trim().min(1).max(120),
+    count: z.number().int().min(1),
+  })).default([]),
+  recentOrderReferences: z.array(z.object({
+    sourceType: z.enum(["order", "quote"]),
+    sourceId: z.string().trim().min(1),
+    reference: z.string().trim().min(1).max(120),
+    createdAt: z.string().trim().max(80).nullable().default(null),
+    productSummary: z.string().trim().max(255).nullable().default(null),
+  })).default([]),
+});
+
 export const inboundOrderParsedDraftSchema = z.object({
   customer: z.object({
     sourceName: z.string().trim().max(255).nullable().default(null),
@@ -217,6 +269,7 @@ export const inboundOrderParsedDraftSchema = z.object({
     items: z.array(inboundOrderEvidenceItemSchema).default([]),
     conflicts: z.array(inboundOrderParseWarningSchema).default([]),
   }).default({ items: [], conflicts: [] }),
+  customerIntelligence: inboundCustomerIntelligenceSummarySchema.nullable().default(null),
 });
 
 export const inboundOrderReviewDraftStatusValues = ["draft", "ready_to_convert", "rejected"] as const;
@@ -360,6 +413,7 @@ export const inboundOrderReviewDraftPayloadSchema = z.object({
   missingDecisionsJson: z.array(inboundOrderReviewedMissingDecisionSchema).default([]),
   warningsJson: z.array(inboundOrderReviewedWarningSchema).default([]),
   unsupportedRequestsJson: z.array(inboundOrderUnsupportedRequestFindingSchema).default([]),
+  customerIntelligenceJson: inboundCustomerIntelligenceSummarySchema.nullable().default(null),
   reviewNotes: nullableTextSchema.default(null),
 });
 
@@ -372,9 +426,11 @@ export type InboundOrderReviewDecisionStatus = z.infer<typeof inboundOrderReview
 export type InboundOrderArtworkReviewStatus = z.infer<typeof inboundOrderArtworkReviewStatusSchema>;
 export type InboundOrderReviewValueSource = z.infer<typeof inboundOrderReviewValueSourceSchema>;
 export type InboundOrderReviewDraftPayload = z.infer<typeof inboundOrderReviewDraftPayloadSchema>;
+export type InboundCustomerIntelligenceSummary = z.infer<typeof inboundCustomerIntelligenceSummarySchema>;
 export type InboundOrderUnsupportedRequestFinding = z.infer<typeof inboundOrderUnsupportedRequestFindingSchema>;
-export type InboundOrderReviewDraftSaveRequest = Omit<z.infer<typeof inboundOrderReviewDraftSaveSchema>, "unsupportedRequestsJson"> & {
+export type InboundOrderReviewDraftSaveRequest = Omit<z.infer<typeof inboundOrderReviewDraftSaveSchema>, "unsupportedRequestsJson" | "customerIntelligenceJson"> & {
   unsupportedRequestsJson?: InboundOrderUnsupportedRequestFinding[];
+  customerIntelligenceJson?: InboundCustomerIntelligenceSummary | null;
 };
 
 export type InboundOrderReviewReadinessScore = {

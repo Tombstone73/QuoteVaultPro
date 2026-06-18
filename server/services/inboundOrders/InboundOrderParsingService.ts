@@ -26,6 +26,7 @@ import {
   type InboundOrderEvidenceBundle,
 } from "./InboundOrderEvidenceService";
 import { inferInboundRequestedDate } from "./inboundOrderDateInference";
+import { CustomerIntelligenceService } from "./CustomerIntelligenceService";
 
 const INBOUND_ORDER_PARSE_PROMPT_VERSION = "inbound-order-parse-v1";
 
@@ -155,6 +156,7 @@ export class InboundOrderParsingService {
     private readonly repository = inboundOrdersRepository,
     private readonly providerFactory: () => AiProviderAdapter | null = createConfiguredAiProvider,
     private readonly evidenceService = inboundOrderEvidenceService,
+    private readonly customerIntelligence = new CustomerIntelligenceService(repository as any),
   ) {}
 
   async parseInboundOrderRecord(args: {
@@ -240,12 +242,13 @@ export class InboundOrderParsingService {
         : this.repairInboundOrderParseResult(rawObject, record);
       const refinedDraft = this.refineParsedDraft(record, repaired.draft, evidenceBundle);
       const draftWithCandidates = await this.addCandidateMatches(args.organizationId, refinedDraft);
-      const score = this.scoreInboundOrderParseResult(draftWithCandidates);
+      const draftWithCustomerIntelligence = await this.attachCustomerIntelligence(args.organizationId, draftWithCandidates);
+      const score = this.scoreInboundOrderParseResult(draftWithCustomerIntelligence);
       const finalWarnings = [
-        ...draftWithCandidates.globalWarnings,
+        ...draftWithCustomerIntelligence.globalWarnings,
         ...repaired.warnings,
       ];
-      const finalStatus = this.resolveParsedRecordStatus(draftWithCandidates, score);
+      const finalStatus = this.resolveParsedRecordStatus(draftWithCustomerIntelligence, score);
       const attemptStatus = repaired.repaired ? "repaired" : "success";
 
       const attempt = await this.storeAttemptAndUpdateRecord({
@@ -262,7 +265,7 @@ export class InboundOrderParsingService {
           rawPromptHash,
           rawResponse: this.responseForStorage(response, rawObject),
           repairedResponse: repaired.repairedResponse,
-          parsedDraft: draftWithCandidates,
+          parsedDraft: draftWithCustomerIntelligence,
           confidence: score,
           warnings: finalWarnings,
           errors: [],
@@ -378,6 +381,12 @@ export class InboundOrderParsingService {
       })),
       evidenceConflicts: bundle.conflicts,
     };
+    const customerIntelligence = await this.customerIntelligence.buildSummaryForSourceEvidence({
+      organizationId,
+      senderEmail: evidence.senderEmail,
+      senderName: evidence.senderName,
+      companyName: evidence.senderName,
+    });
 
     return {
       system: [
@@ -390,6 +399,7 @@ export class InboundOrderParsingService {
         "Think like a print CSR: flag missing size, quantity, artwork, material, and other decisions that block accurate order entry.",
         "Treat purchase order attachments as highest-priority evidence, then other PDF/text attachment content, then email body, then subject.",
         "If email text conflicts with a purchase order attachment, preserve the purchase order value and return a warning.",
+        "Customer history context is advisory only. It can explain familiar terminology, but explicit source evidence always wins.",
       ].join(" "),
       user: [
         "Return exactly one JSON object with this shape:",
@@ -435,6 +445,9 @@ export class InboundOrderParsingService {
         "",
         "Source evidence:",
         JSON.stringify(sourceEvidence),
+        "",
+        "Customer intelligence summary, if any. This is summarized history, not source evidence:",
+        JSON.stringify(customerIntelligence),
       ].join("\n"),
     };
   }
@@ -804,6 +817,12 @@ export class InboundOrderParsingService {
       },
       lineItems,
     };
+  }
+
+  private async attachCustomerIntelligence(organizationId: string, draft: InboundOrderParsedDraft): Promise<InboundOrderParsedDraft> {
+    if (draft.customerIntelligence) return draft;
+    const summary = await this.customerIntelligence.buildSummaryForParsedDraft({ organizationId, draft });
+    return summary ? { ...draft, customerIntelligence: summary } : draft;
   }
 
   private resolveParsedRecordStatus(draft: InboundOrderParsedDraft, score: number): InboundOrderRecordStatus {

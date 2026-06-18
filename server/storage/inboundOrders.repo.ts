@@ -16,6 +16,8 @@ import {
   inboundOrderSources,
   inboundOrderWarnings,
   materials,
+  orderLineItems,
+  orders,
   pbv2TreeVersions,
   productVariants,
   products,
@@ -184,6 +186,24 @@ export type InboundProductSearchResult = {
   pricingMode: string | null;
   pbv2ActiveTreeVersionId: string | null;
   isActive: boolean;
+};
+
+export type InboundCustomerHistoricalContextRow = {
+  sourceType: "order" | "quote";
+  sourceId: string;
+  reference: string | null;
+  createdAt: Date | string | null;
+  productId: string | null;
+  productName: string | null;
+  description: string | null;
+  width: string | number | null;
+  height: string | number | null;
+  quantity: number | null;
+  specsJson: Record<string, any> | null;
+  optionSelectionsJson: any;
+  selectedOptions: Array<Record<string, any>> | null;
+  materialUsages: Array<Record<string, any>> | null;
+  materialUsageJson: Array<Record<string, any>> | null;
 };
 
 export type InboundCandidateResult = {
@@ -1175,6 +1195,73 @@ export class InboundOrdersRepository {
       product,
       activeTree: activeTree ?? null,
     };
+  }
+
+  async listCustomerHistoricalContext(args: {
+    organizationId: string;
+    customerId: string;
+    since: Date;
+    maxRecords: number;
+  }): Promise<InboundCustomerHistoricalContextRow[]> {
+    const orderRows = await this.dbInstance
+      .select({
+        sourceType: sql<"order">`'order'`,
+        sourceId: orders.id,
+        reference: sql<string | null>`coalesce(${orders.displayNumber}, ${orders.orderNumber})`,
+        createdAt: orders.createdAt,
+        productId: orderLineItems.productId,
+        productName: orderLineItems.description,
+        description: orderLineItems.description,
+        width: orderLineItems.width,
+        height: orderLineItems.height,
+        quantity: orderLineItems.quantity,
+        specsJson: orderLineItems.specsJson,
+        optionSelectionsJson: orderLineItems.optionSelectionsJson,
+        selectedOptions: orderLineItems.selectedOptions,
+        materialUsages: orderLineItems.materialUsages,
+        materialUsageJson: orderLineItems.materialUsageJson,
+      })
+      .from(orders)
+      .innerJoin(orderLineItems, eq(orderLineItems.orderId, orders.id))
+      .where(and(
+        eq(orders.organizationId, args.organizationId),
+        eq(orders.customerId, args.customerId),
+        sql`${orders.createdAt} >= ${args.since}`,
+      ))
+      .orderBy(desc(orders.createdAt))
+      .limit(args.maxRecords);
+
+    const quoteRows = await this.dbInstance
+      .select({
+        sourceType: sql<"quote">`'quote'`,
+        sourceId: quotes.id,
+        reference: sql<string | null>`coalesce(${quotes.displayNumber}, ${quotes.quoteNumber}::text, ${quotes.id})`,
+        createdAt: quotes.createdAt,
+        productId: quoteLineItems.productId,
+        productName: quoteLineItems.productName,
+        description: quoteLineItems.description,
+        width: quoteLineItems.width,
+        height: quoteLineItems.height,
+        quantity: quoteLineItems.quantity,
+        specsJson: quoteLineItems.specsJson,
+        optionSelectionsJson: quoteLineItems.optionSelectionsJson,
+        selectedOptions: quoteLineItems.selectedOptions,
+        materialUsages: quoteLineItems.materialUsages,
+        materialUsageJson: sql<Array<Record<string, any>> | null>`null`,
+      })
+      .from(quotes)
+      .innerJoin(quoteLineItems, eq(quoteLineItems.quoteId, quotes.id))
+      .where(and(
+        eq(quotes.organizationId, args.organizationId),
+        eq(quotes.customerId, args.customerId),
+        sql`${quotes.createdAt} >= ${args.since}`,
+      ))
+      .orderBy(desc(quotes.createdAt))
+      .limit(args.maxRecords);
+
+    return [...orderRows, ...quoteRows]
+      .sort((left, right) => new Date(right.createdAt ?? 0).getTime() - new Date(left.createdAt ?? 0).getTime())
+      .slice(0, args.maxRecords);
   }
 
   async searchCustomerCandidates(args: {
