@@ -157,12 +157,16 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       actorUserId: "user_1",
       mailbox,
       message: message({
+        bodyText: "Artwork & Visual PO:",
         attachments: [{
-          filename: "Purchase Order 151661.pdf",
+          filename: "visual-proof.pdf",
           mimeType: "application/pdf",
           size: 11,
           attachmentId: "att_1",
           contentDisposition: "attachment",
+          contentId: "<visual-proof>",
+          partId: "1.2",
+          detectedBy: ["filename", "attachmentId", "content-disposition:attachment"],
         }],
       }),
       record,
@@ -176,6 +180,18 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       providerAttachmentId: "att_1",
       providerMessageId: "gmail_msg_1",
       fileRecordId: "file_record_1",
+      contentDisposition: "attachment",
+    }));
+    expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+      providerAttachmentId: "att_1",
+      providerMessageId: "gmail_msg_1",
+      contentDisposition: "attachment",
+      contentId: "<visual-proof>",
+      gmailPartId: "1.2",
+      detectedBy: ["filename", "attachmentId", "content-disposition:attachment"],
+      sourceHint: "Artwork & Visual PO",
+      poCandidate: true,
+      artworkCandidate: true,
     }));
     expect(events[0]).toEqual(expect.objectContaining({ eventType: "email.attachment_stored" }));
   });
@@ -242,5 +258,44 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       downloadError: "Gmail attachment unavailable",
     }));
     expect(events[0]).toEqual(expect.objectContaining({ eventType: "email.attachment_failed" }));
+  });
+
+  test("stores metadata-only row when Gmail exposes an attachment part without a download id", async () => {
+    const { service, storage, createdFiles } = serviceHarness();
+
+    await (service as any).ingestAttachments({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      mailbox,
+      message: message({
+        attachments: [{
+          filename: "calendar.invite",
+          mimeType: "application/octet-stream",
+          size: 512,
+          attachmentId: null,
+          contentDisposition: "attachment; filename=\"calendar.invite\"",
+          detectedBy: ["filename", "content-disposition:attachment", "mimeType"],
+        }],
+      }),
+      record,
+      adapter: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("x"), mimeType: "application/octet-stream", sizeBytes: 1 })),
+      },
+    });
+
+    expect(storage.finalizeUpload).not.toHaveBeenCalled();
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      role: "email_attachment",
+      status: "uploaded",
+      fileRecordId: null,
+      providerAttachmentId: null,
+      contentDisposition: "attachment; filename=\"calendar.invite\"",
+      reviewNotes: "Attachment type is not supported for automatic download.",
+    }));
+    expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+      detectedBy: ["filename", "content-disposition:attachment", "mimeType"],
+      safeToDownload: false,
+    }));
   });
 });

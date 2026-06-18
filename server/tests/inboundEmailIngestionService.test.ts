@@ -2,8 +2,13 @@ import { describe, expect, test } from "@jest/globals";
 
 import {
   classifyInboundEmailForReview,
+  extractGmailBodyAndAttachments,
   type InboundEmailProviderMessage,
 } from "../services/inboundEmailIngestionService";
+
+function base64Url(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
 
 function message(overrides: Partial<InboundEmailProviderMessage>): InboundEmailProviderMessage {
   return {
@@ -57,5 +62,151 @@ describe("inbound email ingestion classifier", () => {
     }));
 
     expect(result).toMatchObject({ ignored: true, intent: "UNKNOWN" });
+  });
+});
+
+describe("Gmail MIME attachment extraction", () => {
+  test("captures a top-level Gmail attachment part", () => {
+    const result = extractGmailBodyAndAttachments({
+      mimeType: "multipart/mixed",
+      parts: [
+        {
+          partId: "0",
+          mimeType: "text/plain",
+          body: { data: base64Url("Please see attached PO.") },
+        },
+        {
+          partId: "1",
+          filename: "Purchase Order 151753.pdf",
+          mimeType: "application/pdf",
+          headers: [{ name: "Content-Disposition", value: "attachment; filename=\"Purchase Order 151753.pdf\"" }],
+          body: { attachmentId: "att_po", size: 1200 },
+        },
+      ],
+    });
+
+    expect(result.text).toBe("Please see attached PO.");
+    expect(result.attachments).toEqual([
+      expect.objectContaining({
+        filename: "Purchase Order 151753.pdf",
+        mimeType: "application/pdf",
+        attachmentId: "att_po",
+        contentDisposition: "attachment; filename=\"Purchase Order 151753.pdf\"",
+        detectedBy: expect.arrayContaining(["filename", "attachmentId", "content-disposition:attachment", "mimeType"]),
+      }),
+    ]);
+  });
+
+  test("recursively captures nested multipart attachments", () => {
+    const result = extractGmailBodyAndAttachments({
+      mimeType: "multipart/mixed",
+      parts: [
+        {
+          mimeType: "multipart/alternative",
+          parts: [
+            { mimeType: "text/plain", body: { data: base64Url("Artwork & Visual PO: attached") } },
+            { mimeType: "text/html", body: { data: base64Url("<p>Artwork & Visual PO: attached</p>") } },
+            {
+              partId: "0.2",
+              filename: "visual-po.pdf",
+              mimeType: "application/pdf",
+              headers: [{ name: "Content-Disposition", value: "attachment; filename=\"visual-po.pdf\"" }],
+              body: { attachmentId: "nested_att", size: 9800 },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(result.text).toBe("Artwork & Visual PO: attached");
+    expect(result.attachments).toEqual([
+      expect.objectContaining({
+        filename: "visual-po.pdf",
+        attachmentId: "nested_att",
+        partId: "0.2",
+      }),
+    ]);
+  });
+
+  test("captures inline attachment parts with filenames and attachment ids", () => {
+    const result = extractGmailBodyAndAttachments({
+      mimeType: "multipart/related",
+      parts: [
+        { mimeType: "text/html", body: { data: base64Url("<img src=\"cid:proof-1\">") } },
+        {
+          partId: "1",
+          filename: "proof.png",
+          mimeType: "image/png",
+          headers: [
+            { name: "Content-Disposition", value: "inline; filename=\"proof.png\"" },
+            { name: "Content-ID", value: "<proof-1>" },
+          ],
+          body: { attachmentId: "inline_att", size: 2048 },
+        },
+      ],
+    });
+
+    expect(result.attachments).toEqual([
+      expect.objectContaining({
+        filename: "proof.png",
+        mimeType: "image/png",
+        attachmentId: "inline_att",
+        contentId: "<proof-1>",
+        detectedBy: expect.arrayContaining(["content-disposition:inline", "content-id"]),
+      }),
+    ]);
+  });
+
+  test("recursively captures attachment parts inside forwarded message payloads", () => {
+    const result = extractGmailBodyAndAttachments({
+      mimeType: "multipart/mixed",
+      parts: [
+        { mimeType: "text/plain", body: { data: base64Url("Forwarded order below.") } },
+        {
+          mimeType: "message/rfc822",
+          parts: [
+            {
+              mimeType: "multipart/mixed",
+              parts: [
+                {
+                  partId: "forwarded-1",
+                  mimeType: "application/pdf",
+                  headers: [
+                    { name: "Content-Type", value: "application/pdf; name=\"forwarded-po.pdf\"" },
+                    { name: "Content-Disposition", value: "attachment" },
+                  ],
+                  body: { attachmentId: "forwarded_att", size: 4096 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(result.attachments).toEqual([
+      expect.objectContaining({
+        filename: "forwarded-po.pdf",
+        attachmentId: "forwarded_att",
+        partId: "forwarded-1",
+      }),
+    ]);
+  });
+
+  test("creates fallback filenames for attachment ids with no Gmail filename", () => {
+    const result = extractGmailBodyAndAttachments({
+      partId: "root",
+      mimeType: "application/pdf",
+      headers: [{ name: "Content-Disposition", value: "inline" }],
+      body: { attachmentId: "nameless_att", size: 128 },
+    });
+
+    expect(result.attachments).toEqual([
+      expect.objectContaining({
+        filename: "attachment-root.pdf",
+        attachmentId: "nameless_att",
+        detectedBy: expect.arrayContaining(["attachmentId", "content-disposition:inline", "mimeType"]),
+      }),
+    ]);
   });
 });

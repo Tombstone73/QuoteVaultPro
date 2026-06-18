@@ -22,6 +22,9 @@ export type InboundEmailAttachmentMetadata = {
   size: number | null;
   attachmentId?: string | null;
   contentDisposition?: string | null;
+  contentId?: string | null;
+  partId?: string | null;
+  detectedBy?: string[];
 };
 
 export type InboundEmailAttachmentContent = {
@@ -118,6 +121,35 @@ function decodeBase64Url(value: string | null | undefined): string {
   return Buffer.from(normalized, "base64").toString("utf8");
 }
 
+function headerMapFromUnknown(headers: unknown): Map<string, string> {
+  const map = new Map<string, string>();
+  if (!Array.isArray(headers)) return map;
+  for (const header of headers) {
+    const name = String((header as any)?.name ?? "").trim().toLowerCase();
+    if (!name) continue;
+    map.set(name, String((header as any)?.value ?? ""));
+  }
+  return map;
+}
+
+function headerValue(headers: Map<string, string>, name: string): string | null {
+  return stringFromUnknown(headers.get(name.toLowerCase()));
+}
+
+function parseHeaderParameter(header: string | null | undefined, parameter: string): string | null {
+  if (!header) return null;
+  const escaped = parameter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const extended = header.match(new RegExp(`${escaped}\\*\\s*=\\s*(?:"([^"]+)"|([^;]+))`, "i"));
+  const raw = extended?.[1] ?? extended?.[2] ?? header.match(new RegExp(`${escaped}\\s*=\\s*(?:"([^"]+)"|([^;]+))`, "i"))?.[1] ?? header.match(new RegExp(`${escaped}\\s*=\\s*(?:"([^"]+)"|([^;]+))`, "i"))?.[2] ?? null;
+  const value = stringFromUnknown(raw?.replace(/^UTF-8''/i, ""));
+  if (!value) return null;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function parseAddress(value: string | null | undefined): { name: string | null; email: string | null } {
   const raw = String(value ?? "").trim();
   if (!raw) return { name: null, email: null };
@@ -161,6 +193,133 @@ function getExtension(value: string | null | undefined): string {
   return match?.[1] ?? "";
 }
 
+function extensionFromMimeType(mimeType: string | null | undefined): string {
+  const normalized = String(mimeType ?? "").toLowerCase();
+  if (normalized.includes("pdf")) return "pdf";
+  if (normalized.includes("jpeg")) return "jpg";
+  if (normalized.includes("png")) return "png";
+  if (normalized.includes("tiff")) return "tif";
+  if (normalized.includes("svg")) return "svg";
+  if (normalized.includes("zip")) return "zip";
+  if (normalized.includes("postscript")) return "eps";
+  if (normalized.includes("plain")) return "txt";
+  if (normalized.includes("csv")) return "csv";
+  return "bin";
+}
+
+function fallbackAttachmentFilename(args: {
+  filename: string | null;
+  mimeType: string | null;
+  contentId: string | null;
+  partId: string | null;
+  attachmentId: string | null;
+  index: number;
+}): string {
+  if (args.filename) return normalizeAttachmentFileName(args.filename);
+  const ext = extensionFromMimeType(args.mimeType);
+  const contentId = normalizeAttachmentFileName(args.contentId?.replace(/^<|>$/g, "") ?? "");
+  if (contentId && contentId !== "attachment") {
+    return contentId.includes(".") ? contentId : `${contentId}.${ext}`;
+  }
+  const stableId = normalizeAttachmentFileName(args.partId ?? args.attachmentId ?? String(args.index + 1));
+  return `attachment-${stableId}.${ext}`;
+}
+
+function isLikelyAttachmentMime(mimeType: string): boolean {
+  const normalized = mimeType.toLowerCase();
+  if (!normalized || normalized.startsWith("multipart/")) return false;
+  if (normalized === "text/plain" || normalized === "text/html") return false;
+  if (normalized === "message/rfc822") return false;
+  return (
+    normalized.startsWith("image/")
+    || normalized.includes("pdf")
+    || normalized.includes("zip")
+    || normalized.includes("postscript")
+    || normalized.includes("illustrator")
+    || normalized.includes("svg")
+    || normalized.includes("octet-stream")
+    || normalized.includes("msword")
+    || normalized.includes("officedocument")
+  );
+}
+
+function detectAttachmentSourceHint(message: Pick<InboundEmailProviderMessage, "subject" | "bodyText" | "bodyHtml">): string | null {
+  const text = [message.subject, message.bodyText, message.bodyHtml].filter(Boolean).join("\n").slice(0, 20000);
+  if (/\bartwork\s*(?:&|and)\s*visual\s*po\b/i.test(text)) return "Artwork & Visual PO";
+  if (/\bartwork\b.{0,80}\bpo\b/i.test(text)) return "Artwork referenced near PO";
+  if (/\bvisual\s*po\b/i.test(text)) return "Visual PO";
+  return null;
+}
+
+export function extractGmailBodyAndAttachments(part: any): { text: string; html: string; attachments: InboundEmailAttachmentMetadata[] } {
+  let text = "";
+  let html = "";
+  const attachments: InboundEmailAttachmentMetadata[] = [];
+
+  const visit = (node: any) => {
+    if (!node) return;
+    const mimeType = String(node.mimeType ?? "");
+    const body = node.body ?? {};
+    const headers = headerMapFromUnknown(node.headers);
+    const contentDisposition = headerValue(headers, "content-disposition");
+    const contentType = headerValue(headers, "content-type");
+    const contentId = headerValue(headers, "content-id");
+    const attachmentId = body.attachmentId ? String(body.attachmentId) : null;
+    const headerFilename = parseHeaderParameter(contentDisposition, "filename")
+      ?? parseHeaderParameter(contentType, "name");
+    const gmailFilename = stringFromUnknown(node.filename);
+    const filename = gmailFilename ?? headerFilename;
+    const partId = node.partId ? String(node.partId) : null;
+    const bodySize = Number(body.size);
+    const size = Number.isFinite(bodySize) ? bodySize : null;
+    const dispositionLower = String(contentDisposition ?? "").toLowerCase();
+    const detectedBy = [
+      filename ? "filename" : null,
+      attachmentId ? "attachmentId" : null,
+      /\battachment\b/i.test(dispositionLower) ? "content-disposition:attachment" : null,
+      /\binline\b/i.test(dispositionLower) ? "content-disposition:inline" : null,
+      contentId ? "content-id" : null,
+      isLikelyAttachmentMime(mimeType) && (attachmentId || filename || size) ? "mimeType" : null,
+    ].filter((value): value is string => Boolean(value));
+    const isAttachment = detectedBy.length > 0 && (
+      Boolean(filename)
+      || Boolean(attachmentId)
+      || /\battachment\b/i.test(dispositionLower)
+      || (/\binline\b/i.test(dispositionLower) && (Boolean(contentId) || Boolean(size)))
+      || (isLikelyAttachmentMime(mimeType) && Boolean(size))
+    );
+
+    if (isAttachment) {
+      attachments.push({
+        filename: fallbackAttachmentFilename({
+          filename,
+          mimeType: mimeType || null,
+          contentId,
+          partId,
+          attachmentId,
+          index: attachments.length,
+        }),
+        mimeType: mimeType || null,
+        size,
+        attachmentId,
+        contentDisposition,
+        contentId,
+        partId,
+        detectedBy,
+      });
+    } else if (mimeType === "text/plain") {
+      text += decodeBase64Url(body.data);
+    } else if (mimeType === "text/html") {
+      html += decodeBase64Url(body.data);
+    }
+
+    for (const child of node.parts ?? []) visit(child);
+  };
+
+  visit(part);
+  return { text: text.trim(), html: html.trim(), attachments };
+}
+
 export function classifyInboundEmailAttachment(attachment: Pick<InboundEmailAttachmentMetadata, "filename" | "mimeType">): {
   role: "po" | "artwork" | "other";
   poCandidate: boolean;
@@ -198,6 +357,31 @@ export function classifyInboundEmailAttachment(attachment: Pick<InboundEmailAtta
         : textCandidate
           ? "Text attachment supported for evidence."
           : "Attachment type is not supported for automatic download.",
+  };
+}
+
+function classifyInboundEmailAttachmentForMessage(
+  attachment: InboundEmailAttachmentMetadata,
+  message: Pick<InboundEmailProviderMessage, "subject" | "bodyText" | "bodyHtml">,
+): ReturnType<typeof classifyInboundEmailAttachment> & { sourceHint: string | null } {
+  const sourceHint = detectAttachmentSourceHint(message);
+  const base = classifyInboundEmailAttachment(attachment);
+  const filename = String(attachment.filename ?? "").toLowerCase();
+  const mimeType = String(attachment.mimeType ?? "").toLowerCase();
+  const extension = getExtension(filename);
+  const isPdf = mimeType.includes("pdf") || extension === "pdf";
+  const hintReferencesPo = Boolean(sourceHint && /\bpo\b|purchase.?order/i.test(sourceHint));
+  if (!isPdf || !hintReferencesPo || base.poCandidate) {
+    return { ...base, sourceHint };
+  }
+  return {
+    ...base,
+    role: "po",
+    poCandidate: true,
+    artworkCandidate: base.artworkCandidate || Boolean(sourceHint && /\bartwork\b/i.test(sourceHint)),
+    safeToDownload: true,
+    reason: `${base.reason} Email body references ${sourceHint}.`,
+    sourceHint,
   };
 }
 
@@ -335,37 +519,7 @@ class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
   }
 
   private extractBody(part: any): { text: string; html: string; attachments: InboundEmailAttachmentMetadata[] } {
-    let text = "";
-    let html = "";
-    const attachments: InboundEmailAttachmentMetadata[] = [];
-
-    const visit = (node: any) => {
-      if (!node) return;
-      const mimeType = String(node.mimeType ?? "");
-      const filename = stringFromUnknown(node.filename);
-      const body = node.body ?? {};
-      const headers = new Map<string, string>();
-      for (const header of node.headers ?? []) {
-        headers.set(String(header.name ?? "").toLowerCase(), String(header.value ?? ""));
-      }
-      if (filename) {
-        attachments.push({
-          filename,
-          mimeType: mimeType || null,
-          size: Number.isFinite(Number(body.size)) ? Number(body.size) : null,
-          attachmentId: body.attachmentId ? String(body.attachmentId) : null,
-          contentDisposition: headers.get("content-disposition") ?? null,
-        });
-      } else if (mimeType === "text/plain") {
-        text += decodeBase64Url(body.data);
-      } else if (mimeType === "text/html") {
-        html += decodeBase64Url(body.data);
-      }
-      for (const child of node.parts ?? []) visit(child);
-    };
-
-    visit(part);
-    return { text: text.trim(), html: html.trim(), attachments };
+    return extractGmailBodyAndAttachments(part);
   }
 }
 
@@ -678,13 +832,22 @@ export class InboundEmailIngestionService {
     for (const attachment of args.message.attachments) {
       const providerAttachmentId = attachment.attachmentId ?? null;
       const providerMessageId = args.message.messageId;
-      const classification = classifyInboundEmailAttachment(attachment);
+      const classification = classifyInboundEmailAttachmentForMessage(attachment, args.message);
       const filename = normalizeAttachmentFileName(attachment.filename);
+      const contentDisposition = truncate(attachment.contentDisposition ?? null, 100);
       const metadataJson = {
         provider: args.message.provider,
         providerAttachmentId,
         providerMessageId,
         mailboxId: args.mailbox.id,
+        sourceFilename: attachment.filename,
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.size,
+        contentDisposition: attachment.contentDisposition ?? null,
+        contentId: attachment.contentId ?? null,
+        gmailPartId: attachment.partId ?? null,
+        detectedBy: attachment.detectedBy ?? [],
+        sourceHint: classification.sourceHint,
         poCandidate: classification.poCandidate,
         artworkCandidate: classification.artworkCandidate,
         safeToDownload: classification.safeToDownload,
@@ -716,7 +879,7 @@ export class InboundEmailIngestionService {
             status: "uploaded",
             providerAttachmentId,
             providerMessageId,
-            contentDisposition: attachment.contentDisposition ?? null,
+            contentDisposition,
             metadataJson,
             reviewNotes: classification.safeToDownload
               ? "Attachment metadata captured; provider download is not available."
@@ -755,7 +918,7 @@ export class InboundEmailIngestionService {
             status: "available",
             providerAttachmentId,
             providerMessageId,
-            contentDisposition: attachment.contentDisposition ?? null,
+            contentDisposition,
             metadataJson: {
               ...metadataJson,
               storageProvider: stored.storedObject.storageTarget,
@@ -813,7 +976,7 @@ export class InboundEmailIngestionService {
           status: "quarantined",
           providerAttachmentId,
           providerMessageId,
-          contentDisposition: attachment.contentDisposition ?? null,
+          contentDisposition,
           metadataJson: {
             ...metadataJson,
             downloadFailed: true,

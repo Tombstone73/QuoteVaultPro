@@ -634,6 +634,18 @@ describe("InboundOrdersPage", () => {
             providerAttachmentId: "att_art",
             reviewNotes: null,
           },
+          {
+            id: "file_failed",
+            inboundRecordId: row.id,
+            fileRecordId: null,
+            role: "email_attachment",
+            status: "quarantined",
+            sourceFilename: "Offset House Visual PO.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 4096,
+            providerAttachmentId: "att_failed",
+            reviewNotes: "Attachment download failed: Gmail attachment unavailable",
+          },
         ],
       },
     });
@@ -645,6 +657,10 @@ describe("InboundOrdersPage", () => {
     await waitForText("Hello CSR");
     await waitForText("PO candidate");
     await waitForText("Artwork candidate");
+    await waitForText("Offset House Visual PO.pdf");
+    expect(container.textContent).toContain("Metadata only");
+    expect(container.textContent).toContain("Status: Quarantined");
+    expect(container.textContent).toContain("Attachment download failed: Gmail attachment unavailable");
     expect(container.textContent).toContain("orders@printer.test");
     expect(container.textContent).toContain("csr@printer.test");
 
