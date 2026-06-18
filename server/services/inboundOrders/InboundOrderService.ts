@@ -538,7 +538,11 @@ function buildAttachmentPipelineDiagnostics(
   files: Array<Record<string, unknown>>,
   events: Array<Record<string, unknown>>,
 ): Record<string, unknown> {
-  const latestEvent = events.find((event) => event.inboundRecordId === record.id && asRecord(event.metadataJson));
+  const latestEvent = events.find((event) => (
+    event.inboundRecordId === record.id
+    && event.eventType === "email.attachment_ingestion_diagnostics"
+    && asRecord(event.metadataJson)
+  ));
   const metadata = asRecord(latestEvent?.metadataJson) ?? {};
   const rawMetadata = Array.isArray(record.rawAttachmentMetadata) ? record.rawAttachmentMetadata : [];
   const fileFailures = files
@@ -559,6 +563,7 @@ function buildAttachmentPipelineDiagnostics(
     gmailPartsDiscovered: metadata.attachmentPartsDiscovered ?? record.rawAttachmentCount ?? 0,
     attachmentCandidatesDiscovered: metadata.attachmentCandidatesDiscovered ?? metadata.attachmentPartsDiscovered ?? record.rawAttachmentCount ?? 0,
     attachmentIdsDiscovered: attachmentIds,
+    attachmentPartsAttempted: metadata.attachmentPartsAttempted ?? 0,
     downloadAttempts: metadata.downloadAttempts ?? 0,
     downloadSuccesses: metadata.downloadSuccesses ?? 0,
     downloadFailures: metadata.downloadFailures ?? fileFailures.length,
