@@ -14,12 +14,20 @@ import {
 } from "@shared/schema";
 import type { InboundEmailIntent, InboundEmailPullResult } from "@shared/inboundEmailIngestion";
 import { inboundOrdersRepository, type InboundOrdersRepository } from "../storage/inboundOrders.repo";
+import { storageApplicationService, type StorageApplicationService } from "./storage/StorageApplicationService";
 
 export type InboundEmailAttachmentMetadata = {
   filename: string | null;
   mimeType: string | null;
   size: number | null;
   attachmentId?: string | null;
+  contentDisposition?: string | null;
+};
+
+export type InboundEmailAttachmentContent = {
+  buffer: Buffer;
+  mimeType: string | null;
+  sizeBytes: number;
 };
 
 export type InboundEmailProviderMessage = {
@@ -37,6 +45,11 @@ export type InboundEmailProviderMessage = {
 
 export interface InboundEmailProviderAdapter {
   listRecentMessages(mailbox: InboundEmailMailbox, limit: number): Promise<InboundEmailProviderMessage[]>;
+  downloadAttachment?(
+    mailbox: InboundEmailMailbox,
+    message: InboundEmailProviderMessage,
+    attachment: InboundEmailAttachmentMetadata,
+  ): Promise<InboundEmailAttachmentContent>;
 }
 
 export class InboundEmailIngestionError extends Error {
@@ -139,6 +152,55 @@ export function classifyInboundEmailForReview(message: InboundEmailProviderMessa
   return { ignored: false, intent: "UNKNOWN", reason: "Ambiguous inbound request." };
 }
 
+function normalizeAttachmentFileName(value: string | null | undefined): string {
+  return String(value ?? "attachment").trim().replace(/[\r\n\t\0]/g, " ").replace(/[\\/]+/g, "_").slice(0, 240) || "attachment";
+}
+
+function getExtension(value: string | null | undefined): string {
+  const match = String(value ?? "").toLowerCase().match(/\.([a-z0-9]+)$/i);
+  return match?.[1] ?? "";
+}
+
+export function classifyInboundEmailAttachment(attachment: Pick<InboundEmailAttachmentMetadata, "filename" | "mimeType">): {
+  role: "po" | "artwork" | "other";
+  poCandidate: boolean;
+  artworkCandidate: boolean;
+  safeToDownload: boolean;
+  reason: string;
+} {
+  const filename = String(attachment.filename ?? "").toLowerCase();
+  const mimeType = String(attachment.mimeType ?? "").toLowerCase();
+  const extension = getExtension(filename);
+  const poCandidate = (
+    (mimeType.includes("pdf") || extension === "pdf")
+    && (/\b(?:po|purchase.?order|order)\b/i.test(filename) || /\bpo[-_\s]?\d{3,}\b/i.test(filename))
+  );
+  const artworkCandidate = (
+    ["pdf", "ai", "eps", "svg", "tif", "tiff", "psd", "jpg", "jpeg", "png", "zip"].includes(extension)
+    || /^image\//i.test(mimeType)
+    || mimeType.includes("pdf")
+    || mimeType.includes("zip")
+    || mimeType.includes("postscript")
+    || mimeType.includes("illustrator")
+    || mimeType.includes("svg")
+  );
+  const textCandidate = /^text\//i.test(mimeType) || ["txt", "csv"].includes(extension);
+  const safeToDownload = Boolean(poCandidate || artworkCandidate || textCandidate);
+  return {
+    role: poCandidate ? "po" : artworkCandidate ? "artwork" : "other",
+    poCandidate,
+    artworkCandidate,
+    safeToDownload,
+    reason: poCandidate
+      ? "Likely purchase order attachment."
+      : artworkCandidate
+        ? "Likely artwork/reference attachment."
+        : textCandidate
+          ? "Text attachment supported for evidence."
+          : "Attachment type is not supported for automatic download.",
+  };
+}
+
 function normalizeText(value: string | null | undefined): string {
   return String(value ?? "").trim();
 }
@@ -179,9 +241,8 @@ export function matchInboundEmailIgnoreRule(
 }
 
 class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
-  async listRecentMessages(mailbox: InboundEmailMailbox, limit: number): Promise<InboundEmailProviderMessage[]> {
+  private buildGmailClient(mailbox: InboundEmailMailbox) {
     const authJson = (mailbox.authJson ?? {}) as Record<string, unknown>;
-    const settingsJson = (mailbox.settingsJson ?? {}) as Record<string, unknown>;
     const refreshToken = stringFromUnknown(authJson.refreshToken);
     const clientId = stringFromUnknown(authJson.clientId) ?? process.env.GOOGLE_CLIENT_ID ?? null;
     const clientSecret = stringFromUnknown(authJson.clientSecret) ?? process.env.GOOGLE_CLIENT_SECRET ?? null;
@@ -192,7 +253,12 @@ class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
 
     const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
     oauth2Client.setCredentials({ refresh_token: refreshToken });
-    const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+    return google.gmail({ version: "v1", auth: oauth2Client });
+  }
+
+  async listRecentMessages(mailbox: InboundEmailMailbox, limit: number): Promise<InboundEmailProviderMessage[]> {
+    const settingsJson = (mailbox.settingsJson ?? {}) as Record<string, unknown>;
+    const gmail = this.buildGmailClient(mailbox);
     const query = stringFromUnknown(settingsJson.query) ?? "newer_than:14d";
     const labelIds = Array.isArray(settingsJson.labelIds)
       ? settingsJson.labelIds.map((value) => String(value)).filter(Boolean)
@@ -214,6 +280,30 @@ class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
     }
 
     return results;
+  }
+
+  async downloadAttachment(
+    mailbox: InboundEmailMailbox,
+    message: InboundEmailProviderMessage,
+    attachment: InboundEmailAttachmentMetadata,
+  ): Promise<InboundEmailAttachmentContent> {
+    if (!attachment.attachmentId) {
+      throw new Error("Attachment is missing a Gmail attachment id.");
+    }
+    const gmail = this.buildGmailClient(mailbox);
+    const response = await gmail.users.messages.attachments.get({
+      userId: "me",
+      messageId: message.messageId,
+      id: attachment.attachmentId,
+    });
+    const data = response.data.data;
+    if (!data) throw new Error("Gmail attachment response did not include data.");
+    const buffer = Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+    return {
+      buffer,
+      mimeType: attachment.mimeType ?? null,
+      sizeBytes: buffer.length,
+    };
   }
 
   private toProviderMessage(message: any): InboundEmailProviderMessage {
@@ -254,12 +344,17 @@ class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
       const mimeType = String(node.mimeType ?? "");
       const filename = stringFromUnknown(node.filename);
       const body = node.body ?? {};
+      const headers = new Map<string, string>();
+      for (const header of node.headers ?? []) {
+        headers.set(String(header.name ?? "").toLowerCase(), String(header.value ?? ""));
+      }
       if (filename) {
         attachments.push({
           filename,
           mimeType: mimeType || null,
           size: Number.isFinite(Number(body.size)) ? Number(body.size) : null,
           attachmentId: body.attachmentId ? String(body.attachmentId) : null,
+          contentDisposition: headers.get("content-disposition") ?? null,
         });
       } else if (mimeType === "text/plain") {
         text += decodeBase64Url(body.data);
@@ -279,6 +374,7 @@ export class InboundEmailIngestionService {
     private readonly dbInstance = db,
     private readonly adapterByProvider: Record<string, InboundEmailProviderAdapter> = { gmail: new GmailInboundEmailAdapter() },
     private readonly inboundRepository: InboundOrdersRepository = inboundOrdersRepository,
+    private readonly storageService: StorageApplicationService = storageApplicationService,
   ) {}
 
   async pullLatestEmails(args: {
@@ -324,7 +420,7 @@ export class InboundEmailIngestionService {
         const messages = await adapter.listRecentMessages(mailbox, mailboxLimit);
         for (const message of messages) {
           try {
-            const outcome = await this.processMessage(args.organizationId, args.actorUserId, mailbox, source, message);
+            const outcome = await this.processMessage(args.organizationId, args.actorUserId, mailbox, source, message, adapter);
             result[outcome.status] += 1;
             summary[outcome.status] += 1;
             if (outcome.status === "created" && outcome.recordId) {
@@ -412,6 +508,7 @@ export class InboundEmailIngestionService {
     mailbox: InboundEmailMailbox,
     source: InboundOrderSource,
     message: InboundEmailProviderMessage,
+    adapter: InboundEmailProviderAdapter,
   ): Promise<{ status: "created"; recordId: string } | { status: "skippedDuplicates" | "ignored"; recordId?: never }> {
     const idempotencyKey = `${message.provider}:${message.messageId}`;
     const [existing] = await this.dbInstance
@@ -556,7 +653,193 @@ export class InboundEmailIngestionService {
       return [created as InboundOrderRecord | null];
     });
 
-    return record ? { status: "created", recordId: record.id } : { status: "skippedDuplicates" };
+    if (!record) return { status: "skippedDuplicates" };
+    await this.ingestAttachments({
+      organizationId,
+      actorUserId,
+      mailbox,
+      message,
+      record,
+      adapter,
+    });
+    return { status: "created", recordId: record.id };
+  }
+
+  private async ingestAttachments(args: {
+    organizationId: string;
+    actorUserId: string;
+    mailbox: InboundEmailMailbox;
+    message: InboundEmailProviderMessage;
+    record: InboundOrderRecord;
+    adapter: InboundEmailProviderAdapter;
+  }): Promise<void> {
+    if (args.message.attachments.length === 0) return;
+
+    for (const attachment of args.message.attachments) {
+      const providerAttachmentId = attachment.attachmentId ?? null;
+      const providerMessageId = args.message.messageId;
+      const classification = classifyInboundEmailAttachment(attachment);
+      const filename = normalizeAttachmentFileName(attachment.filename);
+      const metadataJson = {
+        provider: args.message.provider,
+        providerAttachmentId,
+        providerMessageId,
+        mailboxId: args.mailbox.id,
+        poCandidate: classification.poCandidate,
+        artworkCandidate: classification.artworkCandidate,
+        safeToDownload: classification.safeToDownload,
+        detectionReason: classification.reason,
+      };
+
+      try {
+        if (providerAttachmentId) {
+          const existing = await this.inboundRepository.findFileByProviderAttachment({
+            organizationId: args.organizationId,
+            inboundRecordId: args.record.id,
+            providerMessageId,
+            providerAttachmentId,
+          });
+          if (existing) continue;
+        }
+
+        if (!classification.safeToDownload || !args.adapter.downloadAttachment || !providerAttachmentId) {
+          await this.inboundRepository.createFile({
+            organizationId: args.organizationId,
+            inboundRecordId: args.record.id,
+            inboundLineItemId: null,
+            fileRecordId: null,
+            sourceFilename: filename,
+            role: classification.role === "other" ? "email_attachment" : classification.role,
+            mimeType: attachment.mimeType ?? null,
+            sizeBytes: attachment.size ?? null,
+            checksum: null,
+            status: "uploaded",
+            providerAttachmentId,
+            providerMessageId,
+            contentDisposition: attachment.contentDisposition ?? null,
+            metadataJson,
+            reviewNotes: classification.safeToDownload
+              ? "Attachment metadata captured; provider download is not available."
+              : classification.reason,
+            createdQuoteAttachmentId: null,
+            createdOrderAttachmentId: null,
+          });
+          continue;
+        }
+
+        const downloaded = await args.adapter.downloadAttachment(args.mailbox, args.message, attachment);
+        const storageResult = await this.storageService.finalizeUpload({
+          organizationId: args.organizationId,
+          createdByUserId: args.actorUserId,
+          resource: {
+            organizationId: args.organizationId,
+            resourceType: "inbound_order",
+            resourceId: args.record.id,
+          },
+          source: {
+            kind: "buffer",
+            buffer: downloaded.buffer,
+            originalFilename: filename,
+            mimeType: downloaded.mimeType ?? attachment.mimeType ?? "application/octet-stream",
+          },
+          persistLink: async (tx, stored) => this.inboundRepository.createFile({
+            organizationId: args.organizationId,
+            inboundRecordId: args.record.id,
+            inboundLineItemId: null,
+            fileRecordId: stored.fileRecord.id,
+            sourceFilename: filename,
+            role: classification.role === "other" ? "email_attachment" : classification.role,
+            mimeType: downloaded.mimeType ?? attachment.mimeType ?? "application/octet-stream",
+            sizeBytes: downloaded.sizeBytes,
+            checksum: stored.fileRecord.checksum ?? null,
+            status: "available",
+            providerAttachmentId,
+            providerMessageId,
+            contentDisposition: attachment.contentDisposition ?? null,
+            metadataJson: {
+              ...metadataJson,
+              storageProvider: stored.storedObject.storageTarget,
+            },
+            reviewNotes: classification.poCandidate
+              ? "PO candidate. Text will be extracted during AI parse when possible."
+              : classification.artworkCandidate
+                ? "Artwork candidate. No proof or preflight record created."
+                : null,
+            createdQuoteAttachmentId: null,
+            createdOrderAttachmentId: null,
+          }, tx),
+        });
+
+        await this.inboundRepository.createEvent({
+          organizationId: args.organizationId,
+          inboundRecordId: args.record.id,
+          actorUserId: args.actorUserId,
+          actorType: "system",
+          eventType: "email.attachment_stored",
+          fromStatus: null,
+          toStatus: null,
+          message: `Stored inbound email attachment ${filename}.`,
+          metadataJson: {
+            fileId: storageResult.linkedRecord.id,
+            fileRecordId: storageResult.fileRecord.id,
+            providerAttachmentId,
+            providerMessageId,
+            role: storageResult.linkedRecord.role,
+            createsArtwork: false,
+            createsProofs: false,
+            createsOrder: false,
+          },
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Attachment download failed.";
+        console.warn("[Inbound Email Pull] Attachment ingestion failed", {
+          organizationId: args.organizationId,
+          inboundRecordId: args.record.id,
+          messageId: providerMessageId,
+          attachmentId: providerAttachmentId,
+          filename,
+          error: message,
+        });
+        await this.inboundRepository.createFile({
+          organizationId: args.organizationId,
+          inboundRecordId: args.record.id,
+          inboundLineItemId: null,
+          fileRecordId: null,
+          sourceFilename: filename,
+          role: classification.role === "other" ? "email_attachment" : classification.role,
+          mimeType: attachment.mimeType ?? null,
+          sizeBytes: attachment.size ?? null,
+          checksum: null,
+          status: "quarantined",
+          providerAttachmentId,
+          providerMessageId,
+          contentDisposition: attachment.contentDisposition ?? null,
+          metadataJson: {
+            ...metadataJson,
+            downloadFailed: true,
+            downloadError: message,
+          },
+          reviewNotes: `Attachment download failed: ${message}`,
+          createdQuoteAttachmentId: null,
+          createdOrderAttachmentId: null,
+        });
+        await this.inboundRepository.createEvent({
+          organizationId: args.organizationId,
+          inboundRecordId: args.record.id,
+          actorUserId: args.actorUserId,
+          actorType: "system",
+          eventType: "email.attachment_failed",
+          fromStatus: null,
+          toStatus: null,
+          message,
+          metadataJson: {
+            providerAttachmentId,
+            providerMessageId,
+            filename,
+          },
+        });
+      }
+    }
   }
 
   private async findMatchedIgnoreRule(

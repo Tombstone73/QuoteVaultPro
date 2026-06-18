@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 
 import {
+  classifyInboundEmailAttachment,
   matchInboundEmailIgnoreRule,
   type InboundEmailProviderMessage,
 } from "../services/inboundEmailIngestionService";
@@ -57,5 +58,40 @@ describe("inbound email ignore rule matching", () => {
       ruleType: "subject_contains",
       ruleValue: "new submission from",
     }, baseMessage)).toBe(false);
+  });
+});
+
+describe("inbound email attachment classification", () => {
+  test("classifies obvious PO PDFs as safe PO candidates", () => {
+    expect(classifyInboundEmailAttachment({
+      filename: "Purchase Order 151661.pdf",
+      mimeType: "application/pdf",
+    })).toEqual(expect.objectContaining({
+      role: "po",
+      poCandidate: true,
+      safeToDownload: true,
+    }));
+  });
+
+  test("classifies artwork PDFs as safe artwork candidates", () => {
+    expect(classifyInboundEmailAttachment({
+      filename: "storefront artwork.pdf",
+      mimeType: "application/pdf",
+    })).toEqual(expect.objectContaining({
+      role: "artwork",
+      artworkCandidate: true,
+      safeToDownload: true,
+    }));
+  });
+
+  test("classifies unsupported files as metadata-only attachments", () => {
+    expect(classifyInboundEmailAttachment({
+      filename: "calendar.invite",
+      mimeType: "application/octet-stream",
+    })).toEqual(expect.objectContaining({
+      role: "other",
+      poCandidate: false,
+      safeToDownload: false,
+    }));
   });
 });

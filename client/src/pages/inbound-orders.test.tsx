@@ -1125,12 +1125,20 @@ describe("InboundOrdersPage", () => {
       inboundLineItemId: null,
       fileRecordId: "file_record_1",
       sourceFilename: "Brainstorm Print PO.pdf",
-      role: "customer_upload",
+      role: "po",
       mimeType: "application/pdf",
       sizeBytes: 12000,
       checksum: null,
-      status: "uploaded",
-      reviewNotes: null,
+      status: "available",
+      providerAttachmentId: "att_1",
+      providerMessageId: "gmail_msg_1",
+      contentDisposition: "attachment",
+      metadataJson: {
+        provider: "gmail",
+        poCandidate: true,
+        artworkCandidate: true,
+      },
+      reviewNotes: "PO candidate. Text will be extracted during AI parse when possible.",
       createdQuoteAttachmentId: null,
       createdOrderAttachmentId: null,
       createdAt: "2026-06-09T12:00:00.000Z",
@@ -1342,6 +1350,13 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Customer 100%");
     expect(container.textContent).toContain("Contact 100%");
     expect(container.textContent).toContain("Brainstorm Print PO.pdf");
+    expect(container.textContent).toContain("PO candidate");
+    expect(container.textContent).toContain("11.7 KB");
+    expect(container.textContent).toContain("Source: Gmail attachment");
+    expect(container.textContent).toContain("Status: Available");
+    expect(container.textContent).toContain("Provider ID captured");
+    const openAttachmentLink = container.querySelector("a[href='/api/inbound-orders/inbound_1/files/file_1/download']");
+    expect(openAttachmentLink).toBeTruthy();
     expect(container.textContent).toContain("Purchase Order");
     expect(container.textContent).toContain("98%");
     expect(container.textContent).toContain("Pages: 1");

@@ -33,6 +33,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ProductOptionsPanelV2 } from "@/features/quotes/editor/components/ProductOptionsPanelV2";
 import { useInboundEmailIntakeSettings, usePullLatestInboundEmails } from "@/hooks/useInboundEmailIntakeSettings";
 import { useToast } from "@/hooks/use-toast";
+import { formatFileSize } from "@/lib/fileUtils";
 import { apiFetch } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import {
@@ -414,6 +415,12 @@ function evidenceSourceLabel(value: string | null | undefined) {
   if (value === "TEXT_ATTACHMENT") return "Text Attachment";
   if (value === "MANUAL_NOTES") return "Manual Notes";
   return titleCase(value);
+}
+
+function inboundAttachmentRoleLabel(role: string | null | undefined) {
+  if (role === "po") return "PO candidate";
+  if (role === "artwork") return "Artwork candidate";
+  return "Other attachment";
 }
 
 function getRecordTitle(record: ClientInboundOrderRecord) {
@@ -1210,30 +1217,56 @@ function SourceEvidencePanel({
             ) : (
               (detail?.files ?? []).map((file) => {
                 const extracted = attachmentEvidence.find((item) => item.sourceId === file.id);
+                const downloadUrl = file.fileRecordId
+                  ? `/api/inbound-orders/${encodeURIComponent(record.id)}/files/${encodeURIComponent(file.id)}/download`
+                  : null;
                 return (
                   <div key={file.id} className="rounded-md border border-border bg-muted/20 px-3 py-2">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div className="min-w-0">
                         <div className="truncate text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {file.mimeType || "unknown type"} / {file.role}
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                          <span>{file.mimeType || "unknown type"}</span>
+                          <span>{formatFileSize(file.sizeBytes)}</span>
+                          <span>Source: Gmail attachment</span>
+                          <span>Status: {titleCase(file.status)}</span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
+                            {inboundAttachmentRoleLabel(file.role)}
+                          </Badge>
+                          {file.providerAttachmentId && <Badge variant="outline">Provider ID captured</Badge>}
+                          {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
                         </div>
                         {extracted && (
                           <div className="mt-1 text-xs text-muted-foreground">
                             Pages: {extracted.pageCount ?? "-"} / Extraction: {titleCase(extracted.extractionStatus)}
                           </div>
                         )}
+                        {file.reviewNotes && (
+                          <div className="mt-1 text-xs text-muted-foreground">{file.reviewNotes}</div>
+                        )}
                       </div>
-                      {extracted ? (
-                        <div className="flex flex-wrap gap-2">
-                          <Badge variant={extracted.documentType === "purchase_order" ? "default" : "outline"}>
-                            {titleCase(extracted.documentType)}
-                          </Badge>
-                          <Badge variant="secondary">{extracted.documentConfidence}%</Badge>
-                        </div>
-                      ) : (
-                        <Badge variant="outline">Not extracted</Badge>
-                      )}
+                      <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                        {extracted ? (
+                          <>
+                            <Badge variant={extracted.documentType === "purchase_order" ? "default" : "outline"}>
+                              {titleCase(extracted.documentType)}
+                            </Badge>
+                            <Badge variant="secondary">{extracted.documentConfidence}%</Badge>
+                          </>
+                        ) : (
+                          <Badge variant="outline">Not extracted</Badge>
+                        )}
+                        {downloadUrl && (
+                          <Button asChild size="sm" variant="outline">
+                            <a href={downloadUrl} target="_blank" rel="noreferrer">
+                              <ExternalLink className="mr-2 h-4 w-4" />
+                              Open
+                            </a>
+                          </Button>
+                        )}
+                      </div>
                     </div>
                     {extracted?.poSummary && (
                       <div className="mt-3 rounded-md border border-border bg-background/60 p-3">
