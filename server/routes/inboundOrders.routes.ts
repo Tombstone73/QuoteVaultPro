@@ -147,6 +147,10 @@ const inboundEmailPullLatestSchema = z.object({
   limit: z.coerce.number().int().min(1).max(25).optional(),
 });
 
+const inboundEmailPullDiagnosticsQuerySchema = z.object({
+  subject: z.string().trim().max(500).optional(),
+});
+
 const inboundEmailMailboxParamsSchema = z.object({
   id: z.string().trim().min(1),
 });
@@ -260,6 +264,14 @@ function formatInboundEmailIgnoreRule(rule: InboundEmailIgnoreRule) {
   };
 }
 
+function stripDiagnosticSecrets(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripDiagnosticSecrets);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => !/(auth|token|secret|credential|password)/i.test(key))
+    .map(([key, entry]) => [key, stripDiagnosticSecrets(entry)]));
+}
+
 export function registerInboundOrderRoutes(
   app: Express,
   middleware: {
@@ -342,6 +354,29 @@ export function registerInboundOrderRoutes(
 
       console.error("Error pulling latest inbound emails:", error);
       res.status(500).json({ success: false, message: "Failed to pull latest inbound emails" });
+    }
+  });
+
+  app.get("/api/inbound-orders/email/pull-diagnostics", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      if (!assertOwnerOrAdmin(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const input = inboundEmailPullDiagnosticsQuerySchema.parse(req.query ?? {});
+      const diagnostics = await service.getEmailPullDiagnostics({
+        organizationId,
+        subject: input.subject ?? null,
+      });
+      res.json({ success: true, data: stripDiagnosticSecrets(diagnostics) });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      console.error("Error loading inbound email pull diagnostics:", error);
+      res.status(500).json({ success: false, message: "Failed to load inbound email pull diagnostics" });
     }
   });
 

@@ -15,13 +15,14 @@ import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Edit, Mail, FileText, Plus, Inbox, PauseCircle, Trash2, Star } from "lucide-react";
+import { AlertTriangle, Edit, Mail, FileText, Plus, Inbox, PauseCircle, RefreshCw, Search, Trash2, Star } from "lucide-react";
 import { useState, useEffect, type FormEvent } from "react";
 import {
   useCreateInboundEmailIgnoreRule,
   useDeleteInboundEmailIgnoreRule,
   useDeleteInboundEmailMailbox,
   useInboundEmailIgnoreRules,
+  useInboundEmailPullDiagnostics,
   useInboundEmailMailboxes,
   useSetDefaultInboundEmailMailbox,
   useStartInboundGmailMailboxOAuth,
@@ -666,6 +667,228 @@ function InboundEmailIgnoreRulesCard() {
   );
 }
 
+function formatDiagnosticValue(value: unknown): string {
+  if (value == null || value === "") return "-";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function EmailPullDiagnosticsPanel() {
+  const [subjectInput, setSubjectInput] = useState("");
+  const [subject, setSubject] = useState("");
+  const diagnosticsQuery = useInboundEmailPullDiagnostics(subject);
+  const diagnostics = diagnosticsQuery.data;
+
+  const submitSearch = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSubject(subjectInput.trim());
+  };
+
+  const clearSearch = () => {
+    setSubjectInput("");
+    setSubject("");
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Search className="h-5 w-5" />
+              Email Pull Diagnostics
+            </CardTitle>
+            <CardDescription>
+              Read-only visibility into the last inbound Gmail pull and recent TEMP_INBOUND email artifacts.
+            </CardDescription>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={diagnosticsQuery.isFetching}
+            onClick={() => diagnosticsQuery.refetch()}
+          >
+            <RefreshCw className="mr-2 h-4 w-4" />
+            Refresh
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <form onSubmit={submitSearch} className="flex flex-col gap-2 md:flex-row">
+          <Input
+            value={subjectInput}
+            onChange={(event) => setSubjectInput(event.target.value)}
+            placeholder="Search exact subject text"
+            aria-label="Email diagnostics subject search"
+          />
+          <div className="flex gap-2">
+            <Button type="submit" disabled={diagnosticsQuery.isFetching}>
+              <Search className="mr-2 h-4 w-4" />
+              Search
+            </Button>
+            {subject && (
+              <Button type="button" variant="ghost" onClick={clearSearch} disabled={diagnosticsQuery.isFetching}>
+                Clear
+              </Button>
+            )}
+          </div>
+        </form>
+
+        {diagnosticsQuery.isLoading ? (
+          <Skeleton className="h-48 w-full" />
+        ) : diagnosticsQuery.isError ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+            Failed to load email pull diagnostics.
+          </div>
+        ) : diagnostics ? (
+          <div className="space-y-5">
+            <div className="grid gap-3 md:grid-cols-4">
+              <div className="rounded-md border border-border p-3">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Enabled Mailboxes</div>
+                <div className="mt-1 text-2xl font-semibold text-foreground">{diagnostics.enabledMailboxCount}</div>
+              </div>
+              <div className="rounded-md border border-border p-3">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Ignore Rules</div>
+                <div className="mt-1 text-2xl font-semibold text-foreground">{diagnostics.ignoreRuleCount}</div>
+              </div>
+              <div className="rounded-md border border-border p-3">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Recent Records</div>
+                <div className="mt-1 text-2xl font-semibold text-foreground">{diagnostics.recentCreatedInboundRecords.length}</div>
+              </div>
+              <div className="rounded-md border border-border p-3">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Recent Files</div>
+                <div className="mt-1 text-2xl font-semibold text-foreground">{diagnostics.recentInboundFiles.length}</div>
+              </div>
+            </div>
+
+            {diagnostics.mailboxes.length === 0 ? (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800">
+                <AlertTriangle className="mr-2 inline h-4 w-4" />
+                No inbound mailboxes are configured for this organization.
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-md border border-border">
+                <table className="w-full min-w-[760px] text-sm">
+                  <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                    <tr>
+                      <th className="px-4 py-3 font-medium">Mailbox</th>
+                      <th className="px-4 py-3 font-medium">Enabled</th>
+                      <th className="px-4 py-3 font-medium">Last Pull</th>
+                      <th className="px-4 py-3 font-medium">Status</th>
+                      <th className="px-4 py-3 font-medium">Last Error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {diagnostics.mailboxes.map((mailbox) => (
+                      <tr key={mailbox.id} className="border-t border-border align-top">
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-foreground">{mailbox.emailAddress}</div>
+                          <div className="text-xs text-muted-foreground">{mailbox.name}</div>
+                        </td>
+                        <td className="px-4 py-3">{mailbox.enabled ? "Yes" : "No"}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{formatMailboxDate(mailbox.lastPulledAt)}</td>
+                        <td className="px-4 py-3">{mailbox.lastPullStatus || "None"}</td>
+                        <td className="max-w-[320px] px-4 py-3 text-muted-foreground">
+                          <span className="block whitespace-normal break-words">{mailbox.lastPullError || "None"}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {diagnostics.subjectSearch.provided && (
+              <div className="rounded-md border border-border p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="text-sm font-semibold text-foreground">Subject Search</h4>
+                  <Badge variant={diagnostics.subjectSearch.found ? "secondary" : "outline"}>
+                    {diagnostics.subjectSearch.found ? "Found" : "Not found"}
+                  </Badge>
+                </div>
+                <div className="mt-2 text-xs text-muted-foreground">{diagnostics.subject}</div>
+                <div className="mt-3 grid gap-3 md:grid-cols-3">
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Matching Records</div>
+                    <div className="mt-2 space-y-2">
+                      {diagnostics.subjectSearch.matchingRecords.length === 0 ? (
+                        <div className="text-sm text-muted-foreground">None</div>
+                      ) : diagnostics.subjectSearch.matchingRecords.map((record, index) => (
+                        <div key={`${formatDiagnosticValue(record.id)}-${index}`} className="rounded-md bg-muted/30 p-2 text-xs">
+                          <div className="font-medium text-foreground">{formatDiagnosticValue(record.subject ?? record.externalReference ?? record.id)}</div>
+                          <div className="text-muted-foreground">
+                            {formatDiagnosticValue(record.status)} / {formatDiagnosticValue(record.reviewOutcome)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Matching Files</div>
+                    <div className="mt-2 space-y-2">
+                      {diagnostics.subjectSearch.matchingFiles.length === 0 ? (
+                        <div className="text-sm text-muted-foreground">None</div>
+                      ) : diagnostics.subjectSearch.matchingFiles.map((file, index) => (
+                        <div key={`${formatDiagnosticValue(file.id)}-${index}`} className="rounded-md bg-muted/30 p-2 text-xs">
+                          <div className="font-medium text-foreground">{formatDiagnosticValue(file.sourceFilename ?? file.id)}</div>
+                          <div className="text-muted-foreground">{formatDiagnosticValue(file.role)} / {formatDiagnosticValue(file.status)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Matching Ignore Rules</div>
+                    <div className="mt-2 space-y-2">
+                      {diagnostics.subjectSearch.matchingIgnoreRules.length === 0 ? (
+                        <div className="text-sm text-muted-foreground">None</div>
+                      ) : diagnostics.subjectSearch.matchingIgnoreRules.map((rule, index) => (
+                        <div key={`${formatDiagnosticValue(rule.id)}-${index}`} className="rounded-md bg-muted/30 p-2 text-xs">
+                          <div className="font-medium text-foreground">{formatDiagnosticValue(rule.ruleType)}</div>
+                          <div className="text-muted-foreground">{formatDiagnosticValue(rule.ruleValuePreview)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <div className="rounded-md border border-border p-3">
+                <h4 className="text-sm font-semibold text-foreground">Recent Failed Diagnostics</h4>
+                <div className="mt-2 space-y-2">
+                  {diagnostics.recentFailedMessageDiagnostics.length === 0 ? (
+                    <div className="text-sm text-muted-foreground">No durable failed message diagnostics found.</div>
+                  ) : diagnostics.recentFailedMessageDiagnostics.map((item, index) => (
+                    <div key={index} className="rounded-md bg-muted/30 p-2 text-xs">
+                      <div className="font-medium text-foreground">{formatDiagnosticValue(item.message ?? item.eventType ?? item.id)}</div>
+                      <div className="text-muted-foreground">{formatDiagnosticValue(item.createdAt)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-md border border-border p-3">
+                <h4 className="text-sm font-semibold text-foreground">Active Ignore Rules</h4>
+                <div className="mt-2 space-y-2">
+                  {diagnostics.activeIgnoreRules.length === 0 ? (
+                    <div className="text-sm text-muted-foreground">No active ignore rules.</div>
+                  ) : diagnostics.activeIgnoreRules.map((rule) => (
+                    <div key={rule.id} className="rounded-md bg-muted/30 p-2 text-xs">
+                      <div className="font-medium text-foreground">{rule.ruleType}</div>
+                      <div className="text-muted-foreground">{rule.ruleValuePreview}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 // Available template variables
 const QUOTE_VARIABLES = [
   { label: "Quote Number", value: "{quoteNumber}" },
@@ -1039,6 +1262,7 @@ export function EmailSettings() {
           <InboundEmailIntakeControls />
           <InboundEmailMailboxSettingsCard />
           <InboundEmailIgnoreRulesCard />
+          <EmailPullDiagnosticsPanel />
           <EmailSettingsTab />
           <EmailTemplatesCard />
         </div>

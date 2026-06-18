@@ -163,6 +163,66 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
         data: { rules: ignoreRules },
       });
     }
+    if (requestUrl.startsWith("/api/inbound-orders/email/pull-diagnostics")) {
+      const hasSubject = requestUrl.includes("subject=");
+      return jsonResponse({
+        success: true,
+        data: {
+          organizationId: "org_1",
+          generatedAt: "2026-06-18T15:00:00.000Z",
+          subject: hasSubject ? "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26" : null,
+          enabledMailboxCount: mailboxes.filter((mailbox: any) => mailbox.enabled).length,
+          mailboxes,
+          latestPullSummary: null,
+          recentFailedMessageDiagnostics: hasSubject ? [{ message: "Attachment download failed", createdAt: "2026-06-18T14:00:00.000Z" }] : [],
+          recentIgnoredMessageDiagnostics: [],
+          recentCreatedInboundRecords: [{
+            id: "inbound_email_1",
+            status: "needs_review",
+            reviewOutcome: null,
+            subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+            createdAt: "2026-06-18T14:55:01.000Z",
+          }],
+          recentInboundFiles: [{
+            id: "file_1",
+            sourceFilename: "po-151753.pdf",
+            role: "po",
+            status: "available",
+          }],
+          ignoreRuleCount: ignoreRules.length,
+          activeIgnoreRules: ignoreRules.filter((rule: any) => rule.enabled).map((rule: any) => ({
+            id: rule.id,
+            ruleType: rule.ruleType,
+            ruleValuePreview: rule.ruleValue,
+            enabled: rule.enabled,
+            matchCount: rule.matchCount ?? 0,
+            lastMatchedAt: rule.lastMatchedAt ?? null,
+            notes: rule.notes ?? null,
+          })),
+          subjectSearch: {
+            provided: hasSubject,
+            found: hasSubject,
+            matchingRecords: hasSubject ? [
+              { id: "inbound_email_1", status: "needs_review", reviewOutcome: null, subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26" },
+            ] : [],
+            matchingFiles: hasSubject ? [
+              { id: "file_1", sourceFilename: "po-151753.pdf", role: "po", status: "available" },
+            ] : [],
+            matchingIgnoreRules: [],
+            duplicateDetection: {
+              durableSkippedMessageLogsStored: false,
+              possibleDuplicateRecords: [],
+            },
+          },
+          storageNotes: {
+            latestPullSummaryStored: false,
+            perMessageFailureDiagnosticsStored: hasSubject,
+            ignoredMessageDiagnosticsStored: false,
+            duplicateSkipDiagnosticsStored: false,
+          },
+        },
+      });
+    }
     if (requestUrl === "/api/inbound-orders/email/ignore-rules" && method === "POST") {
       return jsonResponse({
         success: true,
@@ -337,6 +397,45 @@ describe("EmailSettings inbound mailbox settings", () => {
     await waitForText("Last warning stayed readable");
 
     expect(container.textContent).not.toContain("authJson");
+    expect(container.textContent).not.toContain("refreshToken");
+    expect(container.textContent).not.toContain("secret_refresh_token");
+  });
+
+  test("renders email pull diagnostics and searches by subject", async () => {
+    await renderEmailSettings([
+      {
+        id: "mailbox_enabled",
+        provider: "gmail",
+        name: "Orders Inbox",
+        emailAddress: "orders@example.com",
+        enabled: true,
+        isDefault: true,
+        lastPulledAt: "2026-06-18T14:55:00.000Z",
+        lastPullStatus: "failed",
+        lastPullError: "invalid_grant",
+        createdAt: "2026-06-09T12:00:00.000Z",
+        updatedAt: "2026-06-18T14:55:00.000Z",
+      },
+    ], [ignoreRule({ ruleType: "subject_contains", ruleValue: "Payment Received" })]);
+
+    await waitForText("Email Pull Diagnostics");
+    await waitForText("invalid_grant");
+    await waitForText("Payment Received");
+
+    const subjectInput = container.querySelector("input[aria-label='Email diagnostics subject search']") as HTMLInputElement;
+    await setValue(subjectInput, "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26");
+    const searchButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Search") as HTMLButtonElement;
+    await act(async () => {
+      searchButton.click();
+    });
+
+    await waitForText("Subject Search");
+    await waitForText("Found");
+    await waitForText("po-151753.pdf");
+    expect(apiFetchMock.mock.calls.some(([url]) => (
+      String(url) === "/api/inbound-orders/email/pull-diagnostics?subject=Purchase%20Order%20No%20151753%20Titan%20Compass%20ACM%20Sign%206_18_26"
+    ))).toBe(true);
     expect(container.textContent).not.toContain("refreshToken");
     expect(container.textContent).not.toContain("secret_refresh_token");
   });

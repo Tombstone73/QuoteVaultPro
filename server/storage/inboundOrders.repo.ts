@@ -5,6 +5,7 @@ import {
   customerContactLinks,
   customerContacts,
   customers,
+  inboundEmailMailboxes,
   inboundEmailIgnoreRules,
   inboundOrderDecisionFlags,
   inboundOrderEvents,
@@ -212,6 +213,28 @@ export type InboundCandidateResult = {
   confidence: number;
   reason: string | null;
   metadata: Record<string, unknown>;
+};
+
+export type InboundEmailPullDiagnosticsRaw = {
+  mailboxes: Array<{
+    id: string;
+    provider: string;
+    name: string;
+    emailAddress: string;
+    enabled: boolean;
+    isDefault: boolean;
+    lastPulledAt: Date | null;
+    lastPullStatus: string | null;
+    lastPullError: string | null;
+    settingsJson: Record<string, unknown>;
+  }>;
+  ignoreRules: InboundEmailIgnoreRule[];
+  recentCreatedRecords: Array<Record<string, unknown>>;
+  recentFiles: Array<Record<string, unknown>>;
+  recentFailedDiagnostics: Array<Record<string, unknown>>;
+  recentIgnoredDiagnostics: Array<Record<string, unknown>>;
+  subjectRecords: Array<Record<string, unknown>>;
+  subjectFiles: Array<Record<string, unknown>>;
 };
 
 export type MatchInboundCustomerInput = {
@@ -523,6 +546,206 @@ export class InboundOrdersRepository {
         updatedAt: new Date(),
       })
       .where(eq(inboundEmailIgnoreRules.id, ruleId));
+  }
+
+  async getEmailPullDiagnostics(args: {
+    organizationId: string;
+    subject?: string | null;
+    limit?: number;
+  }): Promise<InboundEmailPullDiagnosticsRaw> {
+    const limit = Math.max(1, Math.min(50, Math.round(Number(args.limit ?? 20))));
+    const subject = args.subject?.trim() || null;
+    const subjectPattern = subject ? `%${subject}%` : null;
+
+    const mailboxes = await this.dbInstance
+      .select({
+        id: inboundEmailMailboxes.id,
+        provider: inboundEmailMailboxes.provider,
+        name: inboundEmailMailboxes.name,
+        emailAddress: inboundEmailMailboxes.emailAddress,
+        enabled: inboundEmailMailboxes.enabled,
+        isDefault: inboundEmailMailboxes.isDefault,
+        lastPulledAt: inboundEmailMailboxes.lastPulledAt,
+        lastPullStatus: inboundEmailMailboxes.lastPullStatus,
+        lastPullError: inboundEmailMailboxes.lastPullError,
+        settingsJson: inboundEmailMailboxes.settingsJson,
+      })
+      .from(inboundEmailMailboxes)
+      .where(eq(inboundEmailMailboxes.organizationId, args.organizationId))
+      .orderBy(desc(inboundEmailMailboxes.enabled), asc(inboundEmailMailboxes.emailAddress));
+
+    const ignoreRules = await this.listEmailIgnoreRules(args.organizationId);
+
+    const recentCreatedRecords = await this.dbInstance
+      .select({
+        id: inboundOrderRecords.id,
+        sourceId: inboundOrderRecords.sourceId,
+        sourceRecordId: inboundOrderRecords.sourceRecordId,
+        sourceMessageId: inboundOrderRecords.sourceMessageId,
+        status: inboundOrderRecords.status,
+        reviewOutcome: inboundOrderRecords.reviewOutcome,
+        externalReference: inboundOrderRecords.externalReference,
+        idempotencyKey: inboundOrderRecords.idempotencyKey,
+        receivedAt: inboundOrderRecords.receivedAt,
+        archivedAt: inboundOrderRecords.archivedAt,
+        createdAt: inboundOrderRecords.createdAt,
+        subject: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'subject', ${inboundOrderRecords.normalizedPayloadJson}->>'subject', ${inboundOrderRecords.extractedOrderJson}->>'subject', ${inboundOrderRecords.externalReference})`,
+        senderEmail: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->'sender'->>'email', ${inboundOrderRecords.normalizedPayloadJson}->'sender'->>'email')`,
+        mailboxEmail: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->'mailbox'->>'emailAddress', ${inboundOrderRecords.normalizedPayloadJson}->'source'->>'mailboxEmail')`,
+      })
+      .from(inboundOrderRecords)
+      .where(and(eq(inboundOrderRecords.organizationId, args.organizationId), eq(inboundOrderRecords.sourceType, "email")))
+      .orderBy(desc(inboundOrderRecords.createdAt))
+      .limit(limit);
+
+    const recentFiles = await this.dbInstance
+      .select({
+        id: inboundOrderFiles.id,
+        inboundRecordId: inboundOrderFiles.inboundRecordId,
+        fileRecordId: inboundOrderFiles.fileRecordId,
+        sourceFilename: inboundOrderFiles.sourceFilename,
+        role: inboundOrderFiles.role,
+        mimeType: inboundOrderFiles.mimeType,
+        sizeBytes: inboundOrderFiles.sizeBytes,
+        status: inboundOrderFiles.status,
+        providerAttachmentId: inboundOrderFiles.providerAttachmentId,
+        providerMessageId: inboundOrderFiles.providerMessageId,
+        metadataJson: inboundOrderFiles.metadataJson,
+        reviewNotes: inboundOrderFiles.reviewNotes,
+        createdAt: inboundOrderFiles.createdAt,
+      })
+      .from(inboundOrderFiles)
+      .innerJoin(inboundOrderRecords, eq(inboundOrderFiles.inboundRecordId, inboundOrderRecords.id))
+      .where(and(eq(inboundOrderFiles.organizationId, args.organizationId), eq(inboundOrderRecords.sourceType, "email")))
+      .orderBy(desc(inboundOrderFiles.createdAt))
+      .limit(limit);
+
+    const recentFailedDiagnostics = await this.dbInstance
+      .select({
+        eventId: inboundOrderEvents.id,
+        inboundRecordId: inboundOrderEvents.inboundRecordId,
+        eventType: inboundOrderEvents.eventType,
+        message: inboundOrderEvents.message,
+        metadataJson: inboundOrderEvents.metadataJson,
+        createdAt: inboundOrderEvents.createdAt,
+      })
+      .from(inboundOrderEvents)
+      .innerJoin(inboundOrderRecords, eq(inboundOrderEvents.inboundRecordId, inboundOrderRecords.id))
+      .where(and(
+        eq(inboundOrderEvents.organizationId, args.organizationId),
+        eq(inboundOrderRecords.sourceType, "email"),
+        sql`${inboundOrderEvents.eventType} in ('email.attachment_failed')`,
+      ))
+      .orderBy(desc(inboundOrderEvents.createdAt))
+      .limit(limit);
+
+    const recentIgnoredDiagnostics = await this.dbInstance
+      .select({
+        id: inboundOrderRecords.id,
+        sourceRecordId: inboundOrderRecords.sourceRecordId,
+        sourceMessageId: inboundOrderRecords.sourceMessageId,
+        status: inboundOrderRecords.status,
+        reviewOutcome: inboundOrderRecords.reviewOutcome,
+        externalReference: inboundOrderRecords.externalReference,
+        receivedAt: inboundOrderRecords.receivedAt,
+        archivedAt: inboundOrderRecords.archivedAt,
+        createdAt: inboundOrderRecords.createdAt,
+        subject: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'subject', ${inboundOrderRecords.normalizedPayloadJson}->>'subject', ${inboundOrderRecords.extractedOrderJson}->>'subject', ${inboundOrderRecords.externalReference})`,
+      })
+      .from(inboundOrderRecords)
+      .where(and(
+        eq(inboundOrderRecords.organizationId, args.organizationId),
+        eq(inboundOrderRecords.sourceType, "email"),
+        sql`(${inboundOrderRecords.status} = 'ignored' or ${inboundOrderRecords.reviewOutcome} = 'ignored')`,
+      ))
+      .orderBy(desc(inboundOrderRecords.createdAt))
+      .limit(limit);
+
+    const subjectRecords = subjectPattern
+      ? await this.dbInstance
+        .select({
+          id: inboundOrderRecords.id,
+          sourceId: inboundOrderRecords.sourceId,
+          sourceRecordId: inboundOrderRecords.sourceRecordId,
+          sourceMessageId: inboundOrderRecords.sourceMessageId,
+          status: inboundOrderRecords.status,
+          reviewOutcome: inboundOrderRecords.reviewOutcome,
+          externalReference: inboundOrderRecords.externalReference,
+          idempotencyKey: inboundOrderRecords.idempotencyKey,
+          payloadHash: inboundOrderRecords.payloadHash,
+          duplicateScore: inboundOrderRecords.duplicateScore,
+          receivedAt: inboundOrderRecords.receivedAt,
+          archivedAt: inboundOrderRecords.archivedAt,
+          createdAt: inboundOrderRecords.createdAt,
+          subject: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'subject', ${inboundOrderRecords.normalizedPayloadJson}->>'subject', ${inboundOrderRecords.extractedOrderJson}->>'subject', ${inboundOrderRecords.externalReference})`,
+          senderEmail: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->'sender'->>'email', ${inboundOrderRecords.normalizedPayloadJson}->'sender'->>'email')`,
+          mailboxEmail: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->'mailbox'->>'emailAddress', ${inboundOrderRecords.normalizedPayloadJson}->'source'->>'mailboxEmail')`,
+        })
+        .from(inboundOrderRecords)
+        .where(and(
+          eq(inboundOrderRecords.organizationId, args.organizationId),
+          eq(inboundOrderRecords.sourceType, "email"),
+          sql`(
+            ${inboundOrderRecords.externalReference} ilike ${subjectPattern}
+            or ${inboundOrderRecords.sourceLabel} ilike ${subjectPattern}
+            or ${inboundOrderRecords.sourceRecordId} ilike ${subjectPattern}
+            or ${inboundOrderRecords.sourceMessageId} ilike ${subjectPattern}
+            or ${inboundOrderRecords.rawPayloadJson}::text ilike ${subjectPattern}
+            or ${inboundOrderRecords.normalizedPayloadJson}::text ilike ${subjectPattern}
+            or ${inboundOrderRecords.extractedOrderJson}::text ilike ${subjectPattern}
+          )`,
+        ))
+        .orderBy(desc(inboundOrderRecords.createdAt))
+        .limit(limit)
+      : [];
+
+    const subjectFiles = subjectPattern
+      ? await this.dbInstance
+        .select({
+          id: inboundOrderFiles.id,
+          inboundRecordId: inboundOrderFiles.inboundRecordId,
+          sourceFilename: inboundOrderFiles.sourceFilename,
+          role: inboundOrderFiles.role,
+          mimeType: inboundOrderFiles.mimeType,
+          sizeBytes: inboundOrderFiles.sizeBytes,
+          status: inboundOrderFiles.status,
+          providerAttachmentId: inboundOrderFiles.providerAttachmentId,
+          providerMessageId: inboundOrderFiles.providerMessageId,
+          metadataJson: inboundOrderFiles.metadataJson,
+          reviewNotes: inboundOrderFiles.reviewNotes,
+          createdAt: inboundOrderFiles.createdAt,
+          recordSubject: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'subject', ${inboundOrderRecords.normalizedPayloadJson}->>'subject', ${inboundOrderRecords.extractedOrderJson}->>'subject', ${inboundOrderRecords.externalReference})`,
+        })
+        .from(inboundOrderFiles)
+        .innerJoin(inboundOrderRecords, eq(inboundOrderFiles.inboundRecordId, inboundOrderRecords.id))
+        .where(and(
+          eq(inboundOrderFiles.organizationId, args.organizationId),
+          eq(inboundOrderRecords.sourceType, "email"),
+          sql`(
+            ${inboundOrderFiles.sourceFilename} ilike ${subjectPattern}
+            or ${inboundOrderFiles.providerMessageId} ilike ${subjectPattern}
+            or ${inboundOrderFiles.providerAttachmentId} ilike ${subjectPattern}
+            or ${inboundOrderFiles.reviewNotes} ilike ${subjectPattern}
+            or ${inboundOrderFiles.metadataJson}::text ilike ${subjectPattern}
+            or ${inboundOrderRecords.externalReference} ilike ${subjectPattern}
+            or ${inboundOrderRecords.rawPayloadJson}::text ilike ${subjectPattern}
+            or ${inboundOrderRecords.normalizedPayloadJson}::text ilike ${subjectPattern}
+          )`,
+        ))
+        .orderBy(desc(inboundOrderFiles.createdAt))
+        .limit(limit)
+      : [];
+
+    return {
+      mailboxes,
+      ignoreRules,
+      recentCreatedRecords,
+      recentFiles,
+      recentFailedDiagnostics,
+      recentIgnoredDiagnostics,
+      subjectRecords,
+      subjectFiles,
+    };
   }
 
   async getInboundOrder(organizationId: string, inboundRecordId: string): Promise<InboundOrderRecord | null> {

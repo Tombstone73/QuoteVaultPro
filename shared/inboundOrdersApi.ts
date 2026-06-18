@@ -510,6 +510,61 @@ export type InboundOrderStatusUpdateRequest = z.infer<typeof inboundOrderStatusU
 export type InboundOrderListQuery = z.infer<typeof inboundOrderListQuerySchema>;
 export type InboundOrderStatusGroup = z.infer<typeof inboundOrderStatusGroupSchema>;
 
+export type InboundEmailPullDiagnosticsResponse = {
+  success: boolean;
+  data: {
+    organizationId: string;
+    generatedAt: string;
+    subject: string | null;
+    enabledMailboxCount: number;
+    mailboxes: Array<{
+      id: string;
+      provider: string;
+      name: string;
+      emailAddress: string;
+      enabled: boolean;
+      isDefault: boolean;
+      lastPulledAt: string | null;
+      lastPullStatus: string | null;
+      lastPullError: string | null;
+      latestPullSummary: unknown | null;
+    }>;
+    latestPullSummary: unknown | null;
+    recentFailedMessageDiagnostics: Array<Record<string, unknown>>;
+    recentIgnoredMessageDiagnostics: Array<Record<string, unknown>>;
+    recentCreatedInboundRecords: Array<Record<string, unknown>>;
+    recentInboundFiles: Array<Record<string, unknown>>;
+    ignoreRuleCount: number;
+    activeIgnoreRules: Array<{
+      id: string;
+      ruleType: InboundEmailIgnoreRuleTypeValue;
+      ruleValuePreview: string;
+      enabled: boolean;
+      matchCount: number;
+      lastMatchedAt: string | null;
+      notes: string | null;
+    }>;
+    subjectSearch: {
+      provided: boolean;
+      found: boolean;
+      matchingRecords: Array<Record<string, unknown>>;
+      matchingFiles: Array<Record<string, unknown>>;
+      matchingIgnoreRules: Array<Record<string, unknown>>;
+      duplicateDetection: {
+        durableSkippedMessageLogsStored: boolean;
+        possibleDuplicateRecords: Array<Record<string, unknown>>;
+      };
+    };
+    storageNotes: {
+      latestPullSummaryStored: boolean;
+      perMessageFailureDiagnosticsStored: boolean;
+      ignoredMessageDiagnosticsStored: boolean;
+      duplicateSkipDiagnosticsStored: boolean;
+    };
+  };
+  message?: string;
+};
+
 export type InboundOrderConvertToOrderResponse = {
   success: boolean;
   data: {
