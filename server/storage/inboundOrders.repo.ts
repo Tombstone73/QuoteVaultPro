@@ -437,6 +437,23 @@ export class InboundOrdersRepository {
       .orderBy(asc(inboundEmailIgnoreRules.ruleType), asc(inboundEmailIgnoreRules.ruleValue));
   }
 
+  async getEmailIgnoreRuleByTypeValue(args: {
+    organizationId: string;
+    ruleType: InboundEmailIgnoreRuleType;
+    ruleValue: string;
+  }): Promise<InboundEmailIgnoreRule | null> {
+    const [rule] = await this.dbInstance
+      .select()
+      .from(inboundEmailIgnoreRules)
+      .where(and(
+        eq(inboundEmailIgnoreRules.organizationId, args.organizationId),
+        eq(inboundEmailIgnoreRules.ruleType, args.ruleType),
+        eq(inboundEmailIgnoreRules.ruleValue, args.ruleValue),
+      ))
+      .limit(1);
+    return rule ?? null;
+  }
+
   async createEmailIgnoreRule(values: CreateInboundEmailIgnoreRuleValues): Promise<InboundEmailIgnoreRule> {
     const ruleValue = values.ruleValue.trim();
     const [created] = await this.dbInstance
@@ -470,10 +487,14 @@ export class InboundOrdersRepository {
   async updateEmailIgnoreRule(args: {
     organizationId: string;
     id: string;
+    ruleType?: InboundEmailIgnoreRuleType;
+    ruleValue?: string;
     enabled?: boolean;
     notes?: string | null;
   }): Promise<InboundEmailIgnoreRule | null> {
     const patch: Partial<typeof inboundEmailIgnoreRules.$inferInsert> = { updatedAt: new Date() };
+    if (args.ruleType) patch.ruleType = args.ruleType;
+    if (typeof args.ruleValue === "string") patch.ruleValue = args.ruleValue.trim();
     if (typeof args.enabled === "boolean") patch.enabled = args.enabled;
     if ("notes" in args) patch.notes = args.notes ?? null;
 

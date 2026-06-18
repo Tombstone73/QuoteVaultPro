@@ -438,30 +438,73 @@ function InboundEmailIgnoreRulesCard() {
   const [ruleType, setRuleType] = useState<InboundEmailIgnoreRuleTypeValue>("sender_email_exact");
   const [ruleValue, setRuleValue] = useState("");
   const [notes, setNotes] = useState("");
+  const [enabled, setEnabled] = useState(true);
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const rules = rulesQuery.data?.rules ?? [];
   const isMutating = createRule.isPending || updateRule.isPending || deleteRule.isPending;
+  const editingRule = rules.find((rule) => rule.id === editingRuleId) ?? null;
+
+  const normalizeRuleValue = (type: InboundEmailIgnoreRuleTypeValue, value: string) => (
+    type === "sender_email_exact" || type === "sender_domain" ? value.trim().toLowerCase() : value.trim()
+  );
+
+  const resetForm = () => {
+    setRuleType("sender_email_exact");
+    setRuleValue("");
+    setNotes("");
+    setEnabled(true);
+    setEditingRuleId(null);
+  };
+
+  const beginEdit = (rule: typeof rules[number]) => {
+    setEditingRuleId(rule.id);
+    setRuleType(rule.ruleType);
+    setRuleValue(rule.ruleValue);
+    setNotes(rule.notes ?? "");
+    setEnabled(rule.enabled);
+  };
 
   const submitRule = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const trimmed = ruleValue.trim();
-    if (!trimmed) return;
-    createRule.mutate({
+    const normalizedValue = normalizeRuleValue(ruleType, ruleValue);
+    if (!normalizedValue) {
+      toast({ title: "Rule value is required", description: "Enter an email, domain, exact subject, or subject fragment.", variant: "destructive" });
+      return;
+    }
+    const duplicate = rules.find((rule) => (
+      rule.id !== editingRuleId
+      && rule.enabled
+      && enabled
+      && rule.ruleType === ruleType
+      && rule.ruleValue === normalizedValue
+    ));
+    if (duplicate) {
+      toast({ title: "Duplicate ignore rule", description: "An enabled rule already exists for this type and value.", variant: "destructive" });
+      return;
+    }
+    const payload = {
       ruleType,
-      ruleValue: trimmed,
+      ruleValue: normalizedValue,
       notes: notes.trim() || null,
-    }, {
+      enabled,
+    };
+    const mutationOptions = {
       onSuccess: () => {
-        setRuleValue("");
-        setNotes("");
+        resetForm();
         toast({
-          title: "Inbound ignore rule saved",
+          title: editingRuleId ? "Inbound ignore rule updated" : "Inbound ignore rule saved",
           description: "Future matching emails will be skipped before TEMP_INBOUND records are created.",
         });
       },
       onError: (error: Error) => {
         toast({ title: "Failed to save ignore rule", description: error.message, variant: "destructive" });
       },
-    });
+    };
+    if (editingRuleId) {
+      updateRule.mutate({ ruleId: editingRuleId, ...payload }, mutationOptions);
+    } else {
+      createRule.mutate(payload, mutationOptions);
+    }
   };
 
   const toggleRule = (ruleId: string, enabled: boolean) => {
@@ -496,6 +539,12 @@ function InboundEmailIgnoreRulesCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="flex justify-end">
+          <Button type="button" variant="outline" onClick={resetForm} disabled={isMutating && !editingRuleId}>
+            <Plus className="mr-2 h-4 w-4" />
+            Add Ignore Rule
+          </Button>
+        </div>
         <form onSubmit={submitRule} className="grid gap-3 md:grid-cols-[220px_1fr_auto]">
           <select
             className="h-10 rounded-md border border-input bg-background px-3 text-sm"
@@ -515,9 +564,13 @@ function InboundEmailIgnoreRulesCard() {
             disabled={isMutating}
           />
           <Button type="submit" disabled={isMutating || !ruleValue.trim()}>
-            <Plus className="mr-2 h-4 w-4" />
-            Add Rule
+            {editingRule ? <Edit className="mr-2 h-4 w-4" /> : <Plus className="mr-2 h-4 w-4" />}
+            {editingRule ? "Save Rule" : "Add Rule"}
           </Button>
+          <label className="flex items-center gap-2 text-sm text-foreground md:col-span-3">
+            <Switch checked={enabled} disabled={isMutating} onCheckedChange={setEnabled} aria-label="Ignore rule enabled" />
+            Enabled
+          </label>
           <Textarea
             className="md:col-span-3"
             value={notes}
@@ -526,6 +579,13 @@ function InboundEmailIgnoreRulesCard() {
             rows={2}
             disabled={isMutating}
           />
+          {editingRule && (
+            <div className="md:col-span-3">
+              <Button type="button" size="sm" variant="ghost" onClick={resetForm} disabled={isMutating}>
+                Cancel edit
+              </Button>
+            </div>
+          )}
         </form>
 
         {rulesQuery.isLoading ? (
@@ -572,16 +632,28 @@ function InboundEmailIgnoreRulesCard() {
                       <span className="block whitespace-normal break-words">{rule.notes || "-"}</span>
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        disabled={isMutating}
-                        onClick={() => removeRule(rule.id, rule.ruleValue)}
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete
-                      </Button>
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          disabled={isMutating}
+                          onClick={() => beginEdit(rule)}
+                        >
+                          <Edit className="mr-2 h-4 w-4" />
+                          Edit
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          disabled={isMutating}
+                          onClick={() => removeRule(rule.id, rule.ruleValue)}
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Delete
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}

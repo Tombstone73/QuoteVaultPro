@@ -88,6 +88,24 @@ function inboundEvent(overrides: Record<string, any> = {}) {
   };
 }
 
+function inboundEmailIgnoreRule(overrides: Record<string, any> = {}) {
+  const now = new Date("2026-06-17T12:00:00.000Z");
+  return {
+    id: "rule_1",
+    organizationId: "org_1",
+    enabled: true,
+    ruleType: "sender_email_exact",
+    ruleValue: "notifications@example.com",
+    notes: "Processor notice",
+    matchCount: 0,
+    lastMatchedAt: null,
+    createdByUserId: "user_1",
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
 function inboundDetail(record = inboundRecord()) {
   return {
     record,
@@ -344,6 +362,10 @@ describe("inbound order routes", () => {
     markReviewDraftReady: jest.fn<(...args: any[]) => Promise<any>>(),
     reopenReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
     refreshReviewDraftFromLatestParse: jest.fn<(...args: any[]) => Promise<any>>(),
+    listEmailIgnoreRules: jest.fn<(...args: any[]) => Promise<any>>(),
+    createEmailIgnoreRule: jest.fn<(...args: any[]) => Promise<any>>(),
+    updateEmailIgnoreRule: jest.fn<(...args: any[]) => Promise<any>>(),
+    deleteEmailIgnoreRule: jest.fn<(...args: any[]) => Promise<any>>(),
   };
   const parsingService = {
     parseInboundOrderRecord: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -694,6 +716,98 @@ describe("inbound order routes", () => {
     expect(serialized).not.toContain("authJson");
     expect(serialized).not.toContain("refreshToken");
     expect(serialized).not.toContain("secret_refresh_token");
+  });
+
+  test("creates a manual inbound email ignore rule with editable fields", async () => {
+    service.createEmailIgnoreRule.mockResolvedValue(inboundEmailIgnoreRule({
+      ruleType: "sender_domain",
+      ruleValue: "payments.example.com",
+      enabled: false,
+      notes: "Processor notices",
+    }));
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/email/ignore-rules")
+      .send({
+        ruleType: "sender_domain",
+        ruleValue: "Payments.Example.COM",
+        enabled: false,
+        notes: "Processor notices",
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data).toMatchObject({
+      ruleType: "sender_domain",
+      ruleValue: "payments.example.com",
+      enabled: false,
+      notes: "Processor notices",
+      createdAt: "2026-06-17T12:00:00.000Z",
+      updatedAt: "2026-06-17T12:00:00.000Z",
+    });
+    expect(service.createEmailIgnoreRule).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      ruleType: "sender_domain",
+      ruleValue: "Payments.Example.COM",
+      enabled: false,
+      notes: "Processor notices",
+    });
+  });
+
+  test("updates manual inbound email ignore rule type, value, notes, and enabled state", async () => {
+    service.updateEmailIgnoreRule.mockResolvedValue(inboundEmailIgnoreRule({
+      id: "rule_1",
+      ruleType: "subject_contains",
+      ruleValue: "New submission from",
+      enabled: true,
+      notes: "Website forms",
+    }));
+
+    const response = await request(buildApp(service))
+      .patch("/api/inbound-orders/email/ignore-rules/rule_1")
+      .send({
+        ruleType: "subject_contains",
+        ruleValue: "New submission from",
+        enabled: true,
+        notes: "Website forms",
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      id: "rule_1",
+      ruleType: "subject_contains",
+      ruleValue: "New submission from",
+      enabled: true,
+      notes: "Website forms",
+    });
+    expect(service.updateEmailIgnoreRule).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      id: "rule_1",
+      ruleType: "subject_contains",
+      ruleValue: "New submission from",
+      enabled: true,
+      notes: "Website forms",
+    });
+  });
+
+  test("returns safe conflict JSON for duplicate inbound email ignore rules", async () => {
+    service.createEmailIgnoreRule.mockRejectedValue(new InboundOrderTransitionError(
+      "An enabled inbound email ignore rule already exists for this type and value.",
+      409,
+    ));
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/email/ignore-rules")
+      .send({
+        ruleType: "sender_email_exact",
+        ruleValue: "notifications@example.com",
+      });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({
+      success: false,
+      message: "An enabled inbound email ignore rule already exists for this type and value.",
+    });
   });
 
   test("creates a manual TEMP inbound record with needs_review status", async () => {
