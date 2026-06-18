@@ -312,6 +312,7 @@ export const inboundOrderReviewedCustomerSchema = z.object({
 });
 
 export const inboundOrderReviewedOrderSchema = z.object({
+  intent: z.enum(["quote", "order", "unknown"]).default("unknown"),
   poNumber: z.string().trim().max(255).nullable().default(null),
   dueDate: z.string().trim().max(80).nullable().default(null),
   shipMethod: z.string().trim().max(160).nullable().default(null),

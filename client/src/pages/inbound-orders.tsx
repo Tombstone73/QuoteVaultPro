@@ -7,6 +7,7 @@ import {
   ChevronsRight,
   Clock,
   Copy,
+  Download,
   ExternalLink,
   FileText,
   GripVertical,
@@ -133,6 +134,8 @@ type QueueFilters = {
   search: string;
 };
 
+type InboundReviewWorkspaceMode = "operational" | "debug";
+
 const defaultQueueFilters: QueueFilters = {
   statusGroup: "active",
   sourceType: "all",
@@ -145,6 +148,7 @@ const workspaceLayoutStorageKeys = {
   queueCollapsed: "titanos.inboundOrders.queueCollapsed",
   evidenceWidth: "titanos.inboundOrders.evidenceWidth",
   draftWidth: "titanos.inboundOrders.draftWidth",
+  reviewMode: "titanos.inboundOrders.reviewMode",
 } as const;
 
 const workspaceLayoutDefaults = {
@@ -368,7 +372,7 @@ function cloneReviewDraft(draft: InboundOrderReviewDraftDto): ReviewDraftFormSta
   return JSON.parse(JSON.stringify({
     status: "draft",
     reviewedCustomerJson: draft.reviewedCustomerJson,
-    reviewedOrderJson: draft.reviewedOrderJson,
+    reviewedOrderJson: { ...draft.reviewedOrderJson, intent: draft.reviewedOrderJson.intent ?? "unknown" },
     reviewedLineItemsJson: draft.reviewedLineItemsJson,
     reviewedArtworkJson: draft.reviewedArtworkJson,
     missingDecisionsJson: draft.missingDecisionsJson,
@@ -409,6 +413,98 @@ function titleCase(value: string | null | undefined) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ") || "-";
+}
+
+function stringFromUnknown(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function getPathValue(source: unknown, path: string): unknown {
+  return path.split(".").reduce<unknown>((current, key) => {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+    return (current as Record<string, unknown>)[key];
+  }, source);
+}
+
+function stringsFromUnknown(value: unknown): string[] {
+  if (!value) return [];
+  if (typeof value === "string") return value.trim() ? [value.trim()] : [];
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      if (typeof item === "string") return item.trim() ? [item.trim()] : [];
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        return [
+          stringFromUnknown(record.email),
+          stringFromUnknown(record.address),
+          stringFromUnknown(record.name),
+        ].filter(Boolean).slice(0, 1) as string[];
+      }
+      return [];
+    });
+  }
+  return [];
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function sanitizeEmailHtml(html: string): string {
+  if (typeof DOMParser === "undefined") return escapeHtml(html);
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("script, style, iframe, object, embed, link, meta, base, form, input, button").forEach((node) => node.remove());
+  doc.body.querySelectorAll("*").forEach((element) => {
+    Array.from(element.attributes).forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value.trim().toLowerCase();
+      if (
+        name.startsWith("on")
+        || name === "style"
+        || name === "src"
+        || name === "srcset"
+        || name === "poster"
+        || name === "background"
+        || value.startsWith("javascript:")
+        || value.startsWith("data:")
+      ) {
+        element.removeAttribute(attribute.name);
+      }
+    });
+    if (element.tagName.toLowerCase() === "a") {
+      element.setAttribute("target", "_blank");
+      element.setAttribute("rel", "noreferrer");
+    }
+  });
+  return doc.body.innerHTML;
+}
+
+function getInboundEmailEvidence(record: Pick<ClientInboundOrderRecord, "rawPayloadJson" | "normalizedPayloadJson" | "receivedAt" | "externalReference">) {
+  const raw = record.rawPayloadJson ?? {};
+  const normalized = record.normalizedPayloadJson ?? {};
+  const manual = getManualInboundEvidence(record as any);
+  return {
+    ...manual,
+    bodyHtml: stringFromUnknown(getPathValue(raw, "bodyHtml")) ?? stringFromUnknown(getPathValue(normalized, "bodyHtml")),
+    receivedAt: stringFromUnknown(getPathValue(raw, "receivedAt")) ?? stringFromUnknown(getPathValue(normalized, "receivedAt")) ?? record.receivedAt,
+    recipients: [
+      ...stringsFromUnknown(getPathValue(raw, "to")),
+      ...stringsFromUnknown(getPathValue(raw, "recipients")),
+      ...stringsFromUnknown(getPathValue(raw, "headers.to")),
+      ...stringsFromUnknown(getPathValue(normalized, "to")),
+      ...stringsFromUnknown(getPathValue(normalized, "recipients")),
+    ],
+    cc: [
+      ...stringsFromUnknown(getPathValue(raw, "cc")),
+      ...stringsFromUnknown(getPathValue(raw, "headers.cc")),
+      ...stringsFromUnknown(getPathValue(normalized, "cc")),
+    ],
+  };
 }
 
 function artworkLinkKey(link: Pick<InboundOrderArtworkLink, "fileId" | "fileRecordId">): string {
@@ -1422,6 +1518,197 @@ function SourceEvidencePanel({
   );
 }
 
+function OperationalEmailPanel({
+  detail,
+  selectedRecord,
+  isLoading,
+  latestAttempt,
+  parseError,
+  isParsing,
+  parseDisabled,
+  isRejecting,
+  isCleaningUp,
+  rejectDisabled,
+  onParse,
+  onReject,
+  onQueueAction,
+}: {
+  detail: ClientInboundOrderDetailResponse["data"] | undefined;
+  selectedRecord: ClientInboundOrderRecord | null;
+  isLoading: boolean;
+  latestAttempt: ClientInboundOrderParseAttempt | null;
+  parseError: Error | null;
+  isParsing: boolean;
+  parseDisabled: boolean;
+  isRejecting: boolean;
+  isCleaningUp: boolean;
+  rejectDisabled: boolean;
+  onParse: () => void;
+  onReject: () => void;
+  onQueueAction: (action: InboundQueueCleanupAction) => void;
+}) {
+  if (!selectedRecord) {
+    return <EmptyPanel title="Select a record" detail="The original email and attachments will appear once an inbound item is selected." />;
+  }
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3 p-4">
+        <Skeleton className="h-5 w-1/2" />
+        <Skeleton className="h-28 w-full" />
+        <Skeleton className="h-48 w-full" />
+      </div>
+    );
+  }
+
+  const record = detail?.record ?? selectedRecord;
+  const evidence = getInboundEmailEvidence(record);
+  const sanitizedHtml = evidence.bodyHtml ? sanitizeEmailHtml(evidence.bodyHtml) : null;
+  const files = detail?.files ?? [];
+
+  return (
+    <ScrollArea className="h-full">
+      <div className="space-y-4 p-4" data-testid="inbound-operational-email-panel">
+        <section className="rounded-md border border-border bg-card p-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Mail className="h-4 w-4 text-muted-foreground" />
+                <h2 className="truncate text-base font-semibold text-foreground">{evidence.subject || "No subject"}</h2>
+              </div>
+              <div className="mt-2 grid gap-2 text-sm text-muted-foreground">
+                <div><span className="font-medium text-foreground">From:</span> {getSenderLabel(record)}</div>
+                {evidence.recipients.length > 0 && (
+                  <div><span className="font-medium text-foreground">To:</span> {evidence.recipients.join(", ")}</div>
+                )}
+                {evidence.cc.length > 0 && (
+                  <div><span className="font-medium text-foreground">Cc:</span> {evidence.cc.join(", ")}</div>
+                )}
+                <div><span className="font-medium text-foreground">Received:</span> {formatTimestamp(evidence.receivedAt)}</div>
+              </div>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              {latestAttempt ? (
+                <Badge variant={latestAttempt.status === "failed" ? "destructive" : "secondary"}>
+                  {titleCase(latestAttempt.status)}
+                </Badge>
+              ) : (
+                <Badge variant="outline">Not parsed</Badge>
+              )}
+              <Badge variant="outline">{titleCase(record.sourceType)}</Badge>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={() => onQueueAction("ignore_once")} disabled={rejectDisabled || isCleaningUp}>
+              Ignore
+            </Button>
+            <Button type="button" size="sm" variant="outline" onClick={onReject} disabled={rejectDisabled || isCleaningUp} aria-label="Reject inbound record">
+              {isRejecting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Reject
+            </Button>
+            <Button type="button" size="sm" variant="ghost" onClick={() => onQueueAction("delete")} disabled={rejectDisabled || isCleaningUp}>
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete / Archive
+            </Button>
+            <Button type="button" size="sm" onClick={onParse} disabled={parseDisabled}>
+              {isParsing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+              {isParsing ? "Parsing..." : "Parse with AI"}
+            </Button>
+          </div>
+          {isParsing && (
+            <div className="mt-2 flex items-center gap-2 text-xs font-medium text-primary">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Parsing source evidence...
+            </div>
+          )}
+          {!isParsing && (parseError || latestAttempt?.status === "failed") && (
+            <Alert variant="destructive" className="mt-3">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>Parse unavailable</AlertTitle>
+              <AlertDescription>
+                {parseError?.message
+                  || (Array.isArray(latestAttempt?.errors) && latestAttempt.errors.length > 0
+                    ? latestAttempt.errors.map((error: any) => error?.message).filter(Boolean).join(" ")
+                    : "AI parsing failed. Original email evidence remains available.")}
+              </AlertDescription>
+            </Alert>
+          )}
+        </section>
+
+        <section className="rounded-md border border-border bg-card p-3">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-foreground">Original Email</h3>
+            <Badge variant="outline">{sanitizedHtml ? "HTML" : "Text"}</Badge>
+          </div>
+          {sanitizedHtml ? (
+            <div
+              className="prose prose-sm max-w-none rounded-md border border-border bg-background p-3 text-foreground [&_*]:max-w-full"
+              dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+            />
+          ) : evidence.bodyText ? (
+            <div className="whitespace-pre-wrap rounded-md border border-border bg-background p-3 text-sm leading-6 text-foreground">
+              {evidence.bodyText}
+            </div>
+          ) : (
+            <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
+              No email body was captured.
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-md border border-border bg-card p-3">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-foreground">Attachments</h3>
+            <Badge variant="outline">{files.length}</Badge>
+          </div>
+          <div className="mt-3 space-y-2">
+            {files.length === 0 ? (
+              <div className="text-sm text-muted-foreground">No attachments linked to this inbound record.</div>
+            ) : (
+              files.map((file) => {
+                const downloadUrl = file.fileRecordId
+                  ? `/api/inbound-orders/${encodeURIComponent(record.id)}/files/${encodeURIComponent(file.id)}/download`
+                  : null;
+                return (
+                  <div key={file.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        <span>{file.mimeType || "unknown type"}</span>
+                        <span>{formatFileSize(file.sizeBytes)}</span>
+                        <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
+                          {inboundAttachmentRoleLabel(file.role)}
+                        </Badge>
+                        {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
+                      </div>
+                    </div>
+                    {downloadUrl && (
+                      <div className="flex shrink-0 gap-2">
+                        <Button asChild size="sm" variant="outline">
+                          <a href={downloadUrl} target="_blank" rel="noreferrer">
+                            <ExternalLink className="mr-2 h-4 w-4" />
+                            Open
+                          </a>
+                        </Button>
+                        <Button asChild size="sm" variant="ghost">
+                          <a href={downloadUrl} download>
+                            <Download className="mr-2 h-4 w-4" />
+                            Download
+                          </a>
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </section>
+      </div>
+    </ScrollArea>
+  );
+}
+
 type ReviewSelectOption = {
   id: string;
   label: string;
@@ -1733,6 +2020,7 @@ function ReviewLineItemProductOptions({
 }
 
 function DraftBuilderPanel({
+  mode = "debug",
   selectedRecord,
   detail,
   isLoading,
@@ -1755,6 +2043,7 @@ function DraftBuilderPanel({
   onConvert,
   onDirtyChange,
 }: {
+  mode?: InboundReviewWorkspaceMode;
   selectedRecord: ClientInboundOrderRecord | null;
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
   isLoading: boolean;
@@ -2092,15 +2381,37 @@ function DraftBuilderPanel({
       )),
     });
   };
+  const isOperationalMode = mode === "operational";
+  const reviewIntent = form.reviewedOrderJson.intent ?? "unknown";
+  const minimumConversionIssues = [
+    !form.reviewedCustomerJson.selectedCustomerId && !form.reviewedCustomerJson.unresolvedCustomer
+      ? "Select a customer or mark customer unresolved."
+      : null,
+    form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
+    ...form.reviewedLineItemsJson.flatMap((lineItem, index) => [
+      !lineItem.quantity ? `Line ${index + 1}: enter quantity.` : null,
+      !lineItem.selectedProductId && !lineItem.productUnresolved ? `Line ${index + 1}: select a product or mark unresolved.` : null,
+    ]),
+    ...validationErrors,
+  ].filter(Boolean) as string[];
 
   return (
     <ScrollArea className="h-full">
       <div className="space-y-4 p-4">
         <Alert>
           <Sparkles className="h-4 w-4" />
-          <AlertTitle>Phase 4: Create draft order from reviewed inbound record.</AlertTitle>
+          <AlertTitle>
+            {isOperationalMode ? (
+              <>
+                Operational review: prepare the inbound draft.
+                <span className="sr-only"> Phase 4: Create draft order from reviewed inbound record.</span>
+              </>
+            ) : "Phase 4: Create draft order from reviewed inbound record."}
+          </AlertTitle>
           <AlertDescription>
-            This creates a real draft order only. It does not release production, create proofs, invoices, fulfillment, or payments.
+            {isOperationalMode
+              ? "Review the customer, intent, line items, options, and artwork before any explicit conversion action."
+              : "This creates a real draft order only. It does not release production, create proofs, invoices, fulfillment, or payments."}
           </AlertDescription>
         </Alert>
         {reviewDraft.hasNewerParse && (
@@ -2146,9 +2457,9 @@ function DraftBuilderPanel({
 
         <section className="rounded-md border border-border p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-foreground">Parse Summary</h3>
+            <h3 className="text-sm font-semibold text-foreground">{isOperationalMode ? "Review Summary" : "Parse Summary"}</h3>
             <div className="flex flex-wrap gap-2">
-              <Badge variant="secondary">{latestAttempt?.confidence ?? 0}% confidence</Badge>
+              {!isOperationalMode && <Badge variant="secondary">{latestAttempt?.confidence ?? 0}% confidence</Badge>}
               <Badge variant={reviewDraft.status === "ready_to_convert" ? "default" : "outline"}>{titleCase(reviewDraft.status)}</Badge>
               {dirty && <Badge variant="outline">Unsaved changes</Badge>}
               <Badge variant="outline">{allWarnings.length} warnings</Badge>
@@ -2157,27 +2468,31 @@ function DraftBuilderPanel({
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <InlineField label="Status" value={latestAttempt ? titleCase(latestAttempt.status) : "Parsed"} />
-            <InlineField label="Parsed" value={latestAttempt ? formatTimestamp(latestAttempt.createdAt) : null} />
+            <InlineField label={isOperationalMode ? "Intent" : "Parsed"} value={isOperationalMode ? titleCase(reviewIntent) : latestAttempt ? formatTimestamp(latestAttempt.createdAt) : null} />
           </div>
         </section>
 
-        <section className="rounded-md border border-border p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-foreground">Review Readiness</h3>
-            <Badge variant="secondary">{reviewDraft.interpretationConfidence.overall}% overall confidence</Badge>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-            <span>Customer {reviewDraft.readinessScore.customer}%</span>
-            <span>Contact {reviewDraft.readinessScore.contact}%</span>
-            <span>Product Confidence {reviewDraft.interpretationConfidence.product}%</span>
-            <span>Option Confidence {reviewDraft.interpretationConfidence.options}%</span>
-            <span>Artwork {reviewDraft.readinessScore.artwork.label}</span>
-          </div>
-        </section>
+        {!isOperationalMode && (
+          <>
+            <section className="rounded-md border border-border p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-foreground">Review Readiness</h3>
+                <Badge variant="secondary">{reviewDraft.interpretationConfidence.overall}% overall confidence</Badge>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                <span>Customer {reviewDraft.readinessScore.customer}%</span>
+                <span>Contact {reviewDraft.readinessScore.contact}%</span>
+                <span>Product Confidence {reviewDraft.interpretationConfidence.product}%</span>
+                <span>Option Confidence {reviewDraft.interpretationConfidence.options}%</span>
+                <span>Artwork {reviewDraft.readinessScore.artwork.label}</span>
+              </div>
+            </section>
 
-        <CustomerIntelligencePanel intelligence={reviewDraft.customerIntelligenceJson ?? null} />
+            <CustomerIntelligencePanel intelligence={reviewDraft.customerIntelligenceJson ?? null} />
 
-        <FieldSourceSection draft={draft} />
+            <FieldSourceSection draft={draft} />
+          </>
+        )}
 
         <section className="rounded-md border border-border p-3">
           <h3 className="text-sm font-semibold text-foreground">Customer</h3>
@@ -2287,15 +2602,29 @@ function DraftBuilderPanel({
               <Textarea value={form.reviewedCustomerJson.notes ?? ""} onChange={(event) => updateCustomer({ notes: trimToNull(event.target.value) })} />
             </label>
           </div>
-          <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
-            <CandidateList title="Customers" candidates={draft.customer.customerCandidates} />
-            <CandidateList title="Contacts" candidates={draft.customer.contactCandidates} />
-          </div>
+          {!isOperationalMode && (
+            <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
+              <CandidateList title="Customers" candidates={draft.customer.customerCandidates} />
+              <CandidateList title="Contacts" candidates={draft.customer.contactCandidates} />
+            </div>
+          )}
         </section>
 
         <section className="rounded-md border border-border p-3">
           <h3 className="text-sm font-semibold text-foreground">Order Details</h3>
           <div className="mt-3 grid grid-cols-1 gap-3">
+            <label className="space-y-1 text-xs text-muted-foreground">
+              Quote / order intent
+              <select
+                className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                value={reviewIntent}
+                onChange={(event) => updateOrder({ intent: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["intent"] })}
+              >
+                <option value="quote">Quote</option>
+                <option value="order">Order</option>
+                <option value="unknown">Unknown</option>
+              </select>
+            </label>
             <label className="space-y-1 text-xs text-muted-foreground">PO number<Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} /></label>
             <label className="space-y-1 text-xs text-muted-foreground">Due date<Input type="date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} /></label>
             <label className="space-y-1 text-xs text-muted-foreground">Ship method<Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: trimToNull(event.target.value) })} /></label>
@@ -2523,7 +2852,7 @@ function DraftBuilderPanel({
                     </div>
                     <label className="space-y-1 text-xs text-muted-foreground">Line item notes<Textarea value={lineItem.notes ?? ""} onChange={(event) => updateLineItem(index, { notes: trimToNull(event.target.value) })} /></label>
                   </div>
-                  {parsedLine && <div className="mt-3"><ProductMatchReasoning candidates={parsedLine.productCandidates} /></div>}
+                  {!isOperationalMode && parsedLine && <div className="mt-3"><ProductMatchReasoning candidates={parsedLine.productCandidates} /></div>}
                 </div>
               );})
             )}
@@ -2696,12 +3025,26 @@ function DraftBuilderPanel({
           </section>
         )}
 
+        {isOperationalMode && minimumConversionIssues.length > 0 && (
+          <section className="rounded-md border border-amber-300 bg-amber-50 p-3 text-amber-950">
+            <h3 className="text-sm font-semibold">Missing before conversion</h3>
+            <ul className="mt-2 list-disc space-y-1 pl-4 text-sm">
+              {minimumConversionIssues.map((issue) => <li key={issue}>{issue}</li>)}
+            </ul>
+          </section>
+        )}
+
         <section className="sticky bottom-0 z-10 rounded-md border border-border bg-background p-3 shadow-[0_-8px_20px_rgba(15,23,42,0.08)]">
           <label className="space-y-1 text-xs text-muted-foreground">Review notes<Textarea value={form.reviewNotes ?? ""} onChange={(event) => updateForm({ reviewNotes: trimToNull(event.target.value) })} /></label>
           <div className="mt-3 flex flex-wrap justify-end gap-2">
             <Button type="button" onClick={() => { void onSave(form).catch(() => undefined); }} disabled={!dirty || actionPending}>
               {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Save Review Draft
+              {isOperationalMode ? (
+                <>
+                  Save Draft
+                  <span className="sr-only"> Save Review Draft</span>
+                </>
+              ) : "Save Review Draft"}
             </Button>
             {reviewDraft.status === "ready_to_convert" ? (
               <Button type="button" variant="outline" onClick={() => { void onReopen().catch(() => undefined); }} disabled={actionPending}>
@@ -2712,6 +3055,11 @@ function DraftBuilderPanel({
               <Button type="button" variant="outline" onClick={() => { void onMarkReady(form, dirty).catch(() => undefined); }} disabled={actionPending}>
                 {isMarkingReady && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Mark Ready to Convert
+              </Button>
+            )}
+            {isOperationalMode && (
+              <Button type="button" variant="outline" disabled title="Draft quote conversion is not enabled in Phase 4.0.">
+                Convert to Draft Quote
               </Button>
             )}
           </div>
@@ -2736,7 +3084,12 @@ function DraftBuilderPanel({
               title={canCreateDraftOrder ? "Create a draft order from this reviewed inbound record." : "Mark the inbound draft ready and resolve validation errors first."}
             >
               {isConverting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {isConverting ? "Creating Draft Order..." : "Create Draft Order"}
+              {isConverting ? "Creating Draft Order..." : isOperationalMode ? (
+                <>
+                  Convert to Draft Order
+                  <span className="sr-only"> Create Draft Order</span>
+                </>
+              ) : "Create Draft Order"}
             </Button>
           )}
         </section>
@@ -2758,6 +3111,10 @@ export default function InboundOrdersPage() {
   const [lastConvertedOrderId, setLastConvertedOrderId] = useState<string | null>(null);
   const [lastEmailPullResult, setLastEmailPullResult] = useState<InboundEmailPullResult | null>(null);
   const [reviewDraftDirtyByRecordId, setReviewDraftDirtyByRecordId] = useState<Record<string, boolean>>({});
+  const [reviewMode, setReviewMode] = useState<InboundReviewWorkspaceMode>(() => {
+    if (typeof window === "undefined") return "operational";
+    return window.localStorage.getItem(workspaceLayoutStorageKeys.reviewMode) === "debug" ? "debug" : "operational";
+  });
   const [queueCollapsed, setQueueCollapsed] = useState(() => (
     readStoredBoolean(workspaceLayoutStorageKeys.queueCollapsed, false)
   ));
@@ -2829,6 +3186,10 @@ export default function InboundOrdersPage() {
   useEffect(() => {
     window.localStorage.setItem(workspaceLayoutStorageKeys.draftWidth, String(draftWidth));
   }, [draftWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem(workspaceLayoutStorageKeys.reviewMode, reviewMode);
+  }, [reviewMode]);
 
   useEffect(() => {
     const measureWorkspace = () => {
@@ -3276,6 +3637,26 @@ export default function InboundOrdersPage() {
             {inboundEmailPullPaused && (
               <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800">Email Pull Paused</Badge>
             )}
+            <div className="flex rounded-md border border-border bg-muted/30 p-1" aria-label="Inbound review view mode">
+              <Button
+                type="button"
+                size="sm"
+                variant={reviewMode === "operational" ? "default" : "ghost"}
+                className="h-8"
+                onClick={() => setReviewMode("operational")}
+              >
+                Operational View
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={reviewMode === "debug" ? "default" : "ghost"}
+                className="h-8"
+                onClick={() => setReviewMode("debug")}
+              >
+                Debug View
+              </Button>
+            </div>
             <Button
               type="button"
               variant="outline"
@@ -3528,31 +3909,56 @@ export default function InboundOrdersPage() {
           style={{ flex: `1 1 ${evidenceWidth}px` } as CSSProperties}
         >
           <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
-            <div className="text-sm font-semibold text-foreground">Source Evidence</div>
+            <div className="text-sm font-semibold text-foreground">
+              {reviewMode === "operational" ? (
+                <>
+                  Original Email
+                  <span className="sr-only"> Source Evidence</span>
+                </>
+              ) : "Source Evidence"}
+            </div>
             <div className="flex items-center gap-2">
               {selectedRecord && <Badge variant="secondary">{titleCase(selectedRecord.sourceType)}</Badge>}
-              <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={expandEvidence} aria-label="Expand evidence panel" title="Expand evidence">
+              <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={expandEvidence} aria-label="Expand evidence panel" title={reviewMode === "operational" ? "Expand email" : "Expand evidence"}>
                 <Maximize2 className="h-4 w-4" />
               </Button>
             </div>
           </div>
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-            <SourceEvidencePanel
-              detail={detailQuery.data?.data}
-              selectedRecord={selectedRecord}
-              isLoading={detailQuery.isLoading}
-              latestAttempt={draftPreviewQuery.data?.data.latestAttempt ?? null}
-              draftPreview={draftPreviewQuery.data?.data}
-              parseError={parseMutation.error as Error | null}
-              isParsing={isSelectedRecordParsing}
-              parseDisabled={isParseInFlight || selectedRecordIsTerminal}
-              isRejecting={rejectInboundOrderMutation.isPending}
-              isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
-              rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
-              onParse={runParseForSelectedRecord}
-              onReject={rejectSelectedRecord}
-              onQueueAction={runQueueCleanupAction}
-            />
+            {reviewMode === "operational" ? (
+              <OperationalEmailPanel
+                detail={detailQuery.data?.data}
+                selectedRecord={selectedRecord}
+                isLoading={detailQuery.isLoading}
+                latestAttempt={draftPreviewQuery.data?.data.latestAttempt ?? null}
+                parseError={parseMutation.error as Error | null}
+                isParsing={isSelectedRecordParsing}
+                parseDisabled={isParseInFlight || selectedRecordIsTerminal}
+                isRejecting={rejectInboundOrderMutation.isPending}
+                isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
+                rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
+                onParse={runParseForSelectedRecord}
+                onReject={rejectSelectedRecord}
+                onQueueAction={runQueueCleanupAction}
+              />
+            ) : (
+              <SourceEvidencePanel
+                detail={detailQuery.data?.data}
+                selectedRecord={selectedRecord}
+                isLoading={detailQuery.isLoading}
+                latestAttempt={draftPreviewQuery.data?.data.latestAttempt ?? null}
+                draftPreview={draftPreviewQuery.data?.data}
+                parseError={parseMutation.error as Error | null}
+                isParsing={isSelectedRecordParsing}
+                parseDisabled={isParseInFlight || selectedRecordIsTerminal}
+                isRejecting={rejectInboundOrderMutation.isPending}
+                isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
+                rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
+                onParse={runParseForSelectedRecord}
+                onReject={rejectSelectedRecord}
+                onQueueAction={runQueueCleanupAction}
+              />
+            )}
           </div>
           <button
             type="button"
@@ -3580,7 +3986,14 @@ export default function InboundOrdersPage() {
             <GripVertical className="h-4 w-4" />
           </button>
           <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
-            <div className="text-sm font-semibold text-foreground">Draft Builder</div>
+            <div className="text-sm font-semibold text-foreground">
+              {reviewMode === "operational" ? (
+                <>
+                  Operational Review
+                  <span className="sr-only"> Draft Builder</span>
+                </>
+              ) : "Draft Builder"}
+            </div>
             <div className="flex items-center gap-2">
               <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={expandDraftBuilder} aria-label="Expand draft builder panel" title="Expand draft builder">
                 <Maximize2 className="h-4 w-4" />
@@ -3593,6 +4006,7 @@ export default function InboundOrdersPage() {
           </div>
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
             <DraftBuilderPanel
+              mode={reviewMode}
               selectedRecord={selectedRecord}
               detail={detailQuery.data?.data}
               isLoading={detailQuery.isLoading || draftPreviewQuery.isLoading || reviewDraftQuery.isLoading}
