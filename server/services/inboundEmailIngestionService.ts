@@ -61,6 +61,65 @@ export type InboundEmailProviderMessage = {
   attachments: InboundEmailAttachmentMetadata[];
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function attachmentMetadataFromUnknown(value: unknown): InboundEmailAttachmentMetadata | null {
+  if (!isRecord(value)) return null;
+  const filename = stringFromUnknown(value.filename) ?? stringFromUnknown(value.sourceFilename);
+  const mimeType = stringFromUnknown(value.mimeType);
+  const size = typeof value.size === "number"
+    ? value.size
+    : typeof value.sizeBytes === "number"
+      ? value.sizeBytes
+      : null;
+  const attachmentId = stringFromUnknown(value.attachmentId) ?? stringFromUnknown(value.providerAttachmentId);
+  const contentDisposition = stringFromUnknown(value.contentDisposition);
+  const contentId = stringFromUnknown(value.contentId);
+  const partId = stringFromUnknown(value.partId) ?? stringFromUnknown(value.gmailPartId);
+  const detectedBy = Array.isArray(value.detectedBy)
+    ? value.detectedBy.filter((entry): entry is string => typeof entry === "string")
+    : undefined;
+  if (!filename && !mimeType && !attachmentId && !contentDisposition && !contentId && !partId) return null;
+  return {
+    filename,
+    mimeType,
+    size,
+    attachmentId,
+    contentDisposition,
+    contentId,
+    partId,
+    detectedBy,
+  };
+}
+
+function attachmentMetadataListFromUnknown(value: unknown): InboundEmailAttachmentMetadata[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => attachmentMetadataFromUnknown(entry))
+    .filter((entry): entry is InboundEmailAttachmentMetadata => Boolean(entry));
+}
+
+function attachmentCandidatesFromPayload(payload: unknown): InboundEmailAttachmentMetadata[] {
+  if (!isRecord(payload)) return [];
+  return attachmentMetadataListFromUnknown(payload.attachments);
+}
+
+function dedupeAttachmentCandidates(attachments: InboundEmailAttachmentMetadata[]): InboundEmailAttachmentMetadata[] {
+  const seen = new Set<string>();
+  const deduped: InboundEmailAttachmentMetadata[] = [];
+  for (const attachment of attachments) {
+    const key = attachment.attachmentId
+      ? `id:${attachment.attachmentId}`
+      : `meta:${attachment.filename ?? ""}|${attachment.mimeType ?? ""}|${attachment.size ?? ""}|${attachment.partId ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(attachment);
+  }
+  return deduped;
+}
+
 type AttachmentIngestionDiagnostics = {
   messageId: string;
   subject: string | null;
@@ -1053,10 +1112,11 @@ export class InboundEmailIngestionService {
   }): Promise<void> {
     const existingFiles = await this.inboundRepository.listFiles(args.organizationId, args.record.id);
     const existingProviderAttachmentIds = new Set(existingFiles.map((file) => file.providerAttachmentId).filter((value): value is string => Boolean(value)));
-    const messageProviderAttachmentIds = args.message.attachments.map((attachment) => attachment.attachmentId).filter((value): value is string => Boolean(value));
+    const attachmentCandidates = this.attachmentCandidatesForIngestion(args.message, args.record);
+    const messageProviderAttachmentIds = attachmentCandidates.map((attachment) => attachment.attachmentId).filter((value): value is string => Boolean(value));
     const hasMissingProviderAttachment = messageProviderAttachmentIds.some((attachmentId) => !existingProviderAttachmentIds.has(attachmentId));
-    const hasAttachmentsWithoutProviderIds = args.message.attachments.some((attachment) => !attachment.attachmentId);
-    const shouldBackfill = args.message.attachments.length > 0 && (
+    const hasAttachmentsWithoutProviderIds = attachmentCandidates.some((attachment) => !attachment.attachmentId);
+    const shouldBackfill = attachmentCandidates.length > 0 && (
       existingFiles.length === 0
       || hasMissingProviderAttachment
       || (hasAttachmentsWithoutProviderIds && existingFiles.length === 0)
@@ -1070,8 +1130,8 @@ export class InboundEmailIngestionService {
         diagnostics: {
           messageId: args.message.messageId,
           subject: args.message.subject,
-          attachmentPartsDiscovered: args.message.attachments.length,
-          attachmentCandidatesDiscovered: args.message.attachments.length,
+          attachmentPartsDiscovered: attachmentCandidates.length,
+          attachmentCandidatesDiscovered: attachmentCandidates.length,
           attachmentIdsDiscovered: messageProviderAttachmentIds,
           attachmentPartsAttempted: 0,
           attachmentRowsCreated: 0,
@@ -1081,7 +1141,7 @@ export class InboundEmailIngestionService {
           downloadSuccesses: 0,
           downloadFailures: 0,
           skippedExistingProviderAttachments: messageProviderAttachmentIds.length,
-          skippedReason: args.message.attachments.length === 0
+          skippedReason: attachmentCandidates.length === 0
             ? "duplicate_message_no_attachment_parts_discovered"
             : "duplicate_message_existing_files_cover_provider_attachments",
           failures: [],
@@ -1101,6 +1161,18 @@ export class InboundEmailIngestionService {
     });
   }
 
+  private attachmentCandidatesForIngestion(
+    message: InboundEmailProviderMessage,
+    record: InboundOrderRecord,
+  ): InboundEmailAttachmentMetadata[] {
+    return dedupeAttachmentCandidates([
+      ...message.attachments,
+      ...attachmentCandidatesFromPayload(record.rawPayloadJson),
+      ...attachmentCandidatesFromPayload(record.normalizedPayloadJson),
+      ...attachmentCandidatesFromPayload(record.extractedOrderJson),
+    ]);
+  }
+
   private async ingestAttachments(args: {
     organizationId: string;
     actorUserId: string;
@@ -1110,12 +1182,13 @@ export class InboundEmailIngestionService {
     adapter: InboundEmailProviderAdapter;
     skippedReason: string | null;
   }): Promise<AttachmentIngestionDiagnostics> {
+    const attachmentCandidates = this.attachmentCandidatesForIngestion(args.message, args.record);
     const diagnostics: AttachmentIngestionDiagnostics = {
       messageId: args.message.messageId,
       subject: args.message.subject,
-      attachmentPartsDiscovered: args.message.attachments.length,
-      attachmentCandidatesDiscovered: args.message.attachments.length,
-      attachmentIdsDiscovered: args.message.attachments.map((attachment) => attachment.attachmentId).filter((value): value is string => Boolean(value)),
+      attachmentPartsDiscovered: attachmentCandidates.length,
+      attachmentCandidatesDiscovered: attachmentCandidates.length,
+      attachmentIdsDiscovered: attachmentCandidates.map((attachment) => attachment.attachmentId).filter((value): value is string => Boolean(value)),
       attachmentPartsAttempted: 0,
       attachmentRowsCreated: 0,
       storedRowsCreated: 0,
@@ -1127,9 +1200,9 @@ export class InboundEmailIngestionService {
       skippedReason: args.skippedReason,
       failures: [],
     };
-    if (args.message.attachments.length === 0) return diagnostics;
+    if (attachmentCandidates.length === 0) return diagnostics;
 
-    for (const attachment of args.message.attachments) {
+    for (const attachment of attachmentCandidates) {
       const providerAttachmentId = attachment.attachmentId ?? null;
       const providerMessageId = args.message.messageId;
       const classification = classifyInboundEmailAttachmentForMessage(attachment, args.message);
