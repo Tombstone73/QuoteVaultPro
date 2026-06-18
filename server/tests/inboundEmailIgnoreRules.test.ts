@@ -286,6 +286,7 @@ describe("inbound email pull diagnostics service", () => {
           bodyHtml: null,
         }],
         subjectFiles: [],
+        subjectPullDiagnostics: [],
       })),
     } as any);
 
@@ -354,6 +355,7 @@ describe("inbound email pull diagnostics service", () => {
         recentIgnoredDiagnostics: [],
         subjectRecords: [],
         subjectFiles: [],
+        subjectPullDiagnostics: [],
       })),
     } as any);
 
@@ -369,6 +371,65 @@ describe("inbound email pull diagnostics service", () => {
       downloadAttempts: 0,
       storedFileRowsCreated: 0,
       metadataOnlyRowsCreated: 0,
+    }));
+  });
+
+  test("uses subject-specific attachment diagnostics events for searched records", async () => {
+    const service = new InboundOrderService({
+      getEmailPullDiagnostics: jest.fn(async () => ({
+        mailboxes: [],
+        ignoreRules: [],
+        recentCreatedRecords: [],
+        recentFiles: [],
+        recentFailedDiagnostics: [],
+        recentPullDiagnostics: [],
+        recentIgnoredDiagnostics: [],
+        subjectRecords: [{
+          id: "inbound_email_1",
+          status: "needs_review",
+          reviewOutcome: null,
+          subject: "Order for Back Lit Signs for Family Church please. 2 different sizes",
+          sourceMessageId: "gmail_msg_1",
+          attachmentCount: 0,
+          rawAttachmentCount: 3,
+          rawAttachmentMetadata: [
+            { filename: "backlit-a.pdf", attachmentId: "att_a" },
+            { filename: "backlit-b.pdf", attachmentId: "att_b" },
+            { filename: "po.pdf", attachmentId: "att_po" },
+          ],
+          bodyText: "Attached artwork and PO.",
+          bodyHtml: null,
+        }],
+        subjectFiles: [],
+        subjectPullDiagnostics: [{
+          inboundRecordId: "inbound_email_1",
+          eventType: "email.attachment_ingestion_diagnostics",
+          metadataJson: {
+            attachmentPartsDiscovered: 3,
+            attachmentCandidatesDiscovered: 3,
+            attachmentIdsDiscovered: ["att_a", "att_b", "att_po"],
+            attachmentPartsAttempted: 3,
+            downloadAttempts: 2,
+            downloadSuccesses: 2,
+            downloadFailures: 0,
+            storedRowsCreated: 2,
+            metadataOnlyRowsCreated: 1,
+          },
+        }],
+      })),
+    } as any);
+
+    const result = await service.getEmailPullDiagnostics({
+      organizationId: "org_1",
+      subject: "Order for Back Lit Signs for Family Church please. 2 different sizes",
+    });
+
+    expect(result.subjectSearch.matchingRecords[0].attachmentPipelineDiagnostics).toEqual(expect.objectContaining({
+      attachmentCandidatesDiscovered: 3,
+      attachmentPartsAttempted: 3,
+      downloadAttempts: 2,
+      storedFileRowsCreated: 2,
+      metadataOnlyRowsCreated: 1,
     }));
   });
 });

@@ -783,15 +783,17 @@ export class InboundOrderService {
       })
       : [];
     const recentPullDiagnostics = raw.recentPullDiagnostics.map(sanitizeDiagnosticRow);
+    const subjectPullDiagnostics = raw.subjectPullDiagnostics.map(sanitizeDiagnosticRow);
+    const allPullDiagnostics = [...subjectPullDiagnostics, ...recentPullDiagnostics];
     const diagnosticFiles = [...raw.recentFiles, ...raw.subjectFiles].map(sanitizeDiagnosticRow);
     const matchingRecords = raw.subjectRecords.map((record) => ({
       ...enrichEmailRecordDiagnostic(record),
-      attachmentPipelineDiagnostics: buildAttachmentPipelineDiagnostics(record, diagnosticFiles, recentPullDiagnostics),
+      attachmentPipelineDiagnostics: buildAttachmentPipelineDiagnostics(record, diagnosticFiles, allPullDiagnostics),
     }));
     const matchingFiles = raw.subjectFiles.map(sanitizeDiagnosticRow);
     const recentCreatedInboundRecords = raw.recentCreatedRecords.map((record) => ({
       ...enrichEmailRecordDiagnostic(record),
-      attachmentPipelineDiagnostics: buildAttachmentPipelineDiagnostics(record, diagnosticFiles, recentPullDiagnostics),
+      attachmentPipelineDiagnostics: buildAttachmentPipelineDiagnostics(record, diagnosticFiles, allPullDiagnostics),
     }));
 
     return {
@@ -802,7 +804,7 @@ export class InboundOrderService {
       mailboxes,
       latestPullSummary: mailboxes.find((mailbox) => mailbox.latestPullSummary != null)?.latestPullSummary ?? null,
       recentFailedMessageDiagnostics: raw.recentFailedDiagnostics.map(sanitizeDiagnosticRow),
-      recentPullMessageDiagnostics: recentPullDiagnostics,
+      recentPullMessageDiagnostics: allPullDiagnostics,
       recentIgnoredMessageDiagnostics: raw.recentIgnoredDiagnostics.map(sanitizeDiagnosticRow),
       recentCreatedInboundRecords,
       recentInboundFiles: raw.recentFiles.map(sanitizeDiagnosticRow),
@@ -821,9 +823,9 @@ export class InboundOrderService {
       },
       storageNotes: {
         latestPullSummaryStored: mailboxes.some((mailbox) => mailbox.latestPullSummary != null),
-        perMessageFailureDiagnosticsStored: raw.recentFailedDiagnostics.length > 0 || recentPullDiagnostics.length > 0,
+        perMessageFailureDiagnosticsStored: raw.recentFailedDiagnostics.length > 0 || allPullDiagnostics.length > 0,
         ignoredMessageDiagnosticsStored: raw.recentIgnoredDiagnostics.length > 0,
-        duplicateSkipDiagnosticsStored: recentPullDiagnostics.some((item) => {
+        duplicateSkipDiagnosticsStored: allPullDiagnostics.some((item) => {
           const metadata = asRecord(item.metadataJson);
           return typeof metadata?.skippedReason === "string" && metadata.skippedReason.includes("duplicate");
         }),

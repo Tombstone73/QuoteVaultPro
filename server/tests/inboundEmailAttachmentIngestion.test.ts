@@ -91,6 +91,7 @@ function serviceHarness() {
   const events: any[] = [];
   const repo = {
     listFiles: jest.fn(async () => createdFiles),
+    listEnabledEmailIgnoreRules: jest.fn(async () => []),
     findFileByProviderAttachment: jest.fn(async () => null),
     createFile: jest.fn(async (values: any) => {
       const file = { id: `file_${createdFiles.length + 1}`, createdAt: new Date(), updatedAt: new Date(), ...values };
@@ -140,6 +141,33 @@ function duplicateDbHarness(existingRecord: InboundOrderRecord) {
         })),
       })),
     })),
+  };
+}
+
+function insertConflictDbHarness(existingRecord: InboundOrderRecord) {
+  let selectCount = 0;
+  const select = jest.fn(() => ({
+    from: jest.fn(() => ({
+      where: jest.fn(() => ({
+        limit: jest.fn(async () => {
+          selectCount += 1;
+          return selectCount === 1 ? [] : [existingRecord];
+        }),
+      })),
+    })),
+  }));
+  const tx = {
+    insert: jest.fn(() => ({
+      values: jest.fn(() => ({
+        onConflictDoNothing: jest.fn(() => ({
+          returning: jest.fn(async () => []),
+        })),
+      })),
+    })),
+  };
+  return {
+    select,
+    transaction: jest.fn(async (callback: any) => callback(tx)),
   };
 }
 
@@ -382,6 +410,49 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
         downloadFailures: 0,
         storedRowsCreated: 1,
         metadataOnlyRowsCreated: 0,
+      }),
+    }));
+  });
+
+  test("backfills attachments when insert conflict returns no created record", async () => {
+    const { repo, storage, createdFiles, events } = serviceHarness();
+    repo.listFiles.mockResolvedValueOnce([]);
+    const service = new InboundEmailIngestionService(insertConflictDbHarness(record) as any, {}, repo as any, storage as any);
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => []),
+      downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+    };
+
+    const outcome = await (service as any).processMessage(
+      "org_1",
+      "user_1",
+      mailbox,
+      { id: "source_1" },
+      message({
+        subject: "Order for Back Lit Signs for Family Church please. 2 different sizes",
+        attachments: [{
+          filename: "Back Lit Sign Artwork.pdf",
+          mimeType: "application/pdf",
+          size: 4,
+          attachmentId: "att_backlit",
+        }],
+      }),
+      adapter,
+    );
+
+    expect(outcome).toEqual({ status: "skippedDuplicates" });
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      inboundRecordId: "inbound_1",
+      providerAttachmentId: "att_backlit",
+      status: "available",
+    }));
+    expect(events.find((event) => event.eventType === "email.attachment_ingestion_diagnostics")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        attachmentCandidatesDiscovered: 1,
+        attachmentPartsAttempted: 1,
+        downloadAttempts: 1,
+        storedRowsCreated: 1,
       }),
     }));
   });

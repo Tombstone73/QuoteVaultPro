@@ -1009,7 +1009,28 @@ export class InboundEmailIngestionService {
       return [created as InboundOrderRecord | null];
     });
 
-    if (!record) return { status: "skippedDuplicates" };
+    if (!record) {
+      const [conflictedRecord] = await this.dbInstance
+        .select()
+        .from(inboundOrderRecords)
+        .where(and(
+          eq(inboundOrderRecords.organizationId, organizationId),
+          eq(inboundOrderRecords.sourceId, source.id),
+          eq(inboundOrderRecords.idempotencyKey, idempotencyKey),
+        ))
+        .limit(1);
+      if (conflictedRecord) {
+        await this.backfillDuplicateAttachmentsIfNeeded({
+          organizationId,
+          actorUserId,
+          mailbox,
+          message,
+          record: conflictedRecord,
+          adapter,
+        });
+      }
+      return { status: "skippedDuplicates" };
+    }
     await this.ingestAttachments({
       organizationId,
       actorUserId,
