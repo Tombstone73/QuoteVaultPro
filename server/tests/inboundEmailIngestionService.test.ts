@@ -1,8 +1,9 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, jest, test } from "@jest/globals";
 
 import {
   classifyInboundEmailForReview,
   extractGmailBodyAndAttachments,
+  GmailInboundEmailAdapter,
   type InboundEmailProviderMessage,
 } from "../services/inboundEmailIngestionService";
 
@@ -207,6 +208,59 @@ describe("Gmail MIME attachment extraction", () => {
         attachmentId: "nameless_att",
         detectedBy: expect.arrayContaining(["attachmentId", "content-disposition:inline", "mimeType"]),
       }),
+    ]);
+  });
+
+  test("fetches Gmail message details with full payload format for attachment traversal", async () => {
+    const list = jest.fn(async () => ({
+      data: { messages: [{ id: "gmail_msg_1" }] },
+    }));
+    const get = jest.fn(async () => ({
+      data: {
+        id: "gmail_msg_1",
+        threadId: "thread_1",
+        internalDate: String(new Date("2026-06-18T12:00:00.000Z").getTime()),
+        payload: {
+          headers: [
+            { name: "From", value: "Audrey <audrey@example.com>" },
+            { name: "Subject", value: "PO with art" },
+          ],
+          mimeType: "multipart/mixed",
+          parts: [{
+            filename: "nested-po.pdf",
+            mimeType: "application/pdf",
+            body: { attachmentId: "att_1", size: 1024 },
+          }],
+        },
+      },
+    }));
+    const adapter = new GmailInboundEmailAdapter();
+    (adapter as any).buildGmailClient = () => ({
+      users: { messages: { list, get } },
+    });
+
+    const messages = await adapter.listRecentMessages({
+      id: "mailbox_1",
+      organizationId: "org_1",
+      sourceId: null,
+      provider: "gmail",
+      name: "Inbound Gmail",
+      emailAddress: "orders@example.com",
+      enabled: true,
+      isDefault: true,
+      authJson: {},
+      settingsJson: {},
+      lastPulledAt: null,
+      lastPullStatus: null,
+      lastPullError: null,
+      createdByUserId: null,
+      createdAt: new Date("2026-06-18T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-18T12:00:00.000Z"),
+    }, 10);
+
+    expect(get).toHaveBeenCalledWith({ userId: "me", id: "gmail_msg_1", format: "full" });
+    expect(messages[0].attachments).toEqual([
+      expect.objectContaining({ filename: "nested-po.pdf", attachmentId: "att_1" }),
     ]);
   });
 });

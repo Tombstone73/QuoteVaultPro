@@ -529,10 +529,11 @@ export type InboundEmailPullDiagnosticsResponse = {
       lastPullError: string | null;
       latestPullSummary: unknown | null;
     }>;
-    latestPullSummary: unknown | null;
-    recentFailedMessageDiagnostics: Array<Record<string, unknown>>;
-    recentIgnoredMessageDiagnostics: Array<Record<string, unknown>>;
-    recentCreatedInboundRecords: Array<Record<string, unknown>>;
+      latestPullSummary: unknown | null;
+      recentFailedMessageDiagnostics: Array<Record<string, unknown>>;
+      recentPullMessageDiagnostics: Array<Record<string, unknown>>;
+      recentIgnoredMessageDiagnostics: Array<Record<string, unknown>>;
+      recentCreatedInboundRecords: Array<Record<string, unknown>>;
     recentInboundFiles: Array<Record<string, unknown>>;
     ignoreRuleCount: number;
     activeIgnoreRules: Array<{

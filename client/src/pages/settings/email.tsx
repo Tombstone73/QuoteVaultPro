@@ -15,7 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertTriangle, Edit, Mail, FileText, Plus, Inbox, PauseCircle, RefreshCw, Search, Trash2, Star } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, Edit, Mail, FileText, Plus, Inbox, PauseCircle, RefreshCw, Search, Trash2, Star } from "lucide-react";
 import { useState, useEffect, type FormEvent } from "react";
 import {
   useCreateInboundEmailIgnoreRule,
@@ -674,11 +674,25 @@ function formatDiagnosticValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function formatDiagnosticHints(value: unknown): string {
+  if (!value || typeof value !== "object") return "No attachment hints detected";
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, enabled]) => enabled === true)
+    .map(([key]) => key.replace(/^mentions|^has/, "").replace(/([A-Z])/g, " $1").trim());
+  return entries.length > 0 ? entries.join(", ") : "No attachment hints detected";
+}
+
 function EmailPullDiagnosticsPanel() {
   const [subjectInput, setSubjectInput] = useState("");
   const [subject, setSubject] = useState("");
+  const [ignoreRulesExpanded, setIgnoreRulesExpanded] = useState(false);
   const diagnosticsQuery = useInboundEmailPullDiagnostics(subject);
   const diagnostics = diagnosticsQuery.data;
+  const collapseIgnoreRulesByDefault = (diagnostics?.activeIgnoreRules.length ?? 0) > 3;
+
+  useEffect(() => {
+    if (diagnostics) setIgnoreRulesExpanded(!collapseIgnoreRulesByDefault);
+  }, [collapseIgnoreRulesByDefault, diagnostics?.generatedAt]);
 
   const submitSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -820,6 +834,15 @@ function EmailPullDiagnosticsPanel() {
                           <div className="text-muted-foreground">
                             {formatDiagnosticValue(record.status)} / {formatDiagnosticValue(record.reviewOutcome)}
                           </div>
+                          <div className="mt-1 text-muted-foreground">
+                            Files: {formatDiagnosticValue(record.attachmentCount)} / Raw Gmail parts: {formatDiagnosticValue((record.rawGmailPayloadAttachmentIndicators as any)?.rawAttachmentCount)}
+                          </div>
+                          <div className="mt-1 text-muted-foreground">
+                            Message: {formatDiagnosticValue(record.sourceMessageId)} / Thread: {formatDiagnosticValue(record.sourceThreadId)}
+                          </div>
+                          <div className="mt-1 text-muted-foreground">
+                            Hints: {formatDiagnosticHints(record.attachmentHints)}
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -854,32 +877,77 @@ function EmailPullDiagnosticsPanel() {
               </div>
             )}
 
+            <div className="rounded-md border border-border p-3">
+              <h4 className="text-sm font-semibold text-foreground">Recent Email Records</h4>
+              <div className="mt-2 space-y-2">
+                {diagnostics.recentCreatedInboundRecords.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No recent email records found.</div>
+                ) : diagnostics.recentCreatedInboundRecords.map((record, index) => (
+                  <div key={`${formatDiagnosticValue(record.id)}-${index}`} className="rounded-md bg-muted/30 p-2 text-xs">
+                    <div className="font-medium text-foreground">{formatDiagnosticValue(record.subject ?? record.externalReference ?? record.id)}</div>
+                    <div className="mt-1 grid gap-1 text-muted-foreground md:grid-cols-2">
+                      <div>Sender: {formatDiagnosticValue(record.senderName)} &lt;{formatDiagnosticValue(record.senderEmail)}&gt;</div>
+                      <div>Received: {formatDiagnosticValue(record.receivedAt)}</div>
+                      <div>Message: {formatDiagnosticValue(record.sourceMessageId)}</div>
+                      <div>Thread: {formatDiagnosticValue(record.sourceThreadId)}</div>
+                      <div>Files: {formatDiagnosticValue(record.attachmentCount)}</div>
+                      <div>Raw Gmail parts: {formatDiagnosticValue((record.rawGmailPayloadAttachmentIndicators as any)?.rawAttachmentCount)}</div>
+                      <div>Status: {formatDiagnosticValue(record.status)}</div>
+                      <div>Hints: {formatDiagnosticHints(record.attachmentHints)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <div className="grid gap-4 xl:grid-cols-2">
               <div className="rounded-md border border-border p-3">
-                <h4 className="text-sm font-semibold text-foreground">Recent Failed Diagnostics</h4>
+                <h4 className="text-sm font-semibold text-foreground">Recent Pull Diagnostics</h4>
                 <div className="mt-2 space-y-2">
-                  {diagnostics.recentFailedMessageDiagnostics.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">No durable failed message diagnostics found.</div>
-                  ) : diagnostics.recentFailedMessageDiagnostics.map((item, index) => (
+                  {[...diagnostics.recentPullMessageDiagnostics, ...diagnostics.recentFailedMessageDiagnostics].length === 0 ? (
+                    <div className="text-sm text-muted-foreground">No durable pull diagnostics found.</div>
+                  ) : [...diagnostics.recentPullMessageDiagnostics, ...diagnostics.recentFailedMessageDiagnostics].map((item, index) => (
                     <div key={index} className="rounded-md bg-muted/30 p-2 text-xs">
                       <div className="font-medium text-foreground">{formatDiagnosticValue(item.message ?? item.eventType ?? item.id)}</div>
                       <div className="text-muted-foreground">{formatDiagnosticValue(item.createdAt)}</div>
+                      {item.metadataJson ? (
+                        <div className="mt-1 text-muted-foreground">
+                          {formatDiagnosticValue(item.metadataJson)}
+                        </div>
+                      ) : null}
                     </div>
                   ))}
                 </div>
               </div>
               <div className="rounded-md border border-border p-3">
-                <h4 className="text-sm font-semibold text-foreground">Active Ignore Rules</h4>
-                <div className="mt-2 space-y-2">
-                  {diagnostics.activeIgnoreRules.length === 0 ? (
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between gap-2 text-left"
+                  onClick={() => setIgnoreRulesExpanded((value) => !value)}
+                  aria-expanded={ignoreRulesExpanded}
+                >
+                  <h4 className="text-sm font-semibold text-foreground">Active Ignore Rules</h4>
+                  <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                    {diagnostics.activeIgnoreRules.length}
+                    {ignoreRulesExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                  </span>
+                </button>
+                {!ignoreRulesExpanded ? (
+                  <div className="mt-2 text-sm text-muted-foreground">
+                    {diagnostics.activeIgnoreRules.length} active ignore rules hidden.
+                  </div>
+                ) : (
+                  <div className="mt-2 space-y-2">
+                    {diagnostics.activeIgnoreRules.length === 0 ? (
                     <div className="text-sm text-muted-foreground">No active ignore rules.</div>
-                  ) : diagnostics.activeIgnoreRules.map((rule) => (
+                    ) : diagnostics.activeIgnoreRules.map((rule) => (
                     <div key={rule.id} className="rounded-md bg-muted/30 p-2 text-xs">
                       <div className="font-medium text-foreground">{rule.ruleType}</div>
                       <div className="text-muted-foreground">{rule.ruleValuePreview}</div>
                     </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>

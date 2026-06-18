@@ -125,6 +125,7 @@ function emailPullDiagnostics(overrides: Record<string, any> = {}) {
       latestPullSummary: null,
     }],
     latestPullSummary: null,
+    recentPullMessageDiagnostics: [],
     recentFailedMessageDiagnostics: [],
     recentIgnoredMessageDiagnostics: [],
     recentCreatedInboundRecords: [{
