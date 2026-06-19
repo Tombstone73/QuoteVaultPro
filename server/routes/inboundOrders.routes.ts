@@ -182,6 +182,10 @@ const inboundAttachmentParamsSchema = z.object({
   fileId: z.string().trim().min(1),
 });
 
+const inboundEmailReprocessActionSchema = z.object({
+  action: z.enum(["reprocess_email", "backfill_attachments", "rerun_trust_attachment_download"]),
+});
+
 const inboundGmailStartQuerySchema = z.object({
   reconnectMailboxId: z.string().trim().min(1).optional(),
 });
@@ -1035,6 +1039,40 @@ export function registerInboundOrderRoutes(
       }
       console.error("Error applying inbound record trust action:", error);
       res.status(500).json({ success: false, message: "Failed to apply inbound sender trust action" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/email-reprocess", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: "User ID not found" });
+
+      const input = inboundEmailReprocessActionSchema.parse(req.body ?? {});
+      const result = await emailIngestionService.manuallyReprocessInboundEmailRecord({
+        organizationId,
+        actorUserId,
+        inboundRecordId: String(req.params.id),
+        action: input.action,
+      });
+      const detail = await service.getInboundOrder({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+      });
+      res.json({ success: true, data: { result, inbound: detail } });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      if (error instanceof InboundEmailIngestionError) {
+        return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+      }
+      console.error("Error manually reprocessing inbound email record:", error);
+      res.status(500).json({ success: false, message: "Failed to reprocess inbound email record" });
     }
   });
 

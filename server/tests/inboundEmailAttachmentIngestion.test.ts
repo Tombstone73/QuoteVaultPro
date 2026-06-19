@@ -118,7 +118,7 @@ function serviceHarness() {
     })),
     senderEmailMatchesCustomerContact: jest.fn(async () => false),
     senderDomainMatchesCustomerDomain: jest.fn(async () => false),
-    findFileByProviderAttachment: jest.fn(async () => null),
+    findFileByProviderAttachment: jest.fn<(...args: any[]) => Promise<any>>(async () => null),
     getRecord: jest.fn(async () => record),
     getFile: jest.fn(async (_organizationId: string, _inboundRecordId: string, fileId: string) => createdFiles.find((file) => file.id === fileId) ?? null),
     updateFile: jest.fn(async (args: any) => {
@@ -127,6 +127,20 @@ function serviceHarness() {
       createdFiles[existingIndex] = { ...createdFiles[existingIndex], ...args.patch, updatedAt: new Date() };
       return createdFiles[existingIndex];
     }),
+    updateRecordWithEvent: jest.fn(async (args: any) => ({
+      record: {
+        ...record,
+        ...args.patch,
+        updatedAt: new Date(),
+      },
+      event: {
+        id: `event_${events.length + 1}`,
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+        createdAt: new Date(),
+        ...args.event,
+      },
+    })),
     createFile: jest.fn(async (values: any) => {
       const file = { id: `file_${createdFiles.length + 1}`, createdAt: new Date(), updatedAt: new Date(), ...values };
       createdFiles.push(file);
@@ -1441,5 +1455,247 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
         skippedReason: "duplicate_message_existing_files_cover_provider_attachments",
       }),
     }));
+  });
+
+  test("manual backfill existing email record with zero files creates stored attachment rows", async () => {
+    const { service, repo, storage, events } = serviceHarness();
+    (service as any).resolveMailboxForRecord = jest.fn(async () => mailbox);
+    const adapter = {
+      listRecentMessages: jest.fn(async () => []),
+      getMessage: jest.fn(async () => message({
+        attachments: [{
+          filename: "po-151753.pdf",
+          mimeType: "application/pdf",
+          size: 4,
+          attachmentId: "att_manual",
+        }],
+      })),
+      downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+    };
+    (service as any).adapterByProvider.gmail = adapter;
+
+    const result = await service.manuallyReprocessInboundEmailRecord({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "backfill_attachments",
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      candidatesFound: 1,
+      attempted: 1,
+      stored: 1,
+      metadataOnly: 0,
+    }));
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(repo.createFile).toHaveBeenCalledWith(expect.objectContaining({
+      inboundRecordId: "inbound_1",
+      providerAttachmentId: "att_manual",
+      providerMessageId: "gmail_msg_1",
+    }), expect.anything());
+    expect(events.some((event) => event.eventType === "email.manual_reprocess_completed")).toBe(true);
+  });
+
+  test("manual backfill with existing provider files does not duplicate rows", async () => {
+    const { service, repo, storage } = serviceHarness();
+    (service as any).resolveMailboxForRecord = jest.fn(async () => mailbox);
+    repo.findFileByProviderAttachment.mockImplementationOnce(async () => ({
+      id: "file_existing",
+      inboundRecordId: "inbound_1",
+      fileRecordId: "file_record_existing",
+      providerAttachmentId: "att_existing",
+      providerMessageId: "gmail_msg_1",
+      metadataJson: { attachmentState: "downloaded" },
+      status: "available",
+    }));
+    (service as any).adapterByProvider.gmail = {
+      listRecentMessages: jest.fn(async () => []),
+      getMessage: jest.fn(async () => message({
+        attachments: [{
+          filename: "po.pdf",
+          mimeType: "application/pdf",
+          size: 4,
+          attachmentId: "att_existing",
+        }],
+      })),
+      downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+    };
+
+    const result = await service.manuallyReprocessInboundEmailRecord({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "backfill_attachments",
+    });
+
+    expect(result.skipped).toBe(1);
+    expect(result.stored).toBe(0);
+    expect(storage.finalizeUpload).not.toHaveBeenCalled();
+    expect(repo.createFile).not.toHaveBeenCalledWith(expect.objectContaining({
+      providerAttachmentId: "att_existing",
+    }));
+  });
+
+  test("manual reprocess refreshes source evidence but does not touch review draft fields", async () => {
+    const { service, repo } = serviceHarness();
+    (service as any).resolveMailboxForRecord = jest.fn(async () => mailbox);
+    (service as any).adapterByProvider.gmail = {
+      listRecentMessages: jest.fn(async () => []),
+      getMessage: jest.fn(async () => message({
+        subject: "Updated subject",
+        bodyText: "Updated thread body",
+        attachments: [],
+      })),
+    };
+
+    await service.manuallyReprocessInboundEmailRecord({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "reprocess_email",
+    });
+
+    expect(repo.updateRecordWithEvent).toHaveBeenCalledWith(expect.objectContaining({
+      patch: expect.objectContaining({
+        rawPayloadJson: expect.objectContaining({
+          subject: "Updated subject",
+          bodyText: "Updated thread body",
+        }),
+        normalizedPayloadJson: expect.objectContaining({
+          subject: "Updated subject",
+          bodyText: "Updated thread body",
+        }),
+      }),
+    }));
+    const patch = repo.updateRecordWithEvent.mock.calls[0][0].patch;
+    expect(Object.keys(patch)).toEqual(expect.arrayContaining(["rawPayloadJson", "normalizedPayloadJson", "extractedOrderJson"]));
+    expect(JSON.stringify(patch)).not.toContain("reviewedCustomerJson");
+    expect(JSON.stringify(patch)).not.toContain("staff_selected");
+  });
+
+  test("manual backfill for untrusted sender creates pending trust metadata-only row", async () => {
+    const { service, repo, storage, createdFiles } = serviceHarness();
+    (service as any).resolveMailboxForRecord = jest.fn(async () => mailbox);
+    repo.listEnabledEmailTrustRules.mockResolvedValue([]);
+    (service as any).adapterByProvider.gmail = {
+      listRecentMessages: jest.fn(async () => []),
+      getMessage: jest.fn(async () => message({
+        senderEmail: "unknown@example.com",
+        attachments: [{
+          filename: "po.pdf",
+          mimeType: "application/pdf",
+          size: 4,
+          attachmentId: "att_pending",
+        }],
+      })),
+      downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+    };
+
+    const result = await service.manuallyReprocessInboundEmailRecord({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "backfill_attachments",
+    });
+
+    expect(result.metadataOnly).toBe(1);
+    expect(result.stored).toBe(0);
+    expect(storage.finalizeUpload).not.toHaveBeenCalled();
+    expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+      attachmentState: "pending_trust",
+      senderTrustStatus: "untrusted",
+    }));
+  });
+
+  test("manual backfill inspects Gmail thread messages and preserves attachment message provenance", async () => {
+    const { service, repo, storage, createdFiles } = serviceHarness();
+    (service as any).resolveMailboxForRecord = jest.fn(async () => mailbox);
+    const adapter = {
+      listRecentMessages: jest.fn(async () => []),
+      getThreadMessages: jest.fn(async () => [
+        message({
+          messageId: "gmail_msg_1",
+          threadId: "thread_1",
+          receivedAt: new Date("2026-06-17T12:00:00.000Z"),
+          attachments: [{
+            filename: "po.pdf",
+            mimeType: "application/pdf",
+            size: 4,
+            attachmentId: "att_thread_1",
+          }],
+        }),
+        message({
+          messageId: "gmail_msg_2",
+          threadId: "thread_1",
+          receivedAt: new Date("2026-06-18T12:00:00.000Z"),
+          attachments: [{
+            filename: "art.png",
+            mimeType: "image/png",
+            size: 8,
+            attachmentId: "att_thread_2",
+          }],
+        }),
+      ]),
+      downloadAttachment: jest.fn(async (_mailbox: any, _message: any, attachment: any) => ({
+        buffer: Buffer.from(attachment.filename === "art.png" ? "PNG" : "%PDF"),
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.size,
+      })),
+    };
+    (service as any).adapterByProvider.gmail = adapter;
+    repo.getRecord.mockResolvedValue({
+      ...record,
+      rawPayloadJson: { messageId: "gmail_msg_1", threadId: "thread_1", sender: { email: "buyer@example.com" } },
+      normalizedPayloadJson: { source: { messageId: "gmail_msg_1", threadId: "thread_1" } },
+    });
+
+    const result = await service.manuallyReprocessInboundEmailRecord({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "backfill_attachments",
+    });
+
+    expect(adapter.getThreadMessages).toHaveBeenCalledWith(mailbox, "thread_1");
+    expect(result.threadMessagesInspected).toBe(2);
+    expect(result.providerThreadId).toBe("thread_1");
+    expect(result.stored).toBe(2);
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(2);
+    expect(createdFiles.map((file) => file.providerMessageId)).toEqual(["gmail_msg_1", "gmail_msg_2"]);
+    expect(repo.updateRecordWithEvent).toHaveBeenCalledWith(expect.objectContaining({
+      patch: expect.objectContaining({
+        rawPayloadJson: expect.objectContaining({
+          thread: expect.objectContaining({
+            messageCount: 2,
+            latestActivityAt: "2026-06-18T12:00:00.000Z",
+          }),
+        }),
+      }),
+    }));
+  });
+
+  test("manual reprocess fails softly when provider message id is missing", async () => {
+    const { service } = serviceHarness();
+    (service as any).resolveMailboxForRecord = jest.fn(async () => mailbox);
+    (service as any).adapterByProvider.gmail = {
+      listRecentMessages: jest.fn(async () => []),
+    };
+    (service as any).inboundRepository.getRecord.mockResolvedValue({
+      ...record,
+      sourceRecordId: null,
+      sourceMessageId: null,
+      rawPayloadJson: {},
+      normalizedPayloadJson: {},
+    });
+
+    await expect(service.manuallyReprocessInboundEmailRecord({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "backfill_attachments",
+    })).rejects.toMatchObject({
+      code: "INBOUND_EMAIL_PROVIDER_MESSAGE_ID_MISSING",
+      statusCode: 400,
+    });
   });
 });

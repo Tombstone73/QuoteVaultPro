@@ -480,6 +480,7 @@ describe("inbound order routes", () => {
     getGmailPayloadDiagnosticsForSubject: jest.fn<(...args: any[]) => Promise<any>>(),
     approveAttachmentTrustAction: jest.fn<(...args: any[]) => Promise<any>>(),
     approveRecordTrustAction: jest.fn<(...args: any[]) => Promise<any>>(),
+    manuallyReprocessInboundEmailRecord: jest.fn<(...args: any[]) => Promise<any>>(),
   };
   const inboundEmailMailboxSettingsService = {
     listMailboxes: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -1145,6 +1146,40 @@ describe("inbound order routes", () => {
       note: null,
     });
     expect(response.body.data.result.downloaded).toBe(1);
+    expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+    expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
+  });
+
+  test("manually backfills inbound email attachments without creating downstream records", async () => {
+    inboundEmailIngestionService.manuallyReprocessInboundEmailRecord.mockResolvedValue({
+      action: "backfill_attachments",
+      inboundRecordId: "inbound_1",
+      providerMessageId: "gmail_msg_1",
+      providerThreadId: "thread_1",
+      threadMessagesInspected: 2,
+      latestThreadActivity: "2026-06-19T14:00:00.000Z",
+      candidatesFound: 2,
+      attempted: 2,
+      stored: 1,
+      metadataOnly: 1,
+      failed: 0,
+      skipped: 0,
+      diagnosticsByMessage: [],
+    });
+    service.getInboundOrder.mockResolvedValue(inboundDetail(inboundRecord({ sourceType: "email" })));
+
+    const response = await request(buildApp(service, { inboundEmailIngestionService }))
+      .post("/api/inbound-orders/inbound_1/email-reprocess")
+      .send({ action: "backfill_attachments" });
+
+    expect(response.status).toBe(200);
+    expect(inboundEmailIngestionService.manuallyReprocessInboundEmailRecord).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "backfill_attachments",
+    });
+    expect(response.body.data.result).toMatchObject({ attempted: 2, stored: 1, metadataOnly: 1 });
     expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
     expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
   });

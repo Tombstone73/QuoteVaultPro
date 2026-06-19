@@ -819,7 +819,7 @@ export class InboundOrdersRepository {
       .where(and(
         eq(inboundOrderEvents.organizationId, args.organizationId),
         eq(inboundOrderRecords.sourceType, "email"),
-        sql`${inboundOrderEvents.eventType} in ('email.attachment_ingestion_diagnostics', 'email.attachment_failed', 'email.attachment_stored', 'attachment_ingestion_call_started', 'attachment_ingestion_call_completed', 'attachment_ingestion_call_failed')`,
+        sql`${inboundOrderEvents.eventType} in ('email.attachment_ingestion_diagnostics', 'email.attachment_failed', 'email.attachment_stored', 'attachment_ingestion_call_started', 'attachment_ingestion_call_completed', 'attachment_ingestion_call_failed', 'email.manual_reprocess_started', 'email.manual_reprocess_source_refreshed', 'email.manual_reprocess_completed', 'email.manual_reprocess_failed')`,
       ))
       .orderBy(desc(inboundOrderEvents.createdAt))
       .limit(limit);
@@ -952,7 +952,7 @@ export class InboundOrdersRepository {
         .where(and(
           eq(inboundOrderEvents.organizationId, args.organizationId),
           eq(inboundOrderRecords.sourceType, "email"),
-          sql`${inboundOrderEvents.eventType} in ('email.attachment_ingestion_diagnostics', 'email.attachment_failed', 'email.attachment_stored', 'attachment_ingestion_call_started', 'attachment_ingestion_call_completed', 'attachment_ingestion_call_failed')`,
+          sql`${inboundOrderEvents.eventType} in ('email.attachment_ingestion_diagnostics', 'email.attachment_failed', 'email.attachment_stored', 'attachment_ingestion_call_started', 'attachment_ingestion_call_completed', 'attachment_ingestion_call_failed', 'email.manual_reprocess_started', 'email.manual_reprocess_source_refreshed', 'email.manual_reprocess_completed', 'email.manual_reprocess_failed')`,
           sql`(
             ${inboundOrderRecords.externalReference} ilike ${subjectPattern}
             or ${inboundOrderRecords.sourceLabel} ilike ${subjectPattern}
