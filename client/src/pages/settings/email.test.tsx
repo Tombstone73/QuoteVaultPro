@@ -219,6 +219,28 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
               metadataOnlyRowsCreated: 1,
               storedFileRowsCreated: 0,
               skippedExistingProviderAttachments: 0,
+              ingestionCallStatus: "failed",
+              ingestionCallError: "Gmail attachment unavailable",
+              ingestionCallEvents: [{
+                eventType: "attachment_ingestion_call_started",
+                metadataJson: {
+                  providerMessageId: "gmail_msg_1",
+                  subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+                  candidateCount: 1,
+                  trustStatus: "trusted_domain",
+                  attachmentPolicy: "auto_download_allowed",
+                },
+              }, {
+                eventType: "attachment_ingestion_call_failed",
+                metadataJson: {
+                  providerMessageId: "gmail_msg_1",
+                  subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+                  candidateCount: 1,
+                  trustStatus: "trusted_domain",
+                  attachmentPolicy: "auto_download_allowed",
+                  errorMessage: "Gmail attachment unavailable",
+                },
+              }],
               failures: [{
                 filename: "visual-po.pdf",
                 failureReason: "Gmail attachment unavailable",
@@ -270,6 +292,28 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
                   metadataOnlyRowsCreated: 1,
                   storedFileRowsCreated: 0,
                   skippedExistingProviderAttachments: 0,
+                  ingestionCallStatus: "failed",
+                  ingestionCallError: "Gmail attachment unavailable",
+                  ingestionCallEvents: [{
+                    eventType: "attachment_ingestion_call_started",
+                    metadataJson: {
+                      providerMessageId: "gmail_msg_1",
+                      subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+                      candidateCount: 1,
+                      trustStatus: "trusted_domain",
+                      attachmentPolicy: "auto_download_allowed",
+                    },
+                  }, {
+                    eventType: "attachment_ingestion_call_failed",
+                    metadataJson: {
+                      providerMessageId: "gmail_msg_1",
+                      subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+                      candidateCount: 1,
+                      trustStatus: "trusted_domain",
+                      attachmentPolicy: "auto_download_allowed",
+                      errorMessage: "Gmail attachment unavailable",
+                    },
+                  }],
                   failures: [{ filename: "visual-po.pdf", failureReason: "Gmail attachment unavailable", gmailApiError: "Gmail attachment unavailable" }],
                 },
               },
@@ -528,6 +572,11 @@ describe("EmailSettings inbound mailbox settings", () => {
     expect(container.textContent).toContain("Gmail parts: 1");
     expect(container.textContent).toContain("Attempts: 1");
     expect(container.textContent).toContain("Successes: 0");
+    expect(container.textContent).toContain("Ingestion call: failed / Error: Gmail attachment unavailable");
+    expect(container.textContent).toContain("Ingestion Call Audit");
+    expect(container.textContent).toContain("attachment_ingestion_call_started");
+    expect(container.textContent).toContain("attachment_ingestion_call_failed");
+    expect(container.textContent).toContain("Policy: auto_download_allowed");
     expect(container.textContent).toContain("Gmail API error: Gmail attachment unavailable");
 
     const subjectInput = container.querySelector("input[aria-label='Email diagnostics subject search']") as HTMLInputElement;
