@@ -482,6 +482,30 @@ function safePullSummaryFromSettings(settings: Record<string, unknown>): unknown
   return summary == null ? null : sanitizeDiagnosticValue(summary);
 }
 
+function gmailListDiagnosticsFromSummary(summary: unknown): Record<string, unknown> | null {
+  const gmailList = asRecord(getPathValue(summary, "gmailList"));
+  return gmailList ? sanitizeDiagnosticRow(gmailList) : null;
+}
+
+function gmailListedMessagesFromMailbox(mailbox: {
+  id: string;
+  emailAddress: string;
+  latestPullSummary: unknown | null;
+}): Array<Record<string, unknown>> {
+  const gmailList = gmailListDiagnosticsFromSummary(mailbox.latestPullSummary);
+  const listedMessages = Array.isArray(gmailList?.listedMessages) ? gmailList.listedMessages : [];
+  return listedMessages.map((message) => sanitizeDiagnosticRow({
+    ...(asRecord(message) ?? {}),
+    mailboxId: mailbox.id,
+    mailboxEmail: mailbox.emailAddress,
+    query: gmailList?.query ?? null,
+    labelIds: gmailList?.labelIds ?? null,
+    maxResults: gmailList?.maxResults ?? null,
+    pageCount: gmailList?.pageCount ?? null,
+    totalMessageIdsReturned: gmailList?.totalMessageIdsReturned ?? null,
+  }));
+}
+
 function detectEmailAttachmentHints(row: Record<string, unknown>): Record<string, boolean> {
   const text = [
     row.subject,
@@ -1056,6 +1080,7 @@ export class InboundOrderService {
       lastPullError: mailbox.lastPullError,
       latestPullSummary: safePullSummaryFromSettings(mailbox.settingsJson),
     }));
+    const recentGmailListedMessages = mailboxes.flatMap(gmailListedMessagesFromMailbox);
     const activeIgnoreRules = raw.ignoreRules
       .filter((rule) => rule.enabled)
       .map((rule) => ({
@@ -1092,6 +1117,16 @@ export class InboundOrderService {
       attachmentPipelineDiagnostics: buildAttachmentPipelineDiagnostics(record, diagnosticFiles, allPullDiagnostics),
     })));
     const matchingFiles = raw.subjectFiles.map(sanitizeDiagnosticRow);
+    const matchingGmailListedMessages = subject
+      ? recentGmailListedMessages.filter((message) => {
+        const normalizedSubject = subject.toLowerCase();
+        return String(message.subject ?? "").toLowerCase().includes(normalizedSubject);
+      })
+      : [];
+    const subjectFound = matchingRecords.length > 0
+      || matchingFiles.length > 0
+      || matchingIgnoreRules.length > 0
+      || matchingGmailListedMessages.length > 0;
     const recentCreatedInboundRecords = await Promise.all(raw.recentCreatedRecords.map(async (record) => ({
       ...await this.enrichDiagnosticRecordTrust({
         organizationId: args.organizationId,
@@ -1113,14 +1148,20 @@ export class InboundOrderService {
       recentIgnoredMessageDiagnostics: raw.recentIgnoredDiagnostics.map(sanitizeDiagnosticRow),
       recentCreatedInboundRecords,
       recentInboundFiles: raw.recentFiles.map(sanitizeDiagnosticRow),
+      recentGmailListedMessages,
       ignoreRuleCount: raw.ignoreRules.length,
       activeIgnoreRules,
       subjectSearch: {
         provided: Boolean(subject),
-        found: matchingRecords.length > 0 || matchingFiles.length > 0 || matchingIgnoreRules.length > 0,
+        found: subjectFound,
         matchingRecords,
         matchingFiles,
         matchingIgnoreRules,
+        matchingGmailListedMessages,
+        notReturnedByGmailListQuery: Boolean(subject && matchingGmailListedMessages.length === 0),
+        gmailListMessage: subject && matchingGmailListedMessages.length === 0
+          ? "Not returned by Gmail list query for latest pull."
+          : null,
         duplicateDetection: {
           durableSkippedMessageLogsStored: false,
           possibleDuplicateRecords: matchingRecords.filter((record) => Boolean((record as Record<string, unknown>).idempotencyKey)),

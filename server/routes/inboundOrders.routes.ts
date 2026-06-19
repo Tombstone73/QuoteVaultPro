@@ -30,7 +30,10 @@ import {
   normalizeInboundOrderStatusForStorage,
 } from "@shared/inboundOrdersApi";
 import type { InboundEmailIgnoreRule, InboundEmailTrustRule } from "@shared/schema";
-import { inboundEmailMailboxViewSchema } from "@shared/inboundEmailMailboxes";
+import {
+  inboundEmailMailboxSettingsSchema,
+  inboundEmailMailboxViewSchema,
+} from "@shared/inboundEmailMailboxes";
 import {
   InboundOrderConversionValidationError,
   InboundOrderReviewDraftValidationError,
@@ -148,7 +151,7 @@ const customerMatchSchema = z.object({
 });
 
 const inboundEmailPullLatestSchema = z.object({
-  limit: z.coerce.number().int().min(1).max(25).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
 const inboundEmailPullDiagnosticsQuerySchema = z.object({
@@ -159,8 +162,11 @@ const inboundEmailMailboxParamsSchema = z.object({
   id: z.string().trim().min(1),
 });
 
-const inboundEmailMailboxEnabledSchema = z.object({
-  enabled: z.boolean(),
+const inboundEmailMailboxUpdateSchema = z.object({
+  enabled: z.boolean().optional(),
+  settings: inboundEmailMailboxSettingsSchema.partial().optional(),
+}).refine((value) => value.enabled !== undefined || value.settings !== undefined, {
+  message: "At least one mailbox setting is required.",
 });
 
 const inboundEmailIgnoreRuleParamsSchema = z.object({
@@ -758,10 +764,14 @@ export function registerInboundOrderRoutes(
       if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
 
       const { id } = inboundEmailMailboxParamsSchema.parse(req.params);
-      const { enabled } = inboundEmailMailboxEnabledSchema.parse(req.body ?? {});
-      const mailbox = inboundEmailMailboxViewSchema.parse(
-        await emailMailboxSettingsService.updateMailboxEnabled(organizationId, id, enabled),
-      );
+      const input = inboundEmailMailboxUpdateSchema.parse(req.body ?? {});
+      let updated = input.enabled !== undefined
+        ? await emailMailboxSettingsService.updateMailboxEnabled(organizationId, id, input.enabled)
+        : null;
+      if (input.settings) {
+        updated = await emailMailboxSettingsService.updateMailboxSettings(organizationId, id, input.settings);
+      }
+      const mailbox = inboundEmailMailboxViewSchema.parse(updated);
       res.json({ success: true, data: mailbox });
     } catch (error: any) {
       if (error instanceof z.ZodError) {

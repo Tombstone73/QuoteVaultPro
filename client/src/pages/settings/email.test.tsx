@@ -275,6 +275,21 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
             role: "po",
             status: "available",
           }],
+          recentGmailListedMessages: [{
+            providerMessageId: "gmail_msg_1",
+            threadId: "thread_1",
+            subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+            senderName: "Audrey Powell",
+            senderEmail: "prepress@offsethouse.example",
+            receivedAt: "2026-06-18T14:54:00.000Z",
+            mailboxId: "mailbox_enabled",
+            mailboxEmail: "orders@example.com",
+            query: "newer_than:14d",
+            labelIds: ["INBOX"],
+            maxResults: 50,
+            pageCount: 2,
+            totalMessageIdsReturned: 31,
+          }],
           ignoreRuleCount: ignoreRules.length,
           activeIgnoreRules: ignoreRules.filter((rule: any) => rule.enabled).map((rule: any) => ({
             id: rule.id,
@@ -358,6 +373,19 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
               { id: "file_1", sourceFilename: "po-151753.pdf", role: "po", status: "available" },
             ] : [],
             matchingIgnoreRules: [],
+            matchingGmailListedMessages: hasSubject ? [{
+              providerMessageId: "gmail_msg_1",
+              threadId: "thread_1",
+              subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+              senderName: "Audrey Powell",
+              senderEmail: "prepress@offsethouse.example",
+              receivedAt: "2026-06-18T14:54:00.000Z",
+              mailboxId: "mailbox_enabled",
+              mailboxEmail: "orders@example.com",
+              query: "newer_than:14d",
+            }] : [],
+            notReturnedByGmailListQuery: false,
+            gmailListMessage: null,
             gmailPayloadDiagnostics: hasSubject ? [{
               inboundRecordId: "inbound_email_1",
               sourceMessageId: "gmail_msg_1",
@@ -600,7 +628,9 @@ describe("EmailSettings inbound mailbox settings", () => {
     await waitForText("invalid_grant");
     await waitForText("Payment Received");
     await waitForText("Recent Email Records");
+    await waitForText("Recent Gmail Listed Messages");
     await waitForText("Audrey Powell");
+    expect(container.textContent).toContain("Total listed: 31");
     expect(container.textContent).toContain("Files: 0");
     expect(container.textContent).toContain("Raw Gmail parts: 1");
     expect(container.textContent).toContain("Attached, Po, Artwork, Links, Google Drive Links");
@@ -630,6 +660,7 @@ describe("EmailSettings inbound mailbox settings", () => {
     await waitForText("Subject Search");
     await waitForText("Found");
     await waitForText("po-151753.pdf");
+    await waitForText("Matching Gmail Listed Messages");
     await waitForText("duplicate_message_attachment_backfill");
     await waitForText("Sanitized Gmail Payload Shape");
     await waitForText("Extracted attachments: 1");

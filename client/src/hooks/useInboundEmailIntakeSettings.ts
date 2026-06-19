@@ -13,6 +13,7 @@ import {
 import {
   inboundEmailMailboxListResponseSchema,
   inboundEmailMailboxViewSchema,
+  type InboundEmailMailboxSettings,
   type InboundEmailMailboxListResponse,
   type InboundEmailMailboxView,
 } from "@shared/inboundEmailMailboxes";
@@ -269,6 +270,31 @@ export function useUpdateInboundEmailMailboxEnabled() {
       const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
       if (!response.ok || payload.success === false) {
         throw new Error(payload.message || "Failed to update inbound email mailbox");
+      }
+      const parsed = inboundEmailMailboxViewSchema.safeParse(payload.data);
+      if (!parsed.success) {
+        throw new Error("Inbound email mailbox update returned an invalid response.");
+      }
+      return parsed.data as InboundEmailMailboxView;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/mailboxes"] });
+    },
+  });
+}
+
+export function useUpdateInboundEmailMailboxSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ mailboxId, settings }: { mailboxId: string; settings: Partial<InboundEmailMailboxSettings> }) => {
+      const response = await apiFetch(`/api/inbound-orders/email/mailboxes/${encodeURIComponent(mailboxId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings }),
+      });
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || "Failed to update inbound email mailbox settings");
       }
       const parsed = inboundEmailMailboxViewSchema.safeParse(payload.data);
       if (!parsed.success) {

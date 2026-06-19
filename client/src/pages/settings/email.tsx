@@ -32,6 +32,7 @@ import {
   useUpdateInboundEmailIgnoreRule,
   useUpdateInboundEmailTrustRule,
   useUpdateInboundEmailMailboxEnabled,
+  useUpdateInboundEmailMailboxSettings,
 } from "@/hooks/useInboundEmailIntakeSettings";
 import {
   defaultInboundEmailIntakeSettings,
@@ -178,10 +179,11 @@ function InboundEmailMailboxSettingsCard() {
   const { toast } = useToast();
   const mailboxesQuery = useInboundEmailMailboxes();
   const updateEnabled = useUpdateInboundEmailMailboxEnabled();
+  const updateMailboxSettings = useUpdateInboundEmailMailboxSettings();
   const setDefault = useSetDefaultInboundEmailMailbox();
   const deleteMailbox = useDeleteInboundEmailMailbox();
   const startGmailOAuth = useStartInboundGmailMailboxOAuth();
-  const isMutating = updateEnabled.isPending || setDefault.isPending || deleteMailbox.isPending || startGmailOAuth.isPending;
+  const isMutating = updateEnabled.isPending || updateMailboxSettings.isPending || setDefault.isPending || deleteMailbox.isPending || startGmailOAuth.isPending;
   const mailboxes = mailboxesQuery.data?.mailboxes ?? [];
 
   useEffect(() => {
@@ -275,6 +277,34 @@ function InboundEmailMailboxSettingsCard() {
     });
   };
 
+  const handleSavePullSettings = (mailboxId: string, form: HTMLFormElement) => {
+    const data = new FormData(form);
+    const labelText = String(data.get("labelIds") ?? "").trim();
+    updateMailboxSettings.mutate({
+      mailboxId,
+      settings: {
+        lookbackDays: Number(data.get("lookbackDays") ?? 14),
+        maxMessages: Number(data.get("maxMessages") ?? 50),
+        gmailQuery: String(data.get("gmailQuery") ?? "").trim() || null,
+        labelIds: labelText ? labelText.split(",").map((value) => value.trim()).filter(Boolean) : [],
+      },
+    }, {
+      onSuccess: () => {
+        toast({
+          title: "Inbound pull settings saved",
+          description: "Future manual pulls will use the updated Gmail list coverage settings.",
+        });
+      },
+      onError: (error: Error) => {
+        toast({
+          title: "Failed to save pull settings",
+          description: error.message,
+          variant: "destructive",
+        });
+      },
+    });
+  };
+
   const handleConnect = (mailboxId?: string) => {
     startGmailOAuth.mutate(mailboxId ?? null, {
       onSuccess: (url) => {
@@ -330,11 +360,12 @@ function InboundEmailMailboxSettingsCard() {
           </div>
         ) : (
           <div className="overflow-x-auto rounded-md border border-border">
-            <table className="w-full min-w-[860px] text-sm">
+            <table className="w-full min-w-[1120px] text-sm">
               <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <tr>
                   <th className="px-4 py-3 font-medium">Provider</th>
                   <th className="px-4 py-3 font-medium">Email Address</th>
+                  <th className="px-4 py-3 font-medium">Pull Coverage</th>
                   <th className="px-4 py-3 font-medium">Enabled</th>
                   <th className="px-4 py-3 font-medium">Default</th>
                   <th className="px-4 py-3 font-medium">Last Pull</th>
@@ -352,6 +383,65 @@ function InboundEmailMailboxSettingsCard() {
                     <td className="px-4 py-3">
                       <div className="font-medium text-foreground">{mailbox.emailAddress}</div>
                       <div className="text-xs text-muted-foreground">{mailbox.name}</div>
+                    </td>
+                    <td className="w-[340px] px-4 py-3">
+                      <form
+                        className="grid gap-2"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          handleSavePullSettings(mailbox.id, event.currentTarget);
+                        }}
+                      >
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="text-xs text-muted-foreground">
+                            Lookback days
+                            <Input
+                              name="lookbackDays"
+                              type="number"
+                              min={1}
+                              max={365}
+                              defaultValue={mailbox.settings.lookbackDays}
+                              disabled={isMutating}
+                              className="mt-1 h-8"
+                            />
+                          </label>
+                          <label className="text-xs text-muted-foreground">
+                            Max messages
+                            <Input
+                              name="maxMessages"
+                              type="number"
+                              min={1}
+                              max={100}
+                              defaultValue={mailbox.settings.maxMessages}
+                              disabled={isMutating}
+                              className="mt-1 h-8"
+                            />
+                          </label>
+                        </div>
+                        <label className="text-xs text-muted-foreground">
+                          Gmail query override
+                          <Input
+                            name="gmailQuery"
+                            defaultValue={mailbox.settings.gmailQuery ?? ""}
+                            placeholder="Defaults to newer_than:{lookbackDays}d"
+                            disabled={isMutating}
+                            className="mt-1 h-8"
+                          />
+                        </label>
+                        <label className="text-xs text-muted-foreground">
+                          Label IDs
+                          <Input
+                            name="labelIds"
+                            defaultValue={mailbox.settings.labelIds.join(", ")}
+                            placeholder="INBOX, CATEGORY_PRIMARY"
+                            disabled={isMutating}
+                            className="mt-1 h-8"
+                          />
+                        </label>
+                        <Button type="submit" size="sm" variant="outline" disabled={isMutating} className="justify-self-start">
+                          Save Pull Settings
+                        </Button>
+                      </form>
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
@@ -1273,9 +1363,55 @@ function EmailPullDiagnosticsPanel() {
                     </div>
                   </div>
                 </div>
+                <div className="mt-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Matching Gmail Listed Messages</div>
+                  {diagnostics.subjectSearch.gmailListMessage ? (
+                    <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-800">
+                      {diagnostics.subjectSearch.gmailListMessage}
+                    </div>
+                  ) : null}
+                  <div className="mt-2 space-y-2">
+                    {diagnostics.subjectSearch.matchingGmailListedMessages.length === 0 ? (
+                      <div className="text-sm text-muted-foreground">None</div>
+                    ) : diagnostics.subjectSearch.matchingGmailListedMessages.map((message, index) => (
+                      <div key={`${formatDiagnosticValue(message.providerMessageId)}-${index}`} className="rounded-md bg-muted/30 p-2 text-xs">
+                        <div className="font-medium text-foreground">{formatDiagnosticValue(message.subject)}</div>
+                        <div className="mt-1 grid gap-1 text-muted-foreground md:grid-cols-2">
+                          <div>Sender: {formatDiagnosticValue(message.senderName)} &lt;{formatDiagnosticValue(message.senderEmail)}&gt;</div>
+                          <div>Received: {formatDiagnosticValue(message.receivedAt)}</div>
+                          <div>Mailbox: {formatDiagnosticValue(message.mailboxEmail)}</div>
+                          <div>Query: {formatDiagnosticValue(message.query)}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
                 <GmailPayloadDiagnosticsPanel diagnostics={diagnostics.subjectSearch.gmailPayloadDiagnostics ?? []} />
               </div>
             )}
+
+            {detailsExpanded && <div className="rounded-md border border-border p-3">
+              <h4 className="text-sm font-semibold text-foreground">Recent Gmail Listed Messages</h4>
+              <div className="mt-2 space-y-2">
+                {diagnostics.recentGmailListedMessages.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No recent Gmail list diagnostics found.</div>
+                ) : diagnostics.recentGmailListedMessages.map((message, index) => (
+                  <div key={`${formatDiagnosticValue(message.providerMessageId)}-${index}`} className="rounded-md bg-muted/30 p-2 text-xs">
+                    <div className="font-medium text-foreground">{formatDiagnosticValue(message.subject)}</div>
+                    <div className="mt-1 grid gap-1 text-muted-foreground md:grid-cols-2">
+                      <div>Sender: {formatDiagnosticValue(message.senderName)} &lt;{formatDiagnosticValue(message.senderEmail)}&gt;</div>
+                      <div>Received: {formatDiagnosticValue(message.receivedAt)}</div>
+                      <div>Message: {formatDiagnosticValue(message.providerMessageId)}</div>
+                      <div>Thread: {formatDiagnosticValue(message.threadId)}</div>
+                      <div>Mailbox: {formatDiagnosticValue(message.mailboxEmail)}</div>
+                      <div>Query: {formatDiagnosticValue(message.query)}</div>
+                      <div>Labels: {formatDiagnosticValue(message.labelIds)}</div>
+                      <div>Pages: {formatDiagnosticValue(message.pageCount)} / Total listed: {formatDiagnosticValue(message.totalMessageIdsReturned)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>}
 
             {detailsExpanded && <div className="rounded-md border border-border p-3">
               <h4 className="text-sm font-semibold text-foreground">Recent Email Records</h4>

@@ -5,7 +5,11 @@ import {
   inboundEmailMailboxes,
   type InboundEmailMailbox,
 } from "@shared/schema";
-import type { InboundEmailMailboxView } from "@shared/inboundEmailMailboxes";
+import {
+  inboundEmailMailboxSettingsSchema,
+  type InboundEmailMailboxSettings,
+  type InboundEmailMailboxView,
+} from "@shared/inboundEmailMailboxes";
 
 type ConnectPlanMailbox = Pick<InboundEmailMailbox, "id" | "emailAddress" | "enabled" | "isDefault" | "name">;
 
@@ -42,6 +46,7 @@ function toIso(value: Date | string | null | undefined): string | null {
 }
 
 function redactMailbox(mailbox: InboundEmailMailbox): InboundEmailMailboxView {
+  const parsedSettings = inboundEmailMailboxSettingsSchema.safeParse(mailbox.settingsJson ?? {});
   return {
     id: mailbox.id,
     provider: mailbox.provider,
@@ -52,6 +57,7 @@ function redactMailbox(mailbox: InboundEmailMailbox): InboundEmailMailboxView {
     lastPulledAt: toIso(mailbox.lastPulledAt),
     lastPullStatus: mailbox.lastPullStatus ?? null,
     lastPullError: mailbox.lastPullError ?? null,
+    settings: parsedSettings.success ? parsedSettings.data : inboundEmailMailboxSettingsSchema.parse({}),
     createdAt: toIso(mailbox.createdAt),
     updatedAt: toIso(mailbox.updatedAt),
   };
@@ -117,7 +123,7 @@ export function planInboundGmailMailboxConnection(args: {
       enabled: true,
       isDefault: !hasDefault,
       authJson: args.authJson,
-      settingsJson: {},
+      settingsJson: inboundEmailMailboxSettingsSchema.parse({}),
       createdByUserId: args.actorUserId ?? null,
     },
   };
@@ -144,6 +150,52 @@ export class InboundEmailMailboxSettingsService {
     const [mailbox] = await this.dbInstance
       .update(inboundEmailMailboxes)
       .set({ enabled, updatedAt: new Date() })
+      .where(and(
+        eq(inboundEmailMailboxes.id, mailboxId),
+        eq(inboundEmailMailboxes.organizationId, organizationId),
+      ))
+      .returning();
+
+    if (!mailbox) {
+      throw Object.assign(new Error("Inbound mailbox not found"), { statusCode: 404 });
+    }
+
+    return redactMailbox(mailbox);
+  }
+
+  async updateMailboxSettings(
+    organizationId: string,
+    mailboxId: string,
+    settings: Partial<InboundEmailMailboxSettings>,
+  ): Promise<InboundEmailMailboxView> {
+    const [existing] = await this.dbInstance
+      .select()
+      .from(inboundEmailMailboxes)
+      .where(and(
+        eq(inboundEmailMailboxes.id, mailboxId),
+        eq(inboundEmailMailboxes.organizationId, organizationId),
+      ))
+      .limit(1);
+
+    if (!existing) {
+      throw Object.assign(new Error("Inbound mailbox not found"), { statusCode: 404 });
+    }
+
+    const current = inboundEmailMailboxSettingsSchema.safeParse(existing.settingsJson ?? {});
+    const merged = inboundEmailMailboxSettingsSchema.parse({
+      ...(current.success ? current.data : {}),
+      ...settings,
+    });
+
+    const [mailbox] = await this.dbInstance
+      .update(inboundEmailMailboxes)
+      .set({
+        settingsJson: {
+          ...(existing.settingsJson ?? {}),
+          ...merged,
+        },
+        updatedAt: new Date(),
+      })
       .where(and(
         eq(inboundEmailMailboxes.id, mailboxId),
         eq(inboundEmailMailboxes.organizationId, organizationId),
