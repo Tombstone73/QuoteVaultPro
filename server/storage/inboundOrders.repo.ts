@@ -748,7 +748,17 @@ export class InboundOrdersRepository {
         bodyHtml: sql<string | null>`coalesce(${inboundOrderRecords.rawPayloadJson}->>'bodyHtml', ${inboundOrderRecords.normalizedPayloadJson}->>'bodyHtml')`,
       })
       .from(inboundOrderRecords)
-      .where(and(eq(inboundOrderRecords.organizationId, args.organizationId), eq(inboundOrderRecords.sourceType, "email")))
+      .where(and(
+        eq(inboundOrderRecords.organizationId, args.organizationId),
+        eq(inboundOrderRecords.sourceType, "email"),
+        sql`coalesce(${inboundOrderRecords.reviewOutcome}, '') <> 'deleted'`,
+        sql`coalesce(${inboundOrderRecords.reviewOutcome}, '') <> 'rejected'`,
+        sql`${inboundOrderRecords.status} <> 'terminal'`,
+        sql`${inboundOrderRecords.status} <> 'submitted'`,
+        sql`${inboundOrderRecords.archivedAt} is null`,
+        sql`${inboundOrderRecords.createdQuoteId} is null`,
+        sql`${inboundOrderRecords.createdOrderId} is null`,
+      ))
       .orderBy(desc(inboundOrderRecords.createdAt))
       .limit(limit);
 

@@ -1029,6 +1029,7 @@ function GmailPayloadDiagnosticsPanel({ diagnostics }: { diagnostics: Array<Reco
 function EmailPullDiagnosticsPanel() {
   const [subjectInput, setSubjectInput] = useState("");
   const [subject, setSubject] = useState("");
+  const [detailsExpanded, setDetailsExpanded] = useState(true);
   const [ignoreRulesExpanded, setIgnoreRulesExpanded] = useState(false);
   const diagnosticsQuery = useInboundEmailPullDiagnostics(subject);
   const diagnostics = diagnosticsQuery.data;
@@ -1061,38 +1062,29 @@ function EmailPullDiagnosticsPanel() {
               Read-only visibility into the last inbound Gmail pull and recent TEMP_INBOUND email artifacts.
             </CardDescription>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={diagnosticsQuery.isFetching}
-            onClick={() => diagnosticsQuery.refetch()}
-          >
-            <RefreshCw className="mr-2 h-4 w-4" />
-            Refresh
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDetailsExpanded((value) => !value)}
+              aria-expanded={detailsExpanded}
+            >
+              {detailsExpanded ? <ChevronDown className="mr-2 h-4 w-4" /> : <ChevronRight className="mr-2 h-4 w-4" />}
+              {detailsExpanded ? "Collapse Details" : "Expand Details"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={diagnosticsQuery.isFetching}
+              onClick={() => diagnosticsQuery.refetch()}
+            >
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Refresh
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
-        <form onSubmit={submitSearch} className="flex flex-col gap-2 md:flex-row">
-          <Input
-            value={subjectInput}
-            onChange={(event) => setSubjectInput(event.target.value)}
-            placeholder="Search exact subject text"
-            aria-label="Email diagnostics subject search"
-          />
-          <div className="flex gap-2">
-            <Button type="submit" disabled={diagnosticsQuery.isFetching}>
-              <Search className="mr-2 h-4 w-4" />
-              Search
-            </Button>
-            {subject && (
-              <Button type="button" variant="ghost" onClick={clearSearch} disabled={diagnosticsQuery.isFetching}>
-                Clear
-              </Button>
-            )}
-          </div>
-        </form>
-
         {diagnosticsQuery.isLoading ? (
           <Skeleton className="h-48 w-full" />
         ) : diagnosticsQuery.isError ? (
@@ -1157,7 +1149,29 @@ function EmailPullDiagnosticsPanel() {
               </div>
             )}
 
-            {diagnostics.subjectSearch.provided && (
+            {detailsExpanded && (
+              <form onSubmit={submitSearch} className="flex flex-col gap-2 md:flex-row">
+                <Input
+                  value={subjectInput}
+                  onChange={(event) => setSubjectInput(event.target.value)}
+                  placeholder="Search exact subject text"
+                  aria-label="Email diagnostics subject search"
+                />
+                <div className="flex gap-2">
+                  <Button type="submit" disabled={diagnosticsQuery.isFetching}>
+                    <Search className="mr-2 h-4 w-4" />
+                    Search
+                  </Button>
+                  {subject && (
+                    <Button type="button" variant="ghost" onClick={clearSearch} disabled={diagnosticsQuery.isFetching}>
+                      Clear
+                    </Button>
+                  )}
+                </div>
+              </form>
+            )}
+
+            {detailsExpanded && diagnostics.subjectSearch.provided && (
               <div className="rounded-md border border-border p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h4 className="text-sm font-semibold text-foreground">Subject Search</h4>
@@ -1226,7 +1240,7 @@ function EmailPullDiagnosticsPanel() {
               </div>
             )}
 
-            <div className="rounded-md border border-border p-3">
+            {detailsExpanded && <div className="rounded-md border border-border p-3">
               <h4 className="text-sm font-semibold text-foreground">Recent Email Records</h4>
               <div className="mt-2 space-y-2">
                 {diagnostics.recentCreatedInboundRecords.length === 0 ? (
@@ -1250,9 +1264,9 @@ function EmailPullDiagnosticsPanel() {
                   </div>
                 ))}
               </div>
-            </div>
+            </div>}
 
-            <div className="grid gap-4 xl:grid-cols-2">
+            {detailsExpanded && <div className="grid gap-4 xl:grid-cols-2">
               <div className="rounded-md border border-border p-3">
                 <h4 className="text-sm font-semibold text-foreground">Recent Pull Diagnostics</h4>
                 <div className="mt-2 space-y-2">
@@ -1301,7 +1315,7 @@ function EmailPullDiagnosticsPanel() {
                   </div>
                 )}
               </div>
-            </div>
+            </div>}
           </div>
         ) : null}
       </CardContent>

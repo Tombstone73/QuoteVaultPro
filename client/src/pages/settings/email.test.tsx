@@ -553,6 +553,49 @@ describe("EmailSettings inbound mailbox settings", () => {
     expect(container.textContent).not.toContain("secret_refresh_token");
   });
 
+  test("collapses email pull diagnostics to stats and mailbox only", async () => {
+    await renderEmailSettings([
+      {
+        id: "mailbox_enabled",
+        provider: "gmail",
+        name: "Orders Inbox",
+        emailAddress: "orders@example.com",
+        enabled: true,
+        isDefault: true,
+        lastPulledAt: "2026-06-18T14:55:00.000Z",
+        lastPullStatus: "success",
+        lastPullError: null,
+        createdAt: "2026-06-09T12:00:00.000Z",
+        updatedAt: "2026-06-18T14:55:00.000Z",
+      },
+    ], [ignoreRule({ ruleType: "subject_contains", ruleValue: "Payment Received" })]);
+
+    await waitForText("Email Pull Diagnostics");
+    await waitForText("Recent Email Records");
+    const collapseButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Collapse Details")) as HTMLButtonElement;
+
+    await act(async () => {
+      collapseButton.click();
+    });
+
+    expect(container.textContent).toContain("Enabled Mailboxes");
+    expect(container.textContent).toContain("orders@example.com");
+    expect(container.textContent).not.toContain("Recent Email Records");
+    expect(container.textContent).not.toContain("Attachment Diagnostics");
+    expect(container.textContent).not.toContain("Audrey Powell");
+    expect(container.querySelector("input[aria-label='Email diagnostics subject search']")).toBeNull();
+
+    const expandButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Expand Details")) as HTMLButtonElement;
+    await act(async () => {
+      expandButton.click();
+    });
+
+    await waitForText("Recent Email Records");
+    expect(container.querySelector("input[aria-label='Email diagnostics subject search']")).toBeTruthy();
+  });
+
   test("collapses active ignore rules in diagnostics when there are many", async () => {
     await renderEmailSettings([
       {
