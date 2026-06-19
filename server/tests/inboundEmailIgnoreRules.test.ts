@@ -387,6 +387,126 @@ describe("inbound email pull diagnostics service", () => {
     }));
   });
 
+  test("includes recent Gmail listed messages in subject diagnostics before app filtering", async () => {
+    const service = new InboundOrderService(diagnosticRepository({
+      getEmailPullDiagnostics: jest.fn(async () => ({
+        mailboxes: [{
+          id: "mailbox_1",
+          provider: "gmail",
+          name: "Orders Inbox",
+          emailAddress: "orders@example.com",
+          enabled: true,
+          isDefault: true,
+          lastPulledAt: new Date("2026-06-19T14:00:00.000Z"),
+          lastPullStatus: "success",
+          lastPullError: null,
+          settingsJson: {
+            latestPullSummary: {
+              gmailList: {
+                query: "from:brainstormprint.com newer_than:30d",
+                labelIds: ["INBOX"],
+                maxResults: 50,
+                pageCount: 2,
+                totalMessageIdsReturned: 31,
+                listedMessages: [{
+                  providerMessageId: "gmail_msg_151534",
+                  threadId: "thread_151534",
+                  subject: "Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26",
+                  senderName: "Shawn Fears",
+                  senderEmail: "shawn@brainstormprint.com",
+                  receivedAt: "2026-06-19T13:45:00.000Z",
+                }],
+              },
+            },
+          },
+        }],
+        ignoreRules: [],
+        recentCreatedRecords: [],
+        recentFiles: [],
+        recentFailedDiagnostics: [],
+        recentPullDiagnostics: [],
+        recentIgnoredDiagnostics: [],
+        subjectRecords: [],
+        subjectFiles: [],
+        subjectPullDiagnostics: [],
+      })),
+    }) as any);
+
+    const result = await service.getEmailPullDiagnostics({
+      organizationId: "org_1",
+      subject: "151534 Titan IYSA",
+    });
+
+    expect(result.recentGmailListedMessages).toEqual([
+      expect.objectContaining({
+        providerMessageId: "gmail_msg_151534",
+        subject: "Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26",
+        mailboxEmail: "orders@example.com",
+        query: "from:brainstormprint.com newer_than:30d",
+        pageCount: 2,
+      }),
+    ]);
+    expect(result.subjectSearch.found).toBe(true);
+    expect(result.subjectSearch.matchingGmailListedMessages).toHaveLength(1);
+    expect(result.subjectSearch.notReturnedByGmailListQuery).toBe(false);
+  });
+
+  test("reports when searched subject was not returned by the latest Gmail list query", async () => {
+    const service = new InboundOrderService(diagnosticRepository({
+      getEmailPullDiagnostics: jest.fn(async () => ({
+        mailboxes: [{
+          id: "mailbox_1",
+          provider: "gmail",
+          name: "Orders Inbox",
+          emailAddress: "orders@example.com",
+          enabled: true,
+          isDefault: true,
+          lastPulledAt: new Date("2026-06-19T14:00:00.000Z"),
+          lastPullStatus: "success",
+          lastPullError: null,
+          settingsJson: {
+            latestPullSummary: {
+              gmailList: {
+                query: "newer_than:14d",
+                labelIds: ["INBOX"],
+                maxResults: 25,
+                pageCount: 1,
+                totalMessageIdsReturned: 25,
+                listedMessages: [{
+                  providerMessageId: "gmail_msg_other",
+                  threadId: "thread_other",
+                  subject: "Some other order",
+                  senderName: "Other Sender",
+                  senderEmail: "other@example.com",
+                  receivedAt: "2026-06-19T13:45:00.000Z",
+                }],
+              },
+            },
+          },
+        }],
+        ignoreRules: [],
+        recentCreatedRecords: [],
+        recentFiles: [],
+        recentFailedDiagnostics: [],
+        recentPullDiagnostics: [],
+        recentIgnoredDiagnostics: [],
+        subjectRecords: [],
+        subjectFiles: [],
+        subjectPullDiagnostics: [],
+      })),
+    }) as any);
+
+    const result = await service.getEmailPullDiagnostics({
+      organizationId: "org_1",
+      subject: "Brainstorm Jobs Due for the Week of 6/15 thru 6/19",
+    });
+
+    expect(result.subjectSearch.found).toBe(false);
+    expect(result.subjectSearch.matchingGmailListedMessages).toEqual([]);
+    expect(result.subjectSearch.notReturnedByGmailListQuery).toBe(true);
+    expect(result.subjectSearch.gmailListMessage).toBe("Not returned by Gmail list query for latest pull.");
+  });
+
   test("reports an explicit reason when candidates exist without processing attempts", async () => {
     const service = new InboundOrderService(diagnosticRepository({
       getEmailPullDiagnostics: jest.fn(async () => ({

@@ -162,6 +162,7 @@ function emailPullDiagnostics(overrides: Record<string, any> = {}) {
       status: "available",
       metadataJson: { provider: "gmail" },
     }],
+    recentGmailListedMessages: [],
     ignoreRuleCount: 1,
     activeIgnoreRules: [{
       id: "rule_1",
@@ -178,6 +179,9 @@ function emailPullDiagnostics(overrides: Record<string, any> = {}) {
       matchingRecords: [],
       matchingFiles: [],
       matchingIgnoreRules: [],
+      matchingGmailListedMessages: [],
+      notReturnedByGmailListQuery: false,
+      gmailListMessage: null,
       duplicateDetection: {
         durableSkippedMessageLogsStored: false,
         possibleDuplicateRecords: [],
@@ -480,6 +484,7 @@ describe("inbound order routes", () => {
   const inboundEmailMailboxSettingsService = {
     listMailboxes: jest.fn<(...args: any[]) => Promise<any>>(),
     updateMailboxEnabled: jest.fn<(...args: any[]) => Promise<any>>(),
+    updateMailboxSettings: jest.fn<(...args: any[]) => Promise<any>>(),
     setDefaultMailbox: jest.fn<(...args: any[]) => Promise<any>>(),
     deleteMailbox: jest.fn<(...args: any[]) => Promise<any>>(),
     connectGmailMailbox: jest.fn<(...args: any[]) => Promise<any>>(),

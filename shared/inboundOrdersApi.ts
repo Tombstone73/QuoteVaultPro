@@ -570,6 +570,7 @@ export type InboundEmailPullDiagnosticsResponse = {
       recentIgnoredMessageDiagnostics: Array<Record<string, unknown>>;
       recentCreatedInboundRecords: Array<Record<string, unknown>>;
     recentInboundFiles: Array<Record<string, unknown>>;
+    recentGmailListedMessages: Array<Record<string, unknown>>;
     ignoreRuleCount: number;
     activeIgnoreRules: Array<{
       id: string;
@@ -586,6 +587,9 @@ export type InboundEmailPullDiagnosticsResponse = {
       matchingRecords: Array<Record<string, unknown>>;
         matchingFiles: Array<Record<string, unknown>>;
         matchingIgnoreRules: Array<Record<string, unknown>>;
+        matchingGmailListedMessages: Array<Record<string, unknown>>;
+        notReturnedByGmailListQuery: boolean;
+        gmailListMessage: string | null;
         gmailPayloadDiagnostics?: Array<Record<string, unknown>>;
         duplicateDetection: {
         durableSkippedMessageLogsStored: boolean;

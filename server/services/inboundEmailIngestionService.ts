@@ -64,6 +64,23 @@ export type InboundEmailProviderMessage = {
   attachments: InboundEmailAttachmentMetadata[];
 };
 
+type InboundEmailListDiagnostics = {
+  provider: string;
+  query: string;
+  labelIds: string[] | null;
+  maxResults: number;
+  pageCount: number;
+  totalMessageIdsReturned: number;
+  listedMessages: Array<{
+    providerMessageId: string;
+    threadId: string | null;
+    subject: string | null;
+    senderName: string | null;
+    senderEmail: string | null;
+    receivedAt: string | null;
+  }>;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -261,6 +278,7 @@ const ALLOWED_INBOUND_ATTACHMENT_EXTENSIONS = new Set([
 
 export interface InboundEmailProviderAdapter {
   listRecentMessages(mailbox: InboundEmailMailbox, limit: number): Promise<InboundEmailProviderMessage[]>;
+  getLastListDiagnostics?(): InboundEmailListDiagnostics | null;
   getMessagePayloadDiagnostics?(
     mailbox: InboundEmailMailbox,
     messageId: string,
@@ -697,6 +715,8 @@ export function matchInboundEmailIgnoreRule(
 }
 
 export class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
+  private lastListDiagnostics: InboundEmailListDiagnostics | null = null;
+
   private buildGmailClient(mailbox: InboundEmailMailbox) {
     const authJson = (mailbox.authJson ?? {}) as Record<string, unknown>;
     const refreshToken = stringFromUnknown(authJson.refreshToken);
@@ -712,28 +732,67 @@ export class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
     return google.gmail({ version: "v1", auth: oauth2Client });
   }
 
+  getLastListDiagnostics(): InboundEmailListDiagnostics | null {
+    return this.lastListDiagnostics;
+  }
+
   async listRecentMessages(mailbox: InboundEmailMailbox, limit: number): Promise<InboundEmailProviderMessage[]> {
     const settingsJson = (mailbox.settingsJson ?? {}) as Record<string, unknown>;
     const gmail = this.buildGmailClient(mailbox);
-    const query = stringFromUnknown(settingsJson.query) ?? "newer_than:14d";
+    const lookbackDays = Math.max(1, Math.min(365, Math.round(numberFromUnknown(settingsJson.lookbackDays, 14))));
+    const configuredQuery = Object.prototype.hasOwnProperty.call(settingsJson, "gmailQuery")
+      ? stringFromUnknown(settingsJson.gmailQuery)
+      : stringFromUnknown(settingsJson.query);
+    const query = configuredQuery ?? `newer_than:${lookbackDays}d`;
     const labelIds = Array.isArray(settingsJson.labelIds)
       ? settingsJson.labelIds.map((value) => String(value)).filter(Boolean)
       : undefined;
+    const safeLimit = Math.max(1, Math.min(100, Math.round(limit)));
+    const pageSize = Math.max(1, Math.min(25, safeLimit));
+    const messageIds: string[] = [];
+    let pageToken: string | undefined;
+    let pageCount = 0;
 
-    const listed = await gmail.users.messages.list({
-      userId: "me",
-      maxResults: limit,
-      q: query,
-      labelIds,
-    });
-    const messages = listed.data.messages ?? [];
+    do {
+      const listed = await gmail.users.messages.list({
+        userId: "me",
+        maxResults: Math.min(pageSize, safeLimit - messageIds.length),
+        q: query,
+        labelIds,
+        pageToken,
+      });
+      pageCount += 1;
+      for (const summary of listed.data.messages ?? []) {
+        if (!summary.id || messageIds.includes(summary.id)) continue;
+        messageIds.push(summary.id);
+        if (messageIds.length >= safeLimit) break;
+      }
+      pageToken = listed.data.nextPageToken || undefined;
+    } while (pageToken && messageIds.length < safeLimit);
+
     const results: InboundEmailProviderMessage[] = [];
 
-    for (const summary of messages) {
-      if (!summary.id) continue;
-      const detail = await gmail.users.messages.get({ userId: "me", id: summary.id, format: "full" });
+    for (const messageId of messageIds) {
+      const detail = await gmail.users.messages.get({ userId: "me", id: messageId, format: "full" });
       results.push(this.toProviderMessage(detail.data));
     }
+
+    this.lastListDiagnostics = {
+      provider: "gmail",
+      query,
+      labelIds: labelIds && labelIds.length > 0 ? labelIds : null,
+      maxResults: safeLimit,
+      pageCount,
+      totalMessageIdsReturned: messageIds.length,
+      listedMessages: results.map((message) => ({
+        providerMessageId: message.messageId,
+        threadId: message.threadId,
+        subject: message.subject,
+        senderName: message.senderName,
+        senderEmail: message.senderEmail,
+        receivedAt: message.receivedAt ? message.receivedAt.toISOString() : null,
+      })),
+    };
 
     return results;
   }
@@ -839,10 +898,10 @@ export class InboundEmailIngestionService {
     const summary = { created: 0, skippedDuplicates: 0, ignored: 0, failed: 0 };
     const createdRecordIds: string[] = [];
     const mailboxResults: InboundEmailPullResult["mailboxResults"] = [];
-    const requestedLimit = Math.max(1, Math.min(25, Math.round(Number(args.limit ?? 10))));
+    const requestedLimit = Math.max(1, Math.min(100, Math.round(Number(args.limit ?? 50))));
 
     for (const mailbox of mailboxes) {
-      const mailboxLimit = Math.max(1, Math.min(25, Math.round(numberFromUnknown((mailbox.settingsJson as any)?.maxMessages, requestedLimit))));
+      const mailboxLimit = Math.max(1, Math.min(100, Math.round(numberFromUnknown((mailbox.settingsJson as any)?.maxMessages, requestedLimit))));
       const result = {
         mailboxId: mailbox.id,
         mailboxName: mailbox.name,
@@ -859,6 +918,7 @@ export class InboundEmailIngestionService {
         if (!adapter) throw new Error(`Unsupported inbound email provider: ${mailbox.provider}`);
         const source = await this.ensureSourceForMailbox(mailbox);
         const messages = await adapter.listRecentMessages(mailbox, mailboxLimit);
+        const listDiagnostics = adapter.getLastListDiagnostics?.() ?? null;
         for (const message of messages) {
           try {
             const outcome = await this.processMessage(args.organizationId, args.actorUserId, mailbox, source, message, adapter);
@@ -878,13 +938,28 @@ export class InboundEmailIngestionService {
             });
           }
         }
-        await this.markMailboxPull(mailbox.id, "success", null);
+        await this.markMailboxPull(mailbox, "success", null, {
+          provider: mailbox.provider,
+          mailboxId: mailbox.id,
+          mailboxEmail: mailbox.emailAddress,
+          requestedLimit: mailboxLimit,
+          gmailList: listDiagnostics,
+          result,
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to pull inbound mailbox.";
         result.failed += 1;
         summary.failed += 1;
         result.error = message;
-        await this.markMailboxPull(mailbox.id, "failed", message);
+        await this.markMailboxPull(mailbox, "failed", message, {
+          provider: mailbox.provider,
+          mailboxId: mailbox.id,
+          mailboxEmail: mailbox.emailAddress,
+          requestedLimit: mailboxLimit,
+          gmailList: this.adapterByProvider[mailbox.provider]?.getLastListDiagnostics?.() ?? null,
+          result,
+          error: message,
+        });
         console.error("[Inbound Email Pull] Mailbox pull failed", {
           organizationId: args.organizationId,
           mailboxId: mailbox.id,
@@ -2380,16 +2455,31 @@ export class InboundEmailIngestionService {
     return rules.find((rule) => matchInboundEmailIgnoreRule(rule, message)) ?? null;
   }
 
-  private async markMailboxPull(mailboxId: string, status: string, error: string | null): Promise<void> {
+  private async markMailboxPull(
+    mailbox: InboundEmailMailbox,
+    status: string,
+    error: string | null,
+    latestPullSummary?: Record<string, unknown> | null,
+  ): Promise<void> {
+    const settingsJson = isRecord(mailbox.settingsJson) ? mailbox.settingsJson : {};
     await this.dbInstance
       .update(inboundEmailMailboxes)
       .set({
         lastPulledAt: new Date(),
         lastPullStatus: status,
         lastPullError: error,
+        settingsJson: latestPullSummary
+          ? {
+              ...settingsJson,
+              latestPullSummary: {
+                ...latestPullSummary,
+                generatedAt: new Date().toISOString(),
+              },
+            }
+          : settingsJson,
         updatedAt: new Date(),
       })
-      .where(eq(inboundEmailMailboxes.id, mailboxId));
+      .where(eq(inboundEmailMailboxes.id, mailbox.id));
   }
 }
 

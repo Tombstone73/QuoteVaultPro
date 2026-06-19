@@ -27,6 +27,28 @@ function message(overrides: Partial<InboundEmailProviderMessage>): InboundEmailP
   };
 }
 
+function mailbox(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "mailbox_1",
+    organizationId: "org_1",
+    sourceId: null,
+    provider: "gmail",
+    name: "Inbound Gmail",
+    emailAddress: "orders@example.com",
+    enabled: true,
+    isDefault: true,
+    authJson: {},
+    settingsJson: {},
+    lastPulledAt: null,
+    lastPullStatus: null,
+    lastPullError: null,
+    createdByUserId: null,
+    createdAt: new Date("2026-06-18T12:00:00.000Z"),
+    updatedAt: new Date("2026-06-18T12:00:00.000Z"),
+    ...overrides,
+  } as any;
+}
+
 describe("inbound email ingestion classifier", () => {
   test("classifies quote request wording", () => {
     const result = classifyInboundEmailForReview(message({
@@ -307,28 +329,77 @@ describe("Gmail MIME attachment extraction", () => {
       users: { messages: { list, get } },
     });
 
-    const messages = await adapter.listRecentMessages({
-      id: "mailbox_1",
-      organizationId: "org_1",
-      sourceId: null,
-      provider: "gmail",
-      name: "Inbound Gmail",
-      emailAddress: "orders@example.com",
-      enabled: true,
-      isDefault: true,
-      authJson: {},
-      settingsJson: {},
-      lastPulledAt: null,
-      lastPullStatus: null,
-      lastPullError: null,
-      createdByUserId: null,
-      createdAt: new Date("2026-06-18T12:00:00.000Z"),
-      updatedAt: new Date("2026-06-18T12:00:00.000Z"),
-    }, 10);
+    const messages = await adapter.listRecentMessages(mailbox(), 10);
 
     expect(get).toHaveBeenCalledWith({ userId: "me", id: "gmail_msg_1", format: "full" });
     expect(messages[0].attachments).toEqual([
       expect.objectContaining({ filename: "nested-po.pdf", attachmentId: "att_1" }),
     ]);
+  });
+
+  test("paginates Gmail list results up to the configured max and records safe listed-message diagnostics", async () => {
+    const list = jest.fn(async (args: any) => {
+      if (!args.pageToken) {
+        return { data: { messages: [{ id: "gmail_msg_page_1" }], nextPageToken: "page_2" } };
+      }
+      return { data: { messages: [{ id: "gmail_msg_target" }] } };
+    });
+    const get = jest.fn(async ({ id }: any) => ({
+      data: {
+        id,
+        threadId: `${id}_thread`,
+        internalDate: String(new Date("2026-06-19T12:00:00.000Z").getTime()),
+        payload: {
+          headers: [
+            { name: "From", value: "Shawn Fears <shawn@brainstormprint.com>" },
+            {
+              name: "Subject",
+              value: id === "gmail_msg_target"
+                ? "Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26"
+                : "Earlier visible inbox message",
+            },
+          ],
+          mimeType: "text/plain",
+          body: { data: base64Url("Please see attached.") },
+        },
+      },
+    }));
+    const adapter = new GmailInboundEmailAdapter();
+    (adapter as any).buildGmailClient = () => ({
+      users: { messages: { list, get } },
+    });
+
+    const messages = await adapter.listRecentMessages(mailbox({
+      settingsJson: {
+        lookbackDays: 30,
+        maxMessages: 50,
+        gmailQuery: "from:brainstormprint.com newer_than:30d",
+        labelIds: ["INBOX"],
+      },
+    }), 50);
+
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(list).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      userId: "me",
+      maxResults: 25,
+      q: "from:brainstormprint.com newer_than:30d",
+      labelIds: ["INBOX"],
+    }));
+    expect(list).toHaveBeenNthCalledWith(2, expect.objectContaining({ pageToken: "page_2" }));
+    expect(messages.map((item) => item.subject)).toContain("Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26");
+    expect(adapter.getLastListDiagnostics()).toEqual(expect.objectContaining({
+      query: "from:brainstormprint.com newer_than:30d",
+      labelIds: ["INBOX"],
+      maxResults: 50,
+      pageCount: 2,
+      totalMessageIdsReturned: 2,
+      listedMessages: expect.arrayContaining([
+        expect.objectContaining({
+          providerMessageId: "gmail_msg_target",
+          subject: "Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26",
+          senderEmail: "shawn@brainstormprint.com",
+        }),
+      ]),
+    }));
   });
 });
