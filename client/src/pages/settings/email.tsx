@@ -947,6 +947,9 @@ function AttachmentPipelineDiagnostics({ record }: { record: Record<string, unkn
           <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Ingestion Call Audit</div>
           {ingestionCallEvents.map((event: Record<string, any>, index: number) => {
             const metadata = event.metadataJson && typeof event.metadataJson === "object" ? event.metadataJson as Record<string, unknown> : {};
+            const providerIdentifierDiagnostics = Array.isArray(metadata.providerIdentifierColumnDiagnostics)
+              ? metadata.providerIdentifierColumnDiagnostics as Array<Record<string, unknown>>
+              : [];
             return (
               <div key={`${event.eventId ?? event.eventType ?? "call"}-${index}`} className="rounded border border-border/70 bg-muted/30 p-1.5 text-[11px] text-muted-foreground">
                 <div className="font-medium text-foreground">{formatDiagnosticValue(event.eventType)}</div>
@@ -954,6 +957,18 @@ function AttachmentPipelineDiagnostics({ record }: { record: Record<string, unkn
                 <div>Candidates: {formatDiagnosticValue(metadata.candidateCount)} / Trust: {formatDiagnosticValue(metadata.trustStatus)}</div>
                 <div>Policy: {formatDiagnosticValue(metadata.attachmentPolicy)}</div>
                 {metadata.errorMessage ? <div>Error: {formatDiagnosticValue(metadata.errorMessage)}</div> : null}
+                {providerIdentifierDiagnostics.length > 0 ? (
+                  <div className="mt-1 space-y-1">
+                    {providerIdentifierDiagnostics.map((diagnostic, diagnosticIndex) => (
+                      <div key={diagnosticIndex}>
+                        Column: {formatDiagnosticValue(diagnostic.table)}.{formatDiagnosticValue(diagnostic.column)}
+                        {" / "}Type: {formatDiagnosticValue(diagnostic.currentType)}
+                        {" / "}Length: {formatDiagnosticValue(diagnostic.actualStringLength)}
+                        {" / "}Gmail field: {formatDiagnosticValue(diagnostic.originatingGmailField)}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             );
           })}

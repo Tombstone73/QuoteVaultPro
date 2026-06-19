@@ -229,6 +229,15 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
                   candidateCount: 1,
                   trustStatus: "trusted_domain",
                   attachmentPolicy: "auto_download_allowed",
+                  providerIdentifierColumnDiagnostics: [{
+                    table: "inbound_order_files",
+                    column: "provider_attachment_id",
+                    currentType: "text",
+                    previousType: "varchar(255)",
+                    actualStringLength: 312,
+                    originatingGmailField: "payload.parts[].body.attachmentId",
+                    exceedsPreviousLimit: true,
+                  }],
                 },
               }, {
                 eventType: "attachment_ingestion_call_failed",
@@ -239,6 +248,15 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
                   trustStatus: "trusted_domain",
                   attachmentPolicy: "auto_download_allowed",
                   errorMessage: "Gmail attachment unavailable",
+                  providerIdentifierColumnDiagnostics: [{
+                    table: "inbound_order_files",
+                    column: "provider_attachment_id",
+                    currentType: "text",
+                    previousType: "varchar(255)",
+                    actualStringLength: 312,
+                    originatingGmailField: "payload.parts[].body.attachmentId",
+                    exceedsPreviousLimit: true,
+                  }],
                 },
               }],
               failures: [{
@@ -302,6 +320,15 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
                       candidateCount: 1,
                       trustStatus: "trusted_domain",
                       attachmentPolicy: "auto_download_allowed",
+                      providerIdentifierColumnDiagnostics: [{
+                        table: "inbound_order_files",
+                        column: "provider_attachment_id",
+                        currentType: "text",
+                        previousType: "varchar(255)",
+                        actualStringLength: 312,
+                        originatingGmailField: "payload.parts[].body.attachmentId",
+                        exceedsPreviousLimit: true,
+                      }],
                     },
                   }, {
                     eventType: "attachment_ingestion_call_failed",
@@ -312,6 +339,15 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
                       trustStatus: "trusted_domain",
                       attachmentPolicy: "auto_download_allowed",
                       errorMessage: "Gmail attachment unavailable",
+                      providerIdentifierColumnDiagnostics: [{
+                        table: "inbound_order_files",
+                        column: "provider_attachment_id",
+                        currentType: "text",
+                        previousType: "varchar(255)",
+                        actualStringLength: 312,
+                        originatingGmailField: "payload.parts[].body.attachmentId",
+                        exceedsPreviousLimit: true,
+                      }],
                     },
                   }],
                   failures: [{ filename: "visual-po.pdf", failureReason: "Gmail attachment unavailable", gmailApiError: "Gmail attachment unavailable" }],
@@ -577,6 +613,10 @@ describe("EmailSettings inbound mailbox settings", () => {
     expect(container.textContent).toContain("attachment_ingestion_call_started");
     expect(container.textContent).toContain("attachment_ingestion_call_failed");
     expect(container.textContent).toContain("Policy: auto_download_allowed");
+    expect(container.textContent).toContain("Column: inbound_order_files.provider_attachment_id");
+    expect(container.textContent).toContain("Type: text");
+    expect(container.textContent).toContain("Length: 312");
+    expect(container.textContent).toContain("Gmail field: payload.parts[].body.attachmentId");
     expect(container.textContent).toContain("Gmail API error: Gmail attachment unavailable");
 
     const subjectInput = container.querySelector("input[aria-label='Email diagnostics subject search']") as HTMLInputElement;

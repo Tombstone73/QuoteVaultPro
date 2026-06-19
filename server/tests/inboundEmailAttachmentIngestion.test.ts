@@ -70,6 +70,8 @@ const record = {
   updatedAt: new Date("2026-06-17T12:00:00.000Z"),
 } satisfies InboundOrderRecord;
 
+const longGmailAttachmentId = `ANGjdJ8${"x".repeat(280)}_gmail_attachment_identifier_tail`;
+
 function message(overrides: Partial<InboundEmailProviderMessage> = {}): InboundEmailProviderMessage {
   return {
     provider: "gmail",
@@ -468,6 +470,71 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       }),
     }));
     expect(events.find((event) => event.eventType === "attachment_ingestion_call_completed")).toBeUndefined();
+  });
+
+  test("preserves long Gmail attachment identifiers and reports provider ID column lengths", async () => {
+    const { repo, storage, createdFiles, events } = serviceHarness();
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => [message({
+        subject: "654898 new po",
+        bodyText: "Please see attached PO.",
+        attachments: [{
+          filename: "654898 new po.pdf",
+          mimeType: "application/pdf",
+          size: 8,
+          attachmentId: longGmailAttachmentId,
+          contentDisposition: "attachment",
+        }],
+      })]),
+      downloadAttachment: jest.fn(async () => ({
+        buffer: Buffer.from("%PDF"),
+        mimeType: "application/pdf",
+        sizeBytes: 4,
+      })),
+    };
+    const service = new InboundEmailIngestionService(
+      pullLatestFreshRecordDbHarness(record) as any,
+      { gmail: adapter },
+      repo as any,
+      storage as any,
+    );
+
+    const result = await service.pullLatestEmails({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      limit: 1,
+    });
+
+    expect(result.summary).toEqual({ created: 1, skippedDuplicates: 0, ignored: 0, failed: 0 });
+    expect(longGmailAttachmentId.length).toBeGreaterThan(255);
+    expect(adapter.downloadAttachment).toHaveBeenCalledWith(
+      mailbox,
+      expect.objectContaining({
+        attachments: [expect.objectContaining({ attachmentId: longGmailAttachmentId })],
+      }),
+      expect.objectContaining({ attachmentId: longGmailAttachmentId }),
+    );
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      providerAttachmentId: longGmailAttachmentId,
+      providerMessageId: "gmail_msg_1",
+      status: "available",
+    }));
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(events.find((event) => event.eventType === "attachment_ingestion_call_started")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        providerIdentifierColumnDiagnostics: expect.arrayContaining([
+          expect.objectContaining({
+            table: "inbound_order_files",
+            column: "provider_attachment_id",
+            previousType: "varchar(255)",
+            currentType: "text",
+            actualStringLength: longGmailAttachmentId.length,
+            originatingGmailField: "payload.parts[].body.attachmentId",
+            exceedsPreviousLimit: true,
+          }),
+        ]),
+      }),
+    }));
   });
 
   test("unknown sender creates metadata-only pending_trust attachment", async () => {
