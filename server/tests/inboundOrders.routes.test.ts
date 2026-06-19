@@ -475,6 +475,7 @@ describe("inbound order routes", () => {
     pullLatestEmails: jest.fn<(...args: any[]) => Promise<any>>(),
     getGmailPayloadDiagnosticsForSubject: jest.fn<(...args: any[]) => Promise<any>>(),
     approveAttachmentTrustAction: jest.fn<(...args: any[]) => Promise<any>>(),
+    approveRecordTrustAction: jest.fn<(...args: any[]) => Promise<any>>(),
   };
   const inboundEmailMailboxSettingsService = {
     listMailboxes: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -1108,6 +1109,39 @@ describe("inbound order routes", () => {
       action: "download_once",
       note: null,
     });
+  });
+
+  test("applies inbound record trust action and returns refreshed inbound detail", async () => {
+    inboundEmailIngestionService.approveRecordTrustAction.mockResolvedValue({
+      trustRuleType: "sender_email_exact",
+      trustRuleValue: "buyer@example.com",
+      attempted: 1,
+      downloaded: 1,
+      metadataOnly: 0,
+      blocked: 0,
+      failed: [],
+    });
+    service.getInboundOrder.mockResolvedValue(inboundDetail(inboundRecord({
+      sourceType: "email",
+      senderTrustStatus: "trusted_sender",
+      attachmentDownloadPolicy: "auto_download_allowed",
+    })));
+
+    const response = await request(buildApp(service, { inboundEmailIngestionService }))
+      .post("/api/inbound-orders/inbound_1/trust-action")
+      .send({ action: "trust_sender_and_download" });
+
+    expect(response.status).toBe(200);
+    expect(inboundEmailIngestionService.approveRecordTrustAction).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "trust_sender_and_download",
+      note: null,
+    });
+    expect(response.body.data.result.downloaded).toBe(1);
+    expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+    expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
   });
 
   test("creates a manual TEMP inbound record with needs_review status", async () => {

@@ -99,6 +99,16 @@ export const inboundAttachmentTrustActionSchema = z.object({
   note: z.string().trim().max(2000).optional().nullable(),
 });
 
+export const inboundRecordTrustActionSchema = z.object({
+  action: z.enum([
+    "trust_sender",
+    "trust_domain",
+    "trust_sender_and_download",
+    "trust_domain_and_download",
+  ]),
+  note: z.string().trim().max(2000).optional().nullable(),
+});
+
 export const inboundOrderIgnoreActionSchema = z.object({
   action: z.enum([
     "ignore_once",
@@ -713,6 +723,7 @@ export type InboundEmailTrustRuleCreateRequest = z.infer<typeof inboundEmailTrus
 export type InboundEmailTrustRuleUpdateRequest = z.infer<typeof inboundEmailTrustRuleUpdateSchema>;
 export type InboundEmailTrustRuleTypeValue = InboundEmailTrustRuleType;
 export type InboundAttachmentTrustActionRequest = z.infer<typeof inboundAttachmentTrustActionSchema>;
+export type InboundRecordTrustActionRequest = z.infer<typeof inboundRecordTrustActionSchema>;
 export type InboundOrderIgnoreActionRequest = z.infer<typeof inboundOrderIgnoreActionSchema>;
 export type InboundOrderBulkActionRequest = z.infer<typeof inboundOrderBulkActionSchema>;
 

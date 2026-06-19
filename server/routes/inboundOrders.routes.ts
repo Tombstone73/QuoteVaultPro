@@ -20,6 +20,7 @@ import {
   inboundEmailTrustRuleCreateSchema,
   inboundEmailTrustRuleUpdateSchema,
   inboundAttachmentTrustActionSchema,
+  inboundRecordTrustActionSchema,
   inboundOrderBulkActionSchema,
   inboundOrderIgnoreActionSchema,
   inboundOrderListQuerySchema,
@@ -989,6 +990,41 @@ export function registerInboundOrderRoutes(
 
       console.error("Error fetching inbound order detail:", error);
       res.status(500).json({ message: "Failed to fetch inbound order detail" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/trust-action", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: "User ID not found" });
+
+      const input = inboundRecordTrustActionSchema.parse(req.body ?? {});
+      const result = await emailIngestionService.approveRecordTrustAction({
+        organizationId,
+        actorUserId,
+        inboundRecordId: String(req.params.id),
+        action: input.action,
+        note: input.note ?? null,
+      });
+      const detail = await service.getInboundOrder({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+      });
+      res.json({ success: true, data: { result, inbound: detail } });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      if (error instanceof InboundEmailIngestionError) {
+        return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+      }
+      console.error("Error applying inbound record trust action:", error);
+      res.status(500).json({ success: false, message: "Failed to apply inbound sender trust action" });
     }
   });
 

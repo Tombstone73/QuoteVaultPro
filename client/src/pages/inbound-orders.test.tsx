@@ -719,6 +719,168 @@ describe("InboundOrdersPage", () => {
     }
   });
 
+  test("queue Trust Sender creates a trust rule and updates the badge without navigation", async () => {
+    const untrusted = record({
+      id: "inline_trust_1",
+      sourceType: "email",
+      senderTrustStatus: "untrusted",
+      trustReason: "Sender is not trusted for automatic attachment download.",
+      canAutoDownloadAttachments: false,
+      attachmentDownloadPolicy: "pending_trust",
+      rawPayloadJson: { sender: { name: "New Buyer", email: "new@example.net" }, subject: "New PO" },
+    });
+    const trusted = record({
+      ...untrusted,
+      senderTrustStatus: "trusted_sender",
+      trustReason: "Sender matched inbound trust rule sender_email_exact.",
+      canAutoDownloadAttachments: true,
+      attachmentDownloadPolicy: "auto_download_allowed",
+    });
+    let trustedApplied = false;
+    let trustBody: any = null;
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      const current = trustedApplied ? trusted : untrusted;
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([current]));
+      if (path === `/api/inbound-orders/${untrusted.id}`) return jsonResponse({ success: true, data: detail(current) });
+      if (path === `/api/inbound-orders/${untrusted.id}/draft-preview`) return jsonResponse(draftPreview());
+      if (path === `/api/inbound-orders/${untrusted.id}/trust-action`) {
+        trustBody = JSON.parse(options?.body ?? "{}");
+        trustedApplied = true;
+        return jsonResponse({
+          success: true,
+          data: {
+            result: { trustRuleType: "sender_email_exact", trustRuleValue: "new@example.net", attempted: 0, downloaded: 0, metadataOnly: 0, blocked: 0, failed: [] },
+            inbound: detail(trusted),
+          },
+        });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    try {
+      renderPage();
+      await waitForText("Untrusted");
+      await waitForText("Trust Sender + Download Attachments");
+      const trustButton = container.querySelector(`[data-testid='queue-trust-action-${untrusted.id}-trust_sender']`)
+        ?? container.querySelector(`[data-testid='review-trust-action-${untrusted.id}-trust_sender']`) as HTMLButtonElement;
+      act(() => {
+        Simulate.click(trustButton);
+      });
+
+      await waitForCondition(() => trustBody?.action === "trust_sender", "inline-trust-sender-body");
+      await waitForText("Trusted Sender");
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Auto-download");
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  test("queue Trust Domain confirms before creating a domain trust rule", async () => {
+    const row = record({
+      id: "inline_domain_1",
+      sourceType: "email",
+      senderTrustStatus: "untrusted",
+      canAutoDownloadAttachments: false,
+      attachmentDownloadPolicy: "pending_trust",
+      rawPayloadJson: { sender: { name: "New Buyer", email: "new@example.net" }, subject: "New PO" },
+    });
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    let trustBody: any = null;
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === `/api/inbound-orders/${row.id}`) return jsonResponse({ success: true, data: detail(row) });
+      if (path === `/api/inbound-orders/${row.id}/draft-preview`) return jsonResponse(draftPreview());
+      if (path === `/api/inbound-orders/${row.id}/trust-action`) {
+        trustBody = JSON.parse(options?.body ?? "{}");
+        return jsonResponse({
+          success: true,
+          data: {
+            result: { trustRuleType: "sender_domain", trustRuleValue: "example.net", attempted: 0, downloaded: 0, metadataOnly: 0, blocked: 0, failed: [] },
+            inbound: detail({ ...row, senderTrustStatus: "trusted_domain", canAutoDownloadAttachments: true }),
+          },
+        });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    try {
+      renderPage();
+      await waitForText("Untrusted");
+      await waitForText("Trust Domain + Download Attachments");
+      const trustButton = container.querySelector(`[data-testid='queue-trust-action-${row.id}-trust_domain']`)
+        ?? container.querySelector(`[data-testid='review-trust-action-${row.id}-trust_domain']`) as HTMLButtonElement;
+      act(() => {
+        Simulate.click(trustButton);
+      });
+
+      await waitForCondition(() => trustBody?.action === "trust_domain", "inline-trust-domain-body");
+      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("example.net"));
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  test("queue Trust Sender plus Download requests pending attachment processing", async () => {
+    const row = record({
+      id: "inline_download_1",
+      sourceType: "email",
+      senderTrustStatus: "untrusted",
+      canAutoDownloadAttachments: false,
+      attachmentDownloadPolicy: "pending_trust",
+      rawPayloadJson: { sender: { name: "New Buyer", email: "new@example.net" }, subject: "New PO" },
+    });
+    let trustBody: any = null;
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === `/api/inbound-orders/${row.id}`) return jsonResponse({ success: true, data: detail(row, {
+        files: [{
+          id: "file_pending",
+          inboundRecordId: row.id,
+          fileRecordId: null,
+          role: "po",
+          status: "uploaded",
+          sourceFilename: "pending-po.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 100,
+          providerAttachmentId: "att_pending",
+          reviewNotes: "Pending trust",
+          metadataJson: { attachmentState: "pending_trust" },
+        }],
+      }) });
+      if (path === `/api/inbound-orders/${row.id}/draft-preview`) return jsonResponse(draftPreview());
+      if (path === `/api/inbound-orders/${row.id}/trust-action`) {
+        trustBody = JSON.parse(options?.body ?? "{}");
+        return jsonResponse({
+          success: true,
+          data: {
+            result: { trustRuleType: "sender_email_exact", trustRuleValue: "new@example.net", attempted: 1, downloaded: 1, metadataOnly: 0, blocked: 0, failed: [] },
+            inbound: detail({ ...row, senderTrustStatus: "trusted_sender", canAutoDownloadAttachments: true, attachmentDownloadPolicy: "auto_download_allowed" }),
+          },
+        });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Pending Trust");
+    const trustDownloadButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Trust Sender + Download Attachments") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(trustDownloadButton);
+    });
+
+    await waitForCondition(() => trustBody?.action === "trust_sender_and_download", "inline-trust-download-body");
+    expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Sender trust updated",
+      description: expect.stringContaining("Downloaded 1"),
+    }));
+  });
+
   test("defaults to operational view, sanitizes HTML email, renders attachments, and preserves debug view", async () => {
     const row = record({
       sourceType: "email",

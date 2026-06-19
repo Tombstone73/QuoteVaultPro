@@ -1111,6 +1111,140 @@ export class InboundEmailIngestionService {
     return storageResult.linkedRecord;
   }
 
+  async approveRecordTrustAction(args: {
+    organizationId: string;
+    actorUserId: string;
+    inboundRecordId: string;
+    action: "trust_sender" | "trust_domain" | "trust_sender_and_download" | "trust_domain_and_download";
+    note?: string | null;
+  }): Promise<{
+    trustRuleType: "sender_email_exact" | "sender_domain";
+    trustRuleValue: string;
+    attempted: number;
+    downloaded: number;
+    metadataOnly: number;
+    blocked: number;
+    failed: Array<{ fileId: string; message: string }>;
+  }> {
+    const record = await this.inboundRepository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) throw new InboundEmailIngestionError("INBOUND_RECORD_NOT_FOUND", "Inbound order record not found.", 404);
+
+    const message = this.providerMessageFromRecord(record);
+    const senderEmail = senderEmailFromMessage(message);
+    const senderDomain = senderDomainFromMessage(message);
+    const trustRuleType = args.action === "trust_sender" || args.action === "trust_sender_and_download"
+      ? "sender_email_exact"
+      : "sender_domain";
+    const trustRuleValue = trustRuleType === "sender_email_exact" ? senderEmail : senderDomain;
+    if (!trustRuleValue) {
+      throw new InboundEmailIngestionError(
+        trustRuleType === "sender_email_exact" ? "INBOUND_SENDER_EMAIL_MISSING" : "INBOUND_SENDER_DOMAIN_MISSING",
+        trustRuleType === "sender_email_exact"
+          ? "Cannot trust sender because the inbound record has no sender email."
+          : "Cannot trust domain because the inbound record has no sender domain.",
+        400,
+      );
+    }
+
+    await this.inboundRepository.createEmailTrustRule({
+      organizationId: args.organizationId,
+      ruleType: trustRuleType,
+      ruleValue: trustRuleValue,
+      notes: args.note || "Trusted from inbound queue review.",
+      createdByUserId: args.actorUserId,
+      enabled: true,
+    });
+
+    const shouldDownload = args.action === "trust_sender_and_download" || args.action === "trust_domain_and_download";
+    const result: {
+      trustRuleType: "sender_email_exact" | "sender_domain";
+      trustRuleValue: string;
+      attempted: number;
+      downloaded: number;
+      metadataOnly: number;
+      blocked: number;
+      failed: Array<{ fileId: string; message: string }>;
+    } = {
+      trustRuleType,
+      trustRuleValue,
+      attempted: 0,
+      downloaded: 0,
+      metadataOnly: 0,
+      blocked: 0,
+      failed: [] as Array<{ fileId: string; message: string }>,
+    };
+
+    if (shouldDownload) {
+      const files = await this.inboundRepository.listFiles(args.organizationId, args.inboundRecordId);
+      const pendingFiles = files.filter((file) => {
+        const metadata = file.metadataJson && typeof file.metadataJson === "object" && !Array.isArray(file.metadataJson)
+          ? file.metadataJson as Record<string, unknown>
+          : {};
+        const attachmentState = typeof metadata.attachmentState === "string" ? metadata.attachmentState : null;
+        return !file.fileRecordId
+          || attachmentState === "pending_trust"
+          || attachmentState === "metadata_only"
+          || attachmentState === "download_failed"
+          || attachmentState === "blocked_file_type";
+      });
+
+      for (const file of pendingFiles) {
+        try {
+          result.attempted += 1;
+          const updated = await this.approveAttachmentTrustAction({
+            organizationId: args.organizationId,
+            actorUserId: args.actorUserId,
+            inboundRecordId: args.inboundRecordId,
+            fileId: file.id,
+            action: args.action === "trust_sender_and_download" ? "trust_sender_and_download" : "trust_domain_and_download",
+            note: args.note ?? null,
+          });
+          const metadata = updated.metadataJson && typeof updated.metadataJson === "object" && !Array.isArray(updated.metadataJson)
+            ? updated.metadataJson as Record<string, unknown>
+            : {};
+          const attachmentState = typeof metadata.attachmentState === "string" ? metadata.attachmentState : null;
+          if (updated.fileRecordId) result.downloaded += 1;
+          else result.metadataOnly += 1;
+          if (attachmentState === "blocked_file_type" || updated.status === "quarantined") result.blocked += 1;
+        } catch (error) {
+          result.failed.push({
+            fileId: file.id,
+            message: error instanceof Error ? error.message : "Attachment trust action failed.",
+          });
+        }
+      }
+    }
+
+    await this.inboundRepository.createEvent({
+      organizationId: args.organizationId,
+      inboundRecordId: record.id,
+      actorUserId: args.actorUserId,
+      actorType: "user",
+      eventType: "email.record_trust_action",
+      fromStatus: null,
+      toStatus: null,
+      message: `Inbound sender trust action ${args.action} applied for ${trustRuleValue}.`,
+      metadataJson: {
+        action: args.action,
+        trustRuleType,
+        trustRuleValue,
+        attachmentProcessing: {
+          attempted: result.attempted,
+          downloaded: result.downloaded,
+          metadataOnly: result.metadataOnly,
+          blocked: result.blocked,
+          failed: result.failed.length,
+        },
+        createsQuote: false,
+        createsOrder: false,
+        createsArtwork: false,
+        createsProofs: false,
+      },
+    });
+
+    return result;
+  }
+
   private async ensureSourceForMailbox(mailbox: InboundEmailMailbox): Promise<InboundOrderSource> {
     if (mailbox.sourceId) {
       const [existing] = await this.dbInstance

@@ -132,6 +132,11 @@ type InboundQueueCleanupAction =
   | "ignore_sender_subject"
   | "delete"
   | "reject";
+type InboundRecordTrustAction =
+  | "trust_sender"
+  | "trust_domain"
+  | "trust_sender_and_download"
+  | "trust_domain_and_download";
 
 type QueueFilters = {
   statusGroup: QueueStatusFilter;
@@ -235,6 +240,18 @@ function getAttachmentPolicyBadgeVariant(policy: InboundAttachmentDownloadPolicy
   if (policy === "blocked_file_type_only") return "outline";
   if (policy === "no_attachments") return "outline";
   return "secondary";
+}
+
+function shouldShowInlineTrustActions(record: ClientInboundOrderRecord): boolean {
+  return record.sourceType === "email"
+    && (record.senderTrustStatus === "untrusted" || record.attachmentDownloadPolicy === "pending_trust");
+}
+
+function recordTrustActionLabel(action: InboundRecordTrustAction): string {
+  if (action === "trust_sender") return "Trust Sender";
+  if (action === "trust_domain") return "Trust Domain";
+  if (action === "trust_sender_and_download") return "Trust Sender + Download Attachments";
+  return "Trust Domain + Download Attachments";
 }
 
 function buildInboundOrderListUrl(filters: QueueFilters) {
@@ -1218,12 +1235,14 @@ function InboundQueuePanel({
   selectedRecordIds,
   onSelect,
   onToggleSelected,
+  onTrustAction,
 }: {
   records: ClientInboundOrderRecord[];
   selectedId: string | null;
   selectedRecordIds: Set<string>;
   onSelect: (id: string) => void;
   onToggleSelected: (id: string, selected: boolean) => void;
+  onTrustAction: (record: ClientInboundOrderRecord, action: InboundRecordTrustAction) => void;
 }) {
   if (records.length === 0) {
     return (
@@ -1270,12 +1289,32 @@ function InboundQueuePanel({
                     <div className="mt-1 block max-w-full truncate text-xs text-muted-foreground">{getSenderLabel(record)}</div>
                     {record.sourceType === "email" && (
                       <div className="mt-2 flex max-w-full flex-wrap gap-1">
-                        <Badge variant={getSenderTrustBadgeVariant(record.senderTrustStatus)} className="max-w-full truncate">
-                          {senderTrustLabels[record.senderTrustStatus]}
-                        </Badge>
-                        <Badge variant={getAttachmentPolicyBadgeVariant(record.attachmentDownloadPolicy)} className="max-w-full truncate">
-                          {attachmentPolicyLabels[record.attachmentDownloadPolicy]}
-                        </Badge>
+                        <button
+                          type="button"
+                          className="max-w-full"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (shouldShowInlineTrustActions(record)) onTrustAction(record, "trust_sender");
+                          }}
+                          aria-label={`Trust sender for ${getRecordTitle(record)}`}
+                        >
+                          <Badge variant={getSenderTrustBadgeVariant(record.senderTrustStatus)} className="max-w-full truncate">
+                            {senderTrustLabels[record.senderTrustStatus]}
+                          </Badge>
+                        </button>
+                        <button
+                          type="button"
+                          className="max-w-full"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (shouldShowInlineTrustActions(record)) onTrustAction(record, "trust_sender_and_download");
+                          }}
+                          aria-label={`Trust sender and download attachments for ${getRecordTitle(record)}`}
+                        >
+                          <Badge variant={getAttachmentPolicyBadgeVariant(record.attachmentDownloadPolicy)} className="max-w-full truncate">
+                            {attachmentPolicyLabels[record.attachmentDownloadPolicy]}
+                          </Badge>
+                        </button>
                       </div>
                     )}
                   </div>
@@ -1304,6 +1343,27 @@ function InboundQueuePanel({
                   <span className="min-w-0 flex-1 whitespace-normal break-words">{record.reviewRequiredReason || "Needs staff review"}</span>
                 </div>
               )}
+              {shouldShowInlineTrustActions(record) && (
+                <div className="mt-3 flex max-w-full flex-wrap gap-1.5">
+                  {(["trust_sender", "trust_domain", "trust_sender_and_download", "trust_domain_and_download"] as InboundRecordTrustAction[]).map((action) => (
+                    <Button
+                      key={action}
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-xs"
+                      aria-label={`${recordTrustActionLabel(action)} for ${getRecordTitle(record)}`}
+                      data-testid={`queue-trust-action-${record.id}-${action}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onTrustAction(record, action);
+                      }}
+                    >
+                      {recordTrustActionLabel(action)}
+                    </Button>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}
@@ -1327,6 +1387,7 @@ function SourceEvidencePanel({
   onParse,
   onReject,
   onQueueAction,
+  onTrustAction,
 }: {
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
   selectedRecord: ClientInboundOrderRecord | null;
@@ -1342,6 +1403,7 @@ function SourceEvidencePanel({
   onParse: () => void;
   onReject: () => void;
   onQueueAction: (action: InboundQueueCleanupAction) => void;
+  onTrustAction: (record: ClientInboundOrderRecord, action: InboundRecordTrustAction) => void;
 }) {
   if (!selectedRecord) {
     return <EmptyPanel title="Select a record" detail="Source evidence will appear once an inbound item is selected." />;
@@ -1465,13 +1527,36 @@ function SourceEvidencePanel({
           </div>
           {record.sourceType === "email" && (
             <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs">
-              <Badge variant={getSenderTrustBadgeVariant(record.senderTrustStatus)}>
-                {senderTrustLabels[record.senderTrustStatus]}
-              </Badge>
-              <Badge variant={getAttachmentPolicyBadgeVariant(record.attachmentDownloadPolicy)}>
-                {attachmentPolicyLabels[record.attachmentDownloadPolicy]}
-              </Badge>
+              <button type="button" onClick={() => shouldShowInlineTrustActions(record) && onTrustAction(record, "trust_sender")}>
+                <Badge variant={getSenderTrustBadgeVariant(record.senderTrustStatus)}>
+                  {senderTrustLabels[record.senderTrustStatus]}
+                </Badge>
+              </button>
+              <button type="button" onClick={() => shouldShowInlineTrustActions(record) && onTrustAction(record, "trust_sender_and_download")}>
+                <Badge variant={getAttachmentPolicyBadgeVariant(record.attachmentDownloadPolicy)}>
+                  {attachmentPolicyLabels[record.attachmentDownloadPolicy]}
+                </Badge>
+              </button>
               {record.trustReason && <span className="min-w-0 flex-1 text-muted-foreground">{record.trustReason}</span>}
+              {shouldShowInlineTrustActions(record) && (
+                <div className="flex flex-wrap gap-1.5">
+                  {(["trust_sender", "trust_domain", "trust_sender_and_download", "trust_domain_and_download"] as InboundRecordTrustAction[]).map((action) => (
+                    <Button
+                      key={action}
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-xs"
+                      disabled={isCleaningUp}
+                      aria-label={`${recordTrustActionLabel(action)} for ${getRecordTitle(record)}`}
+                      data-testid={`review-trust-action-${record.id}-${action}`}
+                      onClick={() => onTrustAction(record, action)}
+                    >
+                      {recordTrustActionLabel(action)}
+                    </Button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           {showPendingTrustNotice && (
@@ -1481,11 +1566,17 @@ function SourceEvidencePanel({
               <AlertDescription>
                 <div className="flex flex-wrap items-center gap-2">
                   <span>Use the attachment actions below to download once, or trust the sender first.</span>
-                  <Button type="button" size="sm" variant="outline" onClick={() => onQueueAction("trust_sender")} disabled={isCleaningUp}>
+                  <Button type="button" size="sm" variant="outline" onClick={() => onTrustAction(record, "trust_sender")} disabled={isCleaningUp}>
                     Trust Sender
                   </Button>
-                  <Button type="button" size="sm" variant="outline" onClick={() => onQueueAction("trust_domain")} disabled={isCleaningUp}>
+                  <Button type="button" size="sm" variant="outline" onClick={() => onTrustAction(record, "trust_domain")} disabled={isCleaningUp}>
                     Trust Domain
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => onTrustAction(record, "trust_sender_and_download")} disabled={isCleaningUp}>
+                    Trust Sender + Download Attachments
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => onTrustAction(record, "trust_domain_and_download")} disabled={isCleaningUp}>
+                    Trust Domain + Download Attachments
                   </Button>
                 </div>
               </AlertDescription>
@@ -4126,6 +4217,58 @@ export default function InboundOrdersPage() {
     },
   });
 
+  const recordTrustActionMutation = useMutation({
+    mutationFn: ({ recordId, action }: { recordId: string; action: InboundRecordTrustAction }) => (
+      postJson<{
+        success: true;
+        data: {
+          result: {
+            trustRuleType: "sender_email_exact" | "sender_domain";
+            trustRuleValue: string;
+            attempted: number;
+            downloaded: number;
+            metadataOnly: number;
+            blocked: number;
+            failed: Array<{ fileId: string; message: string }>;
+          };
+          inbound: ClientInboundOrderDetailResponse["data"] | null;
+        };
+      }>(`/api/inbound-orders/${encodeURIComponent(recordId)}/trust-action`, { action })
+    ),
+    onSuccess: async (response, variables) => {
+      if (response.data.inbound) {
+        queryClient.setQueryData(["/api/inbound-orders", variables.recordId], {
+          success: true,
+          data: response.data.inbound,
+        } satisfies ClientInboundOrderDetailResponse);
+        queryClient.setQueriesData({ predicate: isInboundOrderListQuery }, (current: any) => {
+          if (!current?.data || !Array.isArray(current.data)) return current;
+          return {
+            ...current,
+            data: current.data.map((record: ClientInboundOrderRecord) => (
+              record.id === variables.recordId ? response.data.inbound!.record : record
+            )),
+          };
+        });
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] }),
+      ]);
+      const result = response.data.result;
+      toast({
+        title: "Sender trust updated",
+        description: result.attempted > 0
+          ? `${result.trustRuleValue} trusted. Downloaded ${result.downloaded}, kept ${result.metadataOnly} metadata-only, blocked/quarantined ${result.blocked}.`
+          : `${result.trustRuleValue} trusted. Existing pending attachments were not downloaded.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Sender trust action failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   const convertToOrderMutation = useMutation({
     mutationFn: (recordId: string) => (
       postJson<InboundOrderConvertToOrderResponse>(`/api/inbound-orders/${recordId}/convert-to-order`, {})
@@ -4230,6 +4373,26 @@ export default function InboundOrdersPage() {
     }
 
     ignoreInboundOrderMutation.mutate({ recordId: selectedId, action, note: cleanNote });
+  };
+
+  const runRecordTrustAction = (record: ClientInboundOrderRecord, action: InboundRecordTrustAction) => {
+    if (recordTrustActionMutation.isPending || selectedRecordIsTerminal) return;
+    const evidence = getManualInboundEvidence(record);
+    const email = evidence.senderEmail?.trim().toLowerCase() ?? "";
+    const domain = email.split("@")[1]?.trim().toLowerCase() ?? "";
+    if ((action === "trust_sender" || action === "trust_sender_and_download") && !email) {
+      toast({ title: "No sender email", description: "This inbound record has no sender email to trust.", variant: "destructive" });
+      return;
+    }
+    if ((action === "trust_domain" || action === "trust_domain_and_download") && !domain) {
+      toast({ title: "No sender domain", description: "This inbound record has no sender domain to trust.", variant: "destructive" });
+      return;
+    }
+    if (action === "trust_domain" || action === "trust_domain_and_download") {
+      const confirmed = window.confirm(`Trust the sender domain ${domain}? Future emails from this domain may auto-download allowed attachments. Blocked file types will remain blocked.`);
+      if (!confirmed) return;
+    }
+    recordTrustActionMutation.mutate({ recordId: record.id, action });
   };
 
   const toggleQueueRecordSelected = (recordId: string, selected: boolean) => {
@@ -4669,6 +4832,7 @@ export default function InboundOrdersPage() {
                       selectedRecordIds={selectedQueueRecordIds}
                       onSelect={setSelectedId}
                       onToggleSelected={toggleQueueRecordSelected}
+                      onTrustAction={runRecordTrustAction}
                     />
                   )}
                 </div>
@@ -4743,6 +4907,7 @@ export default function InboundOrdersPage() {
                 onParse={runParseForSelectedRecord}
                 onReject={rejectSelectedRecord}
                 onQueueAction={runQueueCleanupAction}
+                onTrustAction={runRecordTrustAction}
               />
             )}
           </div>
