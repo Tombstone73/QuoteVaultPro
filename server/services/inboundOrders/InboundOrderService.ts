@@ -35,6 +35,7 @@ import {
   type InboundOrderProductOptionsResponse,
   type ManualInboundOrderCreateRequest,
 } from "@shared/inboundOrdersApi";
+import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import {
   detectUnsupportedInboundRequests,
@@ -823,6 +824,15 @@ function trustStatusForRuleType(ruleType: InboundEmailTrustRuleType): InboundSen
   return "trusted_customer_domain";
 }
 
+function assertSenderDomainTrustAllowed(domain: string): void {
+  if (isPublicFreeEmailDomain(domain)) {
+    throw new InboundOrderTransitionError(
+      `Sender domain ${domain} is a public/free email domain. Trust the exact sender email instead.`,
+      400,
+    );
+  }
+}
+
 function getRecordAttachmentCandidates(record: InboundOrderRecord): unknown[] {
   const rawAttachments = getPathValue(record, "rawPayloadJson.attachments");
   const normalizedAttachments = getPathValue(record, "normalizedPayloadJson.attachments");
@@ -892,10 +902,10 @@ export class InboundOrderService {
         const matched = rule.ruleType === "sender_email_exact"
           ? Boolean(senderEmail && senderEmail === value)
           : rule.ruleType === "sender_domain"
-            ? Boolean(senderDomain && senderDomain === value)
+            ? Boolean(senderDomain && !isPublicFreeEmailDomain(senderDomain) && senderDomain === value)
             : rule.ruleType === "customer_contact_email"
               ? Boolean(senderEmail && (value === "*" || senderEmail === value) && await this.repository.senderEmailMatchesCustomerContact(args.organizationId, senderEmail))
-              : Boolean(senderDomain && (value === "*" || senderDomain === value) && await this.repository.senderDomainMatchesCustomerDomain(args.organizationId, senderDomain));
+              : Boolean(senderDomain && !isPublicFreeEmailDomain(senderDomain) && (value === "*" || senderDomain === value) && await this.repository.senderDomainMatchesCustomerDomain(args.organizationId, senderDomain));
         if (matched) {
           matchedRule = rule;
           break;
@@ -918,7 +928,7 @@ export class InboundOrderService {
           trustReason: "Sender email matches an active customer contact.",
           canAutoDownloadAttachments: true,
         };
-      } else if (senderDomain && await this.repository.senderDomainMatchesCustomerDomain(args.organizationId, senderDomain)) {
+      } else if (senderDomain && !isPublicFreeEmailDomain(senderDomain) && await this.repository.senderDomainMatchesCustomerDomain(args.organizationId, senderDomain)) {
         base = {
           senderTrustStatus: "trusted_customer_domain",
           matchedTrustRuleId: null,
@@ -1266,6 +1276,9 @@ export class InboundOrderService {
   }): Promise<InboundEmailTrustRule> {
     const ruleValue = normalizeInboundEmailTrustRuleValue(args.ruleType, args.ruleValue);
     if (!ruleValue) throw new InboundOrderTransitionError("Rule value is required.", 400);
+    if (args.ruleType === "sender_domain") {
+      assertSenderDomainTrustAllowed(ruleValue);
+    }
     return this.repository.createEmailTrustRule({
       organizationId: args.organizationId,
       ruleType: args.ruleType,
@@ -1291,6 +1304,9 @@ export class InboundOrderService {
       ? normalizeInboundEmailTrustRuleValue(nextRuleType, args.ruleValue)
       : current.ruleValue;
     if (!nextRuleValue) throw new InboundOrderTransitionError("Rule value is required.", 400);
+    if (nextRuleType === "sender_domain") {
+      assertSenderDomainTrustAllowed(nextRuleValue);
+    }
     const rule = await this.repository.updateEmailTrustRule({
       ...args,
       ruleType: nextRuleType,
@@ -1747,6 +1763,9 @@ export class InboundOrderService {
                 : "No sender domain was available for this trust rule.",
               400,
             );
+          }
+          if (ruleType === "sender_domain") {
+            assertSenderDomainTrustAllowed(ruleValue);
           }
           await this.repository.createEmailTrustRule({
             organizationId: args.organizationId,

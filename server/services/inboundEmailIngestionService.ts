@@ -16,6 +16,7 @@ import {
   type InboundOrderSource,
 } from "@shared/schema";
 import type { InboundEmailIntent, InboundEmailPullResult } from "@shared/inboundEmailIngestion";
+import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
 import { inboundOrdersRepository, type InboundOrdersRepository } from "../storage/inboundOrders.repo";
 import { storageApplicationService, type StorageApplicationService } from "./storage/StorageApplicationService";
 
@@ -719,6 +720,16 @@ function senderDomainFromEmail(email: string | null | undefined): string {
   return domain || "";
 }
 
+function assertSenderDomainTrustAllowed(domain: string | null): void {
+  if (domain && isPublicFreeEmailDomain(domain)) {
+    throw new InboundEmailIngestionError(
+      "INBOUND_PUBLIC_DOMAIN_TRUST_BLOCKED",
+      `Sender domain ${domain} is a public/free email domain. Trust the exact sender email instead.`,
+      400,
+    );
+  }
+}
+
 export function matchInboundEmailIgnoreRule(
   rule: Pick<InboundEmailIgnoreRule, "ruleType" | "ruleValue">,
   message: InboundEmailProviderMessage,
@@ -1156,6 +1167,7 @@ export class InboundEmailIngestionService {
 
     if (args.action === "trust_domain_and_download") {
       if (!senderDomain) throw new InboundEmailIngestionError("INBOUND_SENDER_DOMAIN_MISSING", "Cannot trust domain because the inbound record has no sender domain.", 400);
+      assertSenderDomainTrustAllowed(senderDomain);
       await this.inboundRepository.createEmailTrustRule({
         organizationId: args.organizationId,
         ruleType: "sender_domain",
@@ -1318,6 +1330,9 @@ export class InboundEmailIngestionService {
           : "Cannot trust domain because the inbound record has no sender domain.",
         400,
       );
+    }
+    if (trustRuleType === "sender_domain") {
+      assertSenderDomainTrustAllowed(trustRuleValue);
     }
 
     await this.inboundRepository.createEmailTrustRule({
@@ -2388,10 +2403,10 @@ export class InboundEmailIngestionService {
       const matched = rule.ruleType === "sender_email_exact"
         ? Boolean(senderEmail && senderEmail === value)
         : rule.ruleType === "sender_domain"
-          ? Boolean(senderDomain && senderDomain === value)
+          ? Boolean(senderDomain && !isPublicFreeEmailDomain(senderDomain) && senderDomain === value)
           : rule.ruleType === "customer_contact_email"
             ? Boolean(senderEmail && (value === "*" || senderEmail === value) && await this.inboundRepository.senderEmailMatchesCustomerContact(organizationId, senderEmail))
-            : Boolean(senderDomain && (value === "*" || senderDomain === value) && await this.inboundRepository.senderDomainMatchesCustomerDomain(organizationId, senderDomain));
+            : Boolean(senderDomain && !isPublicFreeEmailDomain(senderDomain) && (value === "*" || senderDomain === value) && await this.inboundRepository.senderDomainMatchesCustomerDomain(organizationId, senderDomain));
       if (!matched) continue;
       if (options.recordMatch !== false) {
         await this.inboundRepository.recordEmailTrustRuleMatch(rule.id);
@@ -2415,7 +2430,7 @@ export class InboundEmailIngestionService {
         reason: "Sender email matches an active customer contact.",
       };
     }
-    if (senderDomain && await this.inboundRepository.senderDomainMatchesCustomerDomain(organizationId, senderDomain)) {
+    if (senderDomain && !isPublicFreeEmailDomain(senderDomain) && await this.inboundRepository.senderDomainMatchesCustomerDomain(organizationId, senderDomain)) {
       return {
         trusted: true,
         senderEmail,

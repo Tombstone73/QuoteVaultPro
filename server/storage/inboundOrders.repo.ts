@@ -49,6 +49,7 @@ import {
   type Quote,
   type QuoteLineItem,
 } from "@shared/schema";
+import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
 import {
   allocateDocumentNumber,
   isDocumentNumberUniqueViolation,
@@ -668,6 +669,7 @@ export class InboundOrdersRepository {
   async senderDomainMatchesCustomerDomain(organizationId: string, domain: string): Promise<boolean> {
     const normalized = domain.trim().toLowerCase();
     if (!normalized) return false;
+    if (isPublicFreeEmailDomain(normalized)) return false;
     const [customerMatch] = await this.dbInstance
       .select({ id: customers.id })
       .from(customers)

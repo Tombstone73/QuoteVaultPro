@@ -648,6 +648,133 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     }));
   });
 
+  test.each(["yahoo.com", "gmail.com", "outlook.com"])(
+    "public domain %s does not auto-download from customer-domain trust",
+    async (domain) => {
+      const { service, repo, storage, createdFiles } = serviceHarness();
+      repo.listEnabledEmailTrustRules.mockResolvedValueOnce([]);
+      repo.senderDomainMatchesCustomerDomain.mockResolvedValueOnce(true);
+
+      await (service as any).ingestAttachments({
+        organizationId: "org_1",
+        actorUserId: "user_1",
+        mailbox,
+        message: message({
+          senderEmail: `orders@${domain}`,
+          attachments: [{
+            filename: "public-domain-po.pdf",
+            mimeType: "application/pdf",
+            size: 8,
+            attachmentId: `att_${domain.replace(/\W/g, "_")}`,
+          }],
+        }),
+        record,
+        adapter: {
+          listRecentMessages: jest.fn(async () => []),
+          downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+        },
+        skippedReason: null,
+      });
+
+      expect(storage.finalizeUpload).not.toHaveBeenCalled();
+      expect(repo.senderDomainMatchesCustomerDomain).not.toHaveBeenCalled();
+      expect(createdFiles[0]).toEqual(expect.objectContaining({
+        fileRecordId: null,
+        status: "uploaded",
+        reviewNotes: "Sender is not trusted. Attachment metadata captured pending staff trust decision.",
+      }));
+      expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+        senderTrustStatus: "untrusted",
+        senderTrustSource: "none",
+        attachmentState: "pending_trust",
+      }));
+    },
+  );
+
+  test("public sender domain trust rule is ignored during auto-download evaluation", async () => {
+    const { service, repo, storage, createdFiles } = serviceHarness();
+    repo.listEnabledEmailTrustRules.mockResolvedValueOnce([{
+      id: "trust_yahoo_domain",
+      organizationId: "org_1",
+      enabled: true,
+      ruleType: "sender_domain",
+      ruleValue: "yahoo.com",
+      notes: null,
+      matchCount: 0,
+      lastMatchedAt: null,
+      createdByUserId: "user_1",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }]);
+
+    await (service as any).ingestAttachments({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      mailbox,
+      message: message({
+        senderEmail: "orders@yahoo.com",
+        attachments: [{
+          filename: "public-domain-rule-po.pdf",
+          mimeType: "application/pdf",
+          size: 8,
+          attachmentId: "att_yahoo_rule",
+        }],
+      }),
+      record,
+      adapter: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+      },
+      skippedReason: null,
+    });
+
+    expect(storage.finalizeUpload).not.toHaveBeenCalled();
+    expect(repo.recordEmailTrustRuleMatch).not.toHaveBeenCalled();
+    expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+      senderTrustStatus: "untrusted",
+      senderTrustSource: "none",
+      attachmentState: "pending_trust",
+    }));
+  });
+
+  test("exact known contact email on a public domain may auto-download", async () => {
+    const { service, repo, storage, createdFiles } = serviceHarness();
+    repo.listEnabledEmailTrustRules.mockResolvedValueOnce([]);
+    repo.senderEmailMatchesCustomerContact.mockResolvedValueOnce(true);
+
+    await (service as any).ingestAttachments({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      mailbox,
+      message: message({
+        senderEmail: "known.customer@gmail.com",
+        attachments: [{
+          filename: "known-contact-po.pdf",
+          mimeType: "application/pdf",
+          size: 8,
+          attachmentId: "att_known_gmail",
+        }],
+      }),
+      record,
+      adapter: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+      },
+      skippedReason: null,
+    });
+
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(repo.senderDomainMatchesCustomerDomain).not.toHaveBeenCalled();
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      providerAttachmentId: "att_known_gmail",
+      status: "available",
+    }));
+    expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+      senderTrustSource: "customer_contact_email",
+      attachmentState: "downloaded",
+    }));
+  });
+
   test("blocked exe never auto-downloads even from trusted sender", async () => {
     const { service, storage, createdFiles } = serviceHarness();
 
@@ -836,6 +963,65 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
   });
 
+  test("trust domain action rejects public free email domains", async () => {
+    const { repo, storage, createdFiles } = serviceHarness();
+    const existingRecord = {
+      ...record,
+      rawPayloadJson: {
+        provider: "gmail",
+        messageId: "gmail_msg_1",
+        mailbox: { id: "mailbox_1", emailAddress: "orders@example.com" },
+        sender: { name: "Public Sender", email: "orders@yahoo.com" },
+        subject: "PO attached",
+      },
+    };
+    repo.getRecord.mockResolvedValue(existingRecord);
+    createdFiles.push({
+      ...record,
+      id: "file_pending",
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      inboundLineItemId: null,
+      fileRecordId: null,
+      sourceFilename: "public-domain-po.pdf",
+      role: "po",
+      mimeType: "application/pdf",
+      sizeBytes: 8,
+      checksum: null,
+      status: "uploaded",
+      providerAttachmentId: "att_public_domain",
+      providerMessageId: "gmail_msg_1",
+      contentDisposition: "attachment",
+      metadataJson: { attachmentState: "pending_trust" },
+      reviewNotes: "Pending trust",
+      createdQuoteAttachmentId: null,
+      createdOrderAttachmentId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const service = new InboundEmailIngestionService(mailboxDbHarness() as any, {
+      gmail: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+      },
+    }, repo as any, storage as any);
+
+    await expect(service.approveAttachmentTrustAction({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      fileId: "file_pending",
+      action: "trust_domain_and_download",
+    })).rejects.toMatchObject({
+      code: "INBOUND_PUBLIC_DOMAIN_TRUST_BLOCKED",
+      statusCode: 400,
+      message: "Sender domain yahoo.com is a public/free email domain. Trust the exact sender email instead.",
+    });
+
+    expect(repo.createEmailTrustRule).not.toHaveBeenCalled();
+    expect(storage.finalizeUpload).not.toHaveBeenCalled();
+  });
+
   test("record trust sender and download processes pending attachments", async () => {
     const { repo, storage, createdFiles } = serviceHarness();
     repo.getRecord.mockResolvedValue({
@@ -896,6 +1082,63 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       metadataOnly: 0,
     }));
     expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+  });
+
+  test("record trust domain action rejects public free email domains", async () => {
+    const { repo, storage, createdFiles } = serviceHarness();
+    repo.getRecord.mockResolvedValue({
+      ...record,
+      rawPayloadJson: {
+        provider: "gmail",
+        messageId: "gmail_msg_1",
+        mailbox: { id: "mailbox_1", emailAddress: "orders@example.com" },
+        sender: { name: "Public Sender", email: "orders@gmail.com" },
+        subject: "PO attached",
+      },
+    });
+    createdFiles.push({
+      ...record,
+      id: "file_pending",
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      inboundLineItemId: null,
+      fileRecordId: null,
+      sourceFilename: "pending-po.pdf",
+      role: "po",
+      mimeType: "application/pdf",
+      sizeBytes: 8,
+      checksum: null,
+      status: "uploaded",
+      providerAttachmentId: "att_pending",
+      providerMessageId: "gmail_msg_1",
+      contentDisposition: "attachment",
+      metadataJson: { attachmentState: "pending_trust" },
+      reviewNotes: "Pending trust",
+      createdQuoteAttachmentId: null,
+      createdOrderAttachmentId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const service = new InboundEmailIngestionService(mailboxDbHarness() as any, {
+      gmail: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+      },
+    }, repo as any, storage as any);
+
+    await expect(service.approveRecordTrustAction({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "trust_domain_and_download",
+    })).rejects.toMatchObject({
+      code: "INBOUND_PUBLIC_DOMAIN_TRUST_BLOCKED",
+      statusCode: 400,
+      message: "Sender domain gmail.com is a public/free email domain. Trust the exact sender email instead.",
+    });
+
+    expect(repo.createEmailTrustRule).not.toHaveBeenCalled();
+    expect(storage.finalizeUpload).not.toHaveBeenCalled();
   });
 
   test("record trust and download keeps blocked file types blocked", async () => {

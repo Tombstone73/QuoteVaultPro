@@ -253,6 +253,145 @@ function diagnosticRepository(overrides: Record<string, any>) {
   };
 }
 
+function inboundEmailRecord(overrides: Record<string, any> = {}) {
+  return {
+    id: "inbound_email_1",
+    organizationId: "org_1",
+    sourceId: "source_1",
+    sourceType: "email",
+    sourceLabel: "TEMP_INBOUND email intake",
+    sourceTrustLevel: "semi_trusted_email",
+    sourceRecordId: "gmail_msg_1",
+    sourceMessageId: "gmail_msg_1",
+    status: "needs_review",
+    reviewOutcome: null,
+    requiresHumanDecision: true,
+    reviewRequiredReason: null,
+    externalReference: "Public domain order",
+    idempotencyKey: "gmail:gmail_msg_1",
+    payloadHash: null,
+    rawPayloadJson: {
+      sender: { name: "Public Sender", email: "orders@yahoo.com" },
+      subject: "Public domain order",
+    },
+    normalizedPayloadJson: {},
+    extractedCustomerJson: {},
+    extractedOrderJson: {},
+    extractedShippingJson: {},
+    confidenceScore: null,
+    duplicateScore: null,
+    matchedCustomerId: null,
+    matchedContactId: null,
+    matchedQuoteId: null,
+    matchedOrderId: null,
+    createdQuoteId: null,
+    createdOrderId: null,
+    assignedToUserId: null,
+    submittedByUserId: null,
+    rejectedByUserId: null,
+    rejectionReason: null,
+    receivedAt: new Date("2026-06-17T12:00:00.000Z"),
+    parsedAt: null,
+    reviewStartedAt: null,
+    approvedAt: null,
+    submittedAt: null,
+    rejectedAt: null,
+    archivedAt: null,
+    createdAt: new Date("2026-06-17T12:00:00.000Z"),
+    updatedAt: new Date("2026-06-17T12:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+describe("inbound sender trust classification", () => {
+  test.each(["yahoo.com", "gmail.com", "outlook.com"])(
+    "does not trust public customer domain %s in queue records",
+    async (domain) => {
+      const repo = diagnosticRepository({
+        listRecords: jest.fn(async () => [inboundEmailRecord({
+          rawPayloadJson: { sender: { email: `orders@${domain}` } },
+        })]),
+        getQueueSummary: jest.fn(async () => ({ total: 1 })),
+        listFiles: jest.fn(async () => []),
+        senderDomainMatchesCustomerDomain: jest.fn(async () => true),
+      });
+      const service = new InboundOrderService(repo as any);
+
+      const result = await service.listInboundOrders({
+        organizationId: "org_1",
+        filters: { statusGroup: "active", limit: 20, offset: 0 },
+      });
+
+      expect(repo.senderDomainMatchesCustomerDomain).not.toHaveBeenCalled();
+      expect(result.records[0]).toMatchObject({
+        senderTrustStatus: "untrusted",
+        trustRuleType: null,
+        canAutoDownloadAttachments: false,
+      });
+    },
+  );
+
+  test("trusts an exact known contact email on a public domain", async () => {
+    const repo = diagnosticRepository({
+      listRecords: jest.fn(async () => [inboundEmailRecord({
+        rawPayloadJson: { sender: { email: "known.customer@gmail.com" } },
+      })]),
+      getQueueSummary: jest.fn(async () => ({ total: 1 })),
+      listFiles: jest.fn(async () => []),
+      senderEmailMatchesCustomerContact: jest.fn(async () => true),
+      senderDomainMatchesCustomerDomain: jest.fn(async () => true),
+    });
+    const service = new InboundOrderService(repo as any);
+
+    const result = await service.listInboundOrders({
+      organizationId: "org_1",
+      filters: { statusGroup: "active", limit: 20, offset: 0 },
+    });
+
+    expect(repo.senderDomainMatchesCustomerDomain).not.toHaveBeenCalled();
+    expect(result.records[0]).toMatchObject({
+      senderTrustStatus: "trusted_contact",
+      trustRuleType: "customer_contact_email",
+      canAutoDownloadAttachments: true,
+    });
+  });
+
+  test("blocks public sender domain trust rules", async () => {
+    const repo: any = diagnosticRepository({
+      createEmailTrustRule: jest.fn(async (values: Record<string, any>) => values),
+      listEmailTrustRules: jest.fn(async () => [{
+        id: "trust_1",
+        ruleType: "sender_domain",
+        ruleValue: "example.com",
+      }]),
+      updateEmailTrustRule: jest.fn(async (values: Record<string, any>) => values),
+    });
+    const service = new InboundOrderService(repo as any);
+
+    await expect(service.createEmailTrustRule({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      ruleType: "sender_domain",
+      ruleValue: "gmail.com",
+    })).rejects.toMatchObject({
+      statusCode: 400,
+      message: "Sender domain gmail.com is a public/free email domain. Trust the exact sender email instead.",
+    });
+
+    await expect(service.updateEmailTrustRule({
+      organizationId: "org_1",
+      id: "trust_1",
+      ruleValue: "outlook.com",
+    })).rejects.toMatchObject({
+      statusCode: 400,
+      message: "Sender domain outlook.com is a public/free email domain. Trust the exact sender email instead.",
+    });
+
+    expect(repo.createEmailTrustRule).not.toHaveBeenCalled();
+    expect(repo.updateEmailTrustRule).not.toHaveBeenCalled();
+  });
+});
+
 describe("inbound email pull diagnostics service", () => {
   test("reports zero-file email records with raw attachment indicators and body hints", async () => {
     const service = new InboundOrderService(diagnosticRepository({
