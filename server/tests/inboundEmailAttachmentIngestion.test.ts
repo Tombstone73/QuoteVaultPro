@@ -213,6 +213,53 @@ function mailboxDbHarness() {
   };
 }
 
+function pullLatestFreshRecordDbHarness(createdRecord: InboundOrderRecord) {
+  const source = {
+    id: "source_1",
+    organizationId: "org_1",
+    sourceType: "email",
+    name: "Inbound Email: orders@example.com",
+    status: "active",
+    sourceTrustLevel: "semi_trusted_email",
+  };
+  let selectCount = 0;
+  const select = jest.fn(() => ({
+    from: jest.fn(() => ({
+      where: jest.fn(() => {
+        selectCount += 1;
+        const rows = selectCount === 1
+          ? [mailbox]
+          : selectCount === 2
+            ? [source]
+            : [];
+        return {
+          limit: jest.fn(async () => rows),
+          then: (resolve: (value: unknown) => void) => resolve(rows),
+        };
+      }),
+    })),
+  }));
+  const tx = {
+    insert: jest.fn(() => ({
+      values: jest.fn(() => ({
+        onConflictDoNothing: jest.fn(() => ({
+          returning: jest.fn(async () => [createdRecord]),
+        })),
+        then: (resolve: (value: unknown) => void) => resolve(undefined),
+      })),
+    })),
+  };
+  return {
+    select,
+    transaction: jest.fn(async (callback: any) => callback(tx)),
+    update: jest.fn(() => ({
+      set: jest.fn(() => ({
+        where: jest.fn(async () => undefined),
+      })),
+    })),
+  };
+}
+
 describe("InboundEmailIngestionService attachment ingestion", () => {
   test("does nothing for Gmail messages with no attachments", async () => {
     const { service, repo } = serviceHarness();
@@ -283,6 +330,67 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       artworkCandidate: true,
     }));
     expect(events[0]).toEqual(expect.objectContaining({ eventType: "email.attachment_stored" }));
+  });
+
+  test("pullLatestEmails reaches attachment ingestion for a fresh Gmail message with candidates", async () => {
+    const { repo, storage, createdFiles, events } = serviceHarness();
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => [message({
+        subject: "654898 new po",
+        bodyText: "Please see attached PO.",
+        attachments: [{
+          filename: "654898 new po.pdf",
+          mimeType: "application/pdf",
+          size: 8,
+          attachmentId: "att_pull_latest",
+          contentDisposition: "attachment",
+        }],
+      })]),
+      downloadAttachment: jest.fn(async () => ({
+        buffer: Buffer.from("%PDF"),
+        mimeType: "application/pdf",
+        sizeBytes: 4,
+      })),
+    };
+    const service = new InboundEmailIngestionService(
+      pullLatestFreshRecordDbHarness(record) as any,
+      { gmail: adapter },
+      repo as any,
+      storage as any,
+    );
+    const ingestSpy = jest.spyOn(service as any, "ingestAttachments");
+
+    const result = await service.pullLatestEmails({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      limit: 1,
+    });
+
+    expect(result.summary).toEqual({ created: 1, skippedDuplicates: 0, ignored: 0, failed: 0 });
+    expect(adapter.listRecentMessages).toHaveBeenCalledWith(mailbox, 1);
+    expect(ingestSpy).toHaveBeenCalledTimes(1);
+    expect(adapter.downloadAttachment).toHaveBeenCalledWith(
+      mailbox,
+      expect.objectContaining({
+        subject: "654898 new po",
+        attachments: [expect.objectContaining({ attachmentId: "att_pull_latest" })],
+      }),
+      expect.objectContaining({ attachmentId: "att_pull_latest" }),
+    );
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      inboundRecordId: "inbound_1",
+      providerAttachmentId: "att_pull_latest",
+      status: "available",
+    }));
+    expect(events.find((event) => event.eventType === "email.attachment_ingestion_diagnostics")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        attachmentCandidatesDiscovered: 1,
+        attachmentPartsAttempted: 1,
+        downloadAttempts: 1,
+        storedRowsCreated: 1,
+        metadataOnlyRowsCreated: 0,
+      }),
+    }));
   });
 
   test("unknown sender creates metadata-only pending_trust attachment", async () => {
