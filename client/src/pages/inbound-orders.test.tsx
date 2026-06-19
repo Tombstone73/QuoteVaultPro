@@ -111,6 +111,12 @@ function record(overrides: Record<string, any> = {}) {
     submittedAt: null,
     rejectedAt: null,
     archivedAt: null,
+    senderTrustStatus: "unknown",
+    matchedTrustRuleId: null,
+    trustRuleType: null,
+    trustReason: "No sender email was captured for this inbound message.",
+    canAutoDownloadAttachments: false,
+    attachmentDownloadPolicy: "no_attachments",
     createdAt: "2026-06-09T12:00:00.000Z",
     updatedAt: "2026-06-09T12:00:00.000Z",
     ...overrides,
@@ -589,6 +595,128 @@ describe("InboundOrdersPage", () => {
 
     expect(container.textContent).toContain("No inbound records");
     expect(container.textContent).toContain("Draft builder will appear after parsing.");
+  });
+
+  test("shows sender trust badges and attachment policies in the queue", async () => {
+    const trusted = record({
+      id: "trusted_1",
+      sourceType: "email",
+      senderTrustStatus: "trusted_sender",
+      trustReason: "Sender matched inbound trust rule sender_email_exact.",
+      canAutoDownloadAttachments: true,
+      attachmentDownloadPolicy: "auto_download_allowed",
+      rawPayloadJson: {
+        sender: { name: "Trusted Buyer", email: "buyer@example.com" },
+        subject: "Trusted PO",
+      },
+    });
+    const untrusted = record({
+      id: "untrusted_1",
+      sourceType: "email",
+      senderTrustStatus: "untrusted",
+      trustReason: "Sender is not trusted for automatic attachment download.",
+      canAutoDownloadAttachments: false,
+      attachmentDownloadPolicy: "pending_trust",
+      rawPayloadJson: {
+        sender: { name: "New Buyer", email: "new@example.net" },
+        subject: "New PO",
+      },
+    });
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([trusted, untrusted]));
+      if (path === `/api/inbound-orders/${trusted.id}`) return jsonResponse({ success: true, data: detail(trusted) });
+      if (path === `/api/inbound-orders/${trusted.id}/draft-preview`) return jsonResponse(draftPreview());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Trusted Sender");
+
+    expect(container.textContent).toContain("Auto-download");
+    expect(container.textContent).toContain("Untrusted");
+    expect(container.textContent).toContain("Pending Trust");
+  });
+
+  test("trust filter sends the selected queue filter to the backend", async () => {
+    const row = record({ sourceType: "email" });
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === `/api/inbound-orders/${row.id}`) return jsonResponse({ success: true, data: detail(row) });
+      if (path === `/api/inbound-orders/${row.id}/draft-preview`) return jsonResponse(draftPreview());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("All trust statuses");
+    const trustFilter = container.querySelector("select[aria-label='Sender trust filter']") as HTMLSelectElement;
+
+    act(() => {
+      trustFilter.value = "pending_attachment_trust";
+      Simulate.change(trustFilter);
+    });
+
+    await waitForCondition(() => apiFetchMock.mock.calls.some(([url]) => (
+      String(url).includes("trustFilter=pending_attachment_trust")
+    )), "trust-filter-query-param");
+  });
+
+  test("select all filtered records and bulk trust sender creates trust rules without downloading", async () => {
+    const first = record({
+      id: "inbound_a",
+      sourceType: "email",
+      senderTrustStatus: "untrusted",
+      attachmentDownloadPolicy: "pending_trust",
+      rawPayloadJson: { sender: { name: "A", email: "a@example.com" }, subject: "A PO" },
+    });
+    const second = record({
+      id: "inbound_b",
+      sourceType: "email",
+      senderTrustStatus: "untrusted",
+      attachmentDownloadPolicy: "pending_trust",
+      rawPayloadJson: { sender: { name: "B", email: "b@example.com" }, subject: "B PO" },
+    });
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    const promptSpy = jest.spyOn(window, "prompt").mockReturnValue("bulk trust");
+    let bulkBody: any = null;
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([first, second]));
+      if (path === `/api/inbound-orders/${first.id}`) return jsonResponse({ success: true, data: detail(first) });
+      if (path === `/api/inbound-orders/${first.id}/draft-preview`) return jsonResponse(draftPreview());
+      if (path === "/api/inbound-orders/bulk-action") {
+        bulkBody = JSON.parse(options?.body ?? "{}");
+        return jsonResponse({ success: true, data: { updatedIds: [first.id, second.id], errors: [] } });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    try {
+      renderPage();
+      await waitForText("Select all filtered records");
+      const selectAll = container.querySelector("input[aria-label='Select all filtered inbound records']") as HTMLInputElement;
+      act(() => {
+        selectAll.checked = true;
+        Simulate.change(selectAll);
+      });
+      await waitForText("2 selected");
+      const trustButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Trust Sender")) as HTMLButtonElement;
+      act(() => {
+        Simulate.click(trustButton);
+      });
+
+      await waitForCondition(() => Boolean(bulkBody), "bulk-trust-body");
+      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Future emails"));
+      expect(bulkBody).toMatchObject({
+        recordIds: [first.id, second.id],
+        action: "trust_sender",
+        note: "bulk trust",
+      });
+    } finally {
+      confirmSpy.mockRestore();
+      promptSpy.mockRestore();
+    }
   });
 
   test("defaults to operational view, sanitizes HTML email, renders attachments, and preserves debug view", async () => {

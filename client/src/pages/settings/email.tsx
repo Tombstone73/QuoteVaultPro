@@ -1182,6 +1182,9 @@ function EmailPullDiagnosticsPanel() {
                             Files: {formatDiagnosticValue(record.attachmentCount)} / Raw Gmail parts: {formatDiagnosticValue((record.rawGmailPayloadAttachmentIndicators as any)?.rawAttachmentCount)}
                           </div>
                           <div className="mt-1 text-muted-foreground">
+                            Trust: {formatDiagnosticValue(record.senderTrustStatus)} / Policy: {formatDiagnosticValue(record.attachmentDownloadPolicy)}
+                          </div>
+                          <div className="mt-1 text-muted-foreground">
                             Message: {formatDiagnosticValue(record.sourceMessageId)} / Thread: {formatDiagnosticValue(record.sourceThreadId)}
                           </div>
                           <div className="mt-1 text-muted-foreground">
@@ -1238,6 +1241,8 @@ function EmailPullDiagnosticsPanel() {
                       <div>Thread: {formatDiagnosticValue(record.sourceThreadId)}</div>
                       <div>Files: {formatDiagnosticValue(record.attachmentCount)}</div>
                       <div>Raw Gmail parts: {formatDiagnosticValue((record.rawGmailPayloadAttachmentIndicators as any)?.rawAttachmentCount)}</div>
+                      <div>Trust: {formatDiagnosticValue(record.senderTrustStatus)}</div>
+                      <div>Policy: {formatDiagnosticValue(record.attachmentDownloadPolicy)}</div>
                       <div>Status: {formatDiagnosticValue(record.status)}</div>
                       <div>Hints: {formatDiagnosticHints(record.attachmentHints)}</div>
                     </div>

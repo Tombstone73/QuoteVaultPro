@@ -1566,6 +1566,26 @@ export class InboundEmailIngestionService {
         reason: `Sender matched inbound trust rule ${rule.ruleType}.`,
       };
     }
+    if (senderEmail && await this.inboundRepository.senderEmailMatchesCustomerContact(organizationId, senderEmail)) {
+      return {
+        trusted: true,
+        senderEmail,
+        senderDomain,
+        trustSource: "customer_contact_email",
+        ruleId: null,
+        reason: "Sender email matches an active customer contact.",
+      };
+    }
+    if (senderDomain && await this.inboundRepository.senderDomainMatchesCustomerDomain(organizationId, senderDomain)) {
+      return {
+        trusted: true,
+        senderEmail,
+        senderDomain,
+        trustSource: "customer_domain",
+        ruleId: null,
+        reason: "Sender domain matches a known customer or customer contact domain.",
+      };
+    }
     return {
       trusted: false,
       senderEmail,

@@ -63,6 +63,7 @@ import {
 export type InboundOrderListFilters = {
   status?: InboundOrderRecordStatus;
   statusGroup?: "active" | "needs_review" | "waiting" | "ready" | "converted" | "rejected" | "ignored";
+  trustFilter?: "all" | "trusted" | "untrusted" | "unknown" | "pending_attachment_trust";
   reviewOutcome?: string;
   sourceType?: InboundOrderSourceType;
   sourceId?: string;

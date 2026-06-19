@@ -21,13 +21,17 @@ import {
   inboundOrderParsedDraftSchema,
   inboundOrderReviewDraftPayloadSchema,
   type InboundEmailPullDiagnosticsResponse,
+  type InboundAttachmentDownloadPolicy,
   type InboundOrderParsedDraft,
   type InboundOrderArtworkLink,
   type InboundOrderReviewDraftDto,
   type InboundOrderReviewDraftPayload,
   type InboundOrderReviewReadinessScore,
   type InboundOrderReviewDraftSaveRequest,
+  type InboundOrderRecordWithTrust,
   type InboundOrderReviewDraftStatus,
+  type InboundSenderTrustStatus,
+  type InboundSenderTrustSummary,
   type InboundOrderProductOptionsResponse,
   type ManualInboundOrderCreateRequest,
 } from "@shared/inboundOrdersApi";
@@ -103,7 +107,7 @@ export type InboundQuoteActivityProjection = {
 };
 
 export type InboundOrderDetail = {
-  record: InboundOrderRecord;
+  record: InboundOrderRecordWithTrust;
   source: InboundOrderSource | null;
   lineItems: InboundOrderLineItem[];
   files: InboundOrderFile[];
@@ -119,7 +123,7 @@ export type InboundOrderDetail = {
 };
 
 export type InboundOrderListResult = {
-  records: InboundOrderRecord[];
+  records: InboundOrderRecordWithTrust[];
   summary: InboundOrderQueueSummary;
 };
 
@@ -170,6 +174,7 @@ export type InboundOrderIgnoreAction =
   | "ignore_sender_subject";
 
 export type InboundOrderQueueCleanupAction = InboundOrderIgnoreAction | "delete" | "reject";
+export type InboundOrderBulkTrustAction = "trust_sender" | "trust_domain";
 
 export type InboundOrderIgnoreActionInput = {
   organizationId: string;
@@ -183,7 +188,7 @@ export type InboundOrderBulkActionInput = {
   organizationId: string;
   recordIds: string[];
   actorUserId: string;
-  action: InboundOrderQueueCleanupAction;
+  action: InboundOrderQueueCleanupAction | InboundOrderBulkTrustAction;
   note?: string | null;
 };
 
@@ -575,9 +580,18 @@ function buildAttachmentPipelineDiagnostics(
     ?? nonNegativeNumberFromUnknown(record.rawAttachmentCount)
     ?? 0;
   const attachmentPartsAttempted = nonNegativeNumberFromUnknown(metadata.attachmentPartsAttempted) ?? 0;
+  const safetyDecisions = Array.isArray(metadata.safetyDecisions)
+    ? metadata.safetyDecisions.map((item) => sanitizeDiagnosticRow(asRecord(item) ?? { value: item }))
+    : [];
+  const trustGatePending = safetyDecisions.some((decision) => (
+    decision.attachmentState === "pending_trust"
+    || decision.downloadAllowed === false && String(decision.reason ?? "").toLowerCase().includes("not trusted")
+  ));
   const skippedReason = metadata.skippedReason ?? (
     attachmentCandidatesDiscovered > 0 && attachmentPartsAttempted === 0
-      ? hasIngestionDiagnosticsEvent
+      ? trustGatePending
+        ? "pending_trust"
+        : hasIngestionDiagnosticsEvent
         ? "attachment_candidates_discovered_but_not_processed"
         : "attachment_candidates_discovered_but_no_ingestion_event_recorded"
       : null
@@ -596,9 +610,7 @@ function buildAttachmentPipelineDiagnostics(
     attachmentRowsCreated: metadata.attachmentRowsCreated ?? recordFiles.length,
     skippedExistingProviderAttachments: metadata.skippedExistingProviderAttachments ?? 0,
     skippedReason,
-    safetyDecisions: Array.isArray(metadata.safetyDecisions)
-      ? metadata.safetyDecisions.map((item) => sanitizeDiagnosticRow(asRecord(item) ?? { value: item }))
-      : [],
+    safetyDecisions,
     failures: [...eventFailures, ...fileFailures],
   });
 }
@@ -736,6 +748,45 @@ function normalizeInboundEmailTrustRuleValue(ruleType: InboundEmailTrustRuleType
   return trimmed;
 }
 
+function trustStatusForRuleType(ruleType: InboundEmailTrustRuleType): InboundSenderTrustStatus {
+  if (ruleType === "sender_email_exact") return "trusted_sender";
+  if (ruleType === "sender_domain") return "trusted_domain";
+  if (ruleType === "customer_contact_email") return "trusted_contact";
+  return "trusted_customer_domain";
+}
+
+function getRecordAttachmentCandidates(record: InboundOrderRecord): unknown[] {
+  const rawAttachments = getPathValue(record, "rawPayloadJson.attachments");
+  const normalizedAttachments = getPathValue(record, "normalizedPayloadJson.attachments");
+  if (Array.isArray(rawAttachments)) return rawAttachments;
+  if (Array.isArray(normalizedAttachments)) return normalizedAttachments;
+  return [];
+}
+
+function getFileAttachmentState(file: InboundOrderFile): string | null {
+  const metadata = asRecord(file.metadataJson);
+  return stringFromUnknown(metadata?.attachmentState) ?? null;
+}
+
+function getAttachmentDownloadPolicy(args: {
+  record: InboundOrderRecord;
+  files: InboundOrderFile[];
+  trustSummary: Pick<InboundSenderTrustSummary, "senderTrustStatus" | "canAutoDownloadAttachments">;
+}): InboundAttachmentDownloadPolicy {
+  const candidateCount = getRecordAttachmentCandidates(args.record).length;
+  const hasAttachments = args.files.length > 0 || candidateCount > 0;
+  if (!hasAttachments) return "no_attachments";
+
+  const allKnownFilesBlocked = args.files.length > 0
+    && args.files.every((file) => getFileAttachmentState(file) === "blocked_file_type" || file.status === "quarantined");
+  if (allKnownFilesBlocked && candidateCount <= args.files.length) return "blocked_file_type_only";
+
+  const hasPendingTrust = args.files.some((file) => getFileAttachmentState(file) === "pending_trust");
+  if (hasPendingTrust || !args.trustSummary.canAutoDownloadAttachments) return "pending_trust";
+
+  return "auto_download_allowed";
+}
+
 export class InboundOrderService {
   constructor(
     private readonly repository = inboundOrdersRepository,
@@ -745,6 +796,161 @@ export class InboundOrderService {
       ? customerIntelligenceService
       : new CustomerIntelligenceService(repository as any),
   ) {}
+
+  private async resolveSenderTrustSummary(args: {
+    organizationId: string;
+    senderEmail: string | null;
+    senderDomain: string | null;
+    files?: InboundOrderFile[];
+    record?: InboundOrderRecord;
+  }): Promise<InboundSenderTrustSummary> {
+    const senderEmail = args.senderEmail?.trim().toLowerCase() || null;
+    const senderDomain = args.senderDomain?.trim().toLowerCase() || null;
+    let base: Omit<InboundSenderTrustSummary, "attachmentDownloadPolicy">;
+
+    if (!senderEmail && !senderDomain) {
+      base = {
+        senderTrustStatus: "unknown",
+        matchedTrustRuleId: null,
+        trustRuleType: null,
+        trustReason: "No sender email was captured for this inbound message.",
+        canAutoDownloadAttachments: false,
+      };
+    } else {
+      const rules = await this.repository.listEnabledEmailTrustRules(args.organizationId);
+      let matchedRule: InboundEmailTrustRule | null = null;
+      for (const rule of rules) {
+        const value = rule.ruleValue.trim().toLowerCase();
+        const matched = rule.ruleType === "sender_email_exact"
+          ? Boolean(senderEmail && senderEmail === value)
+          : rule.ruleType === "sender_domain"
+            ? Boolean(senderDomain && senderDomain === value)
+            : rule.ruleType === "customer_contact_email"
+              ? Boolean(senderEmail && (value === "*" || senderEmail === value) && await this.repository.senderEmailMatchesCustomerContact(args.organizationId, senderEmail))
+              : Boolean(senderDomain && (value === "*" || senderDomain === value) && await this.repository.senderDomainMatchesCustomerDomain(args.organizationId, senderDomain));
+        if (matched) {
+          matchedRule = rule;
+          break;
+        }
+      }
+
+      if (matchedRule) {
+        base = {
+          senderTrustStatus: trustStatusForRuleType(matchedRule.ruleType),
+          matchedTrustRuleId: matchedRule.id,
+          trustRuleType: matchedRule.ruleType,
+          trustReason: `Sender matched inbound trust rule ${matchedRule.ruleType}.`,
+          canAutoDownloadAttachments: true,
+        };
+      } else if (senderEmail && await this.repository.senderEmailMatchesCustomerContact(args.organizationId, senderEmail)) {
+        base = {
+          senderTrustStatus: "trusted_contact",
+          matchedTrustRuleId: null,
+          trustRuleType: "customer_contact_email",
+          trustReason: "Sender email matches an active customer contact.",
+          canAutoDownloadAttachments: true,
+        };
+      } else if (senderDomain && await this.repository.senderDomainMatchesCustomerDomain(args.organizationId, senderDomain)) {
+        base = {
+          senderTrustStatus: "trusted_customer_domain",
+          matchedTrustRuleId: null,
+          trustRuleType: "customer_domain",
+          trustReason: "Sender domain matches a known customer or customer contact domain.",
+          canAutoDownloadAttachments: true,
+        };
+      } else {
+        base = {
+          senderTrustStatus: "untrusted",
+          matchedTrustRuleId: null,
+          trustRuleType: null,
+          trustReason: "Sender is not trusted for automatic attachment download.",
+          canAutoDownloadAttachments: false,
+        };
+      }
+    }
+
+    return {
+      ...base,
+      attachmentDownloadPolicy: args.record
+        ? getAttachmentDownloadPolicy({
+          record: args.record,
+          files: args.files ?? [],
+          trustSummary: base,
+        })
+        : "no_attachments",
+    };
+  }
+
+  private async enrichRecordTrust(args: {
+    organizationId: string;
+    record: InboundOrderRecord;
+    files?: InboundOrderFile[];
+  }): Promise<InboundOrderRecordWithTrust> {
+    const files = args.files ?? await this.repository.listFiles(args.organizationId, args.record.id);
+    const senderEmail = getInboundRecordSenderEmail(args.record);
+    const senderDomain = getInboundRecordSenderDomain(args.record);
+    const trustSummary = await this.resolveSenderTrustSummary({
+      organizationId: args.organizationId,
+      senderEmail,
+      senderDomain,
+      files,
+      record: args.record,
+    });
+    return {
+      ...args.record,
+      ...trustSummary,
+    };
+  }
+
+  private matchesTrustFilter(record: InboundOrderRecordWithTrust, trustFilter: InboundOrderListFilters["trustFilter"]): boolean {
+    if (!trustFilter || trustFilter === "all") return true;
+    if (trustFilter === "trusted") return record.canAutoDownloadAttachments;
+    if (trustFilter === "untrusted") return record.senderTrustStatus === "untrusted";
+    if (trustFilter === "unknown") return record.senderTrustStatus === "unknown";
+    return record.attachmentDownloadPolicy === "pending_trust";
+  }
+
+  private async enrichDiagnosticRecordTrust(args: {
+    organizationId: string;
+    record: Record<string, unknown>;
+    files: Array<Record<string, unknown>>;
+  }): Promise<Record<string, unknown>> {
+    const senderEmail = stringFromUnknown(args.record.senderEmail)?.toLowerCase() ?? null;
+    const senderDomain = senderEmail?.split("@")[1]?.trim().toLowerCase() || null;
+    const base = await this.resolveSenderTrustSummary({
+      organizationId: args.organizationId,
+      senderEmail,
+      senderDomain,
+    });
+    const recordId = stringFromUnknown(args.record.id);
+    const recordFiles = recordId
+      ? args.files.filter((file) => file.inboundRecordId === recordId)
+      : [];
+    const attachmentCount = nonNegativeNumberFromUnknown(args.record.attachmentCount)
+      ?? nonNegativeNumberFromUnknown(args.record.rawAttachmentCount)
+      ?? nonNegativeNumberFromUnknown(args.record.normalizedAttachmentCount)
+      ?? 0;
+    const hasAttachments = recordFiles.length > 0 || attachmentCount > 0;
+    const allKnownFilesBlocked = recordFiles.length > 0
+      && recordFiles.every((file) => {
+        const metadata = asRecord(file.metadataJson);
+        return metadata?.attachmentState === "blocked_file_type" || file.status === "quarantined";
+      });
+    const hasPendingTrust = recordFiles.some((file) => asRecord(file.metadataJson)?.attachmentState === "pending_trust");
+    const attachmentDownloadPolicy: InboundAttachmentDownloadPolicy = !hasAttachments
+      ? "no_attachments"
+      : allKnownFilesBlocked
+        ? "blocked_file_type_only"
+        : hasPendingTrust || !base.canAutoDownloadAttachments
+          ? "pending_trust"
+          : "auto_download_allowed";
+
+    return sanitizeDiagnosticRow({
+      ...args.record,
+      ...base,
+      attachmentDownloadPolicy,
+    });
+  }
 
   async listInboundOrders(args: {
     organizationId: string;
@@ -762,7 +968,15 @@ export class InboundOrderService {
       this.repository.getQueueSummary(args.organizationId),
     ]);
 
-    return { records, summary };
+    const enrichedRecords = await Promise.all(records.map((record) => this.enrichRecordTrust({
+      organizationId: args.organizationId,
+      record,
+    })));
+
+    return {
+      records: enrichedRecords.filter((record) => this.matchesTrustFilter(record, args.filters.trustFilter)),
+      summary,
+    };
   }
 
   async getInboundOrderCounts(args: { organizationId: string }): Promise<InboundOrderQueueSummary> {
@@ -825,15 +1039,23 @@ export class InboundOrderService {
     const subjectPullDiagnostics = raw.subjectPullDiagnostics.map(sanitizeDiagnosticRow);
     const allPullDiagnostics = [...subjectPullDiagnostics, ...recentPullDiagnostics];
     const diagnosticFiles = [...raw.recentFiles, ...raw.subjectFiles].map(sanitizeDiagnosticRow);
-    const matchingRecords = raw.subjectRecords.map((record) => ({
-      ...enrichEmailRecordDiagnostic(record),
+    const matchingRecords = await Promise.all(raw.subjectRecords.map(async (record) => ({
+      ...await this.enrichDiagnosticRecordTrust({
+        organizationId: args.organizationId,
+        record: enrichEmailRecordDiagnostic(record),
+        files: diagnosticFiles,
+      }),
       attachmentPipelineDiagnostics: buildAttachmentPipelineDiagnostics(record, diagnosticFiles, allPullDiagnostics),
-    }));
+    })));
     const matchingFiles = raw.subjectFiles.map(sanitizeDiagnosticRow);
-    const recentCreatedInboundRecords = raw.recentCreatedRecords.map((record) => ({
-      ...enrichEmailRecordDiagnostic(record),
+    const recentCreatedInboundRecords = await Promise.all(raw.recentCreatedRecords.map(async (record) => ({
+      ...await this.enrichDiagnosticRecordTrust({
+        organizationId: args.organizationId,
+        record: enrichEmailRecordDiagnostic(record),
+        files: diagnosticFiles,
+      }),
       attachmentPipelineDiagnostics: buildAttachmentPipelineDiagnostics(record, diagnosticFiles, allPullDiagnostics),
-    }));
+    })));
 
     return {
       organizationId: args.organizationId,
@@ -1047,7 +1269,11 @@ export class InboundOrderService {
     ]);
 
     const detail: InboundOrderDetail = {
-      record,
+      record: await this.enrichRecordTrust({
+        organizationId: args.organizationId,
+        record,
+        files,
+      }),
       source,
       lineItems,
       files,
@@ -1420,7 +1646,31 @@ export class InboundOrderService {
 
     for (const inboundRecordId of uniqueIds) {
       try {
-        if (args.action === "delete") {
+        if (args.action === "trust_sender" || args.action === "trust_domain") {
+          const record = await this.repository.getRecord(args.organizationId, inboundRecordId);
+          if (!record) throw new InboundOrderTransitionError("Inbound order record not found", 404);
+          const senderEmail = getInboundRecordSenderEmail(record);
+          const senderDomain = getInboundRecordSenderDomain(record);
+          const ruleType: InboundEmailTrustRuleType = args.action === "trust_sender"
+            ? "sender_email_exact"
+            : "sender_domain";
+          const ruleValue = args.action === "trust_sender" ? senderEmail : senderDomain;
+          if (!ruleValue) {
+            throw new InboundOrderTransitionError(
+              args.action === "trust_sender"
+                ? "No sender email was available for this trust rule."
+                : "No sender domain was available for this trust rule.",
+              400,
+            );
+          }
+          await this.repository.createEmailTrustRule({
+            organizationId: args.organizationId,
+            ruleType,
+            ruleValue,
+            notes: args.note?.trim() || `Created from inbound queue bulk action ${args.action}.`,
+            createdByUserId: args.actorUserId,
+          });
+        } else if (args.action === "delete") {
           await this.deleteQueueRecord({ ...args, inboundRecordId });
         } else if (args.action === "reject") {
           await this.applyReviewAction({
