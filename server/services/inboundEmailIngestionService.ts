@@ -154,6 +154,7 @@ type AttachmentIngestionCallAudit = {
   matchedTrustRuleId: string | null;
   trustRuleType: string | null;
   trustReason: string | null;
+  providerIdentifierColumnDiagnostics: Array<Record<string, unknown>>;
 };
 
 type InboundAttachmentState =
@@ -194,6 +195,36 @@ function trustStatusFromDecision(decision: SenderTrustDecision): string {
   if (decision.trustSource === "customer_domain") return "trusted_customer_domain";
   if (!decision.senderEmail) return "unknown";
   return decision.trusted ? "trusted_sender" : "untrusted";
+}
+
+function providerIdentifierColumnDiagnostics(args: {
+  message: InboundEmailProviderMessage;
+  attachmentCandidates: InboundEmailAttachmentMetadata[];
+}): Array<Record<string, unknown>> {
+  return args.attachmentCandidates.flatMap((attachment, index) => [
+    {
+      candidateIndex: index,
+      table: "inbound_order_files",
+      column: "provider_attachment_id",
+      currentType: "text",
+      previousType: "varchar(255)",
+      actualStringLength: attachment.attachmentId?.length ?? 0,
+      originatingGmailField: "payload.parts[].body.attachmentId",
+      sourceFilename: attachment.filename,
+      exceedsPreviousLimit: Boolean(attachment.attachmentId && attachment.attachmentId.length > 255),
+    },
+    {
+      candidateIndex: index,
+      table: "inbound_order_files",
+      column: "provider_message_id",
+      currentType: "text",
+      previousType: "varchar(255)",
+      actualStringLength: args.message.messageId.length,
+      originatingGmailField: "messages[].id",
+      sourceFilename: attachment.filename,
+      exceedsPreviousLimit: args.message.messageId.length > 255,
+    },
+  ]);
 }
 
 const BLOCKED_INBOUND_ATTACHMENT_EXTENSIONS = new Set([
@@ -1706,6 +1737,10 @@ export class InboundEmailIngestionService {
       matchedTrustRuleId: trustDecision.ruleId,
       trustRuleType: trustDecision.trustSource === "none" ? null : trustDecision.trustSource,
       trustReason: trustDecision.reason,
+      providerIdentifierColumnDiagnostics: providerIdentifierColumnDiagnostics({
+        message: args.message,
+        attachmentCandidates,
+      }),
     };
   }
 
