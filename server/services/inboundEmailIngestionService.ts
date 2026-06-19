@@ -142,6 +142,20 @@ type AttachmentIngestionDiagnostics = {
   safetyDecisions?: Array<Record<string, unknown>>;
 };
 
+type AttachmentIngestionCallAudit = {
+  organizationId: string;
+  inboundRecordId: string;
+  providerMessageId: string;
+  subject: string | null;
+  candidateCount: number;
+  attachmentIdsDiscovered: string[];
+  trustStatus: string;
+  attachmentPolicy: string;
+  matchedTrustRuleId: string | null;
+  trustRuleType: string | null;
+  trustReason: string | null;
+};
+
 type InboundAttachmentState =
   | "metadata_only"
   | "pending_trust"
@@ -172,6 +186,15 @@ type AttachmentSafetyDecision = {
   attachmentState: InboundAttachmentState;
   reason: string;
 };
+
+function trustStatusFromDecision(decision: SenderTrustDecision): string {
+  if (decision.trustSource === "sender_email_exact") return "trusted_sender";
+  if (decision.trustSource === "sender_domain") return "trusted_domain";
+  if (decision.trustSource === "customer_contact_email") return "trusted_contact";
+  if (decision.trustSource === "customer_domain") return "trusted_customer_domain";
+  if (!decision.senderEmail) return "unknown";
+  return decision.trusted ? "trusted_sender" : "untrusted";
+}
 
 const BLOCKED_INBOUND_ATTACHMENT_EXTENSIONS = new Set([
   "exe",
@@ -1567,7 +1590,7 @@ export class InboundEmailIngestionService {
       }
       return { status: "skippedDuplicates" };
     }
-    await this.ingestAttachments({
+    await this.ingestAttachmentsWithCallAudit({
       organizationId,
       actorUserId,
       mailbox,
@@ -1627,7 +1650,7 @@ export class InboundEmailIngestionService {
       return;
     }
 
-    await this.ingestAttachments({
+    await this.ingestAttachmentsWithCallAudit({
       organizationId: args.organizationId,
       actorUserId: args.actorUserId,
       mailbox: args.mailbox,
@@ -1636,6 +1659,144 @@ export class InboundEmailIngestionService {
       adapter: args.adapter,
       skippedReason: "duplicate_message_attachment_backfill",
     });
+  }
+
+  private async buildAttachmentIngestionCallAudit(args: {
+    organizationId: string;
+    message: InboundEmailProviderMessage;
+    record: InboundOrderRecord;
+  }): Promise<AttachmentIngestionCallAudit> {
+    const attachmentCandidates = this.attachmentCandidatesForIngestion(args.message, args.record);
+    let trustDecision: SenderTrustDecision | null = null;
+    try {
+      trustDecision = await this.resolveSenderTrust(args.organizationId, args.message, { recordMatch: false });
+    } catch (error) {
+      trustDecision = {
+        trusted: false,
+        senderEmail: senderEmailFromMessage(args.message),
+        senderDomain: senderDomainFromMessage(args.message),
+        trustSource: "none",
+        ruleId: null,
+        reason: error instanceof Error ? error.message : "Unable to resolve sender trust for attachment audit.",
+      };
+    }
+    const safetyDecisions = attachmentCandidates.map((attachment) => this.evaluateAttachmentSafety(
+      attachment,
+      classifyInboundEmailAttachmentForMessage(attachment, args.message),
+      trustDecision,
+    ));
+    const attachmentPolicy = attachmentCandidates.length === 0
+      ? "no_attachments"
+      : safetyDecisions.every((decision) => decision.blocked)
+        ? "blocked_file_type_only"
+        : safetyDecisions.some((decision) => decision.attachmentState === "pending_trust")
+          ? "pending_trust"
+          : safetyDecisions.some((decision) => decision.downloadAllowed)
+            ? "auto_download_allowed"
+            : "pending_trust";
+    return {
+      organizationId: args.organizationId,
+      inboundRecordId: args.record.id,
+      providerMessageId: args.message.messageId,
+      subject: args.message.subject,
+      candidateCount: attachmentCandidates.length,
+      attachmentIdsDiscovered: attachmentCandidates.map((attachment) => attachment.attachmentId).filter((value): value is string => Boolean(value)),
+      trustStatus: trustStatusFromDecision(trustDecision),
+      attachmentPolicy,
+      matchedTrustRuleId: trustDecision.ruleId,
+      trustRuleType: trustDecision.trustSource === "none" ? null : trustDecision.trustSource,
+      trustReason: trustDecision.reason,
+    };
+  }
+
+  private async recordAttachmentIngestionCallAudit(args: {
+    organizationId: string;
+    actorUserId: string;
+    record: InboundOrderRecord;
+    eventType: "attachment_ingestion_call_started" | "attachment_ingestion_call_completed" | "attachment_ingestion_call_failed";
+    audit: AttachmentIngestionCallAudit;
+    diagnostics?: AttachmentIngestionDiagnostics | null;
+    errorMessage?: string | null;
+  }): Promise<void> {
+    await this.inboundRepository.createEvent({
+      organizationId: args.organizationId,
+      inboundRecordId: args.record.id,
+      actorUserId: args.actorUserId,
+      actorType: "system",
+      eventType: args.eventType,
+      fromStatus: null,
+      toStatus: null,
+      message: args.eventType === "attachment_ingestion_call_started"
+        ? "Inbound attachment ingestion call started."
+        : args.eventType === "attachment_ingestion_call_completed"
+          ? "Inbound attachment ingestion call completed."
+          : "Inbound attachment ingestion call failed.",
+      metadataJson: {
+        ...args.audit,
+        errorMessage: args.errorMessage ?? null,
+        diagnostics: args.diagnostics
+          ? {
+              attachmentPartsAttempted: args.diagnostics.attachmentPartsAttempted,
+              attachmentRowsCreated: args.diagnostics.attachmentRowsCreated,
+              storedRowsCreated: args.diagnostics.storedRowsCreated,
+              metadataOnlyRowsCreated: args.diagnostics.metadataOnlyRowsCreated,
+              downloadAttempts: args.diagnostics.downloadAttempts,
+              downloadSuccesses: args.diagnostics.downloadSuccesses,
+              downloadFailures: args.diagnostics.downloadFailures,
+              skippedReason: args.diagnostics.skippedReason,
+            }
+          : null,
+        createsQuote: false,
+        createsOrder: false,
+        createsArtwork: false,
+        createsProofs: false,
+        createsProductionJobs: false,
+        createsInvoices: false,
+        createsFulfillment: false,
+        createsPayments: false,
+      },
+    });
+  }
+
+  private async ingestAttachmentsWithCallAudit(args: {
+    organizationId: string;
+    actorUserId: string;
+    mailbox: InboundEmailMailbox;
+    message: InboundEmailProviderMessage;
+    record: InboundOrderRecord;
+    adapter: InboundEmailProviderAdapter;
+    skippedReason: string | null;
+  }): Promise<AttachmentIngestionDiagnostics> {
+    const audit = await this.buildAttachmentIngestionCallAudit(args);
+    await this.recordAttachmentIngestionCallAudit({
+      organizationId: args.organizationId,
+      actorUserId: args.actorUserId,
+      record: args.record,
+      eventType: "attachment_ingestion_call_started",
+      audit,
+    });
+    try {
+      const diagnostics = await this.ingestAttachments(args);
+      await this.recordAttachmentIngestionCallAudit({
+        organizationId: args.organizationId,
+        actorUserId: args.actorUserId,
+        record: args.record,
+        eventType: "attachment_ingestion_call_completed",
+        audit,
+        diagnostics,
+      });
+      return diagnostics;
+    } catch (error) {
+      await this.recordAttachmentIngestionCallAudit({
+        organizationId: args.organizationId,
+        actorUserId: args.actorUserId,
+        record: args.record,
+        eventType: "attachment_ingestion_call_failed",
+        audit,
+        errorMessage: error instanceof Error ? error.message : "Attachment ingestion failed.",
+      });
+      throw error;
+    }
   }
 
   private attachmentCandidatesForIngestion(
@@ -1676,6 +1837,7 @@ export class InboundEmailIngestionService {
   private async resolveSenderTrust(
     organizationId: string,
     message: InboundEmailProviderMessage,
+    options: { recordMatch?: boolean } = {},
   ): Promise<SenderTrustDecision> {
     const senderEmail = senderEmailFromMessage(message);
     const senderDomain = senderDomainFromMessage(message);
@@ -1690,7 +1852,9 @@ export class InboundEmailIngestionService {
             ? Boolean(senderEmail && (value === "*" || senderEmail === value) && await this.inboundRepository.senderEmailMatchesCustomerContact(organizationId, senderEmail))
             : Boolean(senderDomain && (value === "*" || senderDomain === value) && await this.inboundRepository.senderDomainMatchesCustomerDomain(organizationId, senderDomain));
       if (!matched) continue;
-      await this.inboundRepository.recordEmailTrustRuleMatch(rule.id);
+      if (options.recordMatch !== false) {
+        await this.inboundRepository.recordEmailTrustRuleMatch(rule.id);
+      }
       return {
         trusted: true,
         senderEmail,

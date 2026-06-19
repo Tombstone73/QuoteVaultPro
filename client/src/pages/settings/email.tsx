@@ -901,6 +901,7 @@ function AttachmentPipelineDiagnostics({ record }: { record: Record<string, unkn
   const pipeline = (record.attachmentPipelineDiagnostics ?? {}) as Record<string, any>;
   const failures = Array.isArray(pipeline.failures) ? pipeline.failures : [];
   const safetyDecisions = Array.isArray(pipeline.safetyDecisions) ? pipeline.safetyDecisions : [];
+  const ingestionCallEvents = Array.isArray(pipeline.ingestionCallEvents) ? pipeline.ingestionCallEvents : [];
   return (
     <div className="mt-2 rounded-md border border-border bg-background/70 p-2">
       <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Attachment Diagnostics</div>
@@ -936,6 +937,27 @@ function AttachmentPipelineDiagnostics({ record }: { record: Record<string, unkn
       </div>
       {pipeline.skippedReason ? (
         <div className="mt-2 text-[11px] text-muted-foreground">Skipped reason: {formatDiagnosticValue(pipeline.skippedReason)}</div>
+      ) : null}
+      <div className="mt-2 text-[11px] text-muted-foreground">
+        Ingestion call: {formatDiagnosticValue(pipeline.ingestionCallStatus)}
+        {pipeline.ingestionCallError ? ` / Error: ${formatDiagnosticValue(pipeline.ingestionCallError)}` : ""}
+      </div>
+      {ingestionCallEvents.length > 0 ? (
+        <div className="mt-2 space-y-1">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Ingestion Call Audit</div>
+          {ingestionCallEvents.map((event: Record<string, any>, index: number) => {
+            const metadata = event.metadataJson && typeof event.metadataJson === "object" ? event.metadataJson as Record<string, unknown> : {};
+            return (
+              <div key={`${event.eventId ?? event.eventType ?? "call"}-${index}`} className="rounded border border-border/70 bg-muted/30 p-1.5 text-[11px] text-muted-foreground">
+                <div className="font-medium text-foreground">{formatDiagnosticValue(event.eventType)}</div>
+                <div>Message: {formatDiagnosticValue(metadata.providerMessageId)} / Subject: {formatDiagnosticValue(metadata.subject)}</div>
+                <div>Candidates: {formatDiagnosticValue(metadata.candidateCount)} / Trust: {formatDiagnosticValue(metadata.trustStatus)}</div>
+                <div>Policy: {formatDiagnosticValue(metadata.attachmentPolicy)}</div>
+                {metadata.errorMessage ? <div>Error: {formatDiagnosticValue(metadata.errorMessage)}</div> : null}
+              </div>
+            );
+          })}
+        </div>
       ) : null}
       {safetyDecisions.length > 0 ? (
         <div className="mt-2 space-y-1">

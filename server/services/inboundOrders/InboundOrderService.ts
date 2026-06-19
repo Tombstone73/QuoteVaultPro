@@ -551,6 +551,24 @@ function buildAttachmentPipelineDiagnostics(
   files: Array<Record<string, unknown>>,
   events: Array<Record<string, unknown>>,
 ): Record<string, unknown> {
+  const callEvents = events
+    .filter((event) => (
+      event.inboundRecordId === record.id
+      && (
+        event.eventType === "attachment_ingestion_call_started"
+        || event.eventType === "attachment_ingestion_call_completed"
+        || event.eventType === "attachment_ingestion_call_failed"
+      )
+    ))
+    .map(sanitizeDiagnosticRow);
+  const callStarted = callEvents.find((event) => event.eventType === "attachment_ingestion_call_started");
+  const callCompleted = callEvents.find((event) => event.eventType === "attachment_ingestion_call_completed");
+  const callFailed = callEvents.find((event) => event.eventType === "attachment_ingestion_call_failed");
+  const callMetadata = asRecord(callCompleted?.metadataJson)
+    ?? asRecord(callFailed?.metadataJson)
+    ?? asRecord(callStarted?.metadataJson)
+    ?? {};
+  const callDiagnostics = asRecord(callMetadata.diagnostics) ?? {};
   const latestEvent = events.find((event) => (
     event.inboundRecordId === record.id
     && event.eventType === "email.attachment_ingestion_diagnostics"
@@ -570,16 +588,22 @@ function buildAttachmentPipelineDiagnostics(
   const metadataOnlyFromFiles = recordFiles.filter((file) => !file.fileRecordId).length;
   const attachmentIds = Array.isArray(metadata.attachmentIdsDiscovered)
     ? metadata.attachmentIdsDiscovered.filter((item): item is string => typeof item === "string")
+    : Array.isArray(callMetadata.attachmentIdsDiscovered)
+      ? callMetadata.attachmentIdsDiscovered.filter((item): item is string => typeof item === "string")
     : extractAttachmentIdsFromRawMetadata(rawMetadata);
   const hasIngestionDiagnosticsEvent = Boolean(latestEvent);
   const gmailPartsDiscovered = nonNegativeNumberFromUnknown(metadata.attachmentPartsDiscovered)
+    ?? nonNegativeNumberFromUnknown(callMetadata.candidateCount)
     ?? nonNegativeNumberFromUnknown(record.rawAttachmentCount)
     ?? 0;
   const attachmentCandidatesDiscovered = nonNegativeNumberFromUnknown(metadata.attachmentCandidatesDiscovered)
     ?? nonNegativeNumberFromUnknown(metadata.attachmentPartsDiscovered)
+    ?? nonNegativeNumberFromUnknown(callMetadata.candidateCount)
     ?? nonNegativeNumberFromUnknown(record.rawAttachmentCount)
     ?? 0;
-  const attachmentPartsAttempted = nonNegativeNumberFromUnknown(metadata.attachmentPartsAttempted) ?? 0;
+  const attachmentPartsAttempted = nonNegativeNumberFromUnknown(metadata.attachmentPartsAttempted)
+    ?? nonNegativeNumberFromUnknown(callDiagnostics.attachmentPartsAttempted)
+    ?? 0;
   const safetyDecisions = Array.isArray(metadata.safetyDecisions)
     ? metadata.safetyDecisions.map((item) => sanitizeDiagnosticRow(asRecord(item) ?? { value: item }))
     : [];
@@ -587,7 +611,24 @@ function buildAttachmentPipelineDiagnostics(
     decision.attachmentState === "pending_trust"
     || decision.downloadAllowed === false && String(decision.reason ?? "").toLowerCase().includes("not trusted")
   ));
-  const skippedReason = metadata.skippedReason ?? (
+  const callFailedMetadata = asRecord(callFailed?.metadataJson) ?? {};
+  const ingestionCallError = typeof callFailedMetadata.errorMessage === "string"
+    ? callFailedMetadata.errorMessage
+    : null;
+  const callStatus = callFailed
+    ? "failed"
+    : callStarted && !callCompleted
+      ? "started_without_result"
+      : callCompleted
+        ? "completed"
+        : "not_called";
+  const skippedReason = attachmentCandidatesDiscovered > 0 && !callStarted
+    ? "ingestion_not_called"
+    : attachmentCandidatesDiscovered > 0 && callStarted && !callCompleted && !callFailed
+      ? "ingestion_started_but_no_result"
+      : attachmentCandidatesDiscovered > 0 && callFailed
+        ? "attachment_ingestion_call_failed"
+        : metadata.skippedReason ?? (
     attachmentCandidatesDiscovered > 0 && attachmentPartsAttempted === 0
       ? trustGatePending
         ? "pending_trust"
@@ -602,14 +643,17 @@ function buildAttachmentPipelineDiagnostics(
     attachmentCandidatesDiscovered,
     attachmentIdsDiscovered: attachmentIds,
     attachmentPartsAttempted,
-    downloadAttempts: metadata.downloadAttempts ?? 0,
-    downloadSuccesses: metadata.downloadSuccesses ?? 0,
-    downloadFailures: metadata.downloadFailures ?? fileFailures.length,
-    metadataOnlyRowsCreated: metadata.metadataOnlyRowsCreated ?? metadataOnlyFromFiles,
-    storedFileRowsCreated: metadata.storedRowsCreated ?? storedFromFiles,
-    attachmentRowsCreated: metadata.attachmentRowsCreated ?? recordFiles.length,
+    downloadAttempts: metadata.downloadAttempts ?? callDiagnostics.downloadAttempts ?? 0,
+    downloadSuccesses: metadata.downloadSuccesses ?? callDiagnostics.downloadSuccesses ?? 0,
+    downloadFailures: metadata.downloadFailures ?? callDiagnostics.downloadFailures ?? fileFailures.length,
+    metadataOnlyRowsCreated: metadata.metadataOnlyRowsCreated ?? callDiagnostics.metadataOnlyRowsCreated ?? metadataOnlyFromFiles,
+    storedFileRowsCreated: metadata.storedRowsCreated ?? callDiagnostics.storedRowsCreated ?? storedFromFiles,
+    attachmentRowsCreated: metadata.attachmentRowsCreated ?? callDiagnostics.attachmentRowsCreated ?? recordFiles.length,
     skippedExistingProviderAttachments: metadata.skippedExistingProviderAttachments ?? 0,
     skippedReason,
+    ingestionCallStatus: callStatus,
+    ingestionCallError,
+    ingestionCallEvents: callEvents,
     safetyDecisions,
     failures: [...eventFailures, ...fileFailures],
   });

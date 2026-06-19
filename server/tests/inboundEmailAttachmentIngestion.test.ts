@@ -382,6 +382,32 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       providerAttachmentId: "att_pull_latest",
       status: "available",
     }));
+    expect(events.find((event) => event.eventType === "attachment_ingestion_call_started")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        organizationId: "org_1",
+        inboundRecordId: "inbound_1",
+        providerMessageId: "gmail_msg_1",
+        subject: "654898 new po",
+        candidateCount: 1,
+        trustStatus: "trusted_sender",
+        attachmentPolicy: "auto_download_allowed",
+      }),
+    }));
+    expect(events.find((event) => event.eventType === "attachment_ingestion_call_completed")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        organizationId: "org_1",
+        inboundRecordId: "inbound_1",
+        providerMessageId: "gmail_msg_1",
+        subject: "654898 new po",
+        candidateCount: 1,
+        diagnostics: expect.objectContaining({
+          attachmentPartsAttempted: 1,
+          downloadAttempts: 1,
+          storedRowsCreated: 1,
+          metadataOnlyRowsCreated: 0,
+        }),
+      }),
+    }));
     expect(events.find((event) => event.eventType === "email.attachment_ingestion_diagnostics")).toEqual(expect.objectContaining({
       metadataJson: expect.objectContaining({
         attachmentCandidatesDiscovered: 1,
@@ -391,6 +417,57 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
         metadataOnlyRowsCreated: 0,
       }),
     }));
+  });
+
+  test("pullLatestEmails records failed audit when attachment ingestion throws", async () => {
+    const { repo, storage, events } = serviceHarness();
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => [message({
+        subject: "654898 new po",
+        bodyText: "Please see attached PO.",
+        attachments: [{
+          filename: "654898 new po.pdf",
+          mimeType: "application/pdf",
+          size: 8,
+          attachmentId: "att_pull_latest",
+          contentDisposition: "attachment",
+        }],
+      })]),
+      downloadAttachment: jest.fn(async () => ({
+        buffer: Buffer.from("%PDF"),
+        mimeType: "application/pdf",
+        sizeBytes: 4,
+      })),
+    };
+    const service = new InboundEmailIngestionService(
+      pullLatestFreshRecordDbHarness(record) as any,
+      { gmail: adapter },
+      repo as any,
+      storage as any,
+    );
+    jest.spyOn(service as any, "ingestAttachments").mockRejectedValueOnce(new Error("Injected ingestion failure"));
+
+    const result = await service.pullLatestEmails({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      limit: 1,
+    });
+
+    expect(result.summary).toEqual({ created: 0, skippedDuplicates: 0, ignored: 0, failed: 1 });
+    expect(events.find((event) => event.eventType === "attachment_ingestion_call_started")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        candidateCount: 1,
+        providerMessageId: "gmail_msg_1",
+      }),
+    }));
+    expect(events.find((event) => event.eventType === "attachment_ingestion_call_failed")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        candidateCount: 1,
+        providerMessageId: "gmail_msg_1",
+        errorMessage: "Injected ingestion failure",
+      }),
+    }));
+    expect(events.find((event) => event.eventType === "attachment_ingestion_call_completed")).toBeUndefined();
   });
 
   test("unknown sender creates metadata-only pending_trust attachment", async () => {

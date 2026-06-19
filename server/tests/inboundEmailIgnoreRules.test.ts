@@ -324,7 +324,8 @@ describe("inbound email pull diagnostics service", () => {
         downloadAttempts: 0,
         storedFileRowsCreated: 0,
         metadataOnlyRowsCreated: 0,
-        skippedReason: "attachment_candidates_discovered_but_no_ingestion_event_recorded",
+        skippedReason: "ingestion_not_called",
+        ingestionCallStatus: "not_called",
       }),
     }));
     expect(result.subjectSearch.found).toBe(true);
@@ -381,7 +382,8 @@ describe("inbound email pull diagnostics service", () => {
       downloadAttempts: 0,
       storedFileRowsCreated: 0,
       metadataOnlyRowsCreated: 0,
-      skippedReason: "attachment_candidates_discovered_but_no_ingestion_event_recorded",
+      skippedReason: "ingestion_not_called",
+      ingestionCallStatus: "not_called",
     }));
   });
 
@@ -408,6 +410,26 @@ describe("inbound email pull diagnostics service", () => {
         recentFiles: [],
         recentFailedDiagnostics: [],
         recentPullDiagnostics: [{
+          inboundRecordId: "inbound_email_1",
+          eventType: "attachment_ingestion_call_started",
+          metadataJson: {
+            providerMessageId: "gmail_msg_654898",
+            subject: "654898 new po",
+            candidateCount: 2,
+            trustStatus: "untrusted",
+            attachmentPolicy: "pending_trust",
+          },
+        }, {
+          inboundRecordId: "inbound_email_1",
+          eventType: "attachment_ingestion_call_completed",
+          metadataJson: {
+            providerMessageId: "gmail_msg_654898",
+            subject: "654898 new po",
+            candidateCount: 2,
+            trustStatus: "untrusted",
+            attachmentPolicy: "pending_trust",
+          },
+        }, {
           inboundRecordId: "inbound_email_1",
           eventType: "email.attachment_ingestion_diagnostics",
           metadataJson: {
@@ -442,6 +464,143 @@ describe("inbound email pull diagnostics service", () => {
       attachmentCandidatesDiscovered: 2,
       attachmentPartsAttempted: 0,
       skippedReason: "pending_trust",
+      ingestionCallStatus: "completed",
+    }));
+  });
+
+  test("reports failed attachment ingestion calls with safe error text", async () => {
+    const service = new InboundOrderService(diagnosticRepository({
+      getEmailPullDiagnostics: jest.fn(async () => ({
+        mailboxes: [],
+        ignoreRules: [],
+        recentCreatedRecords: [{
+          id: "inbound_email_1",
+          status: "needs_review",
+          reviewOutcome: null,
+          subject: "654898 new po",
+          sourceMessageId: "gmail_msg_654898",
+          attachmentCount: 0,
+          rawAttachmentCount: 1,
+          rawAttachmentMetadata: [{ filename: "654898 new po.pdf", attachmentId: "att_654898_po" }],
+          bodyText: "Attached PO.",
+          bodyHtml: null,
+        }],
+        recentFiles: [],
+        recentFailedDiagnostics: [],
+        recentPullDiagnostics: [{
+          inboundRecordId: "inbound_email_1",
+          eventType: "attachment_ingestion_call_started",
+          metadataJson: {
+            providerMessageId: "gmail_msg_654898",
+            subject: "654898 new po",
+            candidateCount: 1,
+            trustStatus: "trusted_sender",
+            attachmentPolicy: "auto_download_allowed",
+          },
+        }, {
+          inboundRecordId: "inbound_email_1",
+          eventType: "attachment_ingestion_call_failed",
+          metadataJson: {
+            providerMessageId: "gmail_msg_654898",
+            subject: "654898 new po",
+            candidateCount: 1,
+            trustStatus: "trusted_sender",
+            attachmentPolicy: "auto_download_allowed",
+            errorMessage: "Injected ingestion failure",
+          },
+        }],
+        recentIgnoredDiagnostics: [],
+        subjectRecords: [],
+        subjectFiles: [],
+        subjectPullDiagnostics: [],
+      })),
+    }) as any);
+
+    const result = await service.getEmailPullDiagnostics({
+      organizationId: "org_1",
+      subject: "654898 new po",
+    });
+
+    expect(result.recentCreatedInboundRecords[0].attachmentPipelineDiagnostics).toEqual(expect.objectContaining({
+      attachmentCandidatesDiscovered: 1,
+      skippedReason: "attachment_ingestion_call_failed",
+      ingestionCallStatus: "failed",
+      ingestionCallError: "Injected ingestion failure",
+      ingestionCallEvents: expect.arrayContaining([
+        expect.objectContaining({ eventType: "attachment_ingestion_call_started" }),
+        expect.objectContaining({ eventType: "attachment_ingestion_call_failed" }),
+      ]),
+    }));
+  });
+
+  test("reports completed attachment ingestion call audits", async () => {
+    const service = new InboundOrderService(diagnosticRepository({
+      getEmailPullDiagnostics: jest.fn(async () => ({
+        mailboxes: [],
+        ignoreRules: [],
+        recentCreatedRecords: [{
+          id: "inbound_email_1",
+          status: "needs_review",
+          reviewOutcome: null,
+          subject: "654898 new po",
+          sourceMessageId: "gmail_msg_654898",
+          attachmentCount: 1,
+          rawAttachmentCount: 1,
+          rawAttachmentMetadata: [{ filename: "654898 new po.pdf", attachmentId: "att_654898_po" }],
+          bodyText: "Attached PO.",
+          bodyHtml: null,
+        }],
+        recentFiles: [],
+        recentFailedDiagnostics: [],
+        recentPullDiagnostics: [{
+          inboundRecordId: "inbound_email_1",
+          eventType: "attachment_ingestion_call_started",
+          metadataJson: {
+            providerMessageId: "gmail_msg_654898",
+            subject: "654898 new po",
+            candidateCount: 1,
+            trustStatus: "trusted_sender",
+            attachmentPolicy: "auto_download_allowed",
+          },
+        }, {
+          inboundRecordId: "inbound_email_1",
+          eventType: "attachment_ingestion_call_completed",
+          metadataJson: {
+            providerMessageId: "gmail_msg_654898",
+            subject: "654898 new po",
+            candidateCount: 1,
+            trustStatus: "trusted_sender",
+            attachmentPolicy: "auto_download_allowed",
+            diagnostics: {
+              attachmentPartsAttempted: 1,
+              attachmentRowsCreated: 1,
+              storedRowsCreated: 1,
+              metadataOnlyRowsCreated: 0,
+              downloadAttempts: 1,
+              downloadSuccesses: 1,
+              downloadFailures: 0,
+            },
+          },
+        }],
+        recentIgnoredDiagnostics: [],
+        subjectRecords: [],
+        subjectFiles: [],
+        subjectPullDiagnostics: [],
+      })),
+    }) as any);
+
+    const result = await service.getEmailPullDiagnostics({
+      organizationId: "org_1",
+      subject: "654898 new po",
+    });
+
+    expect(result.recentCreatedInboundRecords[0].attachmentPipelineDiagnostics).toEqual(expect.objectContaining({
+      attachmentCandidatesDiscovered: 1,
+      attachmentPartsAttempted: 1,
+      downloadAttempts: 1,
+      storedFileRowsCreated: 1,
+      ingestionCallStatus: "completed",
+      skippedReason: null,
     }));
   });
 
