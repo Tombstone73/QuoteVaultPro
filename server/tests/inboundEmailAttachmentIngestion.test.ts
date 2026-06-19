@@ -570,6 +570,131 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
   });
 
+  test("record trust sender and download processes pending attachments", async () => {
+    const { repo, storage, createdFiles } = serviceHarness();
+    repo.getRecord.mockResolvedValue({
+      ...record,
+      rawPayloadJson: {
+        provider: "gmail",
+        messageId: "gmail_msg_1",
+        mailbox: { id: "mailbox_1", emailAddress: "orders@example.com" },
+        sender: { name: "Buyer", email: "buyer@example.com" },
+        subject: "PO attached",
+      },
+    });
+    createdFiles.push({
+      ...record,
+      id: "file_pending",
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      inboundLineItemId: null,
+      fileRecordId: null,
+      sourceFilename: "pending-po.pdf",
+      role: "po",
+      mimeType: "application/pdf",
+      sizeBytes: 8,
+      checksum: null,
+      status: "uploaded",
+      providerAttachmentId: "att_pending",
+      providerMessageId: "gmail_msg_1",
+      contentDisposition: "attachment",
+      metadataJson: { attachmentState: "pending_trust" },
+      reviewNotes: "Pending trust",
+      createdQuoteAttachmentId: null,
+      createdOrderAttachmentId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const service = new InboundEmailIngestionService(mailboxDbHarness() as any, {
+      gmail: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+      },
+    }, repo as any, storage as any);
+
+    const result = await service.approveRecordTrustAction({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "trust_sender_and_download",
+    });
+
+    expect(repo.createEmailTrustRule).toHaveBeenCalledWith(expect.objectContaining({
+      ruleType: "sender_email_exact",
+      ruleValue: "buyer@example.com",
+      enabled: true,
+    }));
+    expect(result).toEqual(expect.objectContaining({
+      attempted: 1,
+      downloaded: 1,
+      metadataOnly: 0,
+    }));
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+  });
+
+  test("record trust and download keeps blocked file types blocked", async () => {
+    const { repo, storage, createdFiles } = serviceHarness();
+    repo.getRecord.mockResolvedValue({
+      ...record,
+      rawPayloadJson: {
+        provider: "gmail",
+        messageId: "gmail_msg_1",
+        mailbox: { id: "mailbox_1", emailAddress: "orders@example.com" },
+        sender: { name: "Buyer", email: "buyer@example.com" },
+        subject: "PO attached",
+      },
+    });
+    createdFiles.push({
+      ...record,
+      id: "file_blocked",
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      inboundLineItemId: null,
+      fileRecordId: null,
+      sourceFilename: "payload.exe",
+      role: "other",
+      mimeType: "application/x-msdownload",
+      sizeBytes: 8,
+      checksum: null,
+      status: "uploaded",
+      providerAttachmentId: "att_exe",
+      providerMessageId: "gmail_msg_1",
+      contentDisposition: "attachment",
+      metadataJson: { attachmentState: "pending_trust" },
+      reviewNotes: "Pending trust",
+      createdQuoteAttachmentId: null,
+      createdOrderAttachmentId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const service = new InboundEmailIngestionService(mailboxDbHarness() as any, {
+      gmail: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("MZ"), mimeType: "application/x-msdownload", sizeBytes: 2 })),
+      },
+    }, repo as any, storage as any);
+
+    const result = await service.approveRecordTrustAction({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "trust_sender_and_download",
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      attempted: 1,
+      downloaded: 0,
+      metadataOnly: 1,
+      blocked: 1,
+    }));
+    expect(storage.finalizeUpload).not.toHaveBeenCalled();
+    expect(createdFiles[0]).toEqual(expect.objectContaining({ status: "quarantined" }));
+    expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+      attachmentState: "blocked_file_type",
+      blockedFileType: true,
+    }));
+  });
+
   test("does not duplicate provider attachments already linked to the TEMP record", async () => {
     const { service, repo, storage } = serviceHarness();
     repo.findFileByProviderAttachment.mockResolvedValueOnce({ id: "existing_file", fileRecordId: "file_record_existing" } as any);
