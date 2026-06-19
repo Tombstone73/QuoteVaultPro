@@ -84,6 +84,7 @@ type InboundEmailListDiagnostics = {
 };
 
 type InboundEmailManualReprocessAction = "reprocess_email" | "backfill_attachments" | "rerun_trust_attachment_download";
+type InboundEmailEvidenceRefreshAction = InboundEmailManualReprocessAction | "initial_thread_ingestion" | "thread_message_appended";
 
 type InboundEmailManualReprocessResult = {
   action: InboundEmailManualReprocessAction;
@@ -1592,7 +1593,7 @@ export class InboundEmailIngestionService {
     record: InboundOrderRecord;
     baseMessage: InboundEmailProviderMessage;
     storedCandidates: InboundEmailAttachmentMetadata[];
-    action: InboundEmailManualReprocessAction;
+    action: InboundEmailEvidenceRefreshAction;
   }): Promise<InboundEmailProviderMessage[]> {
     const threadId = args.baseMessage.threadId;
     const messageId = args.baseMessage.messageId || args.record.sourceMessageId || args.record.sourceRecordId || "";
@@ -1655,7 +1656,7 @@ export class InboundEmailIngestionService {
     organizationId: string;
     actorUserId: string;
     record: InboundOrderRecord;
-    action: InboundEmailManualReprocessAction;
+    action: InboundEmailEvidenceRefreshAction;
     messages: InboundEmailProviderMessage[];
     threadId: string | null;
   }): Promise<InboundOrderRecord | null> {
@@ -1665,6 +1666,10 @@ export class InboundEmailIngestionService {
     const latestMessage = args.messages.reduce<InboundEmailProviderMessage | null>((latest, message) => {
       if (!latest) return message;
       return (message.receivedAt?.getTime() ?? 0) > (latest.receivedAt?.getTime() ?? 0) ? message : latest;
+    }, null);
+    const firstMessage = args.messages.reduce<InboundEmailProviderMessage | null>((first, message) => {
+      if (!first) return message;
+      return (message.receivedAt?.getTime() ?? 0) < (first.receivedAt?.getTime() ?? 0) ? message : first;
     }, null);
     const sourceMessageId = args.record.sourceMessageId ?? args.record.sourceRecordId ?? null;
     const primaryMessage = args.messages.find((message) => message.messageId === sourceMessageId) ?? latestMessage ?? args.messages[0] ?? null;
@@ -1689,7 +1694,13 @@ export class InboundEmailIngestionService {
     const threadSummary = {
       id: args.threadId,
       messageCount: args.messages.length,
+      firstMessageId: firstMessage?.messageId ?? null,
+      latestMessageId: latestMessage?.messageId ?? null,
+      firstMessageAt: firstMessage?.receivedAt ? firstMessage.receivedAt.toISOString() : null,
       latestActivityAt: latestMessage?.receivedAt ? latestMessage.receivedAt.toISOString() : null,
+      latestSenderName: latestMessage?.senderName ?? null,
+      latestSenderEmail: latestMessage?.senderEmail ?? null,
+      latestSubject: latestMessage?.subject ?? null,
       messages: args.messages.map((message) => ({
         messageId: message.messageId,
         threadId: message.threadId,
@@ -1772,13 +1783,20 @@ export class InboundEmailIngestionService {
       event: {
         actorUserId: args.actorUserId,
         actorType: "user",
-        eventType: "email.manual_reprocess_source_refreshed",
+        eventType: args.action === "initial_thread_ingestion" || args.action === "thread_message_appended"
+          ? "email.thread_source_refreshed"
+          : "email.manual_reprocess_source_refreshed",
         fromStatus: null,
         toStatus: args.record.status,
-        message: "Manual inbound email reprocess refreshed safe source evidence.",
+        message: args.action === "thread_message_appended"
+          ? "Inbound Gmail thread evidence refreshed from latest pull."
+          : args.action === "initial_thread_ingestion"
+            ? "Inbound Gmail thread evidence initialized from latest pull."
+            : "Manual inbound email reprocess refreshed safe source evidence.",
         metadataJson: {
           action: args.action,
           threadId: args.threadId,
+          latestMessageId: latestMessage?.messageId ?? null,
           threadMessagesInspected: args.messages.length,
           latestThreadActivity: threadSummary.latestActivityAt,
           attachmentCandidatesAcrossThread: combinedAttachments.length,
@@ -1957,6 +1975,9 @@ export class InboundEmailIngestionService {
     adapter: InboundEmailProviderAdapter,
   ): Promise<{ status: "created"; recordId: string } | { status: "skippedDuplicates" | "ignored"; recordId?: never }> {
     message = await this.messageWithRecoveredProviderAttachments(mailbox, message, adapter);
+    if (message.threadId && adapter.getThreadMessages) {
+      return this.processThreadMessage(organizationId, actorUserId, mailbox, source, message, adapter);
+    }
     const idempotencyKey = `${message.provider}:${message.messageId}`;
     const [existing] = await this.dbInstance
       .select({ id: inboundOrderRecords.id })
@@ -2152,6 +2173,476 @@ export class InboundEmailIngestionService {
       skippedReason: null,
     });
     return { status: "created", recordId: record.id };
+  }
+
+  private async processThreadMessage(
+    organizationId: string,
+    actorUserId: string,
+    mailbox: InboundEmailMailbox,
+    source: InboundOrderSource,
+    seedMessage: InboundEmailProviderMessage,
+    adapter: InboundEmailProviderAdapter,
+  ): Promise<{ status: "created"; recordId: string } | { status: "skippedDuplicates" | "ignored"; recordId?: never }> {
+    const threadId = seedMessage.threadId;
+    if (!threadId) return this.processMessage(organizationId, actorUserId, mailbox, source, seedMessage, { ...adapter, getThreadMessages: undefined });
+
+    const idempotencyKey = `${seedMessage.provider}:thread:${threadId}`;
+    const threadMessages = await this.resolveMessagesForInitialThread(mailbox, seedMessage, adapter);
+    const sortedMessages = threadMessages.slice().sort((a, b) => (
+      (a.receivedAt?.getTime() ?? 0) - (b.receivedAt?.getTime() ?? 0)
+    ));
+    const latestMessage = sortedMessages.reduce<InboundEmailProviderMessage | null>((latest, message) => {
+      if (!latest) return message;
+      return (message.receivedAt?.getTime() ?? 0) > (latest.receivedAt?.getTime() ?? 0) ? message : latest;
+    }, null) ?? seedMessage;
+    const firstMessage = sortedMessages[0] ?? seedMessage;
+
+    const [existing] = await this.dbInstance
+      .select({ id: inboundOrderRecords.id })
+      .from(inboundOrderRecords)
+      .where(and(
+        eq(inboundOrderRecords.organizationId, organizationId),
+        eq(inboundOrderRecords.sourceId, source.id),
+        eq(inboundOrderRecords.idempotencyKey, idempotencyKey),
+      ))
+      .limit(1);
+
+    if (existing) {
+      const [existingRecord] = await this.dbInstance
+        .select()
+        .from(inboundOrderRecords)
+        .where(and(
+          eq(inboundOrderRecords.organizationId, organizationId),
+          eq(inboundOrderRecords.id, existing.id),
+        ))
+        .limit(1);
+      if (existingRecord) {
+        const refreshedRecord = await this.refreshRecordSourceEvidenceFromMessages({
+          organizationId,
+          actorUserId,
+          record: existingRecord,
+          action: "thread_message_appended",
+          messages: sortedMessages,
+          threadId,
+        }) ?? existingRecord;
+        await this.ingestThreadAttachments({
+          organizationId,
+          actorUserId,
+          mailbox,
+          record: refreshedRecord,
+          messages: sortedMessages,
+          adapter,
+          skippedReason: "thread_message_attachment_backfill",
+        });
+      }
+      return { status: "skippedDuplicates" };
+    }
+
+    for (const candidate of sortedMessages) {
+      const matchedIgnoreRule = await this.findMatchedIgnoreRule(organizationId, candidate);
+      if (!matchedIgnoreRule) continue;
+      await this.inboundRepository.recordEmailIgnoreRuleMatch(matchedIgnoreRule.id);
+      console.info("[Inbound Email Pull] Ignored Gmail thread by rule", {
+        organizationId,
+        mailboxId: mailbox.id,
+        threadId,
+        messageId: candidate.messageId,
+        ruleId: matchedIgnoreRule.id,
+        ruleType: matchedIgnoreRule.ruleType,
+        ruleValue: matchedIgnoreRule.ruleValue,
+      });
+      return { status: "ignored" };
+    }
+
+    const combinedBodyText = sortedMessages
+      .map((message) => message.bodyText)
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join("\n\n--- Thread message ---\n\n");
+    const combinedBodyHtml = sortedMessages
+      .map((message) => message.bodyHtml)
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join("\n<hr />\n");
+    const combinedAttachments = sortedMessages.flatMap((message) => (
+      message.attachments.map((attachment) => ({
+        ...attachment,
+        providerMessageId: attachment.providerMessageId ?? message.messageId,
+      }))
+    ));
+    const classification = classifyInboundEmailForReview({
+      ...latestMessage,
+      bodyText: combinedBodyText || latestMessage.bodyText,
+      bodyHtml: combinedBodyHtml || latestMessage.bodyHtml,
+      attachments: combinedAttachments,
+    });
+    if (classification.ignored) return { status: "ignored" };
+
+    const receivedAt = firstMessage.receivedAt ?? latestMessage.receivedAt ?? new Date();
+    const sourceLabel = `TEMP_INBOUND email thread intake - ${classification.intent}`;
+    const provisionalRecord = {
+      id: "provisional_thread_record",
+      organizationId,
+      sourceId: source.id,
+      sourceType: "email",
+      sourceLabel,
+      sourceTrustLevel: "semi_trusted_email",
+      sourceRecordId: latestMessage.messageId,
+      sourceMessageId: latestMessage.messageId,
+      status: "needs_review",
+      reviewOutcome: null,
+      requiresHumanDecision: true,
+      reviewRequiredReason: `${classification.intent} email thread candidate needs staff review.`,
+      externalReference: truncate(latestMessage.subject ?? seedMessage.subject ?? "Gmail thread", 255),
+      idempotencyKey,
+      payloadHash: null,
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        provider: seedMessage.provider,
+        mailbox: {
+          id: mailbox.id,
+          name: mailbox.name,
+          emailAddress: mailbox.emailAddress,
+        },
+      },
+      normalizedPayloadJson: {},
+      extractedCustomerJson: {},
+      extractedOrderJson: {},
+      extractedShippingJson: {},
+      confidenceScore: null,
+      duplicateScore: null,
+      matchedCustomerId: null,
+      matchedContactId: null,
+      matchedQuoteId: null,
+      matchedOrderId: null,
+      createdQuoteId: null,
+      createdOrderId: null,
+      assignedToUserId: null,
+      submittedByUserId: null,
+      rejectedByUserId: null,
+      rejectionReason: null,
+      receivedAt,
+      parsedAt: null,
+      reviewStartedAt: null,
+      approvedAt: null,
+      submittedAt: null,
+      rejectedAt: null,
+      archivedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as InboundOrderRecord;
+    const evidence = this.buildThreadEvidenceForRecord({
+      record: provisionalRecord,
+      actorUserId,
+      action: "initial_thread_ingestion",
+      messages: sortedMessages,
+      threadId,
+    });
+
+    const [createdRecord] = await this.dbInstance.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(inboundOrderRecords)
+        .values({
+          organizationId,
+          sourceId: source.id,
+          sourceType: "email",
+          sourceLabel,
+          sourceTrustLevel: "semi_trusted_email",
+          sourceRecordId: latestMessage.messageId,
+          sourceMessageId: latestMessage.messageId,
+          status: "needs_review",
+          requiresHumanDecision: true,
+          reviewRequiredReason: `${classification.intent} email thread candidate needs staff review.`,
+          externalReference: truncate(latestMessage.subject ?? seedMessage.subject ?? "Gmail thread", 255),
+          idempotencyKey,
+          rawPayloadJson: evidence.patch.rawPayloadJson,
+          normalizedPayloadJson: evidence.patch.normalizedPayloadJson,
+          extractedCustomerJson: {
+            senderName: latestMessage.senderName,
+            senderEmail: latestMessage.senderEmail,
+          },
+          extractedOrderJson: evidence.patch.extractedOrderJson,
+          extractedShippingJson: {},
+          receivedAt,
+        })
+        .onConflictDoNothing({
+          target: [
+            inboundOrderRecords.organizationId,
+            inboundOrderRecords.sourceId,
+            inboundOrderRecords.idempotencyKey,
+          ],
+        })
+        .returning();
+
+      if (!created) return [null];
+
+      await tx.insert(inboundOrderEvents).values({
+        organizationId,
+        inboundRecordId: created.id,
+        actorUserId,
+        actorType: "user",
+        eventType: "email.thread_candidate_created",
+        fromStatus: null,
+        toStatus: "needs_review",
+        message: `Manual email pull created ${classification.intent} TEMP_INBOUND thread candidate.`,
+        metadataJson: {
+          phase: "inbound_orders_thread_container_ingestion",
+          provider: seedMessage.provider,
+          mailboxId: mailbox.id,
+          messageId: latestMessage.messageId,
+          threadId,
+          threadMessageCount: sortedMessages.length,
+          latestMessageId: latestMessage.messageId,
+          attachmentCandidatesAcrossThread: combinedAttachments.length,
+          intent: classification.intent,
+          createsQuote: false,
+          createsOrder: false,
+          releasesProduction: false,
+          createsProofs: false,
+          createsInvoices: false,
+          createsFulfillment: false,
+          createsPayments: false,
+        },
+      });
+      return [created as InboundOrderRecord | null];
+    });
+
+    if (!createdRecord) {
+      const [conflictedRecord] = await this.dbInstance
+        .select()
+        .from(inboundOrderRecords)
+        .where(and(
+          eq(inboundOrderRecords.organizationId, organizationId),
+          eq(inboundOrderRecords.sourceId, source.id),
+          eq(inboundOrderRecords.idempotencyKey, idempotencyKey),
+        ))
+        .limit(1);
+      if (conflictedRecord) {
+        const refreshedRecord = await this.refreshRecordSourceEvidenceFromMessages({
+          organizationId,
+          actorUserId,
+          record: conflictedRecord,
+          action: "thread_message_appended",
+          messages: sortedMessages,
+          threadId,
+        }) ?? conflictedRecord;
+        await this.ingestThreadAttachments({
+          organizationId,
+          actorUserId,
+          mailbox,
+          record: refreshedRecord,
+          messages: sortedMessages,
+          adapter,
+          skippedReason: "thread_message_attachment_backfill",
+        });
+      }
+      return { status: "skippedDuplicates" };
+    }
+
+    await this.ingestThreadAttachments({
+      organizationId,
+      actorUserId,
+      mailbox,
+      record: createdRecord,
+      messages: sortedMessages,
+      adapter,
+      skippedReason: null,
+    });
+    return { status: "created", recordId: createdRecord.id };
+  }
+
+  private async resolveMessagesForInitialThread(
+    mailbox: InboundEmailMailbox,
+    seedMessage: InboundEmailProviderMessage,
+    adapter: InboundEmailProviderAdapter,
+  ): Promise<InboundEmailProviderMessage[]> {
+    let messages: InboundEmailProviderMessage[] = [];
+    if (seedMessage.threadId && adapter.getThreadMessages) {
+      try {
+        messages = await adapter.getThreadMessages(mailbox, seedMessage.threadId);
+      } catch (error) {
+        console.warn("[Inbound Email Pull] Failed to fetch Gmail thread; falling back to listed message", {
+          mailboxId: mailbox.id,
+          threadId: seedMessage.threadId,
+          messageId: seedMessage.messageId,
+          error: error instanceof Error ? error.message : "Unknown Gmail thread fetch error.",
+        });
+      }
+    }
+    if (messages.length === 0) messages = [seedMessage];
+    const recovered = await Promise.all(messages.map((message) => (
+      this.messageWithRecoveredProviderAttachments(mailbox, message, adapter)
+    )));
+    const byMessageId = new Map<string, InboundEmailProviderMessage>();
+    for (const message of recovered) {
+      if (!message.messageId) continue;
+      byMessageId.set(message.messageId, {
+        ...message,
+        attachments: message.attachments.map((attachment) => ({
+          ...attachment,
+          providerMessageId: attachment.providerMessageId ?? message.messageId,
+        })),
+      });
+    }
+    return Array.from(byMessageId.values());
+  }
+
+  private buildThreadEvidenceForRecord(args: {
+    record: InboundOrderRecord;
+    actorUserId: string;
+    action: InboundEmailEvidenceRefreshAction;
+    messages: InboundEmailProviderMessage[];
+    threadId: string | null;
+  }): {
+    patch: Pick<InboundOrderRecord, "rawPayloadJson" | "normalizedPayloadJson" | "extractedOrderJson">;
+  } {
+    const raw = isRecord(args.record.rawPayloadJson) ? args.record.rawPayloadJson : {};
+    const normalized = isRecord(args.record.normalizedPayloadJson) ? args.record.normalizedPayloadJson : {};
+    const extractedOrder = isRecord(args.record.extractedOrderJson) ? args.record.extractedOrderJson : {};
+    const latestMessage = args.messages.reduce<InboundEmailProviderMessage | null>((latest, message) => {
+      if (!latest) return message;
+      return (message.receivedAt?.getTime() ?? 0) > (latest.receivedAt?.getTime() ?? 0) ? message : latest;
+    }, null);
+    const firstMessage = args.messages.reduce<InboundEmailProviderMessage | null>((first, message) => {
+      if (!first) return message;
+      return (message.receivedAt?.getTime() ?? 0) < (first.receivedAt?.getTime() ?? 0) ? message : first;
+    }, null);
+    const sourceMessageId = args.record.sourceMessageId ?? args.record.sourceRecordId ?? null;
+    const primaryMessage = args.messages.find((message) => message.messageId === sourceMessageId) ?? latestMessage ?? args.messages[0] ?? null;
+    const combinedBodyText = args.messages
+      .map((message) => message.bodyText)
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join("\n\n--- Thread message ---\n\n");
+    const combinedBodyHtml = args.messages
+      .map((message) => message.bodyHtml)
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join("\n<hr />\n");
+    const combinedAttachments = args.messages.flatMap((message) => (
+      message.attachments.map((attachment) => ({
+        ...attachment,
+        providerMessageId: attachment.providerMessageId ?? message.messageId,
+        messageId: message.messageId,
+        messageSubject: message.subject,
+        messageSenderEmail: message.senderEmail,
+        messageReceivedAt: message.receivedAt ? message.receivedAt.toISOString() : null,
+      }))
+    ));
+    const threadSummary = {
+      id: args.threadId,
+      messageCount: args.messages.length,
+      firstMessageId: firstMessage?.messageId ?? null,
+      latestMessageId: latestMessage?.messageId ?? null,
+      firstMessageAt: firstMessage?.receivedAt ? firstMessage.receivedAt.toISOString() : null,
+      latestActivityAt: latestMessage?.receivedAt ? latestMessage.receivedAt.toISOString() : null,
+      latestSenderName: latestMessage?.senderName ?? null,
+      latestSenderEmail: latestMessage?.senderEmail ?? null,
+      latestSubject: latestMessage?.subject ?? null,
+      messages: args.messages.map((message) => ({
+        messageId: message.messageId,
+        threadId: message.threadId,
+        subject: message.subject,
+        senderName: message.senderName,
+        senderEmail: message.senderEmail,
+        receivedAt: message.receivedAt ? message.receivedAt.toISOString() : null,
+        attachmentCount: message.attachments.length,
+        attachmentFilenames: message.attachments.map((attachment) => attachment.filename).filter(Boolean),
+      })),
+    };
+    const classification = primaryMessage
+      ? classifyInboundEmailForReview({
+          ...primaryMessage,
+          bodyText: combinedBodyText || primaryMessage.bodyText,
+          bodyHtml: combinedBodyHtml || primaryMessage.bodyHtml,
+          attachments: combinedAttachments,
+        })
+      : null;
+    return {
+      patch: {
+        rawPayloadJson: {
+          ...raw,
+          provider: primaryMessage?.provider ?? raw.provider ?? "gmail",
+          mailbox: isRecord(raw.mailbox) ? raw.mailbox : raw.mailbox,
+          messageId: primaryMessage?.messageId ?? raw.messageId ?? args.record.sourceMessageId,
+          threadId: args.threadId ?? raw.threadId ?? null,
+          sender: {
+            ...(isRecord(raw.sender) ? raw.sender : {}),
+            name: primaryMessage?.senderName ?? getPathValue(raw, "sender.name") ?? null,
+            email: primaryMessage?.senderEmail ?? getPathValue(raw, "sender.email") ?? null,
+          },
+          subject: primaryMessage?.subject ?? raw.subject ?? args.record.externalReference,
+          receivedAt: primaryMessage?.receivedAt ? primaryMessage.receivedAt.toISOString() : raw.receivedAt ?? null,
+          bodyText: combinedBodyText || primaryMessage?.bodyText || raw.bodyText || null,
+          bodyHtml: combinedBodyHtml || primaryMessage?.bodyHtml || raw.bodyHtml || null,
+          attachments: combinedAttachments,
+          thread: threadSummary,
+          lastManualReprocess: args.action === "reprocess_email" || args.action === "backfill_attachments" || args.action === "rerun_trust_attachment_download"
+            ? {
+                action: args.action,
+                at: new Date().toISOString(),
+                actorUserId: args.actorUserId,
+              }
+            : raw.lastManualReprocess ?? null,
+        },
+        normalizedPayloadJson: {
+          ...normalized,
+          source: {
+            ...(isRecord(normalized.source) ? normalized.source : {}),
+            type: "email",
+            provider: primaryMessage?.provider ?? getPathValue(normalized, "source.provider") ?? "gmail",
+            messageId: primaryMessage?.messageId ?? getPathValue(normalized, "source.messageId") ?? args.record.sourceMessageId,
+            threadId: args.threadId ?? getPathValue(normalized, "source.threadId") ?? null,
+          },
+          inboundIntent: classification?.intent ?? normalized.inboundIntent ?? null,
+          inboundIntentReason: classification?.reason ?? normalized.inboundIntentReason ?? null,
+          sender: {
+            ...(isRecord(normalized.sender) ? normalized.sender : {}),
+            name: primaryMessage?.senderName ?? getPathValue(normalized, "sender.name") ?? null,
+            email: primaryMessage?.senderEmail ?? getPathValue(normalized, "sender.email") ?? null,
+          },
+          subject: primaryMessage?.subject ?? normalized.subject ?? args.record.externalReference,
+          bodyText: combinedBodyText || primaryMessage?.bodyText || normalized.bodyText || null,
+          bodyHtml: combinedBodyHtml || primaryMessage?.bodyHtml || normalized.bodyHtml || null,
+          attachments: combinedAttachments,
+          thread: threadSummary,
+        },
+        extractedOrderJson: {
+          ...extractedOrder,
+          inboundIntent: classification?.intent ?? extractedOrder.inboundIntent ?? null,
+          inboundIntentReason: classification?.reason ?? extractedOrder.inboundIntentReason ?? null,
+          subject: primaryMessage?.subject ?? extractedOrder.subject ?? args.record.externalReference,
+          bodyText: combinedBodyText || primaryMessage?.bodyText || extractedOrder.bodyText || null,
+          attachments: combinedAttachments,
+        },
+      },
+    };
+  }
+
+  private async ingestThreadAttachments(args: {
+    organizationId: string;
+    actorUserId: string;
+    mailbox: InboundEmailMailbox;
+    record: InboundOrderRecord;
+    messages: InboundEmailProviderMessage[];
+    adapter: InboundEmailProviderAdapter;
+    skippedReason: string | null;
+  }): Promise<AttachmentIngestionDiagnostics[]> {
+    const diagnostics: AttachmentIngestionDiagnostics[] = [];
+    for (const message of args.messages) {
+      diagnostics.push(await this.ingestAttachmentsWithCallAudit({
+        organizationId: args.organizationId,
+        actorUserId: args.actorUserId,
+        mailbox: args.mailbox,
+        message: {
+          ...message,
+          attachments: message.attachments.map((attachment) => ({
+            ...attachment,
+            providerMessageId: attachment.providerMessageId ?? message.messageId,
+          })),
+        },
+        record: this.recordWithoutStoredAttachmentCandidates(args.record),
+        adapter: args.adapter,
+        skippedReason: args.skippedReason,
+      }));
+    }
+    return diagnostics;
   }
 
   private async backfillDuplicateAttachmentsIfNeeded(args: {

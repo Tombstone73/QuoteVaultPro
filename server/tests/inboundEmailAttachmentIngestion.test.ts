@@ -219,6 +219,53 @@ function insertConflictDbHarness(existingRecord: InboundOrderRecord) {
   };
 }
 
+function threadCreateDbHarness(createdRecord: InboundOrderRecord) {
+  const insertedRecords: any[] = [];
+  const insertedEvents: any[] = [];
+  const select = jest.fn(() => ({
+    from: jest.fn(() => ({
+      where: jest.fn(() => ({
+        limit: jest.fn(async () => []),
+      })),
+    })),
+  }));
+  const tx = {
+    insert: jest.fn(() => ({
+      values: jest.fn((values: any) => {
+        if (values?.idempotencyKey) insertedRecords.push(values);
+        else insertedEvents.push(values);
+        return {
+          onConflictDoNothing: jest.fn(() => ({
+            returning: jest.fn(async () => [createdRecord]),
+          })),
+          then: (resolve: (value: unknown) => void) => resolve(undefined),
+        };
+      }),
+    })),
+  };
+  return {
+    select,
+    transaction: jest.fn(async (callback: any) => callback(tx)),
+    insertedRecords,
+    insertedEvents,
+  };
+}
+
+function threadExistingDbHarness(existingRecord: InboundOrderRecord) {
+  let selectCount = 0;
+  const select = jest.fn(() => ({
+    from: jest.fn(() => ({
+      where: jest.fn(() => ({
+        limit: jest.fn(async () => {
+          selectCount += 1;
+          return selectCount === 1 ? [{ id: existingRecord.id }] : [existingRecord];
+        }),
+      })),
+    })),
+  }));
+  return { select };
+}
+
 function mailboxDbHarness() {
   return {
     select: jest.fn(() => ({
@@ -1373,6 +1420,193 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
         storedRowsCreated: 1,
         metadataOnlyRowsCreated: 0,
       }),
+    }));
+  });
+
+  test("first Gmail thread message creates one thread container and ingests all thread attachments", async () => {
+    const { repo, storage, createdFiles } = serviceHarness();
+    const createdThreadRecord = {
+      ...record,
+      id: "thread_record_1",
+      sourceRecordId: "gmail_msg_2",
+      sourceMessageId: "gmail_msg_2",
+      idempotencyKey: "gmail:thread:thread_1",
+      rawPayloadJson: {
+        thread: {
+          id: "thread_1",
+          messageCount: 2,
+        },
+      },
+    };
+    const dbHarness = threadCreateDbHarness(createdThreadRecord);
+    const service = new InboundEmailIngestionService(dbHarness as any, {}, repo as any, storage as any);
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => []),
+      getThreadMessages: jest.fn(async () => [
+        message({
+          messageId: "gmail_msg_1",
+          threadId: "thread_1",
+          subject: "Quote request",
+          receivedAt: new Date("2026-06-17T12:00:00.000Z"),
+          attachments: [{
+            filename: "quote-spec.pdf",
+            mimeType: "application/pdf",
+            size: 4,
+            attachmentId: "att_quote",
+          }],
+        }),
+        message({
+          messageId: "gmail_msg_2",
+          threadId: "thread_1",
+          subject: "Re: Quote request - PO",
+          receivedAt: new Date("2026-06-18T12:00:00.000Z"),
+          attachments: [{
+            filename: "po.pdf",
+            mimeType: "application/pdf",
+            size: 5,
+            attachmentId: "att_po",
+          }],
+        }),
+      ]),
+      downloadAttachment: jest.fn(async (_mailbox: any, _message: any, attachment: any) => ({
+        buffer: Buffer.from("%PDF"),
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.size,
+      })),
+    };
+
+    const outcome = await (service as any).processMessage(
+      "org_1",
+      "user_1",
+      mailbox,
+      { id: "source_1" },
+      message({ messageId: "gmail_msg_1", threadId: "thread_1", subject: "Quote request" }),
+      adapter,
+    );
+
+    expect(outcome).toEqual({ status: "created", recordId: "thread_record_1" });
+    expect(adapter.getThreadMessages).toHaveBeenCalledWith(mailbox, "thread_1");
+    expect(dbHarness.insertedRecords[0]).toEqual(expect.objectContaining({
+      idempotencyKey: "gmail:thread:thread_1",
+      sourceRecordId: "gmail_msg_2",
+      sourceMessageId: "gmail_msg_2",
+      externalReference: "Re: Quote request - PO",
+    }));
+    expect(dbHarness.insertedRecords[0].rawPayloadJson).toEqual(expect.objectContaining({
+      threadId: "thread_1",
+      thread: expect.objectContaining({
+        id: "thread_1",
+        messageCount: 2,
+        firstMessageId: "gmail_msg_1",
+        latestMessageId: "gmail_msg_2",
+        latestActivityAt: "2026-06-18T12:00:00.000Z",
+      }),
+    }));
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(2);
+    expect(createdFiles.map((file) => [file.providerMessageId, file.providerAttachmentId])).toEqual([
+      ["gmail_msg_1", "att_quote"],
+      ["gmail_msg_2", "att_po"],
+    ]);
+  });
+
+  test("second Gmail message in same thread refreshes existing container without creating another record", async () => {
+    const { repo, storage, createdFiles } = serviceHarness();
+    repo.listFiles.mockResolvedValue([]);
+    const existingThreadRecord = {
+      ...record,
+      id: "thread_record_1",
+      idempotencyKey: "gmail:thread:thread_1",
+      rawPayloadJson: {
+        messageId: "gmail_msg_1",
+        threadId: "thread_1",
+        sender: { email: "buyer@example.com" },
+        thread: { id: "thread_1", messageCount: 1 },
+      },
+      normalizedPayloadJson: {
+        source: { messageId: "gmail_msg_1", threadId: "thread_1" },
+      },
+    };
+    repo.updateRecordWithEvent.mockResolvedValueOnce({
+      record: {
+        ...existingThreadRecord,
+        rawPayloadJson: {
+          ...existingThreadRecord.rawPayloadJson,
+          thread: {
+            id: "thread_1",
+            messageCount: 2,
+            latestMessageId: "gmail_msg_2",
+            latestActivityAt: "2026-06-18T12:00:00.000Z",
+          },
+        },
+      },
+      event: { id: "event_thread_refresh" },
+    });
+    const dbHarness = threadExistingDbHarness(existingThreadRecord);
+    const service = new InboundEmailIngestionService(dbHarness as any, {}, repo as any, storage as any);
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => []),
+      getThreadMessages: jest.fn(async () => [
+        message({
+          messageId: "gmail_msg_1",
+          threadId: "thread_1",
+          receivedAt: new Date("2026-06-17T12:00:00.000Z"),
+          attachments: [],
+        }),
+        message({
+          messageId: "gmail_msg_2",
+          threadId: "thread_1",
+          subject: "Re: Quote request - artwork",
+          receivedAt: new Date("2026-06-18T12:00:00.000Z"),
+          attachments: [{
+            filename: "art.png",
+            mimeType: "image/png",
+            size: 8,
+            attachmentId: "att_art",
+          }],
+        }),
+      ]),
+      downloadAttachment: jest.fn(async (_mailbox: any, _message: any, attachment: any) => ({
+        buffer: Buffer.from("PNG"),
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.size,
+      })),
+    };
+
+    const outcome = await (service as any).processMessage(
+      "org_1",
+      "user_1",
+      mailbox,
+      { id: "source_1" },
+      message({ messageId: "gmail_msg_2", threadId: "thread_1", subject: "Re: Quote request - artwork" }),
+      adapter,
+    );
+
+    expect(outcome).toEqual({ status: "skippedDuplicates" });
+    expect(repo.updateRecordWithEvent).toHaveBeenCalledWith(expect.objectContaining({
+      inboundRecordId: "thread_record_1",
+      patch: expect.objectContaining({
+        rawPayloadJson: expect.objectContaining({
+          thread: expect.objectContaining({
+            messageCount: 2,
+            latestMessageId: "gmail_msg_2",
+            latestActivityAt: "2026-06-18T12:00:00.000Z",
+          }),
+        }),
+      }),
+      event: expect.objectContaining({
+        eventType: "email.thread_source_refreshed",
+        metadataJson: expect.objectContaining({
+          action: "thread_message_appended",
+          threadMessagesInspected: 2,
+          attachmentCandidatesAcrossThread: 1,
+        }),
+      }),
+    }));
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      inboundRecordId: "thread_record_1",
+      providerMessageId: "gmail_msg_2",
+      providerAttachmentId: "att_art",
     }));
   });
 

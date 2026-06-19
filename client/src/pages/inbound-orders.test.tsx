@@ -1007,6 +1007,24 @@ describe("InboundOrdersPage", () => {
           id: "thread_1",
           messageCount: 2,
           latestActivityAt: "2026-06-19T14:00:00.000Z",
+          messages: [
+            {
+              messageId: "gmail_msg_1",
+              subject: "Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26",
+              senderName: "Shawn Fears",
+              senderEmail: "shawn@brainstormprint.com",
+              receivedAt: "2026-06-19T13:00:00.000Z",
+              attachmentCount: 1,
+            },
+            {
+              messageId: "gmail_msg_2",
+              subject: "Re: Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26",
+              senderName: "Shawn Fears",
+              senderEmail: "shawn@brainstormprint.com",
+              receivedAt: "2026-06-19T14:00:00.000Z",
+              attachmentCount: 1,
+            },
+          ],
         },
       },
       normalizedPayloadJson: {
@@ -1074,7 +1092,10 @@ describe("InboundOrdersPage", () => {
     renderPage();
 
     await waitForText("Backfill Attachments");
+    await waitForText("Thread: 2 messages");
     await waitForText("Thread messages: 2");
+    await waitForText("Thread Timeline");
+    await waitForText("Message 2");
     const backfillButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Backfill Attachments")) as HTMLButtonElement;
     await act(async () => {
