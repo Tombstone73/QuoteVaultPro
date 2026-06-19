@@ -641,6 +641,45 @@ function groupFilesByThreadMessage(files: ClientInboundOrderFile[], thread: Reco
   return groups.length > 0 ? groups : [{ key: "attachments", label: "Attachments", detail: null, files }];
 }
 
+function ThreadTimeline({ thread, compact = false }: { thread: Record<string, unknown> | null | undefined; compact?: boolean }) {
+  const messages = threadMessagesFromEvidence(thread);
+  if (messages.length === 0) return null;
+  return (
+    <section className={compact ? "rounded-md border border-border bg-card p-2" : "rounded-md border border-border p-3"}>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-foreground">Thread Timeline</h3>
+        <Badge variant="outline">{messages.length}</Badge>
+      </div>
+      <div className="space-y-1.5">
+        {messages.map((message, index) => {
+          const messageId = stringFromUnknown(message.messageId) ?? `message_${index + 1}`;
+          const subject = stringFromUnknown(message.subject) || `Message ${index + 1}`;
+          const sender = [stringFromUnknown(message.senderName), stringFromUnknown(message.senderEmail)]
+            .filter(Boolean)
+            .join(" / ");
+          const receivedAt = stringFromUnknown(message.receivedAt);
+          const attachmentCount = typeof message.attachmentCount === "number" ? message.attachmentCount : 0;
+          return (
+            <div key={messageId} className="rounded-md border border-border bg-muted/20 px-2 py-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0 text-sm font-medium text-foreground">
+                  <span className="mr-1 text-xs text-muted-foreground">Message {index + 1}</span>
+                  <span className="break-words">{subject}</span>
+                </div>
+                <Badge variant="outline">{attachmentCount} attachments</Badge>
+              </div>
+              <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                {sender && <span>{sender}</span>}
+                {receivedAt && <span>{formatTimestamp(receivedAt)}</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function artworkLinkKey(link: Pick<InboundOrderArtworkLink, "fileId" | "fileRecordId">): string {
   return link.fileRecordId ? `record:${link.fileRecordId}` : `file:${link.fileId}`;
 }
@@ -1327,7 +1366,13 @@ function InboundQueuePanel({
     <div className="h-full min-w-0 max-w-full overflow-y-auto overflow-x-hidden">
       <div className="box-border w-full min-w-0 max-w-full space-y-2 overflow-x-hidden p-3">
         {records.map((record) => {
-          const evidence = getManualInboundEvidence(record);
+          const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
+          const thread = record.sourceType === "email" ? (evidence as ReturnType<typeof getInboundEmailEvidence>).thread : null;
+          const threadMessageCount = typeof thread?.messageCount === "number" ? thread.messageCount : null;
+          const latestThreadActivity = stringFromUnknown(thread?.latestActivityAt);
+          const latestThreadSender = [stringFromUnknown(thread?.latestSenderName), stringFromUnknown(thread?.latestSenderEmail)]
+            .filter(Boolean)
+            .join(" / ");
           return (
             <div
               key={record.id}
@@ -1357,6 +1402,13 @@ function InboundQueuePanel({
                   <div className="min-w-0 flex-1 overflow-hidden">
                     <div className="block max-w-full truncate text-sm font-semibold text-foreground">{getRecordTitle(record)}</div>
                     <div className="mt-1 block max-w-full truncate text-xs text-muted-foreground">{getSenderLabel(record)}</div>
+                    {threadMessageCount != null && (
+                      <div className="mt-1 block max-w-full truncate text-xs text-muted-foreground">
+                        Thread: {threadMessageCount} messages
+                        {latestThreadSender ? ` / latest ${latestThreadSender}` : ""}
+                        {latestThreadActivity ? ` / ${formatRelative(latestThreadActivity)}` : ""}
+                      </div>
+                    )}
                     {record.sourceType === "email" && (
                       <div className="mt-2 flex max-w-full flex-wrap gap-1">
                         <button
@@ -1734,6 +1786,8 @@ function SourceEvidencePanel({
           )}
         </section>
 
+        {record.sourceType === "email" && <ThreadTimeline thread={threadEvidence} />}
+
         <section className="rounded-md border border-border p-3">
           <div className="mb-3 flex items-center gap-2">
             <FileText className="h-4 w-4 text-muted-foreground" />
@@ -2003,6 +2057,8 @@ function OperationalEmailPanel({
             </Alert>
           )}
         </section>
+
+        <ThreadTimeline thread={evidence.thread} compact />
 
         <section className="rounded-md border border-border bg-card p-2">
           <div className="mb-2 flex items-center justify-between gap-3">
