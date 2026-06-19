@@ -54,6 +54,9 @@ import {
   type InboundOrdersListResponse,
   type InboundOrderStatusGroup,
   type InboundOrderQueueSummary,
+  type InboundOrderRecordWithTrust,
+  type InboundSenderTrustStatus,
+  type InboundAttachmentDownloadPolicy,
   type InboundOrderConvertToOrderResponse,
   type InboundOrderProductOptionsResponse,
   type InboundProductSearchResponse,
@@ -66,13 +69,12 @@ import {
 import type { LineItemOptionSelectionsV2 } from "@shared/optionTreeV2";
 import { getMissingInboundPbv2RequiredOptions } from "@shared/inboundOrderPbv2Options";
 import type {
-  InboundOrderRecord,
   InboundOrderRecordStatus,
   InboundOrderSourceType,
 } from "@shared/schema";
 
 type ClientInboundOrderRecord = Omit<
-  InboundOrderRecord,
+  InboundOrderRecordWithTrust,
   "receivedAt" | "submittedAt" | "createdAt" | "updatedAt" | "rejectedAt"
 > & {
   receivedAt: string;
@@ -121,6 +123,8 @@ type InboundContactSearchResponse = {
 
 type QueueStatusFilter = "all" | InboundOrderStatusGroup;
 type InboundQueueCleanupAction =
+  | "trust_sender"
+  | "trust_domain"
   | "ignore_once"
   | "ignore_sender"
   | "ignore_domain"
@@ -132,6 +136,7 @@ type InboundQueueCleanupAction =
 type QueueFilters = {
   statusGroup: QueueStatusFilter;
   sourceType: "all" | InboundOrderSourceType;
+  trustFilter: "all" | "trusted" | "untrusted" | "unknown" | "pending_attachment_trust";
   hasWarnings: boolean;
   unconvertedOnly: boolean;
   search: string;
@@ -142,6 +147,7 @@ type InboundReviewWorkspaceMode = "operational" | "debug";
 const defaultQueueFilters: QueueFilters = {
   statusGroup: "active",
   sourceType: "all",
+  trustFilter: "all",
   hasWarnings: false,
   unconvertedOnly: true,
   search: "",
@@ -194,6 +200,43 @@ const sourceTypeOptions: Array<{ value: QueueFilters["sourceType"]; label: strin
   { value: "edi", label: "EDI" },
 ];
 
+const trustFilterOptions: Array<{ value: QueueFilters["trustFilter"]; label: string }> = [
+  { value: "all", label: "All trust statuses" },
+  { value: "trusted", label: "Trusted" },
+  { value: "untrusted", label: "Untrusted" },
+  { value: "unknown", label: "Unknown" },
+  { value: "pending_attachment_trust", label: "Pending attachment trust" },
+];
+
+const senderTrustLabels: Record<InboundSenderTrustStatus, string> = {
+  trusted_sender: "Trusted Sender",
+  trusted_domain: "Trusted Domain",
+  trusted_contact: "Trusted Contact",
+  trusted_customer_domain: "Trusted Customer Domain",
+  untrusted: "Untrusted",
+  unknown: "Unknown",
+};
+
+const attachmentPolicyLabels: Record<InboundAttachmentDownloadPolicy, string> = {
+  auto_download_allowed: "Auto-download",
+  pending_trust: "Pending Trust",
+  blocked_file_type_only: "Blocked Type",
+  no_attachments: "No Attachments",
+};
+
+function getSenderTrustBadgeVariant(status: InboundSenderTrustStatus): "default" | "secondary" | "outline" | "destructive" {
+  if (status === "untrusted") return "destructive";
+  if (status === "unknown") return "outline";
+  return "secondary";
+}
+
+function getAttachmentPolicyBadgeVariant(policy: InboundAttachmentDownloadPolicy): "default" | "secondary" | "outline" | "destructive" {
+  if (policy === "pending_trust") return "destructive";
+  if (policy === "blocked_file_type_only") return "outline";
+  if (policy === "no_attachments") return "outline";
+  return "secondary";
+}
+
 function buildInboundOrderListUrl(filters: QueueFilters) {
   const params = new URLSearchParams();
   params.set("limit", "50");
@@ -201,6 +244,7 @@ function buildInboundOrderListUrl(filters: QueueFilters) {
 
   if (filters.statusGroup !== "all") params.set("statusGroup", filters.statusGroup);
   if (filters.sourceType !== "all") params.set("sourceType", filters.sourceType);
+  if (filters.trustFilter !== "all") params.set("trustFilter", filters.trustFilter);
   if (filters.hasWarnings) params.set("hasWarnings", "true");
   if (filters.unconvertedOnly && filters.statusGroup !== "converted" && filters.statusGroup !== "ignored") params.set("converted", "false");
   if (filters.search.trim()) params.set("search", filters.search.trim());
@@ -1006,6 +1050,17 @@ function QueueTriageControls({
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>
+        <select
+          className="h-8 min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
+          value={filters.trustFilter}
+          onChange={(event) => setFilter({ trustFilter: event.target.value as QueueFilters["trustFilter"] })}
+          disabled={isLoading}
+          aria-label="Sender trust filter"
+        >
+          {trustFilterOptions.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
         <label className="flex min-h-8 min-w-0 max-w-full items-center gap-2 rounded-md border border-input px-2 py-1 text-xs text-foreground">
           <input
             type="checkbox"
@@ -1213,6 +1268,16 @@ function InboundQueuePanel({
                   <div className="min-w-0 flex-1 overflow-hidden">
                     <div className="block max-w-full truncate text-sm font-semibold text-foreground">{getRecordTitle(record)}</div>
                     <div className="mt-1 block max-w-full truncate text-xs text-muted-foreground">{getSenderLabel(record)}</div>
+                    {record.sourceType === "email" && (
+                      <div className="mt-2 flex max-w-full flex-wrap gap-1">
+                        <Badge variant={getSenderTrustBadgeVariant(record.senderTrustStatus)} className="max-w-full truncate">
+                          {senderTrustLabels[record.senderTrustStatus]}
+                        </Badge>
+                        <Badge variant={getAttachmentPolicyBadgeVariant(record.attachmentDownloadPolicy)} className="max-w-full truncate">
+                          {attachmentPolicyLabels[record.attachmentDownloadPolicy]}
+                        </Badge>
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="shrink-0">
@@ -1300,6 +1365,10 @@ function SourceEvidencePanel({
     item.type === "PDF_ATTACHMENT" || item.type === "TEXT_ATTACHMENT"
   ));
   const evidenceConflicts = draftPreview?.draft?.evidence?.conflicts ?? [];
+  const emailFiles = detail?.files ?? [];
+  const showPendingTrustNotice = record.sourceType === "email"
+    && record.attachmentDownloadPolicy === "pending_trust"
+    && emailFiles.length > 0;
 
   return (
     <ScrollArea className="h-full">
@@ -1394,6 +1463,34 @@ function SourceEvidencePanel({
               </Button>
             </div>
           </div>
+          {record.sourceType === "email" && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs">
+              <Badge variant={getSenderTrustBadgeVariant(record.senderTrustStatus)}>
+                {senderTrustLabels[record.senderTrustStatus]}
+              </Badge>
+              <Badge variant={getAttachmentPolicyBadgeVariant(record.attachmentDownloadPolicy)}>
+                {attachmentPolicyLabels[record.attachmentDownloadPolicy]}
+              </Badge>
+              {record.trustReason && <span className="min-w-0 flex-1 text-muted-foreground">{record.trustReason}</span>}
+            </div>
+          )}
+          {showPendingTrustNotice && (
+            <Alert className="mt-3 border-amber-200 bg-amber-50 text-amber-950">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>Attachments are waiting for trust approval.</AlertTitle>
+              <AlertDescription>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span>Use the attachment actions below to download once, or trust the sender first.</span>
+                  <Button type="button" size="sm" variant="outline" onClick={() => onQueueAction("trust_sender")} disabled={isCleaningUp}>
+                    Trust Sender
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => onQueueAction("trust_domain")} disabled={isCleaningUp}>
+                    Trust Domain
+                  </Button>
+                </div>
+              </AlertDescription>
+            </Alert>
+          )}
           <div className="mt-4 grid grid-cols-2 gap-3">
             <DetailField label="Reference" value={evidence.reference} />
             <DetailField label="Sender" value={getSenderLabel(record)} />
@@ -3962,7 +4059,7 @@ export default function InboundOrdersPage() {
   });
 
   const ignoreInboundOrderMutation = useMutation({
-    mutationFn: ({ recordId, action, note }: { recordId: string; action: Exclude<InboundQueueCleanupAction, "delete" | "reject">; note: string | null }) => (
+    mutationFn: ({ recordId, action, note }: { recordId: string; action: Exclude<InboundQueueCleanupAction, "trust_sender" | "trust_domain" | "delete" | "reject">; note: string | null }) => (
       postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/ignore`, { action, note })
     ),
     onSuccess: async (response, variables) => {
@@ -4017,6 +4114,7 @@ export default function InboundOrdersPage() {
     onSuccess: async (response) => {
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] });
       setSelectedQueueRecordIds(new Set());
       if (response.data.errors.length > 0) {
         toast({
@@ -4096,6 +4194,25 @@ export default function InboundOrdersPage() {
 
   const runQueueCleanupAction = (action: InboundQueueCleanupAction) => {
     if (!selectedId || selectedRecordIsTerminal) return;
+    if (action === "trust_sender" || action === "trust_domain") {
+      const selected = selectedRecord;
+      const evidence = selected ? getManualInboundEvidence(selected) : null;
+      const email = evidence?.senderEmail?.trim().toLowerCase() ?? "";
+      const domain = email.split("@")[1]?.trim().toLowerCase() ?? "";
+      const value = action === "trust_sender" ? email : domain;
+      if (!value) {
+        toast({
+          title: "No sender value",
+          description: action === "trust_sender" ? "This record has no sender email to trust." : "This record has no sender domain to trust.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const confirmed = window.confirm(`Trust ${value}? Future emails from this ${action === "trust_sender" ? "sender" : "domain"} may auto-download allowed attachments. No attachments will download immediately.`);
+      if (!confirmed) return;
+      bulkQueueActionMutation.mutate({ recordIds: [selectedId], action, note: null });
+      return;
+    }
     const note = window.prompt("Optional note for this queue cleanup action:");
     if (note === null) return;
     const cleanNote = trimToNull(note);
@@ -4124,9 +4241,38 @@ export default function InboundOrdersPage() {
     });
   };
 
+  const allVisibleQueueRecordsSelected = records.length > 0 && records.every((record) => selectedQueueRecordIds.has(record.id));
+  const toggleAllVisibleQueueRecordsSelected = (selected: boolean) => {
+    setSelectedQueueRecordIds((current) => {
+      const next = new Set(current);
+      for (const record of records) {
+        if (selected) next.add(record.id);
+        else next.delete(record.id);
+      }
+      return next;
+    });
+  };
+
   const runBulkQueueAction = (action: InboundQueueCleanupAction) => {
     const recordIds = Array.from(selectedQueueRecordIds);
     if (recordIds.length === 0 || bulkQueueActionMutation.isPending) return;
+    if (action === "trust_sender" || action === "trust_domain") {
+      const selectedRecords = records.filter((record) => selectedQueueRecordIds.has(record.id));
+      const values = new Set<string>();
+      for (const record of selectedRecords) {
+        const evidence = getManualInboundEvidence(record);
+        const email = evidence.senderEmail?.trim().toLowerCase() ?? "";
+        const domain = email.split("@")[1]?.trim().toLowerCase() ?? "";
+        const value = action === "trust_sender" ? email : domain;
+        if (value) values.add(value);
+      }
+      const label = action === "trust_sender" ? "sender email" : "sender domain";
+      const summary = Array.from(values).slice(0, 8).join(", ");
+      const confirmed = window.confirm(
+        `Trust ${values.size} ${label}${values.size === 1 ? "" : "s"} from ${recordIds.length} selected record(s)? Future emails from these ${label}${values.size === 1 ? "" : "s"} may auto-download allowed attachments. No attachments will download immediately.\n\n${summary}${values.size > 8 ? ", ..." : ""}`,
+      );
+      if (!confirmed) return;
+    }
     const note = window.prompt(`Optional note for ${recordIds.length} selected inbound record(s):`);
     if (note === null) return;
     const cleanNote = trimToNull(note);
@@ -4428,10 +4574,42 @@ export default function InboundOrdersPage() {
                   isLoading={listQuery.isFetching}
                   onChange={setQueueFilters}
                 />
+                {records.length > 0 && (
+                  <div className="border-b border-border bg-background px-3 py-2">
+                    <label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        checked={allVisibleQueueRecordsSelected}
+                        onChange={(event) => toggleAllVisibleQueueRecordsSelected(event.target.checked)}
+                        aria-label="Select all filtered inbound records"
+                      />
+                      Select all filtered records
+                      <Badge variant="outline">{records.length}</Badge>
+                    </label>
+                  </div>
+                )}
                 {selectedQueueRecordIds.size > 0 && (
                   <div className="border-b border-border bg-muted/30 p-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant="secondary">{selectedQueueRecordIds.size} selected</Badge>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={bulkQueueActionMutation.isPending}
+                        onClick={() => runBulkQueueAction("trust_sender")}
+                      >
+                        Trust Sender
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={bulkQueueActionMutation.isPending}
+                        onClick={() => runBulkQueueAction("trust_domain")}
+                      >
+                        Trust Domain
+                      </Button>
                       <Button
                         type="button"
                         size="sm"

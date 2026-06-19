@@ -36,6 +36,7 @@ export const inboundOrderStatusGroupSchema = z.enum([
 export const inboundOrderListQuerySchema = z.object({
   status: inboundOrderRecordStatusSchema.optional(),
   statusGroup: inboundOrderStatusGroupSchema.optional(),
+  trustFilter: z.enum(["all", "trusted", "untrusted", "unknown", "pending_attachment_trust"]).optional(),
   reviewOutcome: z.string().trim().min(1).max(100).optional(),
   sourceType: inboundOrderSourceTypeSchema.optional(),
   sourceId: z.string().trim().min(1).optional(),
@@ -112,6 +113,8 @@ export const inboundOrderIgnoreActionSchema = z.object({
 export const inboundOrderBulkActionSchema = z.object({
   recordIds: z.array(z.string().trim().min(1)).min(1).max(100),
   action: z.enum([
+    "trust_sender",
+    "trust_domain",
     "ignore_once",
     "ignore_sender",
     "ignore_domain",
@@ -642,6 +645,31 @@ export type InboundOrderQueueSummary = {
   withWarnings: number;
 };
 
+export type InboundSenderTrustStatus =
+  | "trusted_sender"
+  | "trusted_domain"
+  | "trusted_contact"
+  | "trusted_customer_domain"
+  | "untrusted"
+  | "unknown";
+
+export type InboundAttachmentDownloadPolicy =
+  | "auto_download_allowed"
+  | "pending_trust"
+  | "blocked_file_type_only"
+  | "no_attachments";
+
+export type InboundSenderTrustSummary = {
+  senderTrustStatus: InboundSenderTrustStatus;
+  matchedTrustRuleId: string | null;
+  trustRuleType: InboundEmailTrustRuleTypeValue | null;
+  trustReason: string | null;
+  canAutoDownloadAttachments: boolean;
+  attachmentDownloadPolicy: InboundAttachmentDownloadPolicy;
+};
+
+export type InboundOrderRecordWithTrust = InboundOrderRecord & InboundSenderTrustSummary;
+
 export type InboundEmailIgnoreRuleDto = Omit<InboundEmailIgnoreRule, "createdAt" | "updatedAt" | "lastMatchedAt"> & {
   createdAt: string;
   updatedAt: string;
@@ -728,7 +756,7 @@ export type InboundQuoteActivityProjection = {
 };
 
 export type InboundOrderDetail = {
-  record: InboundOrderRecord;
+  record: InboundOrderRecordWithTrust;
   source: InboundOrderSource | null;
   lineItems: InboundOrderLineItem[];
   files: InboundOrderFile[];
@@ -745,7 +773,7 @@ export type InboundOrderDetail = {
 
 export type InboundOrdersListResponse = {
   success: true;
-  data: InboundOrderRecord[];
+  data: InboundOrderRecordWithTrust[];
   summary: InboundOrderQueueSummary;
   pagination: {
     limit: number;

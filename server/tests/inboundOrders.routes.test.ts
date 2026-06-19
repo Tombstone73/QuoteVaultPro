@@ -445,6 +445,7 @@ describe("inbound order routes", () => {
     resolveWarning: jest.fn(),
     resolveDecisionFlag: jest.fn(),
     convertInboundReviewDraftToOrder: jest.fn<(...args: any[]) => Promise<any>>(),
+    applyBulkQueueAction: jest.fn<(...args: any[]) => Promise<any>>(),
     createQuoteDraftFromInbound: jest.fn(),
     getReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
     saveReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -1158,7 +1159,7 @@ describe("inbound order routes", () => {
     });
 
     const response = await request(buildApp(service, { orgId: "org_2" }))
-      .get("/api/inbound-orders?statusGroup=needs_review&sourceType=manual&search=banners");
+      .get("/api/inbound-orders?statusGroup=needs_review&sourceType=manual&trustFilter=pending_attachment_trust&search=banners");
 
     expect(response.status).toBe(200);
     expect(response.body.data).toHaveLength(1);
@@ -1168,6 +1169,7 @@ describe("inbound order routes", () => {
       filters: expect.objectContaining({
         statusGroup: "needs_review",
         sourceType: "manual",
+        trustFilter: "pending_attachment_trust",
         search: "banners",
       }),
     });
@@ -1238,6 +1240,33 @@ describe("inbound order routes", () => {
       note: "Spam",
     });
     expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+  });
+
+  test("bulk trusts selected sender emails without creating downstream records", async () => {
+    service.applyBulkQueueAction.mockResolvedValue({
+      updatedIds: ["inbound_1", "inbound_2"],
+      errors: [],
+    });
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/bulk-action")
+      .send({
+        recordIds: ["inbound_1", "inbound_2"],
+        action: "trust_sender",
+        note: "Known senders",
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.updatedIds).toEqual(["inbound_1", "inbound_2"]);
+    expect(service.applyBulkQueueAction).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      recordIds: ["inbound_1", "inbound_2"],
+      action: "trust_sender",
+      note: "Known senders",
+    });
+    expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+    expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
   });
 
   test("searches customers and all contacts for review selectors", async () => {

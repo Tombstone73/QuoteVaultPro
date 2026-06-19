@@ -244,9 +244,18 @@ describe("inbound email attachment classification", () => {
   });
 });
 
+function diagnosticRepository(overrides: Record<string, any>) {
+  return {
+    listEnabledEmailTrustRules: jest.fn(async () => []),
+    senderEmailMatchesCustomerContact: jest.fn(async () => false),
+    senderDomainMatchesCustomerDomain: jest.fn(async () => false),
+    ...overrides,
+  };
+}
+
 describe("inbound email pull diagnostics service", () => {
   test("reports zero-file email records with raw attachment indicators and body hints", async () => {
-    const service = new InboundOrderService({
+    const service = new InboundOrderService(diagnosticRepository({
       getEmailPullDiagnostics: jest.fn(async () => ({
         mailboxes: [],
         ignoreRules: [],
@@ -288,7 +297,7 @@ describe("inbound email pull diagnostics service", () => {
         subjectFiles: [],
         subjectPullDiagnostics: [],
       })),
-    } as any);
+    }) as any);
 
     const result = await service.getEmailPullDiagnostics({
       organizationId: "org_1",
@@ -324,7 +333,7 @@ describe("inbound email pull diagnostics service", () => {
   });
 
   test("uses only attachment ingestion diagnostics events for pipeline attempt counters", async () => {
-    const service = new InboundOrderService({
+    const service = new InboundOrderService(diagnosticRepository({
       getEmailPullDiagnostics: jest.fn(async () => ({
         mailboxes: [],
         ignoreRules: [],
@@ -358,7 +367,7 @@ describe("inbound email pull diagnostics service", () => {
         subjectFiles: [],
         subjectPullDiagnostics: [],
       })),
-    } as any);
+    }) as any);
 
     const result = await service.getEmailPullDiagnostics({
       organizationId: "org_1",
@@ -377,7 +386,7 @@ describe("inbound email pull diagnostics service", () => {
   });
 
   test("reports an explicit reason when candidates exist without processing attempts", async () => {
-    const service = new InboundOrderService({
+    const service = new InboundOrderService(diagnosticRepository({
       getEmailPullDiagnostics: jest.fn(async () => ({
         mailboxes: [],
         ignoreRules: [],
@@ -409,6 +418,12 @@ describe("inbound email pull diagnostics service", () => {
             downloadAttempts: 0,
             storedRowsCreated: 0,
             metadataOnlyRowsCreated: 0,
+            safetyDecisions: [{
+              filename: "654898 new po.pdf",
+              attachmentState: "pending_trust",
+              downloadAllowed: false,
+              reason: "Sender is not trusted. Attachment metadata captured pending staff trust decision.",
+            }],
           },
         }],
         recentIgnoredDiagnostics: [],
@@ -416,7 +431,7 @@ describe("inbound email pull diagnostics service", () => {
         subjectFiles: [],
         subjectPullDiagnostics: [],
       })),
-    } as any);
+    }) as any);
 
     const result = await service.getEmailPullDiagnostics({
       organizationId: "org_1",
@@ -426,12 +441,12 @@ describe("inbound email pull diagnostics service", () => {
     expect(result.recentCreatedInboundRecords[0].attachmentPipelineDiagnostics).toEqual(expect.objectContaining({
       attachmentCandidatesDiscovered: 2,
       attachmentPartsAttempted: 0,
-      skippedReason: "attachment_candidates_discovered_but_not_processed",
+      skippedReason: "pending_trust",
     }));
   });
 
   test("uses subject-specific attachment diagnostics events for searched records", async () => {
-    const service = new InboundOrderService({
+    const service = new InboundOrderService(diagnosticRepository({
       getEmailPullDiagnostics: jest.fn(async () => ({
         mailboxes: [],
         ignoreRules: [],
@@ -473,7 +488,7 @@ describe("inbound email pull diagnostics service", () => {
           },
         }],
       })),
-    } as any);
+    }) as any);
 
     const result = await service.getEmailPullDiagnostics({
       organizationId: "org_1",
