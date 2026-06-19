@@ -1,10 +1,13 @@
 import { z } from "zod";
 import {
   inboundEmailIgnoreRuleTypeSchema,
+  inboundEmailTrustRuleTypeSchema,
   inboundOrderRecordStatusSchema,
   inboundOrderSourceTypeSchema,
   type InboundEmailIgnoreRule,
   type InboundEmailIgnoreRuleType,
+  type InboundEmailTrustRule,
+  type InboundEmailTrustRuleType,
   type InboundOrderParseAttempt,
   type InboundOrderDecisionFlag,
   type InboundOrderEvent,
@@ -74,6 +77,25 @@ export const inboundEmailIgnoreRuleUpdateSchema = z.object({
   ruleValue: z.string().trim().min(1).max(500).optional(),
   enabled: z.boolean().optional(),
   notes: z.string().trim().max(2000).optional().nullable(),
+});
+
+export const inboundEmailTrustRuleCreateSchema = z.object({
+  ruleType: inboundEmailTrustRuleTypeSchema,
+  ruleValue: z.string().trim().min(1).max(500),
+  notes: z.string().trim().max(2000).optional().nullable(),
+  enabled: z.boolean().optional(),
+});
+
+export const inboundEmailTrustRuleUpdateSchema = z.object({
+  ruleType: inboundEmailTrustRuleTypeSchema.optional(),
+  ruleValue: z.string().trim().min(1).max(500).optional(),
+  enabled: z.boolean().optional(),
+  notes: z.string().trim().max(2000).optional().nullable(),
+});
+
+export const inboundAttachmentTrustActionSchema = z.object({
+  action: z.enum(["trust_sender_and_download", "trust_domain_and_download", "download_once", "keep_blocked"]),
+  note: z.string().trim().max(2000).optional().nullable(),
 });
 
 export const inboundOrderIgnoreActionSchema = z.object({
@@ -638,9 +660,31 @@ export type InboundEmailIgnoreRuleMutationResponse = {
   data: InboundEmailIgnoreRuleDto;
 };
 
+export type InboundEmailTrustRuleDto = Omit<InboundEmailTrustRule, "createdAt" | "updatedAt" | "lastMatchedAt"> & {
+  createdAt: string;
+  updatedAt: string;
+  lastMatchedAt: string | null;
+};
+
+export type InboundEmailTrustRuleListResponse = {
+  success: true;
+  data: {
+    rules: InboundEmailTrustRuleDto[];
+  };
+};
+
+export type InboundEmailTrustRuleMutationResponse = {
+  success: true;
+  data: InboundEmailTrustRuleDto;
+};
+
 export type InboundEmailIgnoreRuleCreateRequest = z.infer<typeof inboundEmailIgnoreRuleCreateSchema>;
 export type InboundEmailIgnoreRuleUpdateRequest = z.infer<typeof inboundEmailIgnoreRuleUpdateSchema>;
 export type InboundEmailIgnoreRuleTypeValue = InboundEmailIgnoreRuleType;
+export type InboundEmailTrustRuleCreateRequest = z.infer<typeof inboundEmailTrustRuleCreateSchema>;
+export type InboundEmailTrustRuleUpdateRequest = z.infer<typeof inboundEmailTrustRuleUpdateSchema>;
+export type InboundEmailTrustRuleTypeValue = InboundEmailTrustRuleType;
+export type InboundAttachmentTrustActionRequest = z.infer<typeof inboundAttachmentTrustActionSchema>;
 export type InboundOrderIgnoreActionRequest = z.infer<typeof inboundOrderIgnoreActionSchema>;
 export type InboundOrderBulkActionRequest = z.infer<typeof inboundOrderBulkActionSchema>;
 

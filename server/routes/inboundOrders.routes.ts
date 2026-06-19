@@ -17,6 +17,9 @@ import { fromZodError } from "zod-validation-error";
 import {
   inboundEmailIgnoreRuleCreateSchema,
   inboundEmailIgnoreRuleUpdateSchema,
+  inboundEmailTrustRuleCreateSchema,
+  inboundEmailTrustRuleUpdateSchema,
+  inboundAttachmentTrustActionSchema,
   inboundOrderBulkActionSchema,
   inboundOrderIgnoreActionSchema,
   inboundOrderListQuerySchema,
@@ -25,7 +28,7 @@ import {
   manualInboundOrderCreateSchema,
   normalizeInboundOrderStatusForStorage,
 } from "@shared/inboundOrdersApi";
-import type { InboundEmailIgnoreRule } from "@shared/schema";
+import type { InboundEmailIgnoreRule, InboundEmailTrustRule } from "@shared/schema";
 import { inboundEmailMailboxViewSchema } from "@shared/inboundEmailMailboxes";
 import {
   InboundOrderConversionValidationError,
@@ -163,6 +166,15 @@ const inboundEmailIgnoreRuleParamsSchema = z.object({
   id: z.string().trim().min(1),
 });
 
+const inboundEmailTrustRuleParamsSchema = z.object({
+  id: z.string().trim().min(1),
+});
+
+const inboundAttachmentParamsSchema = z.object({
+  id: z.string().trim().min(1),
+  fileId: z.string().trim().min(1),
+});
+
 const inboundGmailStartQuerySchema = z.object({
   reconnectMailboxId: z.string().trim().min(1).optional(),
 });
@@ -256,6 +268,15 @@ function assertOwnerOrAdmin(req: any, res: any): boolean {
 }
 
 function formatInboundEmailIgnoreRule(rule: InboundEmailIgnoreRule) {
+  return {
+    ...rule,
+    createdAt: rule.createdAt.toISOString(),
+    updatedAt: rule.updatedAt.toISOString(),
+    lastMatchedAt: rule.lastMatchedAt ? rule.lastMatchedAt.toISOString() : null,
+  };
+}
+
+function formatInboundEmailTrustRule(rule: InboundEmailTrustRule) {
   return {
     ...rule,
     createdAt: rule.createdAt.toISOString(),
@@ -502,6 +523,108 @@ export function registerInboundOrderRoutes(
       }
       console.error("Error deleting inbound email ignore rule:", error);
       res.status(500).json({ success: false, message: "Failed to delete inbound email ignore rule" });
+    }
+  });
+
+  app.get("/api/inbound-orders/email/trust-rules", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const rules = (await service.listEmailTrustRules({ organizationId })).map(formatInboundEmailTrustRule);
+      res.json({ success: true, data: { rules } });
+    } catch (error) {
+      console.error("Error listing inbound email trust rules:", error);
+      res.status(500).json({ success: false, message: "Failed to list inbound email trust rules" });
+    }
+  });
+
+  app.post("/api/inbound-orders/email/trust-rules", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      if (!assertOwnerOrAdmin(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: "User ID not found" });
+
+      const input = inboundEmailTrustRuleCreateSchema.parse(req.body ?? {});
+      const rule = await service.createEmailTrustRule({
+        organizationId,
+        actorUserId,
+        ruleType: input.ruleType,
+        ruleValue: input.ruleValue,
+        notes: input.notes ?? null,
+        enabled: input.enabled,
+      });
+      res.status(201).json({ success: true, data: formatInboundEmailTrustRule(rule) });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ success: false, message: error.message });
+      }
+      console.error("Error creating inbound email trust rule:", error);
+      res.status(500).json({ success: false, message: "Failed to create inbound email trust rule" });
+    }
+  });
+
+  app.patch("/api/inbound-orders/email/trust-rules/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      if (!assertOwnerOrAdmin(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { id } = inboundEmailTrustRuleParamsSchema.parse(req.params);
+      const input = inboundEmailTrustRuleUpdateSchema.parse(req.body ?? {});
+      const rule = await service.updateEmailTrustRule({
+        organizationId,
+        id,
+        ruleType: input.ruleType,
+        ruleValue: input.ruleValue,
+        enabled: input.enabled,
+        notes: input.notes,
+      });
+      res.json({ success: true, data: formatInboundEmailTrustRule(rule) });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ success: false, message: error.message });
+      }
+      console.error("Error updating inbound email trust rule:", error);
+      res.status(500).json({ success: false, message: "Failed to update inbound email trust rule" });
+    }
+  });
+
+  app.delete("/api/inbound-orders/email/trust-rules/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      if (!assertOwnerOrAdmin(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { id } = inboundEmailTrustRuleParamsSchema.parse(req.params);
+      const rule = await service.deleteEmailTrustRule({ organizationId, id });
+      res.json({ success: true, data: formatInboundEmailTrustRule(rule) });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ success: false, message: error.message });
+      }
+      console.error("Error deleting inbound email trust rule:", error);
+      res.status(500).json({ success: false, message: "Failed to delete inbound email trust rule" });
     }
   });
 
@@ -869,6 +992,39 @@ export function registerInboundOrderRoutes(
     }
   });
 
+  app.post("/api/inbound-orders/:id/files/:fileId/trust-action", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: "User ID not found" });
+
+      const params = inboundAttachmentParamsSchema.parse(req.params);
+      const input = inboundAttachmentTrustActionSchema.parse(req.body ?? {});
+      const file = await emailIngestionService.approveAttachmentTrustAction({
+        organizationId,
+        actorUserId,
+        inboundRecordId: params.id,
+        fileId: params.fileId,
+        action: input.action,
+        note: input.note ?? null,
+      });
+      res.json({ success: true, data: file });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      if (error instanceof InboundEmailIngestionError) {
+        return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+      }
+      console.error("Error applying inbound attachment trust action:", error);
+      res.status(500).json({ success: false, message: "Failed to apply inbound attachment trust action" });
+    }
+  });
+
   app.get("/api/inbound-orders/:id/files/:fileId/download", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -885,6 +1041,9 @@ export function registerInboundOrderRoutes(
       const file = detail.files.find((candidate) => candidate.id === String(req.params.fileId));
       if (!file) return res.status(404).json({ message: "Inbound attachment not found" });
       if (!file.fileRecordId) return res.status(404).json({ message: "Inbound attachment file is not stored" });
+      if (file.status === "quarantined" || file.status === "rejected") {
+        return res.status(409).json({ message: "Inbound attachment is not available for download." });
+      }
 
       const resolved = await canonicalFileReadResolver.resolveOriginal(file.fileRecordId);
       if (resolved.status !== "available" || !resolved.providerConfigId) {

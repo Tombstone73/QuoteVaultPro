@@ -552,6 +552,74 @@ function inboundAttachmentRoleLabel(role: string | null | undefined) {
   return "Other attachment";
 }
 
+function attachmentSafetyMetadata(file: ClientInboundOrderFile): Record<string, any> {
+  return file.metadataJson && typeof file.metadataJson === "object" && !Array.isArray(file.metadataJson)
+    ? file.metadataJson as Record<string, any>
+    : {};
+}
+
+function AttachmentSafetyDetails({
+  recordId,
+  file,
+}: {
+  recordId: string;
+  file: ClientInboundOrderFile;
+}) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const metadata = attachmentSafetyMetadata(file);
+  const attachmentState = metadata.attachmentState ?? (file.fileRecordId ? "downloaded" : "metadata_only");
+  const trustStatus = metadata.senderTrustStatus ?? "unknown";
+  const reason = metadata.attachmentSafetyReason ?? metadata.failureReason ?? file.reviewNotes ?? null;
+  const canAct = !file.fileRecordId && String(attachmentState) !== "blocked_file_type";
+  const actionMutation = useMutation({
+    mutationFn: (action: "trust_sender_and_download" | "trust_domain_and_download" | "download_once" | "keep_blocked") => (
+      postJson<{ success: boolean; data: ClientInboundOrderFile }>(
+        `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(file.id)}/trust-action`,
+        { action },
+      )
+    ),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] }),
+      ]);
+      toast({ title: "Attachment action applied", description: "The inbound attachment safety state was updated." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Attachment action failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <div className="mt-2 space-y-2">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <Badge variant="outline">State: {titleCase(String(attachmentState))}</Badge>
+        <Badge variant={trustStatus === "trusted" ? "secondary" : "outline"}>Sender: {titleCase(String(trustStatus))}</Badge>
+        {metadata.attachmentExtension ? <Badge variant="outline">.{String(metadata.attachmentExtension)}</Badge> : null}
+        {metadata.blockedFileType ? <Badge variant="destructive">Blocked type</Badge> : null}
+      </div>
+      {reason ? <div className="text-xs text-muted-foreground">{String(reason)}</div> : null}
+      {canAct ? (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={actionMutation.isPending} onClick={() => actionMutation.mutate("trust_sender_and_download")}>
+            Trust sender and download
+          </Button>
+          <Button type="button" size="sm" variant="outline" disabled={actionMutation.isPending} onClick={() => actionMutation.mutate("trust_domain_and_download")}>
+            Trust domain and download
+          </Button>
+          <Button type="button" size="sm" variant="ghost" disabled={actionMutation.isPending} onClick={() => actionMutation.mutate("download_once")}>
+            Download once
+          </Button>
+          <Button type="button" size="sm" variant="ghost" disabled={actionMutation.isPending} onClick={() => actionMutation.mutate("keep_blocked")}>
+            Keep blocked
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function getRecordTitle(record: ClientInboundOrderRecord) {
   const evidence = getManualInboundEvidence(record);
   return evidence.reference || evidence.subject || record.externalReference || `Inbound ${record.id.slice(0, 8)}`;
@@ -1403,7 +1471,7 @@ function SourceEvidencePanel({
             ) : (
               (detail?.files ?? []).map((file) => {
                 const extracted = attachmentEvidence.find((item) => item.sourceId === file.id);
-                const downloadUrl = file.fileRecordId
+                const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
                   ? `/api/inbound-orders/${encodeURIComponent(record.id)}/files/${encodeURIComponent(file.id)}/download`
                   : null;
                 return (
@@ -1432,6 +1500,7 @@ function SourceEvidencePanel({
                         {file.reviewNotes && (
                           <div className="mt-1 text-xs text-muted-foreground">{file.reviewNotes}</div>
                         )}
+                        <AttachmentSafetyDetails recordId={record.id} file={file} />
                       </div>
                       <div className="flex shrink-0 flex-wrap justify-end gap-2">
                         {extracted ? (
@@ -1638,7 +1707,7 @@ function OperationalEmailPanel({
               <div className="text-sm text-muted-foreground">No attachments linked to this inbound record.</div>
             ) : (
               files.map((file) => {
-                const downloadUrl = file.fileRecordId
+                const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
                   ? `/api/inbound-orders/${encodeURIComponent(record.id)}/files/${encodeURIComponent(file.id)}/download`
                   : null;
                 return (
@@ -1657,6 +1726,7 @@ function OperationalEmailPanel({
                       {file.reviewNotes && (
                         <div className="mt-1 text-xs text-muted-foreground">{file.reviewNotes}</div>
                       )}
+                      <AttachmentSafetyDetails recordId={record.id} file={file} />
                     </div>
                     {downloadUrl && (
                       <div className="flex shrink-0 gap-2">
@@ -2842,7 +2912,7 @@ function DraftBuilderPanel({
                       {group.files.length === 0 ? (
                         <div className="text-xs text-muted-foreground">None</div>
                       ) : group.files.map((file) => {
-                        const downloadUrl = file.fileRecordId && selectedRecord
+                        const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected" && selectedRecord
                           ? `/api/inbound-orders/${encodeURIComponent(selectedRecord.id)}/files/${encodeURIComponent(file.id)}/download`
                           : null;
                         return (

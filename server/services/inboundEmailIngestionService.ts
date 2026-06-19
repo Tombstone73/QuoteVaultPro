@@ -9,6 +9,9 @@ import {
   inboundOrderSources,
   type InboundEmailIgnoreRule,
   type InboundEmailMailbox,
+  type InboundEmailTrustRule,
+  type InboundEmailTrustRuleType,
+  type InboundOrderFile,
   type InboundOrderRecord,
   type InboundOrderSource,
 } from "@shared/schema";
@@ -136,7 +139,71 @@ type AttachmentIngestionDiagnostics = {
   skippedExistingProviderAttachments: number;
   skippedReason: string | null;
   failures: Array<Record<string, unknown>>;
+  safetyDecisions?: Array<Record<string, unknown>>;
 };
+
+type InboundAttachmentState =
+  | "metadata_only"
+  | "pending_trust"
+  | "blocked_file_type"
+  | "download_pending"
+  | "downloaded"
+  | "scan_pending"
+  | "scan_passed"
+  | "scan_failed"
+  | "quarantined"
+  | "download_failed";
+
+type SenderTrustDecision = {
+  trusted: boolean;
+  senderEmail: string | null;
+  senderDomain: string | null;
+  trustSource: InboundEmailTrustRuleType | "none";
+  ruleId: string | null;
+  reason: string;
+};
+
+type AttachmentSafetyDecision = {
+  extension: string | null;
+  blocked: boolean;
+  allowedForAutoDownload: boolean;
+  zipFile: boolean;
+  downloadAllowed: boolean;
+  attachmentState: InboundAttachmentState;
+  reason: string;
+};
+
+const BLOCKED_INBOUND_ATTACHMENT_EXTENSIONS = new Set([
+  "exe",
+  "bat",
+  "cmd",
+  "scr",
+  "js",
+  "vbs",
+  "ps1",
+  "msi",
+  "dll",
+  "jar",
+  "com",
+  "reg",
+  "iso",
+  "lnk",
+  "html",
+  "htm",
+]);
+
+const ALLOWED_INBOUND_ATTACHMENT_EXTENSIONS = new Set([
+  "pdf",
+  "ai",
+  "eps",
+  "svg",
+  "tif",
+  "tiff",
+  "jpg",
+  "jpeg",
+  "png",
+  "zip",
+]);
 
 export interface InboundEmailProviderAdapter {
   listRecentMessages(mailbox: InboundEmailMailbox, limit: number): Promise<InboundEmailProviderMessage[]>;
@@ -287,6 +354,27 @@ function normalizeAttachmentFileName(value: string | null | undefined): string {
 function getExtension(value: string | null | undefined): string {
   const match = String(value ?? "").toLowerCase().match(/\.([a-z0-9]+)$/i);
   return match?.[1] ?? "";
+}
+
+function attachmentExtension(attachment: Pick<InboundEmailAttachmentMetadata, "filename" | "mimeType">): string | null {
+  const filenameExtension = getExtension(attachment.filename);
+  const extension = filenameExtension || extensionFromMimeType(attachment.mimeType);
+  return extension && extension !== "bin" ? extension : null;
+}
+
+function senderEmailFromMessage(message: Pick<InboundEmailProviderMessage, "senderEmail">): string | null {
+  const email = String(message.senderEmail ?? "").trim().toLowerCase();
+  return email && email.includes("@") ? email : null;
+}
+
+function senderDomainFromMessage(message: Pick<InboundEmailProviderMessage, "senderEmail">): string | null {
+  const email = senderEmailFromMessage(message);
+  const domain = email?.split("@")[1]?.trim().toLowerCase();
+  return domain || null;
+}
+
+function attachmentMetadataProviderMessageId(file: InboundOrderFile, fallback: string): string {
+  return file.providerMessageId || stringFromUnknown((file.metadataJson as Record<string, unknown> | null)?.providerMessageId) || fallback;
 }
 
 function extensionFromMimeType(mimeType: string | null | undefined): string {
@@ -852,6 +940,177 @@ export class InboundEmailIngestionService {
     return diagnostics;
   }
 
+  async approveAttachmentTrustAction(args: {
+    organizationId: string;
+    actorUserId: string;
+    inboundRecordId: string;
+    fileId: string;
+    action: "trust_sender_and_download" | "trust_domain_and_download" | "download_once" | "keep_blocked";
+    note?: string | null;
+  }): Promise<InboundOrderFile> {
+    const record = await this.inboundRepository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) throw new InboundEmailIngestionError("INBOUND_RECORD_NOT_FOUND", "Inbound order record not found.", 404);
+    const file = await this.inboundRepository.getFile(args.organizationId, args.inboundRecordId, args.fileId);
+    if (!file) throw new InboundEmailIngestionError("INBOUND_ATTACHMENT_NOT_FOUND", "Inbound attachment not found.", 404);
+
+    const message = this.providerMessageFromRecord(record);
+    const senderEmail = senderEmailFromMessage(message);
+    const senderDomain = senderDomainFromMessage(message);
+    if (args.action === "keep_blocked") {
+      const updated = await this.markAttachmentMetadataState({
+        organizationId: args.organizationId,
+        record,
+        file,
+        attachmentState: "blocked_file_type",
+        status: "quarantined",
+        reason: args.note || "Staff kept attachment blocked.",
+      });
+      return updated;
+    }
+
+    if (args.action === "trust_sender_and_download") {
+      if (!senderEmail) throw new InboundEmailIngestionError("INBOUND_SENDER_EMAIL_MISSING", "Cannot trust sender because the inbound record has no sender email.", 400);
+      await this.inboundRepository.createEmailTrustRule({
+        organizationId: args.organizationId,
+        ruleType: "sender_email_exact",
+        ruleValue: senderEmail,
+        notes: args.note || "Trusted from inbound attachment review.",
+        createdByUserId: args.actorUserId,
+        enabled: true,
+      });
+    }
+
+    if (args.action === "trust_domain_and_download") {
+      if (!senderDomain) throw new InboundEmailIngestionError("INBOUND_SENDER_DOMAIN_MISSING", "Cannot trust domain because the inbound record has no sender domain.", 400);
+      await this.inboundRepository.createEmailTrustRule({
+        organizationId: args.organizationId,
+        ruleType: "sender_domain",
+        ruleValue: senderDomain,
+        notes: args.note || "Trusted from inbound attachment review.",
+        createdByUserId: args.actorUserId,
+        enabled: true,
+      });
+    }
+
+    const mailbox = await this.resolveMailboxForRecord(args.organizationId, record);
+    const adapter = this.adapterByProvider[mailbox.provider];
+    if (!adapter) throw new InboundEmailIngestionError("INBOUND_EMAIL_PROVIDER_UNSUPPORTED", "Inbound email provider is unsupported.", 409);
+    const trustDecision = args.action === "download_once"
+      ? {
+          trusted: true,
+          senderEmail,
+          senderDomain,
+          trustSource: "none" as const,
+          ruleId: null,
+          reason: "Staff approved one-time attachment download.",
+        }
+      : await this.resolveSenderTrust(args.organizationId, message);
+    const attachment = this.attachmentMetadataFromFile(file);
+    const classification = classifyInboundEmailAttachmentForMessage(attachment, message);
+    const safetyDecision = this.evaluateAttachmentSafety(attachment, classification, trustDecision, {
+      bypassTrust: args.action === "download_once",
+    });
+    const baseMetadata = {
+      ...(file.metadataJson ?? {}),
+      senderTrustStatus: trustDecision.trusted ? "trusted" : "untrusted",
+      senderTrustSource: trustDecision.trustSource,
+      senderTrustRuleId: trustDecision.ruleId,
+      senderTrustReason: trustDecision.reason,
+      attachmentState: safetyDecision.attachmentState,
+      attachmentSafetyReason: safetyDecision.reason,
+      attachmentExtension: safetyDecision.extension,
+      blockedFileType: safetyDecision.blocked,
+      allowedFileType: safetyDecision.allowedForAutoDownload,
+      downloadAttemptAllowed: safetyDecision.downloadAllowed,
+      staffTrustAction: args.action,
+    };
+    if (!safetyDecision.downloadAllowed || !adapter.downloadAttachment || !attachment.attachmentId) {
+      return this.markAttachmentMetadataState({
+        organizationId: args.organizationId,
+        record,
+        file,
+        attachmentState: safetyDecision.attachmentState,
+        status: safetyDecision.blocked ? "quarantined" : "uploaded",
+        reason: !safetyDecision.downloadAllowed
+          ? safetyDecision.reason
+          : !adapter.downloadAttachment
+            ? "Attachment metadata captured; provider download is not available."
+            : "Attachment metadata captured; Gmail attachment id is missing.",
+        metadataPatch: baseMetadata,
+      });
+    }
+
+    const downloaded = await adapter.downloadAttachment(mailbox, message, attachment);
+    const filename = normalizeAttachmentFileName(file.sourceFilename);
+    const storedStatus = safetyDecision.zipFile ? "quarantined" : "available";
+    const storedAttachmentState = safetyDecision.zipFile ? "scan_pending" : "downloaded";
+    const storageResult = await this.storageService.finalizeUpload({
+      organizationId: args.organizationId,
+      createdByUserId: args.actorUserId,
+      resource: {
+        organizationId: args.organizationId,
+        resourceType: "inbound_order",
+        resourceId: record.id,
+      },
+      source: {
+        kind: "buffer",
+        buffer: downloaded.buffer,
+        originalFilename: filename,
+        mimeType: downloaded.mimeType ?? attachment.mimeType ?? "application/octet-stream",
+      },
+      persistLink: async (tx, stored) => this.persistStoredAttachment({
+        tx,
+        organizationId: args.organizationId,
+        record,
+        existingFile: file,
+        values: {
+          inboundLineItemId: file.inboundLineItemId,
+          fileRecordId: stored.fileRecord.id,
+          sourceFilename: filename,
+          role: file.role,
+          mimeType: downloaded.mimeType ?? attachment.mimeType ?? file.mimeType,
+          sizeBytes: downloaded.sizeBytes,
+          checksum: stored.fileRecord.checksum ?? null,
+          status: storedStatus,
+          providerAttachmentId: attachment.attachmentId ?? file.providerAttachmentId,
+          providerMessageId: attachmentMetadataProviderMessageId(file, message.messageId),
+          contentDisposition: file.contentDisposition,
+          metadataJson: {
+            ...baseMetadata,
+            attachmentState: storedAttachmentState,
+            storageProvider: stored.storedObject.storageTarget,
+          },
+          reviewNotes: safetyDecision.zipFile
+            ? "ZIP attachment stored from trusted sender. Scanner/manual review is required before use."
+            : args.note || "Attachment downloaded after staff trust approval.",
+          createdQuoteAttachmentId: file.createdQuoteAttachmentId,
+          createdOrderAttachmentId: file.createdOrderAttachmentId,
+        },
+      }),
+    });
+
+    await this.inboundRepository.createEvent({
+      organizationId: args.organizationId,
+      inboundRecordId: record.id,
+      actorUserId: args.actorUserId,
+      actorType: "user",
+      eventType: "email.attachment_trust_action",
+      fromStatus: null,
+      toStatus: null,
+      message: `Inbound attachment ${filename} processed by staff trust action ${args.action}.`,
+      metadataJson: {
+        fileId: storageResult.linkedRecord.id,
+        fileRecordId: storageResult.fileRecord.id,
+        action: args.action,
+        createsQuote: false,
+        createsOrder: false,
+        createsArtwork: false,
+        createsProofs: false,
+      },
+    });
+    return storageResult.linkedRecord;
+  }
+
   private async ensureSourceForMailbox(mailbox: InboundEmailMailbox): Promise<InboundOrderSource> {
     if (mailbox.sourceId) {
       const [existing] = await this.dbInstance
@@ -895,6 +1154,89 @@ export class InboundEmailIngestionService {
         .where(eq(inboundEmailMailboxes.id, mailbox.id));
     }
     return source;
+  }
+
+  private providerMessageFromRecord(record: InboundOrderRecord): InboundEmailProviderMessage {
+    const raw = isRecord(record.rawPayloadJson) ? record.rawPayloadJson : {};
+    const normalized = isRecord(record.normalizedPayloadJson) ? record.normalizedPayloadJson : {};
+    const sender = isRecord(raw.sender) ? raw.sender : isRecord(normalized.sender) ? normalized.sender : {};
+    const source = isRecord(normalized.source) ? normalized.source : {};
+    return {
+      provider: stringFromUnknown(raw.provider) ?? stringFromUnknown(source.provider) ?? "gmail",
+      messageId: stringFromUnknown(raw.messageId) ?? stringFromUnknown(source.messageId) ?? record.sourceMessageId ?? record.sourceRecordId ?? "",
+      threadId: stringFromUnknown(raw.threadId) ?? stringFromUnknown(source.threadId),
+      senderName: stringFromUnknown(sender.name),
+      senderEmail: stringFromUnknown(sender.email),
+      subject: stringFromUnknown(raw.subject) ?? stringFromUnknown(normalized.subject) ?? record.externalReference,
+      receivedAt: record.receivedAt ?? null,
+      bodyText: stringFromUnknown(raw.bodyText) ?? stringFromUnknown(normalized.bodyText),
+      bodyHtml: stringFromUnknown(raw.bodyHtml) ?? stringFromUnknown(normalized.bodyHtml),
+      attachments: [],
+    };
+  }
+
+  private attachmentMetadataFromFile(file: InboundOrderFile): InboundEmailAttachmentMetadata {
+    const metadata = isRecord(file.metadataJson) ? file.metadataJson : {};
+    return {
+      filename: file.sourceFilename ?? stringFromUnknown(metadata.sourceFilename),
+      mimeType: file.mimeType ?? stringFromUnknown(metadata.mimeType),
+      size: file.sizeBytes ?? (typeof metadata.sizeBytes === "number" ? metadata.sizeBytes : null),
+      attachmentId: file.providerAttachmentId ?? stringFromUnknown(metadata.providerAttachmentId),
+      contentDisposition: file.contentDisposition ?? stringFromUnknown(metadata.contentDisposition),
+      contentId: stringFromUnknown(metadata.contentId),
+      partId: stringFromUnknown(metadata.gmailPartId) ?? stringFromUnknown(metadata.partId),
+      detectedBy: Array.isArray(metadata.detectedBy)
+        ? metadata.detectedBy.filter((entry): entry is string => typeof entry === "string")
+        : undefined,
+    };
+  }
+
+  private async resolveMailboxForRecord(organizationId: string, record: InboundOrderRecord): Promise<InboundEmailMailbox> {
+    const raw = isRecord(record.rawPayloadJson) ? record.rawPayloadJson : {};
+    const normalized = isRecord(record.normalizedPayloadJson) ? record.normalizedPayloadJson : {};
+    const mailboxPayload = isRecord(raw.mailbox) ? raw.mailbox : {};
+    const sourcePayload = isRecord(normalized.source) ? normalized.source : {};
+    const mailboxId = stringFromUnknown(mailboxPayload.id) ?? stringFromUnknown(sourcePayload.mailboxId);
+    const mailboxEmail = stringFromUnknown(mailboxPayload.emailAddress) ?? stringFromUnknown(sourcePayload.mailboxEmail);
+    const mailboxes = await this.dbInstance
+      .select()
+      .from(inboundEmailMailboxes)
+      .where(eq(inboundEmailMailboxes.organizationId, organizationId));
+    const mailbox = mailboxes.find((candidate) => mailboxId && candidate.id === mailboxId)
+      ?? mailboxes.find((candidate) => mailboxEmail && candidate.emailAddress.toLowerCase() === mailboxEmail.toLowerCase())
+      ?? mailboxes.find((candidate) => candidate.provider === "gmail" && candidate.enabled)
+      ?? null;
+    if (!mailbox) throw new InboundEmailIngestionError("INBOUND_EMAIL_MAILBOX_NOT_CONFIGURED", "No inbound Gmail mailbox is configured for this record.", 409);
+    return mailbox;
+  }
+
+  private async markAttachmentMetadataState(args: {
+    organizationId: string;
+    record: InboundOrderRecord;
+    file: InboundOrderFile;
+    attachmentState: InboundAttachmentState;
+    status: InboundOrderFile["status"];
+    reason: string;
+    metadataPatch?: Record<string, unknown>;
+  }): Promise<InboundOrderFile> {
+    const updated = await this.inboundRepository.updateFile({
+      organizationId: args.organizationId,
+      inboundRecordId: args.record.id,
+      fileId: args.file.id,
+      patch: {
+        status: args.status,
+        metadataJson: {
+          ...(isRecord(args.file.metadataJson) ? args.file.metadataJson : {}),
+          ...(args.metadataPatch ?? {}),
+          attachmentState: args.attachmentState,
+          attachmentSafetyReason: args.reason,
+          failureReason: args.reason,
+        },
+        reviewNotes: args.reason,
+      },
+    });
+    if (!updated) throw new InboundEmailIngestionError("INBOUND_ATTACHMENT_UPDATE_FAILED", "Failed to update inbound attachment.", 500);
+    return updated;
   }
 
   private async processMessage(
@@ -1197,6 +1539,148 @@ export class InboundEmailIngestionService {
     }
   }
 
+  private async resolveSenderTrust(
+    organizationId: string,
+    message: InboundEmailProviderMessage,
+  ): Promise<SenderTrustDecision> {
+    const senderEmail = senderEmailFromMessage(message);
+    const senderDomain = senderDomainFromMessage(message);
+    const rules = await this.inboundRepository.listEnabledEmailTrustRules(organizationId);
+    for (const rule of rules) {
+      const value = rule.ruleValue.trim().toLowerCase();
+      const matched = rule.ruleType === "sender_email_exact"
+        ? Boolean(senderEmail && senderEmail === value)
+        : rule.ruleType === "sender_domain"
+          ? Boolean(senderDomain && senderDomain === value)
+          : rule.ruleType === "customer_contact_email"
+            ? Boolean(senderEmail && (value === "*" || senderEmail === value) && await this.inboundRepository.senderEmailMatchesCustomerContact(organizationId, senderEmail))
+            : Boolean(senderDomain && (value === "*" || senderDomain === value) && await this.inboundRepository.senderDomainMatchesCustomerDomain(organizationId, senderDomain));
+      if (!matched) continue;
+      await this.inboundRepository.recordEmailTrustRuleMatch(rule.id);
+      return {
+        trusted: true,
+        senderEmail,
+        senderDomain,
+        trustSource: rule.ruleType,
+        ruleId: rule.id,
+        reason: `Sender matched inbound trust rule ${rule.ruleType}.`,
+      };
+    }
+    return {
+      trusted: false,
+      senderEmail,
+      senderDomain,
+      trustSource: "none",
+      ruleId: null,
+      reason: "Sender is not trusted for automatic attachment download.",
+    };
+  }
+
+  private evaluateAttachmentSafety(
+    attachment: InboundEmailAttachmentMetadata,
+    classification: ReturnType<typeof classifyInboundEmailAttachmentForMessage>,
+    trustDecision: SenderTrustDecision,
+    options: { bypassTrust?: boolean } = {},
+  ): AttachmentSafetyDecision {
+    const extension = attachmentExtension(attachment);
+    const blocked = Boolean(extension && BLOCKED_INBOUND_ATTACHMENT_EXTENSIONS.has(extension));
+    const allowedForAutoDownload = Boolean(extension && ALLOWED_INBOUND_ATTACHMENT_EXTENSIONS.has(extension));
+    const zipFile = extension === "zip";
+    if (blocked) {
+      return {
+        extension,
+        blocked,
+        allowedForAutoDownload: false,
+        zipFile,
+        downloadAllowed: false,
+        attachmentState: "blocked_file_type",
+        reason: `Blocked file type .${extension} is never downloaded automatically.`,
+      };
+    }
+    if (!allowedForAutoDownload || !classification.safeToDownload) {
+      return {
+        extension,
+        blocked,
+        allowedForAutoDownload: false,
+        zipFile,
+        downloadAllowed: false,
+        attachmentState: "metadata_only",
+        reason: !allowedForAutoDownload
+          ? `Attachment type ${extension ? `.${extension}` : "unknown"} is not allowed for automatic download.`
+          : classification.reason,
+      };
+    }
+    if (!trustDecision.trusted && !options.bypassTrust) {
+      return {
+        extension,
+        blocked,
+        allowedForAutoDownload,
+        zipFile,
+        downloadAllowed: false,
+        attachmentState: "pending_trust",
+        reason: "Sender is not trusted. Attachment metadata captured pending staff trust decision.",
+      };
+    }
+    return {
+      extension,
+      blocked,
+      allowedForAutoDownload,
+      zipFile,
+      downloadAllowed: true,
+      attachmentState: zipFile ? "scan_pending" : "download_pending",
+      reason: zipFile
+        ? "Trusted ZIP attachment may be stored but remains scan pending."
+        : "Trusted sender and allowed file type permit download.",
+    };
+  }
+
+  private async persistMetadataOnlyAttachment(args: {
+    organizationId: string;
+    record: InboundOrderRecord;
+    existingFile: InboundOrderFile | null;
+    values: Omit<Parameters<InboundOrdersRepository["createFile"]>[0], "organizationId" | "inboundRecordId">;
+  }): Promise<InboundOrderFile> {
+    if (!args.existingFile) {
+      return this.inboundRepository.createFile({
+        organizationId: args.organizationId,
+        inboundRecordId: args.record.id,
+        ...args.values,
+      });
+    }
+    const updated = await this.inboundRepository.updateFile({
+      organizationId: args.organizationId,
+      inboundRecordId: args.record.id,
+      fileId: args.existingFile.id,
+      patch: args.values,
+    });
+    if (!updated) throw new Error("Failed to update inbound attachment metadata");
+    return updated;
+  }
+
+  private async persistStoredAttachment(args: {
+    tx: any;
+    organizationId: string;
+    record: InboundOrderRecord;
+    existingFile: InboundOrderFile | null;
+    values: Omit<Parameters<InboundOrdersRepository["createFile"]>[0], "organizationId" | "inboundRecordId">;
+  }): Promise<InboundOrderFile> {
+    if (!args.existingFile) {
+      return this.inboundRepository.createFile({
+        organizationId: args.organizationId,
+        inboundRecordId: args.record.id,
+        ...args.values,
+      }, args.tx);
+    }
+    const updated = await this.inboundRepository.updateFile({
+      organizationId: args.organizationId,
+      inboundRecordId: args.record.id,
+      fileId: args.existingFile.id,
+      patch: args.values,
+    }, args.tx);
+    if (!updated) throw new Error("Failed to update inbound attachment file");
+    return updated;
+  }
+
   private async ingestAttachments(args: {
     organizationId: string;
     actorUserId: string;
@@ -1207,6 +1691,7 @@ export class InboundEmailIngestionService {
     skippedReason: string | null;
   }): Promise<AttachmentIngestionDiagnostics> {
     const attachmentCandidates = this.attachmentCandidatesForIngestion(args.message, args.record);
+    const trustDecision = await this.resolveSenderTrust(args.organizationId, args.message);
     const diagnostics: AttachmentIngestionDiagnostics = {
       messageId: args.message.messageId,
       subject: args.message.subject,
@@ -1223,6 +1708,7 @@ export class InboundEmailIngestionService {
       skippedExistingProviderAttachments: 0,
       skippedReason: args.skippedReason,
       failures: [],
+      safetyDecisions: [],
     };
     if (attachmentCandidates.length === 0) return diagnostics;
 
@@ -1230,6 +1716,7 @@ export class InboundEmailIngestionService {
       const providerAttachmentId = attachment.attachmentId ?? null;
       const providerMessageId = args.message.messageId;
       const classification = classifyInboundEmailAttachmentForMessage(attachment, args.message);
+      const safetyDecision = this.evaluateAttachmentSafety(attachment, classification, trustDecision);
       const filename = normalizeAttachmentFileName(attachment.filename);
       const contentDisposition = truncate(attachment.contentDisposition ?? null, 100);
       const metadataJson = {
@@ -1249,10 +1736,33 @@ export class InboundEmailIngestionService {
         artworkCandidate: classification.artworkCandidate,
         safeToDownload: classification.safeToDownload,
         detectionReason: classification.reason,
+        senderTrustStatus: trustDecision.trusted ? "trusted" : "untrusted",
+        senderTrustSource: trustDecision.trustSource,
+        senderTrustRuleId: trustDecision.ruleId,
+        senderTrustReason: trustDecision.reason,
+        attachmentState: safetyDecision.attachmentState,
+        attachmentSafetyReason: safetyDecision.reason,
+        attachmentExtension: safetyDecision.extension,
+        blockedFileType: safetyDecision.blocked,
+        allowedFileType: safetyDecision.allowedForAutoDownload,
+        downloadAttemptAllowed: safetyDecision.downloadAllowed,
       };
 
       try {
         diagnostics.attachmentPartsAttempted += 1;
+        diagnostics.safetyDecisions?.push({
+          filename,
+          providerAttachmentId,
+          trusted: trustDecision.trusted,
+          trustSource: trustDecision.trustSource,
+          extension: safetyDecision.extension,
+          blocked: safetyDecision.blocked,
+          allowedFileType: safetyDecision.allowedForAutoDownload,
+          downloadAllowed: safetyDecision.downloadAllowed,
+          attachmentState: safetyDecision.attachmentState,
+          reason: safetyDecision.reason,
+        });
+        let existingFile: InboundOrderFile | null = null;
         if (providerAttachmentId) {
           const existing = await this.inboundRepository.findFileByProviderAttachment({
             organizationId: args.organizationId,
@@ -1261,44 +1771,51 @@ export class InboundEmailIngestionService {
             providerAttachmentId,
           });
           if (existing) {
-            diagnostics.skippedExistingProviderAttachments += 1;
-            continue;
+            const existingState = stringFromUnknown((existing.metadataJson as Record<string, unknown> | null)?.attachmentState);
+            if (existing.fileRecordId || existingState === "blocked_file_type" || existingState === "scan_pending" || existingState === "quarantined") {
+              diagnostics.skippedExistingProviderAttachments += 1;
+              continue;
+            }
+            existingFile = existing;
           }
         }
 
-        if (!classification.safeToDownload || !args.adapter.downloadAttachment || !providerAttachmentId) {
-          const unsupportedMimeReason = classification.safeToDownload ? null : classification.reason;
-          const failureReason = !classification.safeToDownload
-            ? classification.reason
+        if (!safetyDecision.downloadAllowed || !classification.safeToDownload || !args.adapter.downloadAttachment || !providerAttachmentId) {
+          const unsupportedMimeReason = !safetyDecision.allowedForAutoDownload || !classification.safeToDownload ? safetyDecision.reason : null;
+          const failureReason = !safetyDecision.downloadAllowed
+            ? safetyDecision.reason
+            : !classification.safeToDownload
+              ? classification.reason
             : !args.adapter.downloadAttachment
               ? "Attachment metadata captured; provider download is not available."
               : "Attachment metadata captured; Gmail attachment id is missing.";
-          await this.inboundRepository.createFile({
+          await this.persistMetadataOnlyAttachment({
             organizationId: args.organizationId,
-            inboundRecordId: args.record.id,
-            inboundLineItemId: null,
-            fileRecordId: null,
-            sourceFilename: filename,
-            role: classification.role === "other" ? "email_attachment" : classification.role,
-            mimeType: attachment.mimeType ?? null,
-            sizeBytes: attachment.size ?? null,
-            checksum: null,
-            status: "uploaded",
-            providerAttachmentId,
-            providerMessageId,
-            contentDisposition,
-            metadataJson: {
+            record: args.record,
+            existingFile,
+            values: {
+              inboundLineItemId: null,
+              fileRecordId: null,
+              sourceFilename: filename,
+              role: classification.role === "other" ? "email_attachment" : classification.role,
+              mimeType: attachment.mimeType ?? null,
+              sizeBytes: attachment.size ?? null,
+              checksum: null,
+              status: safetyDecision.blocked ? "quarantined" : "uploaded",
+              providerAttachmentId,
+              providerMessageId,
+              contentDisposition,
+              metadataJson: {
               ...metadataJson,
               failureReason,
               unsupportedMimeReason,
               gmailApiError: null,
               storageError: null,
+              },
+              reviewNotes: failureReason,
+              createdQuoteAttachmentId: null,
+              createdOrderAttachmentId: null,
             },
-            reviewNotes: classification.safeToDownload
-              ? "Attachment metadata captured; provider download is not available."
-              : classification.reason,
-            createdQuoteAttachmentId: null,
-            createdOrderAttachmentId: null,
           });
           diagnostics.attachmentRowsCreated += 1;
           diagnostics.metadataOnlyRowsCreated += 1;
@@ -1318,6 +1835,8 @@ export class InboundEmailIngestionService {
         diagnostics.downloadAttempts += 1;
         const downloaded = await args.adapter.downloadAttachment(args.mailbox, args.message, attachment);
         diagnostics.downloadSuccesses += 1;
+        const storedStatus = safetyDecision.zipFile ? "quarantined" : "available";
+        const storedAttachmentState = safetyDecision.zipFile ? "scan_pending" : "downloaded";
         const storageResult = await this.storageService.finalizeUpload({
           organizationId: args.organizationId,
           createdByUserId: args.actorUserId,
@@ -1332,32 +1851,39 @@ export class InboundEmailIngestionService {
             originalFilename: filename,
             mimeType: downloaded.mimeType ?? attachment.mimeType ?? "application/octet-stream",
           },
-          persistLink: async (tx, stored) => this.inboundRepository.createFile({
+          persistLink: async (tx, stored) => this.persistStoredAttachment({
+            tx,
             organizationId: args.organizationId,
-            inboundRecordId: args.record.id,
-            inboundLineItemId: null,
-            fileRecordId: stored.fileRecord.id,
-            sourceFilename: filename,
-            role: classification.role === "other" ? "email_attachment" : classification.role,
-            mimeType: downloaded.mimeType ?? attachment.mimeType ?? "application/octet-stream",
-            sizeBytes: downloaded.sizeBytes,
-            checksum: stored.fileRecord.checksum ?? null,
-            status: "available",
-            providerAttachmentId,
-            providerMessageId,
-            contentDisposition,
-            metadataJson: {
-              ...metadataJson,
-              storageProvider: stored.storedObject.storageTarget,
+            record: args.record,
+            existingFile,
+            values: {
+              inboundLineItemId: null,
+              fileRecordId: stored.fileRecord.id,
+              sourceFilename: filename,
+              role: classification.role === "other" ? "email_attachment" : classification.role,
+              mimeType: downloaded.mimeType ?? attachment.mimeType ?? "application/octet-stream",
+              sizeBytes: downloaded.sizeBytes,
+              checksum: stored.fileRecord.checksum ?? null,
+              status: storedStatus,
+              providerAttachmentId,
+              providerMessageId,
+              contentDisposition,
+              metadataJson: {
+                ...metadataJson,
+                attachmentState: storedAttachmentState,
+                storageProvider: stored.storedObject.storageTarget,
+              },
+              reviewNotes: safetyDecision.zipFile
+                ? "ZIP attachment stored from trusted sender. Scanner/manual review is required before use."
+                : classification.poCandidate
+                  ? "PO candidate. Text will be extracted during AI parse when possible."
+                  : classification.artworkCandidate
+                    ? "Artwork candidate. No proof or preflight record created."
+                    : null,
+              createdQuoteAttachmentId: null,
+              createdOrderAttachmentId: null,
             },
-            reviewNotes: classification.poCandidate
-              ? "PO candidate. Text will be extracted during AI parse when possible."
-              : classification.artworkCandidate
-                ? "Artwork candidate. No proof or preflight record created."
-                : null,
-            createdQuoteAttachmentId: null,
-            createdOrderAttachmentId: null,
-          }, tx),
+          }),
         });
 
         await this.inboundRepository.createEvent({
@@ -1411,6 +1937,7 @@ export class InboundEmailIngestionService {
           contentDisposition,
           metadataJson: {
             ...metadataJson,
+            attachmentState: "download_failed",
             downloadFailed: true,
             downloadError: message,
             failureStage,

@@ -12,6 +12,8 @@ import {
   type InboundOrderWarning,
   type InboundEmailIgnoreRule,
   type InboundEmailIgnoreRuleType,
+  type InboundEmailTrustRule,
+  type InboundEmailTrustRuleType,
   type Quote,
   type OrderWithRelations,
 } from "@shared/schema";
@@ -594,6 +596,9 @@ function buildAttachmentPipelineDiagnostics(
     attachmentRowsCreated: metadata.attachmentRowsCreated ?? recordFiles.length,
     skippedExistingProviderAttachments: metadata.skippedExistingProviderAttachments ?? 0,
     skippedReason,
+    safetyDecisions: Array.isArray(metadata.safetyDecisions)
+      ? metadata.safetyDecisions.map((item) => sanitizeDiagnosticRow(asRecord(item) ?? { value: item }))
+      : [],
     failures: [...eventFailures, ...fileFailures],
   });
 }
@@ -723,6 +728,14 @@ function normalizeInboundEmailIgnoreRuleValue(ruleType: InboundEmailIgnoreRuleTy
   return trimmed;
 }
 
+function normalizeInboundEmailTrustRuleValue(ruleType: InboundEmailTrustRuleType, value: string): string {
+  const trimmed = value.trim();
+  if (ruleType === "sender_email_exact" || ruleType === "sender_domain" || ruleType === "customer_contact_email" || ruleType === "customer_domain") {
+    return trimmed.toLowerCase();
+  }
+  return trimmed;
+}
+
 export class InboundOrderService {
   constructor(
     private readonly repository = inboundOrdersRepository,
@@ -758,6 +771,10 @@ export class InboundOrderService {
 
   async listEmailIgnoreRules(args: { organizationId: string }): Promise<InboundEmailIgnoreRule[]> {
     return this.repository.listEmailIgnoreRules(args.organizationId);
+  }
+
+  async listEmailTrustRules(args: { organizationId: string }): Promise<InboundEmailTrustRule[]> {
+    return this.repository.listEmailTrustRules(args.organizationId);
   }
 
   async getEmailPullDiagnostics(args: {
@@ -929,6 +946,56 @@ export class InboundOrderService {
   async deleteEmailIgnoreRule(args: { organizationId: string; id: string }): Promise<InboundEmailIgnoreRule> {
     const rule = await this.repository.deleteEmailIgnoreRule(args.organizationId, args.id);
     if (!rule) throw new InboundOrderTransitionError("Inbound email ignore rule not found", 404);
+    return rule;
+  }
+
+  async createEmailTrustRule(args: {
+    organizationId: string;
+    actorUserId: string;
+    ruleType: InboundEmailTrustRuleType;
+    ruleValue: string;
+    notes?: string | null;
+    enabled?: boolean;
+  }): Promise<InboundEmailTrustRule> {
+    const ruleValue = normalizeInboundEmailTrustRuleValue(args.ruleType, args.ruleValue);
+    if (!ruleValue) throw new InboundOrderTransitionError("Rule value is required.", 400);
+    return this.repository.createEmailTrustRule({
+      organizationId: args.organizationId,
+      ruleType: args.ruleType,
+      ruleValue,
+      notes: args.notes ?? null,
+      createdByUserId: args.actorUserId,
+      enabled: args.enabled ?? true,
+    });
+  }
+
+  async updateEmailTrustRule(args: {
+    organizationId: string;
+    id: string;
+    ruleType?: InboundEmailTrustRuleType;
+    ruleValue?: string;
+    enabled?: boolean;
+    notes?: string | null;
+  }): Promise<InboundEmailTrustRule> {
+    const current = (await this.repository.listEmailTrustRules(args.organizationId)).find((rule) => rule.id === args.id);
+    if (!current) throw new InboundOrderTransitionError("Inbound email trust rule not found", 404);
+    const nextRuleType = args.ruleType ?? current.ruleType;
+    const nextRuleValue = typeof args.ruleValue === "string"
+      ? normalizeInboundEmailTrustRuleValue(nextRuleType, args.ruleValue)
+      : current.ruleValue;
+    if (!nextRuleValue) throw new InboundOrderTransitionError("Rule value is required.", 400);
+    const rule = await this.repository.updateEmailTrustRule({
+      ...args,
+      ruleType: nextRuleType,
+      ruleValue: nextRuleValue,
+    });
+    if (!rule) throw new InboundOrderTransitionError("Inbound email trust rule not found", 404);
+    return rule;
+  }
+
+  async deleteEmailTrustRule(args: { organizationId: string; id: string }): Promise<InboundEmailTrustRule> {
+    const rule = await this.repository.deleteEmailTrustRule(args.organizationId, args.id);
+    if (!rule) throw new InboundOrderTransitionError("Inbound email trust rule not found", 404);
     return rule;
   }
 

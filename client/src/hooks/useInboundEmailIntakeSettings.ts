@@ -22,6 +22,10 @@ import type {
   InboundEmailIgnoreRuleListResponse,
   InboundEmailIgnoreRuleUpdateRequest,
   InboundEmailIgnoreRuleTypeValue,
+  InboundEmailTrustRuleCreateRequest,
+  InboundEmailTrustRuleDto,
+  InboundEmailTrustRuleListResponse,
+  InboundEmailTrustRuleUpdateRequest,
   InboundEmailPullDiagnosticsResponse,
 } from "@shared/inboundOrdersApi";
 
@@ -66,6 +70,16 @@ async function readInboundEmailIgnoreRules(): Promise<InboundEmailIgnoreRuleList
   return { rules: Array.isArray(data?.rules) ? data.rules : [] };
 }
 
+async function readInboundEmailTrustRules(): Promise<InboundEmailTrustRuleListResponse["data"]> {
+  const response = await apiFetch("/api/inbound-orders/email/trust-rules");
+  const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.message || "Failed to load inbound email trust rules");
+  }
+  const data = payload.data as InboundEmailTrustRuleListResponse["data"] | undefined;
+  return { rules: Array.isArray(data?.rules) ? data.rules : [] };
+}
+
 async function readInboundEmailPullDiagnostics(subject: string): Promise<InboundEmailPullDiagnosticsResponse["data"]> {
   const query = subject.trim() ? `?subject=${encodeURIComponent(subject.trim())}` : "";
   const response = await apiFetch(`/api/inbound-orders/email/pull-diagnostics${query}`);
@@ -98,6 +112,15 @@ export function useInboundEmailIgnoreRules() {
   return useQuery<InboundEmailIgnoreRuleListResponse["data"]>({
     queryKey: ["/api/inbound-orders/email/ignore-rules"],
     queryFn: readInboundEmailIgnoreRules,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export function useInboundEmailTrustRules() {
+  return useQuery<InboundEmailTrustRuleListResponse["data"]>({
+    queryKey: ["/api/inbound-orders/email/trust-rules"],
+    queryFn: readInboundEmailTrustRules,
     staleTime: 60_000,
     retry: false,
   });
@@ -169,6 +192,67 @@ export function useDeleteInboundEmailIgnoreRule() {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
+    },
+  });
+}
+
+export function useCreateInboundEmailTrustRule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: InboundEmailTrustRuleCreateRequest) => {
+      const response = await apiFetch("/api/inbound-orders/email/trust-rules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || "Failed to create inbound email trust rule");
+      }
+      return payload.data as InboundEmailTrustRuleDto;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] });
+    },
+  });
+}
+
+export function useUpdateInboundEmailTrustRule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ ruleId, ...input }: { ruleId: string } & InboundEmailTrustRuleUpdateRequest) => {
+      const response = await apiFetch(`/api/inbound-orders/email/trust-rules/${encodeURIComponent(ruleId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || "Failed to update inbound email trust rule");
+      }
+      return payload.data as InboundEmailTrustRuleDto;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] });
+    },
+  });
+}
+
+export function useDeleteInboundEmailTrustRule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (ruleId: string) => {
+      const response = await apiFetch(`/api/inbound-orders/email/trust-rules/${encodeURIComponent(ruleId)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || "Failed to delete inbound email trust rule");
+      }
+      return payload.data as InboundEmailTrustRuleDto;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] });
     },
   });
 }

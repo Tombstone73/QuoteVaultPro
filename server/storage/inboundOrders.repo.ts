@@ -7,6 +7,7 @@ import {
   customers,
   inboundEmailMailboxes,
   inboundEmailIgnoreRules,
+  inboundEmailTrustRules,
   inboundOrderDecisionFlags,
   inboundOrderEvents,
   inboundOrderFiles,
@@ -38,6 +39,8 @@ import {
   type InboundOrderWarning,
   type InboundEmailIgnoreRule,
   type InboundEmailIgnoreRuleType,
+  type InboundEmailTrustRule,
+  type InboundEmailTrustRuleType,
   type Customer,
   type CustomerContact,
   type Product,
@@ -86,6 +89,15 @@ export type InboundOrderQueueSummary = {
 export type CreateInboundEmailIgnoreRuleValues = {
   organizationId: string;
   ruleType: InboundEmailIgnoreRuleType;
+  ruleValue: string;
+  notes?: string | null;
+  createdByUserId?: string | null;
+  enabled?: boolean;
+};
+
+export type CreateInboundEmailTrustRuleValues = {
+  organizationId: string;
+  ruleType: InboundEmailTrustRuleType;
   ruleValue: string;
   notes?: string | null;
   createdByUserId?: string | null;
@@ -550,6 +562,132 @@ export class InboundOrdersRepository {
       .where(eq(inboundEmailIgnoreRules.id, ruleId));
   }
 
+  async listEmailTrustRules(organizationId: string): Promise<InboundEmailTrustRule[]> {
+    return this.dbInstance
+      .select()
+      .from(inboundEmailTrustRules)
+      .where(eq(inboundEmailTrustRules.organizationId, organizationId))
+      .orderBy(desc(inboundEmailTrustRules.enabled), asc(inboundEmailTrustRules.ruleType), asc(inboundEmailTrustRules.ruleValue));
+  }
+
+  async listEnabledEmailTrustRules(organizationId: string): Promise<InboundEmailTrustRule[]> {
+    return this.dbInstance
+      .select()
+      .from(inboundEmailTrustRules)
+      .where(and(eq(inboundEmailTrustRules.organizationId, organizationId), eq(inboundEmailTrustRules.enabled, true)))
+      .orderBy(asc(inboundEmailTrustRules.ruleType), asc(inboundEmailTrustRules.ruleValue));
+  }
+
+  async createEmailTrustRule(values: CreateInboundEmailTrustRuleValues): Promise<InboundEmailTrustRule> {
+    const ruleValue = values.ruleValue.trim();
+    const [created] = await this.dbInstance
+      .insert(inboundEmailTrustRules)
+      .values({
+        organizationId: values.organizationId,
+        enabled: values.enabled ?? true,
+        ruleType: values.ruleType,
+        ruleValue,
+        notes: values.notes ?? null,
+        createdByUserId: values.createdByUserId ?? null,
+      })
+      .onConflictDoUpdate({
+        target: [
+          inboundEmailTrustRules.organizationId,
+          inboundEmailTrustRules.ruleType,
+          inboundEmailTrustRules.ruleValue,
+        ],
+        set: {
+          enabled: values.enabled ?? true,
+          notes: values.notes ?? null,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+
+    if (!created) throw new Error("Failed to create inbound email trust rule");
+    return created;
+  }
+
+  async updateEmailTrustRule(args: {
+    organizationId: string;
+    id: string;
+    ruleType?: InboundEmailTrustRuleType;
+    ruleValue?: string;
+    enabled?: boolean;
+    notes?: string | null;
+  }): Promise<InboundEmailTrustRule | null> {
+    const patch: Partial<typeof inboundEmailTrustRules.$inferInsert> = { updatedAt: new Date() };
+    if (args.ruleType) patch.ruleType = args.ruleType;
+    if (typeof args.ruleValue === "string") patch.ruleValue = args.ruleValue.trim();
+    if (typeof args.enabled === "boolean") patch.enabled = args.enabled;
+    if ("notes" in args) patch.notes = args.notes ?? null;
+
+    const [updated] = await this.dbInstance
+      .update(inboundEmailTrustRules)
+      .set(patch)
+      .where(and(eq(inboundEmailTrustRules.organizationId, args.organizationId), eq(inboundEmailTrustRules.id, args.id)))
+      .returning();
+    return updated ?? null;
+  }
+
+  async deleteEmailTrustRule(organizationId: string, id: string): Promise<InboundEmailTrustRule | null> {
+    const [deleted] = await this.dbInstance
+      .delete(inboundEmailTrustRules)
+      .where(and(eq(inboundEmailTrustRules.organizationId, organizationId), eq(inboundEmailTrustRules.id, id)))
+      .returning();
+    return deleted ?? null;
+  }
+
+  async recordEmailTrustRuleMatch(ruleId: string): Promise<void> {
+    await this.dbInstance
+      .update(inboundEmailTrustRules)
+      .set({
+        matchCount: sql`${inboundEmailTrustRules.matchCount} + 1`,
+        lastMatchedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(inboundEmailTrustRules.id, ruleId));
+  }
+
+  async senderEmailMatchesCustomerContact(organizationId: string, email: string): Promise<boolean> {
+    const normalized = email.trim().toLowerCase();
+    if (!normalized) return false;
+    const [match] = await this.dbInstance
+      .select({ id: customerContacts.id })
+      .from(customerContacts)
+      .where(and(
+        eq(customerContacts.organizationId, organizationId),
+        sql`lower(${customerContacts.email}) = ${normalized}`,
+        eq(customerContacts.status, "active"),
+      ))
+      .limit(1);
+    return Boolean(match);
+  }
+
+  async senderDomainMatchesCustomerDomain(organizationId: string, domain: string): Promise<boolean> {
+    const normalized = domain.trim().toLowerCase();
+    if (!normalized) return false;
+    const [customerMatch] = await this.dbInstance
+      .select({ id: customers.id })
+      .from(customers)
+      .where(and(
+        eq(customers.organizationId, organizationId),
+        sql`lower(split_part(${customers.email}, '@', 2)) = ${normalized}`,
+      ))
+      .limit(1);
+    if (customerMatch) return true;
+    const [contactMatch] = await this.dbInstance
+      .select({ id: customerContacts.id })
+      .from(customerContacts)
+      .where(and(
+        eq(customerContacts.organizationId, organizationId),
+        sql`lower(split_part(${customerContacts.email}, '@', 2)) = ${normalized}`,
+        eq(customerContacts.status, "active"),
+      ))
+      .limit(1);
+    return Boolean(contactMatch);
+  }
+
   async getEmailPullDiagnostics(args: {
     organizationId: string;
     subject?: string | null;
@@ -892,6 +1030,19 @@ export class InboundOrdersRepository {
       .orderBy(asc(inboundOrderFiles.createdAt));
   }
 
+  async getFile(organizationId: string, inboundRecordId: string, fileId: string): Promise<InboundOrderFile | null> {
+    const [file] = await this.dbInstance
+      .select()
+      .from(inboundOrderFiles)
+      .where(and(
+        eq(inboundOrderFiles.organizationId, organizationId),
+        eq(inboundOrderFiles.inboundRecordId, inboundRecordId),
+        eq(inboundOrderFiles.id, fileId),
+      ))
+      .limit(1);
+    return file ?? null;
+  }
+
   async findFileByProviderAttachment(args: {
     organizationId: string;
     inboundRecordId: string;
@@ -909,6 +1060,24 @@ export class InboundOrdersRepository {
       ))
       .limit(1);
     return file ?? null;
+  }
+
+  async updateFile(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    fileId: string;
+    patch: Partial<typeof inboundOrderFiles.$inferInsert>;
+  }, executor: any = this.dbInstance): Promise<InboundOrderFile | null> {
+    const [updated] = await executor
+      .update(inboundOrderFiles)
+      .set({ ...args.patch, updatedAt: new Date() })
+      .where(and(
+        eq(inboundOrderFiles.organizationId, args.organizationId),
+        eq(inboundOrderFiles.inboundRecordId, args.inboundRecordId),
+        eq(inboundOrderFiles.id, args.fileId),
+      ))
+      .returning();
+    return updated ?? null;
   }
 
   async createFile(values: CreateInboundOrderFileValues, executor: any = this.dbInstance): Promise<InboundOrderFile> {
