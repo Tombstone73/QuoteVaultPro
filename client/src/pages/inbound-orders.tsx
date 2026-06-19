@@ -137,6 +137,25 @@ type InboundRecordTrustAction =
   | "trust_domain"
   | "trust_sender_and_download"
   | "trust_domain_and_download";
+type InboundEmailReprocessAction =
+  | "reprocess_email"
+  | "backfill_attachments"
+  | "rerun_trust_attachment_download";
+
+type InboundEmailReprocessResult = {
+  action: InboundEmailReprocessAction;
+  inboundRecordId: string;
+  providerMessageId: string | null;
+  providerThreadId: string | null;
+  threadMessagesInspected: number;
+  latestThreadActivity: string | null;
+  candidatesFound: number;
+  attempted: number;
+  stored: number;
+  metadataOnly: number;
+  failed: number;
+  skipped: number;
+};
 
 type QueueFilters = {
   statusGroup: QueueStatusFilter;
@@ -568,7 +587,58 @@ function getInboundEmailEvidence(record: Pick<ClientInboundOrderRecord, "rawPayl
       ...stringsFromUnknown(getPathValue(raw, "headers.cc")),
       ...stringsFromUnknown(getPathValue(normalized, "cc")),
     ],
+    thread: (typeof getPathValue(raw, "thread") === "object" && getPathValue(raw, "thread") !== null)
+      ? getPathValue(raw, "thread") as Record<string, unknown>
+      : (typeof getPathValue(normalized, "thread") === "object" && getPathValue(normalized, "thread") !== null)
+        ? getPathValue(normalized, "thread") as Record<string, unknown>
+        : null,
   };
+}
+
+function threadMessagesFromEvidence(thread: Record<string, unknown> | null | undefined): Array<Record<string, unknown>> {
+  const messages = thread && Array.isArray(thread.messages) ? thread.messages : [];
+  return messages.filter((message): message is Record<string, unknown> => (
+    Boolean(message) && typeof message === "object" && !Array.isArray(message)
+  ));
+}
+
+function providerMessageIdForFile(file: ClientInboundOrderFile): string | null {
+  return stringFromUnknown(file.providerMessageId) ?? stringFromUnknown(getPathValue(file.metadataJson, "providerMessageId"));
+}
+
+function groupFilesByThreadMessage(files: ClientInboundOrderFile[], thread: Record<string, unknown> | null | undefined) {
+  const messages = threadMessagesFromEvidence(thread);
+  if (messages.length === 0) {
+    return [{ key: "attachments", label: "Attachments", detail: null as string | null, files }];
+  }
+  const fileGroups = new Map<string, ClientInboundOrderFile[]>();
+  for (const file of files) {
+    const key = providerMessageIdForFile(file) ?? "unmatched";
+    fileGroups.set(key, [...(fileGroups.get(key) ?? []), file]);
+  }
+  const groups = messages
+    .map((message, index) => {
+      const messageId = stringFromUnknown(message.messageId) ?? `message_${index}`;
+      const sender = [stringFromUnknown(message.senderName), stringFromUnknown(message.senderEmail)]
+        .filter(Boolean)
+        .join(" / ");
+      const receivedAt = stringFromUnknown(message.receivedAt);
+      return {
+        key: messageId,
+        label: stringFromUnknown(message.subject) || `Thread message ${index + 1}`,
+        detail: [sender || null, receivedAt ? formatTimestamp(receivedAt) : null].filter(Boolean).join(" / ") || null,
+        files: fileGroups.get(messageId) ?? [],
+      };
+    })
+    .filter((group) => group.files.length > 0);
+  const matchedIds = new Set(groups.map((group) => group.key));
+  const unmatched = Array.from(fileGroups.entries())
+    .filter(([messageId]) => !matchedIds.has(messageId))
+    .flatMap(([, groupFiles]) => groupFiles);
+  if (unmatched.length > 0) {
+    groups.push({ key: "unmatched", label: "Other Message Attachments", detail: null, files: unmatched });
+  }
+  return groups.length > 0 ? groups : [{ key: "attachments", label: "Attachments", detail: null, files }];
 }
 
 function artworkLinkKey(link: Pick<InboundOrderArtworkLink, "fileId" | "fileRecordId">): string {
@@ -682,12 +752,12 @@ function AttachmentSafetyDetails({
 }
 
 function getRecordTitle(record: ClientInboundOrderRecord) {
-  const evidence = getManualInboundEvidence(record);
+  const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
   return evidence.reference || evidence.subject || record.externalReference || `Inbound ${record.id.slice(0, 8)}`;
 }
 
 function getSenderLabel(record: ClientInboundOrderRecord) {
-  const evidence = getManualInboundEvidence(record);
+  const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
   return [evidence.senderName, evidence.senderEmail].filter(Boolean).join(" / ") || "No sender captured";
 }
 
@@ -1388,6 +1458,8 @@ function SourceEvidencePanel({
   onReject,
   onQueueAction,
   onTrustAction,
+  onEmailReprocess,
+  isEmailReprocessing,
 }: {
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
   selectedRecord: ClientInboundOrderRecord | null;
@@ -1404,6 +1476,8 @@ function SourceEvidencePanel({
   onReject: () => void;
   onQueueAction: (action: InboundQueueCleanupAction) => void;
   onTrustAction: (record: ClientInboundOrderRecord, action: InboundRecordTrustAction) => void;
+  onEmailReprocess: (record: ClientInboundOrderRecord, action: InboundEmailReprocessAction) => void;
+  isEmailReprocessing: boolean;
 }) {
   if (!selectedRecord) {
     return <EmptyPanel title="Select a record" detail="Source evidence will appear once an inbound item is selected." />;
@@ -1420,7 +1494,7 @@ function SourceEvidencePanel({
   }
 
   const record = detail?.record ?? selectedRecord;
-  const evidence = getManualInboundEvidence(record);
+  const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
   const warnings = detail?.warnings ?? [];
   const evidenceItems = draftPreview?.draft?.evidence?.items ?? [];
   const attachmentEvidence = evidenceItems.filter((item) => (
@@ -1428,6 +1502,9 @@ function SourceEvidencePanel({
   ));
   const evidenceConflicts = draftPreview?.draft?.evidence?.conflicts ?? [];
   const emailFiles = detail?.files ?? [];
+  const threadEvidence = record.sourceType === "email" ? (evidence as ReturnType<typeof getInboundEmailEvidence>).thread : null;
+  const threadMessageCount = typeof threadEvidence?.messageCount === "number" ? threadEvidence.messageCount : null;
+  const latestThreadActivity = stringFromUnknown(threadEvidence?.latestActivityAt);
   const showPendingTrustNotice = record.sourceType === "email"
     && record.attachmentDownloadPolicy === "pending_trust"
     && emailFiles.length > 0;
@@ -1444,6 +1521,28 @@ function SourceEvidencePanel({
             <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
               <Badge variant="secondary">{titleCase(record.sourceType)}</Badge>
               <StatusBadge status={record.status} />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => onEmailReprocess(record, "backfill_attachments")}
+                disabled={rejectDisabled || isEmailReprocessing}
+                aria-label="Backfill inbound email attachments"
+              >
+                {isEmailReprocessing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Paperclip className="mr-2 h-4 w-4" />}
+                Backfill Attachments
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => onEmailReprocess(record, "reprocess_email")}
+                disabled={rejectDisabled || isEmailReprocessing}
+                aria-label="Reprocess inbound email"
+              >
+                {isEmailReprocessing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCcw className="mr-2 h-4 w-4" />}
+                Reprocess
+              </Button>
               <Button
                 type="button"
                 size="sm"
@@ -1589,6 +1688,12 @@ function SourceEvidencePanel({
             <DetailField label="Source type" value={titleCase(record.sourceType)} />
             <DetailField label="Created" value={formatTimestamp(record.createdAt)} />
             <DetailField label="Updated" value={formatTimestamp(record.updatedAt)} />
+            {record.sourceType === "email" && (
+              <>
+                <DetailField label="Thread messages" value={threadMessageCount == null ? null : String(threadMessageCount)} />
+                <DetailField label="Latest thread activity" value={latestThreadActivity ? formatTimestamp(latestThreadActivity) : null} />
+              </>
+            )}
           </div>
           <div className="mt-4 rounded-md border border-border bg-muted/20 px-3 py-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1785,6 +1890,8 @@ function OperationalEmailPanel({
   latestAttempt,
   parseError,
   isParsing,
+  onEmailReprocess,
+  isEmailReprocessing,
 }: {
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
   selectedRecord: ClientInboundOrderRecord | null;
@@ -1792,6 +1899,8 @@ function OperationalEmailPanel({
   latestAttempt: ClientInboundOrderParseAttempt | null;
   parseError: Error | null;
   isParsing: boolean;
+  onEmailReprocess: (record: ClientInboundOrderRecord, action: InboundEmailReprocessAction) => void;
+  isEmailReprocessing: boolean;
 }) {
   if (!selectedRecord) {
     return <EmptyPanel title="Select a record" detail="The original email and attachments will appear once an inbound item is selected." />;
@@ -1811,6 +1920,9 @@ function OperationalEmailPanel({
   const evidence = getInboundEmailEvidence(record);
   const sanitizedHtml = evidence.bodyHtml ? sanitizeEmailHtml(evidence.bodyHtml) : null;
   const files = detail?.files ?? [];
+  const threadMessageCount = typeof evidence.thread?.messageCount === "number" ? evidence.thread.messageCount : null;
+  const latestThreadActivity = stringFromUnknown(evidence.thread?.latestActivityAt);
+  const attachmentGroups = groupFilesByThreadMessage(files, evidence.thread);
 
   return (
     <ScrollArea className="h-full">
@@ -1834,6 +1946,28 @@ function OperationalEmailPanel({
               </div>
             </div>
             <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-xs"
+                disabled={isEmailReprocessing}
+                onClick={() => onEmailReprocess(record, "backfill_attachments")}
+              >
+                {isEmailReprocessing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Paperclip className="mr-1.5 h-3.5 w-3.5" />}
+                Backfill Attachments
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-xs"
+                disabled={isEmailReprocessing}
+                onClick={() => onEmailReprocess(record, "reprocess_email")}
+              >
+                {isEmailReprocessing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="mr-1.5 h-3.5 w-3.5" />}
+                Reprocess
+              </Button>
               {latestAttempt ? (
                 <Badge variant={latestAttempt.status === "failed" ? "destructive" : "secondary"}>
                   {titleCase(latestAttempt.status)}
@@ -1844,6 +1978,12 @@ function OperationalEmailPanel({
               <Badge variant="outline">{titleCase(record.sourceType)}</Badge>
             </div>
           </div>
+          {threadMessageCount != null && (
+            <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+              <span>Thread messages: {threadMessageCount}</span>
+              {latestThreadActivity && <span>Latest activity: {formatTimestamp(latestThreadActivity)}</span>}
+            </div>
+          )}
           {isParsing && (
             <div className="mt-2 flex items-center gap-2 text-xs font-medium text-primary">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1894,7 +2034,13 @@ function OperationalEmailPanel({
             {files.length === 0 ? (
               <div className="text-sm text-muted-foreground">No attachments linked to this inbound record.</div>
             ) : (
-              files.map((file) => {
+              attachmentGroups.map((group) => (
+                <div key={group.key} className="space-y-1.5">
+                  <div className="rounded-md bg-muted/40 px-2 py-1 text-xs">
+                    <div className="font-semibold text-foreground">{group.label}</div>
+                    {group.detail && <div className="text-muted-foreground">{group.detail}</div>}
+                  </div>
+                  {group.files.map((file) => {
                 const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
                   ? `/api/inbound-orders/${encodeURIComponent(record.id)}/files/${encodeURIComponent(file.id)}/download`
                   : null;
@@ -1934,7 +2080,9 @@ function OperationalEmailPanel({
                     )}
                   </div>
                 );
-              })
+                  })}
+                </div>
+              ))
             )}
           </div>
         </section>
@@ -4269,6 +4417,39 @@ export default function InboundOrdersPage() {
     },
   });
 
+  const emailReprocessMutation = useMutation({
+    mutationFn: ({ recordId, action }: { recordId: string; action: InboundEmailReprocessAction }) => (
+      postJson<{
+        success: true;
+        data: {
+          result: InboundEmailReprocessResult;
+          inbound: ClientInboundOrderDetailResponse["data"] | null;
+        };
+      }>(`/api/inbound-orders/${encodeURIComponent(recordId)}/email-reprocess`, { action })
+    ),
+    onSuccess: async (response, variables) => {
+      if (response.data.inbound) {
+        queryClient.setQueryData(["/api/inbound-orders", variables.recordId], {
+          success: true,
+          data: response.data.inbound,
+        } satisfies ClientInboundOrderDetailResponse);
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ predicate: isInboundOrderListQuery }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId], exact: true }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId, "draft-preview"] }),
+      ]);
+      const result = response.data.result;
+      toast({
+        title: variables.action === "reprocess_email" ? "Email reprocessed" : "Attachments backfilled",
+        description: `Candidates ${result.candidatesFound}, attempted ${result.attempted}, stored ${result.stored}, metadata-only ${result.metadataOnly}, failed ${result.failed}, skipped ${result.skipped}.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Email reprocess failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   const convertToOrderMutation = useMutation({
     mutationFn: (recordId: string) => (
       postJson<InboundOrderConvertToOrderResponse>(`/api/inbound-orders/${recordId}/convert-to-order`, {})
@@ -4393,6 +4574,19 @@ export default function InboundOrdersPage() {
       if (!confirmed) return;
     }
     recordTrustActionMutation.mutate({ recordId: record.id, action });
+  };
+
+  const runEmailReprocessAction = (record: ClientInboundOrderRecord, action: InboundEmailReprocessAction) => {
+    if (emailReprocessMutation.isPending || selectedRecordIsTerminal) return;
+    if (record.sourceType !== "email") {
+      toast({ title: "Email reprocess unavailable", description: "Only email-source inbound records can be reprocessed.", variant: "destructive" });
+      return;
+    }
+    if (action === "reprocess_email") {
+      const confirmed = window.confirm("Re-fetch this Gmail message/thread and refresh source evidence? Staff review draft edits will be preserved.");
+      if (!confirmed) return;
+    }
+    emailReprocessMutation.mutate({ recordId: record.id, action });
   };
 
   const toggleQueueRecordSelected = (recordId: string, selected: boolean) => {
@@ -4890,6 +5084,8 @@ export default function InboundOrdersPage() {
                 latestAttempt={draftPreviewQuery.data?.data.latestAttempt ?? null}
                 parseError={parseMutation.error as Error | null}
                 isParsing={isSelectedRecordParsing}
+                onEmailReprocess={runEmailReprocessAction}
+                isEmailReprocessing={emailReprocessMutation.isPending}
               />
             ) : (
               <SourceEvidencePanel
@@ -4908,6 +5104,8 @@ export default function InboundOrdersPage() {
                 onReject={rejectSelectedRecord}
                 onQueueAction={runQueueCleanupAction}
                 onTrustAction={runRecordTrustAction}
+                onEmailReprocess={runEmailReprocessAction}
+                isEmailReprocessing={emailReprocessMutation.isPending}
               />
             )}
           </div>

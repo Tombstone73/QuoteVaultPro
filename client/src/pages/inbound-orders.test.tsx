@@ -988,6 +988,106 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Text");
   });
 
+  test("backfills attachments from the operational email toolbar", async () => {
+    const row = record({
+      id: "inbound_email_1",
+      sourceType: "email",
+      sourceLabel: "TEMP_INBOUND email intake",
+      sourceRecordId: "gmail_msg_1",
+      sourceMessageId: "gmail_msg_1",
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        provider: "gmail",
+        messageId: "gmail_msg_1",
+        threadId: "thread_1",
+        sender: { name: "Shawn Fears", email: "shawn@brainstormprint.com" },
+        subject: "Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26",
+        bodyText: "Please see attached PO.",
+        thread: {
+          id: "thread_1",
+          messageCount: 2,
+          latestActivityAt: "2026-06-19T14:00:00.000Z",
+        },
+      },
+      normalizedPayloadJson: {
+        source: { type: "email", provider: "gmail", messageId: "gmail_msg_1", threadId: "thread_1" },
+      },
+      senderTrustStatus: "trusted_domain",
+      trustReason: "Sender matched inbound trust rule sender_domain.",
+      canAutoDownloadAttachments: true,
+      attachmentDownloadPolicy: "auto_download_allowed",
+      externalReference: "Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26",
+    });
+    let reprocessBody: any = null;
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === `/api/inbound-orders/${row.id}`) return jsonResponse({ success: true, data: detail(row) });
+      if (path === `/api/inbound-orders/${row.id}/draft-preview`) return jsonResponse(draftPreview({ draft: parsedDraft(), latestAttempt: null }));
+      if (path === `/api/inbound-orders/${row.id}/review-draft`) return jsonResponse({ success: true, data: reviewDraft(parsedDraft()) });
+      if (path === `/api/inbound-orders/${row.id}/email-reprocess`) {
+        reprocessBody = JSON.parse(options.body);
+        return jsonResponse({
+          success: true,
+          data: {
+            result: {
+              action: "backfill_attachments",
+              inboundRecordId: row.id,
+              providerMessageId: "gmail_msg_1",
+              providerThreadId: "thread_1",
+              threadMessagesInspected: 2,
+              latestThreadActivity: "2026-06-19T14:00:00.000Z",
+              candidatesFound: 2,
+              attempted: 2,
+              stored: 1,
+              metadataOnly: 1,
+              failed: 0,
+              skipped: 0,
+            },
+            inbound: detail(row, {
+              files: [{
+                id: "file_1",
+                inboundRecordId: row.id,
+                sourceFilename: "po.pdf",
+                role: "po",
+                status: "available",
+                fileRecordId: "file_record_1",
+                providerAttachmentId: "att_1",
+                providerMessageId: "gmail_msg_1",
+                mimeType: "application/pdf",
+                sizeBytes: 4,
+                metadataJson: { attachmentState: "downloaded" },
+              }],
+            }),
+          },
+        });
+      }
+      if (path.startsWith("/api/inbound-orders/customer-search")
+        || path.startsWith("/api/inbound-orders/contact-search")
+        || path.startsWith("/api/inbound-orders/product-search")) {
+        return jsonResponse({ success: true, data: [] });
+      }
+      if (path.startsWith("/api/inbound-orders/product-options/")) return jsonResponse(pbv2OptionsResponse());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+
+    await waitForText("Backfill Attachments");
+    await waitForText("Thread messages: 2");
+    const backfillButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Backfill Attachments")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(backfillButton);
+    });
+
+    await waitForCondition(() => reprocessBody?.action === "backfill_attachments", "email reprocess body");
+    expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Attachments backfilled",
+      description: expect.stringContaining("Candidates 2, attempted 2, stored 1, metadata-only 1"),
+    }));
+  });
+
   test("supports operational line item add, duplicate, remove, and product picker rendering", async () => {
     setupParsedInboundReview();
 
