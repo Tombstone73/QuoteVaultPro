@@ -7320,6 +7320,13 @@ export const inboundEmailIgnoreRuleTypeValues = [
   "subject_contains",
 ] as const;
 
+export const inboundEmailTrustRuleTypeValues = [
+  "sender_email_exact",
+  "sender_domain",
+  "customer_contact_email",
+  "customer_domain",
+] as const;
+
 export const inboundOrderSourceTypeSchema = z.enum(inboundOrderSourceTypeValues);
 export const inboundOrderSourceStatusSchema = z.enum(inboundOrderSourceStatusValues);
 export const inboundOrderSourceTrustLevelSchema = z.enum(inboundOrderSourceTrustLevelValues);
@@ -7334,6 +7341,7 @@ export const inboundOrderEventActorTypeSchema = z.enum(inboundOrderEventActorTyp
 export const inboundOrderReviewSnapshotTypeSchema = z.enum(inboundOrderReviewSnapshotTypeValues);
 export const inboundOrderParseAttemptStatusSchema = z.enum(inboundOrderParseAttemptStatusValues);
 export const inboundEmailIgnoreRuleTypeSchema = z.enum(inboundEmailIgnoreRuleTypeValues);
+export const inboundEmailTrustRuleTypeSchema = z.enum(inboundEmailTrustRuleTypeValues);
 
 export type InboundOrderSourceType = (typeof inboundOrderSourceTypeValues)[number];
 export type InboundOrderSourceStatus = (typeof inboundOrderSourceStatusValues)[number];
@@ -7349,6 +7357,7 @@ export type InboundOrderEventActorType = (typeof inboundOrderEventActorTypeValue
 export type InboundOrderReviewSnapshotType = (typeof inboundOrderReviewSnapshotTypeValues)[number];
 export type InboundOrderParseAttemptStatus = (typeof inboundOrderParseAttemptStatusValues)[number];
 export type InboundEmailIgnoreRuleType = (typeof inboundEmailIgnoreRuleTypeValues)[number];
+export type InboundEmailTrustRuleType = (typeof inboundEmailTrustRuleTypeValues)[number];
 
 export const inboundOrderSourceTypeEnum = pgEnum("inbound_order_source_type", inboundOrderSourceTypeValues);
 export const inboundOrderSourceStatusEnum = pgEnum("inbound_order_source_status", inboundOrderSourceStatusValues);
@@ -7424,6 +7433,24 @@ export const inboundEmailIgnoreRules = pgTable("inbound_email_ignore_rules", {
   index("inbound_email_ignore_rules_org_enabled_idx").on(table.organizationId, table.enabled),
   index("inbound_email_ignore_rules_org_type_value_idx").on(table.organizationId, table.ruleType, table.ruleValue),
   uniqueIndex("inbound_email_ignore_rules_org_type_value_uidx").on(table.organizationId, table.ruleType, table.ruleValue),
+]);
+
+export const inboundEmailTrustRules = pgTable("inbound_email_trust_rules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  enabled: boolean("enabled").notNull().default(true),
+  ruleType: varchar("rule_type", { length: 50 }).$type<InboundEmailTrustRuleType>().notNull(),
+  ruleValue: varchar("rule_value", { length: 500 }).notNull(),
+  notes: text("notes"),
+  matchCount: integer("match_count").notNull().default(0),
+  lastMatchedAt: timestamp("last_matched_at", { withTimezone: true }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("inbound_email_trust_rules_org_enabled_idx").on(table.organizationId, table.enabled),
+  index("inbound_email_trust_rules_org_type_value_idx").on(table.organizationId, table.ruleType, table.ruleValue),
+  uniqueIndex("inbound_email_trust_rules_org_type_value_uidx").on(table.organizationId, table.ruleType, table.ruleValue),
 ]);
 
 export const inboundOrderRecords = pgTable("inbound_order_records", {
@@ -7789,6 +7816,24 @@ export const updateInboundEmailIgnoreRuleSchema = insertInboundEmailIgnoreRuleSc
   id: z.string(),
 });
 
+export const insertInboundEmailTrustRuleSchema = createInsertSchema(inboundEmailTrustRules).omit({
+  id: true,
+  organizationId: true,
+  matchCount: true,
+  lastMatchedAt: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  enabled: z.boolean().default(true),
+  ruleType: inboundEmailTrustRuleTypeSchema,
+  ruleValue: z.string().trim().min(1).max(500),
+  notes: z.string().trim().max(2000).optional().nullable(),
+});
+
+export const updateInboundEmailTrustRuleSchema = insertInboundEmailTrustRuleSchema.partial().extend({
+  id: z.string(),
+});
+
 export const insertInboundOrderRecordSchema = createInsertSchema(inboundOrderRecords).omit({
   id: true,
   organizationId: true,
@@ -7919,6 +7964,11 @@ export type SelectInboundEmailIgnoreRule = typeof inboundEmailIgnoreRules.$infer
 export type InsertInboundEmailIgnoreRule = z.infer<typeof insertInboundEmailIgnoreRuleSchema>;
 export type UpdateInboundEmailIgnoreRule = z.infer<typeof updateInboundEmailIgnoreRuleSchema>;
 export type InboundEmailIgnoreRule = SelectInboundEmailIgnoreRule;
+
+export type SelectInboundEmailTrustRule = typeof inboundEmailTrustRules.$inferSelect;
+export type InsertInboundEmailTrustRule = z.infer<typeof insertInboundEmailTrustRuleSchema>;
+export type UpdateInboundEmailTrustRule = z.infer<typeof updateInboundEmailTrustRuleSchema>;
+export type InboundEmailTrustRule = SelectInboundEmailTrustRule;
 
 export type SelectInboundOrderRecord = typeof inboundOrderRecords.$inferSelect;
 export type InsertInboundOrderRecord = z.infer<typeof insertInboundOrderRecordSchema>;

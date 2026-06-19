@@ -92,7 +92,39 @@ function serviceHarness() {
   const repo = {
     listFiles: jest.fn(async () => createdFiles),
     listEnabledEmailIgnoreRules: jest.fn(async () => []),
+    listEnabledEmailTrustRules: jest.fn(async () => [{
+      id: "trust_1",
+      organizationId: "org_1",
+      enabled: true,
+      ruleType: "sender_email_exact",
+      ruleValue: "buyer@example.com",
+      notes: null,
+      matchCount: 0,
+      lastMatchedAt: null,
+      createdByUserId: "user_1",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }]),
+    recordEmailTrustRuleMatch: jest.fn(async () => undefined),
+    createEmailTrustRule: jest.fn(async (values: any) => ({
+      id: "trust_created",
+      matchCount: 0,
+      lastMatchedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...values,
+    })),
+    senderEmailMatchesCustomerContact: jest.fn(async () => false),
+    senderDomainMatchesCustomerDomain: jest.fn(async () => false),
     findFileByProviderAttachment: jest.fn(async () => null),
+    getRecord: jest.fn(async () => record),
+    getFile: jest.fn(async (_organizationId: string, _inboundRecordId: string, fileId: string) => createdFiles.find((file) => file.id === fileId) ?? null),
+    updateFile: jest.fn(async (args: any) => {
+      const existingIndex = createdFiles.findIndex((file) => file.id === args.fileId);
+      if (existingIndex < 0) return null;
+      createdFiles[existingIndex] = { ...createdFiles[existingIndex], ...args.patch, updatedAt: new Date() };
+      return createdFiles[existingIndex];
+    }),
     createFile: jest.fn(async (values: any) => {
       const file = { id: `file_${createdFiles.length + 1}`, createdAt: new Date(), updatedAt: new Date(), ...values };
       createdFiles.push(file);
@@ -171,6 +203,16 @@ function insertConflictDbHarness(existingRecord: InboundOrderRecord) {
   };
 }
 
+function mailboxDbHarness() {
+  return {
+    select: jest.fn(() => ({
+      from: jest.fn(() => ({
+        where: jest.fn(async () => [mailbox]),
+      })),
+    })),
+  };
+}
+
 describe("InboundEmailIngestionService attachment ingestion", () => {
   test("does nothing for Gmail messages with no attachments", async () => {
     const { service, repo } = serviceHarness();
@@ -243,9 +285,294 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     expect(events[0]).toEqual(expect.objectContaining({ eventType: "email.attachment_stored" }));
   });
 
+  test("unknown sender creates metadata-only pending_trust attachment", async () => {
+    const { service, repo, storage, createdFiles, events } = serviceHarness();
+    repo.listEnabledEmailTrustRules.mockResolvedValueOnce([]);
+
+    await (service as any).ingestAttachments({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      mailbox,
+      message: message({
+        senderEmail: "unknown@example.net",
+        attachments: [{
+          filename: "654898 new po.pdf",
+          mimeType: "application/pdf",
+          size: 8,
+          attachmentId: "att_pending",
+        }],
+      }),
+      record,
+      adapter: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+      },
+      skippedReason: null,
+    });
+
+    expect(storage.finalizeUpload).not.toHaveBeenCalled();
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      providerAttachmentId: "att_pending",
+      fileRecordId: null,
+      status: "uploaded",
+      reviewNotes: "Sender is not trusted. Attachment metadata captured pending staff trust decision.",
+    }));
+    expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+      senderTrustStatus: "untrusted",
+      attachmentState: "pending_trust",
+    }));
+    expect(events.find((event) => event.eventType === "email.attachment_ingestion_diagnostics")).toEqual(expect.objectContaining({
+      metadataJson: expect.objectContaining({
+        attachmentPartsAttempted: 1,
+        downloadAttempts: 0,
+        metadataOnlyRowsCreated: 1,
+        safetyDecisions: [expect.objectContaining({
+          trusted: false,
+          attachmentState: "pending_trust",
+        })],
+      }),
+    }));
+  });
+
+  test("trusted domain auto-downloads allowed PDF", async () => {
+    const { service, repo, storage, createdFiles } = serviceHarness();
+    repo.listEnabledEmailTrustRules.mockResolvedValueOnce([{
+      id: "trust_domain",
+      organizationId: "org_1",
+      enabled: true,
+      ruleType: "sender_domain",
+      ruleValue: "example.com",
+      notes: null,
+      matchCount: 0,
+      lastMatchedAt: null,
+      createdByUserId: "user_1",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }]);
+
+    await (service as any).ingestAttachments({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      mailbox,
+      message: message({
+        senderEmail: "orders@example.com",
+        attachments: [{
+          filename: "domain-po.pdf",
+          mimeType: "application/pdf",
+          size: 8,
+          attachmentId: "att_domain",
+        }],
+      }),
+      record,
+      adapter: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+      },
+      skippedReason: null,
+    });
+
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      providerAttachmentId: "att_domain",
+      status: "available",
+    }));
+    expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+      senderTrustSource: "sender_domain",
+      attachmentState: "downloaded",
+    }));
+  });
+
+  test("blocked exe never auto-downloads even from trusted sender", async () => {
+    const { service, storage, createdFiles } = serviceHarness();
+
+    await (service as any).ingestAttachments({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      mailbox,
+      message: message({
+        attachments: [{
+          filename: "proof-viewer.exe",
+          mimeType: "application/octet-stream",
+          size: 8,
+          attachmentId: "att_exe",
+        }],
+      }),
+      record,
+      adapter: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("MZ"), mimeType: "application/octet-stream", sizeBytes: 2 })),
+      },
+      skippedReason: null,
+    });
+
+    expect(storage.finalizeUpload).not.toHaveBeenCalled();
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      providerAttachmentId: "att_exe",
+      status: "quarantined",
+    }));
+    expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+      attachmentState: "blocked_file_type",
+      blockedFileType: true,
+    }));
+  });
+
+  test("zip from trusted sender is stored as scan_pending quarantined", async () => {
+    const { service, storage, createdFiles } = serviceHarness();
+
+    await (service as any).ingestAttachments({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      mailbox,
+      message: message({
+        attachments: [{
+          filename: "artwork.zip",
+          mimeType: "application/zip",
+          size: 8,
+          attachmentId: "att_zip",
+        }],
+      }),
+      record,
+      adapter: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("PK"), mimeType: "application/zip", sizeBytes: 2 })),
+      },
+      skippedReason: null,
+    });
+
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      providerAttachmentId: "att_zip",
+      status: "quarantined",
+      fileRecordId: "file_record_1",
+    }));
+    expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+      attachmentState: "scan_pending",
+    }));
+  });
+
+  test("download once does not create a trust rule", async () => {
+    const { repo, storage, createdFiles } = serviceHarness();
+    const existingRecord = {
+      ...record,
+      rawPayloadJson: {
+        provider: "gmail",
+        messageId: "gmail_msg_1",
+        mailbox: { id: "mailbox_1", emailAddress: "orders@example.com" },
+        sender: { name: "Unknown", email: "unknown@example.net" },
+        subject: "PO attached",
+      },
+    };
+    repo.getRecord.mockResolvedValue(existingRecord);
+    createdFiles.push({
+      ...record,
+      id: "file_pending",
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      inboundLineItemId: null,
+      fileRecordId: null,
+      sourceFilename: "one-time-po.pdf",
+      role: "po",
+      mimeType: "application/pdf",
+      sizeBytes: 8,
+      checksum: null,
+      status: "uploaded",
+      providerAttachmentId: "att_once",
+      providerMessageId: "gmail_msg_1",
+      contentDisposition: "attachment",
+      metadataJson: { attachmentState: "pending_trust" },
+      reviewNotes: "Pending trust",
+      createdQuoteAttachmentId: null,
+      createdOrderAttachmentId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const service = new InboundEmailIngestionService(mailboxDbHarness() as any, {
+      gmail: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+      },
+    }, repo as any, storage as any);
+
+    const updated = await service.approveAttachmentTrustAction({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      fileId: "file_pending",
+      action: "download_once",
+    });
+
+    expect(repo.createEmailTrustRule).not.toHaveBeenCalled();
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(updated).toEqual(expect.objectContaining({
+      fileRecordId: "file_record_1",
+      status: "available",
+    }));
+  });
+
+  test("trust sender action creates future auto-download permission", async () => {
+    const { repo, storage, createdFiles } = serviceHarness();
+    const existingRecord = {
+      ...record,
+      rawPayloadJson: {
+        provider: "gmail",
+        messageId: "gmail_msg_1",
+        mailbox: { id: "mailbox_1", emailAddress: "orders@example.com" },
+        sender: { name: "Buyer", email: "buyer@example.com" },
+        subject: "PO attached",
+      },
+    };
+    repo.getRecord.mockResolvedValue(existingRecord);
+    createdFiles.push({
+      ...record,
+      id: "file_pending",
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      inboundLineItemId: null,
+      fileRecordId: null,
+      sourceFilename: "trusted-po.pdf",
+      role: "po",
+      mimeType: "application/pdf",
+      sizeBytes: 8,
+      checksum: null,
+      status: "uploaded",
+      providerAttachmentId: "att_trust",
+      providerMessageId: "gmail_msg_1",
+      contentDisposition: "attachment",
+      metadataJson: { attachmentState: "pending_trust" },
+      reviewNotes: "Pending trust",
+      createdQuoteAttachmentId: null,
+      createdOrderAttachmentId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const service = new InboundEmailIngestionService(mailboxDbHarness() as any, {
+      gmail: {
+        listRecentMessages: jest.fn(async () => []),
+        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+      },
+    }, repo as any, storage as any);
+
+    await service.approveAttachmentTrustAction({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      fileId: "file_pending",
+      action: "trust_sender_and_download",
+    });
+
+    expect(repo.createEmailTrustRule).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1",
+      ruleType: "sender_email_exact",
+      ruleValue: "buyer@example.com",
+      createdByUserId: "user_1",
+      enabled: true,
+    }));
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+  });
+
   test("does not duplicate provider attachments already linked to the TEMP record", async () => {
     const { service, repo, storage } = serviceHarness();
-    repo.findFileByProviderAttachment.mockResolvedValueOnce({ id: "existing_file" } as any);
+    repo.findFileByProviderAttachment.mockResolvedValueOnce({ id: "existing_file", fileRecordId: "file_record_existing" } as any);
 
     await (service as any).ingestAttachments({
       organizationId: "org_1",
@@ -359,13 +686,14 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       fileRecordId: null,
       providerAttachmentId: null,
       contentDisposition: "attachment; filename=\"calendar.invite\"",
-      reviewNotes: "Attachment type is not supported for automatic download.",
+      reviewNotes: "Attachment type .invite is not allowed for automatic download.",
     }));
     expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
       detectedBy: ["filename", "content-disposition:attachment", "mimeType"],
       safeToDownload: false,
-      unsupportedMimeReason: "Attachment type is not supported for automatic download.",
-      failureReason: "Attachment type is not supported for automatic download.",
+      unsupportedMimeReason: "Attachment type .invite is not allowed for automatic download.",
+      failureReason: "Attachment type .invite is not allowed for automatic download.",
+      attachmentState: "metadata_only",
     }));
   });
 

@@ -106,6 +106,24 @@ function inboundEmailIgnoreRule(overrides: Record<string, any> = {}) {
   };
 }
 
+function inboundEmailTrustRule(overrides: Record<string, any> = {}) {
+  const now = new Date("2026-06-17T12:00:00.000Z");
+  return {
+    id: "trust_1",
+    organizationId: "org_1",
+    enabled: true,
+    ruleType: "sender_domain",
+    ruleValue: "example.com",
+    notes: "Known customer domain",
+    matchCount: 0,
+    lastMatchedAt: null,
+    createdByUserId: "user_1",
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
 function emailPullDiagnostics(overrides: Record<string, any> = {}) {
   return {
     organizationId: "org_1",
@@ -438,6 +456,10 @@ describe("inbound order routes", () => {
     createEmailIgnoreRule: jest.fn<(...args: any[]) => Promise<any>>(),
     updateEmailIgnoreRule: jest.fn<(...args: any[]) => Promise<any>>(),
     deleteEmailIgnoreRule: jest.fn<(...args: any[]) => Promise<any>>(),
+    listEmailTrustRules: jest.fn<(...args: any[]) => Promise<any>>(),
+    createEmailTrustRule: jest.fn<(...args: any[]) => Promise<any>>(),
+    updateEmailTrustRule: jest.fn<(...args: any[]) => Promise<any>>(),
+    deleteEmailTrustRule: jest.fn<(...args: any[]) => Promise<any>>(),
   };
   const parsingService = {
     parseInboundOrderRecord: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -451,6 +473,7 @@ describe("inbound order routes", () => {
   const inboundEmailIngestionService = {
     pullLatestEmails: jest.fn<(...args: any[]) => Promise<any>>(),
     getGmailPayloadDiagnosticsForSubject: jest.fn<(...args: any[]) => Promise<any>>(),
+    approveAttachmentTrustAction: jest.fn<(...args: any[]) => Promise<any>>(),
   };
   const inboundEmailMailboxSettingsService = {
     listMailboxes: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -1021,6 +1044,68 @@ describe("inbound order routes", () => {
     expect(response.body).toEqual({
       success: false,
       message: "An enabled inbound email ignore rule already exists for this type and value.",
+    });
+  });
+
+  test("manages inbound email trust rules", async () => {
+    service.listEmailTrustRules.mockResolvedValue([inboundEmailTrustRule()]);
+    service.createEmailTrustRule.mockResolvedValue(inboundEmailTrustRule({
+      id: "trust_2",
+      ruleType: "sender_email_exact",
+      ruleValue: "orders@example.com",
+      notes: "Approved sender",
+    }));
+
+    const listResponse = await request(buildApp(service))
+      .get("/api/inbound-orders/email/trust-rules");
+
+    expect(listResponse.status).toBe(200);
+    expect(listResponse.body.data.rules[0]).toMatchObject({
+      id: "trust_1",
+      ruleType: "sender_domain",
+      ruleValue: "example.com",
+    });
+
+    const createResponse = await request(buildApp(service))
+      .post("/api/inbound-orders/email/trust-rules")
+      .send({
+        ruleType: "sender_email_exact",
+        ruleValue: "orders@example.com",
+        notes: "Approved sender",
+      });
+
+    expect(createResponse.status).toBe(201);
+    expect(service.createEmailTrustRule).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      ruleType: "sender_email_exact",
+      ruleValue: "orders@example.com",
+      notes: "Approved sender",
+    }));
+  });
+
+  test("applies inbound attachment trust action without creating downstream records", async () => {
+    inboundEmailIngestionService.approveAttachmentTrustAction.mockResolvedValue({
+      id: "file_1",
+      inboundRecordId: "inbound_1",
+      sourceFilename: "po.pdf",
+      fileRecordId: "file_record_1",
+      status: "available",
+      metadataJson: { attachmentState: "downloaded" },
+    });
+
+    const response = await request(buildApp(service, { inboundEmailIngestionService }))
+      .post("/api/inbound-orders/inbound_1/files/file_1/trust-action")
+      .send({ action: "download_once" });
+
+    expect(response.status).toBe(200);
+    expect(inboundEmailIngestionService.approveAttachmentTrustAction).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      fileId: "file_1",
+      action: "download_once",
+      note: null,
     });
   });
 

@@ -694,6 +694,13 @@
       "when": 1783641600000,
       "tag": "0103_inbound_email_attachment_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1783728000000,
+      "tag": "0104_inbound_email_trust_rules",
+      "breakpoints": true
     }
   ]
 }

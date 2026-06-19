@@ -19,14 +19,18 @@ import { AlertTriangle, ChevronDown, ChevronRight, Edit, Mail, FileText, Plus, I
 import { useState, useEffect, type FormEvent } from "react";
 import {
   useCreateInboundEmailIgnoreRule,
+  useCreateInboundEmailTrustRule,
   useDeleteInboundEmailIgnoreRule,
+  useDeleteInboundEmailTrustRule,
   useDeleteInboundEmailMailbox,
   useInboundEmailIgnoreRules,
+  useInboundEmailTrustRules,
   useInboundEmailPullDiagnostics,
   useInboundEmailMailboxes,
   useSetDefaultInboundEmailMailbox,
   useStartInboundGmailMailboxOAuth,
   useUpdateInboundEmailIgnoreRule,
+  useUpdateInboundEmailTrustRule,
   useUpdateInboundEmailMailboxEnabled,
 } from "@/hooks/useInboundEmailIntakeSettings";
 import {
@@ -34,7 +38,7 @@ import {
   inboundEmailIntakeSettingsSchema,
   type InboundEmailIntakeSettings,
 } from "@shared/inboundEmailIntakeSettings";
-import type { InboundEmailIgnoreRuleTypeValue } from "@shared/inboundOrdersApi";
+import type { InboundEmailIgnoreRuleTypeValue, InboundEmailTrustRuleTypeValue } from "@shared/inboundOrdersApi";
 
 // Schema for email templates
 const emailTemplatesSchema = z.object({
@@ -667,6 +671,217 @@ function InboundEmailIgnoreRulesCard() {
   );
 }
 
+const inboundTrustRuleTypeLabels: Record<InboundEmailTrustRuleTypeValue, string> = {
+  sender_email_exact: "Sender email",
+  sender_domain: "Sender domain",
+  customer_contact_email: "Customer contact email",
+  customer_domain: "Customer domain",
+};
+
+function InboundEmailTrustRulesCard() {
+  const { toast } = useToast();
+  const rulesQuery = useInboundEmailTrustRules();
+  const createRule = useCreateInboundEmailTrustRule();
+  const updateRule = useUpdateInboundEmailTrustRule();
+  const deleteRule = useDeleteInboundEmailTrustRule();
+  const [ruleType, setRuleType] = useState<InboundEmailTrustRuleTypeValue>("sender_email_exact");
+  const [ruleValue, setRuleValue] = useState("");
+  const [notes, setNotes] = useState("");
+  const [enabled, setEnabled] = useState(true);
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const rules = rulesQuery.data?.rules ?? [];
+  const isMutating = createRule.isPending || updateRule.isPending || deleteRule.isPending;
+  const editingRule = rules.find((rule) => rule.id === editingRuleId) ?? null;
+
+  const resetForm = () => {
+    setRuleType("sender_email_exact");
+    setRuleValue("");
+    setNotes("");
+    setEnabled(true);
+    setEditingRuleId(null);
+  };
+
+  const beginEdit = (rule: typeof rules[number]) => {
+    setEditingRuleId(rule.id);
+    setRuleType(rule.ruleType);
+    setRuleValue(rule.ruleValue);
+    setNotes(rule.notes ?? "");
+    setEnabled(rule.enabled);
+  };
+
+  const submitRule = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalizedValue = ruleValue.trim().toLowerCase();
+    if (!normalizedValue) {
+      toast({ title: "Trust rule value is required", description: "Enter a sender email, sender domain, customer email, or customer domain.", variant: "destructive" });
+      return;
+    }
+    const payload = {
+      ruleType,
+      ruleValue: normalizedValue,
+      notes: notes.trim() || null,
+      enabled,
+    };
+    const mutationOptions = {
+      onSuccess: () => {
+        resetForm();
+        toast({
+          title: editingRuleId ? "Trusted inbound sender updated" : "Trusted inbound sender saved",
+          description: "Future pulls can auto-download allowed attachment types for matching trusted senders.",
+        });
+      },
+      onError: (error: Error) => {
+        toast({ title: "Failed to save trust rule", description: error.message, variant: "destructive" });
+      },
+    };
+    if (editingRuleId) {
+      updateRule.mutate({ ruleId: editingRuleId, ...payload }, mutationOptions);
+    } else {
+      createRule.mutate(payload, mutationOptions);
+    }
+  };
+
+  const toggleRule = (ruleId: string, enabled: boolean) => {
+    updateRule.mutate({ ruleId, enabled }, {
+      onError: (error: Error) => {
+        toast({ title: "Failed to update trust rule", description: error.message, variant: "destructive" });
+      },
+    });
+  };
+
+  const removeRule = (ruleId: string, label: string) => {
+    if (!window.confirm(`Delete inbound trust rule for ${label}? Existing TEMP_INBOUND records and files will remain.`)) return;
+    deleteRule.mutate(ruleId, {
+      onSuccess: () => {
+        toast({ title: "Inbound trust rule deleted", description: "Future email pulls will no longer use that trust rule." });
+      },
+      onError: (error: Error) => {
+        toast({ title: "Failed to delete trust rule", description: error.message, variant: "destructive" });
+      },
+    });
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Star className="h-5 w-5" />
+          Trusted Inbound Senders
+        </CardTitle>
+        <CardDescription>
+          Allow matching trusted senders to auto-download safe inbound attachment types. Blocked file types are still never downloaded.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <form onSubmit={submitRule} className="grid gap-3 md:grid-cols-[220px_1fr_auto]">
+          <select
+            className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+            value={ruleType}
+            onChange={(event) => setRuleType(event.target.value as InboundEmailTrustRuleTypeValue)}
+            disabled={isMutating}
+            aria-label="Trust rule type"
+          >
+            {Object.entries(inboundTrustRuleTypeLabels).map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+          <Input
+            value={ruleValue}
+            onChange={(event) => setRuleValue(event.target.value)}
+            placeholder="orders@example.com or example.com"
+            disabled={isMutating}
+          />
+          <Button type="submit" disabled={isMutating || !ruleValue.trim()}>
+            {editingRule ? <Edit className="mr-2 h-4 w-4" /> : <Plus className="mr-2 h-4 w-4" />}
+            {editingRule ? "Save Rule" : "Add Rule"}
+          </Button>
+          <label className="flex items-center gap-2 text-sm text-foreground md:col-span-3">
+            <Switch checked={enabled} disabled={isMutating} onCheckedChange={setEnabled} aria-label="Trust rule enabled" />
+            Enabled
+          </label>
+          <Textarea
+            className="md:col-span-3"
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            placeholder="Optional notes"
+            rows={2}
+            disabled={isMutating}
+          />
+          {editingRule && (
+            <div className="md:col-span-3">
+              <Button type="button" size="sm" variant="ghost" onClick={resetForm} disabled={isMutating}>
+                Cancel edit
+              </Button>
+            </div>
+          )}
+        </form>
+
+        {rulesQuery.isLoading ? (
+          <Skeleton className="h-40 w-full" />
+        ) : rulesQuery.isError ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+            Failed to load inbound trust rules.
+          </div>
+        ) : rules.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border p-6 text-sm text-muted-foreground">
+            No trusted inbound sender rules are configured yet.
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-md border border-border">
+            <table className="w-full min-w-[760px] text-sm">
+              <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Enabled</th>
+                  <th className="px-4 py-3 font-medium">Type</th>
+                  <th className="px-4 py-3 font-medium">Value</th>
+                  <th className="px-4 py-3 font-medium">Usage</th>
+                  <th className="px-4 py-3 font-medium">Notes</th>
+                  <th className="px-4 py-3 text-right font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rules.map((rule) => (
+                  <tr key={rule.id} className="border-t border-border align-top">
+                    <td className="px-4 py-3">
+                      <Switch
+                        checked={rule.enabled}
+                        disabled={isMutating}
+                        onCheckedChange={(checked) => toggleRule(rule.id, checked)}
+                        aria-label={`Enable trust rule ${rule.ruleValue}`}
+                      />
+                    </td>
+                    <td className="px-4 py-3">{inboundTrustRuleTypeLabels[rule.ruleType]}</td>
+                    <td className="px-4 py-3 font-medium text-foreground">{rule.ruleValue}</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      <div>{rule.matchCount} match{rule.matchCount === 1 ? "" : "es"}</div>
+                      <div className="text-xs">{rule.lastMatchedAt ? formatMailboxDate(rule.lastMatchedAt) : "Never matched"}</div>
+                    </td>
+                    <td className="max-w-[260px] px-4 py-3 text-muted-foreground">
+                      <span className="block whitespace-normal break-words">{rule.notes || "-"}</span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button type="button" size="sm" variant="ghost" disabled={isMutating} onClick={() => beginEdit(rule)}>
+                          <Edit className="mr-2 h-4 w-4" />
+                          Edit
+                        </Button>
+                        <Button type="button" size="sm" variant="ghost" disabled={isMutating} onClick={() => removeRule(rule.id, rule.ruleValue)}>
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Delete
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function formatDiagnosticValue(value: unknown): string {
   if (value == null || value === "") return "-";
   if (typeof value === "string") return value;
@@ -685,6 +900,7 @@ function formatDiagnosticHints(value: unknown): string {
 function AttachmentPipelineDiagnostics({ record }: { record: Record<string, unknown> }) {
   const pipeline = (record.attachmentPipelineDiagnostics ?? {}) as Record<string, any>;
   const failures = Array.isArray(pipeline.failures) ? pipeline.failures : [];
+  const safetyDecisions = Array.isArray(pipeline.safetyDecisions) ? pipeline.safetyDecisions : [];
   return (
     <div className="mt-2 rounded-md border border-border bg-background/70 p-2">
       <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Attachment Diagnostics</div>
@@ -720,6 +936,20 @@ function AttachmentPipelineDiagnostics({ record }: { record: Record<string, unkn
       </div>
       {pipeline.skippedReason ? (
         <div className="mt-2 text-[11px] text-muted-foreground">Skipped reason: {formatDiagnosticValue(pipeline.skippedReason)}</div>
+      ) : null}
+      {safetyDecisions.length > 0 ? (
+        <div className="mt-2 space-y-1">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Safety Decisions</div>
+          {safetyDecisions.map((decision: Record<string, unknown>, index: number) => (
+            <div key={index} className="rounded border border-border/70 bg-muted/30 p-1.5 text-[11px] text-muted-foreground">
+              <div className="font-medium text-foreground">{formatDiagnosticValue(decision.filename ?? decision.providerAttachmentId ?? `Attachment ${index + 1}`)}</div>
+              <div>Trust: {formatDiagnosticValue(decision.trusted)} / Source: {formatDiagnosticValue(decision.trustSource)}</div>
+              <div>Extension: {formatDiagnosticValue(decision.extension)} / Blocked: {formatDiagnosticValue(decision.blocked)}</div>
+              <div>Download allowed: {formatDiagnosticValue(decision.downloadAllowed)} / State: {formatDiagnosticValue(decision.attachmentState)}</div>
+              <div>Reason: {formatDiagnosticValue(decision.reason)}</div>
+            </div>
+          ))}
+        </div>
       ) : null}
       {failures.length > 0 ? (
         <div className="mt-2 space-y-1">
@@ -1447,6 +1677,7 @@ export function EmailSettings() {
           <InboundEmailIntakeControls />
           <InboundEmailMailboxSettingsCard />
           <InboundEmailIgnoreRulesCard />
+          <InboundEmailTrustRulesCard />
           <EmailPullDiagnosticsPanel />
           <EmailSettingsTab />
           <EmailTemplatesCard />
