@@ -177,6 +177,8 @@ const defaultQueueFilters: QueueFilters = {
   search: "",
 };
 
+const queueSearchDebounceMs = 300;
+
 const workspaceLayoutStorageKeys = {
   queueCollapsed: "titanos.inboundOrders.queueCollapsed",
   evidenceWidth: "titanos.inboundOrders.evidenceWidth",
@@ -1107,14 +1109,18 @@ function FieldSourceSection({ draft }: { draft: InboundOrderParsedDraft }) {
 
 function QueueTriageControls({
   filters,
+  searchValue,
   summary,
   isLoading,
   onChange,
+  onSearchChange,
 }: {
   filters: QueueFilters;
+  searchValue: string;
   summary: InboundOrderQueueSummary | null;
   isLoading: boolean;
   onChange: (filters: QueueFilters) => void;
+  onSearchChange: (value: string) => void;
 }) {
   const setFilter = (patch: Partial<QueueFilters>) => onChange({ ...filters, ...patch });
   const statusButtons: Array<{ value: QueueStatusFilter; label: string; count: number | null }> = [
@@ -1139,10 +1145,9 @@ function QueueTriageControls({
         <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
         <Input
           className="w-full max-w-full pl-8"
-          value={filters.search}
-          onChange={(event) => setFilter({ search: event.target.value })}
+          value={searchValue}
+          onChange={(event) => onSearchChange(event.target.value)}
           placeholder="Search reference, sender, notes, subject, body"
-          disabled={isLoading}
         />
       </label>
 
@@ -4109,6 +4114,7 @@ export default function InboundOrdersPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedQueueRecordIds, setSelectedQueueRecordIds] = useState<Set<string>>(() => new Set());
   const [queueFilters, setQueueFilters] = useState<QueueFilters>(defaultQueueFilters);
+  const [queueSearchText, setQueueSearchText] = useState(defaultQueueFilters.search);
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
   const [parsingRecordId, setParsingRecordId] = useState<string | null>(null);
   const [lastConvertedOrderId, setLastConvertedOrderId] = useState<string | null>(null);
@@ -4148,26 +4154,38 @@ export default function InboundOrdersPage() {
     queryKey: ["/api/inbound-orders", queueFilters],
     queryFn: () => readJson<ClientInboundOrdersListResponse>(listUrl),
     enabled: inboundEmailSettingsReady && !inboundEmailFeatureDisabled,
+    placeholderData: (previousData) => previousData,
   });
 
   const records = listQuery.data?.data ?? [];
   const queueSummary = listQuery.data?.summary ?? null;
 
   useEffect(() => {
+    const appliedSearch = queueSearchText.trim();
+    if (appliedSearch === queueFilters.search) return;
+
+    const debounceId = window.setTimeout(() => {
+      setQueueFilters((current) => (
+        current.search === appliedSearch ? current : { ...current, search: appliedSearch }
+      ));
+    }, queueSearchDebounceMs);
+
+    return () => window.clearTimeout(debounceId);
+  }, [queueSearchText, queueFilters.search]);
+
+  useEffect(() => {
     if (!selectedId && records.length > 0) {
       setSelectedId(records[0].id);
-      return;
-    }
-
-    if (selectedId && records.length > 0 && !records.some((record) => record.id === selectedId)) {
-      setSelectedId(records[0].id);
-      return;
-    }
-
-    if (selectedId && records.length === 0) {
-      setSelectedId(null);
     }
   }, [records, selectedId]);
+
+  const applyQueueFilters = (nextFilters: QueueFilters) => {
+    setQueueFilters(nextFilters);
+  };
+
+  const updateQueueSearchText = (value: string) => {
+    setQueueSearchText(value);
+  };
 
   useEffect(() => {
     const recordIds = new Set(records.map((record) => record.id));
@@ -4231,7 +4249,7 @@ export default function InboundOrdersPage() {
     return () => window.removeEventListener("resize", reconcileToViewport);
   }, [queueCollapsed, evidenceWidth, draftWidth, workspaceWidth]);
 
-  const selectedRecord = useMemo(
+  const selectedListRecord = useMemo(
     () => records.find((record) => record.id === selectedId) ?? null,
     [records, selectedId],
   );
@@ -4241,6 +4259,8 @@ export default function InboundOrdersPage() {
     queryFn: () => readJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${selectedId}`),
     enabled: Boolean(selectedId),
   });
+
+  const selectedRecord = selectedListRecord ?? detailQuery.data?.data.record ?? null;
 
   const draftPreviewQuery = useQuery({
     queryKey: ["/api/inbound-orders", selectedId, "draft-preview"],
@@ -4983,9 +5003,11 @@ export default function InboundOrdersPage() {
               <div className="flex min-h-0 flex-1 flex-col">
                 <QueueTriageControls
                   filters={queueFilters}
+                  searchValue={queueSearchText}
                   summary={queueSummary}
                   isLoading={listQuery.isFetching}
-                  onChange={setQueueFilters}
+                  onChange={applyQueueFilters}
+                  onSearchChange={updateQueueSearchText}
                 />
                 {records.length > 0 && (
                   <div className="border-b border-border bg-background px-3 py-2">

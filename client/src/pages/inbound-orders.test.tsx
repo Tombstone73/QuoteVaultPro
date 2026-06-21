@@ -638,6 +638,165 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Pending Trust");
   });
 
+  test("debounces queue search without clearing the selected workspace immediately", async () => {
+    const first = record({
+      id: "inbound_1",
+      externalReference: "PVC-PO",
+      rawPayloadJson: {
+        sender: { name: "Ada Lovelace", email: "ada@example.com" },
+        subject: "PVC signs",
+        bodyText: "Please make PVC signs.",
+      },
+    });
+    const second = record({
+      id: "inbound_2",
+      externalReference: "BACKLIT-PO",
+      rawPayloadJson: {
+        sender: { name: "Grace Hopper", email: "grace@example.com" },
+        subject: "Backlit signs",
+        bodyText: "Please make backlit signs.",
+      },
+    });
+    const listRequests: string[] = [];
+    const detailRequests: string[] = [];
+
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path === "/api/inbound-orders/email-settings") {
+        return jsonResponse({
+          success: true,
+          data: {
+            inboundEmailIntakeEnabled: true,
+            inboundEmailPullPaused: false,
+          },
+        });
+      }
+      if (path.startsWith("/api/inbound-orders?")) {
+        listRequests.push(path);
+        const params = new URL(`http://test.local${path}`).searchParams;
+        const search = params.get("search")?.toLowerCase() ?? "";
+        const rows = search.includes("pvc") ? [first] : [first, second];
+        return jsonResponse(listResponse(rows));
+      }
+      if (path === "/api/inbound-orders/inbound_1") {
+        detailRequests.push(path);
+        return jsonResponse({ success: true, data: detail(first) });
+      }
+      if (path === "/api/inbound-orders/inbound_2") {
+        detailRequests.push(path);
+        return jsonResponse({ success: true, data: detail(second) });
+      }
+      if (path === "/api/inbound-orders/inbound_1/draft-preview" || path === "/api/inbound-orders/inbound_2/draft-preview") {
+        return jsonResponse(draftPreview());
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("PVC-PO");
+    await waitForText("BACKLIT-PO");
+    await waitForCondition(() => detailRequests.includes("/api/inbound-orders/inbound_1"), "initial inbound record selected");
+
+    const searchInput = container.querySelector("input[placeholder='Search reference, sender, notes, subject, body']") as HTMLInputElement;
+    act(() => {
+      Simulate.change(searchInput, { target: { value: "p" } } as any);
+      Simulate.change(searchInput, { target: { value: "pv" } } as any);
+      Simulate.change(searchInput, { target: { value: "pvc" } } as any);
+    });
+
+    expect(searchInput.value).toBe("pvc");
+    expect(listRequests.some((path) => path.includes("search=pvc"))).toBe(false);
+    expect(detailRequests).not.toContain("/api/inbound-orders/inbound_2");
+    expect(container.textContent).toContain("PVC-PO");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    await waitForCondition(() => listRequests.some((path) => path.includes("search=pvc")), "debounced queue search applied");
+
+    expect(container.textContent).toContain("PVC-PO");
+    expect(container.textContent).not.toContain("BACKLIT-PO");
+    expect(detailRequests).not.toContain("/api/inbound-orders/inbound_2");
+  });
+
+  test("does not auto-select a different inbound record on each debounced search result", async () => {
+    const first = record({
+      id: "inbound_1",
+      externalReference: "PVC-PO",
+      rawPayloadJson: {
+        sender: { name: "Ada Lovelace", email: "ada@example.com" },
+        subject: "PVC signs",
+        bodyText: "Please make PVC signs.",
+      },
+    });
+    const second = record({
+      id: "inbound_2",
+      externalReference: "BACKLIT-PO",
+      rawPayloadJson: {
+        sender: { name: "Grace Hopper", email: "grace@example.com" },
+        subject: "Backlit signs",
+        bodyText: "Please make backlit signs.",
+      },
+    });
+    const listRequests: string[] = [];
+    const detailRequests: string[] = [];
+
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path === "/api/inbound-orders/email-settings") {
+        return jsonResponse({
+          success: true,
+          data: {
+            inboundEmailIntakeEnabled: true,
+            inboundEmailPullPaused: false,
+          },
+        });
+      }
+      if (path.startsWith("/api/inbound-orders?")) {
+        listRequests.push(path);
+        const params = new URL(`http://test.local${path}`).searchParams;
+        const search = params.get("search")?.toLowerCase() ?? "";
+        const rows = search.includes("backlit") ? [second] : [first, second];
+        return jsonResponse(listResponse(rows));
+      }
+      if (path === "/api/inbound-orders/inbound_1") {
+        detailRequests.push(path);
+        return jsonResponse({ success: true, data: detail(first) });
+      }
+      if (path === "/api/inbound-orders/inbound_2") {
+        detailRequests.push(path);
+        return jsonResponse({ success: true, data: detail(second) });
+      }
+      if (path === "/api/inbound-orders/inbound_1/draft-preview" || path === "/api/inbound-orders/inbound_2/draft-preview") {
+        return jsonResponse(draftPreview());
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("PVC-PO");
+    await waitForText("BACKLIT-PO");
+    await waitForCondition(() => detailRequests.includes("/api/inbound-orders/inbound_1"), "initial inbound record selected");
+
+    const searchInput = container.querySelector("input[placeholder='Search reference, sender, notes, subject, body']") as HTMLInputElement;
+    act(() => {
+      Simulate.change(searchInput, { target: { value: "backlit" } } as any);
+    });
+
+    expect(listRequests.some((path) => path.includes("search=backlit"))).toBe(false);
+    expect(detailRequests).not.toContain("/api/inbound-orders/inbound_2");
+    expect(container.textContent).toContain("PVC-PO");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    await waitForCondition(() => listRequests.some((path) => path.includes("search=backlit")), "debounced backlit search applied");
+
+    expect(container.textContent).toContain("BACKLIT-PO");
+    expect(container.textContent).toContain("PVC signs");
+    expect(detailRequests).not.toContain("/api/inbound-orders/inbound_2");
+  });
+
   test("trust filter sends the selected queue filter to the backend", async () => {
     const row = record({ sourceType: "email" });
     apiFetchMock.mockImplementation(async (url: any) => {
