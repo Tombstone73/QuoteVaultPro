@@ -302,14 +302,18 @@ function pullLatestFreshRecordDbHarness(createdRecord: InboundOrderRecord) {
       }),
     })),
   }));
+  const insertedRecords: any[] = [];
   const tx = {
     insert: jest.fn(() => ({
-      values: jest.fn(() => ({
-        onConflictDoNothing: jest.fn(() => ({
-          returning: jest.fn(async () => [createdRecord]),
-        })),
-        then: (resolve: (value: unknown) => void) => resolve(undefined),
-      })),
+      values: jest.fn((values: any) => {
+        if (values?.idempotencyKey) insertedRecords.push(values);
+        return {
+          onConflictDoNothing: jest.fn(() => ({
+            returning: jest.fn(async () => [createdRecord]),
+          })),
+          then: (resolve: (value: unknown) => void) => resolve(undefined),
+        };
+      }),
     })),
   };
   return {
@@ -320,6 +324,7 @@ function pullLatestFreshRecordDbHarness(createdRecord: InboundOrderRecord) {
         where: jest.fn(async () => undefined),
       })),
     })),
+    insertedRecords,
   };
 }
 
@@ -478,6 +483,60 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
         downloadAttempts: 1,
         storedRowsCreated: 1,
         metadataOnlyRowsCreated: 0,
+      }),
+    }));
+  });
+
+  test("pullLatestEmails creates a TEMP_INBOUND record for no-subject Gmail messages", async () => {
+    const { repo, storage } = serviceHarness();
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => [message({
+        messageId: "gmail_msg_no_subject",
+        threadId: null,
+        senderName: "Shawn Fears",
+        senderEmail: "shawn@brainstormprint.com",
+        subject: null,
+        bodyText: "Please see attached purchase order.",
+        attachments: [],
+      })]),
+    };
+    const noSubjectRecord = {
+      ...record,
+      sourceRecordId: "gmail_msg_no_subject",
+      sourceMessageId: "gmail_msg_no_subject",
+      externalReference: "(no subject) shawn@brainstormprint.com 2026-06-17",
+      idempotencyKey: "gmail:gmail_msg_no_subject",
+    };
+    const dbHarness = pullLatestFreshRecordDbHarness(noSubjectRecord);
+    const service = new InboundEmailIngestionService(
+      dbHarness as any,
+      { gmail: adapter },
+      repo as any,
+      storage as any,
+    );
+
+    const result = await service.pullLatestEmails({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      limit: 1,
+    });
+
+    expect(result.summary).toEqual({ created: 1, skippedDuplicates: 0, ignored: 0, failed: 0 });
+    expect(dbHarness.insertedRecords[0]).toEqual(expect.objectContaining({
+      sourceRecordId: "gmail_msg_no_subject",
+      sourceMessageId: "gmail_msg_no_subject",
+      externalReference: "(no subject) shawn@brainstormprint.com 2026-06-17",
+      rawPayloadJson: expect.objectContaining({
+        subject: null,
+        displaySubject: "(no subject)",
+      }),
+      normalizedPayloadJson: expect.objectContaining({
+        subject: null,
+        displaySubject: "(no subject)",
+      }),
+      extractedOrderJson: expect.objectContaining({
+        subject: null,
+        displaySubject: "(no subject)",
       }),
     }));
   });
@@ -1403,7 +1462,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       adapter,
     );
 
-    expect(outcome).toEqual({ status: "skippedDuplicates" });
+    expect(outcome).toMatchObject({ status: "skippedDuplicates", processingOutcome: "duplicate" });
     expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
     expect(createdFiles[0]).toEqual(expect.objectContaining({
       inboundRecordId: "inbound_1",
@@ -1484,7 +1543,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       adapter,
     );
 
-    expect(outcome).toEqual({ status: "created", recordId: "thread_record_1" });
+    expect(outcome).toMatchObject({ status: "created", recordId: "thread_record_1", processingOutcome: "created_record" });
     expect(adapter.getThreadMessages).toHaveBeenCalledWith(mailbox, "thread_1");
     expect(dbHarness.insertedRecords[0]).toEqual(expect.objectContaining({
       idempotencyKey: "gmail:thread:thread_1",
@@ -1581,7 +1640,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       adapter,
     );
 
-    expect(outcome).toEqual({ status: "skippedDuplicates" });
+    expect(outcome).toMatchObject({ status: "skippedDuplicates", processingOutcome: "updated_thread_container" });
     expect(repo.updateRecordWithEvent).toHaveBeenCalledWith(expect.objectContaining({
       inboundRecordId: "thread_record_1",
       patch: expect.objectContaining({
@@ -1636,7 +1695,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       adapter,
     );
 
-    expect(outcome).toEqual({ status: "skippedDuplicates" });
+    expect(outcome).toMatchObject({ status: "skippedDuplicates", processingOutcome: "duplicate" });
     expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
     expect(createdFiles[0]).toEqual(expect.objectContaining({
       inboundRecordId: "inbound_1",
@@ -1688,7 +1747,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       adapter,
     );
 
-    expect(outcome).toEqual({ status: "skippedDuplicates" });
+    expect(outcome).toMatchObject({ status: "skippedDuplicates", processingOutcome: "duplicate" });
     expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
     expect(adapter.downloadAttachment).toHaveBeenCalledWith(
       mailbox,
@@ -1871,7 +1930,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       adapter,
     );
 
-    expect(outcome).toEqual({ status: "skippedDuplicates" });
+    expect(outcome).toMatchObject({ status: "skippedDuplicates", processingOutcome: "duplicate" });
     expect(adapter.getMessagePayloadDiagnostics).toHaveBeenCalledWith(mailbox, "gmail_msg_1");
     expect(adapter.downloadAttachment).toHaveBeenCalledWith(
       mailbox,
@@ -1923,7 +1982,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       },
     );
 
-    expect(outcome).toEqual({ status: "skippedDuplicates" });
+    expect(outcome).toMatchObject({ status: "skippedDuplicates", processingOutcome: "duplicate" });
     expect(storage.finalizeUpload).not.toHaveBeenCalled();
     expect(repo.createFile).not.toHaveBeenCalled();
     expect(events[0]).toEqual(expect.objectContaining({

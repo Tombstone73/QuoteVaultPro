@@ -131,7 +131,7 @@ async function waitForCondition(predicate: () => boolean, label: string) {
   throw new Error(`Expected condition not met: ${label}`);
 }
 
-async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] = []) {
+async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] = [], trustRules: unknown[] = []) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, staleTime: 0 },
@@ -161,6 +161,12 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
       return jsonResponse({
         success: true,
         data: { rules: ignoreRules },
+      });
+    }
+    if (requestUrl === "/api/inbound-orders/email/trust-rules" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        data: { rules: trustRules },
       });
     }
     if (requestUrl.startsWith("/api/inbound-orders/email/pull-diagnostics")) {
@@ -279,6 +285,7 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
             providerMessageId: "gmail_msg_1",
             threadId: "thread_1",
             subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+            displaySubject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
             senderName: "Audrey Powell",
             senderEmail: "prepress@offsethouse.example",
             receivedAt: "2026-06-18T14:54:00.000Z",
@@ -289,7 +296,22 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
             maxResults: 50,
             pageCount: 2,
             totalMessageIdsReturned: 31,
+            processingOutcome: "created_record",
+            reason: "Created TEMP_INBOUND record.",
           }],
+          recentGmailProcessedMessages: [{
+            providerMessageId: "gmail_msg_1",
+            threadId: "thread_1",
+            subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+            displaySubject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+            senderEmail: "prepress@offsethouse.example",
+            receivedAt: "2026-06-18T14:54:00.000Z",
+            processingOutcome: "created_record",
+            reason: "Created TEMP_INBOUND record.",
+          }],
+          recentGmailSkippedMessages: [],
+          recentGmailIgnoredMessages: [],
+          recentGmailFailedMessages: [],
           ignoreRuleCount: ignoreRules.length,
           activeIgnoreRules: ignoreRules.filter((rule: any) => rule.enabled).map((rule: any) => ({
             id: rule.id,
@@ -377,13 +399,29 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
               providerMessageId: "gmail_msg_1",
               threadId: "thread_1",
               subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+              displaySubject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
               senderName: "Audrey Powell",
               senderEmail: "prepress@offsethouse.example",
               receivedAt: "2026-06-18T14:54:00.000Z",
               mailboxId: "mailbox_enabled",
               mailboxEmail: "orders@example.com",
               query: "newer_than:14d",
+              processingOutcome: "created_record",
+              reason: "Created TEMP_INBOUND record.",
             }] : [],
+            matchingProcessedMessages: hasSubject ? [{
+              providerMessageId: "gmail_msg_1",
+              threadId: "thread_1",
+              subject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+              displaySubject: "Purchase Order No 151753 Titan Compass ACM Sign 6_18_26",
+              senderEmail: "prepress@offsethouse.example",
+              receivedAt: "2026-06-18T14:54:00.000Z",
+              processingOutcome: "created_record",
+              reason: "Created TEMP_INBOUND record.",
+            }] : [],
+            matchingSkippedMessages: [],
+            matchingIgnoredMessages: [],
+            matchingFailedMessages: [],
             notReturnedByGmailListQuery: false,
             gmailListMessage: null,
             gmailPayloadDiagnostics: hasSubject ? [{
@@ -501,6 +539,22 @@ function ignoreRule(overrides: Record<string, unknown> = {}) {
     ruleType: "sender_email_exact",
     ruleValue: "notifications@example.com",
     notes: "Processor notice",
+    matchCount: 0,
+    lastMatchedAt: null,
+    createdAt: "2026-06-17T12:00:00.000Z",
+    updatedAt: "2026-06-17T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function trustRule(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "trust_rule_1",
+    organizationId: "org_1",
+    enabled: true,
+    ruleType: "sender_email_exact",
+    ruleValue: "trusted@example.com",
+    notes: "Known production contact",
     matchCount: 0,
     lastMatchedAt: null,
     createdAt: "2026-06-17T12:00:00.000Z",
@@ -627,10 +681,18 @@ describe("EmailSettings inbound mailbox settings", () => {
     await waitForText("Email Pull Diagnostics");
     await waitForText("invalid_grant");
     await waitForText("Payment Received");
+    const expandButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Expand Details")) as HTMLButtonElement;
+    await act(async () => {
+      expandButton.click();
+    });
     await waitForText("Recent Email Records");
     await waitForText("Recent Gmail Listed Messages");
+    await waitForText("Recent Gmail Processed Messages");
     await waitForText("Audrey Powell");
     expect(container.textContent).toContain("Total listed: 31");
+    expect(container.textContent).toContain("Outcome: created_record");
+    expect(container.textContent).toContain("Reason: Created TEMP_INBOUND record.");
     expect(container.textContent).toContain("Files: 0");
     expect(container.textContent).toContain("Raw Gmail parts: 1");
     expect(container.textContent).toContain("Attached, Po, Artwork, Links, Google Drive Links");
@@ -661,6 +723,7 @@ describe("EmailSettings inbound mailbox settings", () => {
     await waitForText("Found");
     await waitForText("po-151753.pdf");
     await waitForText("Matching Gmail Listed Messages");
+    await waitForText("Matching Processed Messages");
     await waitForText("duplicate_message_attachment_backfill");
     await waitForText("Sanitized Gmail Payload Shape");
     await waitForText("Extracted attachments: 1");
@@ -691,19 +754,9 @@ describe("EmailSettings inbound mailbox settings", () => {
     ], [ignoreRule({ ruleType: "subject_contains", ruleValue: "Payment Received" })]);
 
     await waitForText("Email Pull Diagnostics");
-    await waitForText("Recent Email Records");
-    const collapseButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Collapse Details")) as HTMLButtonElement;
-
-    await act(async () => {
-      collapseButton.click();
-    });
-
-    expect(container.textContent).toContain("Enabled Mailboxes");
+    await waitForText("Enabled Mailboxes");
     expect(container.textContent).toContain("orders@example.com");
     expect(container.textContent).not.toContain("Recent Email Records");
-    expect(container.textContent).not.toContain("Attachment Diagnostics");
-    expect(container.textContent).not.toContain("Audrey Powell");
     expect(container.querySelector("input[aria-label='Email diagnostics subject search']")).toBeNull();
 
     const expandButton = Array.from(container.querySelectorAll("button"))
@@ -714,6 +767,17 @@ describe("EmailSettings inbound mailbox settings", () => {
 
     await waitForText("Recent Email Records");
     expect(container.querySelector("input[aria-label='Email diagnostics subject search']")).toBeTruthy();
+
+    const collapseButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Collapse Details")) as HTMLButtonElement;
+    await act(async () => {
+      collapseButton.click();
+    });
+
+    expect(container.textContent).not.toContain("Recent Email Records");
+    expect(container.textContent).not.toContain("Attachment Diagnostics");
+    expect(container.textContent).not.toContain("Audrey Powell");
+    expect(container.querySelector("input[aria-label='Email diagnostics subject search']")).toBeNull();
   });
 
   test("collapses active ignore rules in diagnostics when there are many", async () => {
@@ -739,11 +803,74 @@ describe("EmailSettings inbound mailbox settings", () => {
     ]);
 
     await waitForText("Email Pull Diagnostics");
+    const expandButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Expand Details")) as HTMLButtonElement;
+    await act(async () => {
+      expandButton.click();
+    });
     await waitForText("4 active ignore rules hidden.");
     const toggle = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Active Ignore Rules")) as HTMLButtonElement;
     expect(toggle).toBeTruthy();
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  test("collapses large ignore and trusted sender sections", async () => {
+    const manyIgnoreRules = Array.from({ length: 11 }, (_, index) => ignoreRule({
+      id: `ignore_rule_${index}`,
+      ruleValue: `ignore-${index}@example.com`,
+    }));
+    const manyTrustRules = Array.from({ length: 11 }, (_, index) => trustRule({
+      id: `trust_rule_${index}`,
+      ruleValue: `trusted-${index}@example.com`,
+    }));
+
+    await renderEmailSettings([], manyIgnoreRules, manyTrustRules);
+
+    await waitForText("Inbound Ignore Rules");
+    await waitForText("Trusted Inbound Senders");
+    expect(container.textContent).toContain("11 rules configured");
+    expect(container.textContent).toContain("11 trusted rules configured");
+    expect(container.textContent).not.toContain("ignore-10@example.com");
+    expect(container.textContent).not.toContain("trusted-10@example.com");
+
+    const ignoreToggle = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Inbound Ignore Rules")) as HTMLButtonElement;
+    await act(async () => {
+      ignoreToggle.click();
+    });
+    await waitForText("ignore-10@example.com");
+
+    const trustToggle = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Trusted Inbound Senders")) as HTMLButtonElement;
+    await act(async () => {
+      trustToggle.click();
+    });
+    await waitForText("trusted-10@example.com");
+  });
+
+  test("filters ignore and trusted sender rules in settings", async () => {
+    await renderEmailSettings([], [
+      ignoreRule({ id: "ignore_rule_1", ruleValue: "payments@example.com", notes: "Payment notices" }),
+      ignoreRule({ id: "ignore_rule_2", ruleValue: "newsletter@example.com", notes: "Marketing list" }),
+    ], [
+      trustRule({ id: "trust_rule_1", ruleValue: "brainstormprint.com", ruleType: "sender_domain", notes: "Customer domain" }),
+      trustRule({ id: "trust_rule_2", ruleValue: "offsethouse.example", ruleType: "sender_domain", notes: "Vendor domain" }),
+    ]);
+
+    await waitForText("payments@example.com");
+    await waitForText("newsletter@example.com");
+    const ignoreSearch = container.querySelector("input[aria-label='Search inbound ignore rules']") as HTMLInputElement;
+    await setValue(ignoreSearch, "payment");
+    await waitForText("payments@example.com");
+    expect(container.textContent).not.toContain("newsletter@example.com");
+
+    await waitForText("brainstormprint.com");
+    await waitForText("offsethouse.example");
+    const trustSearch = container.querySelector("input[aria-label='Search trusted inbound senders']") as HTMLInputElement;
+    await setValue(trustSearch, "vendor");
+    await waitForText("offsethouse.example");
+    expect(container.textContent).not.toContain("brainstormprint.com");
   });
 
   test("starts inbound Gmail OAuth for a new mailbox connection", async () => {

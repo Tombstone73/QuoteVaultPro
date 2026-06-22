@@ -507,6 +507,73 @@ function gmailListedMessagesFromMailbox(mailbox: {
   }));
 }
 
+function pullSummaryMessagesFromMailbox(mailbox: {
+  id: string;
+  emailAddress: string;
+  latestPullSummary: unknown | null;
+}, key: "processedMessages" | "skippedMessages" | "ignoredMessages" | "failedMessages"): Array<Record<string, unknown>> {
+  const summary = asRecord(mailbox.latestPullSummary);
+  const rows = Array.isArray(summary?.[key]) ? summary[key] as unknown[] : [];
+  return rows.map((message) => sanitizeDiagnosticRow({
+    ...(asRecord(message) ?? {}),
+    mailboxId: mailbox.id,
+    mailboxEmail: mailbox.emailAddress,
+  }));
+}
+
+function diagnosticSearchMatches(row: Record<string, unknown>, search: string): boolean {
+  const normalized = search.trim().toLowerCase();
+  if (!normalized) return false;
+  const senderEmail = String(row.senderEmail ?? "").toLowerCase();
+  const senderDomain = senderEmail.split("@")[1] ?? String(row.senderDomain ?? "").toLowerCase();
+  const subject = String(row.subject ?? "").trim();
+  const displaySubject = String(row.displaySubject ?? row.externalReference ?? "").trim();
+  const searchableValues = [
+    row.providerMessageId,
+    row.sourceMessageId,
+    row.sourceRecordId,
+    row.threadId,
+    row.sourceThreadId,
+    row.senderName,
+    row.senderEmail,
+    senderDomain,
+    row.subject,
+    row.displaySubject,
+    row.externalReference,
+    row.reason,
+    row.processingOutcome,
+    row.bodyText,
+    row.bodyHtml,
+    row.rawPayloadJson,
+    row.normalizedPayloadJson,
+    row.extractedOrderJson,
+  ];
+  if ((normalized === "no subject" || normalized === "(no subject)") && (!subject || displaySubject.toLowerCase().includes("no subject"))) {
+    return true;
+  }
+  return searchableValues.some((value) => String(value ?? "").toLowerCase().includes(normalized));
+}
+
+function listedMessagesWithProcessingOutcome(
+  listedMessages: Array<Record<string, unknown>>,
+  processedMessages: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  return listedMessages.map((listed) => {
+    const providerMessageId = String(listed.providerMessageId ?? "");
+    const threadId = String(listed.threadId ?? "");
+    const match = processedMessages.find((processed) => (
+      String(processed.providerMessageId ?? "") === providerMessageId
+      || (threadId && String(processed.threadId ?? "") === threadId)
+    ));
+    return sanitizeDiagnosticRow({
+      ...listed,
+      processingOutcome: match?.processingOutcome ?? "other",
+      reason: match?.reason ?? "No processing outcome was recorded for this listed Gmail message.",
+      inboundRecordId: match?.inboundRecordId ?? null,
+    });
+  });
+}
+
 function detectEmailAttachmentHints(row: Record<string, unknown>): Record<string, boolean> {
   const text = [
     row.subject,
@@ -824,6 +891,21 @@ function trustStatusForRuleType(ruleType: InboundEmailTrustRuleType): InboundSen
   return "trusted_customer_domain";
 }
 
+function inboundIgnoreRuleMatchesSender(rule: InboundEmailIgnoreRule, args: {
+  senderEmail: string | null;
+  senderDomain: string | null;
+  subject?: string | null;
+}): boolean {
+  const value = rule.ruleValue.trim().toLowerCase();
+  if (!value) return false;
+  if (rule.ruleType === "sender_email_exact") return Boolean(args.senderEmail && args.senderEmail === value);
+  if (rule.ruleType === "sender_domain") return Boolean(args.senderDomain && args.senderDomain === value);
+  const subject = args.subject?.trim().toLowerCase() ?? null;
+  if (rule.ruleType === "subject_exact") return Boolean(subject && subject === value);
+  if (rule.ruleType === "subject_contains") return Boolean(subject && subject.includes(value));
+  return false;
+}
+
 function assertSenderDomainTrustAllowed(domain: string): void {
   if (isPublicFreeEmailDomain(domain)) {
     throw new InboundOrderTransitionError(
@@ -895,6 +977,33 @@ export class InboundOrderService {
         canAutoDownloadAttachments: false,
       };
     } else {
+      const listEnabledIgnoreRules = (this.repository as unknown as {
+        listEnabledEmailIgnoreRules?: (organizationId: string) => Promise<InboundEmailIgnoreRule[]>;
+      }).listEnabledEmailIgnoreRules;
+      const ignoreRules = listEnabledIgnoreRules
+        ? await listEnabledIgnoreRules.call(this.repository, args.organizationId)
+        : [];
+      const subject = args.record ? getInboundRecordSubject(args.record) : null;
+      const matchedIgnoreRule = ignoreRules.find((rule) => inboundIgnoreRuleMatchesSender(rule, { senderEmail, senderDomain, subject })) ?? null;
+      if (matchedIgnoreRule) {
+        base = {
+          senderTrustStatus: "ignored",
+          matchedTrustRuleId: null,
+          trustRuleType: null,
+          trustReason: `Sender matched inbound ignore rule ${matchedIgnoreRule.ruleType}.`,
+          canAutoDownloadAttachments: false,
+        };
+        return {
+          ...base,
+          attachmentDownloadPolicy: args.record
+            ? getAttachmentDownloadPolicy({
+              record: args.record,
+              files: args.files ?? [],
+              trustSummary: base,
+            })
+            : "no_attachments",
+        };
+      }
       const rules = await this.repository.listEnabledEmailTrustRules(args.organizationId);
       let matchedRule: InboundEmailTrustRule | null = null;
       for (const rule of rules) {
@@ -983,7 +1092,7 @@ export class InboundOrderService {
   private matchesTrustFilter(record: InboundOrderRecordWithTrust, trustFilter: InboundOrderListFilters["trustFilter"]): boolean {
     if (!trustFilter || trustFilter === "all") return true;
     if (trustFilter === "trusted") return record.canAutoDownloadAttachments;
-    if (trustFilter === "untrusted") return record.senderTrustStatus === "untrusted";
+    if (trustFilter === "untrusted") return record.senderTrustStatus === "untrusted" || record.senderTrustStatus === "ignored";
     if (trustFilter === "unknown") return record.senderTrustStatus === "unknown";
     return record.attachmentDownloadPolicy === "pending_trust";
   }
@@ -1090,7 +1199,14 @@ export class InboundOrderService {
       lastPullError: mailbox.lastPullError,
       latestPullSummary: safePullSummaryFromSettings(mailbox.settingsJson),
     }));
-    const recentGmailListedMessages = mailboxes.flatMap(gmailListedMessagesFromMailbox);
+    const recentGmailProcessedMessages = mailboxes.flatMap((mailbox) => pullSummaryMessagesFromMailbox(mailbox, "processedMessages"));
+    const recentGmailSkippedMessages = mailboxes.flatMap((mailbox) => pullSummaryMessagesFromMailbox(mailbox, "skippedMessages"));
+    const recentGmailIgnoredMessages = mailboxes.flatMap((mailbox) => pullSummaryMessagesFromMailbox(mailbox, "ignoredMessages"));
+    const recentGmailFailedMessages = mailboxes.flatMap((mailbox) => pullSummaryMessagesFromMailbox(mailbox, "failedMessages"));
+    const recentGmailListedMessages = listedMessagesWithProcessingOutcome(
+      mailboxes.flatMap(gmailListedMessagesFromMailbox),
+      recentGmailProcessedMessages,
+    );
     const activeIgnoreRules = raw.ignoreRules
       .filter((rule) => rule.enabled)
       .map((rule) => ({
@@ -1106,12 +1222,14 @@ export class InboundOrderService {
       ? activeIgnoreRules.filter((rule) => {
         const original = raw.ignoreRules.find((candidate) => candidate.id === rule.id);
         if (!original) return false;
-        const normalizedSubject = subject.toLowerCase();
-        const normalizedValue = original.ruleValue.toLowerCase();
-        return (
-          (original.ruleType === "subject_exact" && normalizedSubject === normalizedValue)
-          || (original.ruleType === "subject_contains" && normalizedSubject.includes(normalizedValue))
-        );
+        const search = subject.toLowerCase();
+        return [
+          original.ruleType,
+          original.ruleValue,
+          original.notes,
+          rule.ruleValuePreview,
+          `${original.matchCount} matches`,
+        ].some((value) => String(value ?? "").toLowerCase().includes(search));
       })
       : [];
     const recentPullDiagnostics = raw.recentPullDiagnostics.map(sanitizeDiagnosticRow);
@@ -1128,15 +1246,28 @@ export class InboundOrderService {
     })));
     const matchingFiles = raw.subjectFiles.map(sanitizeDiagnosticRow);
     const matchingGmailListedMessages = subject
-      ? recentGmailListedMessages.filter((message) => {
-        const normalizedSubject = subject.toLowerCase();
-        return String(message.subject ?? "").toLowerCase().includes(normalizedSubject);
-      })
+      ? recentGmailListedMessages.filter((message) => diagnosticSearchMatches(message, subject))
+      : [];
+    const matchingProcessedMessages = subject
+      ? recentGmailProcessedMessages.filter((message) => diagnosticSearchMatches(message, subject))
+      : [];
+    const matchingSkippedMessages = subject
+      ? recentGmailSkippedMessages.filter((message) => diagnosticSearchMatches(message, subject))
+      : [];
+    const matchingIgnoredMessages = subject
+      ? recentGmailIgnoredMessages.filter((message) => diagnosticSearchMatches(message, subject))
+      : [];
+    const matchingFailedMessages = subject
+      ? recentGmailFailedMessages.filter((message) => diagnosticSearchMatches(message, subject))
       : [];
     const subjectFound = matchingRecords.length > 0
       || matchingFiles.length > 0
       || matchingIgnoreRules.length > 0
-      || matchingGmailListedMessages.length > 0;
+      || matchingGmailListedMessages.length > 0
+      || matchingProcessedMessages.length > 0
+      || matchingSkippedMessages.length > 0
+      || matchingIgnoredMessages.length > 0
+      || matchingFailedMessages.length > 0;
     const recentCreatedInboundRecords = await Promise.all(raw.recentCreatedRecords.map(async (record) => ({
       ...await this.enrichDiagnosticRecordTrust({
         organizationId: args.organizationId,
@@ -1159,6 +1290,10 @@ export class InboundOrderService {
       recentCreatedInboundRecords,
       recentInboundFiles: raw.recentFiles.map(sanitizeDiagnosticRow),
       recentGmailListedMessages,
+      recentGmailProcessedMessages,
+      recentGmailSkippedMessages,
+      recentGmailIgnoredMessages,
+      recentGmailFailedMessages,
       ignoreRuleCount: raw.ignoreRules.length,
       activeIgnoreRules,
       subjectSearch: {
@@ -1168,6 +1303,10 @@ export class InboundOrderService {
         matchingFiles,
         matchingIgnoreRules,
         matchingGmailListedMessages,
+        matchingProcessedMessages,
+        matchingSkippedMessages,
+        matchingIgnoredMessages,
+        matchingFailedMessages,
         notReturnedByGmailListQuery: Boolean(subject && matchingGmailListedMessages.length === 0),
         gmailListMessage: subject && matchingGmailListedMessages.length === 0
           ? "Not returned by Gmail list query for latest pull."

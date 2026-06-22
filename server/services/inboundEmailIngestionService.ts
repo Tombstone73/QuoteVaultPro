@@ -77,11 +77,52 @@ type InboundEmailListDiagnostics = {
     providerMessageId: string;
     threadId: string | null;
     subject: string | null;
+    displaySubject?: string;
     senderName: string | null;
     senderEmail: string | null;
     receivedAt: string | null;
   }>;
 };
+
+type InboundEmailProcessingOutcome =
+  | "created_record"
+  | "updated_thread_container"
+  | "duplicate"
+  | "ignored_rule"
+  | "rejected"
+  | "failed"
+  | "classification_skipped"
+  | "missing_required_data"
+  | "no_subject_ingested"
+  | "other";
+
+type InboundEmailMessageProcessingDiagnostic = {
+  providerMessageId: string;
+  threadId: string | null;
+  senderName: string | null;
+  senderEmail: string | null;
+  senderDomain: string | null;
+  subject: string | null;
+  displaySubject: string;
+  receivedAt: string | null;
+  processingOutcome: InboundEmailProcessingOutcome;
+  reason: string;
+  inboundRecordId: string | null;
+};
+
+type InboundEmailProcessMessageResult =
+  | {
+      status: "created";
+      recordId: string;
+      processingOutcome: "created_record" | "no_subject_ingested";
+      reason: string;
+    }
+  | {
+      status: "skippedDuplicates" | "ignored";
+      recordId?: string | null;
+      processingOutcome: Exclude<InboundEmailProcessingOutcome, "created_record" | "no_subject_ingested" | "failed">;
+      reason: string;
+    };
 
 type InboundEmailManualReprocessAction = "reprocess_email" | "backfill_attachments" | "rerun_trust_attachment_download";
 type InboundEmailEvidenceRefreshAction = InboundEmailManualReprocessAction | "initial_thread_ingestion" | "thread_message_appended";
@@ -214,7 +255,7 @@ type SenderTrustDecision = {
   trusted: boolean;
   senderEmail: string | null;
   senderDomain: string | null;
-  trustSource: InboundEmailTrustRuleType | "none";
+  trustSource: InboundEmailTrustRuleType | "none" | "ignored";
   ruleId: string | null;
   reason: string;
 };
@@ -230,6 +271,7 @@ type AttachmentSafetyDecision = {
 };
 
 function trustStatusFromDecision(decision: SenderTrustDecision): string {
+  if (decision.trustSource === "ignored") return "ignored";
   if (decision.trustSource === "sender_email_exact") return "trusted_sender";
   if (decision.trustSource === "sender_domain") return "trusted_domain";
   if (decision.trustSource === "customer_contact_email") return "trusted_contact";
@@ -383,6 +425,22 @@ function truncate(value: string | null, max: number): string | null {
   return value.length > max ? value.slice(0, max) : value;
 }
 
+function displaySubjectForMessage(message: Pick<InboundEmailProviderMessage, "subject">): string {
+  return stringFromUnknown(message.subject) ?? "(no subject)";
+}
+
+function externalReferenceForMessage(message: Pick<InboundEmailProviderMessage, "subject" | "senderEmail" | "receivedAt">): string {
+  const subject = stringFromUnknown(message.subject);
+  if (subject) return subject;
+  const sender = stringFromUnknown(message.senderEmail);
+  const receivedAt = message.receivedAt && !Number.isNaN(message.receivedAt.getTime())
+    ? message.receivedAt.toISOString().slice(0, 10)
+    : null;
+  return [sender, receivedAt].filter(Boolean).length > 0
+    ? `(no subject) ${[sender, receivedAt].filter(Boolean).join(" ")}`
+    : "(no subject)";
+}
+
 function decodeBase64Url(value: string | null | undefined): string {
   if (!value) return "";
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
@@ -437,7 +495,8 @@ function parseAddress(value: string | null | undefined): { name: string | null; 
 
 export function classifyInboundEmailForReview(message: InboundEmailProviderMessage): { ignored: boolean; intent: InboundEmailIntent; reason: string } {
   const text = [message.subject, message.bodyText, message.bodyHtml].filter(Boolean).join("\n").slice(0, 20000);
-  if (!text.trim()) return { ignored: true, intent: "UNKNOWN", reason: "No subject or body text." };
+  if (!text.trim() && message.attachments.length === 0) return { ignored: true, intent: "UNKNOWN", reason: "No subject, body text, or attachments." };
+  if (!text.trim() && message.attachments.length > 0) return { ignored: false, intent: "UNKNOWN", reason: "Attachment-only inbound message needs staff review." };
   if (SPAM_PATTERNS.some((pattern) => pattern.test(text))) {
     return { ignored: true, intent: "UNKNOWN", reason: "Ignored obvious marketing/newsletter email." };
   }
@@ -476,6 +535,25 @@ function senderDomainFromMessage(message: Pick<InboundEmailProviderMessage, "sen
   const email = senderEmailFromMessage(message);
   const domain = email?.split("@")[1]?.trim().toLowerCase();
   return domain || null;
+}
+
+function processingDiagnosticForMessage(
+  message: InboundEmailProviderMessage,
+  result: { processingOutcome: InboundEmailProcessingOutcome; reason: string; recordId?: string | null },
+): InboundEmailMessageProcessingDiagnostic {
+  return {
+    providerMessageId: message.messageId,
+    threadId: message.threadId,
+    senderName: message.senderName,
+    senderEmail: senderEmailFromMessage(message),
+    senderDomain: senderDomainFromMessage(message),
+    subject: message.subject,
+    displaySubject: displaySubjectForMessage(message),
+    receivedAt: message.receivedAt ? message.receivedAt.toISOString() : null,
+    processingOutcome: result.processingOutcome,
+    reason: result.reason,
+    inboundRecordId: result.recordId ?? null,
+  };
 }
 
 function attachmentMetadataProviderMessageId(file: InboundOrderFile, fallback: string): string {
@@ -831,6 +909,7 @@ export class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
         providerMessageId: message.messageId,
         threadId: message.threadId,
         subject: message.subject,
+        displaySubject: displaySubjectForMessage(message),
         senderName: message.senderName,
         senderEmail: message.senderEmail,
         receivedAt: message.receivedAt ? message.receivedAt.toISOString() : null,
@@ -969,6 +1048,7 @@ export class InboundEmailIngestionService {
         failed: 0,
         error: null as string | null,
       };
+      const processedMessages: InboundEmailMessageProcessingDiagnostic[] = [];
 
       try {
         const adapter = this.adapterByProvider[mailbox.provider];
@@ -984,9 +1064,15 @@ export class InboundEmailIngestionService {
             if (outcome.status === "created" && outcome.recordId) {
               createdRecordIds.push(outcome.recordId);
             }
+            processedMessages.push(processingDiagnosticForMessage(message, outcome));
           } catch (error) {
             result.failed += 1;
             summary.failed += 1;
+            processedMessages.push(processingDiagnosticForMessage(message, {
+              processingOutcome: "failed",
+              reason: error instanceof Error ? error.message : "Failed to process Gmail message.",
+              recordId: null,
+            }));
             console.error("[Inbound Email Pull] Failed to process message", {
               organizationId: args.organizationId,
               mailboxId: mailbox.id,
@@ -1001,6 +1087,15 @@ export class InboundEmailIngestionService {
           mailboxEmail: mailbox.emailAddress,
           requestedLimit: mailboxLimit,
           gmailList: listDiagnostics,
+          processedMessages,
+          skippedMessages: processedMessages.filter((message) => (
+            message.processingOutcome === "duplicate"
+            || message.processingOutcome === "classification_skipped"
+            || message.processingOutcome === "missing_required_data"
+            || message.processingOutcome === "other"
+          )),
+          ignoredMessages: processedMessages.filter((message) => message.processingOutcome === "ignored_rule"),
+          failedMessages: processedMessages.filter((message) => message.processingOutcome === "failed"),
           result,
         });
       } catch (error) {
@@ -1014,6 +1109,30 @@ export class InboundEmailIngestionService {
           mailboxEmail: mailbox.emailAddress,
           requestedLimit: mailboxLimit,
           gmailList: this.adapterByProvider[mailbox.provider]?.getLastListDiagnostics?.() ?? null,
+          processedMessages,
+          skippedMessages: processedMessages.filter((message) => (
+            message.processingOutcome === "duplicate"
+            || message.processingOutcome === "classification_skipped"
+            || message.processingOutcome === "missing_required_data"
+            || message.processingOutcome === "other"
+          )),
+          ignoredMessages: processedMessages.filter((message) => message.processingOutcome === "ignored_rule"),
+          failedMessages: [
+            ...processedMessages.filter((message) => message.processingOutcome === "failed"),
+            {
+              providerMessageId: null,
+              threadId: null,
+              senderName: null,
+              senderEmail: null,
+              senderDomain: null,
+              subject: null,
+              displaySubject: "(mailbox pull failed)",
+              receivedAt: null,
+              processingOutcome: "failed",
+              reason: message,
+              inboundRecordId: null,
+            },
+          ],
           result,
           error: message,
         });
@@ -1687,6 +1806,7 @@ export class InboundEmailIngestionService {
         providerMessageId: attachment.providerMessageId ?? message.messageId,
         messageId: message.messageId,
         messageSubject: message.subject,
+        messageDisplaySubject: displaySubjectForMessage(message),
         messageSenderEmail: message.senderEmail,
         messageReceivedAt: message.receivedAt ? message.receivedAt.toISOString() : null,
       }))
@@ -1701,10 +1821,12 @@ export class InboundEmailIngestionService {
       latestSenderName: latestMessage?.senderName ?? null,
       latestSenderEmail: latestMessage?.senderEmail ?? null,
       latestSubject: latestMessage?.subject ?? null,
+      latestDisplaySubject: latestMessage ? displaySubjectForMessage(latestMessage) : null,
       messages: args.messages.map((message) => ({
         messageId: message.messageId,
         threadId: message.threadId,
         subject: message.subject,
+        displaySubject: displaySubjectForMessage(message),
         senderName: message.senderName,
         senderEmail: message.senderEmail,
         receivedAt: message.receivedAt ? message.receivedAt.toISOString() : null,
@@ -1733,6 +1855,7 @@ export class InboundEmailIngestionService {
           email: primaryMessage?.senderEmail ?? getPathValue(raw, "sender.email") ?? null,
         },
         subject: primaryMessage?.subject ?? raw.subject ?? args.record.externalReference,
+        displaySubject: primaryMessage ? displaySubjectForMessage(primaryMessage) : stringFromUnknown(raw.displaySubject) ?? displaySubjectForMessage({ subject: args.record.externalReference }),
         receivedAt: primaryMessage?.receivedAt ? primaryMessage.receivedAt.toISOString() : raw.receivedAt ?? null,
         bodyText: combinedBodyText || primaryMessage?.bodyText || raw.bodyText || null,
         bodyHtml: combinedBodyHtml || primaryMessage?.bodyHtml || raw.bodyHtml || null,
@@ -1761,6 +1884,7 @@ export class InboundEmailIngestionService {
           email: primaryMessage?.senderEmail ?? getPathValue(normalized, "sender.email") ?? null,
         },
         subject: primaryMessage?.subject ?? normalized.subject ?? args.record.externalReference,
+        displaySubject: primaryMessage ? displaySubjectForMessage(primaryMessage) : stringFromUnknown(normalized.displaySubject) ?? displaySubjectForMessage({ subject: args.record.externalReference }),
         bodyText: combinedBodyText || primaryMessage?.bodyText || normalized.bodyText || null,
         bodyHtml: combinedBodyHtml || primaryMessage?.bodyHtml || normalized.bodyHtml || null,
         attachments: combinedAttachments,
@@ -1771,6 +1895,7 @@ export class InboundEmailIngestionService {
         inboundIntent: classification?.intent ?? extractedOrder.inboundIntent ?? null,
         inboundIntentReason: classification?.reason ?? extractedOrder.inboundIntentReason ?? null,
         subject: primaryMessage?.subject ?? extractedOrder.subject ?? args.record.externalReference,
+        displaySubject: primaryMessage ? displaySubjectForMessage(primaryMessage) : stringFromUnknown(extractedOrder.displaySubject) ?? displaySubjectForMessage({ subject: args.record.externalReference }),
         bodyText: combinedBodyText || primaryMessage?.bodyText || extractedOrder.bodyText || null,
         attachments: combinedAttachments,
       },
@@ -1973,7 +2098,7 @@ export class InboundEmailIngestionService {
     source: InboundOrderSource,
     message: InboundEmailProviderMessage,
     adapter: InboundEmailProviderAdapter,
-  ): Promise<{ status: "created"; recordId: string } | { status: "skippedDuplicates" | "ignored"; recordId?: never }> {
+  ): Promise<InboundEmailProcessMessageResult> {
     message = await this.messageWithRecoveredProviderAttachments(mailbox, message, adapter);
     if (message.threadId && adapter.getThreadMessages) {
       return this.processThreadMessage(organizationId, actorUserId, mailbox, source, message, adapter);
@@ -2007,7 +2132,12 @@ export class InboundEmailIngestionService {
           adapter,
         });
       }
-      return { status: "skippedDuplicates" };
+      return {
+        status: "skippedDuplicates",
+        recordId: existing.id,
+        processingOutcome: "duplicate",
+        reason: "Message already has an inbound record; attachments were checked for safe backfill.",
+      };
     }
 
     const matchedIgnoreRule = await this.findMatchedIgnoreRule(organizationId, message);
@@ -2021,14 +2151,26 @@ export class InboundEmailIngestionService {
         ruleType: matchedIgnoreRule.ruleType,
         ruleValue: matchedIgnoreRule.ruleValue,
       });
-      return { status: "ignored" };
+      return {
+        status: "ignored",
+        processingOutcome: "ignored_rule",
+        reason: `Matched ignore rule ${matchedIgnoreRule.ruleType}.`,
+      };
     }
 
     const classification = classifyInboundEmailForReview(message);
-    if (classification.ignored) return { status: "ignored" };
+    if (classification.ignored) {
+      return {
+        status: "ignored",
+        processingOutcome: "classification_skipped",
+        reason: classification.reason,
+      };
+    }
 
     const receivedAt = message.receivedAt ?? new Date();
     const sourceLabel = `TEMP_INBOUND email intake - ${classification.intent}`;
+    const displaySubject = displaySubjectForMessage(message);
+    const externalReference = truncate(externalReferenceForMessage(message), 255);
     const rawPayloadJson = {
       intakeMode: "TEMP_INBOUND",
       provider: message.provider,
@@ -2044,6 +2186,7 @@ export class InboundEmailIngestionService {
         email: message.senderEmail,
       },
       subject: message.subject,
+      displaySubject,
       receivedAt: receivedAt.toISOString(),
       bodyText: message.bodyText,
       bodyHtml: message.bodyHtml,
@@ -2066,7 +2209,7 @@ export class InboundEmailIngestionService {
           status: "needs_review",
           requiresHumanDecision: true,
           reviewRequiredReason: `${classification.intent} email candidate needs staff review.`,
-          externalReference: truncate(message.subject, 255),
+          externalReference,
           idempotencyKey,
           rawPayloadJson,
           normalizedPayloadJson: {
@@ -2085,6 +2228,7 @@ export class InboundEmailIngestionService {
               email: message.senderEmail,
             },
             subject: message.subject,
+            displaySubject,
             bodyText: message.bodyText,
             bodyHtml: message.bodyHtml,
             attachments: message.attachments,
@@ -2096,6 +2240,7 @@ export class InboundEmailIngestionService {
           extractedOrderJson: {
             inboundIntent: classification.intent,
             subject: message.subject,
+            displaySubject,
             bodyText: message.bodyText,
             attachments: message.attachments,
           },
@@ -2161,7 +2306,12 @@ export class InboundEmailIngestionService {
           adapter,
         });
       }
-      return { status: "skippedDuplicates" };
+      return {
+        status: "skippedDuplicates",
+        recordId: conflictedRecord?.id ?? null,
+        processingOutcome: "duplicate",
+        reason: "Message conflicted with an existing inbound record; attachments were checked for safe backfill.",
+      };
     }
     await this.ingestAttachmentsWithCallAudit({
       organizationId,
@@ -2172,7 +2322,14 @@ export class InboundEmailIngestionService {
       adapter,
       skippedReason: null,
     });
-    return { status: "created", recordId: record.id };
+    return {
+      status: "created",
+      recordId: record.id,
+      processingOutcome: message.subject?.trim() ? "created_record" : "no_subject_ingested",
+      reason: message.subject?.trim()
+        ? `Created TEMP_INBOUND candidate from ${classification.intent} classification.`
+        : "Created TEMP_INBOUND candidate with safe no-subject fallback.",
+    };
   }
 
   private async processThreadMessage(
@@ -2182,7 +2339,7 @@ export class InboundEmailIngestionService {
     source: InboundOrderSource,
     seedMessage: InboundEmailProviderMessage,
     adapter: InboundEmailProviderAdapter,
-  ): Promise<{ status: "created"; recordId: string } | { status: "skippedDuplicates" | "ignored"; recordId?: never }> {
+  ): Promise<InboundEmailProcessMessageResult> {
     const threadId = seedMessage.threadId;
     if (!threadId) return this.processMessage(organizationId, actorUserId, mailbox, source, seedMessage, { ...adapter, getThreadMessages: undefined });
 
@@ -2235,7 +2392,12 @@ export class InboundEmailIngestionService {
           skippedReason: "thread_message_attachment_backfill",
         });
       }
-      return { status: "skippedDuplicates" };
+      return {
+        status: "skippedDuplicates",
+        recordId: existing.id,
+        processingOutcome: "updated_thread_container",
+        reason: "Existing Gmail thread container was refreshed with latest thread evidence and attachments.",
+      };
     }
 
     for (const candidate of sortedMessages) {
@@ -2251,7 +2413,11 @@ export class InboundEmailIngestionService {
         ruleType: matchedIgnoreRule.ruleType,
         ruleValue: matchedIgnoreRule.ruleValue,
       });
-      return { status: "ignored" };
+      return {
+        status: "ignored",
+        processingOutcome: "ignored_rule",
+        reason: `Thread message matched ignore rule ${matchedIgnoreRule.ruleType}.`,
+      };
     }
 
     const combinedBodyText = sortedMessages
@@ -2274,7 +2440,13 @@ export class InboundEmailIngestionService {
       bodyHtml: combinedBodyHtml || latestMessage.bodyHtml,
       attachments: combinedAttachments,
     });
-    if (classification.ignored) return { status: "ignored" };
+    if (classification.ignored) {
+      return {
+        status: "ignored",
+        processingOutcome: "classification_skipped",
+        reason: classification.reason,
+      };
+    }
 
     const receivedAt = firstMessage.receivedAt ?? latestMessage.receivedAt ?? new Date();
     const sourceLabel = `TEMP_INBOUND email thread intake - ${classification.intent}`;
@@ -2291,7 +2463,7 @@ export class InboundEmailIngestionService {
       reviewOutcome: null,
       requiresHumanDecision: true,
       reviewRequiredReason: `${classification.intent} email thread candidate needs staff review.`,
-      externalReference: truncate(latestMessage.subject ?? seedMessage.subject ?? "Gmail thread", 255),
+      externalReference: truncate(externalReferenceForMessage(latestMessage ?? seedMessage), 255),
       idempotencyKey,
       payloadHash: null,
       rawPayloadJson: {
@@ -2351,7 +2523,7 @@ export class InboundEmailIngestionService {
           status: "needs_review",
           requiresHumanDecision: true,
           reviewRequiredReason: `${classification.intent} email thread candidate needs staff review.`,
-          externalReference: truncate(latestMessage.subject ?? seedMessage.subject ?? "Gmail thread", 255),
+          externalReference: truncate(externalReferenceForMessage(latestMessage ?? seedMessage), 255),
           idempotencyKey,
           rawPayloadJson: evidence.patch.rawPayloadJson,
           normalizedPayloadJson: evidence.patch.normalizedPayloadJson,
@@ -2434,7 +2606,12 @@ export class InboundEmailIngestionService {
           skippedReason: "thread_message_attachment_backfill",
         });
       }
-      return { status: "skippedDuplicates" };
+      return {
+        status: "skippedDuplicates",
+        recordId: conflictedRecord?.id ?? null,
+        processingOutcome: "updated_thread_container",
+        reason: "Thread container already existed after insert conflict; evidence and attachments were refreshed.",
+      };
     }
 
     await this.ingestThreadAttachments({
@@ -2446,7 +2623,14 @@ export class InboundEmailIngestionService {
       adapter,
       skippedReason: null,
     });
-    return { status: "created", recordId: createdRecord.id };
+    return {
+      status: "created",
+      recordId: createdRecord.id,
+      processingOutcome: sortedMessages.some((message) => message.subject?.trim()) ? "created_record" : "no_subject_ingested",
+      reason: sortedMessages.some((message) => message.subject?.trim())
+        ? `Created TEMP_INBOUND Gmail thread candidate from ${classification.intent} classification.`
+        : "Created TEMP_INBOUND Gmail thread candidate with safe no-subject fallback.",
+    };
   }
 
   private async resolveMessagesForInitialThread(
@@ -2521,6 +2705,7 @@ export class InboundEmailIngestionService {
         providerMessageId: attachment.providerMessageId ?? message.messageId,
         messageId: message.messageId,
         messageSubject: message.subject,
+        messageDisplaySubject: displaySubjectForMessage(message),
         messageSenderEmail: message.senderEmail,
         messageReceivedAt: message.receivedAt ? message.receivedAt.toISOString() : null,
       }))
@@ -2535,10 +2720,12 @@ export class InboundEmailIngestionService {
       latestSenderName: latestMessage?.senderName ?? null,
       latestSenderEmail: latestMessage?.senderEmail ?? null,
       latestSubject: latestMessage?.subject ?? null,
+      latestDisplaySubject: latestMessage ? displaySubjectForMessage(latestMessage) : null,
       messages: args.messages.map((message) => ({
         messageId: message.messageId,
         threadId: message.threadId,
         subject: message.subject,
+        displaySubject: displaySubjectForMessage(message),
         senderName: message.senderName,
         senderEmail: message.senderEmail,
         receivedAt: message.receivedAt ? message.receivedAt.toISOString() : null,
@@ -2568,6 +2755,7 @@ export class InboundEmailIngestionService {
             email: primaryMessage?.senderEmail ?? getPathValue(raw, "sender.email") ?? null,
           },
           subject: primaryMessage?.subject ?? raw.subject ?? args.record.externalReference,
+          displaySubject: primaryMessage ? displaySubjectForMessage(primaryMessage) : stringFromUnknown(raw.displaySubject) ?? displaySubjectForMessage({ subject: args.record.externalReference }),
           receivedAt: primaryMessage?.receivedAt ? primaryMessage.receivedAt.toISOString() : raw.receivedAt ?? null,
           bodyText: combinedBodyText || primaryMessage?.bodyText || raw.bodyText || null,
           bodyHtml: combinedBodyHtml || primaryMessage?.bodyHtml || raw.bodyHtml || null,
@@ -2598,6 +2786,7 @@ export class InboundEmailIngestionService {
             email: primaryMessage?.senderEmail ?? getPathValue(normalized, "sender.email") ?? null,
           },
           subject: primaryMessage?.subject ?? normalized.subject ?? args.record.externalReference,
+          displaySubject: primaryMessage ? displaySubjectForMessage(primaryMessage) : stringFromUnknown(normalized.displaySubject) ?? displaySubjectForMessage({ subject: args.record.externalReference }),
           bodyText: combinedBodyText || primaryMessage?.bodyText || normalized.bodyText || null,
           bodyHtml: combinedBodyHtml || primaryMessage?.bodyHtml || normalized.bodyHtml || null,
           attachments: combinedAttachments,
@@ -2608,6 +2797,7 @@ export class InboundEmailIngestionService {
           inboundIntent: classification?.intent ?? extractedOrder.inboundIntent ?? null,
           inboundIntentReason: classification?.reason ?? extractedOrder.inboundIntentReason ?? null,
           subject: primaryMessage?.subject ?? extractedOrder.subject ?? args.record.externalReference,
+          displaySubject: primaryMessage ? displaySubjectForMessage(primaryMessage) : stringFromUnknown(extractedOrder.displaySubject) ?? displaySubjectForMessage({ subject: args.record.externalReference }),
           bodyText: combinedBodyText || primaryMessage?.bodyText || extractedOrder.bodyText || null,
           attachments: combinedAttachments,
         },
@@ -2888,6 +3078,17 @@ export class InboundEmailIngestionService {
   ): Promise<SenderTrustDecision> {
     const senderEmail = senderEmailFromMessage(message);
     const senderDomain = senderDomainFromMessage(message);
+    const matchedIgnoreRule = await this.findMatchedIgnoreRule(organizationId, message);
+    if (matchedIgnoreRule) {
+      return {
+        trusted: false,
+        senderEmail,
+        senderDomain,
+        trustSource: "ignored",
+        ruleId: matchedIgnoreRule.id,
+        reason: `Sender matched inbound ignore rule ${matchedIgnoreRule.ruleType}.`,
+      };
+    }
     const rules = await this.inboundRepository.listEnabledEmailTrustRules(organizationId);
     for (const rule of rules) {
       const value = rule.ruleValue.trim().toLowerCase();

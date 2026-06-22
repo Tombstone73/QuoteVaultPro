@@ -246,6 +246,7 @@ describe("inbound email attachment classification", () => {
 
 function diagnosticRepository(overrides: Record<string, any>) {
   return {
+    listEnabledEmailIgnoreRules: jest.fn(async () => []),
     listEnabledEmailTrustRules: jest.fn(async () => []),
     senderEmailMatchesCustomerContact: jest.fn(async () => false),
     senderDomainMatchesCustomerDomain: jest.fn(async () => false),
@@ -356,6 +357,34 @@ describe("inbound sender trust classification", () => {
     });
   });
 
+  test("ignore rules override exact known contact email trust", async () => {
+    const repo = diagnosticRepository({
+      listRecords: jest.fn(async () => [inboundEmailRecord({
+        rawPayloadJson: { sender: { email: "known.customer@gmail.com" } },
+      })]),
+      getQueueSummary: jest.fn(async () => ({ total: 1 })),
+      listFiles: jest.fn(async () => []),
+      listEnabledEmailIgnoreRules: jest.fn(async () => [ignoreRule({
+        ruleType: "sender_email_exact",
+        ruleValue: "known.customer@gmail.com",
+      })]),
+      senderEmailMatchesCustomerContact: jest.fn(async () => true),
+    });
+    const service = new InboundOrderService(repo as any);
+
+    const result = await service.listInboundOrders({
+      organizationId: "org_1",
+      filters: { statusGroup: "active", limit: 20, offset: 0 },
+    });
+
+    expect(repo.senderEmailMatchesCustomerContact).not.toHaveBeenCalled();
+    expect(result.records[0]).toMatchObject({
+      senderTrustStatus: "ignored",
+      trustRuleType: null,
+      canAutoDownloadAttachments: false,
+    });
+  });
+
   test("blocks public sender domain trust rules", async () => {
     const repo: any = diagnosticRepository({
       createEmailTrustRule: jest.fn(async (values: Record<string, any>) => values),
@@ -393,6 +422,179 @@ describe("inbound sender trust classification", () => {
 });
 
 describe("inbound email pull diagnostics service", () => {
+  test("reports no-subject Gmail messages with explicit processing outcomes", async () => {
+    const service = new InboundOrderService(diagnosticRepository({
+      getEmailPullDiagnostics: jest.fn(async () => ({
+        mailboxes: [{
+          id: "mailbox_1",
+          provider: "gmail",
+          name: "Inbound Gmail",
+          emailAddress: "orders@example.com",
+          enabled: true,
+          isDefault: true,
+          lastPulledAt: new Date("2026-06-22T12:00:00.000Z"),
+          lastPullStatus: "success",
+          lastPullError: null,
+          settingsJson: {
+            latestPullSummary: {
+              gmailList: {
+                query: "newer_than:14d",
+                labelIds: ["INBOX"],
+                maxResults: 50,
+                pageCount: 1,
+                totalMessageIdsReturned: 1,
+                listedMessages: [{
+                  providerMessageId: "gmail_no_subject",
+                  threadId: "thread_no_subject",
+                  subject: null,
+                  displaySubject: "(no subject)",
+                  senderName: "Shawn Fears",
+                  senderEmail: "shawn@brainstormprint.com",
+                  receivedAt: "2026-06-22T11:00:00.000Z",
+                }],
+              },
+              processedMessages: [{
+                providerMessageId: "gmail_no_subject",
+                threadId: "thread_no_subject",
+                subject: null,
+                displaySubject: "(no subject)",
+                senderName: "Shawn Fears",
+                senderEmail: "shawn@brainstormprint.com",
+                senderDomain: "brainstormprint.com",
+                receivedAt: "2026-06-22T11:00:00.000Z",
+                processingOutcome: "no_subject_ingested",
+                reason: "Created TEMP_INBOUND candidate with safe no-subject fallback.",
+                inboundRecordId: "inbound_no_subject",
+              }],
+              skippedMessages: [],
+              ignoredMessages: [],
+              failedMessages: [],
+            },
+          },
+        }],
+        ignoreRules: [],
+        recentCreatedRecords: [],
+        recentFiles: [],
+        recentFailedDiagnostics: [],
+        recentPullDiagnostics: [],
+        recentIgnoredDiagnostics: [],
+        subjectRecords: [],
+        subjectFiles: [],
+        subjectPullDiagnostics: [],
+      })),
+    }) as any);
+
+    const result = await service.getEmailPullDiagnostics({
+      organizationId: "org_1",
+      subject: "no subject",
+    });
+
+    expect(result.recentGmailListedMessages[0]).toMatchObject({
+      providerMessageId: "gmail_no_subject",
+      displaySubject: "(no subject)",
+      processingOutcome: "no_subject_ingested",
+      reason: "Created TEMP_INBOUND candidate with safe no-subject fallback.",
+    });
+    expect(result.recentGmailProcessedMessages?.[0]).toMatchObject({
+      processingOutcome: "no_subject_ingested",
+      inboundRecordId: "inbound_no_subject",
+    });
+    expect(result.subjectSearch.found).toBe(true);
+    expect(result.subjectSearch.matchingGmailListedMessages[0]).toMatchObject({
+      displaySubject: "(no subject)",
+      processingOutcome: "no_subject_ingested",
+    });
+    expect(result.subjectSearch.matchingProcessedMessages?.[0]).toMatchObject({
+      processingOutcome: "no_subject_ingested",
+    });
+  });
+
+  test("reports listed Gmail messages that were skipped before entering the queue", async () => {
+    const service = new InboundOrderService(diagnosticRepository({
+      getEmailPullDiagnostics: jest.fn(async () => ({
+        mailboxes: [{
+          id: "mailbox_1",
+          provider: "gmail",
+          name: "Inbound Gmail",
+          emailAddress: "orders@example.com",
+          enabled: true,
+          isDefault: true,
+          lastPulledAt: new Date("2026-06-22T12:00:00.000Z"),
+          lastPullStatus: "success",
+          lastPullError: null,
+          settingsJson: {
+            latestPullSummary: {
+              gmailList: {
+                query: "newer_than:14d",
+                labelIds: ["INBOX"],
+                maxResults: 50,
+                pageCount: 1,
+                totalMessageIdsReturned: 1,
+                listedMessages: [{
+                  providerMessageId: "gmail_newsletter",
+                  threadId: "thread_newsletter",
+                  subject: "Weekly newsletter",
+                  displaySubject: "Weekly newsletter",
+                  senderName: "Marketing",
+                  senderEmail: "marketing@example.com",
+                  receivedAt: "2026-06-22T11:00:00.000Z",
+                }],
+              },
+              processedMessages: [{
+                providerMessageId: "gmail_newsletter",
+                threadId: "thread_newsletter",
+                subject: "Weekly newsletter",
+                displaySubject: "Weekly newsletter",
+                senderName: "Marketing",
+                senderEmail: "marketing@example.com",
+                senderDomain: "example.com",
+                receivedAt: "2026-06-22T11:00:00.000Z",
+                processingOutcome: "classification_skipped",
+                reason: "Ignored obvious marketing/newsletter email.",
+                inboundRecordId: null,
+              }],
+              skippedMessages: [{
+                providerMessageId: "gmail_newsletter",
+                threadId: "thread_newsletter",
+                subject: "Weekly newsletter",
+                displaySubject: "Weekly newsletter",
+                senderEmail: "marketing@example.com",
+                processingOutcome: "classification_skipped",
+                reason: "Ignored obvious marketing/newsletter email.",
+                inboundRecordId: null,
+              }],
+              ignoredMessages: [],
+              failedMessages: [],
+            },
+          },
+        }],
+        ignoreRules: [],
+        recentCreatedRecords: [],
+        recentFiles: [],
+        recentFailedDiagnostics: [],
+        recentPullDiagnostics: [],
+        recentIgnoredDiagnostics: [],
+        subjectRecords: [],
+        subjectFiles: [],
+        subjectPullDiagnostics: [],
+      })),
+    }) as any);
+
+    const result = await service.getEmailPullDiagnostics({
+      organizationId: "org_1",
+      subject: "gmail_newsletter",
+    });
+
+    expect(result.subjectSearch.found).toBe(true);
+    expect(result.subjectSearch.matchingGmailListedMessages[0]).toMatchObject({
+      processingOutcome: "classification_skipped",
+      reason: "Ignored obvious marketing/newsletter email.",
+    });
+    expect(result.subjectSearch.matchingSkippedMessages?.[0]).toMatchObject({
+      processingOutcome: "classification_skipped",
+    });
+  });
+
   test("reports zero-file email records with raw attachment indicators and body hints", async () => {
     const service = new InboundOrderService(diagnosticRepository({
       getEmailPullDiagnostics: jest.fn(async () => ({

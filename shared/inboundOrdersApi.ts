@@ -568,9 +568,13 @@ export type InboundEmailPullDiagnosticsResponse = {
       recentFailedMessageDiagnostics: Array<Record<string, unknown>>;
       recentPullMessageDiagnostics: Array<Record<string, unknown>>;
       recentIgnoredMessageDiagnostics: Array<Record<string, unknown>>;
-      recentCreatedInboundRecords: Array<Record<string, unknown>>;
+    recentCreatedInboundRecords: Array<Record<string, unknown>>;
     recentInboundFiles: Array<Record<string, unknown>>;
     recentGmailListedMessages: Array<Record<string, unknown>>;
+    recentGmailProcessedMessages?: Array<Record<string, unknown>>;
+    recentGmailSkippedMessages?: Array<Record<string, unknown>>;
+    recentGmailIgnoredMessages?: Array<Record<string, unknown>>;
+    recentGmailFailedMessages?: Array<Record<string, unknown>>;
     ignoreRuleCount: number;
     activeIgnoreRules: Array<{
       id: string;
@@ -588,6 +592,10 @@ export type InboundEmailPullDiagnosticsResponse = {
         matchingFiles: Array<Record<string, unknown>>;
         matchingIgnoreRules: Array<Record<string, unknown>>;
         matchingGmailListedMessages: Array<Record<string, unknown>>;
+        matchingProcessedMessages?: Array<Record<string, unknown>>;
+        matchingSkippedMessages?: Array<Record<string, unknown>>;
+        matchingIgnoredMessages?: Array<Record<string, unknown>>;
+        matchingFailedMessages?: Array<Record<string, unknown>>;
         notReturnedByGmailListQuery: boolean;
         gmailListMessage: string | null;
         gmailPayloadDiagnostics?: Array<Record<string, unknown>>;
@@ -664,6 +672,7 @@ export type InboundSenderTrustStatus =
   | "trusted_domain"
   | "trusted_contact"
   | "trusted_customer_domain"
+  | "ignored"
   | "untrusted"
   | "unknown";
 

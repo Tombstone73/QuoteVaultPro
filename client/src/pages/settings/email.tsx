@@ -16,7 +16,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertTriangle, ChevronDown, ChevronRight, Edit, Mail, FileText, Plus, Inbox, PauseCircle, RefreshCw, Search, Trash2, Star } from "lucide-react";
-import { useState, useEffect, type FormEvent } from "react";
+import { useState, useEffect, type FormEvent, type ReactNode } from "react";
 import {
   useCreateInboundEmailIgnoreRule,
   useCreateInboundEmailTrustRule,
@@ -175,6 +175,73 @@ function formatMailboxDate(value: string | null): string {
   return date.toLocaleString();
 }
 
+function CollapsibleSettingsCard({
+  title,
+  description,
+  icon,
+  defaultExpanded,
+  summary,
+  actions,
+  children,
+}: {
+  title: string;
+  description: string;
+  icon?: ReactNode;
+  defaultExpanded: boolean;
+  summary?: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+
+  useEffect(() => {
+    setExpanded(defaultExpanded);
+  }, [defaultExpanded]);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <button
+            type="button"
+            className="min-w-0 flex-1 text-left"
+            onClick={() => setExpanded((value) => !value)}
+            aria-expanded={expanded}
+          >
+            <CardTitle className="flex items-center gap-2">
+              {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {icon}
+              {title}
+            </CardTitle>
+            <CardDescription className="mt-1">{description}</CardDescription>
+            {summary ? <div className="mt-2 text-sm text-muted-foreground">{summary}</div> : null}
+          </button>
+          {actions ? <div className="flex shrink-0 flex-wrap gap-2">{actions}</div> : null}
+        </div>
+      </CardHeader>
+      {expanded ? <CardContent>{children}</CardContent> : null}
+    </Card>
+  );
+}
+
+function ruleMatchesSearch(rule: {
+  ruleType: string;
+  ruleValue: string;
+  notes?: string | null;
+  matchCount?: number;
+  lastMatchedAt?: string | null;
+}, search: string): boolean {
+  const normalized = search.trim().toLowerCase();
+  if (!normalized) return true;
+  return [
+    rule.ruleType,
+    rule.ruleValue,
+    rule.notes,
+    `${rule.matchCount ?? 0} matches`,
+    rule.lastMatchedAt,
+  ].some((value) => String(value ?? "").toLowerCase().includes(normalized));
+}
+
 function InboundEmailMailboxSettingsCard() {
   const { toast } = useToast();
   const mailboxesQuery = useInboundEmailMailboxes();
@@ -321,18 +388,13 @@ function InboundEmailMailboxSettingsCard() {
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <CardTitle className="flex items-center gap-2">
-              <Mail className="h-5 w-5" />
-              Inbound Email Mailboxes
-            </CardTitle>
-            <CardDescription>
-              Dedicated inbound mailbox configuration for creating TEMP_INBOUND review records.
-            </CardDescription>
-          </div>
+    <CollapsibleSettingsCard
+      title="Inbound Email Mailboxes"
+      description="Dedicated inbound mailbox configuration for creating TEMP_INBOUND review records."
+      icon={<Mail className="h-5 w-5" />}
+      defaultExpanded
+      summary={`${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"} configured`}
+      actions={
           <Button
             type="button"
             variant="outline"
@@ -342,12 +404,12 @@ function InboundEmailMailboxSettingsCard() {
             <Plus className="mr-2 h-4 w-4" />
             {startGmailOAuth.isPending ? "Connecting..." : "Connect Gmail Inbound Mailbox"}
           </Button>
-        </div>
+      }
+    >
         <p className="text-sm text-muted-foreground">
           This creates a dedicated inbound Gmail mailbox and does not use the outbound Gmail sending connection.
         </p>
-      </CardHeader>
-      <CardContent>
+      <div className="mt-4">
         {mailboxesQuery.isLoading ? (
           <Skeleton className="h-40 w-full" />
         ) : mailboxesQuery.isError ? (
@@ -512,8 +574,8 @@ function InboundEmailMailboxSettingsCard() {
             </table>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </CollapsibleSettingsCard>
   );
 }
 
@@ -535,7 +597,9 @@ function InboundEmailIgnoreRulesCard() {
   const [notes, setNotes] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [ruleSearch, setRuleSearch] = useState("");
   const rules = rulesQuery.data?.rules ?? [];
+  const filteredRules = rules.filter((rule) => ruleMatchesSearch(rule, ruleSearch));
   const isMutating = createRule.isPending || updateRule.isPending || deleteRule.isPending;
   const editingRule = rules.find((rule) => rule.id === editingRuleId) ?? null;
 
@@ -623,17 +687,14 @@ function InboundEmailIgnoreRulesCard() {
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Inbox className="h-5 w-5" />
-          Inbound Ignore Rules
-        </CardTitle>
-        <CardDescription>
-          Skip recurring non-order emails before they create TEMP_INBOUND review records.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <CollapsibleSettingsCard
+      title="Inbound Ignore Rules"
+      description="Skip recurring non-order emails before they create TEMP_INBOUND review records."
+      icon={<Inbox className="h-5 w-5" />}
+      defaultExpanded={rules.length <= 10}
+      summary={`${rules.length} rule${rules.length === 1 ? "" : "s"} configured`}
+    >
+      <div className="space-y-4">
         <div className="flex justify-end">
           <Button type="button" variant="outline" onClick={resetForm} disabled={isMutating && !editingRuleId}>
             <Plus className="mr-2 h-4 w-4" />
@@ -682,6 +743,12 @@ function InboundEmailIgnoreRulesCard() {
             </div>
           )}
         </form>
+        <Input
+          value={ruleSearch}
+          onChange={(event) => setRuleSearch(event.target.value)}
+          placeholder="Search ignore rules by type, value, notes, or usage"
+          aria-label="Search inbound ignore rules"
+        />
 
         {rulesQuery.isLoading ? (
           <Skeleton className="h-40 w-full" />
@@ -692,6 +759,10 @@ function InboundEmailIgnoreRulesCard() {
         ) : rules.length === 0 ? (
           <div className="rounded-md border border-dashed border-border p-6 text-sm text-muted-foreground">
             No inbound ignore rules are configured yet.
+          </div>
+        ) : filteredRules.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border p-6 text-sm text-muted-foreground">
+            No ignore rules match this search.
           </div>
         ) : (
           <div className="overflow-x-auto rounded-md border border-border">
@@ -707,7 +778,7 @@ function InboundEmailIgnoreRulesCard() {
                 </tr>
               </thead>
               <tbody>
-                {rules.map((rule) => (
+                {filteredRules.map((rule) => (
                   <tr key={rule.id} className="border-t border-border align-top">
                     <td className="px-4 py-3">
                       <Switch
@@ -756,8 +827,8 @@ function InboundEmailIgnoreRulesCard() {
             </table>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </CollapsibleSettingsCard>
   );
 }
 
@@ -779,7 +850,9 @@ function InboundEmailTrustRulesCard() {
   const [notes, setNotes] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [ruleSearch, setRuleSearch] = useState("");
   const rules = rulesQuery.data?.rules ?? [];
+  const filteredRules = rules.filter((rule) => ruleMatchesSearch(rule, ruleSearch));
   const isMutating = createRule.isPending || updateRule.isPending || deleteRule.isPending;
   const editingRule = rules.find((rule) => rule.id === editingRuleId) ?? null;
 
@@ -852,17 +925,14 @@ function InboundEmailTrustRulesCard() {
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Star className="h-5 w-5" />
-          Trusted Inbound Senders
-        </CardTitle>
-        <CardDescription>
-          Allow matching trusted senders to auto-download safe inbound attachment types. Blocked file types are still never downloaded.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <CollapsibleSettingsCard
+      title="Trusted Inbound Senders"
+      description="Allow matching trusted senders to auto-download safe inbound attachment types. Blocked file types are still never downloaded."
+      icon={<Star className="h-5 w-5" />}
+      defaultExpanded={rules.length <= 10}
+      summary={`${rules.length} trusted rule${rules.length === 1 ? "" : "s"} configured`}
+    >
+      <div className="space-y-4">
         <form onSubmit={submitRule} className="grid gap-3 md:grid-cols-[220px_1fr_auto]">
           <select
             className="h-10 rounded-md border border-input bg-background px-3 text-sm"
@@ -906,6 +976,13 @@ function InboundEmailTrustRulesCard() {
           )}
         </form>
 
+        <Input
+          value={ruleSearch}
+          onChange={(event) => setRuleSearch(event.target.value)}
+          placeholder="Search trusted senders by type, value, notes, or usage"
+          aria-label="Search trusted inbound senders"
+        />
+
         {rulesQuery.isLoading ? (
           <Skeleton className="h-40 w-full" />
         ) : rulesQuery.isError ? (
@@ -915,6 +992,10 @@ function InboundEmailTrustRulesCard() {
         ) : rules.length === 0 ? (
           <div className="rounded-md border border-dashed border-border p-6 text-sm text-muted-foreground">
             No trusted inbound sender rules are configured yet.
+          </div>
+        ) : filteredRules.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border p-6 text-sm text-muted-foreground">
+            No trusted sender rules match this search.
           </div>
         ) : (
           <div className="overflow-x-auto rounded-md border border-border">
@@ -930,7 +1011,7 @@ function InboundEmailTrustRulesCard() {
                 </tr>
               </thead>
               <tbody>
-                {rules.map((rule) => (
+                {filteredRules.map((rule) => (
                   <tr key={rule.id} className="border-t border-border align-top">
                     <td className="px-4 py-3">
                       <Switch
@@ -967,8 +1048,8 @@ function InboundEmailTrustRulesCard() {
             </table>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </CollapsibleSettingsCard>
   );
 }
 
@@ -1153,10 +1234,43 @@ function GmailPayloadDiagnosticsPanel({ diagnostics }: { diagnostics: Array<Reco
   );
 }
 
+function GmailProcessingOutcomeList({
+  title,
+  messages,
+  emptyText,
+}: {
+  title: string;
+  messages: Array<Record<string, unknown>>;
+  emptyText: string;
+}) {
+  return (
+    <div className="rounded-md border border-border p-3">
+      <h4 className="text-sm font-semibold text-foreground">{title}</h4>
+      <div className="mt-2 space-y-2">
+        {messages.length === 0 ? (
+          <div className="text-sm text-muted-foreground">{emptyText}</div>
+        ) : messages.map((message, index) => (
+          <div key={`${formatDiagnosticValue(message.providerMessageId)}-${index}`} className="rounded-md bg-muted/30 p-2 text-xs">
+            <div className="font-medium text-foreground">{formatDiagnosticValue(message.displaySubject ?? message.subject)}</div>
+            <div className="mt-1 grid gap-1 text-muted-foreground md:grid-cols-2">
+              <div>Outcome: {formatDiagnosticValue(message.processingOutcome)}</div>
+              <div>Reason: {formatDiagnosticValue(message.reason)}</div>
+              <div>Sender: {formatDiagnosticValue(message.senderEmail)}</div>
+              <div>Received: {formatDiagnosticValue(message.receivedAt)}</div>
+              <div>Message: {formatDiagnosticValue(message.providerMessageId)}</div>
+              <div>Thread: {formatDiagnosticValue(message.threadId)}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function EmailPullDiagnosticsPanel() {
   const [subjectInput, setSubjectInput] = useState("");
   const [subject, setSubject] = useState("");
-  const [detailsExpanded, setDetailsExpanded] = useState(true);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [ignoreRulesExpanded, setIgnoreRulesExpanded] = useState(false);
   const diagnosticsQuery = useInboundEmailPullDiagnostics(subject);
   const diagnostics = diagnosticsQuery.data;
@@ -1281,7 +1395,7 @@ function EmailPullDiagnosticsPanel() {
                 <Input
                   value={subjectInput}
                   onChange={(event) => setSubjectInput(event.target.value)}
-                  placeholder="Search exact subject text"
+                  placeholder="Search subject, sender, domain, message id, thread id, body snippet, or no subject"
                   aria-label="Email diagnostics subject search"
                 />
                 <div className="flex gap-2">
@@ -1375,8 +1489,10 @@ function EmailPullDiagnosticsPanel() {
                       <div className="text-sm text-muted-foreground">None</div>
                     ) : diagnostics.subjectSearch.matchingGmailListedMessages.map((message, index) => (
                       <div key={`${formatDiagnosticValue(message.providerMessageId)}-${index}`} className="rounded-md bg-muted/30 p-2 text-xs">
-                        <div className="font-medium text-foreground">{formatDiagnosticValue(message.subject)}</div>
+                        <div className="font-medium text-foreground">{formatDiagnosticValue(message.displaySubject ?? message.subject)}</div>
                         <div className="mt-1 grid gap-1 text-muted-foreground md:grid-cols-2">
+                          <div>Outcome: {formatDiagnosticValue(message.processingOutcome)}</div>
+                          <div>Reason: {formatDiagnosticValue(message.reason)}</div>
                           <div>Sender: {formatDiagnosticValue(message.senderName)} &lt;{formatDiagnosticValue(message.senderEmail)}&gt;</div>
                           <div>Received: {formatDiagnosticValue(message.receivedAt)}</div>
                           <div>Mailbox: {formatDiagnosticValue(message.mailboxEmail)}</div>
@@ -1385,6 +1501,28 @@ function EmailPullDiagnosticsPanel() {
                       </div>
                     ))}
                   </div>
+                </div>
+                <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                  <GmailProcessingOutcomeList
+                    title="Matching Processed Messages"
+                    messages={diagnostics.subjectSearch.matchingProcessedMessages ?? []}
+                    emptyText="No matching processed-message outcomes."
+                  />
+                  <GmailProcessingOutcomeList
+                    title="Matching Skipped Messages"
+                    messages={diagnostics.subjectSearch.matchingSkippedMessages ?? []}
+                    emptyText="No matching skipped-message outcomes."
+                  />
+                  <GmailProcessingOutcomeList
+                    title="Matching Ignored Messages"
+                    messages={diagnostics.subjectSearch.matchingIgnoredMessages ?? []}
+                    emptyText="No matching ignored-message outcomes."
+                  />
+                  <GmailProcessingOutcomeList
+                    title="Matching Failed Messages"
+                    messages={diagnostics.subjectSearch.matchingFailedMessages ?? []}
+                    emptyText="No matching failed-message outcomes."
+                  />
                 </div>
                 <GmailPayloadDiagnosticsPanel diagnostics={diagnostics.subjectSearch.gmailPayloadDiagnostics ?? []} />
               </div>
@@ -1397,8 +1535,10 @@ function EmailPullDiagnosticsPanel() {
                   <div className="text-sm text-muted-foreground">No recent Gmail list diagnostics found.</div>
                 ) : diagnostics.recentGmailListedMessages.map((message, index) => (
                   <div key={`${formatDiagnosticValue(message.providerMessageId)}-${index}`} className="rounded-md bg-muted/30 p-2 text-xs">
-                    <div className="font-medium text-foreground">{formatDiagnosticValue(message.subject)}</div>
+                    <div className="font-medium text-foreground">{formatDiagnosticValue(message.displaySubject ?? message.subject)}</div>
                     <div className="mt-1 grid gap-1 text-muted-foreground md:grid-cols-2">
+                      <div>Outcome: {formatDiagnosticValue(message.processingOutcome)}</div>
+                      <div>Reason: {formatDiagnosticValue(message.reason)}</div>
                       <div>Sender: {formatDiagnosticValue(message.senderName)} &lt;{formatDiagnosticValue(message.senderEmail)}&gt;</div>
                       <div>Received: {formatDiagnosticValue(message.receivedAt)}</div>
                       <div>Message: {formatDiagnosticValue(message.providerMessageId)}</div>
@@ -1411,6 +1551,29 @@ function EmailPullDiagnosticsPanel() {
                   </div>
                 ))}
               </div>
+            </div>}
+
+            {detailsExpanded && <div className="grid gap-4 xl:grid-cols-2">
+              <GmailProcessingOutcomeList
+                title="Recent Gmail Processed Messages"
+                messages={diagnostics.recentGmailProcessedMessages ?? []}
+                emptyText="No recent processed-message outcomes found."
+              />
+              <GmailProcessingOutcomeList
+                title="Recent Gmail Skipped Messages"
+                messages={diagnostics.recentGmailSkippedMessages ?? []}
+                emptyText="No recent skipped-message outcomes found."
+              />
+              <GmailProcessingOutcomeList
+                title="Recent Gmail Ignored Messages"
+                messages={diagnostics.recentGmailIgnoredMessages ?? []}
+                emptyText="No recent ignored-message outcomes found."
+              />
+              <GmailProcessingOutcomeList
+                title="Recent Gmail Failed Messages"
+                messages={diagnostics.recentGmailFailedMessages ?? []}
+                emptyText="No recent failed-message outcomes found."
+              />
             </div>}
 
             {detailsExpanded && <div className="rounded-md border border-border p-3">
