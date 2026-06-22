@@ -1336,6 +1336,195 @@ describe("InboundOrdersPage", () => {
     }));
   });
 
+  test("renders Gmail thread messages separately and collapses inline signature images", async () => {
+    const row = record({
+      id: "thread_display_1",
+      sourceType: "email",
+      sourceLabel: "TEMP_INBOUND email thread intake",
+      sourceRecordId: "gmail_msg_latest",
+      sourceMessageId: "gmail_msg_latest",
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        provider: "gmail",
+        messageId: "gmail_msg_latest",
+        threadId: "thread_brainstorm",
+        sender: { name: "Shawn Fears", email: "shawn@brainstormprint.com" },
+        subject: "Re: Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26",
+        bodyText: "Artwork attached.\n\n--- Thread message ---\n\nPlease see attached PO.",
+        thread: {
+          id: "thread_brainstorm",
+          messageCount: 2,
+          latestActivityAt: "2026-06-19T14:00:00.000Z",
+          messages: [
+            {
+              messageId: "gmail_msg_po",
+              subject: "Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26",
+              displaySubject: "Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26",
+              senderName: "Shawn Fears",
+              senderEmail: "shawn@brainstormprint.com",
+              to: ["orders@titan-graphics.com"],
+              cc: [],
+              receivedAt: "2026-06-19T13:00:00.000Z",
+              bodyText: "Please see attached PO.",
+              attachmentCount: 2,
+            },
+            {
+              messageId: "gmail_msg_latest",
+              subject: "Re: Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26",
+              displaySubject: "Re: Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26",
+              senderName: "Shawn Fears",
+              senderEmail: "shawn@brainstormprint.com",
+              to: ["orders@titan-graphics.com"],
+              cc: ["csr@brainstormprint.com"],
+              receivedAt: "2026-06-19T14:00:00.000Z",
+              bodyText: "Artwork attached.\n\nOn Jun 19, 2026, Titan wrote:\n> Please send files.",
+              attachmentCount: 2,
+            },
+          ],
+        },
+      },
+      normalizedPayloadJson: {
+        source: { type: "email", provider: "gmail", messageId: "gmail_msg_latest", threadId: "thread_brainstorm" },
+      },
+      senderTrustStatus: "trusted_contact",
+      trustReason: "Sender matched known contact email.",
+      canAutoDownloadAttachments: true,
+      attachmentDownloadPolicy: "auto_download_allowed",
+      externalReference: "Re: Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26",
+    });
+    const draft = parsedDraft({
+      evidence: {
+        items: [{
+          type: "PDF_ATTACHMENT",
+          label: "Purchase Order 151534.pdf",
+          sourceId: "file_po",
+          fileName: "Purchase Order 151534.pdf",
+          mimeType: "application/pdf",
+          rawText: "Purchase Order No 151534\nQty 10 Yard Signs",
+          pageCount: 1,
+          documentType: "purchase_order",
+          documentConfidence: 98,
+          extractionStatus: "successful",
+          poSummary: {
+            poNumber: "151534",
+            customer: "Brainstorm Print",
+            contact: "Shawn Fears",
+            dueDate: "2026-06-19",
+            quantity: 10,
+            productDescription: "Yard Signs",
+            material: "Coroplast",
+            dimensions: "24x18",
+            printSpecs: [],
+            shippingNotes: null,
+            price: null,
+            versionCount: null,
+            dateCandidates: [],
+            fieldSources: {},
+          },
+          warnings: [],
+        }],
+        conflicts: [],
+      },
+    });
+    const files = [
+      {
+        id: "file_po",
+        inboundRecordId: row.id,
+        sourceFilename: "Purchase Order 151534.pdf",
+        role: "po",
+        status: "available",
+        fileRecordId: "file_record_po",
+        providerAttachmentId: "att_po",
+        providerMessageId: "gmail_msg_po",
+        mimeType: "application/pdf",
+        sizeBytes: 120000,
+        contentDisposition: "attachment",
+        metadataJson: { attachmentState: "downloaded" },
+      },
+      {
+        id: "file_logo_1",
+        inboundRecordId: row.id,
+        sourceFilename: "image001.gif",
+        role: "email_attachment",
+        status: "available",
+        fileRecordId: "file_record_logo_1",
+        providerAttachmentId: "att_logo_1",
+        providerMessageId: "gmail_msg_po",
+        mimeType: "image/gif",
+        sizeBytes: 2345,
+        contentDisposition: "inline",
+        metadataJson: { attachmentState: "downloaded", contentId: "logo@example" },
+      },
+      {
+        id: "file_art",
+        inboundRecordId: row.id,
+        sourceFilename: "yard-sign-art.pdf",
+        role: "artwork",
+        status: "available",
+        fileRecordId: "file_record_art",
+        providerAttachmentId: "att_art",
+        providerMessageId: "gmail_msg_latest",
+        mimeType: "application/pdf",
+        sizeBytes: 320000,
+        contentDisposition: "attachment",
+        metadataJson: { attachmentState: "downloaded" },
+      },
+      {
+        id: "file_logo_2",
+        inboundRecordId: row.id,
+        sourceFilename: "image001.gif",
+        role: "email_attachment",
+        status: "available",
+        fileRecordId: "file_record_logo_2",
+        providerAttachmentId: "att_logo_2",
+        providerMessageId: "gmail_msg_latest",
+        mimeType: "image/gif",
+        sizeBytes: 2345,
+        contentDisposition: "inline",
+        metadataJson: { attachmentState: "downloaded", contentId: "logo@example" },
+      },
+    ];
+
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === `/api/inbound-orders/${row.id}`) return jsonResponse({ success: true, data: detail(row, { files }) });
+      if (path === `/api/inbound-orders/${row.id}/draft-preview`) return jsonResponse(draftPreview({ draft, latestAttempt: parseAttempt({ parsedDraft: draft }) }));
+      if (path === `/api/inbound-orders/${row.id}/review-draft`) return jsonResponse({ success: true, data: reviewDraft(draft) });
+      if (path.startsWith("/api/inbound-orders/customer-search")
+        || path.startsWith("/api/inbound-orders/contact-search")
+        || path.startsWith("/api/inbound-orders/product-search")) {
+        return jsonResponse({ success: true, data: [] });
+      }
+      if (path.startsWith("/api/inbound-orders/product-options/")) return jsonResponse(pbv2OptionsResponse());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+
+    await waitForText("Original Email");
+    await waitForText("Artwork attached.");
+    expect(container.textContent).toContain("Expand previous messages (1)");
+    expect(container.textContent).not.toContain("Please see attached PO.");
+    expect(container.textContent).toContain("Quoted content in this message");
+    expect(container.textContent).toContain("Signature/inline images");
+    expect(container.textContent).toContain("Purchase Order 151534.pdf");
+    expect(container.textContent).toContain("PO candidate");
+    expect(container.textContent).toContain("yard-sign-art.pdf");
+    expect(container.textContent).toContain("Artwork candidate");
+    await waitForText("Evidence Used");
+    expect(container.textContent).toContain("PO PDFs");
+    expect(container.textContent).toContain("1 purchase order PDF used");
+
+    const expandPrevious = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Expand previous messages")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(expandPrevious);
+    });
+
+    await waitForText("Please see attached PO.");
+  });
+
   test("supports operational line item add, duplicate, remove, and product picker rendering", async () => {
     setupParsedInboundReview();
 

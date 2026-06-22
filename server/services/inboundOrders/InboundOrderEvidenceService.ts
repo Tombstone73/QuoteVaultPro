@@ -1,6 +1,7 @@
 import { promises as fsPromises } from "fs";
 
 import type { InboundOrderFile, InboundOrderRecord } from "@shared/schema";
+import { inflateSync } from "zlib";
 import {
   getManualInboundEvidence,
   type InboundOrderEvidenceItem,
@@ -372,22 +373,56 @@ export function detectEvidenceConflicts(items: InboundOrderEvidenceItem[]): Inbo
 }
 
 export async function extractMachineReadablePdfText(buffer: Buffer | Uint8Array): Promise<{ text: string; pageCount: number }> {
-  const mod = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const pdfjs = (mod as any).default ?? mod;
-  const data = buffer instanceof Buffer
-    ? new Uint8Array(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength))
-    : buffer;
-  const document = await pdfjs.getDocument({ data, disableWorker: true }).promise;
-  const pages: string[] = [];
-  for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-    const page = await document.getPage(pageNumber);
-    const content = await page.getTextContent();
-    pages.push(content.items.map((item: any) => String(item.str ?? "")).join(" "));
+  try {
+    const nativeImport = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<any>;
+    const mod = await nativeImport("pdfjs-dist/legacy/build/pdf.mjs");
+    const pdfjs = (mod as any).default ?? mod;
+    const data = buffer instanceof Buffer
+      ? new Uint8Array(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength))
+      : buffer;
+    const document = await pdfjs.getDocument({ data, disableWorker: true }).promise;
+    const pages: string[] = [];
+    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+      const page = await document.getPage(pageNumber);
+      const content = await page.getTextContent();
+      pages.push(content.items.map((item: any) => String(item.str ?? "")).join(" "));
+    }
+    await document.destroy?.();
+    return {
+      text: normalizeWhitespace(pages.join("\n\n")).slice(0, MAX_ATTACHMENT_TEXT_CHARS),
+      pageCount: document.numPages,
+    };
+  } catch {
+    return extractPdfTextFromCompressedStreams(buffer);
   }
-  await document.destroy?.();
+}
+
+function extractPdfTextFromCompressedStreams(buffer: Buffer | Uint8Array): { text: string; pageCount: number } {
+  const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  const binary = bytes.toString("latin1");
+  const pageCount = Math.max(1, (binary.match(/\/Type\s*\/Page\b/g) ?? []).length);
+  const texts: string[] = [];
+  const streamPattern = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let match: RegExpExecArray | null;
+  while ((match = streamPattern.exec(binary)) !== null) {
+    const raw = Buffer.from(match[1], "latin1");
+    let decoded: string | null = null;
+    try {
+      decoded = inflateSync(raw).toString("latin1");
+    } catch {
+      decoded = raw.toString("latin1");
+    }
+    for (const hex of Array.from(decoded.matchAll(/<([0-9A-Fa-f\s]+)>\s*Tj/g))) {
+      const compact = hex[1].replace(/\s+/g, "");
+      if (compact.length % 2 === 0) texts.push(Buffer.from(compact, "hex").toString("utf8"));
+    }
+    for (const literal of Array.from(decoded.matchAll(/\(([^()]*)\)\s*Tj/g))) {
+      texts.push(literal[1].replace(/\\([()\\])/g, "$1"));
+    }
+  }
   return {
-    text: normalizeWhitespace(pages.join("\n\n")).slice(0, MAX_ATTACHMENT_TEXT_CHARS),
-    pageCount: document.numPages,
+    text: normalizeWhitespace(texts.join("\n")).slice(0, MAX_ATTACHMENT_TEXT_CHARS),
+    pageCount,
   };
 }
 

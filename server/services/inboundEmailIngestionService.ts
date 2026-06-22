@@ -60,6 +60,8 @@ export type InboundEmailProviderMessage = {
   threadId: string | null;
   senderName: string | null;
   senderEmail: string | null;
+  to?: string[];
+  cc?: string[];
   subject: string | null;
   receivedAt: Date | null;
   bodyText: string | null;
@@ -873,12 +875,37 @@ export function classifyInboundEmailAttachment(attachment: Pick<InboundEmailAtta
   };
 }
 
-function classifyInboundEmailAttachmentForMessage(
+function isLikelyInlineSignatureImage(attachment: InboundEmailAttachmentMetadata): boolean {
+  const filename = String(attachment.filename ?? "").toLowerCase();
+  const mimeType = String(attachment.mimeType ?? "").toLowerCase();
+  const disposition = String(attachment.contentDisposition ?? "").toLowerCase();
+  const contentId = String(attachment.contentId ?? "").toLowerCase();
+  const size = typeof attachment.size === "number" ? attachment.size : null;
+  const imageType = /^image\/(?:gif|png|jpe?g)$/i.test(mimeType);
+  if (!imageType) return false;
+  const inlineSignal = disposition.includes("inline") || Boolean(contentId);
+  const smallSignal = size != null && size > 0 && size <= 40_000;
+  const filenameSignal = /(?:^|[-_\s])(image\d{2,}|logo|signature|sig|facebook|linkedin|instagram|twitter|x-icon|spacer|pixel)(?:[-_\s.]|$)/i.test(filename);
+  return inlineSignal && (smallSignal || filenameSignal);
+}
+
+export function classifyInboundEmailAttachmentForMessage(
   attachment: InboundEmailAttachmentMetadata,
   message: Pick<InboundEmailProviderMessage, "subject" | "bodyText" | "bodyHtml">,
 ): ReturnType<typeof classifyInboundEmailAttachment> & { sourceHint: string | null } {
   const sourceHint = detectAttachmentSourceHint(message);
   const base = classifyInboundEmailAttachment(attachment);
+  if (isLikelyInlineSignatureImage(attachment)) {
+    return {
+      ...base,
+      role: "other",
+      poCandidate: false,
+      artworkCandidate: false,
+      safeToDownload: true,
+      reason: "Likely inline signature/logo image; captured as supporting metadata, not artwork.",
+      sourceHint,
+    };
+  }
   const filename = String(attachment.filename ?? "").toLowerCase();
   const mimeType = String(attachment.mimeType ?? "").toLowerCase();
   const extension = getExtension(filename);
@@ -1104,6 +1131,8 @@ export class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
       threadId: message.threadId ? String(message.threadId) : null,
       senderName: from.name,
       senderEmail: from.email,
+      to: headers.get("to") ? [String(headers.get("to"))] : [],
+      cc: headers.get("cc") ? [String(headers.get("cc"))] : [],
       subject,
       receivedAt,
       bodyText: body.text || null,
@@ -1970,7 +1999,11 @@ export class InboundEmailIngestionService {
         displaySubject: displaySubjectForMessage(message),
         senderName: message.senderName,
         senderEmail: message.senderEmail,
+        to: message.to ?? [],
+        cc: message.cc ?? [],
         receivedAt: message.receivedAt ? message.receivedAt.toISOString() : null,
+        bodyText: message.bodyText ?? null,
+        bodyHtml: message.bodyHtml ?? null,
         attachmentCount: message.attachments.length,
         attachmentFilenames: message.attachments.map((attachment) => attachment.filename).filter(Boolean),
       })),
@@ -2921,7 +2954,11 @@ export class InboundEmailIngestionService {
         displaySubject: displaySubjectForMessage(message),
         senderName: message.senderName,
         senderEmail: message.senderEmail,
+        to: message.to ?? [],
+        cc: message.cc ?? [],
         receivedAt: message.receivedAt ? message.receivedAt.toISOString() : null,
+        bodyText: message.bodyText ?? null,
+        bodyHtml: message.bodyHtml ?? null,
         attachmentCount: message.attachments.length,
         attachmentFilenames: message.attachments.map((attachment) => attachment.filename).filter(Boolean),
       })),
