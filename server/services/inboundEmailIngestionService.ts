@@ -108,6 +108,9 @@ type InboundEmailMessageProcessingDiagnostic = {
   processingOutcome: InboundEmailProcessingOutcome;
   reason: string;
   inboundRecordId: string | null;
+  classificationOutcome?: InboundEmailIntent | null;
+  classificationReason?: string | null;
+  crmInfluence?: string | null;
 };
 
 type InboundEmailProcessMessageResult =
@@ -116,12 +119,18 @@ type InboundEmailProcessMessageResult =
       recordId: string;
       processingOutcome: "created_record" | "no_subject_ingested";
       reason: string;
+      classificationOutcome?: InboundEmailIntent | null;
+      classificationReason?: string | null;
+      crmInfluence?: string | null;
     }
   | {
       status: "skippedDuplicates" | "ignored";
       recordId?: string | null;
       processingOutcome: Exclude<InboundEmailProcessingOutcome, "created_record" | "no_subject_ingested" | "failed">;
       reason: string;
+      classificationOutcome?: InboundEmailIntent | null;
+      classificationReason?: string | null;
+      crmInfluence?: string | null;
     };
 
 type InboundEmailManualReprocessAction = "reprocess_email" | "backfill_attachments" | "rerun_trust_attachment_download";
@@ -382,6 +391,16 @@ const SPAM_PATTERNS = [
   /\bmarketing\b/i,
 ];
 
+const STRONG_SPAM_SIGNAL_PATTERNS = [
+  /\blimited time offer\b/i,
+  /\bsale ends\b/i,
+  /\bseo\b/i,
+  /\blead generation\b/i,
+  /\bsponsored\b/i,
+  /\bvendor promo\b/i,
+  /\bbulk email\b/i,
+];
+
 const QUOTE_PATTERNS = [
   /\bquote\b/i,
   /\bestimate\b/i,
@@ -493,22 +512,80 @@ function parseAddress(value: string | null | undefined): { name: string | null; 
   };
 }
 
-export function classifyInboundEmailForReview(message: InboundEmailProviderMessage): { ignored: boolean; intent: InboundEmailIntent; reason: string } {
+type InboundEmailClassificationContext = {
+  senderTrusted?: boolean;
+  trustSource?: SenderTrustDecision["trustSource"] | null;
+  trustReason?: string | null;
+};
+
+function senderRelationshipLabel(context: InboundEmailClassificationContext): string | null {
+  if (!context.senderTrusted) return null;
+  if (context.trustSource === "sender_email_exact") return "trusted sender";
+  if (context.trustSource === "sender_domain") return "trusted sender domain";
+  if (context.trustSource === "customer_contact_email") return "trusted contact";
+  if (context.trustSource === "customer_domain") return "trusted customer domain";
+  return "trusted customer relationship";
+}
+
+function classificationCrmInfluence(context: InboundEmailClassificationContext): string | null {
+  const label = senderRelationshipLabel(context);
+  if (!label) return null;
+  return `${label}: ${context.trustReason ?? "Sender has a known customer relationship."}`;
+}
+
+function hasStrongSpamIndicators(text: string, spamMatchCount: number): boolean {
+  const hasUnsubscribe = /\bunsubscribe\b/i.test(text);
+  const hasStrongSignal = STRONG_SPAM_SIGNAL_PATTERNS.some((pattern) => pattern.test(text));
+  return (hasUnsubscribe && hasStrongSignal) || spamMatchCount >= 3;
+}
+
+export function classifyInboundEmailForReview(
+  message: InboundEmailProviderMessage,
+  context: InboundEmailClassificationContext = {},
+): { ignored: boolean; intent: InboundEmailIntent; reason: string; crmInfluence: string | null } {
   const text = [message.subject, message.bodyText, message.bodyHtml].filter(Boolean).join("\n").slice(0, 20000);
-  if (!text.trim() && message.attachments.length === 0) return { ignored: true, intent: "UNKNOWN", reason: "No subject, body text, or attachments." };
-  if (!text.trim() && message.attachments.length > 0) return { ignored: false, intent: "UNKNOWN", reason: "Attachment-only inbound message needs staff review." };
-  if (SPAM_PATTERNS.some((pattern) => pattern.test(text))) {
-    return { ignored: true, intent: "UNKNOWN", reason: "Ignored obvious marketing/newsletter email." };
-  }
+  const crmInfluence = classificationCrmInfluence(context);
+  if (!text.trim() && message.attachments.length === 0) return { ignored: true, intent: "UNKNOWN", reason: "No subject, body text, or attachments.", crmInfluence };
+  if (!text.trim() && message.attachments.length > 0) return { ignored: false, intent: "UNKNOWN", reason: "Attachment-only inbound message needs staff review.", crmInfluence };
 
   const quote = QUOTE_PATTERNS.some((pattern) => pattern.test(text));
   const order = ORDER_PATTERNS.some((pattern) => pattern.test(text))
     || message.attachments.some((attachment) => /\bpo\b|purchase.?order/i.test(attachment.filename ?? ""));
+  const spamMatches = SPAM_PATTERNS.filter((pattern) => pattern.test(text));
+  const trustedCustomerCommunication = Boolean(context.senderTrusted && context.trustSource !== "ignored" && context.trustSource !== "none");
 
-  if (order && !quote) return { ignored: false, intent: "ORDER_REQUEST", reason: "Order request language detected." };
-  if (quote && !order) return { ignored: false, intent: "QUOTE_REQUEST", reason: "Quote request language detected." };
-  if (quote && order) return { ignored: false, intent: "ORDER_REQUEST", reason: "Order and quote language detected; order intent takes review priority." };
-  return { ignored: false, intent: "UNKNOWN", reason: "Ambiguous inbound request." };
+  if (order && !quote) return { ignored: false, intent: "ORDER_REQUEST", reason: "Order request language detected.", crmInfluence };
+  if (quote && !order) return { ignored: false, intent: "QUOTE_REQUEST", reason: "Quote request language detected.", crmInfluence };
+  if (quote && order) return { ignored: false, intent: "ORDER_REQUEST", reason: "Order and quote language detected; order intent takes review priority.", crmInfluence };
+
+  if (spamMatches.length > 0) {
+    if (trustedCustomerCommunication && !hasStrongSpamIndicators(text, spamMatches.length)) {
+      return {
+        ignored: false,
+        intent: "CUSTOMER_COMMUNICATION",
+        reason: "Known customer/contact communication contained weak newsletter wording, so it remains available for staff review.",
+        crmInfluence,
+      };
+    }
+    return {
+      ignored: true,
+      intent: "NEWSLETTER_SPAM",
+      reason: trustedCustomerCommunication
+        ? "Strong marketing/newsletter indicators detected despite known customer relationship."
+        : "Ignored obvious marketing/newsletter email.",
+      crmInfluence,
+    };
+  }
+
+  if (trustedCustomerCommunication) {
+    return {
+      ignored: false,
+      intent: "CUSTOMER_COMMUNICATION",
+      reason: "Known customer/contact communication needs staff review.",
+      crmInfluence,
+    };
+  }
+  return { ignored: false, intent: "UNKNOWN", reason: "Ambiguous inbound request.", crmInfluence };
 }
 
 function normalizeAttachmentFileName(value: string | null | undefined): string {
@@ -539,7 +616,14 @@ function senderDomainFromMessage(message: Pick<InboundEmailProviderMessage, "sen
 
 function processingDiagnosticForMessage(
   message: InboundEmailProviderMessage,
-  result: { processingOutcome: InboundEmailProcessingOutcome; reason: string; recordId?: string | null },
+  result: {
+    processingOutcome: InboundEmailProcessingOutcome;
+    reason: string;
+    recordId?: string | null;
+    classificationOutcome?: InboundEmailIntent | null;
+    classificationReason?: string | null;
+    crmInfluence?: string | null;
+  },
 ): InboundEmailMessageProcessingDiagnostic {
   return {
     providerMessageId: message.messageId,
@@ -553,6 +637,9 @@ function processingDiagnosticForMessage(
     processingOutcome: result.processingOutcome,
     reason: result.reason,
     inboundRecordId: result.recordId ?? null,
+    classificationOutcome: result.classificationOutcome ?? null,
+    classificationReason: result.classificationReason ?? null,
+    crmInfluence: result.crmInfluence ?? null,
   };
 }
 
@@ -1834,12 +1921,19 @@ export class InboundEmailIngestionService {
         attachmentFilenames: message.attachments.map((attachment) => attachment.filename).filter(Boolean),
       })),
     };
+    const senderTrustDecision = primaryMessage
+      ? await this.resolveClassificationTrust(args.organizationId, args.messages)
+      : null;
     const classification = primaryMessage
       ? classifyInboundEmailForReview({
           ...primaryMessage,
           bodyText: combinedBodyText || primaryMessage.bodyText,
           bodyHtml: combinedBodyHtml || primaryMessage.bodyHtml,
           attachments: combinedAttachments,
+        }, {
+          senderTrusted: senderTrustDecision?.trusted ?? false,
+          trustSource: senderTrustDecision?.trustSource ?? null,
+          trustReason: senderTrustDecision?.reason ?? null,
         })
       : null;
 
@@ -1860,6 +1954,11 @@ export class InboundEmailIngestionService {
         bodyText: combinedBodyText || primaryMessage?.bodyText || raw.bodyText || null,
         bodyHtml: combinedBodyHtml || primaryMessage?.bodyHtml || raw.bodyHtml || null,
         attachments: combinedAttachments,
+        intent: classification?.intent ?? raw.intent ?? null,
+        intentReason: classification?.reason ?? raw.intentReason ?? null,
+        intentCrmInfluence: classification?.crmInfluence ?? raw.intentCrmInfluence ?? null,
+        senderTrustSource: senderTrustDecision?.trustSource ?? raw.senderTrustSource ?? null,
+        senderTrustReason: senderTrustDecision?.reason ?? raw.senderTrustReason ?? null,
         thread: threadSummary,
         lastManualReprocess: {
           action: args.action,
@@ -1878,6 +1977,9 @@ export class InboundEmailIngestionService {
         },
         inboundIntent: classification?.intent ?? normalized.inboundIntent ?? null,
         inboundIntentReason: classification?.reason ?? normalized.inboundIntentReason ?? null,
+        inboundIntentCrmInfluence: classification?.crmInfluence ?? normalized.inboundIntentCrmInfluence ?? null,
+        senderTrustSource: senderTrustDecision?.trustSource ?? normalized.senderTrustSource ?? null,
+        senderTrustReason: senderTrustDecision?.reason ?? normalized.senderTrustReason ?? null,
         sender: {
           ...(isRecord(normalized.sender) ? normalized.sender : {}),
           name: primaryMessage?.senderName ?? getPathValue(normalized, "sender.name") ?? null,
@@ -1894,6 +1996,7 @@ export class InboundEmailIngestionService {
         ...extractedOrder,
         inboundIntent: classification?.intent ?? extractedOrder.inboundIntent ?? null,
         inboundIntentReason: classification?.reason ?? extractedOrder.inboundIntentReason ?? null,
+        inboundIntentCrmInfluence: classification?.crmInfluence ?? extractedOrder.inboundIntentCrmInfluence ?? null,
         subject: primaryMessage?.subject ?? extractedOrder.subject ?? args.record.externalReference,
         displaySubject: primaryMessage ? displaySubjectForMessage(primaryMessage) : stringFromUnknown(extractedOrder.displaySubject) ?? displaySubjectForMessage({ subject: args.record.externalReference }),
         bodyText: combinedBodyText || primaryMessage?.bodyText || extractedOrder.bodyText || null,
@@ -2158,12 +2261,20 @@ export class InboundEmailIngestionService {
       };
     }
 
-    const classification = classifyInboundEmailForReview(message);
+    const senderTrustDecision = await this.resolveSenderTrust(organizationId, message, { recordMatch: false });
+    const classification = classifyInboundEmailForReview(message, {
+      senderTrusted: senderTrustDecision.trusted,
+      trustSource: senderTrustDecision.trustSource,
+      trustReason: senderTrustDecision.reason,
+    });
     if (classification.ignored) {
       return {
         status: "ignored",
         processingOutcome: "classification_skipped",
         reason: classification.reason,
+        classificationOutcome: classification.intent,
+        classificationReason: classification.reason,
+        crmInfluence: classification.crmInfluence,
       };
     }
 
@@ -2193,6 +2304,9 @@ export class InboundEmailIngestionService {
       attachments: message.attachments,
       intent: classification.intent,
       intentReason: classification.reason,
+      intentCrmInfluence: classification.crmInfluence,
+      senderTrustSource: senderTrustDecision.trustSource,
+      senderTrustReason: senderTrustDecision.reason,
     };
 
     const [record] = await this.dbInstance.transaction(async (tx) => {
@@ -2223,6 +2337,9 @@ export class InboundEmailIngestionService {
             },
             inboundIntent: classification.intent,
             inboundIntentReason: classification.reason,
+            inboundIntentCrmInfluence: classification.crmInfluence,
+            senderTrustSource: senderTrustDecision.trustSource,
+            senderTrustReason: senderTrustDecision.reason,
             sender: {
               name: message.senderName,
               email: message.senderEmail,
@@ -2239,6 +2356,8 @@ export class InboundEmailIngestionService {
           },
           extractedOrderJson: {
             inboundIntent: classification.intent,
+            inboundIntentReason: classification.reason,
+            inboundIntentCrmInfluence: classification.crmInfluence,
             subject: message.subject,
             displaySubject,
             bodyText: message.bodyText,
@@ -2329,6 +2448,9 @@ export class InboundEmailIngestionService {
       reason: message.subject?.trim()
         ? `Created TEMP_INBOUND candidate from ${classification.intent} classification.`
         : "Created TEMP_INBOUND candidate with safe no-subject fallback.",
+      classificationOutcome: classification.intent,
+      classificationReason: classification.reason,
+      crmInfluence: classification.crmInfluence,
     };
   }
 
@@ -2434,17 +2556,25 @@ export class InboundEmailIngestionService {
         providerMessageId: attachment.providerMessageId ?? message.messageId,
       }))
     ));
+    const senderTrustDecision = await this.resolveClassificationTrust(organizationId, sortedMessages);
     const classification = classifyInboundEmailForReview({
       ...latestMessage,
       bodyText: combinedBodyText || latestMessage.bodyText,
       bodyHtml: combinedBodyHtml || latestMessage.bodyHtml,
       attachments: combinedAttachments,
+    }, {
+      senderTrusted: senderTrustDecision.trusted,
+      trustSource: senderTrustDecision.trustSource,
+      trustReason: senderTrustDecision.reason,
     });
     if (classification.ignored) {
       return {
         status: "ignored",
         processingOutcome: "classification_skipped",
         reason: classification.reason,
+        classificationOutcome: classification.intent,
+        classificationReason: classification.reason,
+        crmInfluence: classification.crmInfluence,
       };
     }
 
@@ -2507,6 +2637,7 @@ export class InboundEmailIngestionService {
       action: "initial_thread_ingestion",
       messages: sortedMessages,
       threadId,
+      classification,
     });
 
     const [createdRecord] = await this.dbInstance.transaction(async (tx) => {
@@ -2565,6 +2696,10 @@ export class InboundEmailIngestionService {
           latestMessageId: latestMessage.messageId,
           attachmentCandidatesAcrossThread: combinedAttachments.length,
           intent: classification.intent,
+          intentReason: classification.reason,
+          intentCrmInfluence: classification.crmInfluence,
+          senderTrustSource: senderTrustDecision.trustSource,
+          senderTrustReason: senderTrustDecision.reason,
           createsQuote: false,
           createsOrder: false,
           releasesProduction: false,
@@ -2630,6 +2765,9 @@ export class InboundEmailIngestionService {
       reason: sortedMessages.some((message) => message.subject?.trim())
         ? `Created TEMP_INBOUND Gmail thread candidate from ${classification.intent} classification.`
         : "Created TEMP_INBOUND Gmail thread candidate with safe no-subject fallback.",
+      classificationOutcome: classification.intent,
+      classificationReason: classification.reason,
+      crmInfluence: classification.crmInfluence,
     };
   }
 
@@ -2675,6 +2813,7 @@ export class InboundEmailIngestionService {
     action: InboundEmailEvidenceRefreshAction;
     messages: InboundEmailProviderMessage[];
     threadId: string | null;
+    classification?: ReturnType<typeof classifyInboundEmailForReview> | null;
   }): {
     patch: Pick<InboundOrderRecord, "rawPayloadJson" | "normalizedPayloadJson" | "extractedOrderJson">;
   } {
@@ -2733,14 +2872,14 @@ export class InboundEmailIngestionService {
         attachmentFilenames: message.attachments.map((attachment) => attachment.filename).filter(Boolean),
       })),
     };
-    const classification = primaryMessage
+    const classification = args.classification ?? (primaryMessage
       ? classifyInboundEmailForReview({
           ...primaryMessage,
           bodyText: combinedBodyText || primaryMessage.bodyText,
           bodyHtml: combinedBodyHtml || primaryMessage.bodyHtml,
           attachments: combinedAttachments,
         })
-      : null;
+      : null);
     return {
       patch: {
         rawPayloadJson: {
@@ -2760,6 +2899,9 @@ export class InboundEmailIngestionService {
           bodyText: combinedBodyText || primaryMessage?.bodyText || raw.bodyText || null,
           bodyHtml: combinedBodyHtml || primaryMessage?.bodyHtml || raw.bodyHtml || null,
           attachments: combinedAttachments,
+          intent: classification?.intent ?? raw.intent ?? null,
+          intentReason: classification?.reason ?? raw.intentReason ?? null,
+          intentCrmInfluence: classification?.crmInfluence ?? raw.intentCrmInfluence ?? null,
           thread: threadSummary,
           lastManualReprocess: args.action === "reprocess_email" || args.action === "backfill_attachments" || args.action === "rerun_trust_attachment_download"
             ? {
@@ -2780,6 +2922,7 @@ export class InboundEmailIngestionService {
           },
           inboundIntent: classification?.intent ?? normalized.inboundIntent ?? null,
           inboundIntentReason: classification?.reason ?? normalized.inboundIntentReason ?? null,
+          inboundIntentCrmInfluence: classification?.crmInfluence ?? normalized.inboundIntentCrmInfluence ?? null,
           sender: {
             ...(isRecord(normalized.sender) ? normalized.sender : {}),
             name: primaryMessage?.senderName ?? getPathValue(normalized, "sender.name") ?? null,
@@ -2796,6 +2939,7 @@ export class InboundEmailIngestionService {
           ...extractedOrder,
           inboundIntent: classification?.intent ?? extractedOrder.inboundIntent ?? null,
           inboundIntentReason: classification?.reason ?? extractedOrder.inboundIntentReason ?? null,
+          inboundIntentCrmInfluence: classification?.crmInfluence ?? extractedOrder.inboundIntentCrmInfluence ?? null,
           subject: primaryMessage?.subject ?? extractedOrder.subject ?? args.record.externalReference,
           displaySubject: primaryMessage ? displaySubjectForMessage(primaryMessage) : stringFromUnknown(extractedOrder.displaySubject) ?? displaySubjectForMessage({ subject: args.record.externalReference }),
           bodyText: combinedBodyText || primaryMessage?.bodyText || extractedOrder.bodyText || null,
@@ -3136,6 +3280,26 @@ export class InboundEmailIngestionService {
       trusted: false,
       senderEmail,
       senderDomain,
+      trustSource: "none",
+      ruleId: null,
+      reason: "Sender is not trusted for automatic attachment download.",
+    };
+  }
+
+  private async resolveClassificationTrust(
+    organizationId: string,
+    messages: InboundEmailProviderMessage[],
+  ): Promise<SenderTrustDecision> {
+    let fallback: SenderTrustDecision | null = null;
+    for (const message of messages) {
+      const decision = await this.resolveSenderTrust(organizationId, message, { recordMatch: false });
+      fallback ??= decision;
+      if (decision.trusted) return decision;
+    }
+    return fallback ?? {
+      trusted: false,
+      senderEmail: null,
+      senderDomain: null,
       trustSource: "none",
       ruleId: null,
       reason: "Sender is not trusted for automatic attachment download.",

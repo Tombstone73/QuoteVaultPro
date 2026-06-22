@@ -1255,6 +1255,9 @@ function GmailProcessingOutcomeList({
             <div className="mt-1 grid gap-1 text-muted-foreground md:grid-cols-2">
               <div>Outcome: {formatDiagnosticValue(message.processingOutcome)}</div>
               <div>Reason: {formatDiagnosticValue(message.reason)}</div>
+              <div>Classification: {formatDiagnosticValue(message.classificationOutcome)}</div>
+              <div>Classification reason: {formatDiagnosticValue(message.classificationReason)}</div>
+              <div className="md:col-span-2">CRM influence: {formatDiagnosticValue(message.crmInfluence)}</div>
               <div>Sender: {formatDiagnosticValue(message.senderEmail)}</div>
               <div>Received: {formatDiagnosticValue(message.receivedAt)}</div>
               <div>Message: {formatDiagnosticValue(message.providerMessageId)}</div>
@@ -1493,6 +1496,9 @@ function EmailPullDiagnosticsPanel() {
                         <div className="mt-1 grid gap-1 text-muted-foreground md:grid-cols-2">
                           <div>Outcome: {formatDiagnosticValue(message.processingOutcome)}</div>
                           <div>Reason: {formatDiagnosticValue(message.reason)}</div>
+                          <div>Classification: {formatDiagnosticValue(message.classificationOutcome)}</div>
+                          <div>Classification reason: {formatDiagnosticValue(message.classificationReason)}</div>
+                          <div className="md:col-span-2">CRM influence: {formatDiagnosticValue(message.crmInfluence)}</div>
                           <div>Sender: {formatDiagnosticValue(message.senderName)} &lt;{formatDiagnosticValue(message.senderEmail)}&gt;</div>
                           <div>Received: {formatDiagnosticValue(message.receivedAt)}</div>
                           <div>Mailbox: {formatDiagnosticValue(message.mailboxEmail)}</div>
@@ -1539,6 +1545,9 @@ function EmailPullDiagnosticsPanel() {
                     <div className="mt-1 grid gap-1 text-muted-foreground md:grid-cols-2">
                       <div>Outcome: {formatDiagnosticValue(message.processingOutcome)}</div>
                       <div>Reason: {formatDiagnosticValue(message.reason)}</div>
+                      <div>Classification: {formatDiagnosticValue(message.classificationOutcome)}</div>
+                      <div>Classification reason: {formatDiagnosticValue(message.classificationReason)}</div>
+                      <div className="md:col-span-2">CRM influence: {formatDiagnosticValue(message.crmInfluence)}</div>
                       <div>Sender: {formatDiagnosticValue(message.senderName)} &lt;{formatDiagnosticValue(message.senderEmail)}&gt;</div>
                       <div>Received: {formatDiagnosticValue(message.receivedAt)}</div>
                       <div>Message: {formatDiagnosticValue(message.providerMessageId)}</div>

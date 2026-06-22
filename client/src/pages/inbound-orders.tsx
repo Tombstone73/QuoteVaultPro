@@ -251,6 +251,14 @@ const attachmentPolicyLabels: Record<InboundAttachmentDownloadPolicy, string> = 
   no_attachments: "No Attachments",
 };
 
+const inboundIntentLabels: Record<string, string> = {
+  ORDER_REQUEST: "Order Request",
+  QUOTE_REQUEST: "Quote Request",
+  CUSTOMER_COMMUNICATION: "Customer Communication",
+  UNKNOWN: "Unknown",
+  NEWSLETTER_SPAM: "Newsletter/Spam",
+};
+
 function getSenderTrustBadgeVariant(status: InboundSenderTrustStatus): "default" | "secondary" | "outline" | "destructive" {
   if (status === "untrusted" || status === "ignored") return "destructive";
   if (status === "unknown") return "outline";
@@ -801,6 +809,18 @@ function getRecordTitle(record: ClientInboundOrderRecord) {
 function getSenderLabel(record: ClientInboundOrderRecord) {
   const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
   return [evidence.senderName, evidence.senderEmail].filter(Boolean).join(" / ") || "No sender captured";
+}
+
+function getInboundIntent(record: ClientInboundOrderRecord): string | null {
+  return stringFromUnknown(getPathValue(record.normalizedPayloadJson, "inboundIntent"))
+    ?? stringFromUnknown(getPathValue(record.extractedOrderJson, "inboundIntent"))
+    ?? stringFromUnknown(getPathValue(record.rawPayloadJson, "intent"));
+}
+
+function getInboundIntentLabel(record: ClientInboundOrderRecord): string | null {
+  const intent = getInboundIntent(record);
+  if (!intent) return null;
+  return inboundIntentLabels[intent] ?? titleCase(intent);
 }
 
 function getErrorTone(error: Error | null) {
@@ -1374,6 +1394,7 @@ function InboundQueuePanel({
         {records.map((record) => {
           const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
           const thread = record.sourceType === "email" ? (evidence as ReturnType<typeof getInboundEmailEvidence>).thread : null;
+          const intentLabel = record.sourceType === "email" ? getInboundIntentLabel(record) : null;
           const threadMessageCount = typeof thread?.messageCount === "number" ? thread.messageCount : null;
           const latestThreadActivity = stringFromUnknown(thread?.latestActivityAt);
           const latestThreadSender = [stringFromUnknown(thread?.latestSenderName), stringFromUnknown(thread?.latestSenderEmail)]
@@ -1417,6 +1438,11 @@ function InboundQueuePanel({
                     )}
                     {record.sourceType === "email" && (
                       <div className="mt-2 flex max-w-full flex-wrap gap-1">
+                        {intentLabel ? (
+                          <Badge variant="outline" className="max-w-full truncate">
+                            {intentLabel}
+                          </Badge>
+                        ) : null}
                         <button
                           type="button"
                           className="max-w-full"
@@ -1563,6 +1589,7 @@ function SourceEvidencePanel({
   const threadEvidence = record.sourceType === "email" ? (evidence as ReturnType<typeof getInboundEmailEvidence>).thread : null;
   const threadMessageCount = typeof threadEvidence?.messageCount === "number" ? threadEvidence.messageCount : null;
   const latestThreadActivity = stringFromUnknown(threadEvidence?.latestActivityAt);
+  const intentLabel = record.sourceType === "email" ? getInboundIntentLabel(record) : null;
   const showPendingTrustNotice = record.sourceType === "email"
     && record.attachmentDownloadPolicy === "pending_trust"
     && emailFiles.length > 0;
@@ -1578,6 +1605,7 @@ function SourceEvidencePanel({
             </div>
             <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
               <Badge variant="secondary">{titleCase(record.sourceType)}</Badge>
+              {intentLabel ? <Badge variant="outline">{intentLabel}</Badge> : null}
               <StatusBadge status={record.status} />
               <Button
                 type="button"

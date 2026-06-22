@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const inboundEmailIntentSchema = z.enum(["QUOTE_REQUEST", "ORDER_REQUEST", "UNKNOWN"]);
+export const inboundEmailIntentSchema = z.enum(["QUOTE_REQUEST", "ORDER_REQUEST", "CUSTOMER_COMMUNICATION", "UNKNOWN", "NEWSLETTER_SPAM"]);
 export type InboundEmailIntent = z.infer<typeof inboundEmailIntentSchema>;
 
 export const inboundEmailPullSummarySchema = z.object({

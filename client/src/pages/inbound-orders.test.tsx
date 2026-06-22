@@ -609,6 +609,9 @@ describe("InboundOrdersPage", () => {
         sender: { name: "Trusted Buyer", email: "buyer@example.com" },
         subject: "Trusted PO",
       },
+      normalizedPayloadJson: {
+        inboundIntent: "CUSTOMER_COMMUNICATION",
+      },
     });
     const untrusted = record({
       id: "untrusted_1",
@@ -633,6 +636,7 @@ describe("InboundOrdersPage", () => {
     renderPage();
     await waitForText("Trusted Sender");
 
+    expect(container.textContent).toContain("Customer Communication");
     expect(container.textContent).toContain("Auto-download");
     expect(container.textContent).toContain("Untrusted");
     expect(container.textContent).toContain("Pending Trust");
