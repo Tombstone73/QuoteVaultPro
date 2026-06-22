@@ -93,6 +93,7 @@ function serviceHarness() {
   const events: any[] = [];
   const repo = {
     listFiles: jest.fn(async () => createdFiles),
+    listEmailIgnoreRules: jest.fn(async () => []),
     listEnabledEmailIgnoreRules: jest.fn(async () => []),
     listEnabledEmailTrustRules: jest.fn(async () => [{
       id: "trust_1",
@@ -108,6 +109,19 @@ function serviceHarness() {
       updatedAt: new Date(),
     }]),
     recordEmailTrustRuleMatch: jest.fn(async () => undefined),
+    updateEmailIgnoreRule: jest.fn(async (values: any) => ({
+      id: values.id,
+      organizationId: values.organizationId,
+      enabled: values.enabled ?? false,
+      ruleType: "sender_email_exact",
+      ruleValue: "buyer@example.com",
+      notes: null,
+      matchCount: 0,
+      lastMatchedAt: null,
+      createdByUserId: "user_1",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })),
     createEmailTrustRule: jest.fn(async (values: any) => ({
       id: "trust_created",
       matchCount: 0,

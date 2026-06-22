@@ -8,6 +8,7 @@ import {
   inboundOrderRecords,
   inboundOrderSources,
   type InboundEmailIgnoreRule,
+  type InboundEmailIgnoreRuleType,
   type InboundEmailMailbox,
   type InboundEmailTrustRule,
   type InboundEmailTrustRuleType,
@@ -289,6 +290,29 @@ function trustStatusFromDecision(decision: SenderTrustDecision): string {
   return decision.trusted ? "trusted_sender" : "untrusted";
 }
 
+function isInboundEmailAddressRule(ruleType: InboundEmailIgnoreRuleType | InboundEmailTrustRuleType): boolean {
+  return ruleType === "sender_email_exact" || ruleType === "customer_contact_email";
+}
+
+function isInboundEmailDomainRule(ruleType: InboundEmailIgnoreRuleType | InboundEmailTrustRuleType): boolean {
+  return ruleType === "sender_domain" || ruleType === "customer_domain";
+}
+
+function inboundEmailRuleTypesConflict(
+  leftType: InboundEmailIgnoreRuleType | InboundEmailTrustRuleType,
+  leftValue: string,
+  rightType: InboundEmailIgnoreRuleType | InboundEmailTrustRuleType,
+  rightValue: string,
+): boolean {
+  const left = leftValue.trim().toLowerCase();
+  const right = rightValue.trim().toLowerCase();
+  if (!left || !right || left === "*" || right === "*") return false;
+  return left === right && (
+    (isInboundEmailAddressRule(leftType) && isInboundEmailAddressRule(rightType))
+    || (isInboundEmailDomainRule(leftType) && isInboundEmailDomainRule(rightType))
+  );
+}
+
 function providerIdentifierColumnDiagnostics(args: {
   message: InboundEmailProviderMessage;
   attachmentCandidates: InboundEmailAttachmentMetadata[];
@@ -372,6 +396,7 @@ export class InboundEmailIngestionError extends Error {
     public readonly code: string,
     message: string,
     public readonly statusCode = 409,
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "InboundEmailIngestionError";
@@ -1510,6 +1535,7 @@ export class InboundEmailIngestionService {
     inboundRecordId: string;
     action: "trust_sender" | "trust_domain" | "trust_sender_and_download" | "trust_domain_and_download";
     note?: string | null;
+    resolveConflict?: "disable_conflicting_rule";
   }): Promise<{
     trustRuleType: "sender_email_exact" | "sender_domain";
     trustRuleValue: string;
@@ -1540,6 +1566,34 @@ export class InboundEmailIngestionService {
     }
     if (trustRuleType === "sender_domain") {
       assertSenderDomainTrustAllowed(trustRuleValue);
+    }
+
+    const conflictingIgnoreRule = (await this.inboundRepository.listEmailIgnoreRules(args.organizationId))
+      .find((rule) => rule.enabled && inboundEmailRuleTypesConflict(rule.ruleType, rule.ruleValue, trustRuleType, trustRuleValue));
+    if (conflictingIgnoreRule) {
+      if (args.resolveConflict === "disable_conflicting_rule") {
+        await this.inboundRepository.updateEmailIgnoreRule({
+          organizationId: args.organizationId,
+          id: conflictingIgnoreRule.id,
+          enabled: false,
+        });
+      } else {
+        throw new InboundEmailIngestionError(
+          "INBOUND_RULE_CONFLICT",
+          "This sender/domain is currently ignored. Trusting it will disable the ignore rule.",
+          409,
+          {
+            conflict: {
+              conflictType: "trust_conflicted_with_ignore",
+              conflictingRuleId: conflictingIgnoreRule.id,
+              conflictingRuleType: conflictingIgnoreRule.ruleType,
+              conflictingValue: conflictingIgnoreRule.ruleValue,
+              currentRuleLocation: "Inbound Ignore Rules",
+              recommendedResolution: "Trust and disable ignore rule",
+            },
+          },
+        );
+      }
     }
 
     await this.inboundRepository.createEmailTrustRule({
@@ -3224,13 +3278,17 @@ export class InboundEmailIngestionService {
     const senderDomain = senderDomainFromMessage(message);
     const matchedIgnoreRule = await this.findMatchedIgnoreRule(organizationId, message);
     if (matchedIgnoreRule) {
+      const conflictingTrustRule = (await this.inboundRepository.listEnabledEmailTrustRules(organizationId))
+        .find((rule) => inboundEmailRuleTypesConflict(matchedIgnoreRule.ruleType, matchedIgnoreRule.ruleValue, rule.ruleType, rule.ruleValue)) ?? null;
       return {
         trusted: false,
         senderEmail,
         senderDomain,
         trustSource: "ignored",
         ruleId: matchedIgnoreRule.id,
-        reason: `Sender matched inbound ignore rule ${matchedIgnoreRule.ruleType}.`,
+        reason: conflictingTrustRule
+          ? `trust_suppressed_by_ignore: Sender matched inbound ignore rule ${matchedIgnoreRule.ruleType}; conflicting trust rule ${conflictingTrustRule.ruleType} is suppressed.`
+          : `ignored_due_to_rule: Sender matched inbound ignore rule ${matchedIgnoreRule.ruleType}.`,
       };
     }
     const rules = await this.inboundRepository.listEnabledEmailTrustRules(organizationId);

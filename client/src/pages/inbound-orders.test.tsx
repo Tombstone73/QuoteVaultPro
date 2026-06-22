@@ -941,6 +941,70 @@ describe("InboundOrdersPage", () => {
     }
   });
 
+  test("queue Trust Sender resolves ignored-sender conflicts after confirmation", async () => {
+    const row = record({
+      id: "inline_conflict_1",
+      sourceType: "email",
+      senderTrustStatus: "ignored",
+      canAutoDownloadAttachments: false,
+      attachmentDownloadPolicy: "pending_trust",
+      rawPayloadJson: { sender: { name: "Ignored Buyer", email: "ignored@example.net" }, subject: "New PO" },
+    });
+    const trusted = {
+      ...row,
+      senderTrustStatus: "trusted_sender",
+      canAutoDownloadAttachments: true,
+      attachmentDownloadPolicy: "auto_download_allowed",
+    };
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    const trustBodies: any[] = [];
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([trustBodies.some((body) => body.resolveConflict) ? trusted : row]));
+      if (path === `/api/inbound-orders/${row.id}`) return jsonResponse({ success: true, data: detail(trustBodies.some((body) => body.resolveConflict) ? trusted : row) });
+      if (path === `/api/inbound-orders/${row.id}/draft-preview`) return jsonResponse(draftPreview());
+      if (path === `/api/inbound-orders/${row.id}/trust-action`) {
+        const body = JSON.parse(options?.body ?? "{}");
+        trustBodies.push(body);
+        if (!body.resolveConflict) {
+          return jsonResponse({
+            success: false,
+            code: "INBOUND_RULE_CONFLICT",
+            message: "This sender/domain is currently ignored. Trusting it will disable the ignore rule.",
+            conflict: { conflictType: "trust_conflicted_with_ignore", conflictingValue: "ignored@example.net" },
+          }, false, 409);
+        }
+        return jsonResponse({
+          success: true,
+          data: {
+            result: { trustRuleType: "sender_email_exact", trustRuleValue: "ignored@example.net", attempted: 0, downloaded: 0, metadataOnly: 0, blocked: 0, failed: [] },
+            inbound: detail(trusted),
+          },
+        });
+      }
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    try {
+      renderPage();
+      await waitForText("Ignored");
+      await waitForText("Trust Sender + Download Attachments");
+      const trustButton = container.querySelector(`[data-testid='queue-trust-action-${row.id}-trust_sender']`)
+        ?? container.querySelector(`[data-testid='review-trust-action-${row.id}-trust_sender']`) as HTMLButtonElement;
+      act(() => {
+        Simulate.click(trustButton);
+      });
+
+      await waitForCondition(
+        () => trustBodies.some((body) => body.resolveConflict === "disable_conflicting_rule"),
+        "inline trust conflict retry",
+      );
+      expect(confirmSpy).toHaveBeenCalledWith("This sender/domain is currently ignored. Trusting it will disable the ignore rule.");
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
   test("queue Trust Domain confirms before creating a domain trust rule", async () => {
     const row = record({
       id: "inline_domain_1",
