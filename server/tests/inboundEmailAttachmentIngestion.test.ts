@@ -541,6 +541,62 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     }));
   });
 
+  test("pullLatestEmails keeps known customer communications instead of skipping them as newsletters", async () => {
+    const { repo, storage } = serviceHarness();
+    repo.listEnabledEmailTrustRules.mockResolvedValueOnce([]);
+    (repo.senderEmailMatchesCustomerContact as jest.MockedFunction<(
+      organizationId: string,
+      email: string,
+    ) => Promise<boolean>>).mockImplementation(async (_organizationId, email) => email === "shawn@brainstormprint.com");
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => [message({
+        messageId: "gmail_brainstorm_weekly_jobs",
+        threadId: null,
+        senderName: "Shawn Fears",
+        senderEmail: "shawn@brainstormprint.com",
+        subject: "Brainstorm Jobs Due for the Week of 6/15 thru 6/19",
+        bodyText: "Here is the weekly job list, schedule updates, artwork discussion, and delivery coordination.",
+        attachments: [],
+      })]),
+    };
+    const brainstormRecord = {
+      ...record,
+      sourceRecordId: "gmail_brainstorm_weekly_jobs",
+      sourceMessageId: "gmail_brainstorm_weekly_jobs",
+      externalReference: "Brainstorm Jobs Due for the Week of 6/15 thru 6/19",
+      idempotencyKey: "gmail:gmail_brainstorm_weekly_jobs",
+    };
+    const dbHarness = pullLatestFreshRecordDbHarness(brainstormRecord);
+    const service = new InboundEmailIngestionService(
+      dbHarness as any,
+      { gmail: adapter },
+      repo as any,
+      storage as any,
+    );
+
+    const result = await service.pullLatestEmails({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      limit: 1,
+    });
+
+    expect(result.summary).toEqual({ created: 1, skippedDuplicates: 0, ignored: 0, failed: 0 });
+    expect(dbHarness.insertedRecords[0]).toEqual(expect.objectContaining({
+      sourceLabel: "TEMP_INBOUND email intake - CUSTOMER_COMMUNICATION",
+      reviewRequiredReason: "CUSTOMER_COMMUNICATION email candidate needs staff review.",
+      normalizedPayloadJson: expect.objectContaining({
+        inboundIntent: "CUSTOMER_COMMUNICATION",
+        inboundIntentReason: "Known customer/contact communication needs staff review.",
+        inboundIntentCrmInfluence: expect.stringContaining("trusted contact"),
+        senderTrustSource: "customer_contact_email",
+      }),
+      extractedOrderJson: expect.objectContaining({
+        inboundIntent: "CUSTOMER_COMMUNICATION",
+        inboundIntentCrmInfluence: expect.stringContaining("trusted contact"),
+      }),
+    }));
+  });
+
   test("pullLatestEmails records failed audit when attachment ingestion throws", async () => {
     const { repo, storage, events } = serviceHarness();
     const adapter: InboundEmailProviderAdapter = {

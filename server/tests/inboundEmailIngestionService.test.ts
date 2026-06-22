@@ -84,7 +84,84 @@ describe("inbound email ingestion classifier", () => {
       bodyText: "Unsubscribe from this limited time offer at any time.",
     }));
 
-    expect(result).toMatchObject({ ignored: true, intent: "UNKNOWN" });
+    expect(result).toMatchObject({ ignored: true, intent: "NEWSLETTER_SPAM" });
+  });
+
+  test("keeps known customer non-order communications in the inbound queue", () => {
+    const result = classifyInboundEmailForReview(message({
+      senderName: "Shawn Fears",
+      senderEmail: "shawn@brainstormprint.com",
+      subject: "Brainstorm Jobs Due for the Week of 6/15 thru 6/19",
+      bodyText: "Here is the weekly job list and schedule updates for the jobs due this week.",
+    }), {
+      senderTrusted: true,
+      trustSource: "customer_contact_email",
+      trustReason: "Sender email matches an active customer contact.",
+    });
+
+    expect(result).toMatchObject({
+      ignored: false,
+      intent: "CUSTOMER_COMMUNICATION",
+      reason: "Known customer/contact communication needs staff review.",
+      crmInfluence: expect.stringContaining("trusted contact"),
+    });
+  });
+
+  test("keeps weak newsletter wording from a known customer as customer communication", () => {
+    const result = classifyInboundEmailForReview(message({
+      senderName: "Shawn Fears",
+      senderEmail: "shawn@brainstormprint.com",
+      subject: "Weekly newsletter",
+      bodyText: "Weekly production coordination and delivery schedule updates.",
+    }), {
+      senderTrusted: true,
+      trustSource: "customer_contact_email",
+      trustReason: "Sender email matches an active customer contact.",
+    });
+
+    expect(result).toMatchObject({
+      ignored: false,
+      intent: "CUSTOMER_COMMUNICATION",
+      reason: "Known customer/contact communication contained weak newsletter wording, so it remains available for staff review.",
+    });
+  });
+
+  test("classifies known customer order and quote emails by request intent", () => {
+    const trustContext = {
+      senderTrusted: true,
+      trustSource: "customer_contact_email" as const,
+      trustReason: "Sender email matches an active customer contact.",
+    };
+
+    expect(classifyInboundEmailForReview(message({
+      senderEmail: "shawn@brainstormprint.com",
+      subject: "Purchase order",
+      bodyText: "Please proceed. Purchase order attached.",
+    }), trustContext)).toMatchObject({ ignored: false, intent: "ORDER_REQUEST" });
+
+    expect(classifyInboundEmailForReview(message({
+      senderEmail: "shawn@brainstormprint.com",
+      subject: "Can you quote yard signs?",
+      bodyText: "Can you price this job for us?",
+    }), trustContext)).toMatchObject({ ignored: false, intent: "QUOTE_REQUEST" });
+  });
+
+  test("known customer marketing edge case still requires strong spam evidence", () => {
+    const result = classifyInboundEmailForReview(message({
+      senderEmail: "shawn@brainstormprint.com",
+      subject: "Newsletter",
+      bodyText: "Unsubscribe from this limited time offer. Sponsored marketing webinar inside.",
+    }), {
+      senderTrusted: true,
+      trustSource: "customer_contact_email",
+      trustReason: "Sender email matches an active customer contact.",
+    });
+
+    expect(result).toMatchObject({
+      ignored: true,
+      intent: "NEWSLETTER_SPAM",
+      reason: "Strong marketing/newsletter indicators detected despite known customer relationship.",
+    });
   });
 });
 
