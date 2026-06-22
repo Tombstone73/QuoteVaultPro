@@ -183,6 +183,7 @@ export type InboundOrderIgnoreActionInput = {
   actorUserId: string;
   action: InboundOrderIgnoreAction;
   note?: string | null;
+  resolveConflict?: "disable_conflicting_rule";
 };
 
 export type InboundOrderBulkActionInput = {
@@ -191,6 +192,7 @@ export type InboundOrderBulkActionInput = {
   actorUserId: string;
   action: InboundOrderQueueCleanupAction | InboundOrderBulkTrustAction;
   note?: string | null;
+  resolveConflict?: "disable_conflicting_rule";
 };
 
 export type InboundOrderStatusUpdateInput = {
@@ -362,6 +364,25 @@ export class InboundOrderTransitionError extends Error {
   constructor(message: string, public readonly statusCode = 409) {
     super(message);
     this.name = "InboundOrderTransitionError";
+  }
+}
+
+export type InboundEmailRuleConflict = {
+  conflictType: "trust_conflicted_with_ignore" | "ignore_conflicted_with_trust";
+  conflictingRuleId: string;
+  conflictingRuleType: InboundEmailIgnoreRuleType | InboundEmailTrustRuleType;
+  conflictingValue: string;
+  currentRuleLocation: "Inbound Ignore Rules" | "Trusted Inbound Senders";
+  recommendedResolution: string;
+};
+
+export class InboundEmailRuleConflictError extends InboundOrderTransitionError {
+  constructor(
+    message: string,
+    public readonly conflict: InboundEmailRuleConflict,
+  ) {
+    super(message, 409);
+    this.name = "InboundEmailRuleConflictError";
   }
 }
 
@@ -884,6 +905,29 @@ function normalizeInboundEmailTrustRuleValue(ruleType: InboundEmailTrustRuleType
   return trimmed;
 }
 
+function isEmailRuleType(ruleType: InboundEmailIgnoreRuleType | InboundEmailTrustRuleType): boolean {
+  return ruleType === "sender_email_exact" || ruleType === "customer_contact_email";
+}
+
+function isDomainRuleType(ruleType: InboundEmailIgnoreRuleType | InboundEmailTrustRuleType): boolean {
+  return ruleType === "sender_domain" || ruleType === "customer_domain";
+}
+
+function inboundEmailRuleKindsConflict(
+  leftType: InboundEmailIgnoreRuleType | InboundEmailTrustRuleType,
+  leftValue: string,
+  rightType: InboundEmailIgnoreRuleType | InboundEmailTrustRuleType,
+  rightValue: string,
+): boolean {
+  const left = leftValue.trim().toLowerCase();
+  const right = rightValue.trim().toLowerCase();
+  if (!left || !right || left === "*" || right === "*") return false;
+  return left === right && (
+    (isEmailRuleType(leftType) && isEmailRuleType(rightType))
+    || (isDomainRuleType(leftType) && isDomainRuleType(rightType))
+  );
+}
+
 function trustStatusForRuleType(ruleType: InboundEmailTrustRuleType): InboundSenderTrustStatus {
   if (ruleType === "sender_email_exact") return "trusted_sender";
   if (ruleType === "sender_domain") return "trusted_domain";
@@ -986,11 +1030,15 @@ export class InboundOrderService {
       const subject = args.record ? getInboundRecordSubject(args.record) : null;
       const matchedIgnoreRule = ignoreRules.find((rule) => inboundIgnoreRuleMatchesSender(rule, { senderEmail, senderDomain, subject })) ?? null;
       if (matchedIgnoreRule) {
+        const conflictingTrustRule = (await this.repository.listEnabledEmailTrustRules(args.organizationId))
+          .find((rule) => inboundEmailRuleKindsConflict(matchedIgnoreRule.ruleType, matchedIgnoreRule.ruleValue, rule.ruleType, rule.ruleValue)) ?? null;
         base = {
           senderTrustStatus: "ignored",
-          matchedTrustRuleId: null,
-          trustRuleType: null,
-          trustReason: `Sender matched inbound ignore rule ${matchedIgnoreRule.ruleType}.`,
+          matchedTrustRuleId: conflictingTrustRule?.id ?? null,
+          trustRuleType: conflictingTrustRule?.ruleType ?? null,
+          trustReason: conflictingTrustRule
+            ? `trust_suppressed_by_ignore: Sender matched inbound ignore rule ${matchedIgnoreRule.ruleType}; conflicting trust rule ${conflictingTrustRule.ruleType} is suppressed.`
+            : `ignored_due_to_rule: Sender matched inbound ignore rule ${matchedIgnoreRule.ruleType}.`,
           canAutoDownloadAttachments: false,
         };
         return {
@@ -1178,6 +1226,85 @@ export class InboundOrderService {
     return this.repository.listEmailTrustRules(args.organizationId);
   }
 
+  async listEmailRuleConflicts(args: { organizationId: string }): Promise<Array<{
+    ignoreRule: InboundEmailIgnoreRule;
+    trustRule: InboundEmailTrustRule;
+  }>> {
+    const [ignoreRules, trustRules] = await Promise.all([
+      this.repository.listEmailIgnoreRules(args.organizationId),
+      this.repository.listEmailTrustRules(args.organizationId),
+    ]);
+    return ignoreRules
+      .filter((ignoreRule) => ignoreRule.enabled)
+      .flatMap((ignoreRule) => trustRules
+        .filter((trustRule) => trustRule.enabled && inboundEmailRuleKindsConflict(ignoreRule.ruleType, ignoreRule.ruleValue, trustRule.ruleType, trustRule.ruleValue))
+        .map((trustRule) => ({ ignoreRule, trustRule })));
+  }
+
+  private async resolveTrustRuleIgnoreConflict(args: {
+    organizationId: string;
+    ruleType: InboundEmailTrustRuleType;
+    ruleValue: string;
+    enabled: boolean;
+    resolveConflict?: "disable_conflicting_rule";
+  }): Promise<void> {
+    if (!args.enabled) return;
+    const conflict = (await this.repository.listEmailIgnoreRules(args.organizationId))
+      .find((rule) => rule.enabled && inboundEmailRuleKindsConflict(rule.ruleType, rule.ruleValue, args.ruleType, args.ruleValue));
+    if (!conflict) return;
+    if (args.resolveConflict === "disable_conflicting_rule") {
+      await this.repository.updateEmailIgnoreRule({
+        organizationId: args.organizationId,
+        id: conflict.id,
+        enabled: false,
+      });
+      return;
+    }
+    throw new InboundEmailRuleConflictError(
+      "This sender/domain is currently ignored. Trusting it will disable the ignore rule.",
+      {
+        conflictType: "trust_conflicted_with_ignore",
+        conflictingRuleId: conflict.id,
+        conflictingRuleType: conflict.ruleType,
+        conflictingValue: conflict.ruleValue,
+        currentRuleLocation: "Inbound Ignore Rules",
+        recommendedResolution: "Trust and disable ignore rule",
+      },
+    );
+  }
+
+  private async resolveIgnoreRuleTrustConflict(args: {
+    organizationId: string;
+    ruleType: InboundEmailIgnoreRuleType;
+    ruleValue: string;
+    enabled: boolean;
+    resolveConflict?: "disable_conflicting_rule";
+  }): Promise<void> {
+    if (!args.enabled) return;
+    const conflict = (await this.repository.listEmailTrustRules(args.organizationId))
+      .find((rule) => rule.enabled && inboundEmailRuleKindsConflict(args.ruleType, args.ruleValue, rule.ruleType, rule.ruleValue));
+    if (!conflict) return;
+    if (args.resolveConflict === "disable_conflicting_rule") {
+      await this.repository.updateEmailTrustRule({
+        organizationId: args.organizationId,
+        id: conflict.id,
+        enabled: false,
+      });
+      return;
+    }
+    throw new InboundEmailRuleConflictError(
+      "This sender/domain is currently trusted. Ignoring it will disable the trust rule.",
+      {
+        conflictType: "ignore_conflicted_with_trust",
+        conflictingRuleId: conflict.id,
+        conflictingRuleType: conflict.ruleType,
+        conflictingValue: conflict.ruleValue,
+        currentRuleLocation: "Trusted Inbound Senders",
+        recommendedResolution: "Ignore and disable trust rule",
+      },
+    );
+  }
+
   async getEmailPullDiagnostics(args: {
     organizationId: string;
     subject?: string | null;
@@ -1218,6 +1345,16 @@ export class InboundOrderService {
         lastMatchedAt: formatInboundDate(rule.lastMatchedAt),
         notes: rule.notes ?? null,
       }));
+    const ruleConflicts = (await this.listEmailRuleConflicts({ organizationId: args.organizationId })).map(({ ignoreRule, trustRule }) => ({
+      ignoreRuleId: ignoreRule.id,
+      ignoreRuleType: ignoreRule.ruleType,
+      ignoreRuleValue: ignoreRule.ruleValue,
+      trustRuleId: trustRule.id,
+      trustRuleType: trustRule.ruleType,
+      trustRuleValue: trustRule.ruleValue,
+      reason: "trust_suppressed_by_ignore",
+      recommendedResolution: "Keep trust by disabling the ignore rule, or keep ignore by disabling the trust rule.",
+    }));
     const matchingIgnoreRules = subject
       ? activeIgnoreRules.filter((rule) => {
         const original = raw.ignoreRules.find((candidate) => candidate.id === rule.id);
@@ -1296,6 +1433,7 @@ export class InboundOrderService {
       recentGmailFailedMessages,
       ignoreRuleCount: raw.ignoreRules.length,
       activeIgnoreRules,
+      ruleConflicts,
       subjectSearch: {
         provided: Boolean(subject),
         found: subjectFound,
@@ -1335,6 +1473,7 @@ export class InboundOrderService {
     ruleValue: string;
     notes?: string | null;
     enabled?: boolean;
+    resolveConflict?: "disable_conflicting_rule";
   }): Promise<InboundEmailIgnoreRule> {
     const ruleValue = normalizeInboundEmailIgnoreRuleValue(args.ruleType, args.ruleValue);
     if (!ruleValue) throw new InboundOrderTransitionError("Rule value is required.", 400);
@@ -1351,6 +1490,13 @@ export class InboundOrderService {
         409,
       );
     }
+    await this.resolveIgnoreRuleTrustConflict({
+      organizationId: args.organizationId,
+      ruleType: args.ruleType,
+      ruleValue,
+      enabled: args.enabled ?? true,
+      resolveConflict: args.resolveConflict,
+    });
     return this.repository.createEmailIgnoreRule({
       organizationId: args.organizationId,
       ruleType: args.ruleType,
@@ -1368,6 +1514,7 @@ export class InboundOrderService {
     ruleValue?: string;
     enabled?: boolean;
     notes?: string | null;
+    resolveConflict?: "disable_conflicting_rule";
   }): Promise<InboundEmailIgnoreRule> {
     const current = (await this.repository.listEmailIgnoreRules(args.organizationId)).find((rule) => rule.id === args.id);
     if (!current) throw new InboundOrderTransitionError("Inbound email ignore rule not found", 404);
@@ -1390,6 +1537,13 @@ export class InboundOrderService {
         409,
       );
     }
+    await this.resolveIgnoreRuleTrustConflict({
+      organizationId: args.organizationId,
+      ruleType: nextRuleType,
+      ruleValue: nextRuleValue,
+      enabled: nextEnabled,
+      resolveConflict: args.resolveConflict,
+    });
     const rule = await this.repository.updateEmailIgnoreRule({
       ...args,
       ruleType: nextRuleType,
@@ -1412,12 +1566,30 @@ export class InboundOrderService {
     ruleValue: string;
     notes?: string | null;
     enabled?: boolean;
+    resolveConflict?: "disable_conflicting_rule";
   }): Promise<InboundEmailTrustRule> {
     const ruleValue = normalizeInboundEmailTrustRuleValue(args.ruleType, args.ruleValue);
     if (!ruleValue) throw new InboundOrderTransitionError("Rule value is required.", 400);
     if (args.ruleType === "sender_domain") {
       assertSenderDomainTrustAllowed(ruleValue);
     }
+    const existing = (await this.repository.listEmailTrustRules(args.organizationId))
+      .find((rule) => rule.ruleType === args.ruleType && rule.ruleValue === ruleValue) ?? null;
+    if (existing) {
+      throw new InboundOrderTransitionError(
+        existing.enabled
+          ? "An enabled inbound email trust rule already exists for this type and value."
+          : "An inbound email trust rule already exists for this type and value. Edit the existing disabled rule instead.",
+        409,
+      );
+    }
+    await this.resolveTrustRuleIgnoreConflict({
+      organizationId: args.organizationId,
+      ruleType: args.ruleType,
+      ruleValue,
+      enabled: args.enabled ?? true,
+      resolveConflict: args.resolveConflict,
+    });
     return this.repository.createEmailTrustRule({
       organizationId: args.organizationId,
       ruleType: args.ruleType,
@@ -1435,6 +1607,7 @@ export class InboundOrderService {
     ruleValue?: string;
     enabled?: boolean;
     notes?: string | null;
+    resolveConflict?: "disable_conflicting_rule";
   }): Promise<InboundEmailTrustRule> {
     const current = (await this.repository.listEmailTrustRules(args.organizationId)).find((rule) => rule.id === args.id);
     if (!current) throw new InboundOrderTransitionError("Inbound email trust rule not found", 404);
@@ -1446,6 +1619,24 @@ export class InboundOrderService {
     if (nextRuleType === "sender_domain") {
       assertSenderDomainTrustAllowed(nextRuleValue);
     }
+    const nextEnabled = typeof args.enabled === "boolean" ? args.enabled : current.enabled;
+    const duplicate = (await this.repository.listEmailTrustRules(args.organizationId))
+      .find((rule) => rule.id !== args.id && rule.ruleType === nextRuleType && rule.ruleValue === nextRuleValue) ?? null;
+    if (duplicate) {
+      throw new InboundOrderTransitionError(
+        duplicate.enabled && nextEnabled
+          ? "An enabled inbound email trust rule already exists for this type and value."
+          : "An inbound email trust rule already exists for this type and value. Edit the existing rule instead.",
+        409,
+      );
+    }
+    await this.resolveTrustRuleIgnoreConflict({
+      organizationId: args.organizationId,
+      ruleType: nextRuleType,
+      ruleValue: nextRuleValue,
+      enabled: nextEnabled,
+      resolveConflict: args.resolveConflict,
+    });
     const rule = await this.repository.updateEmailTrustRule({
       ...args,
       ruleType: nextRuleType,
@@ -1789,12 +1980,13 @@ export class InboundOrderService {
 
     const createdRules: InboundEmailIgnoreRule[] = [];
     for (const request of ruleRequests) {
-      createdRules.push(await this.repository.createEmailIgnoreRule({
+      createdRules.push(await this.createEmailIgnoreRule({
         organizationId: args.organizationId,
         ruleType: request.ruleType,
         ruleValue: request.ruleValue,
         notes: note ?? `Created from inbound queue action ${args.action}.`,
-        createdByUserId: args.actorUserId,
+        actorUserId: args.actorUserId,
+        resolveConflict: args.resolveConflict,
       }));
     }
 
@@ -1906,12 +2098,13 @@ export class InboundOrderService {
           if (ruleType === "sender_domain") {
             assertSenderDomainTrustAllowed(ruleValue);
           }
-          await this.repository.createEmailTrustRule({
+          await this.createEmailTrustRule({
             organizationId: args.organizationId,
             ruleType,
             ruleValue,
             notes: args.note?.trim() || `Created from inbound queue bulk action ${args.action}.`,
-            createdByUserId: args.actorUserId,
+            actorUserId: args.actorUserId,
+            resolveConflict: args.resolveConflict,
           });
         } else if (args.action === "delete") {
           await this.deleteQueueRecord({ ...args, inboundRecordId });

@@ -71,6 +71,7 @@ export const inboundEmailIgnoreRuleCreateSchema = z.object({
   ruleValue: z.string().trim().min(1).max(500),
   notes: z.string().trim().max(2000).optional().nullable(),
   enabled: z.boolean().optional(),
+  resolveConflict: z.enum(["disable_conflicting_rule"]).optional(),
 });
 
 export const inboundEmailIgnoreRuleUpdateSchema = z.object({
@@ -78,6 +79,7 @@ export const inboundEmailIgnoreRuleUpdateSchema = z.object({
   ruleValue: z.string().trim().min(1).max(500).optional(),
   enabled: z.boolean().optional(),
   notes: z.string().trim().max(2000).optional().nullable(),
+  resolveConflict: z.enum(["disable_conflicting_rule"]).optional(),
 });
 
 export const inboundEmailTrustRuleCreateSchema = z.object({
@@ -85,6 +87,7 @@ export const inboundEmailTrustRuleCreateSchema = z.object({
   ruleValue: z.string().trim().min(1).max(500),
   notes: z.string().trim().max(2000).optional().nullable(),
   enabled: z.boolean().optional(),
+  resolveConflict: z.enum(["disable_conflicting_rule"]).optional(),
 });
 
 export const inboundEmailTrustRuleUpdateSchema = z.object({
@@ -92,6 +95,7 @@ export const inboundEmailTrustRuleUpdateSchema = z.object({
   ruleValue: z.string().trim().min(1).max(500).optional(),
   enabled: z.boolean().optional(),
   notes: z.string().trim().max(2000).optional().nullable(),
+  resolveConflict: z.enum(["disable_conflicting_rule"]).optional(),
 });
 
 export const inboundAttachmentTrustActionSchema = z.object({
@@ -107,6 +111,7 @@ export const inboundRecordTrustActionSchema = z.object({
     "trust_domain_and_download",
   ]),
   note: z.string().trim().max(2000).optional().nullable(),
+  resolveConflict: z.enum(["disable_conflicting_rule"]).optional(),
 });
 
 export const inboundOrderIgnoreActionSchema = z.object({
@@ -118,6 +123,7 @@ export const inboundOrderIgnoreActionSchema = z.object({
     "ignore_sender_subject",
   ]),
   note: z.string().trim().max(2000).optional().nullable(),
+  resolveConflict: z.enum(["disable_conflicting_rule"]).optional(),
 });
 
 export const inboundOrderBulkActionSchema = z.object({
@@ -134,6 +140,7 @@ export const inboundOrderBulkActionSchema = z.object({
     "reject",
   ]),
   note: z.string().trim().max(2000).optional().nullable(),
+  resolveConflict: z.enum(["disable_conflicting_rule"]).optional(),
 });
 
 export const inboundOrderParseAttemptStatusValues = ["success", "failed", "repaired", "fallback"] as const;
@@ -576,6 +583,7 @@ export type InboundEmailPullDiagnosticsResponse = {
     recentGmailIgnoredMessages?: Array<Record<string, unknown>>;
     recentGmailFailedMessages?: Array<Record<string, unknown>>;
     ignoreRuleCount: number;
+    ruleConflicts?: Array<Record<string, unknown>>;
     activeIgnoreRules: Array<{
       id: string;
       ruleType: InboundEmailIgnoreRuleTypeValue;

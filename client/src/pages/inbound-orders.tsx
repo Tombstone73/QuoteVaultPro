@@ -132,6 +132,18 @@ type InboundQueueCleanupAction =
   | "ignore_sender_subject"
   | "delete"
   | "reject";
+
+type InboundRuleConflictError = Error & {
+  code?: string;
+  conflict?: {
+    conflictType?: string;
+    conflictingRuleId?: string;
+    conflictingRuleType?: string;
+    conflictingValue?: string;
+    currentRuleLocation?: string;
+    recommendedResolution?: string;
+  };
+};
 type InboundRecordTrustAction =
   | "trust_sender"
   | "trust_domain"
@@ -339,8 +351,10 @@ async function postJson<T>(url: string, payload: unknown): Promise<T> {
       : typeof json?.error === "string"
         ? json.error
         : "Request failed";
-    const error = new Error(message) as Error & { errors?: string[] };
+    const error = new Error(message) as InboundRuleConflictError & { errors?: string[] };
     if (Array.isArray(json?.errors)) error.errors = json.errors.filter((item: unknown): item is string => typeof item === "string");
+    if (typeof json?.code === "string") error.code = json.code;
+    if (json?.conflict && typeof json.conflict === "object") error.conflict = json.conflict;
     throw error;
   }
 
@@ -475,6 +489,10 @@ function cloneReviewDraft(draft: InboundOrderReviewDraftDto): ReviewDraftFormSta
     customerIntelligenceJson: draft.customerIntelligenceJson ?? null,
     reviewNotes: draft.reviewNotes,
   })) as ReviewDraftFormState;
+}
+
+function isInboundRuleConflictError(error: Error): error is InboundRuleConflictError {
+  return (error as InboundRuleConflictError).code === "INBOUND_RULE_CONFLICT" || Boolean((error as InboundRuleConflictError).conflict);
 }
 
 function formStatesEqual(left: ReviewDraftFormState | null, right: ReviewDraftFormState | null): boolean {
@@ -4403,8 +4421,8 @@ export default function InboundOrdersPage() {
   });
 
   const ignoreInboundOrderMutation = useMutation({
-    mutationFn: ({ recordId, action, note }: { recordId: string; action: Exclude<InboundQueueCleanupAction, "trust_sender" | "trust_domain" | "delete" | "reject">; note: string | null }) => (
-      postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/ignore`, { action, note })
+    mutationFn: ({ recordId, action, note, resolveConflict }: { recordId: string; action: Exclude<InboundQueueCleanupAction, "trust_sender" | "trust_domain" | "delete" | "reject">; note: string | null; resolveConflict?: "disable_conflicting_rule" }) => (
+      postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/ignore`, { action, note, resolveConflict })
     ),
     onSuccess: async (response, variables) => {
       queryClient.setQueryData(["/api/inbound-orders", variables.recordId], response);
@@ -4420,6 +4438,13 @@ export default function InboundOrdersPage() {
         next.delete(variables.recordId);
         return next;
       });
+    },
+    onError: (error: Error, variables) => {
+      if (isInboundRuleConflictError(error) && window.confirm("This sender/domain is currently trusted. Ignoring it will disable the trust rule.")) {
+        ignoreInboundOrderMutation.mutate({ ...variables, resolveConflict: "disable_conflicting_rule" });
+        return;
+      }
+      toast({ title: "Ignore action failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -4449,16 +4474,29 @@ export default function InboundOrdersPage() {
   });
 
   const bulkQueueActionMutation = useMutation({
-    mutationFn: ({ recordIds, action, note }: { recordIds: string[]; action: InboundQueueCleanupAction; note: string | null }) => (
+    mutationFn: ({ recordIds, action, note, resolveConflict }: { recordIds: string[]; action: InboundQueueCleanupAction; note: string | null; resolveConflict?: "disable_conflicting_rule" }) => (
       postJson<{ success: true; data: { updatedIds: string[]; errors: Array<{ id: string; message: string }> } }>(
         "/api/inbound-orders/bulk-action",
-        { recordIds, action, note },
+        { recordIds, action, note, resolveConflict },
       )
     ),
-    onSuccess: async (response) => {
+    onSuccess: async (response, variables) => {
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] });
+      const conflictErrors = response.data.errors.filter((error) => (
+        error.message.includes("currently ignored") || error.message.includes("currently trusted")
+      ));
+      if (conflictErrors.length > 0 && !variables.resolveConflict) {
+        const trustAction = variables.action === "trust_sender" || variables.action === "trust_domain";
+        const confirmed = window.confirm(trustAction
+          ? `${conflictErrors.length} selected sender/domain value(s) are currently ignored. Trusting them will disable matching ignore rule(s).`
+          : `${conflictErrors.length} selected sender/domain value(s) are currently trusted. Ignoring them will disable matching trust rule(s).`);
+        if (confirmed) {
+          bulkQueueActionMutation.mutate({ ...variables, resolveConflict: "disable_conflicting_rule" });
+          return;
+        }
+      }
       setSelectedQueueRecordIds(new Set());
       if (response.data.errors.length > 0) {
         toast({
@@ -4471,7 +4509,7 @@ export default function InboundOrdersPage() {
   });
 
   const recordTrustActionMutation = useMutation({
-    mutationFn: ({ recordId, action }: { recordId: string; action: InboundRecordTrustAction }) => (
+    mutationFn: ({ recordId, action, resolveConflict }: { recordId: string; action: InboundRecordTrustAction; resolveConflict?: "disable_conflicting_rule" }) => (
       postJson<{
         success: true;
         data: {
@@ -4486,7 +4524,7 @@ export default function InboundOrdersPage() {
           };
           inbound: ClientInboundOrderDetailResponse["data"] | null;
         };
-      }>(`/api/inbound-orders/${encodeURIComponent(recordId)}/trust-action`, { action })
+      }>(`/api/inbound-orders/${encodeURIComponent(recordId)}/trust-action`, { action, resolveConflict })
     ),
     onSuccess: async (response, variables) => {
       if (response.data.inbound) {
@@ -4517,7 +4555,11 @@ export default function InboundOrdersPage() {
           : `${result.trustRuleValue} trusted. Existing pending attachments were not downloaded.`,
       });
     },
-    onError: (error: Error) => {
+    onError: (error: Error, variables) => {
+      if (isInboundRuleConflictError(error) && window.confirm("This sender/domain is currently ignored. Trusting it will disable the ignore rule.")) {
+        recordTrustActionMutation.mutate({ ...variables, resolveConflict: "disable_conflicting_rule" });
+        return;
+      }
       toast({ title: "Sender trust action failed", description: error.message, variant: "destructive" });
     },
   });

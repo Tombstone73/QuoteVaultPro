@@ -312,6 +312,15 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
           recentGmailSkippedMessages: [],
           recentGmailIgnoredMessages: [],
           recentGmailFailedMessages: [],
+          ruleConflicts: [{
+            ignoreRuleId: "ignore_titan",
+            ignoreRuleType: "sender_domain",
+            ignoreRuleValue: "titan-graphics.com",
+            trustRuleId: "trust_titan",
+            trustRuleType: "sender_domain",
+            trustRuleValue: "titan-graphics.com",
+            reason: "trust_suppressed_by_ignore",
+          }],
           ignoreRuleCount: ignoreRules.length,
           activeIgnoreRules: ignoreRules.filter((rule: any) => rule.enabled).map((rule: any) => ({
             id: rule.id,
@@ -499,6 +508,23 @@ async function renderEmailSettings(mailboxes: unknown[], ignoreRules: unknown[] 
         },
       });
     }
+    if (requestUrl.startsWith("/api/inbound-orders/email/trust-rules/") && method === "PATCH") {
+      return jsonResponse({
+        success: true,
+        data: {
+          id: decodeURIComponent(requestUrl.split("/").pop() ?? "trust_rule_1"),
+          organizationId: "org_1",
+          ruleType: "sender_domain",
+          ruleValue: "titan-graphics.com",
+          enabled: false,
+          notes: null,
+          matchCount: 0,
+          lastMatchedAt: null,
+          createdAt: "2026-06-17T12:00:00.000Z",
+          updatedAt: "2026-06-17T12:00:00.000Z",
+        },
+      });
+    }
     if (requestUrl.startsWith("/api/inbound-orders/email/ignore-rules/") && method === "DELETE") {
       return jsonResponse({
         success: true,
@@ -681,6 +707,21 @@ describe("EmailSettings inbound mailbox settings", () => {
     await waitForText("Email Pull Diagnostics");
     await waitForText("invalid_grant");
     await waitForText("Payment Received");
+    await waitForText("Conflicting inbound trust/ignore rules found");
+    await waitForText("trust_suppressed_by_ignore");
+    const keepIgnoreButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Keep ignore, disable trust")) as HTMLButtonElement;
+    await act(async () => {
+      keepIgnoreButton.click();
+    });
+    await waitForCondition(
+      () => apiRequestMock.mock.calls.some(([method, url, body]) => (
+        method === "PATCH"
+        && String(url) === "/api/inbound-orders/email/trust-rules/trust_titan"
+        && (body as Record<string, unknown> | undefined)?.enabled === false
+      )),
+      "trust conflict resolution PATCH",
+    );
     const expandButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Expand Details")) as HTMLButtonElement;
     await act(async () => {

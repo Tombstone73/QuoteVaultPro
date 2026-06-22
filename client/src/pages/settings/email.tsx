@@ -33,6 +33,7 @@ import {
   useUpdateInboundEmailTrustRule,
   useUpdateInboundEmailMailboxEnabled,
   useUpdateInboundEmailMailboxSettings,
+  type InboundRuleConflictError,
 } from "@/hooks/useInboundEmailIntakeSettings";
 import {
   defaultInboundEmailIntakeSettings,
@@ -240,6 +241,10 @@ function ruleMatchesSearch(rule: {
     `${rule.matchCount ?? 0} matches`,
     rule.lastMatchedAt,
   ].some((value) => String(value ?? "").toLowerCase().includes(normalized));
+}
+
+function isInboundRuleConflictError(error: Error): error is InboundRuleConflictError {
+  return (error as InboundRuleConflictError).code === "INBOUND_RULE_CONFLICT" || Boolean((error as InboundRuleConflictError).conflict);
 }
 
 function InboundEmailMailboxSettingsCard() {
@@ -656,6 +661,15 @@ function InboundEmailIgnoreRulesCard() {
         });
       },
       onError: (error: Error) => {
+        if (isInboundRuleConflictError(error) && window.confirm("This sender/domain is currently trusted. Ignoring it will disable the trust rule.")) {
+          const resolvedPayload = { ...payload, resolveConflict: "disable_conflicting_rule" as const };
+          if (editingRuleId) {
+            updateRule.mutate({ ruleId: editingRuleId, ...resolvedPayload }, mutationOptions);
+          } else {
+            createRule.mutate(resolvedPayload, mutationOptions);
+          }
+          return;
+        }
         toast({ title: "Failed to save ignore rule", description: error.message, variant: "destructive" });
       },
     };
@@ -894,6 +908,15 @@ function InboundEmailTrustRulesCard() {
         });
       },
       onError: (error: Error) => {
+        if (isInboundRuleConflictError(error) && window.confirm("This sender/domain is currently ignored. Trusting it will disable the ignore rule.")) {
+          const resolvedPayload = { ...payload, resolveConflict: "disable_conflicting_rule" as const };
+          if (editingRuleId) {
+            updateRule.mutate({ ruleId: editingRuleId, ...resolvedPayload }, mutationOptions);
+          } else {
+            createRule.mutate(resolvedPayload, mutationOptions);
+          }
+          return;
+        }
         toast({ title: "Failed to save trust rule", description: error.message, variant: "destructive" });
       },
     };
@@ -1275,9 +1298,30 @@ function EmailPullDiagnosticsPanel() {
   const [subject, setSubject] = useState("");
   const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [ignoreRulesExpanded, setIgnoreRulesExpanded] = useState(false);
+  const { toast } = useToast();
   const diagnosticsQuery = useInboundEmailPullDiagnostics(subject);
   const diagnostics = diagnosticsQuery.data;
   const collapseIgnoreRulesByDefault = (diagnostics?.activeIgnoreRules.length ?? 0) > 3;
+  const resolveRuleConflict = useMutation({
+    mutationFn: async ({ ruleId, keep }: { ruleId: string; keep: "trust" | "ignore" }) => {
+      const url = keep === "trust"
+        ? `/api/inbound-orders/email/ignore-rules/${encodeURIComponent(ruleId)}`
+        : `/api/inbound-orders/email/trust-rules/${encodeURIComponent(ruleId)}`;
+      await apiRequest("PATCH", url, { enabled: false });
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/pull-diagnostics"] }),
+      ]);
+      diagnosticsQuery.refetch();
+      toast({ title: "Inbound rule conflict resolved", description: "The conflicting rule was disabled." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to resolve rule conflict", description: error.message, variant: "destructive" });
+    },
+  });
 
   useEffect(() => {
     if (diagnostics) setIgnoreRulesExpanded(!collapseIgnoreRulesByDefault);
@@ -1355,6 +1399,51 @@ function EmailPullDiagnosticsPanel() {
                 <div className="mt-1 text-2xl font-semibold text-foreground">{diagnostics.recentInboundFiles.length}</div>
               </div>
             </div>
+
+            {(diagnostics.ruleConflicts ?? []).length > 0 ? (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+                <div className="flex items-center gap-2 font-semibold text-amber-900">
+                  <AlertTriangle className="h-4 w-4" />
+                  Conflicting inbound trust/ignore rules found
+                </div>
+                <div className="mt-2 space-y-2">
+                  {(diagnostics.ruleConflicts ?? []).map((conflict, index) => {
+                    const ignoreRuleId = String(conflict.ignoreRuleId ?? "");
+                    const trustRuleId = String(conflict.trustRuleId ?? "");
+                    return (
+                      <div key={`${ignoreRuleId}-${trustRuleId}-${index}`} className="rounded-md border border-amber-500/20 bg-background/70 p-2">
+                        <div className="text-xs text-muted-foreground">
+                          Ignore: {formatDiagnosticValue(conflict.ignoreRuleType)} / {formatDiagnosticValue(conflict.ignoreRuleValue)}
+                          {" | "}
+                          Trust: {formatDiagnosticValue(conflict.trustRuleType)} / {formatDiagnosticValue(conflict.trustRuleValue)}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">{formatDiagnosticValue(conflict.reason)}</div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={!ignoreRuleId || resolveRuleConflict.isPending}
+                            onClick={() => resolveRuleConflict.mutate({ ruleId: ignoreRuleId, keep: "trust" })}
+                          >
+                            Keep trust, disable ignore
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={!trustRuleId || resolveRuleConflict.isPending}
+                            onClick={() => resolveRuleConflict.mutate({ ruleId: trustRuleId, keep: "ignore" })}
+                          >
+                            Keep ignore, disable trust
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
 
             {diagnostics.mailboxes.length === 0 ? (
               <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800">

@@ -87,9 +87,27 @@ function ignoreRule(overrides: Record<string, any> = {}) {
   };
 }
 
+function trustRule(overrides: Record<string, any> = {}) {
+  return {
+    id: "trust_1",
+    organizationId: "org_1",
+    enabled: true,
+    ruleType: "sender_domain",
+    ruleValue: "titan-graphics.com",
+    notes: null,
+    matchCount: 0,
+    lastMatchedAt: null,
+    createdByUserId: "user_1",
+    createdAt: new Date("2026-06-17T12:00:00.000Z"),
+    updatedAt: new Date("2026-06-17T12:00:00.000Z"),
+    ...overrides,
+  };
+}
+
 function makeIgnoreRuleRepo(overrides: Record<string, any> = {}) {
   return {
     listEmailIgnoreRules: jest.fn(async () => []),
+    listEmailTrustRules: jest.fn(async () => []),
     getEmailIgnoreRuleByTypeValue: jest.fn(async () => null),
     createEmailIgnoreRule: jest.fn(async (values: Record<string, any>) => ignoreRule(values)),
     updateEmailIgnoreRule: jest.fn(async (values: Record<string, any>) => ignoreRule(values)),
@@ -248,6 +266,10 @@ function diagnosticRepository(overrides: Record<string, any>) {
   return {
     listEnabledEmailIgnoreRules: jest.fn(async () => []),
     listEnabledEmailTrustRules: jest.fn(async () => []),
+    listEmailIgnoreRules: jest.fn(async () => []),
+    listEmailTrustRules: jest.fn(async () => []),
+    updateEmailIgnoreRule: jest.fn(async (args: Record<string, any>) => ignoreRule(args)),
+    updateEmailTrustRule: jest.fn(async (args: Record<string, any>) => trustRule(args)),
     senderEmailMatchesCustomerContact: jest.fn(async () => false),
     senderDomainMatchesCustomerDomain: jest.fn(async () => false),
     ...overrides,
@@ -333,7 +355,7 @@ describe("inbound sender trust classification", () => {
   );
 
   test("trusts an exact known contact email on a public domain", async () => {
-    const repo = diagnosticRepository({
+    const repo: any = diagnosticRepository({
       listRecords: jest.fn(async () => [inboundEmailRecord({
         rawPayloadJson: { sender: { email: "known.customer@gmail.com" } },
       })]),
@@ -358,7 +380,7 @@ describe("inbound sender trust classification", () => {
   });
 
   test("ignore rules override exact known contact email trust", async () => {
-    const repo = diagnosticRepository({
+    const repo: any = diagnosticRepository({
       listRecords: jest.fn(async () => [inboundEmailRecord({
         rawPayloadJson: { sender: { email: "known.customer@gmail.com" } },
       })]),
@@ -418,6 +440,148 @@ describe("inbound sender trust classification", () => {
 
     expect(repo.createEmailTrustRule).not.toHaveBeenCalled();
     expect(repo.updateEmailTrustRule).not.toHaveBeenCalled();
+  });
+
+  test("cannot silently trust an ignored domain", async () => {
+    const repo: any = diagnosticRepository({
+      listEmailIgnoreRules: jest.fn(async () => [ignoreRule({
+        id: "ignore_titan",
+        ruleType: "sender_domain",
+        ruleValue: "titan-graphics.com",
+      })]),
+      listEmailTrustRules: jest.fn(async () => []),
+      createEmailTrustRule: jest.fn(async (values: Record<string, any>) => trustRule(values)),
+    });
+    const service = new InboundOrderService(repo as any);
+
+    await expect(service.createEmailTrustRule({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      ruleType: "sender_domain",
+      ruleValue: "titan-graphics.com",
+    })).rejects.toMatchObject({
+      statusCode: 409,
+      conflict: expect.objectContaining({
+        conflictType: "trust_conflicted_with_ignore",
+        currentRuleLocation: "Inbound Ignore Rules",
+        conflictingValue: "titan-graphics.com",
+      }),
+    });
+    expect(repo.createEmailTrustRule).not.toHaveBeenCalled();
+  });
+
+  test("trusting an ignored domain can intentionally disable the ignore rule", async () => {
+    const repo: any = diagnosticRepository({
+      listEmailIgnoreRules: jest.fn(async () => [ignoreRule({
+        id: "ignore_titan",
+        ruleType: "sender_domain",
+        ruleValue: "titan-graphics.com",
+      })]),
+      listEmailTrustRules: jest.fn(async () => []),
+      createEmailTrustRule: jest.fn(async (values: Record<string, any>) => trustRule(values)),
+    });
+    const service = new InboundOrderService(repo as any);
+
+    await service.createEmailTrustRule({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      ruleType: "sender_domain",
+      ruleValue: "titan-graphics.com",
+      resolveConflict: "disable_conflicting_rule",
+    });
+
+    expect(repo.updateEmailIgnoreRule).toHaveBeenCalledWith(expect.objectContaining({
+      id: "ignore_titan",
+      enabled: false,
+    }));
+    expect(repo.createEmailTrustRule).toHaveBeenCalledWith(expect.objectContaining({
+      ruleType: "sender_domain",
+      ruleValue: "titan-graphics.com",
+    }));
+  });
+
+  test("cannot silently ignore a trusted domain", async () => {
+    const repo: any = diagnosticRepository({
+      listEmailTrustRules: jest.fn(async () => [trustRule({
+        id: "trust_titan",
+        ruleType: "sender_domain",
+        ruleValue: "titan-graphics.com",
+      })]),
+      listEmailIgnoreRules: jest.fn(async () => []),
+      createEmailIgnoreRule: jest.fn(async (values: Record<string, any>) => ignoreRule(values)),
+      getEmailIgnoreRuleByTypeValue: jest.fn(async () => null),
+    });
+    const service = new InboundOrderService(repo as any);
+
+    await expect(service.createEmailIgnoreRule({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      ruleType: "sender_domain",
+      ruleValue: "titan-graphics.com",
+    })).rejects.toMatchObject({
+      statusCode: 409,
+      conflict: expect.objectContaining({
+        conflictType: "ignore_conflicted_with_trust",
+        currentRuleLocation: "Trusted Inbound Senders",
+        conflictingValue: "titan-graphics.com",
+      }),
+    });
+    expect(repo.createEmailIgnoreRule).not.toHaveBeenCalled();
+  });
+
+  test("runtime ignore overrides conflicting trust rule and reports suppression", async () => {
+    const repo = diagnosticRepository({
+      listRecords: jest.fn(async () => [inboundEmailRecord({
+        rawPayloadJson: { sender: { email: "orders@titan-graphics.com" } },
+      })]),
+      getQueueSummary: jest.fn(async () => ({ total: 1 })),
+      listFiles: jest.fn(async () => []),
+      listEnabledEmailIgnoreRules: jest.fn(async () => [ignoreRule({
+        id: "ignore_titan",
+        ruleType: "sender_domain",
+        ruleValue: "titan-graphics.com",
+      })]),
+      listEnabledEmailTrustRules: jest.fn(async () => [trustRule({
+        id: "trust_titan",
+        ruleType: "sender_domain",
+        ruleValue: "titan-graphics.com",
+      })]),
+    });
+    const service = new InboundOrderService(repo as any);
+
+    const result = await service.listInboundOrders({
+      organizationId: "org_1",
+      filters: { statusGroup: "active", limit: 20, offset: 0 },
+    });
+
+    expect(result.records[0]).toMatchObject({
+      senderTrustStatus: "ignored",
+      matchedTrustRuleId: "trust_titan",
+      canAutoDownloadAttachments: false,
+    });
+    expect(result.records[0].trustReason).toContain("trust_suppressed_by_ignore");
+  });
+
+  test("legacy conflict detector finds enabled trust and ignore rule conflicts", async () => {
+    const service = new InboundOrderService(diagnosticRepository({
+      listEmailIgnoreRules: jest.fn(async () => [ignoreRule({
+        id: "ignore_titan",
+        ruleType: "sender_domain",
+        ruleValue: "titan-graphics.com",
+      })]),
+      listEmailTrustRules: jest.fn(async () => [trustRule({
+        id: "trust_titan",
+        ruleType: "sender_domain",
+        ruleValue: "titan-graphics.com",
+      })]),
+    }) as any);
+
+    await expect(service.listEmailRuleConflicts({ organizationId: "org_1" })).resolves.toEqual([
+      expect.objectContaining({
+        ignoreRule: expect.objectContaining({ id: "ignore_titan" }),
+        trustRule: expect.objectContaining({ id: "trust_titan" }),
+      }),
+    ]);
   });
 });
 

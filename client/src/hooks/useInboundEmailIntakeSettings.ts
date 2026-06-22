@@ -30,6 +30,27 @@ import type {
   InboundEmailPullDiagnosticsResponse,
 } from "@shared/inboundOrdersApi";
 
+type InboundRuleConflictPayload = {
+  conflictType?: string;
+  conflictingRuleId?: string;
+  conflictingRuleType?: string;
+  conflictingValue?: string;
+  currentRuleLocation?: string;
+  recommendedResolution?: string;
+};
+
+export type InboundRuleConflictError = Error & {
+  code?: string;
+  conflict?: InboundRuleConflictPayload;
+};
+
+function throwInboundEmailRuleError(payload: { success?: boolean; message?: string; code?: string; conflict?: InboundRuleConflictPayload }, fallback: string): never {
+  const error = new Error(payload.message || fallback) as InboundRuleConflictError;
+  error.code = payload.code;
+  error.conflict = payload.conflict;
+  throw error;
+}
+
 type InboundEmailSettingsResponse = {
   success: boolean;
   data?: unknown;
@@ -145,14 +166,15 @@ export function useCreateInboundEmailIgnoreRule() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
       });
-      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; code?: string; conflict?: InboundRuleConflictPayload; data?: unknown };
       if (!response.ok || payload.success === false) {
-        throw new Error(payload.message || "Failed to create inbound email ignore rule");
+        throwInboundEmailRuleError(payload, "Failed to create inbound email ignore rule");
       }
       return payload.data as InboundEmailIgnoreRuleDto;
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] });
     },
   });
 }
@@ -166,14 +188,15 @@ export function useUpdateInboundEmailIgnoreRule() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
       });
-      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; code?: string; conflict?: InboundRuleConflictPayload; data?: unknown };
       if (!response.ok || payload.success === false) {
-        throw new Error(payload.message || "Failed to update inbound email ignore rule");
+        throwInboundEmailRuleError(payload, "Failed to update inbound email ignore rule");
       }
       return payload.data as InboundEmailIgnoreRuleDto;
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] });
     },
   });
 }
@@ -206,14 +229,15 @@ export function useCreateInboundEmailTrustRule() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
       });
-      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; code?: string; conflict?: InboundRuleConflictPayload; data?: unknown };
       if (!response.ok || payload.success === false) {
-        throw new Error(payload.message || "Failed to create inbound email trust rule");
+        throwInboundEmailRuleError(payload, "Failed to create inbound email trust rule");
       }
       return payload.data as InboundEmailTrustRuleDto;
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
     },
   });
 }
@@ -227,14 +251,15 @@ export function useUpdateInboundEmailTrustRule() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
       });
-      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; data?: unknown };
+      const payload = await response.json().catch(() => ({})) as { success?: boolean; message?: string; code?: string; conflict?: InboundRuleConflictPayload; data?: unknown };
       if (!response.ok || payload.success === false) {
-        throw new Error(payload.message || "Failed to update inbound email trust rule");
+        throwInboundEmailRuleError(payload, "Failed to update inbound email trust rule");
       }
       return payload.data as InboundEmailTrustRuleDto;
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
     },
   });
 }

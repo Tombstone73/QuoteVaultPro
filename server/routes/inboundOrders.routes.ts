@@ -36,6 +36,7 @@ import {
 } from "@shared/inboundEmailMailboxes";
 import {
   InboundOrderConversionValidationError,
+  InboundEmailRuleConflictError,
   InboundOrderReviewDraftValidationError,
   InboundOrderTransitionError,
   inboundOrderService,
@@ -54,6 +55,15 @@ import { getRequestOrganizationId } from "../tenantContext";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub ?? user?.id;
+}
+
+function sendInboundRuleConflict(res: any, error: InboundEmailRuleConflictError) {
+  return res.status(error.statusCode).json({
+    success: false,
+    code: "INBOUND_RULE_CONFLICT",
+    message: error.message,
+    conflict: error.conflict,
+  });
 }
 
 const jsonObjectSchema = z.record(z.unknown());
@@ -469,12 +479,14 @@ export function registerInboundOrderRoutes(
         ruleValue: input.ruleValue,
         notes: input.notes ?? null,
         enabled: input.enabled,
+        resolveConflict: input.resolveConflict,
       });
       res.status(201).json({ success: true, data: formatInboundEmailIgnoreRule(rule) });
     } catch (error: any) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
+      if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
       if (error instanceof InboundOrderTransitionError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
@@ -500,12 +512,14 @@ export function registerInboundOrderRoutes(
         ruleValue: input.ruleValue,
         enabled: input.enabled,
         notes: input.notes,
+        resolveConflict: input.resolveConflict,
       });
       res.json({ success: true, data: formatInboundEmailIgnoreRule(rule) });
     } catch (error: any) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
+      if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
       if (error instanceof InboundOrderTransitionError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
@@ -571,12 +585,14 @@ export function registerInboundOrderRoutes(
         ruleValue: input.ruleValue,
         notes: input.notes ?? null,
         enabled: input.enabled,
+        resolveConflict: input.resolveConflict,
       });
       res.status(201).json({ success: true, data: formatInboundEmailTrustRule(rule) });
     } catch (error: any) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
+      if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
       if (error instanceof InboundOrderTransitionError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
@@ -602,12 +618,14 @@ export function registerInboundOrderRoutes(
         ruleValue: input.ruleValue,
         enabled: input.enabled,
         notes: input.notes,
+        resolveConflict: input.resolveConflict,
       });
       res.json({ success: true, data: formatInboundEmailTrustRule(rule) });
     } catch (error: any) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
+      if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
       if (error instanceof InboundOrderTransitionError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
@@ -1024,6 +1042,7 @@ export function registerInboundOrderRoutes(
         inboundRecordId: String(req.params.id),
         action: input.action,
         note: input.note ?? null,
+        resolveConflict: input.resolveConflict,
       });
       const detail = await service.getInboundOrder({
         organizationId,
@@ -1035,7 +1054,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
       if (error instanceof InboundEmailIngestionError) {
-        return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+        return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message, ...(error.details ?? {}) });
       }
       console.error("Error applying inbound record trust action:", error);
       res.status(500).json({ success: false, message: "Failed to apply inbound sender trust action" });
@@ -1526,6 +1545,7 @@ export function registerInboundOrderRoutes(
         actorUserId,
         action: input.action,
         note: input.note ?? null,
+        resolveConflict: input.resolveConflict,
       });
 
       res.json({ success: true, data: detail });
@@ -1533,6 +1553,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
+      if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
       if (error instanceof InboundOrderTransitionError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
@@ -1589,6 +1610,7 @@ export function registerInboundOrderRoutes(
         recordIds: input.recordIds,
         action: input.action,
         note: input.note ?? null,
+        resolveConflict: input.resolveConflict,
       });
       res.json({ success: true, data: result });
     } catch (error) {
