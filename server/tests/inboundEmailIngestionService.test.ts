@@ -1,6 +1,7 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
 import {
+  classifyInboundEmailAttachmentForMessage,
   classifyInboundEmailForReview,
   extractGmailBodyAndAttachments,
   GmailInboundEmailAdapter,
@@ -67,6 +68,22 @@ describe("inbound email ingestion classifier", () => {
     }));
 
     expect(result).toMatchObject({ ignored: false, intent: "ORDER_REQUEST" });
+  });
+
+  test("does not classify tiny inline signature GIFs as artwork", () => {
+    const classification = classifyInboundEmailAttachmentForMessage({
+      filename: "image001.gif",
+      mimeType: "image/gif",
+      size: 2345,
+      contentDisposition: "inline",
+      contentId: "<logo-signature>",
+    } as any, message({ subject: "PO attached" }));
+
+    expect(classification).toMatchObject({
+      role: "other",
+      poCandidate: false,
+      artworkCandidate: false,
+    });
   });
 
   test("keeps ambiguous request candidates as unknown", () => {

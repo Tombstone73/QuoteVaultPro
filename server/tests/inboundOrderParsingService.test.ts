@@ -796,6 +796,60 @@ describe("InboundOrderParsingService", () => {
     expect(repo.matchLineItemProductWithEvent).not.toHaveBeenCalled();
   });
 
+  test("includes extracted PO PDF text and source attribution in parse prompt evidence", async () => {
+    const service = new InboundOrderParsingService(makeRepository().repo as any, () => null);
+    const evidenceBundle: InboundOrderEvidenceBundle = {
+      items: [{
+        type: "PDF_ATTACHMENT",
+        label: "Purchase Order 151534.pdf",
+        sourceId: "file_po",
+        fileName: "Purchase Order 151534.pdf",
+        mimeType: "application/pdf",
+        rawText: "Purchase Order No 151534\nQty 10 Yard Signs\n24x18 Coroplast",
+        pageCount: 1,
+        documentType: "purchase_order",
+        documentConfidence: 98,
+        extractionStatus: "successful",
+        poSummary: extractPurchaseOrderFields({
+          text: "Purchase Order No 151534\nQty 10 Yard Signs\n24x18 Coroplast",
+          receivedAt: "2026-06-19T12:00:00.000Z",
+          sourceDocument: "Purchase Order 151534.pdf",
+        }),
+        warnings: [],
+      }, {
+        type: "EMAIL_BODY",
+        label: "Email Body",
+        rawText: "Artwork to follow.",
+        documentType: "unknown",
+        documentConfidence: 0,
+        extractionStatus: "not_attempted",
+        warnings: [],
+      }],
+      conflicts: [],
+    };
+
+    const prompt = await service.buildInboundOrderParsePrompt(
+      "org_1",
+      inboundRecord({
+        sourceType: "email",
+        receivedAt: new Date("2026-06-19T12:00:00.000Z"),
+        rawPayloadJson: {
+          intakeMode: "TEMP_INBOUND",
+          sender: { name: "Shawn Fears", email: "shawn@brainstormprint.com" },
+          subject: "PO attached",
+          bodyText: "Artwork to follow.",
+        },
+      }) as any,
+      evidenceBundle,
+    );
+
+    expect(prompt.user).toContain("\"type\":\"PDF_ATTACHMENT\"");
+    expect(prompt.user).toContain("Purchase Order No 151534");
+    expect(prompt.user).toContain("\"documentType\":\"purchase_order\"");
+    expect(prompt.user).toContain("\"sourceType\":\"PDF_ATTACHMENT\"");
+    expect(prompt.user).toContain("Qty 10 Yard Signs");
+  });
+
   test("product ranking prioritizes exact material match over generic description text", () => {
     const matches = scoreProductKnowledgeCandidates(
       { sourceText: "PVC Signs 24x36 Stock: 3mm White PVC", productName: "PVC Signs", materialText: "3mm White PVC" },

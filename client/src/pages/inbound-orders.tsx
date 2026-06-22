@@ -631,17 +631,84 @@ function threadMessagesFromEvidence(thread: Record<string, unknown> | null | und
   ));
 }
 
+function threadMessagesLatestFirst(thread: Record<string, unknown> | null | undefined): Array<Record<string, unknown>> {
+  return threadMessagesFromEvidence(thread).slice().sort((left, right) => (
+    new Date(stringFromUnknown(right.receivedAt) ?? 0).getTime() - new Date(stringFromUnknown(left.receivedAt) ?? 0).getTime()
+  ));
+}
+
+function threadMessageRecipients(message: Record<string, unknown>, key: "to" | "cc"): string[] {
+  const value = message[key];
+  if (!Array.isArray(value)) return [];
+  return value.map(stringFromUnknown).filter((item): item is string => Boolean(item));
+}
+
+function splitQuotedMessageText(value: string | null | undefined): { current: string; quoted: string | null } {
+  const text = String(value ?? "").trim();
+  if (!text) return { current: "", quoted: null };
+  const patterns = [
+    /\n\s*On .{5,240} wrote:\s*/i,
+    /\n\s*-{2,}\s*Original Message\s*-{2,}\s*/i,
+    /\n\s*From:\s+.+\n\s*Sent:\s+.+\n/i,
+    /\n\s*_{8,}\s*\n/,
+  ];
+  const indexes = patterns
+    .map((pattern) => {
+      const match = text.match(pattern);
+      return match?.index ?? -1;
+    })
+    .filter((index) => index > 0);
+  if (indexes.length === 0) return { current: text, quoted: null };
+  const index = Math.min(...indexes);
+  return {
+    current: text.slice(0, index).trim(),
+    quoted: text.slice(index).trim(),
+  };
+}
+
 function providerMessageIdForFile(file: ClientInboundOrderFile): string | null {
   return stringFromUnknown(file.providerMessageId) ?? stringFromUnknown(getPathValue(file.metadataJson, "providerMessageId"));
 }
 
+function isLikelySignatureInlineFile(file: ClientInboundOrderFile): boolean {
+  const metadata = attachmentSafetyMetadata(file);
+  const filename = String(file.sourceFilename ?? "").toLowerCase();
+  const mimeType = String(file.mimeType ?? "").toLowerCase();
+  const disposition = String(file.contentDisposition ?? metadata.contentDisposition ?? "").toLowerCase();
+  const contentId = String(metadata.contentId ?? "").toLowerCase();
+  const imageType = /^image\/(?:gif|png|jpe?g)$/i.test(mimeType);
+  if (!imageType) return false;
+  const inlineSignal = disposition.includes("inline") || Boolean(contentId);
+  const smallSignal = typeof file.sizeBytes === "number" && file.sizeBytes > 0 && file.sizeBytes <= 40_000;
+  const filenameSignal = /(?:^|[-_\s])(image\d{2,}|logo|signature|sig|facebook|linkedin|instagram|twitter|x-icon|spacer|pixel)(?:[-_\s.]|$)/i.test(filename);
+  return inlineSignal && (smallSignal || filenameSignal);
+}
+
+function dedupeAttachmentFiles(files: ClientInboundOrderFile[]): ClientInboundOrderFile[] {
+  const seen = new Set<string>();
+  return files.filter((file) => {
+    const providerKey = file.providerAttachmentId
+      ? `provider:${providerMessageIdForFile(file) ?? ""}:${file.providerAttachmentId}`
+      : null;
+    const fallbackKey = `file:${providerMessageIdForFile(file) ?? ""}:${String(file.sourceFilename ?? "").toLowerCase()}:${file.sizeBytes ?? ""}:${file.mimeType ?? ""}`;
+    const signatureKey = isLikelySignatureInlineFile(file)
+      ? `signature:${String(file.sourceFilename ?? "").toLowerCase()}:${file.sizeBytes ?? ""}:${file.mimeType ?? ""}`
+      : null;
+    const key = signatureKey ?? providerKey ?? fallbackKey;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function groupFilesByThreadMessage(files: ClientInboundOrderFile[], thread: Record<string, unknown> | null | undefined) {
   const messages = threadMessagesFromEvidence(thread);
+  const uniqueFiles = dedupeAttachmentFiles(files);
   if (messages.length === 0) {
-    return [{ key: "attachments", label: "Attachments", detail: null as string | null, files }];
+    return [{ key: "attachments", label: "Attachments", detail: null as string | null, files: uniqueFiles }];
   }
   const fileGroups = new Map<string, ClientInboundOrderFile[]>();
-  for (const file of files) {
+  for (const file of uniqueFiles) {
     const key = providerMessageIdForFile(file) ?? "unmatched";
     fileGroups.set(key, [...(fileGroups.get(key) ?? []), file]);
   }
@@ -667,7 +734,7 @@ function groupFilesByThreadMessage(files: ClientInboundOrderFile[], thread: Reco
   if (unmatched.length > 0) {
     groups.push({ key: "unmatched", label: "Other Message Attachments", detail: null, files: unmatched });
   }
-  return groups.length > 0 ? groups : [{ key: "attachments", label: "Attachments", detail: null, files }];
+  return groups.length > 0 ? groups : [{ key: "attachments", label: "Attachments", detail: null, files: uniqueFiles }];
 }
 
 function ThreadTimeline({ thread, compact = false }: { thread: Record<string, unknown> | null | undefined; compact?: boolean }) {
@@ -706,6 +773,123 @@ function ThreadTimeline({ thread, compact = false }: { thread: Record<string, un
         })}
       </div>
     </section>
+  );
+}
+
+function EmailMessageBody({ message }: { message: Record<string, unknown> }) {
+  const bodyText = stringFromUnknown(message.bodyText);
+  const bodyHtml = stringFromUnknown(message.bodyHtml);
+  const split = splitQuotedMessageText(bodyText);
+  if (split.current) {
+    return (
+      <div className="space-y-2">
+        <div className="whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-sm leading-5 text-foreground">
+          {split.current}
+        </div>
+        {split.quoted && (
+          <details className="rounded-md border border-dashed border-border bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
+            <summary className="cursor-pointer font-medium text-foreground">Quoted content in this message</summary>
+            <div className="mt-2 whitespace-pre-wrap leading-5">{split.quoted}</div>
+          </details>
+        )}
+      </div>
+    );
+  }
+  if (bodyHtml) {
+    return (
+      <div
+        className="prose prose-sm max-w-none rounded-md border border-border bg-background p-2 text-foreground [&_*]:max-w-full"
+        dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(bodyHtml) }}
+      />
+    );
+  }
+  return <div className="rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">No body text captured for this message.</div>;
+}
+
+function ThreadMessageBlock({ message, index }: { message: Record<string, unknown>; index: number }) {
+  const subject = stringFromUnknown(message.displaySubject) ?? stringFromUnknown(message.subject) ?? `Message ${index + 1}`;
+  const sender = [stringFromUnknown(message.senderName), stringFromUnknown(message.senderEmail)].filter(Boolean).join(" / ");
+  const receivedAt = stringFromUnknown(message.receivedAt);
+  const to = threadMessageRecipients(message, "to");
+  const cc = threadMessageRecipients(message, "cc");
+  return (
+    <article className="rounded-md border border-border bg-muted/10 p-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-xs font-semibold uppercase text-muted-foreground">Message {index + 1}</div>
+          <h4 className="mt-0.5 break-words text-sm font-semibold text-foreground">{subject}</h4>
+        </div>
+        {receivedAt && <Badge variant="outline">{formatTimestamp(receivedAt)}</Badge>}
+      </div>
+      <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+        {sender && <div><span className="font-medium text-foreground">From:</span> {sender}</div>}
+        {to.length > 0 && <div><span className="font-medium text-foreground">To:</span> {to.join(", ")}</div>}
+        {cc.length > 0 && <div><span className="font-medium text-foreground">Cc:</span> {cc.join(", ")}</div>}
+      </div>
+      <div className="mt-2">
+        <EmailMessageBody message={message} />
+      </div>
+    </article>
+  );
+}
+
+function ThreadMessageBlocks({
+  thread,
+  fallbackHtml,
+  fallbackText,
+}: {
+  thread: Record<string, unknown> | null | undefined;
+  fallbackHtml: string | null;
+  fallbackText: string | null;
+}) {
+  const [previousExpanded, setPreviousExpanded] = useState(false);
+  const messages = threadMessagesLatestFirst(thread);
+  if (messages.length > 0) {
+    const latest = messages[0];
+    const previous = messages.slice(1);
+    return (
+      <div className="space-y-2">
+        <ThreadMessageBlock message={latest} index={1} />
+        {previous.length > 0 && (
+          <div className="rounded-md border border-border bg-muted/20 p-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setPreviousExpanded((current) => !current)}
+            >
+              {previousExpanded ? "Collapse previous messages" : `Expand previous messages (${previous.length})`}
+            </Button>
+            {previousExpanded && (
+              <div className="mt-2 space-y-2">
+                {previous.map((message, index) => (
+                  <ThreadMessageBlock
+                    key={stringFromUnknown(message.messageId) ?? `previous_${index}`}
+                    message={message}
+                    index={index + 2}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+  return fallbackHtml ? (
+    <div
+      className="prose prose-sm max-w-none rounded-md border border-border bg-background p-2 text-foreground [&_*]:max-w-full"
+      dangerouslySetInnerHTML={{ __html: fallbackHtml }}
+    />
+  ) : fallbackText ? (
+    <div className="whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-sm leading-5 text-foreground">
+      {fallbackText}
+    </div>
+  ) : (
+    <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
+      No email body was captured.
+    </div>
   );
 }
 
@@ -1146,6 +1330,82 @@ function FieldSourceSection({ draft }: { draft: InboundOrderParsedDraft }) {
   );
 }
 
+function EvidenceUsedSection({
+  draft,
+  detail,
+}: {
+  draft: InboundOrderParsedDraft;
+  detail: ClientInboundOrderDetailResponse["data"] | undefined;
+}) {
+  const record = detail?.record ?? null;
+  const evidence = record?.sourceType === "email" ? getInboundEmailEvidence(record) : record ? getManualInboundEvidence(record) : null;
+  const files = detail?.files ?? [];
+  const poItems = draft.evidence.items.filter((item) => item.type === "PDF_ATTACHMENT" && item.documentType === "purchase_order");
+  const pdfFailures = draft.evidence.items.filter((item) => item.type === "PDF_ATTACHMENT" && item.extractionStatus === "failed");
+  const artworkFiles = files.filter((file) => file.role === "artwork");
+  const threadCount = typeof (evidence as ReturnType<typeof getInboundEmailEvidence> | null)?.thread?.messageCount === "number"
+    ? Number((evidence as ReturnType<typeof getInboundEmailEvidence>).thread?.messageCount)
+    : 0;
+  const rows = [
+    {
+      label: "Email body",
+      status: draft.evidence.items.some((item) => item.type === "EMAIL_BODY") ? "parsed" : evidence?.bodyText ? "skipped" : "not available",
+      detail: evidence?.bodyText ? "Body text captured" : "No email body text captured",
+    },
+    {
+      label: "Thread messages",
+      status: threadCount > 1 ? "parsed" : threadCount === 1 ? "single message" : "not available",
+      detail: threadCount > 0 ? `${threadCount} message${threadCount === 1 ? "" : "s"} available` : "No thread timeline captured",
+    },
+    {
+      label: "PO PDFs",
+      status: poItems.some((item) => item.extractionStatus === "successful")
+        ? "parsed"
+        : pdfFailures.length > 0
+          ? "failed"
+          : files.some((file) => file.role === "po")
+            ? "skipped"
+            : "not available",
+      detail: poItems.length > 0
+        ? `${poItems.length} purchase order PDF${poItems.length === 1 ? "" : "s"} used`
+        : pdfFailures.length > 0
+          ? "PO PDF downloaded, text not extracted"
+          : files.some((file) => file.role === "po")
+            ? "PO PDF available for manual review"
+            : "No PO PDF detected",
+    },
+    {
+      label: "Artwork files",
+      status: artworkFiles.length > 0 ? "available" : "not available",
+      detail: artworkFiles.length > 0
+        ? `${artworkFiles.length} artwork file${artworkFiles.length === 1 ? "" : "s"} at thread level`
+        : "No artwork files detected",
+    },
+  ];
+
+  return (
+    <section className="rounded-md border border-border p-3">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-foreground">Evidence Used</h3>
+        <Badge variant="outline">{rows.filter((row) => row.status !== "not available").length}</Badge>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {rows.map((row) => (
+          <div key={row.label} className="rounded-md border border-border bg-muted/20 px-3 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-medium text-foreground">{row.label}</div>
+              <Badge variant={row.status === "failed" ? "destructive" : row.status === "parsed" || row.status === "available" ? "secondary" : "outline"}>
+                {titleCase(row.status)}
+              </Badge>
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">{row.detail}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function QueueTriageControls({
   filters,
   searchValue,
@@ -1540,6 +1800,59 @@ function InboundQueuePanel({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function InboundAttachmentCard({
+  recordId,
+  file,
+  compact = false,
+}: {
+  recordId: string;
+  file: ClientInboundOrderFile;
+  compact?: boolean;
+}) {
+  const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
+    ? `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(file.id)}/download`
+    : null;
+  return (
+    <div className={cn(
+      "flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2",
+      compact && "px-2 py-1.5",
+    )}>
+      <div className="min-w-0">
+        <div className="truncate text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>{file.mimeType || "unknown type"}</span>
+          <span>{formatFileSize(file.sizeBytes)}</span>
+          <span>Status: {titleCase(file.status)}</span>
+          <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
+            {inboundAttachmentRoleLabel(file.role)}
+          </Badge>
+          {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
+        </div>
+        {file.reviewNotes && (
+          <div className="mt-1 text-xs text-muted-foreground">{file.reviewNotes}</div>
+        )}
+        <AttachmentSafetyDetails recordId={recordId} file={file} />
+      </div>
+      {downloadUrl && (
+        <div className="flex shrink-0 gap-2">
+          <Button asChild size="sm" variant="outline">
+            <a href={downloadUrl} target="_blank" rel="noreferrer">
+              <ExternalLink className="mr-2 h-4 w-4" />
+              Open
+            </a>
+          </Button>
+          <Button asChild size="sm" variant="ghost">
+            <a href={downloadUrl} download>
+              <Download className="mr-2 h-4 w-4" />
+              Download
+            </a>
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2115,22 +2428,9 @@ function OperationalEmailPanel({
         <section className="rounded-md border border-border bg-card p-2">
           <div className="mb-2 flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold text-foreground">Original Email</h3>
-            <Badge variant="outline">{sanitizedHtml ? "HTML" : "Text"}</Badge>
+            <Badge variant="outline">{threadMessageCount && threadMessageCount > 1 ? "Thread messages" : sanitizedHtml ? "HTML" : "Text"}</Badge>
           </div>
-          {sanitizedHtml ? (
-            <div
-              className="prose prose-sm max-w-none rounded-md border border-border bg-background p-2 text-foreground [&_*]:max-w-full"
-              dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
-            />
-          ) : evidence.bodyText ? (
-            <div className="whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-sm leading-5 text-foreground">
-              {evidence.bodyText}
-            </div>
-          ) : (
-            <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
-              No email body was captured.
-            </div>
-          )}
+          <ThreadMessageBlocks thread={evidence.thread} fallbackHtml={sanitizedHtml} fallbackText={evidence.bodyText} />
         </section>
 
         <section className="rounded-md border border-border bg-card p-2">
@@ -2142,55 +2442,37 @@ function OperationalEmailPanel({
             {files.length === 0 ? (
               <div className="text-sm text-muted-foreground">No attachments linked to this inbound record.</div>
             ) : (
-              attachmentGroups.map((group) => (
-                <div key={group.key} className="space-y-1.5">
-                  <div className="rounded-md bg-muted/40 px-2 py-1 text-xs">
-                    <div className="font-semibold text-foreground">{group.label}</div>
-                    {group.detail && <div className="text-muted-foreground">{group.detail}</div>}
-                  </div>
-                  {group.files.map((file) => {
-                const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
-                  ? `/api/inbound-orders/${encodeURIComponent(record.id)}/files/${encodeURIComponent(file.id)}/download`
-                  : null;
+              attachmentGroups.map((group) => {
+                const visibleFiles = group.files.filter((file) => !isLikelySignatureInlineFile(file));
+                const signatureFiles = group.files.filter(isLikelySignatureInlineFile);
                 return (
-                  <div key={file.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        <span>{file.mimeType || "unknown type"}</span>
-                        <span>{formatFileSize(file.sizeBytes)}</span>
-                        <span>Status: {titleCase(file.status)}</span>
-                        <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
-                          {inboundAttachmentRoleLabel(file.role)}
-                        </Badge>
-                        {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
-                      </div>
-                      {file.reviewNotes && (
-                        <div className="mt-1 text-xs text-muted-foreground">{file.reviewNotes}</div>
-                      )}
-                      <AttachmentSafetyDetails recordId={record.id} file={file} />
+                  <div key={group.key} className="space-y-1.5">
+                    <div className="rounded-md bg-muted/40 px-2 py-1 text-xs">
+                      <div className="font-semibold text-foreground">{group.label}</div>
+                      {group.detail && <div className="text-muted-foreground">{group.detail}</div>}
                     </div>
-                    {downloadUrl && (
-                      <div className="flex shrink-0 gap-2">
-                        <Button asChild size="sm" variant="outline">
-                          <a href={downloadUrl} target="_blank" rel="noreferrer">
-                            <ExternalLink className="mr-2 h-4 w-4" />
-                            Open
-                          </a>
-                        </Button>
-                        <Button asChild size="sm" variant="ghost">
-                          <a href={downloadUrl} download>
-                            <Download className="mr-2 h-4 w-4" />
-                            Download
-                          </a>
-                        </Button>
+                    {visibleFiles.length === 0 && signatureFiles.length > 0 ? (
+                      <div className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">
+                        Only inline signature images were found for this message.
                       </div>
+                    ) : visibleFiles.map((file) => (
+                      <InboundAttachmentCard key={file.id} recordId={record.id} file={file} />
+                    ))}
+                    {signatureFiles.length > 0 && (
+                      <details className="rounded-md border border-border bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
+                        <summary className="cursor-pointer font-medium text-foreground">
+                          Signature/inline images ({signatureFiles.length})
+                        </summary>
+                        <div className="mt-2 space-y-1.5">
+                          {signatureFiles.map((file) => (
+                            <InboundAttachmentCard key={file.id} recordId={record.id} file={file} compact />
+                          ))}
+                        </div>
+                      </details>
                     )}
                   </div>
                 );
-                  })}
-                </div>
-              ))
+              })
             )}
           </div>
         </section>
@@ -3006,6 +3288,8 @@ function DraftBuilderPanel({
             </div>
           </section>
         )}
+
+        <EvidenceUsedSection draft={draft} detail={detail} />
 
         {!isOperationalMode && (
           <>
