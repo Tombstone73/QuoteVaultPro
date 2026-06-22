@@ -239,6 +239,7 @@ const senderTrustLabels: Record<InboundSenderTrustStatus, string> = {
   trusted_domain: "Trusted Domain",
   trusted_contact: "Trusted Contact",
   trusted_customer_domain: "Trusted Customer Domain",
+  ignored: "Ignored",
   untrusted: "Untrusted",
   unknown: "Unknown",
 };
@@ -251,7 +252,7 @@ const attachmentPolicyLabels: Record<InboundAttachmentDownloadPolicy, string> = 
 };
 
 function getSenderTrustBadgeVariant(status: InboundSenderTrustStatus): "default" | "secondary" | "outline" | "destructive" {
-  if (status === "untrusted") return "destructive";
+  if (status === "untrusted" || status === "ignored") return "destructive";
   if (status === "unknown") return "outline";
   return "secondary";
 }
