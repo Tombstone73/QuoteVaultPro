@@ -1,6 +1,7 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
 import {
+  classifyInboundEmailAttachment,
   classifyInboundEmailAttachmentForMessage,
   classifyInboundEmailForReview,
   extractGmailBodyAndAttachments,
@@ -83,6 +84,124 @@ describe("inbound email ingestion classifier", () => {
       role: "other",
       poCandidate: false,
       artworkCandidate: false,
+    });
+  });
+
+  test("classifies PO PDFs by filename", () => {
+    const classification = classifyInboundEmailAttachment({
+      filename: "PO_151661.pdf",
+      mimeType: "application/pdf",
+    });
+
+    expect(classification).toMatchObject({
+      role: "po",
+      poCandidate: true,
+      artworkCandidate: false,
+      safeToDownload: true,
+      classification: expect.objectContaining({
+        classification: "PO",
+      }),
+    });
+  });
+
+  test("classifies PO PDFs by extracted text", () => {
+    const classification = classifyInboundEmailAttachment({
+      filename: "customer-document.pdf",
+      mimeType: "application/pdf",
+      extractedText: "Purchase Order PO # 151661 Bill To Titan Graphics Ship To Main Office",
+    });
+
+    expect(classification).toMatchObject({
+      role: "po",
+      poCandidate: true,
+      classification: expect.objectContaining({
+        classification: "PO",
+        reasons: expect.arrayContaining([
+          expect.stringContaining("PDF text contains purchase-order language"),
+        ]),
+      }),
+    });
+  });
+
+  test("classifies artwork by filename and production extensions", () => {
+    expect(classifyInboundEmailAttachment({
+      filename: "final-banner-art.pdf",
+      mimeType: "application/pdf",
+    })).toMatchObject({
+      role: "artwork",
+      artworkCandidate: true,
+      classification: expect.objectContaining({ classification: "ARTWORK" }),
+    });
+
+    for (const filename of ["logo.ai", "press-file.eps", "decal.svg"]) {
+      expect(classifyInboundEmailAttachment({
+        filename,
+        mimeType: "application/octet-stream",
+      })).toMatchObject({
+        role: "artwork",
+        poCandidate: false,
+        artworkCandidate: true,
+        classification: expect.objectContaining({ classification: "ARTWORK" }),
+      });
+    }
+  });
+
+  test("classifies JPG and PNG artwork unless they are inline signature-sized images", () => {
+    expect(classifyInboundEmailAttachment({
+      filename: "customer-logo.png",
+      mimeType: "image/png",
+      size: 250_000,
+    })).toMatchObject({
+      role: "artwork",
+      artworkCandidate: true,
+      classification: expect.objectContaining({ classification: "ARTWORK" }),
+    });
+
+    expect(classifyInboundEmailAttachmentForMessage({
+      filename: "signature-logo.png",
+      mimeType: "image/png",
+      size: 12_000,
+      contentDisposition: "inline",
+      contentId: "<image001>",
+    } as any, message({ subject: "New order" }))).toMatchObject({
+      role: "other",
+      poCandidate: false,
+      artworkCandidate: false,
+      classification: expect.objectContaining({ classification: "IGNORE_INLINE" }),
+    });
+  });
+
+  test("classifies ambiguous mixed-signal PDFs as reference", () => {
+    const classification = classifyInboundEmailAttachment({
+      filename: "PO-final-banner-art.pdf",
+      mimeType: "application/pdf",
+      extractedText: "Bill To Titan Graphics Ship To Customer",
+    });
+
+    expect(classification).toMatchObject({
+      role: "reference",
+      poCandidate: false,
+      artworkCandidate: false,
+      classification: expect.objectContaining({ classification: "REFERENCE" }),
+    });
+  });
+
+  test("does not assign PO PDFs as artwork or artwork files as PO by default", () => {
+    expect(classifyInboundEmailAttachment({
+      filename: "Purchase Order 151661.pdf",
+      mimeType: "application/pdf",
+    })).toMatchObject({
+      role: "po",
+      artworkCandidate: false,
+    });
+
+    expect(classifyInboundEmailAttachment({
+      filename: "PO-export.ai",
+      mimeType: "application/postscript",
+    })).toMatchObject({
+      role: "artwork",
+      poCandidate: false,
+      classification: expect.objectContaining({ classification: "ARTWORK" }),
     });
   });
 

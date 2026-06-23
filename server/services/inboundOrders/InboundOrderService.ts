@@ -36,6 +36,11 @@ import {
   type ManualInboundOrderCreateRequest,
 } from "@shared/inboundOrdersApi";
 import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
+import {
+  inboundAttachmentClassificationToRole,
+  inboundAttachmentRoleToClassification,
+  type InboundAttachmentClassificationResult,
+} from "@shared/inboundAttachmentClassification";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import {
   detectUnsupportedInboundRequests,
@@ -657,6 +662,52 @@ function attachmentFailureDetailFromFile(file: Record<string, unknown>): Record<
     unsupportedMimeReason,
     status: file.status ?? null,
   });
+}
+
+function attachmentClassificationFromInboundFile(file: InboundOrderFile): InboundAttachmentClassificationResult {
+  const metadata = asRecord(file.metadataJson);
+  const stored = asRecord(metadata?.attachmentClassification);
+  const classificationValue = typeof stored?.classification === "string"
+    ? stored.classification
+    : null;
+  const fallbackClassification = inboundAttachmentRoleToClassification(file.role);
+  const classification = (
+    classificationValue === "PO"
+    || classificationValue === "ARTWORK"
+    || classificationValue === "REFERENCE"
+    || classificationValue === "IGNORE_INLINE"
+    || classificationValue === "OTHER"
+  ) ? classificationValue : fallbackClassification;
+  const breakdown = asRecord(stored?.breakdown);
+  const source = stored?.source === "manual_override" ? "manual_override" : "automatic";
+  const reasons = Array.isArray(stored?.reasons)
+    ? stored.reasons.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 5)
+    : [];
+  return {
+    classification,
+    confidence: typeof stored?.confidence === "number" ? Math.max(0, Math.min(100, Math.round(stored.confidence))) : 50,
+    reasons: reasons.length > 0 ? reasons : [file.reviewNotes ?? "Classification inferred from stored inbound file role."],
+    source,
+    breakdown: {
+      filename: arrayOfStrings((breakdown?.filename)),
+      content: arrayOfStrings((breakdown?.content)),
+      metadata: arrayOfStrings((breakdown?.metadata)),
+      manual: arrayOfStrings((breakdown?.manual)),
+      scores: asNumberRecord(breakdown?.scores),
+    },
+  };
+}
+
+function arrayOfStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function asNumberRecord(value: unknown): Record<string, number> {
+  const record = asRecord(value);
+  if (!record) return {};
+  return Object.fromEntries(
+    Object.entries(record).filter((entry): entry is [string, number] => typeof entry[1] === "number"),
+  );
 }
 
 function buildAttachmentPipelineDiagnostics(
@@ -3236,6 +3287,16 @@ export class InboundOrderService {
 
     for (const file of args.files) {
       const baseLink = this.artworkLinkFromInboundFile(file, "unresolved", null, "Stored inbound attachment awaiting staff assignment.");
+      if (baseLink.classification !== "ARTWORK") {
+        unassignedAttachments.push({
+          ...baseLink,
+          confidence: baseLink.classificationConfidence ?? null,
+          reason: baseLink.classificationReasons.length > 0
+            ? baseLink.classificationReasons.join("; ")
+            : "Attachment is not classified as artwork; staff review is required.",
+        });
+        continue;
+      }
       const scores = reviewedLineItemsJson.map((lineItem, index) => ({
         index,
         score: this.scoreArtworkFileForLineItem(file, args.draft, lineItem, index),
@@ -3271,7 +3332,8 @@ export class InboundOrderService {
     confidence: number | null,
     reason: string | null,
   ): InboundOrderArtworkLink {
-    const role: InboundOrderArtworkLink["role"] = file.role === "artwork" || file.role === "po" ? file.role : "other";
+    const classification = attachmentClassificationFromInboundFile(file);
+    const role = inboundAttachmentClassificationToRole(classification.classification);
     return {
       fileId: file.id,
       fileRecordId: file.fileRecordId ?? null,
@@ -3282,6 +3344,12 @@ export class InboundOrderService {
       source,
       confidence,
       reason,
+      classification: classification.classification,
+      classificationConfidence: classification.confidence,
+      classificationReasons: classification.reasons,
+      classificationSource: classification.source,
+      classificationBreakdown: classification.breakdown,
+      manualOverride: classification.source === "manual_override",
     };
   }
 
@@ -3384,13 +3452,22 @@ export class InboundOrderService {
         .filter((link) => link.source === "staff_selected")
         .map((link) => artworkLinkKey(link)),
     );
+    const manualUnassignedByKey = new Map(existingPayload.reviewedArtworkJson.unassignedAttachments
+      .filter((link) => link.manualOverride || link.classificationSource === "manual_override")
+      .map((link) => [artworkLinkKey(link), link]));
+    const refreshedUnassigned = refreshedPayload.reviewedArtworkJson.unassignedAttachments
+      .filter((link) => !staffSelectedKeys.has(artworkLinkKey(link)))
+      .map((link) => manualUnassignedByKey.get(artworkLinkKey(link)) ?? link);
+    const refreshedUnassignedKeys = new Set(refreshedUnassigned.map((link) => artworkLinkKey(link)));
     return inboundOrderReviewDraftPayloadSchema.parse({
       ...refreshedPayload,
       reviewedLineItemsJson,
       reviewedArtworkJson: {
         ...refreshedPayload.reviewedArtworkJson,
-        unassignedAttachments: refreshedPayload.reviewedArtworkJson.unassignedAttachments
-          .filter((link) => !staffSelectedKeys.has(artworkLinkKey(link))),
+        unassignedAttachments: [
+          ...refreshedUnassigned,
+          ...Array.from(manualUnassignedByKey.values()).filter((link) => !refreshedUnassignedKeys.has(artworkLinkKey(link))),
+        ],
       },
     });
   }

@@ -22,6 +22,7 @@ import {
 } from "./schema";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "./optionTreeV2";
 import type { InboundPbv2OptionSuggestion, InboundPbv2RequiredOption } from "./inboundOrderPbv2Options";
+import { inboundAttachmentClassificationValues } from "./inboundAttachmentClassification";
 
 export const inboundOrderStatusGroupSchema = z.enum([
   "active",
@@ -367,8 +368,10 @@ export const inboundOrderReviewedOrderSchema = z.object({
 export const inboundOrderArtworkLinkSourceValues = ["ai_suggested", "staff_selected", "staff_removed", "unresolved"] as const;
 export const inboundOrderArtworkLinkSourceSchema = z.enum(inboundOrderArtworkLinkSourceValues);
 
-export const inboundOrderArtworkAttachmentRoleValues = ["artwork", "po", "other"] as const;
+export const inboundOrderArtworkAttachmentRoleValues = ["artwork", "po", "reference", "ignore_inline", "other"] as const;
 export const inboundOrderArtworkAttachmentRoleSchema = z.enum(inboundOrderArtworkAttachmentRoleValues);
+export const inboundOrderAttachmentClassificationSchema = z.enum(inboundAttachmentClassificationValues);
+export const inboundOrderAttachmentClassificationSourceSchema = z.enum(["automatic", "manual_override"]);
 
 export const inboundOrderArtworkLinkSchema = z.object({
   fileId: z.string().trim().min(1),
@@ -380,6 +383,18 @@ export const inboundOrderArtworkLinkSchema = z.object({
   source: inboundOrderArtworkLinkSourceSchema.default("ai_suggested"),
   confidence: z.number().min(0).max(100).nullable().default(null),
   reason: z.string().trim().max(1000).nullable().default(null),
+  classification: inboundOrderAttachmentClassificationSchema.optional(),
+  classificationConfidence: z.number().min(0).max(100).nullable().optional(),
+  classificationReasons: z.array(z.string().trim().min(1).max(300)).default([]),
+  classificationSource: inboundOrderAttachmentClassificationSourceSchema.default("automatic"),
+  classificationBreakdown: z.object({
+    filename: z.array(z.string().trim().min(1).max(300)).default([]),
+    content: z.array(z.string().trim().min(1).max(300)).default([]),
+    metadata: z.array(z.string().trim().min(1).max(300)).default([]),
+    manual: z.array(z.string().trim().min(1).max(300)).default([]),
+    scores: z.record(z.number()).default({}),
+  }).optional(),
+  manualOverride: z.boolean().default(false),
 });
 
 export const inboundOrderReviewedLineItemSchema = z.object({

@@ -1615,6 +1615,93 @@ describe("InboundOrdersPage", () => {
     expect(getSavedBody().reviewedOrderJson.intent).toBe("order");
   });
 
+  test("manual attachment classification override persists and wins in review draft", async () => {
+    const attachmentLink = {
+      fileId: "file_1",
+      fileRecordId: "file_record_1",
+      filename: "final-banner-art.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 44_000,
+      role: "artwork",
+      source: "unresolved",
+      confidence: 80,
+      reason: "Stored inbound attachment awaiting staff assignment.",
+      classification: "ARTWORK",
+      classificationConfidence: 91,
+      classificationReasons: ["filename contains artwork or production terms"],
+      classificationSource: "automatic",
+      classificationBreakdown: {
+        filename: ["filename contains artwork or production terms"],
+        content: [],
+        metadata: [],
+        manual: [],
+        scores: { ARTWORK: 91 },
+      },
+      manualOverride: false,
+    };
+    const files = [{
+      id: "file_1",
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      inboundLineItemId: null,
+      fileRecordId: "file_record_1",
+      sourceFilename: "final-banner-art.pdf",
+      role: "artwork",
+      mimeType: "application/pdf",
+      sizeBytes: 44_000,
+      checksum: null,
+      status: "available",
+      providerAttachmentId: "att_1",
+      providerMessageId: "msg_1",
+      contentDisposition: "attachment",
+      metadataJson: {
+        attachmentClassification: {
+          classification: "ARTWORK",
+          confidence: 91,
+          reasons: ["filename contains artwork or production terms"],
+          source: "automatic",
+          breakdown: attachmentLink.classificationBreakdown,
+        },
+      },
+      reviewNotes: null,
+      createdQuoteAttachmentId: null,
+      createdOrderAttachmentId: null,
+      createdAt: "2026-06-09T12:02:00.000Z",
+      updatedAt: "2026-06-09T12:02:00.000Z",
+    }];
+    const parsed = parsedDraft();
+    const review = reviewDraft(parsed, { unassignedAttachments: [attachmentLink] });
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review, detailOverrides: { files } });
+
+    renderPage();
+    await waitForText("Operational Review");
+    await waitForCondition(() => (
+      Array.from(container.querySelectorAll("select")).some((select) => select.getAttribute("aria-label") === "Classify final-banner-art.pdf")
+    ), "attachment classification override control rendered");
+    const overrideSelect = Array.from(container.querySelectorAll("select")).find((select) => (
+      select.getAttribute("aria-label") === "Classify final-banner-art.pdf"
+    )) as HTMLSelectElement;
+
+    act(() => {
+      Simulate.change(overrideSelect, { target: { value: "PO" } } as any);
+    });
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(saveButton);
+    });
+    await waitForCondition(() => Boolean(getSavedBody()), "attachment override saved");
+    const savedLink = getSavedBody().reviewedArtworkJson.unassignedAttachments[0];
+    expect(savedLink).toMatchObject({
+      role: "po",
+      classification: "PO",
+      classificationConfidence: 100,
+      classificationSource: "manual_override",
+      manualOverride: true,
+    });
+    expect(savedLink.classificationReasons).toContain("Staff manually classified as Purchase Order.");
+  });
+
   test("shows disabled state and does not load the queue when inbound email intake is off", async () => {
     apiFetchMock.mockImplementation(async (url: any) => {
       const path = String(url);

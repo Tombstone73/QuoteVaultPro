@@ -66,6 +66,11 @@ import {
   type ManualInboundOrderCreateRequest,
   type ManualInboundOrderCreateResponse,
 } from "@shared/inboundOrdersApi";
+import {
+  inboundAttachmentClassificationToRole,
+  inboundAttachmentRoleToClassification,
+  type InboundAttachmentClassification,
+} from "@shared/inboundAttachmentClassification";
 import type { LineItemOptionSelectionsV2 } from "@shared/optionTreeV2";
 import { getMissingInboundPbv2RequiredOptions } from "@shared/inboundOrderPbv2Options";
 import type {
@@ -897,27 +902,115 @@ function artworkLinkKey(link: Pick<InboundOrderArtworkLink, "fileId" | "fileReco
   return link.fileRecordId ? `record:${link.fileRecordId}` : `file:${link.fileId}`;
 }
 
+function attachmentClassificationLabel(classification: InboundAttachmentClassification | string | null | undefined): string {
+  if (classification === "PO") return "Purchase Order";
+  if (classification === "ARTWORK") return "Artwork";
+  if (classification === "REFERENCE") return "Reference";
+  if (classification === "IGNORE_INLINE") return "Ignored Inline";
+  return "Other";
+}
+
+function attachmentRoleForClassification(classification: InboundAttachmentClassification): InboundOrderArtworkLink["role"] {
+  if (classification === "IGNORE_INLINE") return "ignore_inline";
+  return inboundAttachmentClassificationToRole(classification);
+}
+
+function safeClassificationBreakdown(value: unknown): InboundOrderArtworkLink["classificationBreakdown"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const strings = (items: unknown) => Array.isArray(items) ? items.filter((item): item is string => typeof item === "string") : [];
+  return {
+    filename: strings(record.filename),
+    content: strings(record.content),
+    metadata: strings(record.metadata),
+    manual: strings(record.manual),
+    scores: record.scores && typeof record.scores === "object" && !Array.isArray(record.scores)
+      ? Object.fromEntries(Object.entries(record.scores as Record<string, unknown>).filter((entry): entry is [string, number] => typeof entry[1] === "number"))
+      : {},
+  };
+}
+
+function attachmentClassificationFromMetadata(
+  metadata: Record<string, any>,
+  fallbackRole: string | null | undefined,
+): Pick<
+  InboundOrderArtworkLink,
+  "classification" | "classificationConfidence" | "classificationReasons" | "classificationSource" | "classificationBreakdown" | "manualOverride"
+> {
+  const stored = metadata.attachmentClassification && typeof metadata.attachmentClassification === "object" && !Array.isArray(metadata.attachmentClassification)
+    ? metadata.attachmentClassification as Record<string, any>
+    : null;
+  const storedClassification = stored?.classification;
+  const classification = (
+    storedClassification === "PO"
+    || storedClassification === "ARTWORK"
+    || storedClassification === "REFERENCE"
+    || storedClassification === "IGNORE_INLINE"
+    || storedClassification === "OTHER"
+  ) ? storedClassification : inboundAttachmentRoleToClassification(fallbackRole);
+  return {
+    classification,
+    classificationConfidence: typeof stored?.confidence === "number" ? stored.confidence : null,
+    classificationReasons: Array.isArray(stored?.reasons) ? stored.reasons.filter((item: unknown): item is string => typeof item === "string") : [],
+    classificationSource: stored?.source === "manual_override" ? "manual_override" : "automatic",
+    classificationBreakdown: safeClassificationBreakdown(stored?.breakdown),
+    manualOverride: stored?.source === "manual_override",
+  };
+}
+
 function artworkLinkFromInboundFile(file: ClientInboundOrderFile, source: InboundOrderArtworkLink["source"]): InboundOrderArtworkLink {
+  const metadata = attachmentSafetyMetadata(file);
+  const classification = attachmentClassificationFromMetadata(metadata, file.role);
   return {
     fileId: file.id,
     fileRecordId: file.fileRecordId ?? null,
     filename: file.sourceFilename ?? null,
     mimeType: file.mimeType ?? null,
     sizeBytes: file.sizeBytes ?? null,
-    role: file.role === "artwork" || file.role === "po" ? file.role : "other",
+    role: attachmentRoleForClassification(classification.classification ?? inboundAttachmentRoleToClassification(file.role)),
     source,
     confidence: source === "staff_selected" ? 100 : null,
     reason: source === "staff_selected" ? "Staff selected artwork attachment for this line item." : null,
+    ...classification,
   };
 }
 
 function describeArtworkLink(link: InboundOrderArtworkLink): string {
   const details = [
-    titleCase(link.role),
+    attachmentClassificationLabel(link.classification ?? inboundAttachmentRoleToClassification(link.role)),
     link.mimeType,
     link.sizeBytes != null ? formatFileSize(link.sizeBytes) : null,
   ].filter(Boolean);
   return details.join(" / ") || "Attachment";
+}
+
+function classificationForLink(link: InboundOrderArtworkLink): InboundAttachmentClassification {
+  return link.classification ?? inboundAttachmentRoleToClassification(link.role);
+}
+
+function classificationConfidenceForLink(link: InboundOrderArtworkLink): number | null {
+  if (typeof link.classificationConfidence === "number") return Math.round(link.classificationConfidence);
+  if (typeof link.confidence === "number") return Math.round(link.confidence);
+  return null;
+}
+
+function classificationReasonText(link: InboundOrderArtworkLink): string {
+  const reasons = link.classificationReasons?.filter(Boolean) ?? [];
+  if (reasons.length > 0) return reasons.join(", ");
+  return link.reason ?? "No classification evidence captured.";
+}
+
+function attachmentDebugText(link: InboundOrderArtworkLink): string {
+  const breakdown = link.classificationBreakdown;
+  if (!breakdown) return "No detailed classification breakdown captured.";
+  const parts = [
+    `Filename: ${breakdown.filename.length > 0 ? breakdown.filename.join("; ") : "none"}`,
+    `Content: ${breakdown.content.length > 0 ? breakdown.content.join("; ") : "none"}`,
+    `Metadata: ${breakdown.metadata.length > 0 ? breakdown.metadata.join("; ") : "none"}`,
+    `Manual: ${breakdown.manual.length > 0 ? breakdown.manual.join("; ") : "none"}`,
+    `Scores: ${Object.entries(breakdown.scores ?? {}).map(([key, value]) => `${key} ${value}`).join(", ") || "none"}`,
+  ];
+  return parts.join(" | ");
 }
 
 function evidenceSourceLabel(value: string | null | undefined) {
@@ -932,6 +1025,8 @@ function evidenceSourceLabel(value: string | null | undefined) {
 function inboundAttachmentRoleLabel(role: string | null | undefined) {
   if (role === "po") return "PO candidate";
   if (role === "artwork") return "Artwork candidate";
+  if (role === "reference") return "Reference";
+  if (role === "ignore_inline") return "Ignored inline";
   return "Other attachment";
 }
 
@@ -3092,6 +3187,39 @@ function DraftBuilderPanel({
       ],
     });
   };
+  const overrideAttachmentClassification = (link: InboundOrderArtworkLink, classification: InboundAttachmentClassification) => {
+    const key = artworkLinkKey(link);
+    const nextLink = (candidate: InboundOrderArtworkLink): InboundOrderArtworkLink => (
+      artworkLinkKey(candidate) !== key ? candidate : {
+        ...candidate,
+        role: attachmentRoleForClassification(classification),
+        classification,
+        classificationConfidence: 100,
+        classificationReasons: [`Staff manually classified as ${attachmentClassificationLabel(classification)}.`],
+        classificationSource: "manual_override",
+        classificationBreakdown: {
+          filename: candidate.classificationBreakdown?.filename ?? [],
+          content: candidate.classificationBreakdown?.content ?? [],
+          metadata: candidate.classificationBreakdown?.metadata ?? [],
+          manual: [`Staff manually classified as ${attachmentClassificationLabel(classification)}.`],
+          scores: candidate.classificationBreakdown?.scores ?? {},
+        },
+        manualOverride: true,
+        confidence: 100,
+        reason: `Staff manually classified as ${attachmentClassificationLabel(classification)}.`,
+      }
+    );
+    updateForm({
+      reviewedLineItemsJson: form.reviewedLineItemsJson.map((item) => ({
+        ...item,
+        artworkLinks: item.artworkLinks.map(nextLink),
+      })),
+      reviewedArtworkJson: {
+        ...form.reviewedArtworkJson,
+        unassignedAttachments: form.reviewedArtworkJson.unassignedAttachments.map(nextLink),
+      },
+    });
+  };
   const moveArtworkLink = (fromLineItemIndex: number, toLineItemIndex: number, link: InboundOrderArtworkLink) => {
     const key = artworkLinkKey(link);
     updateForm({
@@ -3201,9 +3329,28 @@ function DraftBuilderPanel({
   ].filter(Boolean) as string[];
   const reviewNotesPreview = form.reviewNotes?.trim() ?? "";
   const inboundFiles = detail?.files ?? [];
-  const artworkFiles = inboundFiles.filter((file) => file.role === "artwork");
-  const poFiles = inboundFiles.filter((file) => file.role === "po");
-  const otherFiles = inboundFiles.filter((file) => file.role !== "artwork" && file.role !== "po");
+  const inboundFileByAttachmentKey = new Map(inboundFiles.map((file) => [artworkLinkKey({ fileId: file.id, fileRecordId: file.fileRecordId ?? null }), file]));
+  const attachmentReviewGroups = [
+    {
+      title: "Artwork",
+      links: allAttachmentLinks.filter((link) => classificationForLink(link) === "ARTWORK"),
+    },
+    {
+      title: "Purchase Orders",
+      links: allAttachmentLinks.filter((link) => classificationForLink(link) === "PO"),
+    },
+    {
+      title: "Reference / Other",
+      links: allAttachmentLinks.filter((link) => {
+        const classification = classificationForLink(link);
+        return classification === "REFERENCE" || classification === "OTHER";
+      }),
+    },
+    {
+      title: "Ignored / Inline Images",
+      links: allAttachmentLinks.filter((link) => classificationForLink(link) === "IGNORE_INLINE"),
+    },
+  ];
 
   return (
     <ScrollArea className="h-full">
@@ -3625,34 +3772,51 @@ function DraftBuilderPanel({
 
             <DocumentMetaCard contentClassName="p-3">
               <OrderEntrySectionTitle title="Attachments" count={inboundFiles.length} />
-              <div className="mt-3 grid gap-3 xl:grid-cols-3">
-                {[
-                  { title: "Artwork", files: artworkFiles },
-                  { title: "PO Documents", files: poFiles },
-                  { title: "Other Attachments", files: otherFiles },
-                ].map((group) => (
+              <div className="mt-3 grid gap-3 xl:grid-cols-4">
+                {attachmentReviewGroups.map((group) => (
                   <div key={group.title} className="rounded-md border border-border/60 bg-background/40 p-2">
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.title}</div>
-                      <Badge variant="outline">{group.files.length}</Badge>
+                      <Badge variant="outline">{group.links.length}</Badge>
                     </div>
                     <div className="space-y-1.5">
-                      {group.files.length === 0 ? (
+                      {group.links.length === 0 ? (
                         <div className="text-xs text-muted-foreground">None</div>
-                      ) : group.files.map((file) => {
-                        const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected" && selectedRecord
+                      ) : group.links.map((link) => {
+                        const key = artworkLinkKey(link);
+                        const file = inboundFileByAttachmentKey.get(key);
+                        const downloadUrl = file?.fileRecordId && file.status !== "quarantined" && file.status !== "rejected" && selectedRecord
                           ? `/api/inbound-orders/${encodeURIComponent(selectedRecord.id)}/files/${encodeURIComponent(file.id)}/download`
                           : null;
+                        const confidence = classificationConfidenceForLink(link);
                         return (
-                          <div key={file.id} className="rounded-md border border-border bg-muted/20 px-2 py-1.5">
-                            <div className="truncate text-xs font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
+                          <div key={key} className="rounded-md border border-border bg-muted/20 px-2 py-1.5">
+                            <div className="truncate text-xs font-medium text-foreground">{link.filename || "Attachment"}</div>
+                            <div className="mt-1 text-[11px] text-muted-foreground">
+                              {attachmentClassificationLabel(classificationForLink(link))}
+                              {confidence != null ? ` · ${confidence}%` : ""}
+                              {link.manualOverride ? " · manual override" : ""}
+                            </div>
+                            <div className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">Reasons: {classificationReasonText(link)}</div>
                             <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                              <span>{formatFileSize(file.sizeBytes)}</span>
-                              <span>{file.mimeType || "unknown"}</span>
+                              <span>{formatFileSize(link.sizeBytes)}</span>
+                              <span>{link.mimeType || "unknown"}</span>
                               {downloadUrl && (
                                 <a className="text-primary underline" href={downloadUrl} target="_blank" rel="noreferrer">Open</a>
                               )}
                             </div>
+                            <select
+                              className="mt-2 h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                              aria-label={`Classify ${link.filename || link.fileId}`}
+                              value={classificationForLink(link)}
+                              onChange={(event) => overrideAttachmentClassification(link, event.target.value as InboundAttachmentClassification)}
+                              disabled={actionPending}
+                            >
+                              <option value="ARTWORK">Artwork</option>
+                              <option value="PO">Purchase Order</option>
+                              <option value="REFERENCE">Reference</option>
+                              <option value="IGNORE_INLINE">Ignore</option>
+                            </select>
                           </div>
                         );
                       })}
@@ -4235,6 +4399,47 @@ function DraftBuilderPanel({
             <label className="mt-3 block space-y-1 text-xs text-muted-foreground">Artwork notes<Textarea value={form.reviewedArtworkJson.notes ?? ""} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, notes: trimToNull(event.target.value) } })} /></label>
           </div>
         </section>
+
+        {!isOperationalMode && (
+          <section className="rounded-md border border-border p-3">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-foreground">Attachment Classification Debug</h3>
+              <Badge variant="outline">{allAttachmentLinks.length}</Badge>
+            </div>
+            <div className="mt-3 space-y-2">
+              {allAttachmentLinks.length === 0 ? (
+                <div className="text-sm text-muted-foreground">No attachments captured.</div>
+              ) : allAttachmentLinks.map((link) => (
+                <div key={artworkLinkKey(link)} className="rounded-md border border-border bg-muted/10 px-3 py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-foreground">{link.filename || link.fileId}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {attachmentClassificationLabel(classificationForLink(link))}
+                        {classificationConfidenceForLink(link) != null ? ` · ${classificationConfidenceForLink(link)}%` : ""}
+                        {link.classificationSource === "manual_override" ? " · manual override" : ""}
+                      </div>
+                    </div>
+                    <select
+                      className="h-8 min-w-[180px] rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                      aria-label={`Classify ${link.filename || link.fileId}`}
+                      value={classificationForLink(link)}
+                      onChange={(event) => overrideAttachmentClassification(link, event.target.value as InboundAttachmentClassification)}
+                      disabled={actionPending}
+                    >
+                      <option value="ARTWORK">Artwork</option>
+                      <option value="PO">Purchase Order</option>
+                      <option value="REFERENCE">Reference</option>
+                      <option value="IGNORE_INLINE">Ignore</option>
+                    </select>
+                  </div>
+                  <div className="mt-2 text-xs text-muted-foreground">Reasons: {classificationReasonText(link)}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">{attachmentDebugText(link)}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         <section className="rounded-md border border-border p-3">
           <div className="flex items-center justify-between gap-2">
