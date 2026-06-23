@@ -838,12 +838,44 @@ export class CustomersRepository {
             .orderBy(desc(customerNotes.createdAt));
     }
 
+    async getCustomerNotesForOrganization(organizationId: string, customerId: string, filters?: {
+        noteType?: string;
+        assignedTo?: string;
+    }): Promise<CustomerNote[] | undefined> {
+        // Notes have no organization_id column; enforce tenancy through the parent customer.
+        const rows = await this.dbInstance
+            .select({ customerId: customers.id, note: customerNotes })
+            .from(customers)
+            .leftJoin(customerNotes, eq(customerNotes.customerId, customers.id))
+            .where(and(eq(customers.organizationId, organizationId), eq(customers.id, customerId)))
+            .orderBy(desc(customerNotes.createdAt));
+        if (rows.length === 0) return undefined;
+        return rows
+            .map((row: { note: CustomerNote | null }) => row.note)
+            .filter((note: CustomerNote | null): note is CustomerNote => Boolean(note));
+    }
+
     async createCustomerNote(noteData: InsertCustomerNote): Promise<CustomerNote> {
         const [note] = await this.dbInstance.insert(customerNotes).values(noteData).returning();
         if (!note) {
             throw new Error("Failed to create customer note");
         }
         return note;
+    }
+
+    async createCustomerNoteForOrganization(
+        organizationId: string,
+        customerId: string,
+        noteData: InsertCustomerNote,
+    ): Promise<CustomerNote | undefined> {
+        const [customer] = await this.dbInstance
+            .select({ id: customers.id })
+            .from(customers)
+            .where(and(eq(customers.organizationId, organizationId), eq(customers.id, customerId)))
+            .limit(1);
+        if (!customer) return undefined;
+
+        return this.createCustomerNote({ ...noteData, customerId });
     }
 
     async updateCustomerNote(id: string, noteData: Partial<InsertCustomerNote>): Promise<CustomerNote> {
@@ -865,8 +897,47 @@ export class CustomersRepository {
         return note;
     }
 
+    async updateCustomerNoteForOrganization(
+        organizationId: string,
+        id: string,
+        noteData: Partial<InsertCustomerNote>,
+    ): Promise<CustomerNote | undefined> {
+        const [existing] = await this.dbInstance
+            .select({ note: customerNotes })
+            .from(customerNotes)
+            .innerJoin(customers, eq(customerNotes.customerId, customers.id))
+            .where(and(eq(customerNotes.id, id), eq(customers.organizationId, organizationId)))
+            .limit(1);
+        if (!existing) return undefined;
+
+        const { customerId: _ignoredCustomerId, ...safeNoteData } = noteData as Partial<InsertCustomerNote>;
+        const [note] = await this.dbInstance
+            .update(customerNotes)
+            .set({
+                ...safeNoteData,
+                updatedAt: new Date(),
+            } as any)
+            .where(eq(customerNotes.id, id))
+            .returning();
+
+        return note;
+    }
+
     async deleteCustomerNote(id: string): Promise<void> {
         await this.dbInstance.delete(customerNotes).where(eq(customerNotes.id, id));
+    }
+
+    async deleteCustomerNoteForOrganization(organizationId: string, id: string): Promise<boolean> {
+        const [existing] = await this.dbInstance
+            .select({ id: customerNotes.id })
+            .from(customerNotes)
+            .innerJoin(customers, eq(customerNotes.customerId, customers.id))
+            .where(and(eq(customerNotes.id, id), eq(customers.organizationId, organizationId)))
+            .limit(1);
+        if (!existing) return false;
+
+        await this.dbInstance.delete(customerNotes).where(eq(customerNotes.id, id));
+        return true;
     }
 
     // Customer credit transactions operations
@@ -878,12 +949,44 @@ export class CustomersRepository {
             .orderBy(desc(customerCreditTransactions.createdAt));
     }
 
+    async getCustomerCreditTransactionsForOrganization(
+        organizationId: string,
+        customerId: string,
+    ): Promise<CustomerCreditTransaction[] | undefined> {
+        // Credit rows have no organization_id column; enforce tenancy through the parent customer.
+        const rows = await this.dbInstance
+            .select({ customerId: customers.id, transaction: customerCreditTransactions })
+            .from(customers)
+            .leftJoin(customerCreditTransactions, eq(customerCreditTransactions.customerId, customers.id))
+            .where(and(eq(customers.organizationId, organizationId), eq(customers.id, customerId)))
+            .orderBy(desc(customerCreditTransactions.createdAt));
+        if (rows.length === 0) return undefined;
+        return rows
+            .map((row: { transaction: CustomerCreditTransaction | null }) => row.transaction)
+            .filter((transaction: CustomerCreditTransaction | null): transaction is CustomerCreditTransaction => Boolean(transaction));
+    }
+
     async createCustomerCreditTransaction(transactionData: InsertCustomerCreditTransaction): Promise<CustomerCreditTransaction> {
         const [transaction] = await this.dbInstance.insert(customerCreditTransactions).values(transactionData).returning();
         if (!transaction) {
             throw new Error("Failed to create customer credit transaction");
         }
         return transaction;
+    }
+
+    async createCustomerCreditTransactionForOrganization(
+        organizationId: string,
+        customerId: string,
+        transactionData: InsertCustomerCreditTransaction,
+    ): Promise<CustomerCreditTransaction | undefined> {
+        const [customer] = await this.dbInstance
+            .select({ id: customers.id })
+            .from(customers)
+            .where(and(eq(customers.organizationId, organizationId), eq(customers.id, customerId)))
+            .limit(1);
+        if (!customer) return undefined;
+
+        return this.createCustomerCreditTransaction({ ...transactionData, customerId });
     }
 
     async updateCustomerCreditTransaction(id: string, transactionData: Partial<InsertCustomerCreditTransaction>): Promise<CustomerCreditTransaction> {
@@ -901,6 +1004,29 @@ export class CustomersRepository {
         if (!transaction) {
             throw new Error("Customer credit transaction not found");
         }
+
+        return transaction;
+    }
+
+    async updateCustomerCreditTransactionForOrganization(
+        organizationId: string,
+        id: string,
+        transactionData: Partial<InsertCustomerCreditTransaction>,
+    ): Promise<CustomerCreditTransaction | undefined> {
+        const [existing] = await this.dbInstance
+            .select({ transaction: customerCreditTransactions })
+            .from(customerCreditTransactions)
+            .innerJoin(customers, eq(customerCreditTransactions.customerId, customers.id))
+            .where(and(eq(customerCreditTransactions.id, id), eq(customers.organizationId, organizationId)))
+            .limit(1);
+        if (!existing) return undefined;
+
+        const { customerId: _ignoredCustomerId, ...safeTransactionData } = transactionData as Partial<InsertCustomerCreditTransaction>;
+        const [transaction] = await this.dbInstance
+            .update(customerCreditTransactions)
+            .set(safeTransactionData)
+            .where(eq(customerCreditTransactions.id, id))
+            .returning();
 
         return transaction;
     }
