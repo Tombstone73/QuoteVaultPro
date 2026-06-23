@@ -18,6 +18,11 @@ import {
 } from "@shared/schema";
 import type { InboundEmailIntent, InboundEmailPullResult } from "@shared/inboundEmailIngestion";
 import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
+import {
+  classifyInboundAttachment,
+  inboundAttachmentClassificationToRole,
+  type InboundAttachmentClassificationResult,
+} from "@shared/inboundAttachmentClassification";
 import { inboundOrdersRepository, type InboundOrdersRepository } from "../storage/inboundOrders.repo";
 import { storageApplicationService, type StorageApplicationService } from "./storage/StorageApplicationService";
 
@@ -835,58 +840,58 @@ export function summarizeGmailPayloadPart(part: any): GmailPayloadPartDiagnostic
   };
 }
 
-export function classifyInboundEmailAttachment(attachment: Pick<InboundEmailAttachmentMetadata, "filename" | "mimeType">): {
-  role: "po" | "artwork" | "other";
+type InboundEmailAttachmentClassification = {
+  role: "po" | "artwork" | "reference" | "other";
   poCandidate: boolean;
   artworkCandidate: boolean;
   safeToDownload: boolean;
   reason: string;
-} {
+  classification: InboundAttachmentClassificationResult;
+};
+
+type InboundEmailAttachmentClassificationInput = Pick<
+  InboundEmailAttachmentMetadata,
+  "filename" | "mimeType"
+> & Partial<Pick<InboundEmailAttachmentMetadata, "size" | "contentDisposition" | "contentId">> & {
+  extractedText?: string | null;
+  sourceHint?: string | null;
+};
+
+export function classifyInboundEmailAttachment(attachment: InboundEmailAttachmentClassificationInput): InboundEmailAttachmentClassification {
   const filename = String(attachment.filename ?? "").toLowerCase();
   const mimeType = String(attachment.mimeType ?? "").toLowerCase();
   const extension = getExtension(filename);
-  const poCandidate = (
-    (mimeType.includes("pdf") || extension === "pdf")
-    && (/\b(?:po|purchase.?order|order)\b/i.test(filename) || /\bpo[-_\s]?\d{3,}\b/i.test(filename))
-  );
-  const artworkCandidate = (
-    ["pdf", "ai", "eps", "svg", "tif", "tiff", "psd", "jpg", "jpeg", "png", "zip"].includes(extension)
-    || /^image\//i.test(mimeType)
-    || mimeType.includes("pdf")
-    || mimeType.includes("zip")
-    || mimeType.includes("postscript")
-    || mimeType.includes("illustrator")
-    || mimeType.includes("svg")
-  );
+  const classification = classifyInboundAttachment({
+    filename: attachment.filename,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.size ?? null,
+    contentDisposition: attachment.contentDisposition ?? null,
+    contentId: attachment.contentId ?? null,
+    extractedText: attachment.extractedText ?? null,
+    sourceHint: attachment.sourceHint ?? null,
+  });
+  const role = inboundAttachmentClassificationToRole(classification.classification);
   const textCandidate = /^text\//i.test(mimeType) || ["txt", "csv"].includes(extension);
-  const safeToDownload = Boolean(poCandidate || artworkCandidate || textCandidate);
+  const safeToDownload = Boolean(classification.classification !== "OTHER" || textCandidate);
+  const label = classification.classification === "PO"
+    ? "Likely purchase order attachment"
+    : classification.classification === "ARTWORK"
+      ? "Likely artwork attachment"
+      : classification.classification === "REFERENCE"
+        ? "Likely reference attachment"
+        : classification.classification === "IGNORE_INLINE"
+          ? "Likely inline signature/logo image"
+          : textCandidate
+            ? "Text attachment supported for evidence"
+            : "Attachment type is not supported for automatic download";
   return {
-    role: poCandidate ? "po" : artworkCandidate ? "artwork" : "other",
-    poCandidate,
-    artworkCandidate,
+    role,
+    poCandidate: classification.classification === "PO",
+    artworkCandidate: classification.classification === "ARTWORK",
     safeToDownload,
-    reason: poCandidate
-      ? "Likely purchase order attachment."
-      : artworkCandidate
-        ? "Likely artwork/reference attachment."
-        : textCandidate
-          ? "Text attachment supported for evidence."
-          : "Attachment type is not supported for automatic download.",
+    reason: `${label}. ${classification.reasons.join("; ")}`,
+    classification,
   };
-}
-
-function isLikelyInlineSignatureImage(attachment: InboundEmailAttachmentMetadata): boolean {
-  const filename = String(attachment.filename ?? "").toLowerCase();
-  const mimeType = String(attachment.mimeType ?? "").toLowerCase();
-  const disposition = String(attachment.contentDisposition ?? "").toLowerCase();
-  const contentId = String(attachment.contentId ?? "").toLowerCase();
-  const size = typeof attachment.size === "number" ? attachment.size : null;
-  const imageType = /^image\/(?:gif|png|jpe?g)$/i.test(mimeType);
-  if (!imageType) return false;
-  const inlineSignal = disposition.includes("inline") || Boolean(contentId);
-  const smallSignal = size != null && size > 0 && size <= 40_000;
-  const filenameSignal = /(?:^|[-_\s])(image\d{2,}|logo|signature|sig|facebook|linkedin|instagram|twitter|x-icon|spacer|pixel)(?:[-_\s.]|$)/i.test(filename);
-  return inlineSignal && (smallSignal || filenameSignal);
 }
 
 export function classifyInboundEmailAttachmentForMessage(
@@ -894,35 +899,8 @@ export function classifyInboundEmailAttachmentForMessage(
   message: Pick<InboundEmailProviderMessage, "subject" | "bodyText" | "bodyHtml">,
 ): ReturnType<typeof classifyInboundEmailAttachment> & { sourceHint: string | null } {
   const sourceHint = detectAttachmentSourceHint(message);
-  const base = classifyInboundEmailAttachment(attachment);
-  if (isLikelyInlineSignatureImage(attachment)) {
-    return {
-      ...base,
-      role: "other",
-      poCandidate: false,
-      artworkCandidate: false,
-      safeToDownload: true,
-      reason: "Likely inline signature/logo image; captured as supporting metadata, not artwork.",
-      sourceHint,
-    };
-  }
-  const filename = String(attachment.filename ?? "").toLowerCase();
-  const mimeType = String(attachment.mimeType ?? "").toLowerCase();
-  const extension = getExtension(filename);
-  const isPdf = mimeType.includes("pdf") || extension === "pdf";
-  const hintReferencesPo = Boolean(sourceHint && /\bpo\b|purchase.?order/i.test(sourceHint));
-  if (!isPdf || !hintReferencesPo || base.poCandidate) {
-    return { ...base, sourceHint };
-  }
-  return {
-    ...base,
-    role: "po",
-    poCandidate: true,
-    artworkCandidate: base.artworkCandidate || Boolean(sourceHint && /\bartwork\b/i.test(sourceHint)),
-    safeToDownload: true,
-    reason: `${base.reason} Email body references ${sourceHint}.`,
-    sourceHint,
-  };
+  const base = classifyInboundEmailAttachment({ ...attachment, sourceHint });
+  return { ...base, sourceHint };
 }
 
 function normalizeText(value: string | null | undefined): string {
@@ -3561,6 +3539,7 @@ export class InboundEmailIngestionService {
         artworkCandidate: classification.artworkCandidate,
         safeToDownload: classification.safeToDownload,
         detectionReason: classification.reason,
+        attachmentClassification: classification.classification,
         senderTrustStatus: trustDecision.trusted ? "trusted" : "untrusted",
         senderTrustSource: trustDecision.trustSource,
         senderTrustRuleId: trustDecision.ruleId,
