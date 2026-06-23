@@ -422,13 +422,16 @@ export function registerCustomerRelationsRoutes(
   // CUSTOMER NOTES
   // ============================================================
 
-  app.get("/api/customers/:customerId/notes", isAuthenticated, async (req, res) => {
+  app.get("/api/customers/:customerId/notes", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
       const filters = {
         noteType: req.query.noteType as string | undefined,
         assignedTo: req.query.assignedTo as string | undefined,
       };
-      const notes = await storage.getCustomerNotes(req.params.customerId, filters);
+      const notes = await storage.getCustomerNotesForOrganization(organizationId, req.params.customerId, filters);
+      if (!notes) return jsonError(res, 404, "Customer not found");
       res.json(notes);
     } catch (error) {
       console.error("Error fetching customer notes:", error);
@@ -436,15 +439,18 @@ export function registerCustomerRelationsRoutes(
     }
   });
 
-  app.post("/api/customers/:customerId/notes", isAuthenticated, async (req: any, res) => {
+  app.post("/api/customers/:customerId/notes", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
       const userId = getUserId(req.user);
       const noteData = insertCustomerNoteSchema.parse({
         ...req.body,
         customerId: req.params.customerId,
-        createdBy: userId,
+        userId,
       });
-      const note = await storage.createCustomerNote(noteData);
+      const note = await storage.createCustomerNoteForOrganization(organizationId, req.params.customerId, noteData);
+      if (!note) return jsonError(res, 404, "Customer not found");
       res.json(note);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -455,10 +461,13 @@ export function registerCustomerRelationsRoutes(
     }
   });
 
-  app.patch("/api/customer-notes/:id", isAuthenticated, async (req, res) => {
+  app.patch("/api/customer-notes/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
       const noteData = updateCustomerNoteSchema.parse(req.body);
-      const note = await storage.updateCustomerNote(req.params.id, noteData);
+      const note = await storage.updateCustomerNoteForOrganization(organizationId, req.params.id, noteData);
+      if (!note) return jsonError(res, 404, "Customer note not found");
       res.json(note);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -469,9 +478,12 @@ export function registerCustomerRelationsRoutes(
     }
   });
 
-  app.delete("/api/customer-notes/:id", isAuthenticated, async (req, res) => {
+  app.delete("/api/customer-notes/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      await storage.deleteCustomerNote(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
+      const deleted = await storage.deleteCustomerNoteForOrganization(organizationId, req.params.id);
+      if (!deleted) return jsonError(res, 404, "Customer note not found");
       res.json({ message: "Customer note deleted successfully" });
     } catch (error) {
       console.error("Error deleting customer note:", error);
@@ -483,9 +495,12 @@ export function registerCustomerRelationsRoutes(
   // CUSTOMER CREDIT TRANSACTIONS
   // ============================================================
 
-  app.get("/api/customers/:customerId/credit-transactions", isAuthenticated, async (req, res) => {
+  app.get("/api/customers/:customerId/credit-transactions", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const transactions = await storage.getCustomerCreditTransactions(req.params.customerId);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
+      const transactions = await storage.getCustomerCreditTransactionsForOrganization(organizationId, req.params.customerId);
+      if (!transactions) return jsonError(res, 404, "Customer not found");
       res.json(transactions);
     } catch (error) {
       console.error("Error fetching customer credit transactions:", error);
@@ -493,15 +508,22 @@ export function registerCustomerRelationsRoutes(
     }
   });
 
-  app.post("/api/customers/:customerId/credit-transactions", isAuthenticated, async (req: any, res) => {
+  app.post("/api/customers/:customerId/credit-transactions", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
       const userId = getUserId(req.user);
       const transactionData = insertCustomerCreditTransactionSchema.parse({
         ...req.body,
         customerId: req.params.customerId,
-        createdBy: userId,
+        userId,
       });
-      const transaction = await storage.createCustomerCreditTransaction(transactionData);
+      const transaction = await storage.createCustomerCreditTransactionForOrganization(
+        organizationId,
+        req.params.customerId,
+        transactionData,
+      );
+      if (!transaction) return jsonError(res, 404, "Customer not found");
       res.json(transaction);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -512,10 +534,17 @@ export function registerCustomerRelationsRoutes(
     }
   });
 
-  app.patch("/api/customer-credit-transactions/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.patch("/api/customer-credit-transactions/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return jsonError(res, 500, "Missing organization context");
       const transactionData = updateCustomerCreditTransactionSchema.parse(req.body);
-      const transaction = await storage.updateCustomerCreditTransaction(req.params.id, transactionData);
+      const transaction = await storage.updateCustomerCreditTransactionForOrganization(
+        organizationId,
+        req.params.id,
+        transactionData,
+      );
+      if (!transaction) return jsonError(res, 404, "Customer credit transaction not found");
       res.json(transaction);
     } catch (error) {
       if (error instanceof z.ZodError) {

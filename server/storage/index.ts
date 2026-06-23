@@ -225,13 +225,20 @@ export const unlinkCustomerContactForOrganization = customersRepo.unlinkCustomer
 export const setCustomerContactLinkStatusForOrganization = customersRepo.setCustomerContactLinkStatusForOrganization.bind(customersRepo);
 
 export const getCustomerNotes = customersRepo.getCustomerNotes.bind(customersRepo);
+export const getCustomerNotesForOrganization = customersRepo.getCustomerNotesForOrganization.bind(customersRepo);
 export const createCustomerNote = customersRepo.createCustomerNote.bind(customersRepo);
+export const createCustomerNoteForOrganization = customersRepo.createCustomerNoteForOrganization.bind(customersRepo);
 export const updateCustomerNote = customersRepo.updateCustomerNote.bind(customersRepo);
+export const updateCustomerNoteForOrganization = customersRepo.updateCustomerNoteForOrganization.bind(customersRepo);
 export const deleteCustomerNote = customersRepo.deleteCustomerNote.bind(customersRepo);
+export const deleteCustomerNoteForOrganization = customersRepo.deleteCustomerNoteForOrganization.bind(customersRepo);
 
 export const getCustomerCreditTransactions = customersRepo.getCustomerCreditTransactions.bind(customersRepo);
+export const getCustomerCreditTransactionsForOrganization = customersRepo.getCustomerCreditTransactionsForOrganization.bind(customersRepo);
 export const createCustomerCreditTransaction = customersRepo.createCustomerCreditTransaction.bind(customersRepo);
+export const createCustomerCreditTransactionForOrganization = customersRepo.createCustomerCreditTransactionForOrganization.bind(customersRepo);
 export const updateCustomerCreditTransaction = customersRepo.updateCustomerCreditTransaction.bind(customersRepo);
+export const updateCustomerCreditTransactionForOrganization = customersRepo.updateCustomerCreditTransactionForOrganization.bind(customersRepo);
 export const updateCustomerBalance = customersRepo.updateCustomerBalance.bind(customersRepo);
 
 // Contacts (required by routes)
@@ -455,12 +462,19 @@ export const storage = {
     unlinkCustomerContactForOrganization,
     setCustomerContactLinkStatusForOrganization,
     getCustomerNotes,
+    getCustomerNotesForOrganization,
     createCustomerNote,
+    createCustomerNoteForOrganization,
     updateCustomerNote,
+    updateCustomerNoteForOrganization,
     deleteCustomerNote,
+    deleteCustomerNoteForOrganization,
     getCustomerCreditTransactions,
+    getCustomerCreditTransactionsForOrganization,
     createCustomerCreditTransaction,
+    createCustomerCreditTransactionForOrganization,
     updateCustomerCreditTransaction,
+    updateCustomerCreditTransactionForOrganization,
     updateCustomerBalance,
     getAllContacts,
     getContactWithRelations,
