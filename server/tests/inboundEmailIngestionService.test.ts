@@ -372,6 +372,119 @@ describe("inbound email ingestion classifier", () => {
     }), trustContext)).toMatchObject({ ignored: false, intent: "QUOTE_REQUEST" });
   });
 
+  test("classifies explicit New Order feather flag email as order request", () => {
+    const result = classifyInboundEmailForReview(message({
+      subject: "New Order - Feather Flags",
+      bodyText: "Can you send us an invoice for 2 Feather Flags that are 14' Double Sided with Ground spike base. Attached are the files.",
+      attachments: [{ filename: "feather-flag-art.pdf", mimeType: "application/pdf", size: 120_000 }],
+    }));
+
+    expect(result).toMatchObject({
+      ignored: false,
+      intent: "ORDER_REQUEST",
+      reasons: expect.arrayContaining([
+        "subject contains \"New Order\"",
+        "body asks to send an invoice for a product",
+        "quantity detected",
+        "product phrase detected",
+        "specs detected",
+        "attachments present",
+      ]),
+    });
+  });
+
+  test("classifies explicit New Order banner email with quantity and specs as order request", () => {
+    const result = classifyInboundEmailForReview(message({
+      subject: "New Order - Banners",
+      bodyText: "Please print 3 vinyl banners 24x36 double sided with grommets. Attached are the files.",
+      attachments: [{ filename: "banner-art.pdf", mimeType: "application/pdf", size: 90_000 }],
+    }));
+
+    expect(result).toMatchObject({
+      ignored: false,
+      intent: "ORDER_REQUEST",
+      reasons: expect.arrayContaining([
+        "subject contains \"New Order\"",
+        "quantity detected",
+        "specs detected",
+      ]),
+    });
+  });
+
+  test("classifies reorder subject as order request using existing intent enum", () => {
+    const result = classifyInboundEmailForReview(message({
+      subject: "Reorder - Yard Signs",
+      bodyText: "Same as last time, 25 yard signs 18x24 with stakes.",
+    }));
+
+    expect(result).toMatchObject({
+      ignored: false,
+      intent: "ORDER_REQUEST",
+      reasons: expect.arrayContaining(["subject contains reorder"]),
+    });
+  });
+
+  test("keeps order status and support subjects as customer communication", () => {
+    expect(classifyInboundEmailForReview(message({
+      subject: "Order Status",
+      bodyText: "Can you send a status update?",
+    }))).toMatchObject({
+      ignored: false,
+      intent: "CUSTOMER_COMMUNICATION",
+      reasons: expect.arrayContaining(["status request detected"]),
+    });
+
+    expect(classifyInboundEmailForReview(message({
+      subject: "Where is my order?",
+      bodyText: "Has this shipped yet?",
+    }))).toMatchObject({
+      ignored: false,
+      intent: "CUSTOMER_COMMUNICATION",
+      reasons: expect.arrayContaining(["order status request detected"]),
+    });
+
+    expect(classifyInboundEmailForReview(message({
+      subject: "Cancel order",
+      bodyText: "Please cancel this order.",
+    }))).toMatchObject({
+      ignored: false,
+      intent: "CUSTOMER_COMMUNICATION",
+      reasons: expect.arrayContaining(["cancellation request detected"]),
+    });
+  });
+
+  test("keeps invoice resend email as customer communication", () => {
+    const result = classifyInboundEmailForReview(message({
+      subject: "Invoice #12345",
+      bodyText: "Can you resend the invoice for our records?",
+    }));
+
+    expect(result).toMatchObject({
+      ignored: false,
+      intent: "CUSTOMER_COMMUNICATION",
+      reasons: expect.arrayContaining(["invoice resend request detected"]),
+    });
+  });
+
+  test("treats invoice-for-product language as order intent", () => {
+    const result = classifyInboundEmailForReview(message({
+      subject: "Feather Flags",
+      bodyText: "Can you send us an invoice for 2 Feather Flags that are 14' Double Sided with Ground spike base. Attached are the files.",
+    }));
+
+    expect(result).toMatchObject({
+      ignored: false,
+      intent: "ORDER_REQUEST",
+      reasons: expect.arrayContaining([
+        "body asks to send an invoice for a product",
+        "quantity detected",
+        "product phrase detected",
+        "specs detected",
+        "attachments present",
+      ]),
+    });
+  });
+
   test("known customer marketing edge case still requires strong spam evidence", () => {
     const result = classifyInboundEmailForReview(message({
       senderEmail: "shawn@brainstormprint.com",
