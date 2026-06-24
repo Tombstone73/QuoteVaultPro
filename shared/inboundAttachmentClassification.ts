@@ -34,11 +34,36 @@ export type InboundAttachmentClassificationInput = {
   contentId?: string | null;
   extractedText?: string | null;
   sourceHint?: string | null;
+  subject?: string | null;
+  bodyText?: string | null;
+  bodyHtml?: string | null;
+  customerAttachmentCount?: number | null;
 };
 
 const artworkExtensions = new Set(["ai", "eps", "svg", "jpg", "jpeg", "png", "tif", "tiff", "psd"]);
 const strongArtworkExtensions = new Set(["ai", "eps", "svg"]);
 const imageExtensions = new Set(["jpg", "jpeg", "png", "tif", "tiff", "psd"]);
+const jobProductTermPatterns = [
+  /\b(?:art|artwork|final|print|press|production)\b/i,
+  /\b(?:banner|banners|sign|signs|decal|decals|sticker|stickers|logo|logos)\b/i,
+  /\b(?:wrap|wraps|vinyl|psv|premask|pre[-_\s]?mask)\b/i,
+  /\bsenior\s+decals?\b/i,
+];
+const strongPoFilenamePatterns = [
+  /(^|[-_\s.])(?:po|p\.o\.)(?:[-_\s.#]|\d|$)/i,
+  /\b(?:purchase[-_\s]?order|order[-_\s]?form|invoice|estimate)\b/i,
+];
+const strongPoTextPatterns = [
+  /\bpurchase\s+order\b/i,
+  /\bpo\s*#/i,
+  /\bp\.o\./i,
+  /\bbill\s+to\b/i,
+  /\bship\s+to\b/i,
+  /\bvendor\b/i,
+  /\binvoice\b/i,
+  /\bestimate\b/i,
+  /\border\s+form\b/i,
+];
 
 function normalize(value: string | null | undefined): string {
   return String(value ?? "").trim().toLowerCase();
@@ -57,6 +82,21 @@ function includesAny(text: string, patterns: RegExp[], target: string[], reason:
   if (!patterns.some((pattern) => pattern.test(text))) return 0;
   pushReason(target, reason);
   return score;
+}
+
+function hasAny(text: string, patterns: RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function usefulBodyText(text: string, html: string): string {
+  const strippedHtml = html
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ");
+  return `${text} ${strippedHtml}`
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function baseBreakdown(): InboundAttachmentClassificationBreakdown {
@@ -82,12 +122,22 @@ export function classifyInboundAttachment(input: InboundAttachmentClassification
   const contentId = normalize(input.contentId);
   const extractedText = normalize(input.extractedText);
   const sourceHint = normalize(input.sourceHint);
+  const subject = normalize(input.subject);
+  const bodyText = normalize(input.bodyText);
+  const bodyHtml = normalize(input.bodyHtml);
   const extension = extensionFromFilename(filename);
   const sizeBytes = typeof input.sizeBytes === "number" ? input.sizeBytes : null;
   const isPdf = extension === "pdf" || mimeType.includes("pdf");
   const isImage = artworkExtensions.has(extension) || /^image\//i.test(mimeType);
   const isInline = contentDisposition.includes("inline") || Boolean(contentId);
   const smallImage = isImage && sizeBytes != null && sizeBytes > 0 && sizeBytes <= 40_000;
+  const isDesignOrImageAttachment = isPdf || isImage;
+  const attachmentCount = typeof input.customerAttachmentCount === "number" ? input.customerAttachmentCount : null;
+  const body = usefulBodyText(bodyText, bodyHtml);
+  const bodyHasUsefulText = body.length >= 20;
+  const subjectHasJobTerms = hasAny(subject, jobProductTermPatterns);
+  const filenameHasJobTerms = hasAny(filename, jobProductTermPatterns);
+  const hasStrongPoEvidence = hasAny(filename, strongPoFilenamePatterns) || hasAny(extractedText, strongPoTextPatterns);
   const breakdown = baseBreakdown();
   const scores = breakdown.scores;
 
@@ -118,10 +168,17 @@ export function classifyInboundAttachment(input: InboundAttachmentClassification
 
   scores.ARTWORK += includesAny(
     filename,
-    [/\b(?:art|artwork|final|print|press|production|banner|sign|decal|sticker|logo)\b/i],
+    jobProductTermPatterns,
     breakdown.filename,
     "filename contains artwork or production terms",
     isPdf ? 62 : 30,
+  );
+  scores.ARTWORK += includesAny(
+    subject,
+    jobProductTermPatterns,
+    breakdown.content,
+    "subject contains product or job terms",
+    24,
   );
 
   scores.REFERENCE += includesAny(
@@ -135,10 +192,7 @@ export function classifyInboundAttachment(input: InboundAttachmentClassification
   if (!strongArtworkExtensions.has(extension) && !imageExtensions.has(extension)) {
     scores.PO += includesAny(
       filename,
-      [
-        /(^|[-_\s.])(?:po|p\.o\.)(?:[-_\s.#]|\d|$)/i,
-        /\b(?:purchase[-_\s]?order|order[-_\s]?form|invoice|estimate)\b/i,
-      ],
+      strongPoFilenamePatterns,
       breakdown.filename,
       "filename contains purchase-order or business document terms",
       58,
@@ -178,12 +232,38 @@ export function classifyInboundAttachment(input: InboundAttachmentClassification
     scores.PO += 18;
     pushReason(breakdown.content, "email body references PO or purchase order");
   }
+  if (
+    !bodyHasUsefulText
+    && attachmentCount === 1
+    && isDesignOrImageAttachment
+    && subjectHasJobTerms
+    && filenameHasJobTerms
+    && !hasStrongPoEvidence
+  ) {
+    scores.ARTWORK += 72;
+    pushReason(breakdown.metadata, "single customer attachment with empty body");
+    pushReason(breakdown.content, "subject and filename contain product or job terms");
+    pushReason(breakdown.content, "no strong PO indicators were found");
+  }
+  if (
+    !bodyHasUsefulText
+    && attachmentCount === 1
+    && isDesignOrImageAttachment
+    && !hasStrongPoEvidence
+    && scores.ARTWORK < 55
+  ) {
+    scores.REFERENCE += 62;
+    pushReason(breakdown.metadata, "single customer attachment with empty body needs staff review as reference");
+  }
 
   if (isInline && scores.IGNORE_INLINE >= 50) {
     return finalizeClassification("IGNORE_INLINE", scores.IGNORE_INLINE, "automatic", breakdown);
   }
   if (strongArtworkExtensions.has(extension) || imageExtensions.has(extension) || /^image\//i.test(mimeType)) {
     return finalizeClassification("ARTWORK", scores.ARTWORK, "automatic", breakdown);
+  }
+  if (hasStrongPoEvidence && scores.PO >= 60) {
+    return finalizeClassification("PO", scores.PO, "automatic", breakdown);
   }
   if (isPdf && scores.PO > 0 && scores.ARTWORK > 0) {
     return finalizeClassification("REFERENCE", Math.max(scores.REFERENCE, 64), "automatic", breakdown);

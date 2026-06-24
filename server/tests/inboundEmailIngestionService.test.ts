@@ -171,11 +171,11 @@ describe("inbound email ingestion classifier", () => {
     });
   });
 
-  test("classifies ambiguous mixed-signal PDFs as reference", () => {
+  test("classifies weak mixed-signal PDFs as reference", () => {
     const classification = classifyInboundEmailAttachment({
-      filename: "PO-final-banner-art.pdf",
+      filename: "final-banner-art.pdf",
       mimeType: "application/pdf",
-      extractedText: "Bill To Titan Graphics Ship To Customer",
+      sourceHint: "Email body references PO near artwork.",
     });
 
     expect(classification).toMatchObject({
@@ -202,6 +202,96 @@ describe("inbound email ingestion classifier", () => {
       role: "artwork",
       poCandidate: false,
       classification: expect.objectContaining({ classification: "ARTWORK" }),
+    });
+  });
+
+  test("classifies empty-body single PDF decal/job emails as artwork", () => {
+    const attachment = {
+      filename: "2027 football senior decals.pdf",
+      mimeType: "application/pdf",
+      size: 540_000,
+    };
+    const classification = classifyInboundEmailAttachmentForMessage(attachment, message({
+      subject: "PSV Decals with premask",
+      bodyText: null,
+      bodyHtml: null,
+      attachments: [attachment],
+    }));
+
+    expect(classification).toMatchObject({
+      role: "artwork",
+      poCandidate: false,
+      artworkCandidate: true,
+      classification: expect.objectContaining({
+        classification: "ARTWORK",
+        reasons: expect.arrayContaining([
+          "subject contains product or job terms",
+          "filename contains artwork or production terms",
+          "single customer attachment with empty body",
+        ]),
+      }),
+    });
+  });
+
+  test("keeps empty-body single PDF PO filenames classified as PO", () => {
+    const attachment = {
+      filename: "PO_12345.pdf",
+      mimeType: "application/pdf",
+      size: 120_000,
+    };
+    const classification = classifyInboundEmailAttachmentForMessage(attachment, message({
+      subject: "PSV Decals with premask",
+      bodyText: "",
+      bodyHtml: "",
+      attachments: [attachment],
+    }));
+
+    expect(classification).toMatchObject({
+      role: "po",
+      poCandidate: true,
+      artworkCandidate: false,
+      classification: expect.objectContaining({ classification: "PO" }),
+    });
+  });
+
+  test("keeps empty-body single PDF purchase-order text classified as PO", () => {
+    const classification = classifyInboundEmailAttachment({
+      filename: "2027 football senior decals.pdf",
+      mimeType: "application/pdf",
+      size: 120_000,
+      subject: "PSV Decals with premask",
+      bodyText: "",
+      bodyHtml: "",
+      customerAttachmentCount: 1,
+      extractedText: "Purchase Order PO # 12345 Bill To Graphic Solutions Ship To Titan Graphics",
+    });
+
+    expect(classification).toMatchObject({
+      role: "po",
+      poCandidate: true,
+      artworkCandidate: false,
+      classification: expect.objectContaining({ classification: "PO" }),
+    });
+  });
+
+  test("classifies empty-body single ambiguous PDFs as reference", () => {
+    const attachment = {
+      filename: "customer-details.pdf",
+      mimeType: "application/pdf",
+      size: 84_000,
+    };
+    const classification = classifyInboundEmailAttachmentForMessage(attachment, message({
+      subject: "Files attached",
+      bodyText: "",
+      bodyHtml: "",
+      attachments: [attachment],
+    }));
+
+    expect(classification).toMatchObject({
+      role: "reference",
+      poCandidate: false,
+      artworkCandidate: false,
+      classification: expect.objectContaining({ classification: "REFERENCE" }),
     });
   });
 

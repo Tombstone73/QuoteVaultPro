@@ -855,6 +855,10 @@ type InboundEmailAttachmentClassificationInput = Pick<
 > & Partial<Pick<InboundEmailAttachmentMetadata, "size" | "contentDisposition" | "contentId">> & {
   extractedText?: string | null;
   sourceHint?: string | null;
+  subject?: string | null;
+  bodyText?: string | null;
+  bodyHtml?: string | null;
+  customerAttachmentCount?: number | null;
 };
 
 export function classifyInboundEmailAttachment(attachment: InboundEmailAttachmentClassificationInput): InboundEmailAttachmentClassification {
@@ -869,6 +873,10 @@ export function classifyInboundEmailAttachment(attachment: InboundEmailAttachmen
     contentId: attachment.contentId ?? null,
     extractedText: attachment.extractedText ?? null,
     sourceHint: attachment.sourceHint ?? null,
+    subject: attachment.subject ?? null,
+    bodyText: attachment.bodyText ?? null,
+    bodyHtml: attachment.bodyHtml ?? null,
+    customerAttachmentCount: attachment.customerAttachmentCount ?? null,
   });
   const role = inboundAttachmentClassificationToRole(classification.classification);
   const textCandidate = /^text\//i.test(mimeType) || ["txt", "csv"].includes(extension);
@@ -896,10 +904,17 @@ export function classifyInboundEmailAttachment(attachment: InboundEmailAttachmen
 
 export function classifyInboundEmailAttachmentForMessage(
   attachment: InboundEmailAttachmentMetadata,
-  message: Pick<InboundEmailProviderMessage, "subject" | "bodyText" | "bodyHtml">,
+  message: Pick<InboundEmailProviderMessage, "subject" | "bodyText" | "bodyHtml" | "attachments">,
 ): ReturnType<typeof classifyInboundEmailAttachment> & { sourceHint: string | null } {
   const sourceHint = detectAttachmentSourceHint(message);
-  const base = classifyInboundEmailAttachment({ ...attachment, sourceHint });
+  const base = classifyInboundEmailAttachment({
+    ...attachment,
+    sourceHint,
+    subject: message.subject,
+    bodyText: message.bodyText,
+    bodyHtml: message.bodyHtml,
+    customerAttachmentCount: Math.max(1, message.attachments.length),
+  });
   return { ...base, sourceHint };
 }
 
