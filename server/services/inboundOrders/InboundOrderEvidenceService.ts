@@ -4,6 +4,7 @@ import type { InboundOrderFile, InboundOrderRecord } from "@shared/schema";
 import { inflateSync } from "zlib";
 import {
   getManualInboundEvidence,
+  type InboundOrderEvidenceReconciliation,
   type InboundOrderEvidenceItem,
   type InboundOrderParseWarning,
 } from "@shared/inboundOrdersApi";
@@ -16,6 +17,7 @@ import { inferInboundRequestedDate } from "./inboundOrderDateInference";
 export type InboundOrderEvidenceBundle = {
   items: InboundOrderEvidenceItem[];
   conflicts: InboundOrderParseWarning[];
+  reconciliation?: InboundOrderEvidenceReconciliation;
 };
 
 export type ManualAttachmentClassificationEvidence = {
@@ -30,6 +32,13 @@ type PurchaseOrderSummary = NonNullable<InboundOrderEvidenceItem["poSummary"]>;
 type FieldSource = PurchaseOrderSummary["fieldSources"][string];
 type DateCandidate = PurchaseOrderSummary["dateCandidates"][number];
 type DateClassification = DateCandidate["classification"];
+type ReconciliationField = InboundOrderEvidenceReconciliation[keyof InboundOrderEvidenceReconciliation];
+type ReconciliationSource = ReconciliationField["sources"][number];
+type ReconciliationSignal = {
+  value: string | number | boolean;
+  source: ReconciliationSource;
+  confidence: number;
+};
 
 const MAX_ATTACHMENT_TEXT_CHARS = 50000;
 const DATE_CLASSIFICATION_PRIORITY: DateClassification[] = [
@@ -112,6 +121,10 @@ function prioritizeEvidenceItems(items: InboundOrderEvidenceItem[]): InboundOrde
     .map((item, index) => ({ item, index }))
     .sort((a, b) => evidenceItemPriority(a.item) - evidenceItemPriority(b.item) || a.index - b.index)
     .map(({ item }) => item);
+}
+
+function emptyReconciliationField(): ReconciliationField {
+  return { value: null, status: "missing", sources: [], conflicts: [] };
 }
 
 function normalizeWhitespace(value: string): string {
@@ -368,14 +381,14 @@ export function extractPurchaseOrderFields(args: {
     /\b(coroplast)\b/i,
   ]);
   const productFromQuantity = quantity
-    ? { match: quantity.sourceText.match(/^\s*\d+(?:,\d{3})*\s+(.{3,120})$/i), sourceText: quantity.sourceText }
+    ? { match: /\beach\s+of\b/i.test(quantity.sourceText) ? null : quantity.sourceText.match(/^\s*\d+(?:,\d{3})*\s+(.{3,120})$/i), sourceText: quantity.sourceText }
     : null;
   const productDescription = productFromQuantity?.match?.[1]
     ? { value: productFromQuantity.match[1].trim(), sourceText: productFromQuantity.sourceText }
     : firstMatchWithSource(text, [
-    /^\s*\d+(?:,\d{3})*\s+(.{3,120}?(?:signs?|banners?|posters?|decals?|stickers?|prints?))\b/im,
     /\bitem\s+description\s*[:#]?\s*(.{3,120})/i,
     /\bproduct\s*[:#]?\s*(.{3,120})/i,
+    /^\s*\d+(?:,\d{3})*\s+(?!each\s+of\b)(.{3,120}?(?:signs?|banners?|posters?|decals?|stickers?|prints?))\b/im,
   ]);
   const customer = firstMatchWithSource(text, [
     /\bcustomer\s+name\s*[:#]?\s*(.{3,120}?)(?=\s+(?:contact|attn|attention|purchase\s+order|po|arrival\s+due|qty|item\s+description)\b|$)/i,
@@ -514,6 +527,231 @@ export function detectEvidenceConflicts(items: InboundOrderEvidenceItem[]): Inbo
   return conflicts;
 }
 
+function sourceForItem(item: InboundOrderEvidenceItem, sourceText: string | null | undefined, confidence?: number): ReconciliationSource {
+  return {
+    sourceType: item.type,
+    label: item.label,
+    sourceDocument: item.fileName ?? item.poSummary?.pricing?.sourceDocument ?? null,
+    sourceText: sourceText ? normalizeWhitespace(sourceText).slice(0, 1000) : null,
+    confidence: confidence ?? item.documentConfidence ?? 0,
+  };
+}
+
+function addSignal(signals: ReconciliationSignal[], value: string | number | boolean | null | undefined, source: ReconciliationSource | null, confidence: number): void {
+  if (value == null || value === "" || !source) return;
+  signals.push({ value, source, confidence });
+}
+
+function normalizedSignalValue(value: string | number | boolean): string {
+  return typeof value === "string" ? normalizeWhitespace(value).toLowerCase() : String(value);
+}
+
+function buildReconciliationField(
+  fieldPath: string,
+  signals: ReconciliationSignal[],
+  conflictMessage: (left: string | number | boolean, right: string | number | boolean) => string,
+): ReconciliationField {
+  if (signals.length === 0) return emptyReconciliationField();
+  const ranked = signals.slice().sort((left, right) => right.confidence - left.confidence);
+  const best = ranked[0];
+  const distinctValues = Array.from(new Map(ranked.map((signal) => [normalizedSignalValue(signal.value), signal.value])).values());
+  const conflicts = distinctValues.length > 1
+    ? [warning(`evidence_reconciliation_${fieldPath.replace(/\W+/g, "_")}_conflict`, conflictMessage(distinctValues[0], distinctValues[1]), "warning", fieldPath)]
+    : [];
+  return {
+    value: best.value,
+    status: conflicts.length > 0 ? "conflict" : best.confidence >= 90 ? "confirmed" : "candidate",
+    sources: ranked.map((signal) => signal.source),
+    conflicts,
+  };
+}
+
+function extractQuantitySignalsFromText(item: InboundOrderEvidenceItem): ReconciliationSignal[] {
+  const text = item.rawText ? normalizeWhitespace(item.rawText) : "";
+  if (!text) return [];
+  const signals: ReconciliationSignal[] = [];
+  const patterns = [
+    /\btotal\s+qty\.?\s*[:#]?\s*(\d+(?:,\d{3})*)\b/gi,
+    /\btotal\s+quantity\s*[:#]?\s*(\d+(?:,\d{3})*)\b/gi,
+    /\b(\d+(?:,\d{3})*)\s+versions?\b/gi,
+    /\b1\s+each\s+of\s+(\d+(?:,\d{3})*)\b/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of Array.from(text.matchAll(pattern))) {
+      const value = numberValue(match[1] ?? null);
+      if (value) addSignal(signals, value, sourceForItem(item, match[0] ?? null, item.type === "PDF_ATTACHMENT" ? 96 : 82), item.type === "PDF_ATTACHMENT" ? 96 : 82);
+    }
+  }
+  const generic = extractQuantityWithSource(text);
+  if (generic) addSignal(signals, generic.value, sourceForItem(item, generic.sourceText, item.type === "PDF_ATTACHMENT" ? 90 : 76), item.type === "PDF_ATTACHMENT" ? 90 : 76);
+  return signals;
+}
+
+function extractRushSignal(item: InboundOrderEvidenceItem): ReconciliationSignal | null {
+  const text = item.rawText ? normalizeWhitespace(item.rawText) : "";
+  if (!text) return null;
+  const match = text.match(/(?:^|[\n.?!;])\s*([^.\n?!;]*(?:\brush\b|rush\s+for\s+pickup|urgent|expedite|must\s+eod|pickup\s+monday\s+morning)[^.\n?!;]*)/i);
+  if (!match?.[1]) return null;
+  return {
+    value: "rush",
+    source: sourceForItem(item, match[1], item.type === "THREAD_MESSAGE" ? 90 : 84),
+    confidence: item.type === "THREAD_MESSAGE" ? 90 : 84,
+  };
+}
+
+function extractArtworkSignal(item: InboundOrderEvidenceItem): ReconciliationSignal | null {
+  const text = item.rawText ? normalizeWhitespace(item.rawText) : "";
+  const urlMatch = text.match(/\bhttps?:\/\/[^\s<>"')]+/i);
+  const hasArtworkWords = /\b(artwork|art|proof|files?|download|drive\.google|dropbox|wetransfer|sharepoint|box\.com|attached\s+are\s+the\s+files)\b/i.test(text);
+  if (item.documentType === "artwork_reference" || item.finalClassification === "ARTWORK") {
+    return {
+      value: "supplied",
+      source: sourceForItem(item, item.classificationInfluence ?? item.fileName ?? item.label, item.manualClassificationUsed ? 100 : item.documentConfidence),
+      confidence: item.manualClassificationUsed ? 100 : Math.max(76, item.documentConfidence),
+    };
+  }
+  if (urlMatch && hasArtworkWords) {
+    return {
+      value: "supplied",
+      source: sourceForItem(item, urlMatch[0], item.type === "THREAD_MESSAGE" ? 90 : 82),
+      confidence: item.type === "THREAD_MESSAGE" ? 90 : 82,
+    };
+  }
+  return null;
+}
+
+function extractPricingSignal(item: InboundOrderEvidenceItem): ReconciliationSignal | null {
+  const pricing = item.poSummary?.pricing ?? null;
+  if (!pricing) return null;
+  const hasPricing = pricing.approvedPriceCents != null
+    || pricing.unitPriceCents != null
+    || pricing.extendedPriceCents != null
+    || pricing.rushFeesCents != null
+    || pricing.totalPriceCents != null
+    || pricing.alternatePricingNotes.length > 0;
+  if (!hasPricing) return null;
+  return {
+    value: "approved_pricing_found",
+    source: sourceForItem(item, pricing.evidenceText ?? item.poSummary?.price ?? "PO pricing detected.", 94),
+    confidence: 94,
+  };
+}
+
+function itemSourceTypeConfidence(item: InboundOrderEvidenceItem): number {
+  if (item.documentType === "purchase_order") return 96;
+  if (item.type === "THREAD_MESSAGE") return 84;
+  if (item.type === "EMAIL_BODY") return 80;
+  if (item.type === "EMAIL_SUBJECT") return 64;
+  return Math.max(70, item.documentConfidence);
+}
+
+function valueAtPath(source: unknown, path: string): unknown {
+  return path.split(".").reduce<unknown>((current, key) => {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+    return (current as Record<string, unknown>)[key];
+  }, source);
+}
+
+function stringFromUnknown(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function threadMessagesFromRecord(record: InboundOrderRecord): InboundOrderEvidenceItem[] {
+  const rawThread = valueAtPath(record.rawPayloadJson, "thread");
+  const normalizedThread = valueAtPath(record.normalizedPayloadJson, "thread");
+  const thread = rawThread && typeof rawThread === "object" && !Array.isArray(rawThread)
+    ? rawThread as Record<string, unknown>
+    : normalizedThread && typeof normalizedThread === "object" && !Array.isArray(normalizedThread)
+      ? normalizedThread as Record<string, unknown>
+      : null;
+  const messages = Array.isArray(thread?.messages) ? thread.messages : [];
+  return messages
+    .filter((message): message is Record<string, unknown> => Boolean(message && typeof message === "object" && !Array.isArray(message)))
+    .flatMap((message, index): InboundOrderEvidenceItem[] => {
+      const subject = stringFromUnknown(message.subject);
+      const bodyText = stringFromUnknown(message.bodyText);
+      const receivedAt = stringFromUnknown(message.receivedAt) ?? stringFromUnknown(message.date);
+      const senderEmail = stringFromUnknown(valueAtPath(message, "sender.email")) ?? stringFromUnknown(message.senderEmail);
+      const rawText = [subject, bodyText].filter(Boolean).join("\n\n");
+      if (!rawText) return [];
+      return [{
+        type: "THREAD_MESSAGE" as const,
+        label: `Thread Message ${index + 1}${receivedAt ? ` (${receivedAt})` : ""}`,
+        sourceId: stringFromUnknown(message.id) ?? stringFromUnknown(message.messageId) ?? null,
+        rawText,
+        documentType: "unknown" as const,
+        documentConfidence: 0,
+        extractionStatus: "not_attempted" as const,
+        warnings: senderEmail ? [warning("thread_message_source", `Thread message from ${senderEmail} included as parsing evidence.`, "info")] : [],
+      }];
+    });
+}
+
+export function reconcileInboundEvidence(items: InboundOrderEvidenceItem[]): InboundOrderEvidenceReconciliation {
+  const productSignals: ReconciliationSignal[] = [];
+  const quantitySignals: ReconciliationSignal[] = [];
+  const dimensionsSignals: ReconciliationSignal[] = [];
+  const materialSignals: ReconciliationSignal[] = [];
+  const dueDateSignals: ReconciliationSignal[] = [];
+  const rushSignals: ReconciliationSignal[] = [];
+  const artworkSignals: ReconciliationSignal[] = [];
+  const pricingSignals: ReconciliationSignal[] = [];
+
+  for (const item of items) {
+    const summary = item.poSummary ?? null;
+    const confidence = itemSourceTypeConfidence(item);
+    if (summary) {
+      addSignal(productSignals, summary.productDescription, sourceForItem(item, summary.fieldSources.productDescription?.sourceText ?? summary.productDescription, confidence), confidence);
+      addSignal(quantitySignals, summary.quantity, sourceForItem(item, summary.fieldSources.quantity?.sourceText ?? null, confidence), confidence);
+      addSignal(dimensionsSignals, summary.dimensions, sourceForItem(item, summary.fieldSources.dimensions?.sourceText ?? summary.dimensions, confidence), confidence);
+      addSignal(materialSignals, summary.material, sourceForItem(item, summary.fieldSources.material?.sourceText ?? summary.material, confidence), confidence);
+      addSignal(dueDateSignals, summary.dueDate, sourceForItem(item, summary.fieldSources.dueDate?.sourceText ?? summary.dueDate, confidence), confidence);
+      if (summary.versionCount) {
+        addSignal(quantitySignals, summary.versionCount, sourceForItem(item, summary.fieldSources.versionCount?.sourceText ?? `${summary.versionCount} versions`, 88), 88);
+      }
+    } else if (item.rawText) {
+      const textConfidence = itemSourceTypeConfidence(item);
+      const quantity = extractQuantityWithSource(item.rawText);
+      const dimensions = extractDimensionsWithSource(item.rawText);
+      const dueDate = inferInboundRequestedDate({ text: item.rawText });
+      const product = firstMatchWithSource(item.rawText, [
+        /\b(\d+(?:,\d{3})*\s+.{3,120}?(?:signs?|banners?|posters?|decals?|stickers?|prints?))\b/i,
+        /\b(?:need|print|order|request)\s+(.{3,120}?(?:signs?|banners?|posters?|decals?|stickers?|prints?))\b/i,
+      ]);
+      const material = firstMatchWithSource(item.rawText, [
+        /\b(\d+(?:\.\d+)?\s*mm\s+(?:white\s+)?PVC)\b/i,
+        /\b(\d+(?:\.\d+)?\s*mm\s+coroplast)\b/i,
+        /\b(\.?\d+\s*magnetic)\b/i,
+        /\b(one[-\s]?way vision vinyl|window perf(?:orated)? vinyl)\b/i,
+      ]);
+      addSignal(productSignals, product?.value, product ? sourceForItem(item, product.sourceText, textConfidence) : null, textConfidence);
+      addSignal(quantitySignals, quantity?.value, quantity ? sourceForItem(item, quantity.sourceText, textConfidence) : null, textConfidence);
+      addSignal(dimensionsSignals, dimensions?.value, dimensions ? sourceForItem(item, dimensions.sourceText, textConfidence) : null, textConfidence);
+      addSignal(materialSignals, material?.value, material ? sourceForItem(item, material.sourceText, textConfidence) : null, textConfidence);
+      addSignal(dueDateSignals, dueDate?.parsedDate, dueDate ? sourceForItem(item, dueDate.sourceText, dueDate.confidence) : null, dueDate?.confidence ?? 0);
+    }
+
+    quantitySignals.push(...extractQuantitySignalsFromText(item));
+    const rush = extractRushSignal(item);
+    if (rush) rushSignals.push(rush);
+    const artwork = extractArtworkSignal(item);
+    if (artwork) artworkSignals.push(artwork);
+    const pricing = extractPricingSignal(item);
+    if (pricing) pricingSignals.push(pricing);
+  }
+
+  return {
+    product: buildReconciliationField("lineItems.0.productName", productSignals, (left, right) => `Product evidence differs between "${left}" and "${right}".`),
+    quantity: buildReconciliationField("lineItems.0.quantity", quantitySignals, (left, right) => `Quantity evidence differs between ${left} and ${right}.`),
+    dimensions: buildReconciliationField("lineItems.0.dimensions", dimensionsSignals, (left, right) => `Dimension evidence differs between "${left}" and "${right}".`),
+    material: buildReconciliationField("lineItems.0.materialText", materialSignals, (left, right) => `Material evidence differs between "${left}" and "${right}".`),
+    dueDate: buildReconciliationField("order.requestedDueDate", dueDateSignals, (left, right) => `Due date evidence differs between ${left} and ${right}.`),
+    rushStatus: buildReconciliationField("order.priority", rushSignals, () => "Rush evidence conflicts with other priority evidence."),
+    artworkStatus: buildReconciliationField("lineItems.0.artwork", artworkSignals, () => "Artwork evidence conflicts across sources."),
+    pricingStatus: buildReconciliationField("lineItems.0.pricing", pricingSignals, () => "Pricing evidence conflicts across sources."),
+  };
+}
+
 export async function extractMachineReadablePdfText(buffer: Buffer | Uint8Array): Promise<{ text: string; pageCount: number }> {
   try {
     const nativeImport = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<any>;
@@ -587,6 +825,7 @@ export class InboundOrderEvidenceService {
     if (evidence.notes) {
       items.push({ type: "MANUAL_NOTES", label: "Manual Notes", rawText: evidence.notes, documentType: "unknown", documentConfidence: 0, extractionStatus: "not_attempted", warnings: [] });
     }
+    items.push(...threadMessagesFromRecord(args.record));
 
     for (const file of args.files) {
       const manual = args.manualClassifications?.get(`file:${file.id}`)
@@ -596,9 +835,15 @@ export class InboundOrderEvidenceService {
     }
 
     const prioritizedItems = prioritizeEvidenceItems(items);
+    const reconciliation = reconcileInboundEvidence(prioritizedItems);
+    const reconciliationConflicts = Object.values(reconciliation).flatMap((field) => field.conflicts);
     return {
       items: prioritizedItems,
-      conflicts: detectEvidenceConflicts(prioritizedItems),
+      conflicts: [
+        ...detectEvidenceConflicts(prioritizedItems),
+        ...reconciliationConflicts,
+      ],
+      reconciliation,
     };
   }
 

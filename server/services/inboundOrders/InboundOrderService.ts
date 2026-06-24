@@ -3220,7 +3220,9 @@ export class InboundOrderService {
       ...draft.lineItems.flatMap((lineItem) => lineItem.warnings),
       ...draft.artwork.flatMap((artwork) => artwork.warnings),
     ];
-    const hasArtwork = draft.artwork.length > 0 || draft.lineItems.some((lineItem) => lineItem.artworkRefs.length > 0);
+    const hasReconciledArtwork = draft.evidence.reconciliation?.artworkStatus.value === "supplied";
+    const hasArtwork = hasReconciledArtwork || draft.artwork.length > 0 || draft.lineItems.some((lineItem) => lineItem.artworkRefs.length > 0);
+    const reconciledRush = draft.evidence.reconciliation?.rushStatus.value === "rush";
     const customerInterpretation = await this.interpretCustomerAndContact(args.organizationId, draft);
     const customerIntelligenceJson = draft.customerIntelligence
       ?? (customerInterpretation.customerId
@@ -3345,6 +3347,7 @@ export class InboundOrderService {
       reviewedOrderJson: {
         poNumber: draft.order.poNumber,
         dueDate: normalizeInboundReviewedDueDate(draft.order.requestedDueDate, args.record.receivedAt),
+        priority: reconciledRush ? "rush" : "normal",
         shipMethod: draft.order.requestedShipMethod,
         fulfillmentType: draft.order.requestedPickup === true ? "pickup" : "unknown",
         internalNotes: draft.order.notes,
@@ -4419,7 +4422,7 @@ export class InboundOrderService {
       label: `Inbound ${reference}`,
       poNumber: order.poNumber ?? detail.record.externalReference ?? null,
       status: "new",
-      priority: "normal",
+      priority: order.priority,
       dueDate: normalizedDueDate,
       requestedDueDate: normalizedDueDate,
       notesInternal: reviewedNotes,

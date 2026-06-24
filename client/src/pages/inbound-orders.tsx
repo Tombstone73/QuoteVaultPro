@@ -1090,8 +1090,11 @@ function evidenceSourceLabel(value: string | null | undefined) {
   if (value === "PDF_ATTACHMENT") return "PDF Attachment";
   if (value === "EMAIL_BODY") return "Email Body";
   if (value === "EMAIL_SUBJECT") return "Email Subject";
+  if (value === "THREAD_MESSAGE") return "Thread Message";
   if (value === "TEXT_ATTACHMENT") return "Text Attachment";
   if (value === "MANUAL_NOTES") return "Manual Notes";
+  if (value === "ARTWORK_LINK") return "Artwork Link";
+  if (value === "ATTACHMENT_METADATA") return "Attachment Metadata";
   return titleCase(value);
 }
 
@@ -1511,6 +1514,59 @@ function FieldSourceSection({ draft }: { draft: InboundOrderParsedDraft }) {
   );
 }
 
+const reconciliationLabels: Array<{ key: keyof NonNullable<InboundOrderParsedDraft["evidence"]["reconciliation"]>; label: string }> = [
+  { key: "product", label: "Product" },
+  { key: "quantity", label: "Quantity" },
+  { key: "dimensions", label: "Dimensions" },
+  { key: "material", label: "Material" },
+  { key: "dueDate", label: "Due date" },
+  { key: "rushStatus", label: "Rush status" },
+  { key: "artworkStatus", label: "Artwork status" },
+  { key: "pricingStatus", label: "Pricing status" },
+];
+
+function EvidenceReconciliationSection({ draft }: { draft: InboundOrderParsedDraft }) {
+  const reconciliation = draft.evidence.reconciliation;
+  if (!reconciliation) return null;
+  const rows = reconciliationLabels.map(({ key, label }) => ({ key, label, field: reconciliation[key] }))
+    .filter(({ field }) => field.value != null || field.sources.length > 0 || field.conflicts.length > 0);
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="mt-3 border-t border-border pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Evidence Reconciliation</h4>
+        <Badge variant="outline">{rows.length}</Badge>
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        {rows.map(({ key, label, field }) => {
+          const primarySource = field.sources[0] ?? null;
+          return (
+            <div key={key} className="rounded-md border border-border bg-background px-3 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-sm font-medium text-foreground">{label}</div>
+                <Badge variant={field.status === "conflict" ? "destructive" : field.status === "confirmed" ? "secondary" : "outline"}>
+                  {titleCase(field.status)}
+                </Badge>
+              </div>
+              <div className="mt-1 break-words text-sm text-foreground">{String(field.value ?? "-")}</div>
+              {primarySource && (
+                <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                  <div>Source: {evidenceSourceLabel(primarySource.sourceType)}{primarySource.sourceDocument ? ` / ${primarySource.sourceDocument}` : ""}</div>
+                  {primarySource.sourceText && <div className="break-words">Evidence: {primarySource.sourceText}</div>}
+                </div>
+              )}
+              {field.conflicts.length > 0 && (
+                <div className="mt-2 text-xs text-destructive">{field.conflicts[0]?.message}</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function EvidenceUsedSection({
   draft,
   detail,
@@ -1583,6 +1639,7 @@ function EvidenceUsedSection({
           </div>
         ))}
       </div>
+      <EvidenceReconciliationSection draft={draft} />
     </section>
   );
 }

@@ -445,6 +445,7 @@ export class InboundOrderParsingService {
         poSummary: item.poSummary,
       })),
       evidenceConflicts: bundle.conflicts,
+      evidenceReconciliation: bundle.reconciliation ?? null,
     };
     const customerIntelligence = await this.customerIntelligence.buildSummaryForSourceEvidence({
       organizationId,
@@ -531,7 +532,7 @@ export class InboundOrderParsingService {
   }
 
   refineParsedDraft(record: InboundOrderRecord, draft: InboundOrderParsedDraft, evidenceBundle?: InboundOrderEvidenceBundle): InboundOrderParsedDraft {
-    const evidenceRefined = evidenceBundle ? this.applyAttachmentEvidencePriority(draft, evidenceBundle) : draft;
+    const evidenceRefined = evidenceBundle ? this.applyReconciledEvidence(this.applyAttachmentEvidencePriority(draft, evidenceBundle), evidenceBundle) : draft;
     const hasPurchaseOrderDueDate = Boolean(
       evidenceBundle?.items.some((item) => item.documentType === "purchase_order" && item.poSummary?.dueDate),
     );
@@ -543,6 +544,7 @@ export class InboundOrderParsingService {
         evidence: {
           items: evidenceBundle.items,
           conflicts: evidenceBundle.conflicts,
+          reconciliation: evidenceBundle.reconciliation ?? null,
         },
         globalWarnings: [
           ...decisionsRefined.globalWarnings,
@@ -550,6 +552,94 @@ export class InboundOrderParsingService {
         ],
       }
       : decisionsRefined;
+  }
+
+  applyReconciledEvidence(draft: InboundOrderParsedDraft, evidenceBundle: InboundOrderEvidenceBundle): InboundOrderParsedDraft {
+    const reconciliation = evidenceBundle.reconciliation;
+    if (!reconciliation) return draft;
+    const firstLine = draft.lineItems[0] ?? {
+      sourceText: null,
+      productName: null,
+      candidateProductIds: [],
+      productCandidates: [],
+      quantity: null,
+      width: null,
+      height: null,
+      dimensionsUnit: null,
+      materialText: null,
+      optionTexts: [],
+      finishingTexts: [],
+      artworkRefs: [],
+      confidence: 0,
+      warnings: [],
+    };
+    const dimensions = typeof reconciliation.dimensions.value === "string"
+      ? this.parseDimensionText(reconciliation.dimensions.value)
+      : { width: null, height: null, unit: null };
+    const shouldUseQuantity = typeof reconciliation.quantity.value === "number"
+      && reconciliation.quantity.status !== "missing"
+      && reconciliation.quantity.status !== "conflict";
+    const shouldUseProduct = typeof reconciliation.product.value === "string"
+      && reconciliation.product.status !== "missing"
+      && reconciliation.product.status !== "conflict";
+    const shouldUseMaterial = typeof reconciliation.material.value === "string"
+      && reconciliation.material.status !== "missing"
+      && reconciliation.material.status !== "conflict";
+    const artworkSupplied = reconciliation.artworkStatus.value === "supplied";
+    const enrichedLine = {
+      ...firstLine,
+      productName: shouldUseProduct ? reconciliation.product.value as string : firstLine.productName,
+      quantity: shouldUseQuantity ? reconciliation.quantity.value as number : firstLine.quantity,
+      width: dimensions.width ?? firstLine.width,
+      height: dimensions.height ?? firstLine.height,
+      dimensionsUnit: dimensions.unit ?? firstLine.dimensionsUnit,
+      materialText: shouldUseMaterial ? reconciliation.material.value as string : firstLine.materialText,
+      artworkRefs: artworkSupplied && firstLine.artworkRefs.length === 0 ? ["Artwork supplied via source evidence"] : firstLine.artworkRefs,
+      confidence: Math.max(firstLine.confidence, ...[
+        reconciliation.product,
+        reconciliation.quantity,
+        reconciliation.dimensions,
+        reconciliation.material,
+        reconciliation.artworkStatus,
+      ].flatMap((field) => field.sources.map((source) => source.confidence))),
+    };
+    const dueDate = typeof reconciliation.dueDate.value === "string" && reconciliation.dueDate.status !== "conflict"
+      ? reconciliation.dueDate.value
+      : draft.order.requestedDueDate;
+    const orderWarnings = reconciliation.rushStatus.value === "rush"
+      ? [warning(
+        "evidence_reconciliation_rush_priority",
+        "Rush request detected in source evidence. Review draft priority should be Rush.",
+        "info",
+        "reviewedOrderJson.priority",
+      )]
+      : [];
+
+    return {
+      ...draft,
+      order: {
+        ...draft.order,
+        requestedDueDate: dueDate ?? draft.order.requestedDueDate,
+        warnings: [
+          ...draft.order.warnings,
+          ...orderWarnings,
+        ],
+      },
+      lineItems: [
+        enrichedLine,
+        ...draft.lineItems.slice(1),
+      ],
+      artwork: artworkSupplied && draft.artwork.length === 0
+        ? [{
+          filename: null,
+          sourceReference: String(reconciliation.artworkStatus.sources[0]?.sourceText ?? reconciliation.artworkStatus.sources[0]?.label ?? "Artwork supplied via source evidence"),
+          likelyLineItemIndex: 0,
+          purpose: "artwork",
+          confidence: Math.max(70, reconciliation.artworkStatus.sources[0]?.confidence ?? 70),
+          warnings: [],
+        }]
+        : draft.artwork,
+    };
   }
 
   applyAttachmentEvidencePriority(draft: InboundOrderParsedDraft, evidenceBundle: InboundOrderEvidenceBundle): InboundOrderParsedDraft {

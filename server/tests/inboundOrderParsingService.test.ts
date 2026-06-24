@@ -15,6 +15,7 @@ import {
   extractClassifiedDates,
   extractMachineReadablePdfText,
   extractPurchaseOrderFields,
+  reconcileInboundEvidence,
   type InboundOrderEvidenceBundle,
 } from "../services/inboundOrders/InboundOrderEvidenceService";
 import { inferInboundRequestedDate } from "../services/inboundOrders/inboundOrderDateInference";
@@ -670,6 +671,155 @@ describe("InboundOrderParsingService", () => {
     }), expect.objectContaining({
       code: "evidence_due_date_conflict",
     })]);
+  });
+
+  test("reconciles Brainstorm thread evidence across PO, rush text, artwork links, and pricing", () => {
+    const poSummary = extractPurchaseOrderFields({
+      text: [
+        "Purchase Order No. 151793",
+        "Total QTY: 11",
+        "11 versions",
+        "1 each of 11 signs",
+        "Item Description: Yard Signs",
+        "Size: 24x18",
+        "Stock: 4mm Coroplast",
+        "Approved Price: $550.00",
+      ].join("\n"),
+      receivedAt: "2026-06-24T14:00:00.000Z",
+      sourceDocument: "Brainstorm PO 151793.pdf",
+    });
+    const items: InboundOrderEvidenceBundle["items"] = [{
+      type: "PDF_ATTACHMENT",
+      label: "Brainstorm PO 151793.pdf",
+      sourceId: "file_po",
+      fileName: "Brainstorm PO 151793.pdf",
+      mimeType: "application/pdf",
+      rawText: [
+        "Purchase Order No. 151793",
+        "Total QTY: 11",
+        "11 versions",
+        "1 each of 11 signs",
+        "Item Description: Yard Signs",
+        "Size: 24x18",
+        "Stock: 4mm Coroplast",
+        "Approved Price: $550.00",
+      ].join("\n"),
+      pageCount: 1,
+      documentType: "purchase_order",
+      documentConfidence: 98,
+      extractionStatus: "successful",
+      poSummary,
+      warnings: [],
+    }, {
+      type: "THREAD_MESSAGE",
+      label: "Thread Message 2 (2026-06-24T16:20:00.000Z)",
+      sourceId: "gmail_msg_2",
+      rawText: [
+        "This is a RUSH for pickup Monday morning.",
+        "Artwork link: https://drive.google.com/file/d/brainstorm-art",
+      ].join("\n"),
+      documentType: "unknown",
+      documentConfidence: 0,
+      extractionStatus: "not_attempted",
+      warnings: [],
+    }];
+
+    const reconciliation = reconcileInboundEvidence(items);
+
+    expect(reconciliation.quantity).toMatchObject({
+      value: 11,
+      status: "confirmed",
+    });
+    expect(reconciliation.quantity.sources.map((source) => source.sourceText)).toEqual(expect.arrayContaining([
+      expect.stringContaining("Total QTY: 11"),
+      expect.stringContaining("11 versions"),
+      expect.stringContaining("1 each of 11"),
+    ]));
+    expect(reconciliation.rushStatus).toMatchObject({
+      value: "rush",
+      status: "confirmed",
+    });
+    expect(reconciliation.artworkStatus).toMatchObject({
+      value: "supplied",
+      status: "confirmed",
+    });
+    expect(reconciliation.pricingStatus).toMatchObject({
+      value: "approved_pricing_found",
+      status: "confirmed",
+    });
+    expect(reconciliation.artworkStatus.sources[0]?.sourceText).toContain("https://drive.google.com/file/d/brainstorm-art");
+    expect(reconciliation.pricingStatus.sources[0]?.sourceText).toContain("Approved Price");
+  });
+
+  test("uses reconciled Brainstorm evidence to repair parsed quantity and artwork status", () => {
+    const service = new InboundOrderParsingService(makeRepository().repo as any, () => null);
+    const items: InboundOrderEvidenceBundle["items"] = [{
+      type: "PDF_ATTACHMENT",
+      label: "Brainstorm PO 151793.pdf",
+      sourceId: "file_po",
+      fileName: "Brainstorm PO 151793.pdf",
+      mimeType: "application/pdf",
+      rawText: "Purchase Order No. 151793\nTotal QTY: 11\n11 versions\n1 each of 11 signs\nItem Description: Yard Signs\nSize: 24x18\nStock: 4mm Coroplast\nApproved Price: $550.00",
+      pageCount: 1,
+      documentType: "purchase_order",
+      documentConfidence: 98,
+      extractionStatus: "successful",
+      poSummary: extractPurchaseOrderFields({
+        text: "Purchase Order No. 151793\nTotal QTY: 11\n11 versions\n1 each of 11 signs\nItem Description: Yard Signs\nSize: 24x18\nStock: 4mm Coroplast\nApproved Price: $550.00",
+        receivedAt: "2026-06-24T14:00:00.000Z",
+        sourceDocument: "Brainstorm PO 151793.pdf",
+      }),
+      warnings: [],
+    }, {
+      type: "THREAD_MESSAGE",
+      label: "Thread Message 2",
+      sourceId: "gmail_msg_2",
+      rawText: "This is a RUSH for pickup Monday morning.\nArtwork link: https://drive.google.com/file/d/brainstorm-art",
+      documentType: "unknown",
+      documentConfidence: 0,
+      extractionStatus: "not_attempted",
+      warnings: [],
+    }];
+    const reconciliation = reconcileInboundEvidence(items);
+    const evidenceBundle: InboundOrderEvidenceBundle = {
+      items,
+      conflicts: Object.values(reconciliation).flatMap((field) => field.conflicts),
+      reconciliation,
+    };
+
+    const refined = service.refineParsedDraft(
+      inboundRecord({ receivedAt: new Date("2026-06-24T14:00:00.000Z") }) as any,
+      parsedDraft({
+        lineItems: [{
+          ...parsedDraft().lineItems[0],
+          productName: "Yard Signs",
+          quantity: 1,
+          artworkRefs: [],
+        }],
+        artwork: [],
+      }) as any,
+      evidenceBundle,
+    );
+
+    expect(refined.lineItems[0]).toMatchObject({
+      productName: "Yard Signs",
+      quantity: 11,
+      width: 24,
+      height: 18,
+      materialText: "4mm Coroplast",
+    });
+    expect(refined.lineItems[0].artworkRefs).toContain("Artwork supplied via source evidence");
+    expect(refined.artwork[0]).toMatchObject({
+      purpose: "artwork",
+      likelyLineItemIndex: 0,
+    });
+    expect(refined.order.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "evidence_reconciliation_rush_priority" }),
+    ]));
+    expect(refined.evidence.reconciliation?.quantity.value).toBe(11);
+    expect(refined.missingDecisions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "lineItems.0.artwork" }),
+    ]));
   });
 
   test("prioritizes purchase order fields before product matching", () => {
