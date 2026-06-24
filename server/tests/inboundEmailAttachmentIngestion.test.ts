@@ -374,14 +374,15 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       actorUserId: "user_1",
       mailbox,
       message: message({
-        bodyText: "Artwork & Visual PO:",
+        subject: "PO 151793 attached",
+        bodyText: "Please see attached purchase order.",
         attachments: [{
-          filename: "visual-proof.pdf",
+          filename: "PO_151793.pdf",
           mimeType: "application/pdf",
           size: 11,
           attachmentId: "att_1",
           contentDisposition: "attachment",
-          contentId: "<visual-proof>",
+          contentId: "<po-151793>",
           partId: "1.2",
           detectedBy: ["filename", "attachmentId", "content-disposition:attachment"],
         }],
@@ -404,12 +405,12 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       providerAttachmentId: "att_1",
       providerMessageId: "gmail_msg_1",
       contentDisposition: "attachment",
-      contentId: "<visual-proof>",
+      contentId: "<po-151793>",
       gmailPartId: "1.2",
       detectedBy: ["filename", "attachmentId", "content-disposition:attachment"],
-      sourceHint: "Artwork & Visual PO",
+      sourceHint: null,
       poCandidate: true,
-      artworkCandidate: true,
+      artworkCandidate: false,
     }));
     expect(events[0]).toEqual(expect.objectContaining({ eventType: "email.attachment_stored" }));
   });
@@ -2142,6 +2143,49 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     }));
   });
 
+  test("manual reprocess same email multiple times remains attachment-idempotent", async () => {
+    const { service, repo, storage, createdFiles } = serviceHarness();
+    (service as any).resolveMailboxForRecord = jest.fn(async () => mailbox);
+    repo.getRecord.mockResolvedValue({
+      ...record,
+      rawPayloadJson: { messageId: "gmail_msg_1", threadId: "thread_1", sender: { email: "buyer@example.com" } },
+      normalizedPayloadJson: { source: { messageId: "gmail_msg_1", threadId: "thread_1" } },
+    });
+    (service as any).adapterByProvider.gmail = {
+      listRecentMessages: jest.fn(async () => []),
+      getThreadMessages: jest.fn(async () => [message({
+        messageId: "gmail_msg_1",
+        attachments: [{
+          filename: "po-151793.pdf",
+          mimeType: "application/pdf",
+          size: 4,
+          attachmentId: "att_151793",
+        }],
+      })]),
+      downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+    };
+
+    const first = await service.manuallyReprocessInboundEmailRecord({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "reprocess_email",
+    });
+    const second = await service.manuallyReprocessInboundEmailRecord({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "reprocess_email",
+    });
+
+    expect(first.stored).toBe(1);
+    expect(second.stored).toBe(0);
+    expect(second.skipped).toBe(1);
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(createdFiles).toHaveLength(1);
+    expect(repo.createFile).toHaveBeenCalledTimes(1);
+  });
+
   test("manual reprocess refreshes source evidence but does not touch review draft fields", async () => {
     const { service, repo } = serviceHarness();
     (service as any).resolveMailboxForRecord = jest.fn(async () => mailbox);
@@ -2278,6 +2322,103 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
         }),
       }),
     }));
+  });
+
+  test("manual reprocess dedupes same attachment repeated across thread messages", async () => {
+    const { service, repo, storage, createdFiles } = serviceHarness();
+    (service as any).resolveMailboxForRecord = jest.fn(async () => mailbox);
+    repo.getRecord.mockResolvedValue({
+      ...record,
+      rawPayloadJson: { messageId: "gmail_msg_1", threadId: "thread_1", sender: { email: "buyer@example.com" } },
+      normalizedPayloadJson: { source: { messageId: "gmail_msg_1", threadId: "thread_1" } },
+    });
+    (service as any).adapterByProvider.gmail = {
+      listRecentMessages: jest.fn(async () => []),
+      getThreadMessages: jest.fn(async () => [
+        message({
+          messageId: "gmail_msg_1",
+          threadId: "thread_1",
+          receivedAt: new Date("2026-06-17T12:00:00.000Z"),
+          attachments: [{
+            filename: "PO 151793.pdf",
+            mimeType: "application/pdf",
+            size: 4,
+            attachmentId: "att_a",
+          }],
+        }),
+        message({
+          messageId: "gmail_msg_2",
+          threadId: "thread_1",
+          receivedAt: new Date("2026-06-18T12:00:00.000Z"),
+          attachments: [{
+            filename: "PO 151793.pdf",
+            mimeType: "application/pdf",
+            size: 4,
+            attachmentId: "att_b",
+          }],
+        }),
+      ]),
+      downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+    };
+
+    const result = await service.manuallyReprocessInboundEmailRecord({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "reprocess_email",
+    });
+
+    expect(result.threadMessagesInspected).toBe(2);
+    expect(result.stored).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(createdFiles).toHaveLength(1);
+    expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+      seenProviderMessageIds: ["gmail_msg_1", "gmail_msg_2"],
+      seenInMessageCount: 2,
+    }));
+  });
+
+  test("manual reprocess does not dedupe different files with same filename and different size", async () => {
+    const { service, repo, storage, createdFiles } = serviceHarness();
+    (service as any).resolveMailboxForRecord = jest.fn(async () => mailbox);
+    repo.getRecord.mockResolvedValue({
+      ...record,
+      rawPayloadJson: { messageId: "gmail_msg_1", threadId: "thread_1", sender: { email: "buyer@example.com" } },
+      normalizedPayloadJson: { source: { messageId: "gmail_msg_1", threadId: "thread_1" } },
+    });
+    (service as any).adapterByProvider.gmail = {
+      listRecentMessages: jest.fn(async () => []),
+      getThreadMessages: jest.fn(async () => [
+        message({
+          messageId: "gmail_msg_1",
+          threadId: "thread_1",
+          attachments: [{ filename: "art.pdf", mimeType: "application/pdf", size: 4, attachmentId: "att_a" }],
+        }),
+        message({
+          messageId: "gmail_msg_2",
+          threadId: "thread_1",
+          attachments: [{ filename: "art.pdf", mimeType: "application/pdf", size: 8, attachmentId: "att_b" }],
+        }),
+      ]),
+      downloadAttachment: jest.fn(async (_mailbox: any, _message: any, attachment: any) => ({
+        buffer: Buffer.from("%PDF"),
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.size,
+      })),
+    };
+
+    const result = await service.manuallyReprocessInboundEmailRecord({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      action: "reprocess_email",
+    });
+
+    expect(result.stored).toBe(2);
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(2);
+    expect(createdFiles).toHaveLength(2);
+    expect(createdFiles.map((file) => file.sizeBytes)).toEqual([4, 8]);
   });
 
   test("manual reprocess fails softly when provider message id is missing", async () => {

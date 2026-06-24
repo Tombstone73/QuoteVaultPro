@@ -692,18 +692,33 @@ function isLikelySignatureInlineFile(file: ClientInboundOrderFile): boolean {
 function dedupeAttachmentFiles(files: ClientInboundOrderFile[]): ClientInboundOrderFile[] {
   const seen = new Set<string>();
   return files.filter((file) => {
+    const filename = String(file.sourceFilename ?? "").toLowerCase();
+    const size = file.sizeBytes ?? null;
+    const mimeType = String(file.mimeType ?? "").toLowerCase();
+    const globalKey = filename && size != null && mimeType
+      ? `global:${filename}:${size}:${mimeType}`
+      : null;
     const providerKey = file.providerAttachmentId
       ? `provider:${providerMessageIdForFile(file) ?? ""}:${file.providerAttachmentId}`
       : null;
-    const fallbackKey = `file:${providerMessageIdForFile(file) ?? ""}:${String(file.sourceFilename ?? "").toLowerCase()}:${file.sizeBytes ?? ""}:${file.mimeType ?? ""}`;
+    const fallbackKey = `file:${providerMessageIdForFile(file) ?? ""}:${filename}:${size ?? ""}:${mimeType}`;
     const signatureKey = isLikelySignatureInlineFile(file)
       ? `signature:${String(file.sourceFilename ?? "").toLowerCase()}:${file.sizeBytes ?? ""}:${file.mimeType ?? ""}`
       : null;
-    const key = signatureKey ?? providerKey ?? fallbackKey;
+    const key = signatureKey ?? globalKey ?? providerKey ?? fallbackKey;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+}
+
+function attachmentSeenMessageCount(file: ClientInboundOrderFile): number | null {
+  const metadata = attachmentSafetyMetadata(file);
+  if (typeof metadata.seenInMessageCount === "number" && metadata.seenInMessageCount > 1) return metadata.seenInMessageCount;
+  if (Array.isArray(metadata.seenProviderMessageIds) && metadata.seenProviderMessageIds.length > 1) {
+    return new Set(metadata.seenProviderMessageIds.filter((entry) => typeof entry === "string")).size;
+  }
+  return null;
 }
 
 function groupFilesByThreadMessage(files: ClientInboundOrderFile[], thread: Record<string, unknown> | null | undefined) {
@@ -900,6 +915,31 @@ function ThreadMessageBlocks({
 
 function artworkLinkKey(link: Pick<InboundOrderArtworkLink, "fileId" | "fileRecordId">): string {
   return link.fileRecordId ? `record:${link.fileRecordId}` : `file:${link.fileId}`;
+}
+
+function attachmentLinkDedupeKey(link: InboundOrderArtworkLink): string {
+  const filename = String(link.filename ?? "").toLowerCase();
+  const size = link.sizeBytes ?? null;
+  const mimeType = String(link.mimeType ?? "").toLowerCase();
+  return filename && size != null && mimeType
+    ? `global:${filename}:${size}:${mimeType}`
+    : artworkLinkKey(link);
+}
+
+function dedupeAttachmentLinks(links: InboundOrderArtworkLink[]): InboundOrderArtworkLink[] {
+  const byKey = new Map<string, InboundOrderArtworkLink>();
+  for (const link of links) {
+    const key = attachmentLinkDedupeKey(link);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, link);
+      continue;
+    }
+    if (link.manualOverride && !existing.manualOverride) {
+      byKey.set(key, link);
+    }
+  }
+  return Array.from(byKey.values());
 }
 
 function attachmentClassificationLabel(classification: InboundAttachmentClassification | string | null | undefined): string {
@@ -1476,7 +1516,7 @@ function EvidenceUsedSection({
 }) {
   const record = detail?.record ?? null;
   const evidence = record?.sourceType === "email" ? getInboundEmailEvidence(record) : record ? getManualInboundEvidence(record) : null;
-  const files = detail?.files ?? [];
+  const files = dedupeAttachmentFiles(detail?.files ?? []);
   const poItems = draft.evidence.items.filter((item) => item.type === "PDF_ATTACHMENT" && item.documentType === "purchase_order");
   const pdfFailures = draft.evidence.items.filter((item) => item.type === "PDF_ATTACHMENT" && item.extractionStatus === "failed");
   const artworkFiles = files.filter((file) => file.role === "artwork");
@@ -2053,7 +2093,7 @@ function SourceEvidencePanel({
     item.type === "PDF_ATTACHMENT" || item.type === "TEXT_ATTACHMENT"
   ));
   const evidenceConflicts = draftPreview?.draft?.evidence?.conflicts ?? [];
-  const emailFiles = detail?.files ?? [];
+  const emailFiles = dedupeAttachmentFiles(detail?.files ?? []);
   const threadEvidence = record.sourceType === "email" ? (evidence as ReturnType<typeof getInboundEmailEvidence>).thread : null;
   const threadMessageCount = typeof threadEvidence?.messageCount === "number" ? threadEvidence.messageCount : null;
   const latestThreadActivity = stringFromUnknown(threadEvidence?.latestActivityAt);
@@ -2326,14 +2366,15 @@ function SourceEvidencePanel({
         <section className="rounded-md border border-border p-3">
           <div className="flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold text-foreground">Attachments</h3>
-            <Badge variant="outline">{detail?.files?.length ?? 0}</Badge>
+            <Badge variant="outline">{dedupeAttachmentFiles(detail?.files ?? []).length}</Badge>
           </div>
           <div className="mt-3 space-y-3">
-            {(detail?.files ?? []).length === 0 ? (
+            {dedupeAttachmentFiles(detail?.files ?? []).length === 0 ? (
               <div className="text-sm text-muted-foreground">No attachments linked to this inbound record.</div>
             ) : (
-              (detail?.files ?? []).map((file) => {
+              dedupeAttachmentFiles(detail?.files ?? []).map((file) => {
                 const extracted = attachmentEvidence.find((item) => item.sourceId === file.id);
+                const seenCount = attachmentSeenMessageCount(file);
                 const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
                   ? `/api/inbound-orders/${encodeURIComponent(record.id)}/files/${encodeURIComponent(file.id)}/download`
                   : null;
@@ -2347,6 +2388,7 @@ function SourceEvidencePanel({
                           <span>{formatFileSize(file.sizeBytes)}</span>
                           <span>Source: Gmail attachment</span>
                           <span>Status: {titleCase(file.status)}</span>
+                          {seenCount ? <span>Seen in {seenCount} messages</span> : null}
                         </div>
                         <div className="mt-1 flex flex-wrap items-center gap-2">
                           <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
@@ -2489,7 +2531,7 @@ function OperationalEmailPanel({
   const record = detail?.record ?? selectedRecord;
   const evidence = getInboundEmailEvidence(record);
   const sanitizedHtml = evidence.bodyHtml ? sanitizeEmailHtml(evidence.bodyHtml) : null;
-  const files = detail?.files ?? [];
+  const files = dedupeAttachmentFiles(detail?.files ?? []);
   const threadMessageCount = typeof evidence.thread?.messageCount === "number" ? evidence.thread.messageCount : null;
   const latestThreadActivity = stringFromUnknown(evidence.thread?.latestActivityAt);
   const attachmentGroups = groupFilesByThreadMessage(files, evidence.thread);
@@ -3188,22 +3230,22 @@ function DraftBuilderPanel({
       )),
     });
   };
-  const storedAttachmentLinks = (detail?.files ?? []).map((file) => artworkLinkFromInboundFile(file, "staff_selected"));
-  const allAttachmentLinks = Array.from(new Map([
+  const storedAttachmentLinks = dedupeAttachmentFiles(detail?.files ?? []).map((file) => artworkLinkFromInboundFile(file, "staff_selected"));
+  const allAttachmentLinks = dedupeAttachmentLinks(Array.from(new Map([
     ...storedAttachmentLinks,
     ...form.reviewedArtworkJson.unassignedAttachments,
     ...form.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
-  ].map((link) => [artworkLinkKey(link), link])).values());
+  ].map((link) => [artworkLinkKey(link), link])).values()));
   const visibleLinkedArtworkKeys = new Set(
     form.reviewedLineItemsJson
       .flatMap((lineItem) => lineItem.artworkLinks)
       .filter((link) => link.source !== "staff_removed")
       .map((link) => artworkLinkKey(link)),
   );
-  const unassignedAttachmentLinks = Array.from(new Map([
+  const unassignedAttachmentLinks = dedupeAttachmentLinks(Array.from(new Map([
     ...form.reviewedArtworkJson.unassignedAttachments,
     ...allAttachmentLinks.filter((link) => !visibleLinkedArtworkKeys.has(artworkLinkKey(link)) && link.source !== "staff_removed"),
-  ].map((link) => [artworkLinkKey(link), link])).values());
+  ].map((link) => [artworkLinkKey(link), link])).values()));
   const unassignedArtworkLinks = unassignedAttachmentLinks.filter((link) => classificationForLink(link) === "ARTWORK");
   const attachmentLinkOptions = allAttachmentLinks.filter((link) => (
     link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK"
@@ -3418,7 +3460,7 @@ function DraftBuilderPanel({
     ...validationErrors,
   ].filter(Boolean) as string[];
   const reviewNotesPreview = form.reviewNotes?.trim() ?? "";
-  const inboundFiles = detail?.files ?? [];
+  const inboundFiles = dedupeAttachmentFiles(detail?.files ?? []);
   const inboundFileByAttachmentKey = new Map(inboundFiles.map((file) => [artworkLinkKey({ fileId: file.id, fileRecordId: file.fileRecordId ?? null }), file]));
   const attachmentReviewGroups = [
     {
