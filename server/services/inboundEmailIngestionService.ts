@@ -36,6 +36,15 @@ export type InboundEmailAttachmentMetadata = {
   contentId?: string | null;
   partId?: string | null;
   detectedBy?: string[];
+  dedupeKey?: string | null;
+  dedupeStrategy?: string | null;
+  seenProviderMessageIds?: string[];
+  seenInMessages?: Array<{
+    messageId: string;
+    subject: string | null;
+    receivedAt: string | null;
+  }>;
+  seenInMessageCount?: number | null;
 };
 
 export type InboundEmailAttachmentContent = {
@@ -181,6 +190,23 @@ function attachmentMetadataFromUnknown(value: unknown): InboundEmailAttachmentMe
   const detectedBy = Array.isArray(value.detectedBy)
     ? value.detectedBy.filter((entry): entry is string => typeof entry === "string")
     : undefined;
+  const seenProviderMessageIds = Array.isArray(value.seenProviderMessageIds)
+    ? value.seenProviderMessageIds.filter((entry): entry is string => typeof entry === "string")
+    : undefined;
+  const seenInMessages = Array.isArray(value.seenInMessages)
+    ? value.seenInMessages
+      .map((entry) => {
+        if (!isRecord(entry)) return null;
+        const messageId = stringFromUnknown(entry.messageId);
+        if (!messageId) return null;
+        return {
+          messageId,
+          subject: stringFromUnknown(entry.subject),
+          receivedAt: stringFromUnknown(entry.receivedAt),
+        };
+      })
+      .filter((entry): entry is { messageId: string; subject: string | null; receivedAt: string | null } => Boolean(entry))
+    : undefined;
   if (!filename && !mimeType && !attachmentId && !contentDisposition && !contentId && !partId) return null;
   return {
     filename,
@@ -192,6 +218,11 @@ function attachmentMetadataFromUnknown(value: unknown): InboundEmailAttachmentMe
     contentId,
     partId,
     detectedBy,
+    dedupeKey: stringFromUnknown(value.dedupeKey),
+    dedupeStrategy: stringFromUnknown(value.dedupeStrategy),
+    seenProviderMessageIds,
+    seenInMessages,
+    seenInMessageCount: typeof value.seenInMessageCount === "number" ? value.seenInMessageCount : null,
   };
 }
 
@@ -220,6 +251,136 @@ function dedupeAttachmentCandidates(attachments: InboundEmailAttachmentMetadata[
     deduped.push(attachment);
   }
   return deduped;
+}
+
+function normalizeAttachmentDedupePart(value: string | number | null | undefined): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function attachmentProviderDedupeKey(
+  attachment: InboundEmailAttachmentMetadata,
+  providerMessageId: string | null | undefined,
+): string | null {
+  return attachment.attachmentId && providerMessageId
+    ? `provider:${normalizeAttachmentDedupePart(providerMessageId)}:${normalizeAttachmentDedupePart(attachment.attachmentId)}`
+    : null;
+}
+
+function attachmentMessageMetadataDedupeKey(
+  attachment: InboundEmailAttachmentMetadata,
+  providerMessageId: string | null | undefined,
+): string | null {
+  const filename = normalizeAttachmentDedupePart(attachment.filename);
+  const size = normalizeAttachmentDedupePart(attachment.size);
+  const mimeType = normalizeAttachmentDedupePart(attachment.mimeType);
+  const messageId = normalizeAttachmentDedupePart(providerMessageId);
+  if (!messageId || !filename || !size || !mimeType) return null;
+  return `message-file:${messageId}:${filename}:${size}:${mimeType}`;
+}
+
+function attachmentGlobalMetadataDedupeKey(attachment: InboundEmailAttachmentMetadata): string | null {
+  const filename = normalizeAttachmentDedupePart(attachment.filename);
+  const size = normalizeAttachmentDedupePart(attachment.size);
+  const mimeType = normalizeAttachmentDedupePart(attachment.mimeType);
+  if (!filename || !size || !mimeType) return null;
+  return `file:${filename}:${size}:${mimeType}`;
+}
+
+function attachmentDedupeKeysForCandidate(
+  attachment: InboundEmailAttachmentMetadata,
+  providerMessageId: string | null | undefined,
+): string[] {
+  return [
+    attachmentProviderDedupeKey(attachment, providerMessageId),
+    attachmentMessageMetadataDedupeKey(attachment, providerMessageId),
+    attachmentGlobalMetadataDedupeKey(attachment),
+  ].filter((key): key is string => Boolean(key));
+}
+
+function inboundFileGlobalDedupeKey(file: InboundOrderFile): string | null {
+  const filename = normalizeAttachmentDedupePart(file.sourceFilename);
+  const size = normalizeAttachmentDedupePart(file.sizeBytes);
+  const mimeType = normalizeAttachmentDedupePart(file.mimeType);
+  if (!filename || !size || !mimeType) return null;
+  return `file:${filename}:${size}:${mimeType}`;
+}
+
+function inboundFileDedupeKeys(file: InboundOrderFile): string[] {
+  const metadata = isRecord(file.metadataJson) ? file.metadataJson : {};
+  const providerMessageId = file.providerMessageId ?? stringFromUnknown(metadata.providerMessageId);
+  const providerAttachmentId = file.providerAttachmentId ?? stringFromUnknown(metadata.providerAttachmentId);
+  return [
+    stringFromUnknown(metadata.attachmentDedupeKey),
+    providerMessageId && providerAttachmentId
+      ? `provider:${normalizeAttachmentDedupePart(providerMessageId)}:${normalizeAttachmentDedupePart(providerAttachmentId)}`
+      : null,
+    providerMessageId
+      ? `message-file:${normalizeAttachmentDedupePart(providerMessageId)}:${normalizeAttachmentDedupePart(file.sourceFilename)}:${normalizeAttachmentDedupePart(file.sizeBytes)}:${normalizeAttachmentDedupePart(file.mimeType)}`
+      : null,
+    inboundFileGlobalDedupeKey(file),
+  ].filter((key): key is string => Boolean(key));
+}
+
+function dedupeThreadAttachmentMessages(messages: InboundEmailProviderMessage[]): InboundEmailProviderMessage[] {
+  const byKey = new Map<string, {
+    messageIndex: number;
+    attachmentIndex: number;
+    seenMessageIds: Set<string>;
+    seenInMessages: Array<{ messageId: string; subject: string | null; receivedAt: string | null }>;
+  }>();
+  const nextMessages = messages.map((message) => ({ ...message, attachments: [] as InboundEmailAttachmentMetadata[] }));
+
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+    const message = messages[messageIndex];
+    const providerMessageId = message.messageId;
+    for (const rawAttachment of message.attachments) {
+      const attachment = {
+        ...rawAttachment,
+        providerMessageId: rawAttachment.providerMessageId ?? providerMessageId,
+      };
+      const candidateKeys = attachmentDedupeKeysForCandidate(attachment, attachment.providerMessageId);
+      const key = candidateKeys[0] ?? `${messageIndex}:${nextMessages[messageIndex].attachments.length}`;
+      const globalKey = attachmentGlobalMetadataDedupeKey(attachment);
+      const seen = candidateKeys.map((candidateKey) => byKey.get(candidateKey)).find(Boolean);
+      const occurrence = {
+        messageId: providerMessageId,
+        subject: message.subject,
+        receivedAt: message.receivedAt ? message.receivedAt.toISOString() : null,
+      };
+      if (seen) {
+        if (!seen.seenMessageIds.has(providerMessageId)) {
+          seen.seenMessageIds.add(providerMessageId);
+          seen.seenInMessages.push(occurrence);
+        }
+        const retained = nextMessages[seen.messageIndex].attachments[seen.attachmentIndex];
+        retained.seenProviderMessageIds = Array.from(seen.seenMessageIds);
+        retained.seenInMessages = seen.seenInMessages;
+        retained.seenInMessageCount = seen.seenMessageIds.size;
+        continue;
+      }
+
+      const retained = {
+        ...attachment,
+        dedupeKey: key,
+        dedupeStrategy: key === globalKey ? "filename_size_mime" : attachment.attachmentId ? "provider_message_attachment" : "message_filename_size_mime",
+        seenProviderMessageIds: [providerMessageId],
+        seenInMessages: [occurrence],
+        seenInMessageCount: 1,
+      };
+      const entry = {
+        messageIndex,
+        attachmentIndex: nextMessages[messageIndex].attachments.length,
+        seenMessageIds: new Set([providerMessageId]),
+        seenInMessages: [occurrence],
+      };
+      for (const candidateKey of candidateKeys.length > 0 ? candidateKeys : [key]) {
+        byKey.set(candidateKey, entry);
+      }
+      nextMessages[messageIndex].attachments.push(retained);
+    }
+  }
+
+  return nextMessages;
 }
 
 type AttachmentIngestionDiagnostics = {
@@ -1908,6 +2069,7 @@ export class InboundEmailIngestionService {
       const sortedMessages = messages.slice().sort((a, b) => (
         (a.receivedAt?.getTime() ?? 0) - (b.receivedAt?.getTime() ?? 0)
       ));
+      const dedupedMessages = dedupeThreadAttachmentMessages(sortedMessages);
 
       let workingRecord = record;
       if (args.action === "reprocess_email" || messages.some((message) => message.messageId !== baseMessage.messageId || message.attachments.length > 0)) {
@@ -1916,13 +2078,13 @@ export class InboundEmailIngestionService {
           actorUserId: args.actorUserId,
           record,
           action: args.action,
-          messages: sortedMessages,
+          messages: dedupedMessages,
           threadId,
         }) ?? record;
       }
 
       const diagnosticsByMessage: AttachmentIngestionDiagnostics[] = [];
-      for (const message of sortedMessages) {
+      for (const message of dedupedMessages) {
         const cleanRecord = this.recordWithoutStoredAttachmentCandidates(workingRecord);
         const diagnostics = await this.ingestAttachmentsWithCallAudit({
           organizationId: args.organizationId,
@@ -1945,7 +2107,7 @@ export class InboundEmailIngestionService {
       const result = this.summarizeManualReprocessResult({
         action: args.action,
         record,
-        messages: sortedMessages,
+        messages: dedupedMessages,
         diagnosticsByMessage,
         threadId,
       });
@@ -2073,28 +2235,29 @@ export class InboundEmailIngestionService {
     messages: InboundEmailProviderMessage[];
     threadId: string | null;
   }): Promise<InboundOrderRecord | null> {
+    const messages = dedupeThreadAttachmentMessages(args.messages);
     const raw = isRecord(args.record.rawPayloadJson) ? args.record.rawPayloadJson : {};
     const normalized = isRecord(args.record.normalizedPayloadJson) ? args.record.normalizedPayloadJson : {};
     const extractedOrder = isRecord(args.record.extractedOrderJson) ? args.record.extractedOrderJson : {};
-    const latestMessage = args.messages.reduce<InboundEmailProviderMessage | null>((latest, message) => {
+    const latestMessage = messages.reduce<InboundEmailProviderMessage | null>((latest, message) => {
       if (!latest) return message;
       return (message.receivedAt?.getTime() ?? 0) > (latest.receivedAt?.getTime() ?? 0) ? message : latest;
     }, null);
-    const firstMessage = args.messages.reduce<InboundEmailProviderMessage | null>((first, message) => {
+    const firstMessage = messages.reduce<InboundEmailProviderMessage | null>((first, message) => {
       if (!first) return message;
       return (message.receivedAt?.getTime() ?? 0) < (first.receivedAt?.getTime() ?? 0) ? message : first;
     }, null);
     const sourceMessageId = args.record.sourceMessageId ?? args.record.sourceRecordId ?? null;
-    const primaryMessage = args.messages.find((message) => message.messageId === sourceMessageId) ?? latestMessage ?? args.messages[0] ?? null;
-    const combinedBodyText = args.messages
+    const primaryMessage = messages.find((message) => message.messageId === sourceMessageId) ?? latestMessage ?? messages[0] ?? null;
+    const combinedBodyText = messages
       .map((message) => message.bodyText)
       .filter((value): value is string => Boolean(value?.trim()))
       .join("\n\n--- Thread message ---\n\n");
-    const combinedBodyHtml = args.messages
+    const combinedBodyHtml = messages
       .map((message) => message.bodyHtml)
       .filter((value): value is string => Boolean(value?.trim()))
       .join("\n<hr />\n");
-    const combinedAttachments = args.messages.flatMap((message) => (
+    const combinedAttachments = messages.flatMap((message) => (
       message.attachments.map((attachment) => ({
         ...attachment,
         providerMessageId: attachment.providerMessageId ?? message.messageId,
@@ -2107,7 +2270,7 @@ export class InboundEmailIngestionService {
     ));
     const threadSummary = {
       id: args.threadId,
-      messageCount: args.messages.length,
+      messageCount: messages.length,
       firstMessageId: firstMessage?.messageId ?? null,
       latestMessageId: latestMessage?.messageId ?? null,
       firstMessageAt: firstMessage?.receivedAt ? firstMessage.receivedAt.toISOString() : null,
@@ -2116,7 +2279,7 @@ export class InboundEmailIngestionService {
       latestSenderEmail: latestMessage?.senderEmail ?? null,
       latestSubject: latestMessage?.subject ?? null,
       latestDisplaySubject: latestMessage ? displaySubjectForMessage(latestMessage) : null,
-      messages: args.messages.map((message) => ({
+      messages: messages.map((message) => ({
         messageId: message.messageId,
         threadId: message.threadId,
         subject: message.subject,
@@ -3035,28 +3198,29 @@ export class InboundEmailIngestionService {
   }): {
     patch: Pick<InboundOrderRecord, "rawPayloadJson" | "normalizedPayloadJson" | "extractedOrderJson">;
   } {
+    const messages = dedupeThreadAttachmentMessages(args.messages);
     const raw = isRecord(args.record.rawPayloadJson) ? args.record.rawPayloadJson : {};
     const normalized = isRecord(args.record.normalizedPayloadJson) ? args.record.normalizedPayloadJson : {};
     const extractedOrder = isRecord(args.record.extractedOrderJson) ? args.record.extractedOrderJson : {};
-    const latestMessage = args.messages.reduce<InboundEmailProviderMessage | null>((latest, message) => {
+    const latestMessage = messages.reduce<InboundEmailProviderMessage | null>((latest, message) => {
       if (!latest) return message;
       return (message.receivedAt?.getTime() ?? 0) > (latest.receivedAt?.getTime() ?? 0) ? message : latest;
     }, null);
-    const firstMessage = args.messages.reduce<InboundEmailProviderMessage | null>((first, message) => {
+    const firstMessage = messages.reduce<InboundEmailProviderMessage | null>((first, message) => {
       if (!first) return message;
       return (message.receivedAt?.getTime() ?? 0) < (first.receivedAt?.getTime() ?? 0) ? message : first;
     }, null);
     const sourceMessageId = args.record.sourceMessageId ?? args.record.sourceRecordId ?? null;
-    const primaryMessage = args.messages.find((message) => message.messageId === sourceMessageId) ?? latestMessage ?? args.messages[0] ?? null;
-    const combinedBodyText = args.messages
+    const primaryMessage = messages.find((message) => message.messageId === sourceMessageId) ?? latestMessage ?? messages[0] ?? null;
+    const combinedBodyText = messages
       .map((message) => message.bodyText)
       .filter((value): value is string => Boolean(value?.trim()))
       .join("\n\n--- Thread message ---\n\n");
-    const combinedBodyHtml = args.messages
+    const combinedBodyHtml = messages
       .map((message) => message.bodyHtml)
       .filter((value): value is string => Boolean(value?.trim()))
       .join("\n<hr />\n");
-    const combinedAttachments = args.messages.flatMap((message) => (
+    const combinedAttachments = messages.flatMap((message) => (
       message.attachments.map((attachment) => ({
         ...attachment,
         providerMessageId: attachment.providerMessageId ?? message.messageId,
@@ -3069,7 +3233,7 @@ export class InboundEmailIngestionService {
     ));
     const threadSummary = {
       id: args.threadId,
-      messageCount: args.messages.length,
+      messageCount: messages.length,
       firstMessageId: firstMessage?.messageId ?? null,
       latestMessageId: latestMessage?.messageId ?? null,
       firstMessageAt: firstMessage?.receivedAt ? firstMessage.receivedAt.toISOString() : null,
@@ -3078,7 +3242,7 @@ export class InboundEmailIngestionService {
       latestSenderEmail: latestMessage?.senderEmail ?? null,
       latestSubject: latestMessage?.subject ?? null,
       latestDisplaySubject: latestMessage ? displaySubjectForMessage(latestMessage) : null,
-      messages: args.messages.map((message) => ({
+      messages: messages.map((message) => ({
         messageId: message.messageId,
         threadId: message.threadId,
         subject: message.subject,
@@ -3184,7 +3348,8 @@ export class InboundEmailIngestionService {
     skippedReason: string | null;
   }): Promise<AttachmentIngestionDiagnostics[]> {
     const diagnostics: AttachmentIngestionDiagnostics[] = [];
-    for (const message of args.messages) {
+    const dedupedMessages = dedupeThreadAttachmentMessages(args.messages);
+    for (const message of dedupedMessages) {
       diagnostics.push(await this.ingestAttachmentsWithCallAudit({
         organizationId: args.organizationId,
         actorUserId: args.actorUserId,
@@ -3556,7 +3721,7 @@ export class InboundEmailIngestionService {
         reason: `Blocked file type .${extension} is never downloaded automatically.`,
       };
     }
-    if (!allowedForAutoDownload || !classification.safeToDownload) {
+    if (!allowedForAutoDownload || (!classification.safeToDownload && !zipFile)) {
       return {
         extension,
         blocked,
@@ -3616,6 +3781,50 @@ export class InboundEmailIngestionService {
     return updated;
   }
 
+  private async updateExistingAttachmentDedupeMetadata(args: {
+    organizationId: string;
+    record: InboundOrderRecord;
+    existingFile: InboundOrderFile;
+    metadataJson: Record<string, unknown>;
+  }): Promise<InboundOrderFile | null> {
+    const existingMetadata = isRecord(args.existingFile.metadataJson) ? args.existingFile.metadataJson : {};
+    const existingMessageIds = Array.isArray(existingMetadata.seenProviderMessageIds)
+      ? existingMetadata.seenProviderMessageIds.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    const nextMessageIds = Array.isArray(args.metadataJson.seenProviderMessageIds)
+      ? args.metadataJson.seenProviderMessageIds.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    const existingSeenMessages = Array.isArray(existingMetadata.seenInMessages) ? existingMetadata.seenInMessages : [];
+    const nextSeenMessages = Array.isArray(args.metadataJson.seenInMessages) ? args.metadataJson.seenInMessages : [];
+    const seenByMessageId = new Map<string, unknown>();
+    for (const entry of [...existingSeenMessages, ...nextSeenMessages]) {
+      if (!isRecord(entry)) continue;
+      const messageId = stringFromUnknown(entry.messageId);
+      if (messageId) seenByMessageId.set(messageId, entry);
+    }
+    const seenProviderMessageIds = Array.from(new Set([...existingMessageIds, ...nextMessageIds]));
+    return this.inboundRepository.updateFile({
+      organizationId: args.organizationId,
+      inboundRecordId: args.record.id,
+      fileId: args.existingFile.id,
+      patch: {
+        metadataJson: {
+          ...existingMetadata,
+          attachmentDedupeKey: existingMetadata.attachmentDedupeKey ?? args.metadataJson.attachmentDedupeKey ?? null,
+          attachmentDedupeKeys: Array.from(new Set([
+            ...(Array.isArray(existingMetadata.attachmentDedupeKeys) ? existingMetadata.attachmentDedupeKeys.filter((entry): entry is string => typeof entry === "string") : []),
+            ...(Array.isArray(args.metadataJson.attachmentDedupeKeys) ? args.metadataJson.attachmentDedupeKeys.filter((entry): entry is string => typeof entry === "string") : []),
+          ])),
+          attachmentDedupeStrategy: existingMetadata.attachmentDedupeStrategy ?? args.metadataJson.attachmentDedupeStrategy ?? null,
+          duplicateCollapsed: true,
+          seenProviderMessageIds,
+          seenInMessages: Array.from(seenByMessageId.values()),
+          seenInMessageCount: seenProviderMessageIds.length || seenByMessageId.size || 1,
+        },
+      },
+    });
+  }
+
   private async persistStoredAttachment(args: {
     tx: any;
     organizationId: string;
@@ -3651,6 +3860,14 @@ export class InboundEmailIngestionService {
   }): Promise<AttachmentIngestionDiagnostics> {
     const attachmentCandidates = this.attachmentCandidatesForIngestion(args.message, args.record);
     const trustDecision = await this.resolveSenderTrust(args.organizationId, args.message);
+    const existingFiles = await this.inboundRepository.listFiles(args.organizationId, args.record.id);
+    const existingFilesByDedupeKey = new Map<string, InboundOrderFile>();
+    const rememberFile = (file: InboundOrderFile) => {
+      for (const key of inboundFileDedupeKeys(file)) {
+        if (!existingFilesByDedupeKey.has(key)) existingFilesByDedupeKey.set(key, file);
+      }
+    };
+    existingFiles.forEach(rememberFile);
     const diagnostics: AttachmentIngestionDiagnostics = {
       messageId: args.message.messageId,
       subject: args.message.subject,
@@ -3674,6 +3891,8 @@ export class InboundEmailIngestionService {
     for (const attachment of attachmentCandidates) {
       const providerAttachmentId = attachment.attachmentId ?? null;
       const providerMessageId = attachment.providerMessageId ?? args.message.messageId;
+      const dedupeKeys = attachmentDedupeKeysForCandidate(attachment, providerMessageId);
+      const attachmentDedupeKey = attachment.dedupeKey ?? dedupeKeys[0] ?? attachmentGlobalMetadataDedupeKey(attachment) ?? null;
       const classification = classifyInboundEmailAttachmentForMessage(attachment, args.message);
       const safetyDecision = this.evaluateAttachmentSafety(attachment, classification, trustDecision);
       const filename = normalizeAttachmentFileName(attachment.filename);
@@ -3706,6 +3925,16 @@ export class InboundEmailIngestionService {
         blockedFileType: safetyDecision.blocked,
         allowedFileType: safetyDecision.allowedForAutoDownload,
         downloadAttemptAllowed: safetyDecision.downloadAllowed,
+        attachmentDedupeKey,
+        attachmentDedupeKeys: dedupeKeys,
+        attachmentDedupeStrategy: attachment.dedupeStrategy ?? (attachmentDedupeKey?.startsWith("file:") ? "filename_size_mime" : "provider_message_attachment"),
+        seenProviderMessageIds: attachment.seenProviderMessageIds ?? [providerMessageId],
+        seenInMessages: attachment.seenInMessages ?? [{
+          messageId: providerMessageId,
+          subject: args.message.subject,
+          receivedAt: args.message.receivedAt ? args.message.receivedAt.toISOString() : null,
+        }],
+        seenInMessageCount: attachment.seenInMessageCount ?? 1,
       };
 
       let existingFile: InboundOrderFile | null = null;
@@ -3733,23 +3962,43 @@ export class InboundEmailIngestionService {
           if (existing) {
             const existingState = stringFromUnknown((existing.metadataJson as Record<string, unknown> | null)?.attachmentState);
             if (existing.fileRecordId || existingState === "blocked_file_type" || existingState === "scan_pending" || existingState === "quarantined") {
+              await this.updateExistingAttachmentDedupeMetadata({
+                organizationId: args.organizationId,
+                record: args.record,
+                existingFile: existing,
+                metadataJson,
+              });
               diagnostics.skippedExistingProviderAttachments += 1;
               continue;
             }
             existingFile = existing;
           }
         }
+        if (!existingFile) {
+          existingFile = dedupeKeys.map((key) => existingFilesByDedupeKey.get(key)).find(Boolean) ?? null;
+        }
+        if (existingFile) {
+          const existingState = stringFromUnknown((existingFile.metadataJson as Record<string, unknown> | null)?.attachmentState);
+          if (existingFile.fileRecordId || existingState === "blocked_file_type" || existingState === "scan_pending" || existingState === "quarantined") {
+            await this.updateExistingAttachmentDedupeMetadata({
+              organizationId: args.organizationId,
+              record: args.record,
+              existingFile,
+              metadataJson,
+            });
+            diagnostics.skippedExistingProviderAttachments += 1;
+            continue;
+          }
+        }
 
-        if (!safetyDecision.downloadAllowed || !classification.safeToDownload || !args.adapter.downloadAttachment || !providerAttachmentId) {
-          const unsupportedMimeReason = !safetyDecision.allowedForAutoDownload || !classification.safeToDownload ? safetyDecision.reason : null;
+        if (!safetyDecision.downloadAllowed || !args.adapter.downloadAttachment || !providerAttachmentId) {
+          const unsupportedMimeReason = !safetyDecision.allowedForAutoDownload ? safetyDecision.reason : null;
           const failureReason = !safetyDecision.downloadAllowed
             ? safetyDecision.reason
-            : !classification.safeToDownload
-              ? classification.reason
             : !args.adapter.downloadAttachment
               ? "Attachment metadata captured; provider download is not available."
               : "Attachment metadata captured; Gmail attachment id is missing.";
-          await this.persistMetadataOnlyAttachment({
+          const persisted = await this.persistMetadataOnlyAttachment({
             organizationId: args.organizationId,
             record: args.record,
             existingFile,
@@ -3777,6 +4026,7 @@ export class InboundEmailIngestionService {
               createdOrderAttachmentId: null,
             },
           });
+          rememberFile(persisted);
           diagnostics.attachmentRowsCreated += 1;
           diagnostics.metadataOnlyRowsCreated += 1;
           diagnostics.failures.push({
@@ -3845,6 +4095,7 @@ export class InboundEmailIngestionService {
             },
           }),
         });
+        rememberFile(storageResult.linkedRecord);
 
         await this.inboundRepository.createEvent({
           organizationId: args.organizationId,
@@ -3881,7 +4132,7 @@ export class InboundEmailIngestionService {
           filename,
           error: message,
         });
-        await this.persistMetadataOnlyAttachment({
+        const persisted = await this.persistMetadataOnlyAttachment({
           organizationId: args.organizationId,
           record: args.record,
           existingFile,
@@ -3911,6 +4162,7 @@ export class InboundEmailIngestionService {
             createdOrderAttachmentId: null,
           },
         });
+        rememberFile(persisted);
         diagnostics.attachmentRowsCreated += 1;
         diagnostics.metadataOnlyRowsCreated += 1;
         diagnostics.downloadFailures += 1;

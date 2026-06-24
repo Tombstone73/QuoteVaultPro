@@ -1879,6 +1879,113 @@ describe("InboundOrdersPage", () => {
     });
   });
 
+  test("PO artwork grouping uses deduped attachments and preserves manual duplicate override", async () => {
+    const duplicateFiles = [
+      {
+        id: "file_original",
+        organizationId: "org_1",
+        inboundRecordId: "inbound_1",
+        inboundLineItemId: null,
+        fileRecordId: "file_record_original",
+        sourceFilename: "PO 151793.pdf",
+        role: "po",
+        mimeType: "application/pdf",
+        sizeBytes: 44_000,
+        checksum: null,
+        status: "available",
+        providerAttachmentId: "att_a",
+        providerMessageId: "gmail_msg_1",
+        contentDisposition: "attachment",
+        metadataJson: {
+          seenProviderMessageIds: ["gmail_msg_1", "gmail_msg_2"],
+          seenInMessageCount: 2,
+          attachmentClassification: {
+            classification: "PO",
+            confidence: 91,
+            reasons: ["filename contains PO"],
+            source: "automatic",
+          },
+        },
+        reviewNotes: null,
+        createdQuoteAttachmentId: null,
+        createdOrderAttachmentId: null,
+        createdAt: "2026-06-09T12:02:00.000Z",
+        updatedAt: "2026-06-09T12:02:00.000Z",
+      },
+      {
+        id: "file_duplicate",
+        organizationId: "org_1",
+        inboundRecordId: "inbound_1",
+        inboundLineItemId: null,
+        fileRecordId: "file_record_duplicate",
+        sourceFilename: "PO 151793.pdf",
+        role: "po",
+        mimeType: "application/pdf",
+        sizeBytes: 44_000,
+        checksum: null,
+        status: "available",
+        providerAttachmentId: "att_b",
+        providerMessageId: "gmail_msg_2",
+        contentDisposition: "attachment",
+        metadataJson: {
+          seenProviderMessageIds: ["gmail_msg_1", "gmail_msg_2"],
+          seenInMessageCount: 2,
+          attachmentClassification: {
+            classification: "PO",
+            confidence: 91,
+            reasons: ["filename contains PO"],
+            source: "automatic",
+          },
+        },
+        reviewNotes: null,
+        createdQuoteAttachmentId: null,
+        createdOrderAttachmentId: null,
+        createdAt: "2026-06-09T12:03:00.000Z",
+        updatedAt: "2026-06-09T12:03:00.000Z",
+      },
+    ];
+    const manualDuplicateLink = {
+      fileId: "file_duplicate",
+      fileRecordId: "file_record_duplicate",
+      filename: "PO 151793.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 44_000,
+      role: "artwork",
+      source: "unresolved",
+      confidence: 100,
+      reason: "Staff manually classified as Artwork.",
+      classification: "ARTWORK",
+      classificationConfidence: 100,
+      classificationReasons: ["Staff manually classified as Artwork."],
+      classificationSource: "manual_override",
+      automaticClassification: "PO",
+      automaticClassificationConfidence: 91,
+      automaticClassificationReasons: ["filename contains PO"],
+      manualOverride: true,
+    };
+    const parsed = parsedDraft();
+    const review = reviewDraft(parsed, { unassignedAttachments: [manualDuplicateLink] });
+    setupParsedInboundReview({ parsed, review, detailOverrides: { files: duplicateFiles } });
+
+    renderPage();
+    await waitForText("Operational Review");
+
+    await waitForCondition(() => (
+      Array.from(container.querySelectorAll("select")).filter((select) => (
+        select.getAttribute("aria-label") === "Classify PO 151793.pdf"
+      )).length === 1
+    ), "deduped attachment classification control rendered once");
+    const classificationSelect = Array.from(container.querySelectorAll("select")).find((select) => (
+      select.getAttribute("aria-label") === "Classify PO 151793.pdf"
+    )) as HTMLSelectElement;
+    expect(classificationSelect.value).toBe("ARTWORK");
+
+    const artworkSelect = Array.from(container.querySelectorAll("select")).find((select) => (
+      select.getAttribute("aria-label") === "Attach artwork to line item 1"
+    )) as HTMLSelectElement;
+    expect(Array.from(artworkSelect.options).filter((option) => option.textContent === "PO 151793.pdf")).toHaveLength(1);
+  });
+
   test("shows disabled state and does not load the queue when inbound email intake is off", async () => {
     apiFetchMock.mockImplementation(async (url: any) => {
       const path = String(url);
