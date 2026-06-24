@@ -161,6 +161,77 @@ function numberValue(value: string | null): number | null {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
 }
 
+function moneyCents(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const match = String(value).match(/\$?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)/);
+  if (!match) return null;
+  const amount = Number(match[1].replace(/,/g, ""));
+  return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 100) : null;
+}
+
+function firstMoneyCentsWithSource(text: string, patterns: RegExp[]): { cents: number; sourceText: string } | null {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const raw = match?.[1] ?? match?.[0] ?? null;
+    const cents = moneyCents(raw);
+    if (cents != null) {
+      return { cents, sourceText: normalizeWhitespace(match?.[0] ?? raw ?? "") };
+    }
+  }
+  return null;
+}
+
+function extractPurchaseOrderPricing(text: string, sourceDocument: string | null): PurchaseOrderSummary["pricing"] {
+  const approved = firstMoneyCentsWithSource(text, [
+    /\bapproved\s+price\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+    /\bapproved\s*(?:amount|total)\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+  ]);
+  const unit = firstMoneyCentsWithSource(text, [
+    /\bunit\s+price\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+    /\bunit\s+cost\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+    /\bprice\s+each\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+    /\b(?:ea|each)\.?\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+  ]);
+  const extended = firstMoneyCentsWithSource(text, [
+    /\bextended\s+price\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+    /\bline\s+total\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+    /\bext\.?\s*(?:price|amount)?\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+  ]);
+  const rush = firstMoneyCentsWithSource(text, [
+    /\brush\s+(?:fee|charge)\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+    /\bexpedite(?:d)?\s+(?:fee|charge)\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+  ]);
+  const total = firstMoneyCentsWithSource(text, [
+    /\bgrand\s+total\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+    /\border\s+total\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+    /\btotal\s+(?:price|amount|due)\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+    /\btotal\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+  ]);
+  const alternatePricingNotes = Array.from(new Set([
+    ...Array.from(text.matchAll(/\b(?:alternate|alt\.?)\s+pricing\s*[:#]?\s*(.{3,160})/gi)).map((match) => normalizeWhitespace(match[1] ?? "")),
+    ...Array.from(text.matchAll(/\bprice\s+notes?\s*[:#]?\s*(.{3,160})/gi)).map((match) => normalizeWhitespace(match[1] ?? "")),
+  ].filter(Boolean)));
+  const evidenceText = [
+    approved?.sourceText,
+    unit?.sourceText,
+    extended?.sourceText,
+    rush?.sourceText,
+    total?.sourceText,
+    ...alternatePricingNotes,
+  ].filter(Boolean).join("; ") || null;
+  if (!approved && !unit && !extended && !rush && !total && alternatePricingNotes.length === 0) return null;
+  return {
+    approvedPriceCents: approved?.cents ?? null,
+    unitPriceCents: unit?.cents ?? null,
+    extendedPriceCents: extended?.cents ?? null,
+    rushFeesCents: rush?.cents ?? null,
+    totalPriceCents: total?.cents ?? null,
+    alternatePricingNotes,
+    evidenceText,
+    sourceDocument,
+  };
+}
+
 function extractQuantity(text: string): number | null {
   return numberValue(firstMatch(text, [
     /\bqty\.?\s*[:#]?\s*(\d+(?:,\d{3})*)\b/i,
@@ -331,6 +402,7 @@ export function extractPurchaseOrderFields(args: {
     /\bdeliver(?:y)?\s*[:#]?\s*(.{3,200})/i,
   ]);
   const price = firstMatchWithSource(text, [/(\$\s*\d+(?:,\d{3})*(?:\.\d{2})?)/]);
+  const pricing = extractPurchaseOrderPricing(text, sourceDocument ?? null);
   const versionCount = firstMatchWithSource(text, [/\b(\d+)\s+versions?\b/i]);
   const fieldSources: PurchaseOrderSummary["fieldSources"] = {};
   if (poNumber) fieldSources.poNumber = source(poNumber.value, poNumber.sourceText, 98, sourceDocument);
@@ -364,6 +436,7 @@ export function extractPurchaseOrderFields(args: {
     ].filter((item): item is string => Boolean(item)),
     shippingNotes: shippingNotes?.value ?? null,
     price: price?.value ?? null,
+    pricing,
     versionCount: numberValue(versionCount?.value ?? null),
     dateCandidates,
     fieldSources,

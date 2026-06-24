@@ -33,6 +33,7 @@ import {
   type InboundSenderTrustStatus,
   type InboundSenderTrustSummary,
   type InboundOrderProductOptionsResponse,
+  type InboundOrderLinePricingReview,
   type ManualInboundOrderCreateRequest,
 } from "@shared/inboundOrdersApi";
 import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
@@ -485,6 +486,92 @@ function normalizeDimensionToken(value: number): string | null {
 
 function artworkLinkKey(link: Pick<InboundOrderArtworkLink, "fileId" | "fileRecordId">): string {
   return link.fileRecordId ? `record:${link.fileRecordId}` : `file:${link.fileId}`;
+}
+
+function centsFromUnknown(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return Math.round(value);
+  if (typeof value !== "string") return null;
+  const match = value.match(/\$?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)/);
+  if (!match) return null;
+  const numeric = Number(match[1].replace(/,/g, ""));
+  return Number.isFinite(numeric) && numeric >= 0 ? Math.round(numeric * 100) : null;
+}
+
+function formatCents(value: number | null | undefined): string {
+  return value == null ? "-" : `$${(value / 100).toFixed(2)}`;
+}
+
+function pricingSourceEvidenceForPoSummary(
+  item: InboundOrderParsedDraft["evidence"]["items"][number],
+): string[] {
+  const summary = item.poSummary;
+  const evidence: string[] = [];
+  const pricing = summary?.pricing ?? null;
+  if (pricing?.sourceDocument || item.fileName) evidence.push(`Source: ${pricing?.sourceDocument ?? item.fileName}`);
+  if (pricing?.evidenceText) evidence.push(pricing.evidenceText);
+  const fieldSource = summary?.fieldSources?.price;
+  if (fieldSource?.sourceText && !evidence.includes(fieldSource.sourceText)) evidence.push(fieldSource.sourceText);
+  if (summary?.price && !evidence.some((entry) => entry.includes(summary.price!))) evidence.push(`PO price: ${summary.price}`);
+  return Array.from(new Set(evidence.filter(Boolean))).slice(0, 6);
+}
+
+function firstPoPricingForLine(
+  draft: InboundOrderParsedDraft | null,
+  lineItemIndex: number,
+): {
+  pricing: NonNullable<NonNullable<InboundOrderParsedDraft["evidence"]["items"][number]["poSummary"]>["pricing"]>;
+  sourceEvidence: string[];
+} | null {
+  if (!draft) return null;
+  const poItems = draft.evidence.items.filter((item) => item.documentType === "purchase_order" && item.poSummary);
+  const exactQuantity = draft.lineItems[lineItemIndex]?.quantity ?? null;
+  const matched = poItems.find((item) => {
+    const summary = item.poSummary;
+    if (!summary?.pricing) return false;
+    return exactQuantity == null || summary.quantity == null || summary.quantity === exactQuantity;
+  }) ?? poItems.find((item) => item.poSummary?.pricing);
+  const pricing = matched?.poSummary?.pricing ?? null;
+  return pricing ? { pricing, sourceEvidence: pricingSourceEvidenceForPoSummary(matched!) } : null;
+}
+
+function preservePricingResolution(
+  previous: InboundOrderLinePricingReview | null | undefined,
+  next: InboundOrderLinePricingReview,
+): InboundOrderLinePricingReview {
+  if (!previous?.acknowledged || !previous.resolution) return next;
+  const sameComparison = previous.poPriceCents === next.poPriceCents
+    && previous.systemPriceCents === next.systemPriceCents
+    && previous.differenceCents === next.differenceCents
+    && previous.comparisonType === next.comparisonType;
+  if (!sameComparison) return next;
+  return {
+    ...next,
+    status: next.status === "mismatch" ? "resolved" : next.status,
+    acknowledged: true,
+    resolution: previous.resolution,
+    resolutionNote: previous.resolutionNote ?? null,
+  };
+}
+
+function pricingReviewAuditSummary(payload: InboundOrderReviewDraftPayload): Record<string, unknown> {
+  const reviews = payload.reviewedLineItemsJson
+    .map((lineItem, index) => ({ index, productName: lineItem.productName ?? lineItem.sourceText ?? null, review: lineItem.pricingReviewJson }))
+    .filter((entry) => entry.review && entry.review.status !== "not_available");
+  return {
+    total: reviews.length,
+    mismatches: reviews.filter((entry) => entry.review?.status === "mismatch").length,
+    resolved: reviews.filter((entry) => entry.review?.status === "resolved").length,
+    items: reviews.map((entry) => ({
+      lineItemIndex: entry.index,
+      productName: entry.productName,
+      status: entry.review?.status,
+      acknowledged: entry.review?.acknowledged ?? false,
+      resolution: entry.review?.resolution ?? null,
+      poPriceCents: entry.review?.poPriceCents ?? null,
+      systemPriceCents: entry.review?.systemPriceCents ?? null,
+      differenceCents: entry.review?.differenceCents ?? null,
+    })),
+  };
 }
 
 function sanitizeDiagnosticValue(value: unknown): unknown {
@@ -2315,10 +2402,15 @@ export class InboundOrderService {
     }
 
     const sourceAttempt = await this.resolveReviewDraftSourceAttempt(args.organizationId, args.inboundRecordId, existingSnapshot, latestAttempt);
-    const payload = this.normalizeReviewDraftPayload(record, inboundOrderReviewDraftPayloadSchema.parse({
+    const normalizedPayload = this.normalizeReviewDraftPayload(record, inboundOrderReviewDraftPayloadSchema.parse({
       ...args.draft,
       status: "draft",
     }));
+    const payload = await this.enrichReviewDraftPricingReview({
+      organizationId: args.organizationId,
+      parsedDraft: this.parsedDraftFromAttempt(latestAttempt),
+      payload: normalizedPayload,
+    });
     const snapshot = await this.persistEditableReviewDraftSnapshot({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
@@ -2347,7 +2439,12 @@ export class InboundOrderService {
     const baseDto = existingSnapshot
       ? this.reviewDraftDtoFromSnapshot(record, existingSnapshot, latestAttempt, false)
       : await this.getReviewDraft(args);
-    const errors = await this.validateReviewDraftReadyForMarkReady(args.organizationId, baseDto);
+    const pricedBaseDto = await this.enrichReviewDraftPricingReview({
+      organizationId: args.organizationId,
+      parsedDraft: this.parsedDraftFromAttempt(latestAttempt),
+      payload: baseDto,
+    });
+    const errors = await this.validateReviewDraftReadyForMarkReady(args.organizationId, pricedBaseDto);
     if (errors.length > 0) {
       throw new InboundOrderReviewDraftValidationError("Review draft is not ready to convert.", errors);
     }
@@ -2355,14 +2452,15 @@ export class InboundOrderService {
     const sourceAttempt = await this.resolveReviewDraftSourceAttempt(args.organizationId, args.inboundRecordId, existingSnapshot, latestAttempt);
     const payload = this.normalizeReviewDraftPayload(record, inboundOrderReviewDraftPayloadSchema.parse({
       status: "ready_to_convert",
-      reviewedCustomerJson: baseDto.reviewedCustomerJson,
-      reviewedOrderJson: baseDto.reviewedOrderJson,
-      reviewedLineItemsJson: baseDto.reviewedLineItemsJson,
-      reviewedArtworkJson: baseDto.reviewedArtworkJson,
-      missingDecisionsJson: baseDto.missingDecisionsJson,
-      warningsJson: baseDto.warningsJson,
-      unsupportedRequestsJson: baseDto.unsupportedRequestsJson,
-      reviewNotes: baseDto.reviewNotes,
+      reviewedCustomerJson: pricedBaseDto.reviewedCustomerJson,
+      reviewedOrderJson: pricedBaseDto.reviewedOrderJson,
+      reviewedLineItemsJson: pricedBaseDto.reviewedLineItemsJson,
+      reviewedArtworkJson: pricedBaseDto.reviewedArtworkJson,
+      missingDecisionsJson: pricedBaseDto.missingDecisionsJson,
+      warningsJson: pricedBaseDto.warningsJson,
+      unsupportedRequestsJson: pricedBaseDto.unsupportedRequestsJson,
+      customerIntelligenceJson: pricedBaseDto.customerIntelligenceJson,
+      reviewNotes: pricedBaseDto.reviewNotes,
     }));
     const snapshot = await this.persistEditableReviewDraftSnapshot({
       organizationId: args.organizationId,
@@ -2768,7 +2866,15 @@ export class InboundOrderService {
     }
 
     const latestSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
-    const payload = latestSnapshot ? this.reviewDraftPayloadFromSnapshot(latestSnapshot) : null;
+    const latestParseAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
+    const rawPayload = latestSnapshot ? this.reviewDraftPayloadFromSnapshot(latestSnapshot) : null;
+    const payload = rawPayload
+      ? await this.enrichReviewDraftPricingReview({
+        organizationId: args.organizationId,
+        parsedDraft: this.parsedDraftFromAttempt(latestParseAttempt),
+        payload: rawPayload,
+      })
+      : null;
     const validationErrors = await this.validateInboundOrderConversion(detail, payload);
 
     if (validationErrors.length > 0 || !payload || !latestSnapshot) {
@@ -2778,7 +2884,6 @@ export class InboundOrderService {
     }
 
     try {
-      const latestParseAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
       const convertWithRepositories = async (
         conversionRepository: typeof this.repository,
         orderRepository: typeof this.orderRepository,
@@ -3163,6 +3268,7 @@ export class InboundOrderService {
           optionSelectionsJson: null,
           pbv2TreeVersionId: null,
           pbv2OptionSuggestions: [],
+          pricingReviewJson: null,
           artworkLinks: [],
           notes: null,
         });
@@ -3206,6 +3312,7 @@ export class InboundOrderService {
         optionSelectionsJson,
         pbv2TreeVersionId,
         pbv2OptionSuggestions,
+        pricingReviewJson: null,
         artworkLinks: [],
         notes: null,
       });
@@ -3216,7 +3323,7 @@ export class InboundOrderService {
       reviewedLineItemsJson,
     });
 
-    return inboundOrderReviewDraftPayloadSchema.parse({
+    const payload = inboundOrderReviewDraftPayloadSchema.parse({
       status: "draft",
       reviewedCustomerJson: {
         sourceName: draft.customer.sourceName,
@@ -3268,6 +3375,11 @@ export class InboundOrderService {
       unsupportedRequestsJson,
       customerIntelligenceJson,
       reviewNotes: null,
+    });
+    return this.enrichReviewDraftPricingReview({
+      organizationId: args.organizationId,
+      parsedDraft: draft,
+      payload,
     });
   }
 
@@ -3441,11 +3553,33 @@ export class InboundOrderService {
       const staffLinks = existingLineItem.artworkLinks.filter((link) => (
         link.source === "staff_selected" || link.source === "staff_removed"
       ));
-      if (staffLinks.length === 0) return lineItem;
+      const pricingReviewJson = existingLineItem.pricingReviewJson?.acknowledged
+        ? preservePricingResolution(existingLineItem.pricingReviewJson, lineItem.pricingReviewJson ?? {
+          status: "not_available",
+          message: null,
+          acknowledged: false,
+          resolution: null,
+          resolutionNote: null,
+          poPriceCents: null,
+          poUnitPriceCents: null,
+          poExtendedPriceCents: null,
+          poRushFeesCents: null,
+          poTotalPriceCents: null,
+          systemPriceCents: null,
+          systemUnitPriceCents: null,
+          differenceCents: null,
+          comparisonType: null,
+          sourceEvidence: [],
+          alternatePricingNotes: [],
+          evaluatedAt: null,
+        })
+        : lineItem.pricingReviewJson;
+      if (staffLinks.length === 0) return { ...lineItem, pricingReviewJson };
       const staffKeys = new Set(staffLinks.map((link) => artworkLinkKey(link)));
       const retainedLinks = lineItem.artworkLinks.filter((link) => !staffKeys.has(artworkLinkKey(link)));
       return {
         ...lineItem,
+        pricingReviewJson,
         artworkLinks: [...retainedLinks, ...staffLinks],
       };
     });
@@ -3472,6 +3606,102 @@ export class InboundOrderService {
           ...Array.from(manualUnassignedByKey.values()).filter((link) => !refreshedUnassignedKeys.has(artworkLinkKey(link))),
         ],
       },
+    });
+  }
+
+  private async enrichReviewDraftPricingReview(args: {
+    organizationId: string;
+    parsedDraft: InboundOrderParsedDraft | null;
+    payload: InboundOrderReviewDraftPayload;
+  }): Promise<InboundOrderReviewDraftPayload> {
+    const reviewedLineItemsJson: InboundOrderReviewDraftPayload["reviewedLineItemsJson"] = [];
+    for (let index = 0; index < args.payload.reviewedLineItemsJson.length; index += 1) {
+      const lineItem = args.payload.reviewedLineItemsJson[index];
+      const poPricing = firstPoPricingForLine(args.parsedDraft, index);
+      const quantity = lineItem.quantity ?? 1;
+      let nextReview: InboundOrderLinePricingReview = {
+        status: "not_available",
+        message: null,
+        acknowledged: false,
+        resolution: null,
+        resolutionNote: null,
+        poPriceCents: null,
+        poUnitPriceCents: poPricing?.pricing.unitPriceCents ?? null,
+        poExtendedPriceCents: poPricing?.pricing.extendedPriceCents ?? null,
+        poRushFeesCents: poPricing?.pricing.rushFeesCents ?? null,
+        poTotalPriceCents: poPricing?.pricing.totalPriceCents ?? null,
+        systemPriceCents: null,
+        systemUnitPriceCents: null,
+        differenceCents: null,
+        comparisonType: null,
+        sourceEvidence: poPricing?.sourceEvidence ?? [],
+        alternatePricingNotes: poPricing?.pricing.alternatePricingNotes ?? [],
+        evaluatedAt: new Date().toISOString(),
+      };
+
+      if (poPricing && lineItem.selectedProductId && lineItem.quantity) {
+        try {
+          const pricing = await this.priceLineItemFn({
+            organizationId: args.organizationId,
+            productId: lineItem.selectedProductId,
+            quantity: lineItem.quantity,
+            widthIn: lineItem.width ?? undefined,
+            heightIn: lineItem.height ?? undefined,
+            pbv2ExplicitSelections: this.normalizePbv2Selections(lineItem.optionSelectionsJson).selected,
+            pbv2TreeVersionIdOverride: lineItem.pbv2TreeVersionId ?? undefined,
+          });
+          const systemPriceCents = Number.isFinite(pricing.lineTotalCents) ? Math.round(pricing.lineTotalCents) : null;
+          const systemUnitPriceCents = systemPriceCents != null && quantity > 0 ? Math.round(systemPriceCents / quantity) : null;
+          const comparisons = [
+            { type: "total" as const, po: poPricing.pricing.totalPriceCents, system: systemPriceCents },
+            { type: "extended" as const, po: poPricing.pricing.extendedPriceCents, system: systemPriceCents },
+            { type: "approved" as const, po: poPricing.pricing.approvedPriceCents, system: systemPriceCents },
+            { type: "unit" as const, po: poPricing.pricing.unitPriceCents, system: systemUnitPriceCents },
+          ]
+            .filter((comparison): comparison is {
+              type: "total" | "extended" | "approved" | "unit";
+              po: number;
+              system: number;
+            } => comparison.po != null && comparison.system != null)
+            .map((comparison) => ({
+              ...comparison,
+              differenceCents: comparison.system - comparison.po,
+            }));
+          const selectedComparison = comparisons.find((comparison) => Math.abs(comparison.differenceCents) >= 1) ?? comparisons[0] ?? null;
+          if (selectedComparison) {
+            const mismatch = Math.abs(selectedComparison.differenceCents) >= 1;
+            nextReview = {
+              ...nextReview,
+              status: mismatch ? "mismatch" : "matched",
+              message: mismatch ? "PO price differs from system price." : null,
+              poPriceCents: selectedComparison.po,
+              systemPriceCents,
+              systemUnitPriceCents,
+              differenceCents: selectedComparison.differenceCents,
+              comparisonType: selectedComparison.type,
+              sourceEvidence: [
+                ...nextReview.sourceEvidence,
+                `System ${selectedComparison.type === "unit" ? "unit" : "line"} price: ${formatCents(selectedComparison.system)}`,
+              ],
+            };
+          }
+        } catch {
+          nextReview = {
+            ...nextReview,
+            message: "System pricing unavailable for PO price comparison.",
+          };
+        }
+      }
+
+      reviewedLineItemsJson.push({
+        ...lineItem,
+        pricingReviewJson: preservePricingResolution(lineItem.pricingReviewJson, nextReview),
+      });
+    }
+
+    return inboundOrderReviewDraftPayloadSchema.parse({
+      ...args.payload,
+      reviewedLineItemsJson,
     });
   }
 
@@ -4042,6 +4272,9 @@ export class InboundOrderService {
       if (this.lineItemRequiresDimensions(lineItem) && (!lineItem.width || !lineItem.height)) {
         errors.push(`${label}: width and height are required for this product type.`);
       }
+      if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
+        errors.push(`${label}: PO price differs from system price. Acknowledge or resolve pricing before conversion.`);
+      }
     }
 
     payload.missingDecisionsJson.forEach((decision) => {
@@ -4075,6 +4308,19 @@ export class InboundOrderService {
         const reason = stringFromUnknown((finding as any).reason);
         return `Unsupported request${category ? ` (${category})` : ""}: ${requestedText}${reason ? ` - ${reason}` : ""}`;
       });
+    const pricingReviewNotes = payload.reviewedLineItemsJson.flatMap((lineItem, index) => {
+      const review = lineItem.pricingReviewJson;
+      if (!review || (review.status !== "mismatch" && review.status !== "resolved")) return [];
+      return [
+        [
+          `Pricing review line ${index + 1}: ${review.message ?? "PO price review captured."}`,
+          `PO ${formatCents(review.poPriceCents)} vs system ${formatCents(review.systemPriceCents)}.`,
+          review.differenceCents != null ? `Difference ${formatCents(Math.abs(review.differenceCents))}.` : null,
+          review.resolution ? `Resolution: ${review.resolution}.` : null,
+          review.resolutionNote ? `Note: ${review.resolutionNote}` : null,
+        ].filter(Boolean).join(" "),
+      ];
+    });
     const reviewedNotes = [
       "Created from inbound reviewed draft.",
       `Inbound record: ${detail.record.id}`,
@@ -4087,6 +4333,7 @@ export class InboundOrderService {
       artwork.status === "missing" ? "Artwork: missing at conversion." : null,
       artwork.notes ? `Artwork notes: ${artwork.notes}` : null,
       ...unsupportedRequestNotes,
+      ...pricingReviewNotes,
     ].filter(Boolean).join("\n");
 
     const lineItems: CreateOrderLineItemInput[] = [];
@@ -4248,6 +4495,7 @@ export class InboundOrderService {
             updatedByUserId: args.actorUserId,
             initializedFromParse: args.initializedFromParse,
             savedAt: new Date().toISOString(),
+            pricingReview: pricingReviewAuditSummary(args.payload),
           },
         },
         createdByUserId: args.actorUserId,
@@ -4266,6 +4514,7 @@ export class InboundOrderService {
           reviewDraftStatus: args.status,
           reviewOnly: true,
           createsDownstreamRecords: false,
+          pricingReview: pricingReviewAuditSummary(args.payload),
         },
       },
     });
@@ -4288,6 +4537,7 @@ export class InboundOrderService {
             reviewDraftStatus: args.status,
             reviewOnly: true,
             createsDownstreamRecords: false,
+            pricingReview: pricingReviewAuditSummary(args.payload),
           },
         },
       });
@@ -4317,6 +4567,9 @@ export class InboundOrderService {
       }
       if (this.lineItemRequiresDimensions(lineItem) && (!lineItem.width || !lineItem.height)) {
         errors.push(`${label}: width and height are required for this product type.`);
+      }
+      if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
+        errors.push(`${label}: PO price differs from system price. Acknowledge or resolve pricing before conversion.`);
       }
     });
 

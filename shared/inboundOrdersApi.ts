@@ -192,6 +192,16 @@ export const inboundOrderEvidenceItemSchema = z.object({
     printSpecs: z.array(z.string().trim().min(1).max(255)).default([]),
     shippingNotes: z.string().trim().max(2000).optional().nullable(),
     price: z.string().trim().max(120).optional().nullable(),
+    pricing: z.object({
+      approvedPriceCents: z.number().int().min(0).nullable().default(null),
+      unitPriceCents: z.number().int().min(0).nullable().default(null),
+      extendedPriceCents: z.number().int().min(0).nullable().default(null),
+      rushFeesCents: z.number().int().min(0).nullable().default(null),
+      totalPriceCents: z.number().int().min(0).nullable().default(null),
+      alternatePricingNotes: z.array(z.string().trim().min(1).max(500)).default([]),
+      evidenceText: z.string().trim().max(1000).nullable().default(null),
+      sourceDocument: z.string().trim().max(512).nullable().default(null),
+    }).optional().nullable(),
     versionCount: z.number().positive().optional().nullable(),
     dateCandidates: z.array(z.object({
       parsedDate: z.string().trim().max(80),
@@ -424,6 +434,32 @@ export const inboundOrderArtworkLinkSchema = z.object({
   }).optional(),
 });
 
+export const inboundOrderPoPriceResolutionSchema = z.enum([
+  "accept_system_price",
+  "honor_po_price",
+  "pricing_exception",
+]);
+
+export const inboundOrderLinePricingReviewSchema = z.object({
+  status: z.enum(["not_available", "matched", "mismatch", "resolved"]).default("not_available"),
+  message: z.string().trim().max(500).nullable().default(null),
+  acknowledged: z.boolean().default(false),
+  resolution: inboundOrderPoPriceResolutionSchema.nullable().default(null),
+  resolutionNote: nullableTextSchema.default(null),
+  poPriceCents: z.number().int().min(0).nullable().default(null),
+  poUnitPriceCents: z.number().int().min(0).nullable().default(null),
+  poExtendedPriceCents: z.number().int().min(0).nullable().default(null),
+  poRushFeesCents: z.number().int().min(0).nullable().default(null),
+  poTotalPriceCents: z.number().int().min(0).nullable().default(null),
+  systemPriceCents: z.number().int().min(0).nullable().default(null),
+  systemUnitPriceCents: z.number().int().min(0).nullable().default(null),
+  differenceCents: z.number().int().nullable().default(null),
+  comparisonType: z.enum(["total", "unit", "approved", "extended"]).nullable().default(null),
+  sourceEvidence: z.array(z.string().trim().min(1).max(500)).default([]),
+  alternatePricingNotes: z.array(z.string().trim().min(1).max(500)).default([]),
+  evaluatedAt: z.string().trim().max(80).nullable().default(null),
+});
+
 export const inboundOrderReviewedLineItemSchema = z.object({
   sourceLineItemId: z.string().trim().min(1).nullable().default(null),
   sourceText: z.string().trim().max(5000).nullable().default(null),
@@ -473,6 +509,7 @@ export const inboundOrderReviewedLineItemSchema = z.object({
     confidence: z.number().min(0).max(100),
     reason: z.string().trim().min(1).max(1000),
   })).default([]),
+  pricingReviewJson: inboundOrderLinePricingReviewSchema.nullable().default(null),
   artworkLinks: z.array(inboundOrderArtworkLinkSchema).default([]),
   notes: nullableTextSchema.default(null),
 });
@@ -535,6 +572,7 @@ export type InboundOrderReviewDecisionStatus = z.infer<typeof inboundOrderReview
 export type InboundOrderArtworkReviewStatus = z.infer<typeof inboundOrderArtworkReviewStatusSchema>;
 export type InboundOrderReviewValueSource = z.infer<typeof inboundOrderReviewValueSourceSchema>;
 export type InboundOrderReviewDraftPayload = z.infer<typeof inboundOrderReviewDraftPayloadSchema>;
+export type InboundOrderLinePricingReview = z.infer<typeof inboundOrderLinePricingReviewSchema>;
 export type InboundCustomerIntelligenceSummary = z.infer<typeof inboundCustomerIntelligenceSummarySchema>;
 export type InboundOrderUnsupportedRequestFinding = z.infer<typeof inboundOrderUnsupportedRequestFindingSchema>;
 export type InboundOrderArtworkLink = z.infer<typeof inboundOrderArtworkLinkSchema>;
