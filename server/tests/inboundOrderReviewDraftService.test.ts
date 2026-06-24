@@ -9,6 +9,7 @@ import {
   InboundOrderService,
   InboundOrderTransitionError,
 } from "../services/inboundOrders/InboundOrderService";
+import { extractPurchaseOrderFields } from "../services/inboundOrders/InboundOrderEvidenceService";
 import { hydrateInboundPbv2Selections } from "@shared/inboundOrderPbv2Options";
 
 const mockPriceLineItem = jest.fn<(...args: any[]) => Promise<any>>();
@@ -141,6 +142,53 @@ function parsedDraft(overrides: Record<string, any> = {}) {
     evidence: { items: [], conflicts: [] },
     ...overrides,
   };
+}
+
+function parsedDraftWithPoPricing(pricing: Record<string, any>) {
+  return parsedDraft({
+    evidence: {
+      items: [{
+        type: "PDF_ATTACHMENT",
+        label: "Purchase Order 151661.pdf",
+        sourceId: "file_po",
+        fileName: "Purchase Order 151661.pdf",
+        mimeType: "application/pdf",
+        rawText: pricing.evidenceText ?? "Purchase order pricing evidence",
+        pageCount: 1,
+        documentType: "purchase_order",
+        documentConfidence: 98,
+        extractionStatus: "successful",
+        poSummary: {
+          poNumber: "151661",
+          customer: "Brainstorm Print",
+          contact: "Shawn Fears",
+          dueDate: "2026-06-11",
+          quantity: 3,
+          productDescription: "PVC Signs",
+          material: "3mm White PVC",
+          dimensions: "24x36",
+          printSpecs: [],
+          shippingNotes: null,
+          price: pricing.price ?? null,
+          pricing: {
+            approvedPriceCents: pricing.approvedPriceCents ?? null,
+            unitPriceCents: pricing.unitPriceCents ?? null,
+            extendedPriceCents: pricing.extendedPriceCents ?? null,
+            rushFeesCents: pricing.rushFeesCents ?? null,
+            totalPriceCents: pricing.totalPriceCents ?? null,
+            alternatePricingNotes: pricing.alternatePricingNotes ?? [],
+            evidenceText: pricing.evidenceText ?? null,
+            sourceDocument: "Purchase Order 151661.pdf",
+          },
+          versionCount: null,
+          dateCandidates: [],
+          fieldSources: {},
+        },
+        warnings: [],
+      }],
+      conflicts: [],
+    },
+  });
 }
 
 function parseAttempt(overrides: Record<string, any> = {}) {
@@ -1184,6 +1232,155 @@ describe("InboundOrderService editable review draft", () => {
     });
   });
 
+  test("matching PO total and system total does not create a pricing warning", async () => {
+    const attempt = parseAttempt({ parsedDraft: parsedDraftWithPoPricing({ totalPriceCents: 4500, evidenceText: "Total: $45.00" }) });
+    const { repo } = makeRepository(inboundRecord(), attempt);
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
+
+    const draft = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(draft.reviewedLineItemsJson[0].pricingReviewJson).toMatchObject({
+      status: "matched",
+      message: null,
+      poPriceCents: 4500,
+      systemPriceCents: 4500,
+      differenceCents: 0,
+    });
+    expect(draft.validationErrors.join("\n")).not.toContain("PO price differs from system price");
+  });
+
+  test("PO total mismatch blocks mark ready until staff resolves it", async () => {
+    const attempt = parseAttempt({ parsedDraft: parsedDraftWithPoPricing({ totalPriceCents: 5000, evidenceText: "Total: $50.00" }) });
+    const { repo } = makeRepository(inboundRecord(), attempt);
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(initialized.reviewedLineItemsJson[0].pricingReviewJson).toMatchObject({
+      status: "mismatch",
+      message: "PO price differs from system price.",
+      poPriceCents: 5000,
+      systemPriceCents: 4500,
+      differenceCents: -500,
+      comparisonType: "total",
+    });
+
+    await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: initialized.reviewedLineItemsJson,
+        reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: "to_follow" },
+        missingDecisionsJson: initialized.missingDecisionsJson.map((decision) => ({ ...decision, status: "acknowledged", resolutionNote: "Artwork to follow" })),
+        warningsJson: initialized.warningsJson,
+        reviewNotes: null,
+      },
+    });
+
+    await expect(service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    })).rejects.toMatchObject({
+      name: "InboundOrderReviewDraftValidationError",
+      errors: expect.arrayContaining(["PVC: PO price differs from system price. Acknowledge or resolve pricing before conversion."]),
+    });
+  });
+
+  test("PO unit price mismatch is detected when no PO total is available", async () => {
+    const attempt = parseAttempt({ parsedDraft: parsedDraftWithPoPricing({ unitPriceCents: 2000, evidenceText: "Unit Price: $20.00" }) });
+    const { repo } = makeRepository(inboundRecord(), attempt);
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
+
+    const draft = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(draft.reviewedLineItemsJson[0].pricingReviewJson).toMatchObject({
+      status: "mismatch",
+      comparisonType: "unit",
+      poPriceCents: 2000,
+      systemUnitPriceCents: 1500,
+      differenceCents: -500,
+    });
+  });
+
+  test("purchase order field extraction captures rush fees", () => {
+    const summary = extractPurchaseOrderFields({
+      text: "Purchase Order 151661\nQty: 3\nUnit Price: $15.00\nRush Fee: $25.00\nTotal: $70.00",
+      sourceDocument: "PO_151661.pdf",
+    });
+
+    expect(summary.pricing).toMatchObject({
+      unitPriceCents: 1500,
+      rushFeesCents: 2500,
+      totalPriceCents: 7000,
+    });
+    expect(summary.pricing?.evidenceText).toContain("Rush Fee: $25.00");
+  });
+
+  test("staff pricing acknowledgment unblocks mark ready", async () => {
+    const attempt = parseAttempt({ parsedDraft: parsedDraftWithPoPricing({ totalPriceCents: 5000, evidenceText: "Total: $50.00" }) });
+    const { repo, getRecord } = makeRepository(inboundRecord(), attempt);
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    const pricingReviewJson = {
+      ...initialized.reviewedLineItemsJson[0].pricingReviewJson!,
+      status: "resolved" as const,
+      acknowledged: true,
+      resolution: "accept_system_price" as const,
+      resolutionNote: "CSR confirmed Titan pricing.",
+    };
+
+    await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: [{ ...initialized.reviewedLineItemsJson[0], pricingReviewJson }],
+        reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: "to_follow" },
+        missingDecisionsJson: initialized.missingDecisionsJson.map((decision) => ({ ...decision, status: "acknowledged", resolutionNote: "Artwork to follow" })),
+        warningsJson: initialized.warningsJson,
+        reviewNotes: null,
+      },
+    });
+
+    const ready = await service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(ready.status).toBe("ready_to_convert");
+    expect(ready.reviewedLineItemsJson[0].pricingReviewJson).toMatchObject({
+      status: "resolved",
+      acknowledged: true,
+      resolution: "accept_system_price",
+      resolutionNote: "CSR confirmed Titan pricing.",
+    });
+    expect(getRecord().status).toBe("ready");
+  });
+
   test("marks ready after required decisions are acknowledged", async () => {
     const { repo, getRecord } = makeRepository();
     const service = new InboundOrderService(repo as any);
@@ -1432,7 +1629,7 @@ describe("InboundOrderService editable review draft", () => {
         reviewedOrderJson: initialized.reviewedOrderJson,
         reviewedLineItemsJson: initialized.reviewedLineItemsJson.map((lineItem, index) => ({
           ...lineItem,
-          artworkLinks: index === 0 ? [sharedLink, secondLink] : [sharedLink],
+          artworkLinks: (index === 0 ? [sharedLink, secondLink] : [sharedLink]) as any,
         })),
         reviewedArtworkJson: { ...initialized.reviewedArtworkJson, unassignedAttachments: [] },
         missingDecisionsJson: initialized.missingDecisionsJson,
@@ -1507,7 +1704,7 @@ describe("InboundOrderService editable review draft", () => {
         reviewedOrderJson: initialized.reviewedOrderJson,
         reviewedLineItemsJson: initialized.reviewedLineItemsJson.map((lineItem, index) => ({
           ...lineItem,
-          artworkLinks: index === 0 ? [staffRemoved] : [staffSelected],
+          artworkLinks: (index === 0 ? [staffRemoved] : [staffSelected]) as any,
         })),
         reviewedArtworkJson: initialized.reviewedArtworkJson,
         missingDecisionsJson: initialized.missingDecisionsJson,
@@ -1667,6 +1864,7 @@ describe("InboundOrderService editable review draft", () => {
           optionSelectionsJson: null,
           pbv2TreeVersionId: null,
           pbv2OptionSuggestions: [],
+          pricingReviewJson: null,
           artworkLinks: [],
           notes: null,
         }],

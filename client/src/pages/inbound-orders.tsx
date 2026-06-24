@@ -510,6 +510,10 @@ function optionalNumber(value: string): number | null {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
 }
 
+function formatCents(value: number | null | undefined): string {
+  return value == null ? "-" : `$${(value / 100).toFixed(2)}`;
+}
+
 function formatRelative(value: string | Date | null | undefined) {
   if (!value) return "-";
   const date = value instanceof Date ? value : new Date(value);
@@ -2862,6 +2866,7 @@ function createBlankReviewLineItem(index: number): ReviewDraftFormState["reviewe
     optionSelectionsJson: null,
     pbv2TreeVersionId: null,
     pbv2OptionSuggestions: [],
+    pricingReviewJson: null,
     artworkLinks: [],
     notes: null,
   };
@@ -2998,6 +3003,81 @@ function ReviewLineItemProductOptions({
             </Badge>
           ))}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PricingReviewCard({
+  review,
+  onChange,
+}: {
+  review: ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"];
+  onChange: (review: NonNullable<ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"]>) => void;
+}) {
+  if (!review || review.status === "not_available") return null;
+  const hasMismatch = review.status === "mismatch" || review.status === "resolved";
+  if (!hasMismatch && review.status !== "matched") return null;
+  const difference = review.differenceCents;
+  return (
+    <div className={cn(
+      "rounded-md border px-3 py-2 text-xs",
+      hasMismatch
+        ? "border-amber-500/40 bg-amber-500/10 text-amber-100"
+        : "border-emerald-500/30 bg-emerald-500/10 text-emerald-100",
+    )}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="font-semibold text-foreground">
+          {hasMismatch ? "PO price differs from system price." : "PO price matches system price."}
+        </div>
+        {review.acknowledged ? <Badge variant="outline">Acknowledged</Badge> : null}
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+        <div><span className="text-muted-foreground">PO price</span><div className="font-mono text-foreground">{formatCents(review.poPriceCents)}</div></div>
+        <div><span className="text-muted-foreground">System price</span><div className="font-mono text-foreground">{formatCents(review.systemPriceCents)}</div></div>
+        <div><span className="text-muted-foreground">Difference</span><div className="font-mono text-foreground">{formatCents(difference == null ? null : Math.abs(difference))}</div></div>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-2 text-muted-foreground">
+        {review.comparisonType ? <span>Compared {review.comparisonType} price</span> : null}
+        {review.poUnitPriceCents != null ? <span>PO unit {formatCents(review.poUnitPriceCents)}</span> : null}
+        {review.poRushFeesCents != null ? <span>Rush fee {formatCents(review.poRushFeesCents)}</span> : null}
+      </div>
+      {review.sourceEvidence.length > 0 && (
+        <div className="mt-2 text-muted-foreground">
+          Source evidence: {review.sourceEvidence.slice(0, 3).join("; ")}
+        </div>
+      )}
+      {review.alternatePricingNotes.length > 0 && (
+        <div className="mt-1 text-muted-foreground">Notes: {review.alternatePricingNotes.join("; ")}</div>
+      )}
+      {hasMismatch && (
+        <div className="mt-3 grid gap-2 sm:grid-cols-[180px_1fr]">
+          <select
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+            aria-label="Resolve PO price mismatch"
+            value={review.resolution ?? ""}
+            onChange={(event) => {
+              const resolution = trimToNull(event.target.value) as NonNullable<typeof review>["resolution"];
+              onChange({
+                ...review,
+                status: resolution ? "resolved" : "mismatch",
+                acknowledged: Boolean(resolution),
+                resolution,
+              });
+            }}
+          >
+            <option value="">Resolve pricing...</option>
+            <option value="accept_system_price">Accept system price</option>
+            <option value="honor_po_price">Honor PO price</option>
+            <option value="pricing_exception">Pricing exception</option>
+          </select>
+          <Input
+            aria-label="Pricing resolution note"
+            value={review.resolutionNote ?? ""}
+            onChange={(event) => onChange({ ...review, resolutionNote: trimToNull(event.target.value) })}
+            placeholder="Pricing note"
+          />
         </div>
       )}
     </div>
@@ -3448,6 +3528,11 @@ function DraftBuilderPanel({
   const isOperationalMode = mode === "operational";
   const reviewIntent = form.reviewedOrderJson.intent ?? "unknown";
   const reviewPriority = form.reviewedOrderJson.priority ?? "normal";
+  const unresolvedPricingIssues = form.reviewedLineItemsJson.flatMap((lineItem, index) => (
+    lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)
+      ? [`Line ${index + 1}: PO price differs from system price.`]
+      : []
+  ));
   const minimumConversionIssues = [
     !form.reviewedCustomerJson.selectedCustomerId && !form.reviewedCustomerJson.unresolvedCustomer
       ? "Select a customer or mark customer unresolved."
@@ -3457,6 +3542,7 @@ function DraftBuilderPanel({
       !lineItem.quantity ? `Line ${index + 1}: enter quantity.` : null,
       !lineItem.selectedProductId && !lineItem.productUnresolved ? `Line ${index + 1}: select a product or mark unresolved.` : null,
     ]),
+    ...unresolvedPricingIssues,
     ...validationErrors,
   ].filter(Boolean) as string[];
   const reviewNotesPreview = form.reviewNotes?.trim() ?? "";
@@ -3845,6 +3931,10 @@ function DraftBuilderPanel({
                             </OrderEntryField>
                           </div>
                           <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={(patch) => updateLineItem(index, patch)} />
+                          <PricingReviewCard
+                            review={lineItem.pricingReviewJson}
+                            onChange={(pricingReviewJson) => updateLineItem(index, { pricingReviewJson })}
+                          />
                           <div className="grid gap-2 lg:grid-cols-3">
                             <OrderEntryField label="Print specs">
                               <Input value={lineItem.printSpecs.join(", ")} onChange={(event) => updateLineItem(index, { printSpecs: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), printSpecsSource: "staff_selected" })} />
@@ -4344,6 +4434,10 @@ function DraftBuilderPanel({
                       lineItem={lineItem}
                       index={index}
                       onChange={(patch) => updateLineItem(index, patch)}
+                    />
+                    <PricingReviewCard
+                      review={lineItem.pricingReviewJson}
+                      onChange={(pricingReviewJson) => updateLineItem(index, { pricingReviewJson })}
                     />
                     <label className="flex items-center gap-2 text-sm text-foreground">
                       <input type="checkbox" checked={lineItem.productUnresolved} onChange={(event) => updateLineItem(index, { productUnresolved: event.target.checked })} />

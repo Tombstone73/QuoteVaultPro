@@ -312,6 +312,7 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
     optionSelectionsJson: lineItem.optionSelectionsJson ?? null,
     pbv2TreeVersionId: lineItem.pbv2TreeVersionId ?? null,
     pbv2OptionSuggestions: lineItem.pbv2OptionSuggestions ?? [],
+    pricingReviewJson: lineItem.pricingReviewJson ?? null,
     artworkLinks: lineItem.artworkLinks ?? [],
     notes: null,
   }));
@@ -1637,6 +1638,71 @@ describe("InboundOrdersPage", () => {
     await waitForCondition(() => Boolean(getSavedBody()), "operational review draft saved");
     expect(getSavedBody().reviewedOrderJson.poNumber).toBe("PO-999");
     expect(getSavedBody().reviewedOrderJson.intent).toBe("order");
+  });
+
+  test("shows PO price mismatch warning and saves staff pricing resolution", async () => {
+    const parsed = parsedDraft({
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        pricingReviewJson: {
+          status: "mismatch",
+          message: "PO price differs from system price.",
+          acknowledged: false,
+          resolution: null,
+          resolutionNote: null,
+          poPriceCents: 5000,
+          poUnitPriceCents: null,
+          poExtendedPriceCents: null,
+          poRushFeesCents: 500,
+          poTotalPriceCents: 5000,
+          systemPriceCents: 4500,
+          systemUnitPriceCents: 2250,
+          differenceCents: -500,
+          comparisonType: "total",
+          sourceEvidence: ["Total: $50.00", "System line price: $45.00"],
+          alternatePricingNotes: ["Approved by buyer"],
+          evaluatedAt: "2026-06-09T12:05:00.000Z",
+        },
+      }],
+    });
+    const review = reviewDraft(parsed, {
+      validationErrors: ["Banner: PO price differs from system price. Acknowledge or resolve pricing before conversion."],
+    });
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review });
+
+    renderPage();
+    await waitForText("Operational Review");
+    await waitForText("PO price differs from system price.");
+    await waitForText("$50.00");
+    await waitForText("$45.00");
+    await waitForText("Rush fee $5.00");
+    await waitForText("Source evidence: Total: $50.00; System line price: $45.00");
+    expect(container.textContent).toContain("Line 1: PO price differs from system price.");
+
+    const resolutionSelect = Array.from(container.querySelectorAll("select")).find((select) => (
+      select.getAttribute("aria-label") === "Resolve PO price mismatch"
+    )) as HTMLSelectElement;
+    act(() => {
+      Simulate.change(resolutionSelect, { target: { value: "honor_po_price" } } as any);
+    });
+    const noteInput = Array.from(container.querySelectorAll("input")).find((input) => (
+      input.getAttribute("aria-label") === "Pricing resolution note"
+    )) as HTMLInputElement;
+    act(() => {
+      Simulate.change(noteInput, { target: { value: "Honor customer PO for this order." } } as any);
+    });
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(saveButton);
+    });
+    await waitForCondition(() => Boolean(getSavedBody()), "pricing resolution saved");
+    expect(getSavedBody().reviewedLineItemsJson[0].pricingReviewJson).toMatchObject({
+      status: "resolved",
+      acknowledged: true,
+      resolution: "honor_po_price",
+      resolutionNote: "Honor customer PO for this order.",
+    });
   });
 
   test("manual attachment classification override persists and wins in review draft", async () => {
