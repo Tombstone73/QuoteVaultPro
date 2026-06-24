@@ -164,7 +164,7 @@ export const inboundOrderCandidateSchema = z.object({
 });
 
 export const inboundOrderEvidenceItemSchema = z.object({
-  type: z.enum(["EMAIL_SUBJECT", "EMAIL_BODY", "PDF_ATTACHMENT", "TEXT_ATTACHMENT", "MANUAL_NOTES"]),
+  type: z.enum(["EMAIL_SUBJECT", "EMAIL_BODY", "THREAD_MESSAGE", "PDF_ATTACHMENT", "TEXT_ATTACHMENT", "MANUAL_NOTES"]),
   label: z.string().trim().min(1).max(255),
   sourceId: z.string().trim().max(255).optional().nullable(),
   fileName: z.string().trim().max(512).optional().nullable(),
@@ -211,13 +211,39 @@ export const inboundOrderEvidenceItemSchema = z.object({
     })).default([]),
     fieldSources: z.record(z.object({
       value: z.union([z.string(), z.number(), z.boolean()]).nullable(),
-      sourceType: z.enum(["EMAIL_SUBJECT", "EMAIL_BODY", "PDF_ATTACHMENT", "TEXT_ATTACHMENT", "MANUAL_NOTES"]),
+      sourceType: z.enum(["EMAIL_SUBJECT", "EMAIL_BODY", "THREAD_MESSAGE", "PDF_ATTACHMENT", "TEXT_ATTACHMENT", "MANUAL_NOTES"]),
       sourceDocument: z.string().trim().max(512).optional().nullable(),
       sourceText: z.string().trim().max(1000).optional().nullable(),
       confidence: z.number().min(0).max(100),
     })).default({}),
   }).optional().nullable(),
   warnings: z.array(inboundOrderParseWarningSchema).default([]),
+});
+
+export const inboundOrderEvidenceSourceSchema = z.object({
+  sourceType: z.enum(["EMAIL_SUBJECT", "EMAIL_BODY", "THREAD_MESSAGE", "PDF_ATTACHMENT", "TEXT_ATTACHMENT", "MANUAL_NOTES", "ARTWORK_LINK", "ATTACHMENT_METADATA"]),
+  label: z.string().trim().min(1).max(255),
+  sourceDocument: z.string().trim().max(512).optional().nullable(),
+  sourceText: z.string().trim().max(1000).optional().nullable(),
+  confidence: z.number().min(0).max(100).default(0),
+});
+
+export const inboundOrderEvidenceSummaryFieldSchema = z.object({
+  value: z.union([z.string(), z.number(), z.boolean()]).nullable().default(null),
+  status: z.enum(["confirmed", "candidate", "conflict", "missing"]).default("missing"),
+  sources: z.array(inboundOrderEvidenceSourceSchema).default([]),
+  conflicts: z.array(inboundOrderParseWarningSchema).default([]),
+});
+
+export const inboundOrderEvidenceReconciliationSchema = z.object({
+  product: inboundOrderEvidenceSummaryFieldSchema,
+  quantity: inboundOrderEvidenceSummaryFieldSchema,
+  dimensions: inboundOrderEvidenceSummaryFieldSchema,
+  material: inboundOrderEvidenceSummaryFieldSchema,
+  dueDate: inboundOrderEvidenceSummaryFieldSchema,
+  rushStatus: inboundOrderEvidenceSummaryFieldSchema,
+  artworkStatus: inboundOrderEvidenceSummaryFieldSchema,
+  pricingStatus: inboundOrderEvidenceSummaryFieldSchema,
 });
 
 const confidenceSchema = z.number().min(0).max(100).default(0);
@@ -331,7 +357,8 @@ export const inboundOrderParsedDraftSchema = z.object({
   evidence: z.object({
     items: z.array(inboundOrderEvidenceItemSchema).default([]),
     conflicts: z.array(inboundOrderParseWarningSchema).default([]),
-  }).default({ items: [], conflicts: [] }),
+    reconciliation: inboundOrderEvidenceReconciliationSchema.nullable().default(null),
+  }).default({ items: [], conflicts: [], reconciliation: null }),
   customerIntelligence: inboundCustomerIntelligenceSummarySchema.nullable().default(null),
 });
 
@@ -626,6 +653,7 @@ export type InboundOrderParsedDraft = z.infer<typeof inboundOrderParsedDraftSche
 export type InboundOrderParseWarning = z.infer<typeof inboundOrderParseWarningSchema>;
 export type InboundOrderCandidate = z.infer<typeof inboundOrderCandidateSchema>;
 export type InboundOrderEvidenceItem = z.infer<typeof inboundOrderEvidenceItemSchema>;
+export type InboundOrderEvidenceReconciliation = z.infer<typeof inboundOrderEvidenceReconciliationSchema>;
 
 export type ManualInboundOrderCreateRequest = z.infer<typeof manualInboundOrderCreateSchema>;
 export type InboundOrderStatusUpdateRequest = z.infer<typeof inboundOrderStatusUpdateSchema>;
