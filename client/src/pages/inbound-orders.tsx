@@ -906,7 +906,7 @@ function attachmentClassificationLabel(classification: InboundAttachmentClassifi
   if (classification === "PO") return "Purchase Order";
   if (classification === "ARTWORK") return "Artwork";
   if (classification === "REFERENCE") return "Reference";
-  if (classification === "IGNORE_INLINE") return "Ignored Inline";
+  if (classification === "IGNORE_INLINE") return "Junk / Signature";
   return "Other";
 }
 
@@ -935,7 +935,15 @@ function attachmentClassificationFromMetadata(
   fallbackRole: string | null | undefined,
 ): Pick<
   InboundOrderArtworkLink,
-  "classification" | "classificationConfidence" | "classificationReasons" | "classificationSource" | "classificationBreakdown" | "manualOverride"
+  | "classification"
+  | "classificationConfidence"
+  | "classificationReasons"
+  | "classificationSource"
+  | "automaticClassification"
+  | "automaticClassificationConfidence"
+  | "automaticClassificationReasons"
+  | "classificationBreakdown"
+  | "manualOverride"
 > {
   const stored = metadata.attachmentClassification && typeof metadata.attachmentClassification === "object" && !Array.isArray(metadata.attachmentClassification)
     ? metadata.attachmentClassification as Record<string, any>
@@ -953,6 +961,9 @@ function attachmentClassificationFromMetadata(
     classificationConfidence: typeof stored?.confidence === "number" ? stored.confidence : null,
     classificationReasons: Array.isArray(stored?.reasons) ? stored.reasons.filter((item: unknown): item is string => typeof item === "string") : [],
     classificationSource: stored?.source === "manual_override" ? "manual_override" : "automatic",
+    automaticClassification: classification,
+    automaticClassificationConfidence: typeof stored?.confidence === "number" ? stored.confidence : null,
+    automaticClassificationReasons: Array.isArray(stored?.reasons) ? stored.reasons.filter((item: unknown): item is string => typeof item === "string") : [],
     classificationBreakdown: safeClassificationBreakdown(stored?.breakdown),
     manualOverride: stored?.source === "manual_override",
   };
@@ -1011,6 +1022,24 @@ function attachmentDebugText(link: InboundOrderArtworkLink): string {
     `Scores: ${Object.entries(breakdown.scores ?? {}).map(([key, value]) => `${key} ${value}`).join(", ") || "none"}`,
   ];
   return parts.join(" | ");
+}
+
+function fileExtension(filename: string | null | undefined): string | null {
+  const match = String(filename ?? "").match(/\.([a-z0-9]+)$/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
+function senderDomainFromEmail(email: string | null | undefined): string | null {
+  const domain = String(email ?? "").split("@")[1]?.trim().toLowerCase();
+  return domain || null;
+}
+
+function automaticClassificationForLink(link: InboundOrderArtworkLink): InboundAttachmentClassification {
+  return link.automaticClassification ?? (
+    link.classificationSource === "automatic"
+      ? classificationForLink(link)
+      : inboundAttachmentRoleToClassification(link.role)
+  );
 }
 
 function evidenceSourceLabel(value: string | null | undefined) {
@@ -3144,11 +3173,14 @@ function DraftBuilderPanel({
       .filter((link) => link.source !== "staff_removed")
       .map((link) => artworkLinkKey(link)),
   );
-  const unassignedArtworkLinks = Array.from(new Map([
+  const unassignedAttachmentLinks = Array.from(new Map([
     ...form.reviewedArtworkJson.unassignedAttachments,
     ...allAttachmentLinks.filter((link) => !visibleLinkedArtworkKeys.has(artworkLinkKey(link)) && link.source !== "staff_removed"),
   ].map((link) => [artworkLinkKey(link), link])).values());
-  const attachmentLinkOptions = allAttachmentLinks.filter((link) => link.source !== "staff_removed");
+  const unassignedArtworkLinks = unassignedAttachmentLinks.filter((link) => classificationForLink(link) === "ARTWORK");
+  const attachmentLinkOptions = allAttachmentLinks.filter((link) => (
+    link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK"
+  ));
   const addArtworkLinkToLineItem = (lineItemIndex: number, link: InboundOrderArtworkLink) => {
     const key = artworkLinkKey(link);
     updateForm({
@@ -3189,6 +3221,30 @@ function DraftBuilderPanel({
   };
   const overrideAttachmentClassification = (link: InboundOrderArtworkLink, classification: InboundAttachmentClassification) => {
     const key = artworkLinkKey(link);
+    const sourceEvidence = getManualInboundEvidence(selectedRecord as any);
+    const automaticClassification = automaticClassificationForLink(link);
+    const automaticConfidence = link.automaticClassificationConfidence ?? link.classificationConfidence ?? link.confidence ?? null;
+    const automaticReasons = link.automaticClassificationReasons?.length
+      ? link.automaticClassificationReasons
+      : link.classificationReasons ?? [];
+    const learningEvidence = {
+      inboundRecordId: selectedRecord.id,
+      attachmentKey: key,
+      attachmentId: link.fileId,
+      fileRecordId: link.fileRecordId ?? null,
+      senderEmail: sourceEvidence.senderEmail ?? null,
+      senderDomain: senderDomainFromEmail(sourceEvidence.senderEmail),
+      subject: sourceEvidence.subject ?? null,
+      filename: link.filename ?? null,
+      extension: fileExtension(link.filename),
+      originalAutomaticClassification: automaticClassification,
+      correctedManualClassification: classification,
+      automaticConfidence,
+      automaticReasons,
+      capturedAt: new Date().toISOString(),
+      userId: null,
+      note: "Manual correction captured for future classification learning.",
+    };
     const nextLink = (candidate: InboundOrderArtworkLink): InboundOrderArtworkLink => (
       artworkLinkKey(candidate) !== key ? candidate : {
         ...candidate,
@@ -3197,14 +3253,21 @@ function DraftBuilderPanel({
         classificationConfidence: 100,
         classificationReasons: [`Staff manually classified as ${attachmentClassificationLabel(classification)}.`],
         classificationSource: "manual_override",
+        automaticClassification,
+        automaticClassificationConfidence: automaticConfidence,
+        automaticClassificationReasons: automaticReasons,
         classificationBreakdown: {
           filename: candidate.classificationBreakdown?.filename ?? [],
           content: candidate.classificationBreakdown?.content ?? [],
           metadata: candidate.classificationBreakdown?.metadata ?? [],
-          manual: [`Staff manually classified as ${attachmentClassificationLabel(classification)}.`],
+          manual: [
+            `Staff manually classified as ${attachmentClassificationLabel(classification)}.`,
+            "Manual correction captured for future classification learning.",
+          ],
           scores: candidate.classificationBreakdown?.scores ?? {},
         },
         manualOverride: true,
+        learningEvidence,
         confidence: 100,
         reason: `Staff manually classified as ${attachmentClassificationLabel(classification)}.`,
       }
@@ -3795,7 +3858,7 @@ function DraftBuilderPanel({
                             <div className="mt-1 text-[11px] text-muted-foreground">
                               {attachmentClassificationLabel(classificationForLink(link))}
                               {confidence != null ? ` · ${confidence}%` : ""}
-                              {link.manualOverride ? " · manual override" : ""}
+                              {link.manualOverride ? " · Manual" : ""}
                             </div>
                             <div className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">Reasons: {classificationReasonText(link)}</div>
                             <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
@@ -3815,7 +3878,7 @@ function DraftBuilderPanel({
                               <option value="ARTWORK">Artwork</option>
                               <option value="PO">Purchase Order</option>
                               <option value="REFERENCE">Reference</option>
-                              <option value="IGNORE_INLINE">Ignore</option>
+                              <option value="IGNORE_INLINE">Junk / Signature</option>
                             </select>
                           </div>
                         );
@@ -4417,7 +4480,7 @@ function DraftBuilderPanel({
                       <div className="mt-1 text-xs text-muted-foreground">
                         {attachmentClassificationLabel(classificationForLink(link))}
                         {classificationConfidenceForLink(link) != null ? ` · ${classificationConfidenceForLink(link)}%` : ""}
-                        {link.classificationSource === "manual_override" ? " · manual override" : ""}
+                        {link.classificationSource === "manual_override" ? " · Manual" : ""}
                       </div>
                     </div>
                     <select
@@ -4430,11 +4493,21 @@ function DraftBuilderPanel({
                       <option value="ARTWORK">Artwork</option>
                       <option value="PO">Purchase Order</option>
                       <option value="REFERENCE">Reference</option>
-                      <option value="IGNORE_INLINE">Ignore</option>
+                      <option value="IGNORE_INLINE">Junk / Signature</option>
                     </select>
+                  </div>
+                  <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-3">
+                    <div>Automatic: {attachmentClassificationLabel(automaticClassificationForLink(link))}{link.automaticClassificationConfidence != null ? ` · ${Math.round(link.automaticClassificationConfidence)}%` : ""}</div>
+                    <div>Manual: {link.manualOverride ? attachmentClassificationLabel(classificationForLink(link)) : "none"}</div>
+                    <div>Final: {attachmentClassificationLabel(classificationForLink(link))}</div>
                   </div>
                   <div className="mt-2 text-xs text-muted-foreground">Reasons: {classificationReasonText(link)}</div>
                   <div className="mt-1 text-xs text-muted-foreground">{attachmentDebugText(link)}</div>
+                  {link.learningEvidence && (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Learning evidence: {link.learningEvidence.note} Original {attachmentClassificationLabel(link.learningEvidence.originalAutomaticClassification)} -&gt; corrected {attachmentClassificationLabel(link.learningEvidence.correctedManualClassification)}.
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

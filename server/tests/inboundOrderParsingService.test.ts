@@ -850,6 +850,183 @@ describe("InboundOrderParsingService", () => {
     expect(prompt.user).toContain("Qty 10 Yard Signs");
   });
 
+  test("passes saved manual attachment classifications into parse evidence", async () => {
+    const { repo } = makeRepository(inboundRecord({
+      sourceType: "email",
+      rawPayloadJson: {
+        sender: { email: "buyer@example.com" },
+        subject: "Files attached",
+        bodyText: "Please review.",
+      },
+    }));
+    repo.listFiles.mockResolvedValue([{
+      id: "file_1",
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      inboundLineItemId: null,
+      fileRecordId: null,
+      sourceFilename: "final-art.pdf",
+      role: "po",
+      mimeType: "application/pdf",
+      sizeBytes: 12000,
+      checksum: null,
+      status: "uploaded",
+      providerAttachmentId: "att_1",
+      providerMessageId: "msg_1",
+      contentDisposition: "attachment",
+      metadataJson: {},
+      reviewNotes: null,
+      createdQuoteAttachmentId: null,
+      createdOrderAttachmentId: null,
+      createdAt: new Date("2026-06-09T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-09T12:00:00.000Z"),
+    }] as any);
+    (repo as any).listReviewSnapshots = jest.fn(async () => [{
+      id: "snapshot_1",
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      snapshotType: "approval",
+      snapshotVersion: 1,
+      payloadJson: {
+        status: "draft",
+        reviewedCustomerJson: {
+          sourceName: null,
+          sourceEmail: null,
+          sourcePhone: null,
+          companyName: null,
+          selectedCustomerId: null,
+          selectedCustomerSource: null,
+          selectedCustomerReason: null,
+          selectedCustomerConfidence: null,
+          selectedContactId: null,
+          selectedContactSource: null,
+          selectedContactReason: null,
+          selectedContactConfidence: null,
+          unresolvedCustomer: false,
+          unresolvedContact: false,
+          notes: null,
+        },
+        reviewedOrderJson: {
+          intent: "unknown",
+          poNumber: null,
+          dueDate: null,
+          priority: "normal",
+          shipMethod: null,
+          fulfillmentType: "unknown",
+          internalNotes: null,
+          customerNotes: null,
+        },
+        reviewedLineItemsJson: [],
+        reviewedArtworkJson: {
+          status: "missing",
+          refs: [],
+          notes: null,
+          unassignedAttachments: [{
+            fileId: "file_1",
+            fileRecordId: null,
+            filename: "final-art.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 12000,
+            role: "artwork",
+            source: "unresolved",
+            confidence: 100,
+            reason: "Staff manually classified as Artwork.",
+            classification: "ARTWORK",
+            classificationConfidence: 100,
+            classificationReasons: ["Staff manually classified as Artwork."],
+            classificationSource: "manual_override",
+            automaticClassification: "PO",
+            automaticClassificationConfidence: 88,
+            automaticClassificationReasons: ["filename contained PO"],
+            manualOverride: true,
+            learningEvidence: {
+              inboundRecordId: "inbound_1",
+              attachmentKey: "file:file_1",
+              originalAutomaticClassification: "PO",
+              correctedManualClassification: "ARTWORK",
+              capturedAt: "2026-06-09T12:05:00.000Z",
+            },
+          }],
+        },
+        missingDecisionsJson: [],
+        warningsJson: [],
+        unsupportedRequestsJson: [],
+        customerIntelligenceJson: null,
+        reviewNotes: null,
+        metadata: { snapshotKind: "editable_review_draft" },
+      },
+      createdByUserId: "user_1",
+      createdAt: new Date("2026-06-09T12:05:00.000Z"),
+      updatedAt: new Date("2026-06-09T12:05:00.000Z"),
+    }]);
+    const evidenceService = {
+      buildEvidenceBundle: jest.fn(async () => ({ items: [], conflicts: [] })),
+    };
+    const provider = makeProvider(JSON.stringify(parsedDraft()));
+    const service = new InboundOrderParsingService(repo as any, () => provider, evidenceService as any);
+
+    await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    const manualClassifications = (evidenceService.buildEvidenceBundle as any).mock.calls[0]?.[0]?.manualClassifications as Map<string, any>;
+    expect(manualClassifications.get("file:file_1")).toMatchObject({
+      classification: "ARTWORK",
+      automaticClassification: "PO",
+      automaticConfidence: 88,
+      learningEvidence: expect.objectContaining({
+        correctedManualClassification: "ARTWORK",
+      }),
+    });
+  });
+
+  test("includes manual classification influence in parse prompt evidence", async () => {
+    const service = new InboundOrderParsingService(makeRepository().repo as any, () => null);
+    const evidenceBundle: InboundOrderEvidenceBundle = {
+      items: [{
+        type: "PDF_ATTACHMENT",
+        label: "final-art.pdf",
+        sourceId: "file_1",
+        fileName: "final-art.pdf",
+        mimeType: "application/pdf",
+        rawText: null,
+        pageCount: null,
+        documentType: "artwork_reference",
+        documentConfidence: 100,
+        extractionStatus: "failed",
+        poSummary: null,
+        manualClassificationUsed: true,
+        automaticClassification: "PO",
+        manualClassification: "ARTWORK",
+        finalClassification: "ARTWORK",
+        classificationInfluence: "Manual attachment classification used: Artwork.",
+        learningEvidence: {
+          inboundRecordId: "inbound_1",
+          attachmentKey: "file:file_1",
+          originalAutomaticClassification: "PO",
+          correctedManualClassification: "ARTWORK",
+        },
+        warnings: [{
+          code: "manual_attachment_classification_used",
+          message: "Manual attachment classification used: Artwork.",
+          severity: "info",
+          fieldPath: null,
+        }],
+      }],
+      conflicts: [],
+    };
+
+    const prompt = await service.buildInboundOrderParsePrompt("org_1", inboundRecord() as any, evidenceBundle);
+
+    expect(prompt.system).toContain("Manual attachment classification is authoritative");
+    expect(prompt.user).toContain("\"manualClassificationUsed\":true");
+    expect(prompt.user).toContain("\"automaticClassification\":\"PO\"");
+    expect(prompt.user).toContain("\"finalClassification\":\"ARTWORK\"");
+    expect(prompt.user).toContain("Manual attachment classification used");
+  });
+
   test("product ranking prioritizes exact material match over generic description text", () => {
     const matches = scoreProductKnowledgeCandidates(
       { sourceText: "PVC Signs 24x36 Stock: 3mm White PVC", productName: "PVC Signs", materialText: "3mm White PVC" },

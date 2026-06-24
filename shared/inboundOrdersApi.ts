@@ -146,6 +146,7 @@ export const inboundOrderBulkActionSchema = z.object({
 
 export const inboundOrderParseAttemptStatusValues = ["success", "failed", "repaired", "fallback"] as const;
 export const inboundOrderParseAttemptStatusSchema = z.enum(inboundOrderParseAttemptStatusValues);
+export const inboundOrderAttachmentClassificationSchema = z.enum(inboundAttachmentClassificationValues);
 
 export const inboundOrderParseWarningSchema = z.object({
   code: z.string().trim().min(1).max(100).default("parse_warning"),
@@ -173,6 +174,12 @@ export const inboundOrderEvidenceItemSchema = z.object({
   documentType: z.enum(["purchase_order", "artwork_reference", "unknown"]).default("unknown"),
   documentConfidence: z.number().min(0).max(100).default(0),
   extractionStatus: z.enum(["successful", "failed", "not_attempted"]).default("not_attempted"),
+  manualClassificationUsed: z.boolean().optional(),
+  automaticClassification: inboundOrderAttachmentClassificationSchema.optional(),
+  manualClassification: inboundOrderAttachmentClassificationSchema.optional(),
+  finalClassification: inboundOrderAttachmentClassificationSchema.optional(),
+  classificationInfluence: z.string().trim().max(1000).optional().nullable(),
+  learningEvidence: z.record(z.unknown()).optional(),
   poSummary: z.object({
     poNumber: z.string().trim().max(255).optional().nullable(),
     customer: z.string().trim().max(255).optional().nullable(),
@@ -370,7 +377,6 @@ export const inboundOrderArtworkLinkSourceSchema = z.enum(inboundOrderArtworkLin
 
 export const inboundOrderArtworkAttachmentRoleValues = ["artwork", "po", "reference", "ignore_inline", "other"] as const;
 export const inboundOrderArtworkAttachmentRoleSchema = z.enum(inboundOrderArtworkAttachmentRoleValues);
-export const inboundOrderAttachmentClassificationSchema = z.enum(inboundAttachmentClassificationValues);
 export const inboundOrderAttachmentClassificationSourceSchema = z.enum(["automatic", "manual_override"]);
 
 export const inboundOrderArtworkLinkSchema = z.object({
@@ -387,6 +393,9 @@ export const inboundOrderArtworkLinkSchema = z.object({
   classificationConfidence: z.number().min(0).max(100).nullable().optional(),
   classificationReasons: z.array(z.string().trim().min(1).max(300)).default([]),
   classificationSource: inboundOrderAttachmentClassificationSourceSchema.default("automatic"),
+  automaticClassification: inboundOrderAttachmentClassificationSchema.optional(),
+  automaticClassificationConfidence: z.number().min(0).max(100).nullable().optional(),
+  automaticClassificationReasons: z.array(z.string().trim().min(1).max(300)).default([]),
   classificationBreakdown: z.object({
     filename: z.array(z.string().trim().min(1).max(300)).default([]),
     content: z.array(z.string().trim().min(1).max(300)).default([]),
@@ -395,6 +404,24 @@ export const inboundOrderArtworkLinkSchema = z.object({
     scores: z.record(z.number()).default({}),
   }).optional(),
   manualOverride: z.boolean().default(false),
+  learningEvidence: z.object({
+    inboundRecordId: z.string().trim().min(1),
+    attachmentKey: z.string().trim().min(1).max(255),
+    attachmentId: z.string().trim().min(1).nullable().default(null),
+    fileRecordId: z.string().trim().min(1).nullable().default(null),
+    senderEmail: z.string().trim().max(255).nullable().default(null),
+    senderDomain: z.string().trim().max(255).nullable().default(null),
+    subject: z.string().trim().max(500).nullable().default(null),
+    filename: z.string().trim().max(512).nullable().default(null),
+    extension: z.string().trim().max(40).nullable().default(null),
+    originalAutomaticClassification: inboundOrderAttachmentClassificationSchema,
+    correctedManualClassification: inboundOrderAttachmentClassificationSchema,
+    automaticConfidence: z.number().min(0).max(100).nullable().default(null),
+    automaticReasons: z.array(z.string().trim().min(1).max(300)).default([]),
+    capturedAt: z.string().trim().min(1),
+    userId: z.string().trim().min(1).nullable().default(null),
+    note: z.string().trim().max(500).default("Manual correction captured for future classification learning."),
+  }).optional(),
 });
 
 export const inboundOrderReviewedLineItemSchema = z.object({

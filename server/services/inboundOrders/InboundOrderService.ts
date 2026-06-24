@@ -3348,6 +3348,9 @@ export class InboundOrderService {
       classificationConfidence: classification.confidence,
       classificationReasons: classification.reasons,
       classificationSource: classification.source,
+      automaticClassification: classification.classification,
+      automaticClassificationConfidence: classification.confidence,
+      automaticClassificationReasons: classification.reasons,
       classificationBreakdown: classification.breakdown,
       manualOverride: classification.source === "manual_override",
     };

@@ -3,10 +3,13 @@ import type { InboundOrderParseAttempt, InboundOrderRecord, InboundOrderRecordSt
 import {
   getManualInboundEvidence,
   inboundOrderParsedDraftSchema,
+  inboundOrderReviewDraftPayloadSchema,
+  type InboundOrderArtworkLink,
   type InboundOrderCandidate,
   type InboundOrderParsedDraft,
   type InboundOrderParseWarning,
 } from "@shared/inboundOrdersApi";
+import type { InboundAttachmentClassification } from "@shared/inboundAttachmentClassification";
 import { parseAiJsonObject } from "../ai/bugReviewValidator";
 import { createConfiguredAiProvider, resolveAiProviderTimeoutMs } from "../ai/providers/configuredProvider";
 import {
@@ -19,16 +22,19 @@ import {
   inboundOrdersRepository,
   type CreateInboundOrderParseAttemptValues,
   type InboundCandidateResult,
+  type InboundOrdersRepository,
 } from "../../storage/inboundOrders.repo";
 import { InboundOrderTransitionError } from "./InboundOrderService";
 import {
   inboundOrderEvidenceService,
   type InboundOrderEvidenceBundle,
+  type ManualAttachmentClassificationEvidence,
 } from "./InboundOrderEvidenceService";
 import { inferInboundRequestedDate } from "./inboundOrderDateInference";
 import { CustomerIntelligenceService } from "./CustomerIntelligenceService";
 
 const INBOUND_ORDER_PARSE_PROMPT_VERSION = "inbound-order-parse-v1";
+const EDITABLE_REVIEW_DRAFT_KIND = "editable_review_draft";
 
 export type InboundOrderParseResult = {
   draft: InboundOrderParsedDraft | null;
@@ -344,11 +350,63 @@ export class InboundOrderParsingService {
 
   async buildEvidenceBundle(organizationId: string, record: InboundOrderRecord): Promise<InboundOrderEvidenceBundle> {
     const files = await this.repository.listFiles(organizationId, record.id);
+    const manualClassifications = await this.getManualAttachmentClassifications(organizationId, record.id);
     return this.evidenceService.buildEvidenceBundle({
       organizationId,
       record,
       files,
+      manualClassifications,
     });
+  }
+
+  private async getManualAttachmentClassifications(
+    organizationId: string,
+    inboundRecordId: string,
+  ): Promise<Map<string, ManualAttachmentClassificationEvidence>> {
+    const listReviewSnapshots = (this.repository as Partial<InboundOrdersRepository>).listReviewSnapshots;
+    if (typeof listReviewSnapshots !== "function") return new Map();
+    const snapshots = await listReviewSnapshots.call(this.repository, organizationId, inboundRecordId);
+    const snapshot = snapshots.find((candidate) => {
+      const payload = candidate.payloadJson && typeof candidate.payloadJson === "object" && !Array.isArray(candidate.payloadJson)
+        ? candidate.payloadJson as Record<string, unknown>
+        : null;
+      const metadata = payload?.metadata && typeof payload.metadata === "object" && !Array.isArray(payload.metadata)
+        ? payload.metadata as Record<string, unknown>
+        : null;
+      return stringValue(metadata?.snapshotKind) === EDITABLE_REVIEW_DRAFT_KIND;
+    });
+    const parsed = snapshot ? inboundOrderReviewDraftPayloadSchema.safeParse(snapshot.payloadJson) : null;
+    if (!parsed?.success) return new Map();
+    const links = [
+      ...parsed.data.reviewedArtworkJson.unassignedAttachments,
+      ...parsed.data.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
+    ];
+    const manual = links.filter((link) => link.manualOverride || link.classificationSource === "manual_override");
+    const map = new Map<string, ManualAttachmentClassificationEvidence>();
+    for (const link of manual) {
+      const classification = this.manualClassificationFromLink(link);
+      if (!classification) continue;
+      const evidence: ManualAttachmentClassificationEvidence = {
+        classification,
+        automaticClassification: link.automaticClassification ?? null,
+        automaticConfidence: link.automaticClassificationConfidence ?? null,
+        automaticReasons: link.automaticClassificationReasons ?? [],
+        learningEvidence: link.learningEvidence as Record<string, unknown> | null | undefined,
+      };
+      map.set(`file:${link.fileId}`, evidence);
+      if (link.fileRecordId) map.set(`record:${link.fileRecordId}`, evidence);
+    }
+    return map;
+  }
+
+  private manualClassificationFromLink(link: InboundOrderArtworkLink): InboundAttachmentClassification | null {
+    const value = link.classification;
+    if (value === "PO" || value === "ARTWORK" || value === "REFERENCE" || value === "IGNORE_INLINE" || value === "OTHER") return value;
+    if (link.role === "po") return "PO";
+    if (link.role === "artwork") return "ARTWORK";
+    if (link.role === "reference") return "REFERENCE";
+    if (link.role === "ignore_inline") return "IGNORE_INLINE";
+    return null;
   }
 
   async buildInboundOrderParsePrompt(
@@ -377,6 +435,13 @@ export class InboundOrderParsingService {
         pageCount: item.pageCount,
         documentType: item.documentType,
         documentConfidence: item.documentConfidence,
+        manualClassificationUsed: item.manualClassificationUsed,
+        automaticClassification: item.automaticClassification,
+        manualClassification: item.manualClassification,
+        finalClassification: item.finalClassification,
+        classificationInfluence: item.classificationInfluence,
+        learningEvidence: item.learningEvidence,
+        warnings: item.warnings,
         poSummary: item.poSummary,
       })),
       evidenceConflicts: bundle.conflicts,
@@ -398,6 +463,8 @@ export class InboundOrderParsingService {
         "Interpret dates using receivedAt/email context. If a month/day has no year, use the context year unless it has already passed, then choose the next reasonable future date and add a warning.",
         "Think like a print CSR: flag missing size, quantity, artwork, material, and other decisions that block accurate order entry.",
         "Treat purchase order attachments as highest-priority evidence, then other PDF/text attachment content, then email body, then subject.",
+        "Manual attachment classification is authoritative. If an evidence item says Manual attachment classification used, honor that finalClassification with confidence 100.",
+        "Manual PO files must be parsed first for PO number, quantities, due dates, ship/bill info, and order notes. Manual Artwork files are artwork candidates. Manual Reference files are supporting evidence only. Manual Junk/Signature files are omitted from evidence.",
         "If email text conflicts with a purchase order attachment, preserve the purchase order value and return a warning.",
         "Customer history context is advisory only. It can explain familiar terminology, but explicit source evidence always wins.",
       ].join(" "),
