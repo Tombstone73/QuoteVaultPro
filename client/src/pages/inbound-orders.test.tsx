@@ -1697,9 +1697,162 @@ describe("InboundOrdersPage", () => {
       classification: "PO",
       classificationConfidence: 100,
       classificationSource: "manual_override",
+      automaticClassification: "ARTWORK",
+      automaticClassificationConfidence: 91,
       manualOverride: true,
+      learningEvidence: expect.objectContaining({
+        inboundRecordId: "inbound_1",
+        attachmentKey: "record:file_record_1",
+        filename: "final-banner-art.pdf",
+        extension: "pdf",
+        originalAutomaticClassification: "ARTWORK",
+        correctedManualClassification: "PO",
+        automaticConfidence: 91,
+        automaticReasons: ["filename contains artwork or production terms"],
+        note: "Manual correction captured for future classification learning.",
+      }),
     });
     expect(savedLink.classificationReasons).toContain("Staff manually classified as Purchase Order.");
+  });
+
+  test("manual PO to Artwork override appears in artwork dropdown and saves learning evidence", async () => {
+    const attachmentLink = {
+      fileId: "file_po",
+      fileRecordId: "file_record_po",
+      filename: "customer-po.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 31_000,
+      role: "po",
+      source: "unresolved",
+      confidence: 82,
+      reason: "Stored inbound attachment awaiting staff assignment.",
+      classification: "PO",
+      classificationConfidence: 88,
+      classificationReasons: ["filename contains PO"],
+      classificationSource: "automatic",
+      classificationBreakdown: {
+        filename: ["filename contains PO"],
+        content: [],
+        metadata: [],
+        manual: [],
+        scores: { PO: 88 },
+      },
+      manualOverride: false,
+    };
+    const parsed = parsedDraft();
+    const review = reviewDraft(parsed, { unassignedAttachments: [attachmentLink] });
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review });
+
+    renderPage();
+    await waitForText("Operational Review");
+    await waitForCondition(() => (
+      Array.from(container.querySelectorAll("select")).some((select) => select.getAttribute("aria-label") === "Classify customer-po.pdf")
+    ), "PO classification override control rendered");
+
+    const overrideSelect = Array.from(container.querySelectorAll("select")).find((select) => (
+      select.getAttribute("aria-label") === "Classify customer-po.pdf"
+    )) as HTMLSelectElement;
+    act(() => {
+      Simulate.change(overrideSelect, { target: { value: "ARTWORK" } } as any);
+    });
+
+    await waitForCondition(() => (
+      Array.from((Array.from(container.querySelectorAll("select")).find((select) => (
+        select.getAttribute("aria-label") === "Attach artwork to line item 1"
+      )) as HTMLSelectElement).options)
+        .some((option) => option.textContent === "customer-po.pdf")
+    ), "manual artwork is available to line item dropdown");
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(saveButton);
+    });
+    await waitForCondition(() => Boolean(getSavedBody()), "manual artwork override saved");
+
+    const savedLink = getSavedBody().reviewedArtworkJson.unassignedAttachments[0];
+    expect(savedLink).toMatchObject({
+      role: "artwork",
+      classification: "ARTWORK",
+      classificationConfidence: 100,
+      classificationSource: "manual_override",
+      automaticClassification: "PO",
+      manualOverride: true,
+      learningEvidence: expect.objectContaining({
+        originalAutomaticClassification: "PO",
+        correctedManualClassification: "ARTWORK",
+        filename: "customer-po.pdf",
+      }),
+    });
+  });
+
+  test("manual Junk Signature override is excluded from artwork dropdown", async () => {
+    const attachmentLink = {
+      fileId: "file_logo",
+      fileRecordId: "file_record_logo",
+      filename: "signature-logo.png",
+      mimeType: "image/png",
+      sizeBytes: 1_200,
+      role: "artwork",
+      source: "unresolved",
+      confidence: 70,
+      reason: "Stored inbound attachment awaiting staff assignment.",
+      classification: "ARTWORK",
+      classificationConfidence: 70,
+      classificationReasons: ["image file type"],
+      classificationSource: "automatic",
+      classificationBreakdown: {
+        filename: [],
+        content: [],
+        metadata: ["image file type"],
+        manual: [],
+        scores: { ARTWORK: 70 },
+      },
+      manualOverride: false,
+    };
+    const parsed = parsedDraft();
+    const review = reviewDraft(parsed, { unassignedAttachments: [attachmentLink] });
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review });
+
+    renderPage();
+    await waitForText("Operational Review");
+    await waitForCondition(() => (
+      Array.from(container.querySelectorAll("select")).some((select) => select.getAttribute("aria-label") === "Classify signature-logo.png")
+    ), "signature classification override control rendered");
+
+    const overrideSelect = Array.from(container.querySelectorAll("select")).find((select) => (
+      select.getAttribute("aria-label") === "Classify signature-logo.png"
+    )) as HTMLSelectElement;
+    act(() => {
+      Simulate.change(overrideSelect, { target: { value: "IGNORE_INLINE" } } as any);
+    });
+
+    await waitForCondition(() => (
+      !Array.from((Array.from(container.querySelectorAll("select")).find((select) => (
+        select.getAttribute("aria-label") === "Attach artwork to line item 1"
+      )) as HTMLSelectElement).options)
+        .some((option) => option.textContent === "signature-logo.png")
+    ), "manual junk is excluded from artwork dropdown");
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(saveButton);
+    });
+    await waitForCondition(() => Boolean(getSavedBody()), "manual junk override saved");
+
+    const savedLink = getSavedBody().reviewedArtworkJson.unassignedAttachments[0];
+    expect(savedLink).toMatchObject({
+      role: "ignore_inline",
+      classification: "IGNORE_INLINE",
+      classificationConfidence: 100,
+      classificationSource: "manual_override",
+      automaticClassification: "ARTWORK",
+      manualOverride: true,
+      learningEvidence: expect.objectContaining({
+        originalAutomaticClassification: "ARTWORK",
+        correctedManualClassification: "IGNORE_INLINE",
+        filename: "signature-logo.png",
+      }),
+    });
   });
 
   test("shows disabled state and does not load the queue when inbound email intake is off", async () => {

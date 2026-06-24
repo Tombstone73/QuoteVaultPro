@@ -100,4 +100,89 @@ describe("InboundOrderEvidenceService attachment evidence", () => {
     }));
     expect(attachment?.warnings?.[0]?.message).toContain("PO candidate PDF was stored");
   });
+
+  test("manual PO classification is authoritative parse evidence", async () => {
+    const bundle = await inboundOrderEvidenceService.buildEvidenceBundle({
+      organizationId: "org_1",
+      record: record(),
+      files: [inboundFile({ role: "artwork", sourceFilename: "customer-art.pdf", reviewNotes: "Originally artwork." })],
+      manualClassifications: new Map([[
+        "file:file_1",
+        {
+          classification: "PO",
+          automaticClassification: "ARTWORK",
+          automaticConfidence: 91,
+          automaticReasons: ["filename contained artwork terms"],
+          learningEvidence: {
+            inboundRecordId: "inbound_1",
+            attachmentKey: "file:file_1",
+            originalAutomaticClassification: "ARTWORK",
+            correctedManualClassification: "PO",
+          },
+        },
+      ]]),
+    });
+
+    const attachment = bundle.items.find((item) => item.sourceId === "file_1");
+    expect(bundle.items[0]?.sourceId).toBe("file_1");
+    expect(attachment).toEqual(expect.objectContaining({
+      documentType: "purchase_order",
+      documentConfidence: 100,
+      manualClassificationUsed: true,
+      automaticClassification: "ARTWORK",
+      manualClassification: "PO",
+      finalClassification: "PO",
+      classificationInfluence: "Manual PO classification used as authoritative purchase-order evidence.",
+    }));
+    expect(attachment?.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "manual_attachment_classification_used" }),
+    ]));
+  });
+
+  test("manual artwork classification prevents PO parsing and marks artwork evidence", async () => {
+    const bundle = await inboundOrderEvidenceService.buildEvidenceBundle({
+      organizationId: "org_1",
+      record: record(),
+      files: [inboundFile({ role: "po", sourceFilename: "final-art.pdf", reviewNotes: "Originally PO candidate." })],
+      manualClassifications: new Map([[
+        "file:file_1",
+        {
+          classification: "ARTWORK",
+          automaticClassification: "PO",
+          automaticConfidence: 88,
+          automaticReasons: ["filename contained PO"],
+          learningEvidence: null,
+        },
+      ]]),
+    });
+
+    const attachment = bundle.items.find((item) => item.sourceId === "file_1");
+    expect(attachment).toEqual(expect.objectContaining({
+      documentType: "artwork_reference",
+      documentConfidence: 100,
+      poSummary: null,
+      manualClassificationUsed: true,
+      manualClassification: "ARTWORK",
+    }));
+  });
+
+  test("manual junk classification removes attachment from parse evidence", async () => {
+    const bundle = await inboundOrderEvidenceService.buildEvidenceBundle({
+      organizationId: "org_1",
+      record: record(),
+      files: [inboundFile({ role: "artwork", sourceFilename: "signature-logo.png", mimeType: "image/png" })],
+      manualClassifications: new Map([[
+        "file:file_1",
+        {
+          classification: "IGNORE_INLINE",
+          automaticClassification: "ARTWORK",
+          automaticConfidence: 78,
+          automaticReasons: ["image file type"],
+          learningEvidence: null,
+        },
+      ]]),
+    });
+
+    expect(bundle.items.some((item) => item.sourceId === "file_1")).toBe(false);
+  });
 });

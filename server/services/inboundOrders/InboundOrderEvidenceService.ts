@@ -7,6 +7,7 @@ import {
   type InboundOrderEvidenceItem,
   type InboundOrderParseWarning,
 } from "@shared/inboundOrdersApi";
+import type { InboundAttachmentClassification } from "@shared/inboundAttachmentClassification";
 import { storageProviderConfigRepository } from "../../storage/storageProviderConfig.repo";
 import { canonicalFileReadResolver } from "../storage/CanonicalFileReadResolver";
 import { storageRegistry } from "../storage/StorageRegistry";
@@ -15,6 +16,14 @@ import { inferInboundRequestedDate } from "./inboundOrderDateInference";
 export type InboundOrderEvidenceBundle = {
   items: InboundOrderEvidenceItem[];
   conflicts: InboundOrderParseWarning[];
+};
+
+export type ManualAttachmentClassificationEvidence = {
+  classification: InboundAttachmentClassification;
+  automaticClassification?: InboundAttachmentClassification | null;
+  automaticConfidence?: number | null;
+  automaticReasons?: string[];
+  learningEvidence?: Record<string, unknown> | null;
 };
 
 type PurchaseOrderSummary = NonNullable<InboundOrderEvidenceItem["poSummary"]>;
@@ -43,6 +52,66 @@ function attachmentDocumentFallback(file: InboundOrderFile): Pick<InboundOrderEv
   if (file.role === "po") return { documentType: "purchase_order", documentConfidence: 70 };
   if (file.role === "artwork") return { documentType: "artwork_reference", documentConfidence: 70 };
   return { documentType: "unknown", documentConfidence: 0 };
+}
+
+function manualClassificationInfluence(classification: InboundAttachmentClassification): string {
+  if (classification === "PO") return "Manual PO classification used as authoritative purchase-order evidence.";
+  if (classification === "ARTWORK") return "Manual Artwork classification used as authoritative artwork evidence.";
+  if (classification === "REFERENCE") return "Manual Reference classification used as supporting evidence only.";
+  if (classification === "IGNORE_INLINE") return "Manual Junk / Signature classification ignored for parsing.";
+  return "Manual attachment classification used.";
+}
+
+function applyManualClassificationToEvidence(
+  item: InboundOrderEvidenceItem,
+  manual: ManualAttachmentClassificationEvidence | null | undefined,
+  record: InboundOrderRecord,
+): InboundOrderEvidenceItem | null {
+  if (!manual) return item;
+  if (manual.classification === "IGNORE_INLINE" || manual.classification === "OTHER") return null;
+  const documentType = manual.classification === "PO"
+    ? "purchase_order"
+    : manual.classification === "ARTWORK"
+      ? "artwork_reference"
+      : "unknown";
+  const poSummary = manual.classification === "PO" && item.rawText
+    ? item.poSummary ?? extractPurchaseOrderFields({ text: item.rawText, receivedAt: record.receivedAt, sourceDocument: item.fileName ?? item.label })
+    : null;
+  const influence = manualClassificationInfluence(manual.classification);
+  return {
+    ...item,
+    documentType,
+    documentConfidence: 100,
+    poSummary,
+    manualClassificationUsed: true,
+    automaticClassification: manual.automaticClassification ?? undefined,
+    manualClassification: manual.classification,
+    finalClassification: manual.classification,
+    classificationInfluence: influence,
+    learningEvidence: manual.learningEvidence ?? undefined,
+    warnings: [
+      warning("manual_attachment_classification_used", influence, "info"),
+      ...item.warnings,
+    ],
+  };
+}
+
+function evidenceItemPriority(item: InboundOrderEvidenceItem): number {
+  if (item.manualClassificationUsed && item.finalClassification === "PO") return 0;
+  if (item.documentType === "purchase_order") return 1;
+  if (item.manualClassificationUsed && item.finalClassification === "ARTWORK") return 2;
+  if (item.manualClassificationUsed && item.finalClassification === "REFERENCE") return 3;
+  if (item.type === "PDF_ATTACHMENT" || item.type === "TEXT_ATTACHMENT") return 4;
+  if (item.type === "EMAIL_BODY") return 5;
+  if (item.type === "EMAIL_SUBJECT") return 6;
+  return 7;
+}
+
+function prioritizeEvidenceItems(items: InboundOrderEvidenceItem[]): InboundOrderEvidenceItem[] {
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => evidenceItemPriority(a.item) - evidenceItemPriority(b.item) || a.index - b.index)
+    .map(({ item }) => item);
 }
 
 function normalizeWhitespace(value: string): string {
@@ -431,6 +500,7 @@ export class InboundOrderEvidenceService {
     organizationId: string;
     record: InboundOrderRecord;
     files: InboundOrderFile[];
+    manualClassifications?: Map<string, ManualAttachmentClassificationEvidence>;
   }): Promise<InboundOrderEvidenceBundle> {
     const evidence = getManualInboundEvidence(args.record);
     const items: InboundOrderEvidenceItem[] = [];
@@ -446,17 +516,25 @@ export class InboundOrderEvidenceService {
     }
 
     for (const file of args.files) {
-      const attachment = await this.buildAttachmentEvidence(args.record, file);
+      const manual = args.manualClassifications?.get(`file:${file.id}`)
+        ?? (file.fileRecordId ? args.manualClassifications?.get(`record:${file.fileRecordId}`) : undefined);
+      const attachment = await this.buildAttachmentEvidence(args.record, file, manual);
       if (attachment) items.push(attachment);
     }
 
+    const prioritizedItems = prioritizeEvidenceItems(items);
     return {
-      items,
-      conflicts: detectEvidenceConflicts(items),
+      items: prioritizedItems,
+      conflicts: detectEvidenceConflicts(prioritizedItems),
     };
   }
 
-  private async buildAttachmentEvidence(record: InboundOrderRecord, file: InboundOrderFile): Promise<InboundOrderEvidenceItem | null> {
+  private async buildAttachmentEvidence(
+    record: InboundOrderRecord,
+    file: InboundOrderFile,
+    manual?: ManualAttachmentClassificationEvidence,
+  ): Promise<InboundOrderEvidenceItem | null> {
+    if (manual?.classification === "IGNORE_INLINE" || manual?.classification === "OTHER") return null;
     const mimeType = file.mimeType ?? "";
     const fileName = file.sourceFilename ?? null;
     const base = {
@@ -470,7 +548,7 @@ export class InboundOrderEvidenceService {
       try {
         const buffer = file.fileRecordId ? await this.readCanonicalFile(file.fileRecordId) : null;
         if (!buffer) {
-          return {
+          return applyManualClassificationToEvidence({
             ...base,
             type: "PDF_ATTACHMENT",
             rawText: null,
@@ -485,14 +563,14 @@ export class InboundOrderEvidenceService {
                 : "PDF attachment could not be read for parsing.",
               "warning",
             )],
-          };
+          }, manual, record);
         }
         const extracted = await extractMachineReadablePdfText(buffer);
         const detected = detectAttachmentDocument(extracted.text, fileName);
         const poSummary = detected.documentType === "purchase_order"
           ? extractPurchaseOrderFields({ text: extracted.text, receivedAt: record.receivedAt, sourceDocument: fileName })
           : null;
-        return {
+        return applyManualClassificationToEvidence({
           ...base,
           type: "PDF_ATTACHMENT",
           rawText: extracted.text,
@@ -501,9 +579,9 @@ export class InboundOrderEvidenceService {
           extractionStatus: "successful",
           poSummary,
           warnings: [],
-        };
+        }, manual, record);
       } catch (error: any) {
-        return {
+        return applyManualClassificationToEvidence({
           ...base,
           type: "PDF_ATTACHMENT",
           rawText: null,
@@ -512,7 +590,7 @@ export class InboundOrderEvidenceService {
           extractionStatus: "failed",
           poSummary: null,
           warnings: [warning("pdf_text_extraction_failed", error?.message ?? "PDF text extraction failed.", "warning")],
-        };
+        }, manual, record);
       }
     }
 
@@ -521,7 +599,7 @@ export class InboundOrderEvidenceService {
       const rawText = buffer?.toString("utf8").slice(0, MAX_ATTACHMENT_TEXT_CHARS) ?? null;
       if (!rawText) return null;
       const detected = detectAttachmentDocument(rawText, fileName);
-      return {
+      return applyManualClassificationToEvidence({
         ...base,
         type: "TEXT_ATTACHMENT",
         rawText,
@@ -532,10 +610,10 @@ export class InboundOrderEvidenceService {
           ? extractPurchaseOrderFields({ text: rawText, receivedAt: record.receivedAt, sourceDocument: fileName })
           : null,
         warnings: [],
-      };
+      }, manual, record);
     }
 
-    return {
+    return applyManualClassificationToEvidence({
       ...base,
       type: "TEXT_ATTACHMENT",
       rawText: file.reviewNotes ?? null,
@@ -544,7 +622,7 @@ export class InboundOrderEvidenceService {
       extractionStatus: "not_attempted",
       poSummary: null,
       warnings: [],
-    };
+    }, manual, record);
   }
 
   private async readCanonicalFile(fileRecordId: string): Promise<Buffer | null> {
