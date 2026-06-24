@@ -1149,6 +1149,19 @@ function getInboundIntentLabel(record: ClientInboundOrderRecord): string | null 
   return inboundIntentLabels[intent] ?? titleCase(intent);
 }
 
+function getInboundIntentReasons(record: ClientInboundOrderRecord): string[] {
+  const reasons = [
+    ...stringsFromUnknown(getPathValue(record.normalizedPayloadJson, "inboundIntentReasons")),
+    ...stringsFromUnknown(getPathValue(record.extractedOrderJson, "inboundIntentReasons")),
+    ...stringsFromUnknown(getPathValue(record.rawPayloadJson, "intentReasons")),
+  ];
+  if (reasons.length > 0) return Array.from(new Set(reasons));
+  const reason = stringFromUnknown(getPathValue(record.normalizedPayloadJson, "inboundIntentReason"))
+    ?? stringFromUnknown(getPathValue(record.extractedOrderJson, "inboundIntentReason"))
+    ?? stringFromUnknown(getPathValue(record.rawPayloadJson, "intentReason"));
+  return reason ? [reason] : [];
+}
+
 function getErrorTone(error: Error | null) {
   if (!error) return null;
   const message = error.message.toLowerCase();
@@ -2045,6 +2058,7 @@ function SourceEvidencePanel({
   const threadMessageCount = typeof threadEvidence?.messageCount === "number" ? threadEvidence.messageCount : null;
   const latestThreadActivity = stringFromUnknown(threadEvidence?.latestActivityAt);
   const intentLabel = record.sourceType === "email" ? getInboundIntentLabel(record) : null;
+  const intentReasons = record.sourceType === "email" ? getInboundIntentReasons(record) : [];
   const showPendingTrustNotice = record.sourceType === "email"
     && record.attachmentDownloadPolicy === "pending_trust"
     && emailFiles.length > 0;
@@ -2236,6 +2250,19 @@ function SourceEvidencePanel({
               </>
             )}
           </div>
+          {record.sourceType === "email" && intentReasons.length > 0 && (
+            <div className="mt-4 rounded-md border border-border bg-muted/20 px-3 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-semibold uppercase text-muted-foreground">Intent evidence</div>
+                {intentLabel ? <Badge variant="outline">{intentLabel}</Badge> : null}
+              </div>
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-muted-foreground">
+                {intentReasons.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div className="mt-4 rounded-md border border-border bg-muted/20 px-3 py-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-xs font-semibold uppercase text-muted-foreground">AI Parse Attempt</div>

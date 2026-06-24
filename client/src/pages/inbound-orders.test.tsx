@@ -1121,6 +1121,26 @@ describe("InboundOrdersPage", () => {
         receivedAt: "2026-06-09T12:30:00.000Z",
         bodyText: "Plain fallback should not be primary when HTML exists.",
         bodyHtml: "<div><p>Hello <strong>CSR</strong></p><script>window.bad=true</script><img src=\"https://tracker.test/pixel.png\" onerror=\"bad()\"><a href=\"javascript:bad()\">bad link</a></div>",
+        intent: "ORDER_REQUEST",
+        intentReason: "Explicit order intent detected: subject contains \"New Order\".",
+        intentReasons: [
+          "subject contains \"New Order\"",
+          "quantity detected",
+          "product phrase detected",
+          "specs detected",
+          "attachments present",
+        ],
+      },
+      normalizedPayloadJson: {
+        inboundIntent: "ORDER_REQUEST",
+        inboundIntentReason: "Explicit order intent detected: subject contains \"New Order\".",
+        inboundIntentReasons: [
+          "subject contains \"New Order\"",
+          "quantity detected",
+          "product phrase detected",
+          "specs detected",
+          "attachments present",
+        ],
       },
     });
     setupParsedInboundReview({
@@ -1194,6 +1214,10 @@ describe("InboundOrdersPage", () => {
     });
     await waitForText("Source Evidence");
     await waitForText("Draft Builder");
+    await waitForText("Intent evidence");
+    await waitForText("subject contains \"New Order\"");
+    await waitForText("quantity detected");
+    await waitForText("specs detected");
     expect(window.localStorage.getItem("titanos.inboundOrders.reviewMode")).toBe("debug");
   });
 

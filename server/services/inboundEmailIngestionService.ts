@@ -453,6 +453,115 @@ const ORDER_PATTERNS = [
   /\bpo attached\b/i,
 ];
 
+const STRONG_ORDER_SUBJECT_PATTERNS: Array<{ pattern: RegExp; reason: string; score: number }> = [
+  { pattern: /\bnew\s+order\b/i, reason: "subject contains \"New Order\"", score: 70 },
+  { pattern: /\border\s+request\b/i, reason: "subject contains order request", score: 55 },
+  { pattern: /\border\s+for\b/i, reason: "subject contains order for", score: 50 },
+  { pattern: /\bplease\s+order\b/i, reason: "subject contains please order", score: 50 },
+  { pattern: /\bprint\s+order\b/i, reason: "subject contains print order", score: 55 },
+  { pattern: /\bproduction\s+order\b/i, reason: "subject contains production order", score: 55 },
+  { pattern: /\bre[\s-]?order\b/i, reason: "subject contains reorder", score: 55 },
+  { pattern: /\brepeat\s+order\b/i, reason: "subject contains repeat order", score: 55 },
+  { pattern: /\bnew\s+job\b/i, reason: "subject contains new job", score: 55 },
+  { pattern: /\bjob\s+request\b/i, reason: "subject contains job request", score: 55 },
+];
+
+const COMMUNICATION_PROTECTION_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /\border\s+status\b/i, reason: "status request detected" },
+  { pattern: /\bwhere\s+is\s+my\s+order\b/i, reason: "order status request detected" },
+  { pattern: /\bdid\s+this\s+ship\b/i, reason: "shipping status request detected" },
+  { pattern: /\b(?:has|have)\s+(?:this|it|these|they)\s+shipped\b/i, reason: "shipping status request detected" },
+  { pattern: /\btracking\b/i, reason: "shipping status request detected" },
+  { pattern: /\bresend\s+(?:the\s+)?invoice\b/i, reason: "invoice resend request detected" },
+  { pattern: /\binvoice\s*#?\s*\d{3,}\b.*\bresend\b/i, reason: "invoice resend request detected" },
+  { pattern: /\bpayment\s+(?:question|issue|problem)\b/i, reason: "payment question detected" },
+  { pattern: /\bproof\s+(?:question|change|revision|approval|status)\b/i, reason: "proof question detected" },
+  { pattern: /\bcancel(?:lation)?\s+(?:this\s+)?order\b/i, reason: "cancellation request detected" },
+  { pattern: /\bcomplaint\b|\bsupport\s+(?:issue|request)\b/i, reason: "support issue detected" },
+];
+
+const PRODUCT_SPEC_PATTERNS = [
+  /\bdouble\s+sided\b/i,
+  /\bsingle\s+sided\b/i,
+  /\b\d+(?:\.\d+)?\s*(?:'|ft|feet|in|inch|inches)\b/i,
+  /\bground\s+spike\b/i,
+  /\bbase\b/i,
+  /\bmaterial\b/i,
+  /\bfinishing\b/i,
+  /\bgrommets?\b/i,
+  /\blaminate(?:d|ion)?\b/i,
+  /\bvinyl\b/i,
+];
+
+type InboundEmailReviewClassification = {
+  ignored: boolean;
+  intent: InboundEmailIntent;
+  reason: string;
+  reasons: string[];
+  crmInfluence: string | null;
+};
+
+function appendReason(reasons: string[], reason: string): void {
+  if (!reasons.includes(reason)) reasons.push(reason);
+}
+
+function scoreOrderIntent(message: InboundEmailProviderMessage): {
+  score: number;
+  reasons: string[];
+  protectionReasons: string[];
+} {
+  const subject = String(message.subject ?? "");
+  const body = [message.bodyText, message.bodyHtml].filter(Boolean).join("\n");
+  const text = [subject, body].filter(Boolean).join("\n");
+  const reasons: string[] = [];
+  const protectionReasons: string[] = [];
+  let score = 0;
+
+  for (const candidate of STRONG_ORDER_SUBJECT_PATTERNS) {
+    if (candidate.pattern.test(subject)) {
+      score += candidate.score;
+      appendReason(reasons, candidate.reason);
+    }
+  }
+
+  if (ORDER_PATTERNS.some((pattern) => pattern.test(text))) {
+    score += 45;
+    appendReason(reasons, "order request language detected");
+  }
+
+  if (message.attachments.some((attachment) => /\bpo\b|purchase.?order/i.test(attachment.filename ?? ""))) {
+    score += 35;
+    appendReason(reasons, "purchase-order attachment filename detected");
+  }
+
+  if (/\bsend\s+us\s+an\s+invoice\s+for\b/i.test(body)) {
+    score += 35;
+    appendReason(reasons, "body asks to send an invoice for a product");
+  }
+
+  if (/\b(?:qty|quantity)?\s*\d+\s+[A-Z][A-Z0-9'’ -]{2,80}\b/i.test(body)) {
+    score += 25;
+    appendReason(reasons, "quantity detected");
+    appendReason(reasons, "product phrase detected");
+  }
+
+  if (PRODUCT_SPEC_PATTERNS.some((pattern) => pattern.test(body))) {
+    score += 20;
+    appendReason(reasons, "specs detected");
+  }
+
+  if (message.attachments.length > 0 || /\battached\s+(?:are\s+)?(?:the\s+)?files?\b/i.test(body)) {
+    score += 10;
+    appendReason(reasons, "attachments present");
+  }
+
+  for (const candidate of COMMUNICATION_PROTECTION_PATTERNS) {
+    if (candidate.pattern.test(text)) appendReason(protectionReasons, candidate.reason);
+  }
+
+  return { score, reasons, protectionReasons };
+}
+
 function stringFromUnknown(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -574,21 +683,39 @@ function hasStrongSpamIndicators(text: string, spamMatchCount: number): boolean 
 export function classifyInboundEmailForReview(
   message: InboundEmailProviderMessage,
   context: InboundEmailClassificationContext = {},
-): { ignored: boolean; intent: InboundEmailIntent; reason: string; crmInfluence: string | null } {
+): InboundEmailReviewClassification {
   const text = [message.subject, message.bodyText, message.bodyHtml].filter(Boolean).join("\n").slice(0, 20000);
   const crmInfluence = classificationCrmInfluence(context);
-  if (!text.trim() && message.attachments.length === 0) return { ignored: true, intent: "UNKNOWN", reason: "No subject, body text, or attachments.", crmInfluence };
-  if (!text.trim() && message.attachments.length > 0) return { ignored: false, intent: "UNKNOWN", reason: "Attachment-only inbound message needs staff review.", crmInfluence };
+  if (!text.trim() && message.attachments.length === 0) return { ignored: true, intent: "UNKNOWN", reason: "No subject, body text, or attachments.", reasons: ["No subject, body text, or attachments."], crmInfluence };
+  if (!text.trim() && message.attachments.length > 0) return { ignored: false, intent: "UNKNOWN", reason: "Attachment-only inbound message needs staff review.", reasons: ["Attachment-only inbound message needs staff review."], crmInfluence };
 
   const quote = QUOTE_PATTERNS.some((pattern) => pattern.test(text));
-  const order = ORDER_PATTERNS.some((pattern) => pattern.test(text))
-    || message.attachments.some((attachment) => /\bpo\b|purchase.?order/i.test(attachment.filename ?? ""));
+  const orderScore = scoreOrderIntent(message);
+  const order = orderScore.score >= 45;
   const spamMatches = SPAM_PATTERNS.filter((pattern) => pattern.test(text));
   const trustedCustomerCommunication = Boolean(context.senderTrusted && context.trustSource !== "ignored" && context.trustSource !== "none");
+  const protectedCommunication = orderScore.protectionReasons.length > 0;
 
-  if (order && !quote) return { ignored: false, intent: "ORDER_REQUEST", reason: "Order request language detected.", crmInfluence };
-  if (quote && !order) return { ignored: false, intent: "QUOTE_REQUEST", reason: "Quote request language detected.", crmInfluence };
-  if (quote && order) return { ignored: false, intent: "ORDER_REQUEST", reason: "Order and quote language detected; order intent takes review priority.", crmInfluence };
+  if (protectedCommunication && (!order || orderScore.score < 80)) {
+    const reasons = orderScore.protectionReasons;
+    return {
+      ignored: false,
+      intent: "CUSTOMER_COMMUNICATION",
+      reason: reasons.join("; "),
+      reasons,
+      crmInfluence,
+    };
+  }
+
+  if (order && !quote) {
+    const reason = orderScore.reasons.length > 0 ? `Explicit order intent detected: ${orderScore.reasons.join("; ")}.` : "Order request language detected.";
+    return { ignored: false, intent: "ORDER_REQUEST", reason, reasons: orderScore.reasons.length > 0 ? orderScore.reasons : ["Order request language detected."], crmInfluence };
+  }
+  if (quote && !order) return { ignored: false, intent: "QUOTE_REQUEST", reason: "Quote request language detected.", reasons: ["Quote request language detected."], crmInfluence };
+  if (quote && order) {
+    const reasons = ["Order and quote language detected; order intent takes review priority.", ...orderScore.reasons];
+    return { ignored: false, intent: "ORDER_REQUEST", reason: reasons[0], reasons, crmInfluence };
+  }
 
   if (spamMatches.length > 0) {
     if (trustedCustomerCommunication && !hasStrongSpamIndicators(text, spamMatches.length)) {
@@ -596,15 +723,18 @@ export function classifyInboundEmailForReview(
         ignored: false,
         intent: "CUSTOMER_COMMUNICATION",
         reason: "Known customer/contact communication contained weak newsletter wording, so it remains available for staff review.",
+        reasons: ["Known customer/contact communication contained weak newsletter wording."],
         crmInfluence,
       };
     }
+    const reason = trustedCustomerCommunication
+      ? "Strong marketing/newsletter indicators detected despite known customer relationship."
+      : "Ignored obvious marketing/newsletter email.";
     return {
       ignored: true,
       intent: "NEWSLETTER_SPAM",
-      reason: trustedCustomerCommunication
-        ? "Strong marketing/newsletter indicators detected despite known customer relationship."
-        : "Ignored obvious marketing/newsletter email.",
+      reason,
+      reasons: [reason],
       crmInfluence,
     };
   }
@@ -614,10 +744,11 @@ export function classifyInboundEmailForReview(
       ignored: false,
       intent: "CUSTOMER_COMMUNICATION",
       reason: "Known customer/contact communication needs staff review.",
+      reasons: ["Known customer/contact communication needs staff review."],
       crmInfluence,
     };
   }
-  return { ignored: false, intent: "UNKNOWN", reason: "Ambiguous inbound request.", crmInfluence };
+  return { ignored: false, intent: "UNKNOWN", reason: "Ambiguous inbound request.", reasons: ["Ambiguous inbound request."], crmInfluence };
 }
 
 function normalizeAttachmentFileName(value: string | null | undefined): string {
@@ -2036,6 +2167,7 @@ export class InboundEmailIngestionService {
         attachments: combinedAttachments,
         intent: classification?.intent ?? raw.intent ?? null,
         intentReason: classification?.reason ?? raw.intentReason ?? null,
+        intentReasons: classification?.reasons ?? raw.intentReasons ?? null,
         intentCrmInfluence: classification?.crmInfluence ?? raw.intentCrmInfluence ?? null,
         senderTrustSource: senderTrustDecision?.trustSource ?? raw.senderTrustSource ?? null,
         senderTrustReason: senderTrustDecision?.reason ?? raw.senderTrustReason ?? null,
@@ -2057,6 +2189,7 @@ export class InboundEmailIngestionService {
         },
         inboundIntent: classification?.intent ?? normalized.inboundIntent ?? null,
         inboundIntentReason: classification?.reason ?? normalized.inboundIntentReason ?? null,
+        inboundIntentReasons: classification?.reasons ?? normalized.inboundIntentReasons ?? null,
         inboundIntentCrmInfluence: classification?.crmInfluence ?? normalized.inboundIntentCrmInfluence ?? null,
         senderTrustSource: senderTrustDecision?.trustSource ?? normalized.senderTrustSource ?? null,
         senderTrustReason: senderTrustDecision?.reason ?? normalized.senderTrustReason ?? null,
@@ -2076,6 +2209,7 @@ export class InboundEmailIngestionService {
         ...extractedOrder,
         inboundIntent: classification?.intent ?? extractedOrder.inboundIntent ?? null,
         inboundIntentReason: classification?.reason ?? extractedOrder.inboundIntentReason ?? null,
+        inboundIntentReasons: classification?.reasons ?? extractedOrder.inboundIntentReasons ?? null,
         inboundIntentCrmInfluence: classification?.crmInfluence ?? extractedOrder.inboundIntentCrmInfluence ?? null,
         subject: primaryMessage?.subject ?? extractedOrder.subject ?? args.record.externalReference,
         displaySubject: primaryMessage ? displaySubjectForMessage(primaryMessage) : stringFromUnknown(extractedOrder.displaySubject) ?? displaySubjectForMessage({ subject: args.record.externalReference }),
@@ -2384,6 +2518,7 @@ export class InboundEmailIngestionService {
       attachments: message.attachments,
       intent: classification.intent,
       intentReason: classification.reason,
+      intentReasons: classification.reasons,
       intentCrmInfluence: classification.crmInfluence,
       senderTrustSource: senderTrustDecision.trustSource,
       senderTrustReason: senderTrustDecision.reason,
@@ -2417,6 +2552,7 @@ export class InboundEmailIngestionService {
             },
             inboundIntent: classification.intent,
             inboundIntentReason: classification.reason,
+            inboundIntentReasons: classification.reasons,
             inboundIntentCrmInfluence: classification.crmInfluence,
             senderTrustSource: senderTrustDecision.trustSource,
             senderTrustReason: senderTrustDecision.reason,
@@ -2437,6 +2573,7 @@ export class InboundEmailIngestionService {
           extractedOrderJson: {
             inboundIntent: classification.intent,
             inboundIntentReason: classification.reason,
+            inboundIntentReasons: classification.reasons,
             inboundIntentCrmInfluence: classification.crmInfluence,
             subject: message.subject,
             displaySubject,
@@ -2777,6 +2914,7 @@ export class InboundEmailIngestionService {
           attachmentCandidatesAcrossThread: combinedAttachments.length,
           intent: classification.intent,
           intentReason: classification.reason,
+          intentReasons: classification.reasons,
           intentCrmInfluence: classification.crmInfluence,
           senderTrustSource: senderTrustDecision.trustSource,
           senderTrustReason: senderTrustDecision.reason,
@@ -2985,6 +3123,7 @@ export class InboundEmailIngestionService {
           attachments: combinedAttachments,
           intent: classification?.intent ?? raw.intent ?? null,
           intentReason: classification?.reason ?? raw.intentReason ?? null,
+          intentReasons: classification?.reasons ?? raw.intentReasons ?? null,
           intentCrmInfluence: classification?.crmInfluence ?? raw.intentCrmInfluence ?? null,
           thread: threadSummary,
           lastManualReprocess: args.action === "reprocess_email" || args.action === "backfill_attachments" || args.action === "rerun_trust_attachment_download"
@@ -3006,6 +3145,7 @@ export class InboundEmailIngestionService {
           },
           inboundIntent: classification?.intent ?? normalized.inboundIntent ?? null,
           inboundIntentReason: classification?.reason ?? normalized.inboundIntentReason ?? null,
+          inboundIntentReasons: classification?.reasons ?? normalized.inboundIntentReasons ?? null,
           inboundIntentCrmInfluence: classification?.crmInfluence ?? normalized.inboundIntentCrmInfluence ?? null,
           sender: {
             ...(isRecord(normalized.sender) ? normalized.sender : {}),
@@ -3023,6 +3163,7 @@ export class InboundEmailIngestionService {
           ...extractedOrder,
           inboundIntent: classification?.intent ?? extractedOrder.inboundIntent ?? null,
           inboundIntentReason: classification?.reason ?? extractedOrder.inboundIntentReason ?? null,
+          inboundIntentReasons: classification?.reasons ?? extractedOrder.inboundIntentReasons ?? null,
           inboundIntentCrmInfluence: classification?.crmInfluence ?? extractedOrder.inboundIntentCrmInfluence ?? null,
           subject: primaryMessage?.subject ?? extractedOrder.subject ?? args.record.externalReference,
           displaySubject: primaryMessage ? displaySubjectForMessage(primaryMessage) : stringFromUnknown(extractedOrder.displaySubject) ?? displaySubjectForMessage({ subject: args.record.externalReference }),
