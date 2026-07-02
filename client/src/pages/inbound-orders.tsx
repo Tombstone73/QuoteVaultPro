@@ -764,39 +764,71 @@ function groupFilesByThreadMessage(files: ClientInboundOrderFile[], thread: Reco
 function ThreadTimeline({ thread, compact = false }: { thread: Record<string, unknown> | null | undefined; compact?: boolean }) {
   const messages = threadMessagesFromEvidence(thread);
   if (messages.length === 0) return null;
-  return (
-    <section className={compact ? "rounded-md border border-border bg-card p-2" : "rounded-md border border-border p-3"}>
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold text-foreground">Thread Timeline</h3>
-        <Badge variant="outline">{messages.length}</Badge>
-      </div>
-      <div className="space-y-1.5">
-        {messages.map((message, index) => {
-          const messageId = stringFromUnknown(message.messageId) ?? `message_${index + 1}`;
-          const subject = stringFromUnknown(message.subject) || `Message ${index + 1}`;
-          const sender = [stringFromUnknown(message.senderName), stringFromUnknown(message.senderEmail)]
-            .filter(Boolean)
-            .join(" / ");
-          const receivedAt = stringFromUnknown(message.receivedAt);
-          const attachmentCount = typeof message.attachmentCount === "number" ? message.attachmentCount : 0;
-          return (
-            <div key={messageId} className="rounded-md border border-border bg-muted/20 px-2 py-1.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="min-w-0 text-sm font-medium text-foreground">
-                  <span className="mr-1 text-xs text-muted-foreground">Message {index + 1}</span>
-                  <span className="break-words">{subject}</span>
-                </div>
-                <Badge variant="outline">{attachmentCount} attachments</Badge>
+  const attachmentCount = messages.reduce((total, message) => (
+    total + (typeof message.attachmentCount === "number" ? message.attachmentCount : 0)
+  ), 0);
+  const latestActivity = messages
+    .map((message) => stringFromUnknown(message.receivedAt))
+    .filter((value): value is string => Boolean(value))
+    .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] ?? null;
+  const timelineBody = (
+    <div className="space-y-1.5">
+      {messages.map((message, index) => {
+        const messageId = stringFromUnknown(message.messageId) ?? `message_${index + 1}`;
+        const subject = stringFromUnknown(message.subject) || `Message ${index + 1}`;
+        const sender = [stringFromUnknown(message.senderName), stringFromUnknown(message.senderEmail)]
+          .filter(Boolean)
+          .join(" / ");
+        const receivedAt = stringFromUnknown(message.receivedAt);
+        const messageAttachmentCount = typeof message.attachmentCount === "number" ? message.attachmentCount : 0;
+        return (
+          <div key={messageId} className="rounded-md border border-border bg-muted/20 px-2 py-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0 text-sm font-medium text-foreground">
+                <span className="mr-1 text-xs text-muted-foreground">Message {index + 1}</span>
+                <span className="break-words">{subject}</span>
               </div>
-              <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                {sender && <span>{sender}</span>}
-                {receivedAt && <span>{formatTimestamp(receivedAt)}</span>}
-              </div>
+              <Badge variant="outline">{messageAttachmentCount} attachments</Badge>
             </div>
-          );
-        })}
-      </div>
-    </section>
+            <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
+              {sender && <span>{sender}</span>}
+              {receivedAt && <span>{formatTimestamp(receivedAt)}</span>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+  return (
+    <>
+      <details className={cn(
+        "rounded-md border border-border bg-card p-2 min-[1180px]:hidden",
+        !compact && "bg-background",
+      )}>
+        <summary className="cursor-pointer list-none">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-foreground">Thread Timeline</h3>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <Badge variant="outline">{messages.length} messages</Badge>
+              <Badge variant="outline">{attachmentCount} attachments</Badge>
+              {latestActivity && <span>Latest {formatTimestamp(latestActivity)}</span>}
+              <ChevronDown className="h-4 w-4" />
+            </div>
+          </div>
+        </summary>
+        <div className="mt-2">{timelineBody}</div>
+      </details>
+      <section className={cn(
+        compact ? "rounded-md border border-border bg-card p-2" : "rounded-md border border-border p-3",
+        "max-[1179px]:hidden",
+      )}>
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-foreground">Thread Timeline</h3>
+          <Badge variant="outline">{messages.length}</Badge>
+        </div>
+        {timelineBody}
+      </section>
+    </>
   );
 }
 
@@ -2623,7 +2655,7 @@ function OperationalEmailPanel({
                 type="button"
                 size="sm"
                 variant="outline"
-                className="h-7 px-2 text-xs"
+                className="hidden h-7 px-2 text-xs min-[1180px]:inline-flex"
                 disabled={isEmailReprocessing}
                 onClick={() => onEmailReprocess(record, "backfill_attachments")}
               >
@@ -2634,7 +2666,7 @@ function OperationalEmailPanel({
                 type="button"
                 size="sm"
                 variant="outline"
-                className="h-7 px-2 text-xs"
+                className="hidden h-7 px-2 text-xs min-[1180px]:inline-flex"
                 disabled={isEmailReprocessing}
                 onClick={() => onEmailReprocess(record, "reprocess_email")}
               >
@@ -2649,6 +2681,35 @@ function OperationalEmailPanel({
                 <Badge variant="outline">Not parsed</Badge>
               )}
               <Badge variant="outline">{titleCase(record.sourceType)}</Badge>
+              <details className="relative min-[1180px]:hidden">
+                <summary className="flex h-7 cursor-pointer list-none items-center rounded-md border border-border px-2 text-xs font-medium text-foreground">
+                  Actions
+                </summary>
+                <div className="absolute right-0 top-8 z-20 grid w-48 gap-1 rounded-md border border-border bg-popover p-1 shadow-lg">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="justify-start"
+                    disabled={isEmailReprocessing}
+                    onClick={() => onEmailReprocess(record, "backfill_attachments")}
+                  >
+                    {isEmailReprocessing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Paperclip className="mr-2 h-4 w-4" />}
+                    Backfill Attachments
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="justify-start"
+                    disabled={isEmailReprocessing}
+                    onClick={() => onEmailReprocess(record, "reprocess_email")}
+                  >
+                    {isEmailReprocessing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCcw className="mr-2 h-4 w-4" />}
+                    Reprocess
+                  </Button>
+                </div>
+              </details>
             </div>
           </div>
           {threadMessageCount != null && (
@@ -4952,6 +5013,8 @@ export default function InboundOrdersPage() {
     if (typeof window === "undefined") return "operational";
     return window.localStorage.getItem(workspaceLayoutStorageKeys.reviewMode) === "debug" ? "debug" : "operational";
   });
+  const [responsivePanel, setResponsivePanel] = useState<"email" | "review">("email");
+  const [queueDrawerOpen, setQueueDrawerOpen] = useState(false);
   const [queueCollapsed, setQueueCollapsed] = useState(() => (
     readStoredBoolean(workspaceLayoutStorageKeys.queueCollapsed, false)
   ));
@@ -5795,7 +5858,7 @@ export default function InboundOrdersPage() {
         <>
       <div
         ref={workspaceRef}
-        className="flex min-h-0 w-full max-w-none flex-1 flex-col overflow-hidden min-[1180px]:flex-row"
+        className="relative flex min-h-0 w-full max-w-none flex-1 flex-col overflow-hidden min-[1180px]:flex-row"
         data-testid="inbound-review-workspace"
         style={{
           "--workspace-queue-width": `${queueWidth}px`,
@@ -5803,16 +5866,62 @@ export default function InboundOrdersPage() {
           "--workspace-draft-width": `${draftWidth}px`,
         } as CSSProperties}
       >
+        {queueDrawerOpen && (
+          <button
+            type="button"
+            className="fixed inset-0 z-40 bg-black/30 min-[1180px]:hidden"
+            aria-label="Close inbound queue drawer"
+            onClick={() => setQueueDrawerOpen(false)}
+          />
+        )}
+        <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-border bg-background px-3 min-[1180px]:hidden">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 px-2"
+            onClick={() => {
+              setQueueCollapsed(false);
+              setQueueDrawerOpen(true);
+            }}
+            aria-label="Open inbound queue"
+          >
+            <Inbox className="mr-2 h-4 w-4" />
+            Queue
+            <Badge variant="outline" className="ml-2">{records.length}</Badge>
+          </Button>
+          <div className="flex rounded-md border border-border bg-muted/30 p-1" aria-label="Responsive inbound workspace panel">
+            <Button
+              type="button"
+              size="sm"
+              variant={responsivePanel === "email" ? "default" : "ghost"}
+              className="h-7 px-2 text-xs"
+              onClick={() => setResponsivePanel("email")}
+            >
+              {reviewMode === "operational" ? "Email" : "Evidence"}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={responsivePanel === "review" ? "default" : "ghost"}
+              className="h-7 px-2 text-xs"
+              onClick={() => setResponsivePanel("review")}
+            >
+              Review
+            </Button>
+          </div>
+        </div>
         <section
           className={cn(
-            "flex min-w-0 shrink-0 flex-col overflow-hidden border-b border-border min-[1180px]:h-full min-[1180px]:w-[var(--workspace-queue-width)] min-[1180px]:min-w-[var(--workspace-queue-width)] min-[1180px]:max-w-[var(--workspace-queue-width)] min-[1180px]:border-b-0 min-[1180px]:border-r",
+            queueDrawerOpen
+              ? "fixed inset-y-0 left-0 z-50 flex w-[360px] max-w-[calc(100vw-1rem)] bg-background shadow-2xl"
+              : "hidden",
+            "min-w-0 shrink-0 flex-col overflow-hidden border-b border-border min-[1180px]:relative min-[1180px]:inset-auto min-[1180px]:z-auto min-[1180px]:flex min-[1180px]:h-full min-[1180px]:w-[var(--workspace-queue-width)] min-[1180px]:min-w-[var(--workspace-queue-width)] min-[1180px]:max-w-[var(--workspace-queue-width)] min-[1180px]:shadow-none min-[1180px]:border-b-0 min-[1180px]:border-r",
             queueCollapsed ? "h-14 min-[1180px]:h-full" : "min-h-[300px] flex-1 min-[1180px]:min-h-0 min-[1180px]:flex-none",
           )}
           data-testid="inbound-queue-panel"
           style={{
             width: `${queueWidth}px`,
-            minWidth: `${queueWidth}px`,
-            maxWidth: `${queueWidth}px`,
             flex: `0 0 ${queueWidth}px`,
           } as CSSProperties}
         >
@@ -5844,12 +5953,23 @@ export default function InboundOrdersPage() {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-8 w-8 p-0"
+                    className="hidden h-8 w-8 p-0 min-[1180px]:inline-flex"
                     onClick={() => setQueueCollapsed(true)}
                     aria-label="Collapse inbound queue"
                     title="Collapse queue"
                   >
                     <ChevronsLeft className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 px-2 text-xs min-[1180px]:hidden"
+                    onClick={() => setQueueDrawerOpen(false)}
+                    aria-label="Close inbound queue"
+                    title="Close queue"
+                  >
+                    Close
                   </Button>
                 </div>
               </div>
@@ -5967,7 +6087,10 @@ export default function InboundOrdersPage() {
         </section>
 
         <section
-          className="relative flex min-h-[360px] min-w-0 flex-1 flex-col overflow-hidden border-b border-border min-[1180px]:h-full min-[1180px]:min-h-0 min-[1180px]:basis-[var(--workspace-evidence-width)] min-[1180px]:border-b-0 min-[1180px]:border-r min-[1500px]:min-w-[420px]"
+          className={cn(
+            "relative min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-b border-border min-[1180px]:flex min-[1180px]:h-full min-[1180px]:basis-[var(--workspace-evidence-width)] min-[1180px]:border-b-0 min-[1180px]:border-r min-[1500px]:min-w-[420px]",
+            responsivePanel === "email" ? "flex" : "hidden",
+          )}
           data-testid="inbound-evidence-panel"
           style={{ flex: `1 1 ${evidenceWidth}px` } as CSSProperties}
         >
@@ -5987,17 +6110,39 @@ export default function InboundOrdersPage() {
                     {isSelectedRecordParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
                     Parse<span className="sr-only"> with AI</span>
                   </Button>
-                  <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => runQueueCleanupAction("ignore_once")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
+                  <Button type="button" size="sm" variant="outline" className="hidden h-7 px-2 text-xs min-[1180px]:inline-flex" onClick={() => runQueueCleanupAction("ignore_once")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
                     Ignore
                   </Button>
-                  <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={rejectSelectedRecord} disabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal} aria-label="Reject inbound record">
+                  <Button type="button" size="sm" variant="outline" className="hidden h-7 px-2 text-xs min-[1180px]:inline-flex" onClick={rejectSelectedRecord} disabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal} aria-label="Reject inbound record">
                     {rejectInboundOrderMutation.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
                     Reject
                   </Button>
-                  <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => runQueueCleanupAction("delete")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
+                  <Button type="button" size="sm" variant="ghost" className="hidden h-7 px-2 text-xs min-[1180px]:inline-flex" onClick={() => runQueueCleanupAction("delete")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
                     <Trash2 className="mr-1.5 h-3.5 w-3.5" />
                     Delete
                   </Button>
+                  <details className="relative min-[1180px]:hidden">
+                    <summary className="flex h-7 cursor-pointer list-none items-center rounded-md border border-border px-2 text-xs font-medium text-foreground">
+                      More
+                    </summary>
+                    <div className="absolute right-0 top-8 z-30 grid w-48 gap-1 rounded-md border border-border bg-popover p-1 shadow-lg">
+                      <Button type="button" size="sm" variant="ghost" className="justify-start" onClick={() => runEmailReprocessAction(selectedRecord, "backfill_attachments")} disabled={emailReprocessMutation.isPending || selectedRecordIsTerminal}>
+                        Backfill Attachments
+                      </Button>
+                      <Button type="button" size="sm" variant="ghost" className="justify-start" onClick={() => runEmailReprocessAction(selectedRecord, "reprocess_email")} disabled={emailReprocessMutation.isPending || selectedRecordIsTerminal}>
+                        Reprocess
+                      </Button>
+                      <Button type="button" size="sm" variant="ghost" className="justify-start" onClick={() => runQueueCleanupAction("ignore_once")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
+                        Ignore Once
+                      </Button>
+                      <Button type="button" size="sm" variant="ghost" className="justify-start" onClick={rejectSelectedRecord} disabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
+                        Reject
+                      </Button>
+                      <Button type="button" size="sm" variant="ghost" className="justify-start" onClick={() => runQueueCleanupAction("delete")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
+                        Delete
+                      </Button>
+                    </div>
+                  </details>
                 </div>
               )}
               {selectedRecord && <Badge variant="secondary">{titleCase(selectedRecord.sourceType)}</Badge>}
@@ -6052,7 +6197,10 @@ export default function InboundOrdersPage() {
         </section>
 
         <section
-          className="relative flex min-h-[320px] min-w-0 flex-[1.1_1_0] flex-col overflow-hidden min-[1180px]:h-full min-[1180px]:min-h-0 min-[1180px]:basis-[var(--workspace-draft-width)] min-[1500px]:min-w-[480px]"
+          className={cn(
+            "relative min-h-0 min-w-0 flex-[1.1_1_0] flex-col overflow-hidden min-[1180px]:flex min-[1180px]:h-full min-[1180px]:basis-[var(--workspace-draft-width)] min-[1500px]:min-w-[480px]",
+            responsivePanel === "review" ? "flex" : "hidden",
+          )}
           data-testid="inbound-draft-panel"
           style={{ flex: `1.1 1 ${draftWidth}px` } as CSSProperties}
         >

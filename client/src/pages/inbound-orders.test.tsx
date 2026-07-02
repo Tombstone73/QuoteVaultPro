@@ -2197,8 +2197,6 @@ describe("InboundOrdersPage", () => {
     const initialDraftWidth = workspace.style.getPropertyValue("--workspace-draft-width");
     expect(workspace.style.getPropertyValue("--workspace-queue-width")).toBe("360px");
     expect(queuePanel.style.width).toBe("360px");
-    expect(queuePanel.style.minWidth).toBe("360px");
-    expect(queuePanel.style.maxWidth).toBe("360px");
     expect(queuePanel.style.flex).toBe("0 0 360px");
 
     const addButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Add"));
@@ -2434,6 +2432,60 @@ describe("InboundOrdersPage", () => {
         && window.localStorage.getItem("titanos.inboundOrders.draftWidth") === "520"
         && workspace.style.getPropertyValue("--workspace-queue-width") === "360px"
     ), "layout restore persistence");
+  });
+
+  test("exposes Chromebook layout controls for queue drawer and email/review tabs", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: 1100,
+    });
+    const row = record({ sourceType: "email" });
+    const draft = parsedDraft();
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") return jsonResponse(draftPreview({ draft, latestAttempt: parseAttempt({ parsedDraft: draft }) }));
+      if (path === "/api/inbound-orders/inbound_1/review-draft") return jsonResponse({ success: true, data: reviewDraft(draft) });
+      if (path.startsWith("/api/inbound-orders/customer-search")
+        || path.startsWith("/api/inbound-orders/contact-search")
+        || path.startsWith("/api/inbound-orders/product-search")) {
+        return jsonResponse({ success: true, data: [] });
+      }
+      if (path.startsWith("/api/inbound-orders/product-options/")) return jsonResponse(pbv2OptionsResponse());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Queue");
+
+    const workspace = container.querySelector("[data-testid='inbound-review-workspace']") as HTMLElement;
+    const queuePanel = container.querySelector("[data-testid='inbound-queue-panel']") as HTMLElement;
+    const evidencePanel = container.querySelector("[data-testid='inbound-evidence-panel']") as HTMLElement;
+    const draftPanel = container.querySelector("[data-testid='inbound-draft-panel']") as HTMLElement;
+    expect(workspace.className).toContain("min-[1180px]:flex-row");
+    expect(queuePanel.className).toContain("hidden");
+    expect(evidencePanel.className).toContain("flex");
+    expect(draftPanel.className).toContain("hidden");
+
+    const queueButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Queue")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(queueButton);
+    });
+    expect(queuePanel.className).toContain("fixed");
+    expect(queuePanel.className).toContain("max-w-[calc(100vw-1rem)]");
+
+    const reviewTab = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Review") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(reviewTab);
+    });
+    expect(evidencePanel.className).toContain("hidden");
+    expect(draftPanel.className).toContain("flex");
+    await waitForText("Evidence Used");
+    expect(container.textContent).toContain("Evidence Used");
   });
 
   test("clamps oversized saved widths and keeps draft actions visible", async () => {
