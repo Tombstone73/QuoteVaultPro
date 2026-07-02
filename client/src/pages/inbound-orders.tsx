@@ -802,17 +802,17 @@ function ThreadTimeline({ thread, compact = false }: { thread: Record<string, un
   return (
     <>
       <details className={cn(
-        "rounded-md border border-border bg-card p-2 min-[1180px]:hidden",
+        "group rounded-md border border-border bg-card p-2 shadow-sm min-[1180px]:hidden",
         !compact && "bg-background",
       )}>
-        <summary className="cursor-pointer list-none">
+        <summary className="cursor-pointer list-none rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-foreground">Thread Timeline</h3>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <Badge variant="outline">{messages.length} messages</Badge>
               <Badge variant="outline">{attachmentCount} attachments</Badge>
               {latestActivity && <span>Latest {formatTimestamp(latestActivity)}</span>}
-              <ChevronDown className="h-4 w-4" />
+              <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
             </div>
           </div>
         </summary>
@@ -2631,15 +2631,15 @@ function OperationalEmailPanel({
 
   return (
     <ScrollArea className="h-full">
-      <div className="space-y-2 p-2" data-testid="inbound-operational-email-panel">
-        <section className="rounded-md border border-border bg-card px-3 py-2">
+      <div className="space-y-2 p-2 max-[1179px]:space-y-1.5 max-[1179px]:p-1.5" data-testid="inbound-operational-email-panel">
+        <section className="rounded-md border border-border bg-card px-3 py-2 max-[1179px]:px-2 max-[1179px]:py-1.5">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <Mail className="h-4 w-4 text-muted-foreground" />
                 <h2 className="truncate text-base font-semibold text-foreground">{evidence.subject || "No subject"}</h2>
               </div>
-              <div className="mt-1 grid gap-1 text-xs text-muted-foreground">
+              <div className="mt-1 grid gap-1 text-xs text-muted-foreground max-[1179px]:flex max-[1179px]:flex-wrap max-[1179px]:gap-x-3 max-[1179px]:gap-y-1">
                 <div><span className="font-medium text-foreground">From:</span> {getSenderLabel(record)}</div>
                 {evidence.recipients.length > 0 && (
                   <div><span className="font-medium text-foreground">To:</span> {evidence.recipients.join(", ")}</div>
@@ -2650,7 +2650,7 @@ function OperationalEmailPanel({
                 <div><span className="font-medium text-foreground">Received:</span> {formatTimestamp(evidence.receivedAt)}</div>
               </div>
             </div>
-            <div className="flex flex-wrap justify-end gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
               <Button
                 type="button"
                 size="sm"
@@ -2681,16 +2681,17 @@ function OperationalEmailPanel({
                 <Badge variant="outline">Not parsed</Badge>
               )}
               <Badge variant="outline">{titleCase(record.sourceType)}</Badge>
-              <details className="relative min-[1180px]:hidden">
-                <summary className="flex h-7 cursor-pointer list-none items-center rounded-md border border-border px-2 text-xs font-medium text-foreground">
+              <details className="group relative min-[1180px]:hidden">
+                <summary className="flex h-7 cursor-pointer list-none items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
                   Actions
+                  <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
                 </summary>
-                <div className="absolute right-0 top-8 z-20 grid w-48 gap-1 rounded-md border border-border bg-popover p-1 shadow-lg">
+                <div className="absolute right-0 top-8 z-20 grid w-56 gap-1 rounded-md border border-border bg-popover p-1.5 shadow-xl">
                   <Button
                     type="button"
                     size="sm"
                     variant="ghost"
-                    className="justify-start"
+                    className="h-8 justify-start px-2 text-xs"
                     disabled={isEmailReprocessing}
                     onClick={() => onEmailReprocess(record, "backfill_attachments")}
                   >
@@ -2701,7 +2702,7 @@ function OperationalEmailPanel({
                     type="button"
                     size="sm"
                     variant="ghost"
-                    className="justify-start"
+                    className="h-8 justify-start px-2 text-xs"
                     disabled={isEmailReprocessing}
                     onClick={() => onEmailReprocess(record, "reprocess_email")}
                   >
@@ -5874,12 +5875,12 @@ export default function InboundOrdersPage() {
             onClick={() => setQueueDrawerOpen(false)}
           />
         )}
-        <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-border bg-background px-3 min-[1180px]:hidden">
+        <div className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/95 px-2.5 shadow-sm backdrop-blur min-[1180px]:hidden">
           <Button
             type="button"
             size="sm"
             variant="outline"
-            className="h-8 px-2"
+            className="h-8 shrink-0 px-2"
             onClick={() => {
               setQueueCollapsed(false);
               setQueueDrawerOpen(true);
@@ -5890,12 +5891,12 @@ export default function InboundOrdersPage() {
             Queue
             <Badge variant="outline" className="ml-2">{records.length}</Badge>
           </Button>
-          <div className="flex rounded-md border border-border bg-muted/30 p-1" aria-label="Responsive inbound workspace panel">
+          <div className="grid min-w-[12rem] grid-cols-2 rounded-md border border-border bg-muted/40 p-1 shadow-inner" aria-label="Responsive inbound workspace panel">
             <Button
               type="button"
               size="sm"
               variant={responsivePanel === "email" ? "default" : "ghost"}
-              className="h-7 px-2 text-xs"
+              className="h-7 justify-center px-3 text-xs font-semibold"
               onClick={() => setResponsivePanel("email")}
             >
               {reviewMode === "operational" ? "Email" : "Evidence"}
@@ -5904,7 +5905,7 @@ export default function InboundOrdersPage() {
               type="button"
               size="sm"
               variant={responsivePanel === "review" ? "default" : "ghost"}
-              className="h-7 px-2 text-xs"
+              className="h-7 justify-center px-3 text-xs font-semibold"
               onClick={() => setResponsivePanel("review")}
             >
               Review
@@ -5914,15 +5915,15 @@ export default function InboundOrdersPage() {
         <section
           className={cn(
             queueDrawerOpen
-              ? "fixed inset-y-0 left-0 z-50 flex w-[360px] max-w-[calc(100vw-1rem)] bg-background shadow-2xl"
+              ? "fixed inset-y-0 left-0 z-50 flex w-[min(360px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] bg-background shadow-2xl"
               : "hidden",
             "min-w-0 shrink-0 flex-col overflow-hidden border-b border-border min-[1180px]:relative min-[1180px]:inset-auto min-[1180px]:z-auto min-[1180px]:flex min-[1180px]:h-full min-[1180px]:w-[var(--workspace-queue-width)] min-[1180px]:min-w-[var(--workspace-queue-width)] min-[1180px]:max-w-[var(--workspace-queue-width)] min-[1180px]:shadow-none min-[1180px]:border-b-0 min-[1180px]:border-r",
             queueCollapsed ? "h-14 min-[1180px]:h-full" : "min-h-[300px] flex-1 min-[1180px]:min-h-0 min-[1180px]:flex-none",
           )}
           data-testid="inbound-queue-panel"
           style={{
-            width: `${queueWidth}px`,
-            flex: `0 0 ${queueWidth}px`,
+            width: queueDrawerOpen ? "min(360px, calc(100vw - 1rem))" : `${queueWidth}px`,
+            flex: queueDrawerOpen ? "0 0 min(360px, calc(100vw - 1rem))" : `0 0 ${queueWidth}px`,
           } as CSSProperties}
         >
           {queueCollapsed ? (
@@ -5945,7 +5946,7 @@ export default function InboundOrdersPage() {
             </div>
           ) : (
             <>
-              <div className="flex h-12 items-center justify-between border-b border-border px-4">
+              <div className="flex h-12 items-center justify-between border-b border-border px-3">
                 <div className="text-sm font-semibold text-foreground">Inbound Queue</div>
                 <div className="flex items-center gap-2">
                   <Badge variant="outline">{records.length}</Badge>
@@ -5964,7 +5965,7 @@ export default function InboundOrdersPage() {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-8 px-2 text-xs min-[1180px]:hidden"
+                    className="h-8 px-2 text-xs hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 min-[1180px]:hidden"
                     onClick={() => setQueueDrawerOpen(false)}
                     aria-label="Close inbound queue"
                     title="Close queue"
@@ -6094,7 +6095,7 @@ export default function InboundOrdersPage() {
           data-testid="inbound-evidence-panel"
           style={{ flex: `1 1 ${evidenceWidth}px` } as CSSProperties}
         >
-          <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
+          <div className="sticky top-0 z-20 flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/95 px-2.5 backdrop-blur min-[1180px]:static min-[1180px]:h-9 min-[1180px]:px-3">
             <div className="text-sm font-semibold text-foreground">
               {reviewMode === "operational" ? (
                 <>
@@ -6106,7 +6107,7 @@ export default function InboundOrdersPage() {
             <div className="flex items-center gap-2">
               {reviewMode === "operational" && selectedRecord && (
                 <div className="flex items-center gap-1">
-                  <Button type="button" size="sm" className="h-7 px-2 text-xs" onClick={runParseForSelectedRecord} disabled={isParseInFlight || selectedRecordIsTerminal}>
+                  <Button type="button" size="sm" className="h-8 px-3 text-xs font-semibold shadow-sm min-[1180px]:h-7 min-[1180px]:px-2" onClick={runParseForSelectedRecord} disabled={isParseInFlight || selectedRecordIsTerminal}>
                     {isSelectedRecordParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
                     Parse<span className="sr-only"> with AI</span>
                   </Button>
@@ -6121,24 +6122,25 @@ export default function InboundOrdersPage() {
                     <Trash2 className="mr-1.5 h-3.5 w-3.5" />
                     Delete
                   </Button>
-                  <details className="relative min-[1180px]:hidden">
-                    <summary className="flex h-7 cursor-pointer list-none items-center rounded-md border border-border px-2 text-xs font-medium text-foreground">
+                  <details className="group relative min-[1180px]:hidden">
+                    <summary className="flex h-8 cursor-pointer list-none items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
                       More
+                      <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
                     </summary>
-                    <div className="absolute right-0 top-8 z-30 grid w-48 gap-1 rounded-md border border-border bg-popover p-1 shadow-lg">
-                      <Button type="button" size="sm" variant="ghost" className="justify-start" onClick={() => runEmailReprocessAction(selectedRecord, "backfill_attachments")} disabled={emailReprocessMutation.isPending || selectedRecordIsTerminal}>
+                    <div className="absolute right-0 top-9 z-30 grid w-56 gap-1 rounded-md border border-border bg-popover p-1.5 shadow-xl">
+                      <Button type="button" size="sm" variant="ghost" className="h-8 justify-start px-2 text-xs" onClick={() => runEmailReprocessAction(selectedRecord, "backfill_attachments")} disabled={emailReprocessMutation.isPending || selectedRecordIsTerminal}>
                         Backfill Attachments
                       </Button>
-                      <Button type="button" size="sm" variant="ghost" className="justify-start" onClick={() => runEmailReprocessAction(selectedRecord, "reprocess_email")} disabled={emailReprocessMutation.isPending || selectedRecordIsTerminal}>
+                      <Button type="button" size="sm" variant="ghost" className="h-8 justify-start px-2 text-xs" onClick={() => runEmailReprocessAction(selectedRecord, "reprocess_email")} disabled={emailReprocessMutation.isPending || selectedRecordIsTerminal}>
                         Reprocess
                       </Button>
-                      <Button type="button" size="sm" variant="ghost" className="justify-start" onClick={() => runQueueCleanupAction("ignore_once")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
+                      <Button type="button" size="sm" variant="ghost" className="h-8 justify-start px-2 text-xs" onClick={() => runQueueCleanupAction("ignore_once")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
                         Ignore Once
                       </Button>
-                      <Button type="button" size="sm" variant="ghost" className="justify-start" onClick={rejectSelectedRecord} disabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
+                      <Button type="button" size="sm" variant="ghost" className="h-8 justify-start px-2 text-xs" onClick={rejectSelectedRecord} disabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
                         Reject
                       </Button>
-                      <Button type="button" size="sm" variant="ghost" className="justify-start" onClick={() => runQueueCleanupAction("delete")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
+                      <Button type="button" size="sm" variant="ghost" className="h-8 justify-start px-2 text-xs" onClick={() => runQueueCleanupAction("delete")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
                         Delete
                       </Button>
                     </div>
@@ -6213,7 +6215,7 @@ export default function InboundOrdersPage() {
           >
             <GripVertical className="h-4 w-4" />
           </button>
-          <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
+          <div className="sticky top-0 z-20 flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/95 px-2.5 backdrop-blur min-[1180px]:static min-[1180px]:h-9 min-[1180px]:px-3">
             <div className="text-sm font-semibold text-foreground">
               {reviewMode === "operational" ? (
                 <>
