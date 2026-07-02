@@ -1547,6 +1547,33 @@ describe("InboundOrdersPage", () => {
     });
 
     await waitForText("Please see attached PO.");
+
+    const poTab = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "PO") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(poTab);
+    });
+    await waitForText("PO Documents");
+    await waitForText("PO Extraction Summary");
+    expect(container.textContent).toContain("151534");
+    expect(container.textContent).toContain("Yard Signs");
+    expect(container.textContent).toContain("Confidence: 98%");
+
+    const artworkTab = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Artwork") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(artworkTab);
+    });
+    await waitForText("Artwork Files");
+    await waitForText("Junk / Signature Images");
+    expect(container.textContent).toContain("Manual reclassification controls are preserved");
+
+    const historyTab = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "History") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(historyTab);
+    });
+    await waitForText("Thread Timeline");
   });
 
   test("supports operational line item add, duplicate, remove, and product picker rendering", async () => {
