@@ -22,6 +22,7 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  SlidersHorizontal,
   Sparkles,
   Trash2,
   XCircle,
@@ -184,6 +185,7 @@ type QueueFilters = {
 };
 
 type InboundReviewWorkspaceMode = "operational" | "debug";
+type SourceDocumentTab = "email" | "po" | "artwork" | "history";
 
 const defaultQueueFilters: QueueFilters = {
   statusGroup: "active",
@@ -198,22 +200,24 @@ const queueSearchDebounceMs = 300;
 
 const workspaceLayoutStorageKeys = {
   queueCollapsed: "titanos.inboundOrders.queueCollapsed",
+  queueWidth: "titanos.inboundOrders.queueWidth",
   evidenceWidth: "titanos.inboundOrders.evidenceWidth",
   draftWidth: "titanos.inboundOrders.draftWidth",
   reviewMode: "titanos.inboundOrders.reviewMode",
 } as const;
 
 const workspaceLayoutDefaults = {
-  queueExpandedWidth: 360,
+  queueExpandedWidth: 300,
   queueCollapsedWidth: 56,
   evidenceWidth: 440,
   draftWidth: 520,
-  minQueueExpandedWidth: 360,
-  minEvidenceWidth: 420,
-  minDraftWidth: 480,
-  compactEvidenceWidth: 340,
-  compactDraftWidth: 380,
-  desktopBreakpoint: 1180,
+  minQueueExpandedWidth: 260,
+  maxQueueExpandedWidth: 450,
+  minEvidenceWidth: 360,
+  minDraftWidth: 460,
+  compactEvidenceWidth: 320,
+  compactDraftWidth: 360,
+  desktopBreakpoint: 1024,
   wideDesktopBreakpoint: 1500,
 } as const;
 
@@ -400,7 +404,9 @@ function readStoredBoolean(key: string, fallback: boolean): boolean {
 
 function readStoredNumber(key: string, fallback: number, minimum: number, maximum = 900): number {
   if (typeof window === "undefined") return fallback;
-  const value = Number(window.localStorage.getItem(key));
+  const storedValue = window.localStorage.getItem(key);
+  if (storedValue == null || storedValue.trim() === "") return fallback;
+  const value = Number(storedValue);
   return Number.isFinite(value) ? clampWorkspaceWidth(value, minimum, maximum) : fallback;
 }
 
@@ -423,21 +429,21 @@ function getVisibleWorkspaceWidth(element: HTMLElement | null): number {
   return Math.max(0, Math.round(boundedWidth));
 }
 
-function getWorkspaceQueueWidth(queueCollapsed: boolean): number {
+function getWorkspaceQueueWidth(queueCollapsed: boolean, queueExpandedWidth: number = workspaceLayoutDefaults.queueExpandedWidth): number {
   return queueCollapsed
     ? workspaceLayoutDefaults.queueCollapsedWidth
-    : workspaceLayoutDefaults.queueExpandedWidth;
+    : queueExpandedWidth;
 }
 
-function getWorkspaceAvailablePanelWidth(args: { queueCollapsed: boolean; workspaceWidth: number }): number {
+function getWorkspaceAvailablePanelWidth(args: { queueCollapsed: boolean; workspaceWidth: number; queueExpandedWidth?: number }): number {
   const measuredWidth = getMeasuredWorkspaceWidth(args.workspaceWidth);
   if (measuredWidth < workspaceLayoutDefaults.desktopBreakpoint) {
     return workspaceLayoutDefaults.evidenceWidth + workspaceLayoutDefaults.draftWidth;
   }
-  return Math.max(0, measuredWidth - getWorkspaceQueueWidth(args.queueCollapsed));
+  return Math.max(0, measuredWidth - getWorkspaceQueueWidth(args.queueCollapsed, args.queueExpandedWidth));
 }
 
-function getWorkspacePanelMinimums(args: { queueCollapsed: boolean; workspaceWidth: number }) {
+function getWorkspacePanelMinimums(args: { queueCollapsed: boolean; workspaceWidth: number; queueExpandedWidth?: number }) {
   const availableWidth = getWorkspaceAvailablePanelWidth(args);
   if (args.workspaceWidth >= workspaceLayoutDefaults.wideDesktopBreakpoint || availableWidth >= 980) {
     return {
@@ -455,6 +461,7 @@ function reconcileWorkspacePanelWidths(args: {
   evidenceWidth: number;
   draftWidth: number;
   queueCollapsed: boolean;
+  queueExpandedWidth: number;
   workspaceWidth: number;
 }) {
   const availableWidth = getWorkspaceAvailablePanelWidth(args);
@@ -802,7 +809,7 @@ function ThreadTimeline({ thread, compact = false }: { thread: Record<string, un
   return (
     <>
       <details className={cn(
-        "group rounded-md border border-border bg-card p-2 shadow-sm min-[1180px]:hidden",
+        "group rounded-md border border-border bg-card p-2 shadow-sm min-[1024px]:hidden",
         !compact && "bg-background",
       )}>
         <summary className="cursor-pointer list-none rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
@@ -820,7 +827,7 @@ function ThreadTimeline({ thread, compact = false }: { thread: Record<string, un
       </details>
       <section className={cn(
         compact ? "rounded-md border border-border bg-card p-2" : "rounded-md border border-border p-3",
-        "max-[1179px]:hidden",
+        "max-[1023px]:hidden",
       )}>
         <div className="mb-2 flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold text-foreground">Thread Timeline</h3>
@@ -1708,78 +1715,105 @@ function QueueTriageControls({
     { value: "ignored", label: "Ignored", count: summary?.ignored ?? 0 },
   ];
 
+  const activeStatus = statusButtons.find((button) => button.value === filters.statusGroup);
+  const activeFilterCount = [
+    filters.sourceType !== "all",
+    filters.trustFilter !== "all",
+    filters.hasWarnings,
+    !filters.unconvertedOnly,
+    filters.statusGroup !== "active",
+  ].filter(Boolean).length;
+
   return (
-    <div className="box-border min-w-0 max-w-full space-y-3 overflow-x-hidden border-b border-border p-3">
-      <label className="relative block min-w-0 max-w-full">
-        <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-        <Input
-          className="w-full max-w-full pl-8"
-          value={searchValue}
-          onChange={(event) => onSearchChange(event.target.value)}
-          placeholder="Search reference, sender, notes, subject, body"
-        />
-      </label>
-
-      <div className="flex max-w-full flex-wrap gap-1.5 overflow-hidden">
-        {statusButtons.map((button) => (
-          <Button
-            key={button.value}
-            type="button"
-            size="sm"
-            className="h-auto min-h-8 min-w-0 max-w-full whitespace-normal"
-            variant={filters.statusGroup === button.value ? "default" : "outline"}
-            onClick={() => setFilter({
-              statusGroup: button.value,
-              unconvertedOnly: button.value === "converted" || button.value === "ignored" ? false : filters.unconvertedOnly,
-            })}
-          >
-            {button.label}
-            {button.count !== null && <Badge variant="secondary" className="ml-2">{button.count}</Badge>}
-          </Button>
-        ))}
+    <div className="box-border min-w-0 max-w-full overflow-visible border-b border-border bg-background p-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <label className="relative block min-w-0 flex-1">
+          <Search className="pointer-events-none absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
+          <Input
+            className="h-8 w-full max-w-full pl-7 text-xs"
+            value={searchValue}
+            onChange={(event) => onSearchChange(event.target.value)}
+            placeholder="Search queue"
+          />
+        </label>
+        <details className="group relative shrink-0">
+          <summary className="flex h-8 cursor-pointer list-none items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" aria-label="Open queue filters">
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Filters
+            {activeFilterCount > 0 && <Badge variant="secondary" className="ml-0.5 h-5 px-1.5 text-[10px]">{activeFilterCount}</Badge>}
+            <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="absolute right-0 top-9 z-40 w-[min(310px,calc(100vw-1rem))] rounded-md border border-border bg-popover p-2 shadow-xl">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Queue Filters</div>
+            <div className="mt-2 grid grid-cols-2 gap-1.5">
+              {statusButtons.map((button) => (
+                <Button
+                  key={button.value}
+                  type="button"
+                  size="sm"
+                  className="h-8 justify-between px-2 text-xs"
+                  variant={filters.statusGroup === button.value ? "default" : "outline"}
+                  onClick={() => setFilter({
+                    statusGroup: button.value,
+                    unconvertedOnly: button.value === "converted" || button.value === "ignored" ? false : filters.unconvertedOnly,
+                  })}
+                >
+                  <span className="truncate">{button.label}</span>
+                  {button.count !== null && <Badge variant="secondary" className="ml-1 h-5 px-1.5 text-[10px]">{button.count}</Badge>}
+                </Button>
+              ))}
+            </div>
+            <div className="mt-2 grid gap-2">
+              <select
+                className="h-8 min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                value={filters.sourceType}
+                onChange={(event) => setFilter({ sourceType: event.target.value as QueueFilters["sourceType"] })}
+                disabled={isLoading}
+                aria-label="Source type filter"
+              >
+                {sourceTypeOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <select
+                className="h-8 min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                value={filters.trustFilter}
+                onChange={(event) => setFilter({ trustFilter: event.target.value as QueueFilters["trustFilter"] })}
+                disabled={isLoading}
+                aria-label="Sender trust filter"
+              >
+                {trustFilterOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <div className="flex flex-wrap gap-2">
+                <label className="flex min-h-8 min-w-0 max-w-full items-center gap-2 rounded-md border border-input px-2 py-1 text-xs text-foreground">
+                  <input
+                    type="checkbox"
+                    checked={filters.hasWarnings}
+                    onChange={(event) => setFilter({ hasWarnings: event.target.checked })}
+                    disabled={isLoading}
+                  />
+                  Warnings
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{summary?.withWarnings ?? 0}</Badge>
+                </label>
+                <label className="flex min-h-8 min-w-0 max-w-full items-center gap-2 rounded-md border border-input px-2 py-1 text-xs text-foreground">
+                  <input
+                    type="checkbox"
+                    checked={filters.unconvertedOnly}
+                    onChange={(event) => setFilter({ unconvertedOnly: event.target.checked })}
+                    disabled={isLoading}
+                  />
+                  Unconverted
+                </label>
+              </div>
+            </div>
+          </div>
+        </details>
       </div>
-
-      <div className="flex max-w-full flex-wrap items-center gap-2 overflow-hidden">
-        <select
-          className="h-8 min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
-          value={filters.sourceType}
-          onChange={(event) => setFilter({ sourceType: event.target.value as QueueFilters["sourceType"] })}
-          disabled={isLoading}
-        >
-          {sourceTypeOptions.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-        <select
-          className="h-8 min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
-          value={filters.trustFilter}
-          onChange={(event) => setFilter({ trustFilter: event.target.value as QueueFilters["trustFilter"] })}
-          disabled={isLoading}
-          aria-label="Sender trust filter"
-        >
-          {trustFilterOptions.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-        <label className="flex min-h-8 min-w-0 max-w-full items-center gap-2 rounded-md border border-input px-2 py-1 text-xs text-foreground">
-          <input
-            type="checkbox"
-            checked={filters.hasWarnings}
-            onChange={(event) => setFilter({ hasWarnings: event.target.checked })}
-            disabled={isLoading}
-          />
-          Warnings
-          <Badge variant="secondary">{summary?.withWarnings ?? 0}</Badge>
-        </label>
-        <label className="flex min-h-8 min-w-0 max-w-full items-center gap-2 rounded-md border border-input px-2 py-1 text-xs text-foreground">
-          <input
-            type="checkbox"
-            checked={filters.unconvertedOnly}
-            onChange={(event) => setFilter({ unconvertedOnly: event.target.checked })}
-            disabled={isLoading}
-          />
-          Unconverted
-        </label>
+      <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+        <span className="truncate">{activeStatus?.label ?? "Active"} queue</span>
+        <span className="shrink-0">{summary ? `${summary.needsReview} review / ${summary.readyReviewed} ready` : "Loading"}</span>
       </div>
     </div>
   );
@@ -1938,7 +1972,7 @@ function InboundQueuePanel({
 
   return (
     <div className="h-full min-w-0 max-w-full overflow-y-auto overflow-x-hidden">
-      <div className="box-border w-full min-w-0 max-w-full space-y-2 overflow-x-hidden p-3">
+      <div className="box-border w-full min-w-0 max-w-full divide-y divide-border overflow-x-hidden">
         {records.map((record) => {
           const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
           const thread = record.sourceType === "email" ? (evidence as ReturnType<typeof getInboundEmailEvidence>).thread : null;
@@ -1948,6 +1982,9 @@ function InboundQueuePanel({
           const latestThreadSender = [stringFromUnknown(thread?.latestSenderName), stringFromUnknown(thread?.latestSenderEmail)]
             .filter(Boolean)
             .join(" / ");
+          const recordAge = formatRelative(record.createdAt);
+          const queueCustomer = getSenderLabel(record);
+          const queueRequest = evidence.reference || getRecordTitle(record);
           return (
             <div
               key={record.id}
@@ -1958,36 +1995,40 @@ function InboundQueuePanel({
               role="button"
               tabIndex={0}
               className={cn(
-                "block box-border w-full min-w-0 max-w-full cursor-pointer overflow-x-hidden rounded-md border p-3 text-left transition-colors",
+                "block box-border w-full min-w-0 max-w-full cursor-pointer overflow-x-hidden px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                 selectedId === record.id
-                  ? "border-primary bg-primary/5"
-                  : "border-border bg-card hover:bg-muted/50",
+                  ? "bg-primary/10"
+                  : "bg-card hover:bg-muted/50",
               )}
             >
               <div className="flex min-w-0 max-w-full items-start justify-between gap-2 overflow-hidden">
                 <div className="flex min-w-0 flex-1 items-start gap-2 overflow-hidden">
                   <input
                     type="checkbox"
-                    className="mt-0.5 h-4 w-4 shrink-0"
+                    className="mt-1 h-3.5 w-3.5 shrink-0"
                     checked={selectedRecordIds.has(record.id)}
                     onClick={(event) => event.stopPropagation()}
                     onChange={(event) => onToggleSelected(record.id, event.target.checked)}
                     aria-label={`Select inbound record ${getRecordTitle(record)}`}
                   />
                   <div className="min-w-0 flex-1 overflow-hidden">
-                    <div className="block max-w-full truncate text-sm font-semibold text-foreground">{getRecordTitle(record)}</div>
-                    <div className="mt-1 block max-w-full truncate text-xs text-muted-foreground">{getSenderLabel(record)}</div>
+                    <div className="flex min-w-0 items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="block max-w-full truncate text-sm font-semibold leading-5 text-foreground">{queueCustomer}</div>
+                        <div className="block max-w-full truncate text-xs font-medium text-muted-foreground">{queueRequest}</div>
+                      </div>
+                    </div>
                     {threadMessageCount != null && (
-                      <div className="mt-1 block max-w-full truncate text-xs text-muted-foreground">
-                        Thread: {threadMessageCount} messages
+                      <div className="mt-0.5 block max-w-full truncate text-[11px] text-muted-foreground">
+                        {threadMessageCount} msg
                         {latestThreadSender ? ` / latest ${latestThreadSender}` : ""}
                         {latestThreadActivity ? ` / ${formatRelative(latestThreadActivity)}` : ""}
                       </div>
                     )}
                     {record.sourceType === "email" && (
-                      <div className="mt-2 flex max-w-full flex-wrap gap-1">
+                      <div className="mt-1 flex max-w-full flex-wrap items-center gap-1">
                         {intentLabel ? (
-                          <Badge variant="outline" className="max-w-full truncate">
+                          <Badge variant="outline" className="h-5 max-w-full truncate px-1.5 text-[10px]">
                             {intentLabel}
                           </Badge>
                         ) : null}
@@ -2000,7 +2041,7 @@ function InboundQueuePanel({
                           }}
                           aria-label={`Trust sender for ${getRecordTitle(record)}`}
                         >
-                          <Badge variant={getSenderTrustBadgeVariant(record.senderTrustStatus)} className="max-w-full truncate">
+                          <Badge variant={getSenderTrustBadgeVariant(record.senderTrustStatus)} className="h-5 max-w-full truncate px-1.5 text-[10px]">
                             {senderTrustLabels[record.senderTrustStatus]}
                           </Badge>
                         </button>
@@ -2013,7 +2054,7 @@ function InboundQueuePanel({
                           }}
                           aria-label={`Trust sender and download attachments for ${getRecordTitle(record)}`}
                         >
-                          <Badge variant={getAttachmentPolicyBadgeVariant(record.attachmentDownloadPolicy)} className="max-w-full truncate">
+                          <Badge variant={getAttachmentPolicyBadgeVariant(record.attachmentDownloadPolicy)} className="h-5 max-w-full truncate px-1.5 text-[10px]">
                             {attachmentPolicyLabels[record.attachmentDownloadPolicy]}
                           </Badge>
                         </button>
@@ -2025,35 +2066,32 @@ function InboundQueuePanel({
                   <StatusBadge status={record.status} />
                 </div>
               </div>
-              <div className="mt-3 grid max-w-full grid-cols-2 gap-2 overflow-hidden text-xs">
-                <div className="min-w-0 overflow-hidden">
-                  <div className="text-muted-foreground">Source</div>
-                  <div className="truncate font-medium text-foreground">{titleCase(record.sourceType)}</div>
-                </div>
-                <div className="min-w-0 overflow-hidden">
-                  <div className="text-muted-foreground">Reference</div>
-                  <div className="truncate font-medium text-foreground">{evidence.reference || "-"}</div>
-                </div>
-                <div className="min-w-0 overflow-hidden">
-                  <div className="text-muted-foreground">Created</div>
-                  <div className="truncate font-medium text-foreground">{formatRelative(record.createdAt)}</div>
-                </div>
+              <div className="mt-1 flex max-w-full items-center gap-2 overflow-hidden text-[11px] text-muted-foreground">
+                <span className="truncate">{titleCase(record.sourceType)}</span>
+                <span className="shrink-0">/</span>
+                <span className="truncate">{recordAge}</span>
+                {record.requiresHumanDecision && (
+                  <>
+                    <span className="shrink-0">/</span>
+                    <span className="truncate text-amber-700">Warning</span>
+                  </>
+                )}
               </div>
               {record.requiresHumanDecision && (
-                <div className="mt-3 flex min-w-0 max-w-full items-start gap-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs leading-snug text-amber-900">
+                <div className="mt-1.5 flex min-w-0 max-w-full items-start gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-900">
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   <span className="min-w-0 flex-1 whitespace-normal break-words">{record.reviewRequiredReason || "Needs staff review"}</span>
                 </div>
               )}
               {shouldShowInlineTrustActions(record) && (
-                <div className="mt-3 flex max-w-full flex-wrap gap-1.5">
+                <div className="mt-1.5 flex max-w-full flex-wrap gap-1">
                   {(["trust_sender", "trust_domain", "trust_sender_and_download", "trust_domain_and_download"] as InboundRecordTrustAction[]).map((action) => (
                     <Button
                       key={action}
                       type="button"
                       size="sm"
                       variant="outline"
-                      className="h-7 px-2 text-xs"
+                      className="h-6 px-1.5 text-[10px]"
                       aria-label={`${recordTrustActionLabel(action)} for ${getRecordTitle(record)}`}
                       data-testid={`queue-trust-action-${record.id}-${action}`}
                       onClick={(event) => {
@@ -2595,6 +2633,7 @@ function OperationalEmailPanel({
   latestAttempt,
   parseError,
   isParsing,
+  activeTab = "email",
   onEmailReprocess,
   isEmailReprocessing,
 }: {
@@ -2604,6 +2643,7 @@ function OperationalEmailPanel({
   latestAttempt: ClientInboundOrderParseAttempt | null;
   parseError: Error | null;
   isParsing: boolean;
+  activeTab?: SourceDocumentTab;
   onEmailReprocess: (record: ClientInboundOrderRecord, action: InboundEmailReprocessAction) => void;
   isEmailReprocessing: boolean;
 }) {
@@ -2628,18 +2668,35 @@ function OperationalEmailPanel({
   const threadMessageCount = typeof evidence.thread?.messageCount === "number" ? evidence.thread.messageCount : null;
   const latestThreadActivity = stringFromUnknown(evidence.thread?.latestActivityAt);
   const attachmentGroups = groupFilesByThreadMessage(files, evidence.thread);
+  const poFiles = files.filter((file) => file.role === "po");
+  const artworkFiles = files.filter((file) => file.role === "artwork");
+  const renderAttachmentList = (items: ClientInboundOrderFile[], emptyText: string) => (
+    <section className="rounded-md border border-border bg-card p-2">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-foreground">Integrated Evidence</h3>
+        <Badge variant="outline">{items.length}</Badge>
+      </div>
+      <div className="mt-2 space-y-1.5">
+        {items.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border px-3 py-6 text-sm text-muted-foreground">{emptyText}</div>
+        ) : items.map((file) => (
+          <InboundAttachmentCard key={file.id} recordId={record.id} file={file} />
+        ))}
+      </div>
+    </section>
+  );
 
   return (
     <ScrollArea className="h-full">
-      <div className="space-y-2 p-2 max-[1179px]:space-y-1.5 max-[1179px]:p-1.5" data-testid="inbound-operational-email-panel">
-        <section className="rounded-md border border-border bg-card px-3 py-2 max-[1179px]:px-2 max-[1179px]:py-1.5">
+      <div className="space-y-2 p-2 max-[1023px]:space-y-1.5 max-[1023px]:p-1.5" data-testid="inbound-operational-email-panel">
+        <section className="rounded-md border border-border bg-card px-3 py-2 max-[1023px]:px-2 max-[1023px]:py-1.5">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <Mail className="h-4 w-4 text-muted-foreground" />
                 <h2 className="truncate text-base font-semibold text-foreground">{evidence.subject || "No subject"}</h2>
               </div>
-              <div className="mt-1 grid gap-1 text-xs text-muted-foreground max-[1179px]:flex max-[1179px]:flex-wrap max-[1179px]:gap-x-3 max-[1179px]:gap-y-1">
+              <div className="mt-1 grid gap-1 text-xs text-muted-foreground max-[1023px]:flex max-[1023px]:flex-wrap max-[1023px]:gap-x-3 max-[1023px]:gap-y-1">
                 <div><span className="font-medium text-foreground">From:</span> {getSenderLabel(record)}</div>
                 {evidence.recipients.length > 0 && (
                   <div><span className="font-medium text-foreground">To:</span> {evidence.recipients.join(", ")}</div>
@@ -2655,7 +2712,7 @@ function OperationalEmailPanel({
                 type="button"
                 size="sm"
                 variant="outline"
-                className="hidden h-7 px-2 text-xs min-[1180px]:inline-flex"
+                className="hidden h-7 px-2 text-xs min-[1024px]:inline-flex"
                 disabled={isEmailReprocessing}
                 onClick={() => onEmailReprocess(record, "backfill_attachments")}
               >
@@ -2666,7 +2723,7 @@ function OperationalEmailPanel({
                 type="button"
                 size="sm"
                 variant="outline"
-                className="hidden h-7 px-2 text-xs min-[1180px]:inline-flex"
+                className="hidden h-7 px-2 text-xs min-[1024px]:inline-flex"
                 disabled={isEmailReprocessing}
                 onClick={() => onEmailReprocess(record, "reprocess_email")}
               >
@@ -2681,7 +2738,7 @@ function OperationalEmailPanel({
                 <Badge variant="outline">Not parsed</Badge>
               )}
               <Badge variant="outline">{titleCase(record.sourceType)}</Badge>
-              <details className="group relative min-[1180px]:hidden">
+              <details className="group relative min-[1024px]:hidden">
                 <summary className="flex h-7 cursor-pointer list-none items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
                   Actions
                   <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
@@ -2739,59 +2796,71 @@ function OperationalEmailPanel({
           )}
         </section>
 
-        <ThreadTimeline thread={evidence.thread} compact />
+        {activeTab === "email" && (
+          <>
+            <ThreadTimeline thread={evidence.thread} compact />
 
-        <section className="rounded-md border border-border bg-card p-2">
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold text-foreground">Original Email</h3>
-            <Badge variant="outline">{threadMessageCount && threadMessageCount > 1 ? "Thread messages" : sanitizedHtml ? "HTML" : "Text"}</Badge>
-          </div>
-          <ThreadMessageBlocks thread={evidence.thread} fallbackHtml={sanitizedHtml} fallbackText={evidence.bodyText} />
-        </section>
+            <section className="rounded-md border border-border bg-card p-2">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold text-foreground">Email Source Document</h3>
+                <Badge variant="outline">{threadMessageCount && threadMessageCount > 1 ? "Thread messages" : sanitizedHtml ? "HTML" : "Text"}</Badge>
+              </div>
+              <ThreadMessageBlocks thread={evidence.thread} fallbackHtml={sanitizedHtml} fallbackText={evidence.bodyText} />
+            </section>
 
-        <section className="rounded-md border border-border bg-card p-2">
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold text-foreground">Attachments</h3>
-            <Badge variant="outline">{files.length}</Badge>
-          </div>
-          <div className="mt-2 space-y-1.5">
-            {files.length === 0 ? (
-              <div className="text-sm text-muted-foreground">No attachments linked to this inbound record.</div>
-            ) : (
-              attachmentGroups.map((group) => {
-                const visibleFiles = group.files.filter((file) => !isLikelySignatureInlineFile(file));
-                const signatureFiles = group.files.filter(isLikelySignatureInlineFile);
-                return (
-                  <div key={group.key} className="space-y-1.5">
-                    <div className="rounded-md bg-muted/40 px-2 py-1 text-xs">
-                      <div className="font-semibold text-foreground">{group.label}</div>
-                      {group.detail && <div className="text-muted-foreground">{group.detail}</div>}
-                    </div>
-                    {visibleFiles.length === 0 && signatureFiles.length > 0 ? (
-                      <div className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">
-                        Only inline signature images were found for this message.
-                      </div>
-                    ) : visibleFiles.map((file) => (
-                      <InboundAttachmentCard key={file.id} recordId={record.id} file={file} />
-                    ))}
-                    {signatureFiles.length > 0 && (
-                      <details className="rounded-md border border-border bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
-                        <summary className="cursor-pointer font-medium text-foreground">
-                          Signature/inline images ({signatureFiles.length})
-                        </summary>
-                        <div className="mt-2 space-y-1.5">
-                          {signatureFiles.map((file) => (
-                            <InboundAttachmentCard key={file.id} recordId={record.id} file={file} compact />
-                          ))}
+            <section className="rounded-md border border-border bg-card p-2">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold text-foreground">Integrated Attachments</h3>
+                <Badge variant="outline">{files.length}</Badge>
+              </div>
+              <div className="mt-2 space-y-1.5">
+                {files.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No attachments linked to this inbound record.</div>
+                ) : (
+                  attachmentGroups.map((group) => {
+                    const visibleFiles = group.files.filter((file) => !isLikelySignatureInlineFile(file));
+                    const signatureFiles = group.files.filter(isLikelySignatureInlineFile);
+                    return (
+                      <div key={group.key} className="space-y-1.5">
+                        <div className="rounded-md bg-muted/40 px-2 py-1 text-xs">
+                          <div className="font-semibold text-foreground">{group.label}</div>
+                          {group.detail && <div className="text-muted-foreground">{group.detail}</div>}
                         </div>
-                      </details>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </section>
+                        {visibleFiles.length === 0 && signatureFiles.length > 0 ? (
+                          <div className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">
+                            Only inline signature images were found for this message.
+                          </div>
+                        ) : visibleFiles.map((file) => (
+                          <InboundAttachmentCard key={file.id} recordId={record.id} file={file} />
+                        ))}
+                        {signatureFiles.length > 0 && (
+                          <details className="rounded-md border border-border bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
+                            <summary className="cursor-pointer font-medium text-foreground">
+                              Signature/inline images ({signatureFiles.length})
+                            </summary>
+                            <div className="mt-2 space-y-1.5">
+                              {signatureFiles.map((file) => (
+                                <InboundAttachmentCard key={file.id} recordId={record.id} file={file} compact />
+                              ))}
+                            </div>
+                          </details>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+          </>
+        )}
+
+        {activeTab === "po" && renderAttachmentList(poFiles, "No purchase order documents are linked to this inbound record.")}
+        {activeTab === "artwork" && renderAttachmentList(artworkFiles, "No artwork files are linked to this inbound record.")}
+        {activeTab === "history" && (
+          <section className="rounded-md border border-border bg-card p-2">
+            <ThreadTimeline thread={evidence.thread} compact />
+          </section>
+        )}
       </div>
     </ScrollArea>
   );
@@ -3327,7 +3396,7 @@ function DraftBuilderPanel({
   }, [dirty, onDirtyChange, selectedRecord?.id]);
 
   if (!selectedRecord) {
-    return <EmptyPanel title="Draft builder" detail="Draft builder will appear after parsing." />;
+    return <EmptyPanel title="Order Workstation" detail="Line items and reviewed order details will appear after parsing." />;
   }
 
   if (isLoading) {
@@ -3363,7 +3432,7 @@ function DraftBuilderPanel({
         <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-muted">
           <Sparkles className="h-5 w-5 text-muted-foreground" />
         </div>
-        <div className="mt-4 text-sm font-semibold text-foreground">Draft builder will appear after parsing.</div>
+        <div className="mt-4 text-sm font-semibold text-foreground">Order Workstation will appear after parsing.</div>
         <div className="mt-1 max-w-sm text-sm text-muted-foreground">
           Phase 4 conversion starts after a successful parse and ready review.
         </div>
@@ -3799,10 +3868,29 @@ function DraftBuilderPanel({
 
         {isOperationalMode ? (
           <>
-            <DocumentMetaCard contentClassName="p-3">
-              <div className="grid gap-3 xl:grid-cols-[minmax(260px,0.9fr)_minmax(360px,1.2fr)]">
+            <DocumentMetaCard contentClassName="p-2">
+              <div className="grid gap-2 xl:grid-cols-[minmax(220px,0.75fr)_minmax(420px,1.25fr)]">
                 <div className="space-y-2">
-                  <OrderEntrySectionTitle title="Customer" />
+                  <details
+                    className="group rounded-md border border-border/60 bg-muted/20 p-2"
+                    open={form.reviewedCustomerJson.unresolvedCustomer || !(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName)}
+                  >
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Confirmed Customer</div>
+                        <div className="truncate text-sm font-semibold text-foreground">
+                          {form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || "Customer unresolved"}
+                        </div>
+                        <div className="truncate text-xs text-muted-foreground">
+                          {form.reviewedCustomerJson.sourceEmail || form.reviewedCustomerJson.selectedCustomerId || "Select or mark unresolved"}
+                        </div>
+                      </div>
+                      <span className="pointer-events-none inline-flex h-7 items-center rounded-md border border-input bg-background px-2 text-xs font-medium text-foreground">
+                        Change
+                        <ChevronDown className="ml-1 h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+                      </span>
+                    </summary>
+                    <div className="mt-2 space-y-2 border-t border-border/60 pt-2">
                   <SearchableReviewSelector
                     label="Selected customer"
                     searchLabel="Customer search"
@@ -3875,12 +3963,14 @@ function DraftBuilderPanel({
                       Contact unresolved
                     </label>
                   </div>
+                    </div>
+                  </details>
                 </div>
 
                 <div className="space-y-2">
                   <OrderEntrySectionTitle title="Order Details" />
-                  <div className="grid grid-cols-2 gap-2">
-                    <OrderEntryField label="PO number">
+                  <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+                    <OrderEntryField label="PO Ref">
                       <Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} />
                     </OrderEntryField>
                     <OrderEntryField label="Due date">
@@ -3894,7 +3984,7 @@ function DraftBuilderPanel({
                         <Calendar className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                       </div>
                     </OrderEntryField>
-                    <OrderEntryField label="Quote / order intent">
+                    <OrderEntryField label="Intent">
                       <select
                         className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
                         value={reviewIntent}
@@ -3923,25 +4013,33 @@ function DraftBuilderPanel({
                         <option value="shipping">Shipping</option>
                       </select>
                     </OrderEntryField>
-                    <OrderEntryField label="Ship method">
+                    <OrderEntryField label="Carrier">
                       <Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: trimToNull(event.target.value) })} />
                     </OrderEntryField>
                   </div>
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <OrderEntryField label="Customer notes">
-                      <Textarea className="min-h-[68px]" value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: trimToNull(event.target.value) })} />
-                    </OrderEntryField>
-                    <OrderEntryField label="Internal notes">
-                      <Textarea className="min-h-[68px]" value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: trimToNull(event.target.value) })} />
-                    </OrderEntryField>
-                  </div>
+                  <details
+                    className="rounded-md border border-border/60 bg-muted/20 px-2 py-1.5"
+                    open={Boolean(form.reviewedOrderJson.customerNotes || form.reviewedOrderJson.internalNotes)}
+                  >
+                    <summary className="cursor-pointer list-none text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                      Notes {form.reviewedOrderJson.customerNotes || form.reviewedOrderJson.internalNotes ? "(populated)" : "(empty)"}
+                    </summary>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      <OrderEntryField label="Customer notes">
+                        <Textarea className="min-h-[60px]" value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: trimToNull(event.target.value) })} />
+                      </OrderEntryField>
+                      <OrderEntryField label="Internal notes">
+                        <Textarea className="min-h-[60px]" value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: trimToNull(event.target.value) })} />
+                      </OrderEntryField>
+                    </div>
+                  </details>
                 </div>
               </div>
             </DocumentMetaCard>
 
             <section className="rounded-xl border border-border/60 bg-card/80 shadow-sm">
               <div className="flex items-center justify-between gap-2 border-b border-border/50 px-4 py-2">
-                <OrderEntrySectionTitle title="Line Items" count={form.reviewedLineItemsJson.length} />
+                <OrderEntrySectionTitle title="Line Items / Products" count={form.reviewedLineItemsJson.length} />
                 <Button type="button" variant="outline" size="sm" className="h-8" onClick={addLineItem} disabled={actionPending}>
                   <Plus className="mr-2 h-4 w-4" />
                   Add line item
@@ -5015,9 +5113,18 @@ export default function InboundOrdersPage() {
     return window.localStorage.getItem(workspaceLayoutStorageKeys.reviewMode) === "debug" ? "debug" : "operational";
   });
   const [responsivePanel, setResponsivePanel] = useState<"email" | "review">("email");
+  const [sourceDocumentTab, setSourceDocumentTab] = useState<SourceDocumentTab>("email");
   const [queueDrawerOpen, setQueueDrawerOpen] = useState(false);
   const [queueCollapsed, setQueueCollapsed] = useState(() => (
     readStoredBoolean(workspaceLayoutStorageKeys.queueCollapsed, false)
+  ));
+  const [queueExpandedWidth, setQueueExpandedWidth] = useState(() => (
+    readStoredNumber(
+      workspaceLayoutStorageKeys.queueWidth,
+      workspaceLayoutDefaults.queueExpandedWidth,
+      workspaceLayoutDefaults.minQueueExpandedWidth,
+      workspaceLayoutDefaults.maxQueueExpandedWidth,
+    )
   ));
   const [evidenceWidth, setEvidenceWidth] = useState(() => (
     readStoredNumber(
@@ -5093,6 +5200,10 @@ export default function InboundOrdersPage() {
   }, [queueCollapsed]);
 
   useEffect(() => {
+    window.localStorage.setItem(workspaceLayoutStorageKeys.queueWidth, String(queueExpandedWidth));
+  }, [queueExpandedWidth]);
+
+  useEffect(() => {
     window.localStorage.setItem(workspaceLayoutStorageKeys.evidenceWidth, String(evidenceWidth));
   }, [evidenceWidth]);
 
@@ -5122,25 +5233,19 @@ export default function InboundOrdersPage() {
     };
   }, []);
 
-  useEffect(() => {
-    const reconcileToViewport = () => {
-      const measuredWidth = getMeasuredWorkspaceWidth(workspaceWidth);
-      if (measuredWidth < workspaceLayoutDefaults.desktopBreakpoint) return;
-      const next = reconcileWorkspacePanelWidths({
-        evidenceWidth,
-        draftWidth,
-        queueCollapsed,
-        workspaceWidth: measuredWidth,
-      });
-
-      if (next.evidenceWidth !== evidenceWidth) setEvidenceWidth(next.evidenceWidth);
-      if (next.draftWidth !== draftWidth) setDraftWidth(next.draftWidth);
-    };
-
-    reconcileToViewport();
-    window.addEventListener("resize", reconcileToViewport);
-    return () => window.removeEventListener("resize", reconcileToViewport);
-  }, [queueCollapsed, evidenceWidth, draftWidth, workspaceWidth]);
+  const effectivePanelWidths = useMemo(() => {
+    const measuredWidth = getMeasuredWorkspaceWidth(workspaceWidth);
+    if (measuredWidth < workspaceLayoutDefaults.desktopBreakpoint) {
+      return { evidenceWidth, draftWidth };
+    }
+    return reconcileWorkspacePanelWidths({
+      evidenceWidth,
+      draftWidth,
+      queueCollapsed,
+      queueExpandedWidth,
+      workspaceWidth: measuredWidth,
+    });
+  }, [draftWidth, evidenceWidth, queueCollapsed, queueExpandedWidth, workspaceWidth]);
 
   const selectedListRecord = useMemo(
     () => records.find((record) => record.id === selectedId) ?? null,
@@ -5640,19 +5745,28 @@ export default function InboundOrdersPage() {
   };
 
   const startResize = (
-    panel: "evidence" | "draft",
+    panel: "queue" | "evidence" | "draft",
     event: ReactMouseEvent<HTMLButtonElement>,
   ) => {
     event.preventDefault();
     const startX = event.clientX;
+    const startingQueueWidth = queueExpandedWidth;
     const startingEvidenceWidth = evidenceWidth;
     const startingDraftWidth = draftWidth;
     const measuredWidth = getMeasuredWorkspaceWidth(workspaceWidth);
-    const availablePanelWidth = getWorkspaceAvailablePanelWidth({ queueCollapsed, workspaceWidth: measuredWidth });
+    const availablePanelWidth = getWorkspaceAvailablePanelWidth({ queueCollapsed, queueExpandedWidth, workspaceWidth: measuredWidth });
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const delta = moveEvent.clientX - startX;
-      const minimums = getWorkspacePanelMinimums({ queueCollapsed, workspaceWidth: measuredWidth });
+      if (panel === "queue") {
+        setQueueExpandedWidth(clampWorkspaceWidth(
+          startingQueueWidth + delta,
+          workspaceLayoutDefaults.minQueueExpandedWidth,
+          workspaceLayoutDefaults.maxQueueExpandedWidth,
+        ));
+        return;
+      }
+      const minimums = getWorkspacePanelMinimums({ queueCollapsed, queueExpandedWidth, workspaceWidth: measuredWidth });
       if (panel === "evidence") {
         const nextEvidenceWidth = clampWorkspaceWidth(
           startingEvidenceWidth + delta,
@@ -5687,6 +5801,7 @@ export default function InboundOrdersPage() {
 
   const restoreLayout = () => {
     setQueueCollapsed(false);
+    setQueueExpandedWidth(workspaceLayoutDefaults.queueExpandedWidth);
     setEvidenceWidth(workspaceLayoutDefaults.evidenceWidth);
     setDraftWidth(workspaceLayoutDefaults.draftWidth);
   };
@@ -5709,7 +5824,7 @@ export default function InboundOrdersPage() {
       || (draftPreviewQuery.error as Error | null),
   );
   const listError = getErrorTone(listQuery.error as Error | null);
-  const queueWidth = getWorkspaceQueueWidth(queueCollapsed);
+  const queueWidth = getWorkspaceQueueWidth(queueCollapsed, queueExpandedWidth);
   const pullLatestEmails = async () => {
     if (inboundEmailFeatureDisabled || inboundEmailPullPaused || pullLatestEmailsMutation.isPending) return;
     try {
@@ -5859,23 +5974,23 @@ export default function InboundOrdersPage() {
         <>
       <div
         ref={workspaceRef}
-        className="relative flex min-h-0 w-full max-w-none flex-1 flex-col overflow-hidden min-[1180px]:flex-row"
+        className="relative flex min-h-0 w-full max-w-none flex-1 flex-col overflow-hidden min-[1024px]:flex-row"
         data-testid="inbound-review-workspace"
         style={{
           "--workspace-queue-width": `${queueWidth}px`,
-          "--workspace-evidence-width": `${evidenceWidth}px`,
-          "--workspace-draft-width": `${draftWidth}px`,
+          "--workspace-evidence-width": `${effectivePanelWidths.evidenceWidth}px`,
+          "--workspace-draft-width": `${effectivePanelWidths.draftWidth}px`,
         } as CSSProperties}
       >
         {queueDrawerOpen && (
           <button
             type="button"
-            className="fixed inset-0 z-40 bg-black/30 min-[1180px]:hidden"
+            className="fixed inset-0 z-40 bg-black/30 min-[1024px]:hidden"
             aria-label="Close inbound queue drawer"
             onClick={() => setQueueDrawerOpen(false)}
           />
         )}
-        <div className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/95 px-2.5 shadow-sm backdrop-blur min-[1180px]:hidden">
+        <div className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/95 px-2.5 shadow-sm backdrop-blur min-[1024px]:hidden">
           <Button
             type="button"
             size="sm"
@@ -5899,7 +6014,7 @@ export default function InboundOrdersPage() {
               className="h-7 justify-center px-3 text-xs font-semibold"
               onClick={() => setResponsivePanel("email")}
             >
-              {reviewMode === "operational" ? "Email" : "Evidence"}
+              {reviewMode === "operational" ? "Docs" : "Evidence"}
             </Button>
             <Button
               type="button"
@@ -5908,7 +6023,7 @@ export default function InboundOrdersPage() {
               className="h-7 justify-center px-3 text-xs font-semibold"
               onClick={() => setResponsivePanel("review")}
             >
-              Review
+              Workstation
             </Button>
           </div>
         </div>
@@ -5917,8 +6032,8 @@ export default function InboundOrdersPage() {
             queueDrawerOpen
               ? "fixed inset-y-0 left-0 z-50 flex w-[min(360px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] bg-background shadow-2xl"
               : "hidden",
-            "min-w-0 shrink-0 flex-col overflow-hidden border-b border-border min-[1180px]:relative min-[1180px]:inset-auto min-[1180px]:z-auto min-[1180px]:flex min-[1180px]:h-full min-[1180px]:w-[var(--workspace-queue-width)] min-[1180px]:min-w-[var(--workspace-queue-width)] min-[1180px]:max-w-[var(--workspace-queue-width)] min-[1180px]:shadow-none min-[1180px]:border-b-0 min-[1180px]:border-r",
-            queueCollapsed ? "h-14 min-[1180px]:h-full" : "min-h-[300px] flex-1 min-[1180px]:min-h-0 min-[1180px]:flex-none",
+            "min-w-0 shrink-0 flex-col overflow-hidden border-b border-border min-[1024px]:relative min-[1024px]:inset-auto min-[1024px]:z-auto min-[1024px]:flex min-[1024px]:h-full min-[1024px]:w-[var(--workspace-queue-width)] min-[1024px]:min-w-[var(--workspace-queue-width)] min-[1024px]:max-w-[var(--workspace-queue-width)] min-[1024px]:shadow-none min-[1024px]:border-b-0 min-[1024px]:border-r",
+            queueCollapsed ? "h-14 min-[1024px]:h-full" : "min-h-[300px] flex-1 min-[1024px]:min-h-0 min-[1024px]:flex-none",
           )}
           data-testid="inbound-queue-panel"
           style={{
@@ -5927,7 +6042,7 @@ export default function InboundOrdersPage() {
           } as CSSProperties}
         >
           {queueCollapsed ? (
-            <div className="flex h-14 items-center gap-3 px-3 py-2 min-[1180px]:h-full min-[1180px]:flex-col min-[1180px]:px-2 min-[1180px]:py-3" aria-label="Collapsed inbound queue">
+            <div className="flex h-14 items-center gap-3 px-3 py-2 min-[1024px]:h-full min-[1024px]:flex-col min-[1024px]:px-2 min-[1024px]:py-3" aria-label="Collapsed inbound queue">
               <Button
                 type="button"
                 variant="ghost"
@@ -5947,14 +6062,17 @@ export default function InboundOrdersPage() {
           ) : (
             <>
               <div className="flex h-12 items-center justify-between border-b border-border px-3">
-                <div className="text-sm font-semibold text-foreground">Inbound Queue</div>
+                <div>
+                  <div className="text-sm font-semibold text-foreground">Queue</div>
+                  <div className="text-[11px] text-muted-foreground">{records.length} active</div>
+                </div>
                 <div className="flex items-center gap-2">
                   <Badge variant="outline">{records.length}</Badge>
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="hidden h-8 w-8 p-0 min-[1180px]:inline-flex"
+                    className="hidden h-8 w-8 p-0 min-[1024px]:inline-flex"
                     onClick={() => setQueueCollapsed(true)}
                     aria-label="Collapse inbound queue"
                     title="Collapse queue"
@@ -5965,7 +6083,7 @@ export default function InboundOrdersPage() {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-8 px-2 text-xs hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 min-[1180px]:hidden"
+                    className="h-8 px-2 text-xs hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 min-[1024px]:hidden"
                     onClick={() => setQueueDrawerOpen(false)}
                     aria-label="Close inbound queue"
                     title="Close queue"
@@ -6085,46 +6203,58 @@ export default function InboundOrdersPage() {
               </div>
             </>
           )}
+          {!queueCollapsed && (
+            <button
+              type="button"
+              className="absolute right-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 min-[1024px]:flex"
+              onMouseDown={(event) => startResize("queue", event)}
+              aria-label="Resize queue panel"
+              title="Drag to resize queue"
+            >
+              <GripVertical className="h-4 w-4" />
+            </button>
+          )}
         </section>
 
         <section
           className={cn(
-            "relative min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-b border-border min-[1180px]:flex min-[1180px]:h-full min-[1180px]:basis-[var(--workspace-evidence-width)] min-[1180px]:border-b-0 min-[1180px]:border-r min-[1500px]:min-w-[420px]",
+            "relative min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-b border-border min-[1024px]:flex min-[1024px]:h-full min-[1024px]:basis-[var(--workspace-evidence-width)] min-[1024px]:border-b-0 min-[1024px]:border-r min-[1500px]:min-w-[420px]",
             responsivePanel === "email" ? "flex" : "hidden",
           )}
           data-testid="inbound-evidence-panel"
-          style={{ flex: `1 1 ${evidenceWidth}px` } as CSSProperties}
+          style={{ flex: `1 1 ${effectivePanelWidths.evidenceWidth}px` } as CSSProperties}
         >
-          <div className="sticky top-0 z-20 flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/95 px-2.5 backdrop-blur min-[1180px]:static min-[1180px]:h-9 min-[1180px]:px-3">
-            <div className="text-sm font-semibold text-foreground">
+          <div className="sticky top-0 z-20 shrink-0 border-b border-border bg-background/95 px-2.5 py-1.5 backdrop-blur min-[1024px]:static min-[1024px]:px-3">
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <div className="min-w-0 truncate text-sm font-semibold text-foreground">
               {reviewMode === "operational" ? (
                 <>
-                  Original Email
+                  Source Documents
                   <span className="sr-only"> Source Evidence</span>
                 </>
               ) : "Source Evidence"}
-            </div>
-            <div className="flex items-center gap-2">
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
               {reviewMode === "operational" && selectedRecord && (
                 <div className="flex items-center gap-1">
-                  <Button type="button" size="sm" className="h-8 px-3 text-xs font-semibold shadow-sm min-[1180px]:h-7 min-[1180px]:px-2" onClick={runParseForSelectedRecord} disabled={isParseInFlight || selectedRecordIsTerminal}>
+                  <Button type="button" size="sm" className="h-8 px-3 text-xs font-semibold shadow-sm min-[1024px]:h-7 min-[1024px]:px-2" onClick={runParseForSelectedRecord} disabled={isParseInFlight || selectedRecordIsTerminal}>
                     {isSelectedRecordParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
                     Parse<span className="sr-only"> with AI</span>
                   </Button>
-                  <Button type="button" size="sm" variant="outline" className="hidden h-7 px-2 text-xs min-[1180px]:inline-flex" onClick={() => runQueueCleanupAction("ignore_once")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
+                  <Button type="button" size="sm" variant="outline" className="hidden h-7 px-2 text-xs min-[1500px]:inline-flex" onClick={() => runQueueCleanupAction("ignore_once")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
                     Ignore
                   </Button>
-                  <Button type="button" size="sm" variant="outline" className="hidden h-7 px-2 text-xs min-[1180px]:inline-flex" onClick={rejectSelectedRecord} disabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal} aria-label="Reject inbound record">
+                  <Button type="button" size="sm" variant="outline" className="hidden h-7 px-2 text-xs min-[1500px]:inline-flex" onClick={rejectSelectedRecord} disabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal} aria-label="Reject inbound record">
                     {rejectInboundOrderMutation.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
                     Reject
                   </Button>
-                  <Button type="button" size="sm" variant="ghost" className="hidden h-7 px-2 text-xs min-[1180px]:inline-flex" onClick={() => runQueueCleanupAction("delete")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
+                  <Button type="button" size="sm" variant="ghost" className="hidden h-7 px-2 text-xs min-[1500px]:inline-flex" onClick={() => runQueueCleanupAction("delete")} disabled={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}>
                     <Trash2 className="mr-1.5 h-3.5 w-3.5" />
                     Delete
                   </Button>
-                  <details className="group relative min-[1180px]:hidden">
+                  <details className="group relative min-[1500px]:hidden">
                     <summary className="flex h-8 cursor-pointer list-none items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
-                      More
+                      Actions
                       <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
                     </summary>
                     <div className="absolute right-0 top-9 z-30 grid w-56 gap-1 rounded-md border border-border bg-popover p-1.5 shadow-xl">
@@ -6147,12 +6277,34 @@ export default function InboundOrdersPage() {
                   </details>
                 </div>
               )}
-              {selectedRecord && <Badge variant="secondary">{titleCase(selectedRecord.sourceType)}</Badge>}
-              <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={expandEvidence} aria-label="Expand evidence panel" title={reviewMode === "operational" ? "Expand email" : "Expand evidence"}>
+              {selectedRecord && <Badge variant="secondary" className="hidden min-[1500px]:inline-flex">{titleCase(selectedRecord.sourceType)}</Badge>}
+              <Button type="button" variant="ghost" size="sm" className="hidden h-8 w-8 p-0 min-[1500px]:inline-flex" onClick={expandEvidence} aria-label="Expand evidence panel" title={reviewMode === "operational" ? "Expand email" : "Expand evidence"}>
                 <Maximize2 className="h-4 w-4" />
               </Button>
+              </div>
             </div>
-          </div>
+            {reviewMode === "operational" && (
+              <div className="mt-1 flex min-w-0 rounded-md border border-border bg-muted/30 p-0.5" aria-label="Source document tabs">
+                {([
+                  ["email", "Email"],
+                  ["po", "PO"],
+                  ["artwork", "Artwork"],
+                  ["history", "History"],
+                ] as Array<[SourceDocumentTab, string]>).map(([tab, label]) => (
+                  <Button
+                    key={tab}
+                    type="button"
+                    size="sm"
+                    variant={sourceDocumentTab === tab ? "default" : "ghost"}
+                    className="h-7 flex-1 px-2 text-[11px] font-semibold"
+                    onClick={() => setSourceDocumentTab(tab)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+            )}
+            </div>
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
             {reviewMode === "operational" ? (
               <OperationalEmailPanel
@@ -6162,6 +6314,7 @@ export default function InboundOrdersPage() {
                 latestAttempt={draftPreviewQuery.data?.data.latestAttempt ?? null}
                 parseError={parseMutation.error as Error | null}
                 isParsing={isSelectedRecordParsing}
+                activeTab={sourceDocumentTab}
                 onEmailReprocess={runEmailReprocessAction}
                 isEmailReprocessing={emailReprocessMutation.isPending}
               />
@@ -6189,7 +6342,7 @@ export default function InboundOrdersPage() {
           </div>
           <button
             type="button"
-            className="absolute right-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 min-[1180px]:flex"
+            className="absolute right-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 min-[1024px]:flex"
             onMouseDown={(event) => startResize("evidence", event)}
             aria-label="Resize evidence panel"
             title="Drag to resize evidence"
@@ -6200,26 +6353,26 @@ export default function InboundOrdersPage() {
 
         <section
           className={cn(
-            "relative min-h-0 min-w-0 flex-[1.1_1_0] flex-col overflow-hidden min-[1180px]:flex min-[1180px]:h-full min-[1180px]:basis-[var(--workspace-draft-width)] min-[1500px]:min-w-[480px]",
+            "relative min-h-0 min-w-0 flex-[1.1_1_0] flex-col overflow-hidden min-[1024px]:flex min-[1024px]:h-full min-[1024px]:basis-[var(--workspace-draft-width)] min-[1500px]:min-w-[480px]",
             responsivePanel === "review" ? "flex" : "hidden",
           )}
           data-testid="inbound-draft-panel"
-          style={{ flex: `1.1 1 ${draftWidth}px` } as CSSProperties}
+          style={{ flex: `1.1 1 ${effectivePanelWidths.draftWidth}px` } as CSSProperties}
         >
           <button
             type="button"
-            className="absolute left-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 min-[1180px]:flex"
+            className="absolute left-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 min-[1024px]:flex"
             onMouseDown={(event) => startResize("draft", event)}
             aria-label="Resize draft builder panel"
             title="Drag to resize draft builder"
           >
             <GripVertical className="h-4 w-4" />
           </button>
-          <div className="sticky top-0 z-20 flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/95 px-2.5 backdrop-blur min-[1180px]:static min-[1180px]:h-9 min-[1180px]:px-3">
+          <div className="sticky top-0 z-20 flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/95 px-2.5 backdrop-blur min-[1024px]:static min-[1024px]:h-9 min-[1024px]:px-3">
             <div className="text-sm font-semibold text-foreground">
               {reviewMode === "operational" ? (
                 <>
-                  Operational Review
+                  Order Workstation
                   <span className="sr-only"> Draft Builder</span>
                 </>
               ) : "Draft Builder"}

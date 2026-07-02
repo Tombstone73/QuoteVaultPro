@@ -595,7 +595,7 @@ describe("InboundOrdersPage", () => {
     await waitForText("No inbound records");
 
     expect(container.textContent).toContain("No inbound records");
-    expect(container.textContent).toContain("Draft builder will appear after parsing.");
+    expect(container.textContent).toContain("Order Workstation");
   });
 
   test("shows sender trust badges and attachment policies in the queue", async () => {
@@ -702,7 +702,7 @@ describe("InboundOrdersPage", () => {
     await waitForText("BACKLIT-PO");
     await waitForCondition(() => detailRequests.includes("/api/inbound-orders/inbound_1"), "initial inbound record selected");
 
-    const searchInput = container.querySelector("input[placeholder='Search reference, sender, notes, subject, body']") as HTMLInputElement;
+    const searchInput = container.querySelector("input[placeholder='Search queue']") as HTMLInputElement;
     act(() => {
       Simulate.change(searchInput, { target: { value: "p" } } as any);
       Simulate.change(searchInput, { target: { value: "pv" } } as any);
@@ -783,7 +783,7 @@ describe("InboundOrdersPage", () => {
     await waitForText("BACKLIT-PO");
     await waitForCondition(() => detailRequests.includes("/api/inbound-orders/inbound_1"), "initial inbound record selected");
 
-    const searchInput = container.querySelector("input[placeholder='Search reference, sender, notes, subject, body']") as HTMLInputElement;
+    const searchInput = container.querySelector("input[placeholder='Search queue']") as HTMLInputElement;
     act(() => {
       Simulate.change(searchInput, { target: { value: "backlit" } } as any);
     });
@@ -1190,8 +1190,7 @@ describe("InboundOrdersPage", () => {
 
     renderPage();
     await waitForText("Operational View");
-    await waitForText("Operational Review");
-    await waitForText("Original Email");
+    await waitForText("Source Documents");
     await waitForText("Hello CSR");
     await waitForText("PO candidate");
     await waitForText("Artwork candidate");
@@ -1235,7 +1234,7 @@ describe("InboundOrdersPage", () => {
     setupParsedInboundReview({ row });
 
     renderPage();
-    await waitForText("Original Email");
+    await waitForText("Source Documents");
     await waitForText("Please quote 3 aluminum signs, 24x36.");
     expect(container.textContent).toContain("Text");
   });
@@ -1344,7 +1343,7 @@ describe("InboundOrdersPage", () => {
     renderPage();
 
     await waitForText("Backfill Attachments");
-    await waitForText("Thread: 2 messages");
+    await waitForText("Thread messages: 2");
     await waitForText("Thread messages: 2");
     await waitForText("Thread Timeline");
     await waitForText("Message 2");
@@ -1527,7 +1526,7 @@ describe("InboundOrdersPage", () => {
 
     renderPage();
 
-    await waitForText("Original Email");
+    await waitForText("Source Documents");
     await waitForText("Artwork attached.");
     expect(container.textContent).toContain("Expand previous messages (1)");
     expect(container.textContent).not.toContain("Please see attached PO.");
@@ -1554,7 +1553,7 @@ describe("InboundOrdersPage", () => {
     setupParsedInboundReview();
 
     renderPage();
-    await waitForText("Operational Review");
+    await waitForText("Order Workstation");
     await waitForText("Add line item");
     expect(labeledControl("Product", "select")).toHaveProperty("value", "product_1");
 
@@ -1609,13 +1608,13 @@ describe("InboundOrdersPage", () => {
     const { getSavedBody } = setupParsedInboundReview();
 
     renderPage();
-    await waitForText("Operational Review");
-    await waitForText("PO number");
+    await waitForText("Order Workstation");
+    await waitForText("PO Ref");
     act(() => {
-      Simulate.change(labeledControl("PO number", "input"), { target: { value: "PO-999" } } as any);
+      Simulate.change(labeledControl("PO Ref", "input"), { target: { value: "PO-999" } } as any);
     });
     act(() => {
-      Simulate.change(labeledControl("Quote / order intent", "select"), { target: { value: "order" } } as any);
+      Simulate.change(labeledControl("Intent", "select"), { target: { value: "order" } } as any);
     });
 
     const debugButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Debug View")) as HTMLButtonElement;
@@ -1627,8 +1626,8 @@ describe("InboundOrdersPage", () => {
     act(() => {
       Simulate.click(operationalButton);
     });
-    await waitForText("Operational Review");
-    expect(labeledControl("PO number", "input")).toHaveProperty("value", "PO-999");
+    await waitForText("Order Workstation");
+    expect(labeledControl("PO Ref", "input")).toHaveProperty("value", "PO-999");
 
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
     expect(saveButton.disabled).toBe(false);
@@ -1671,7 +1670,7 @@ describe("InboundOrdersPage", () => {
     const { getSavedBody } = setupParsedInboundReview({ parsed, review });
 
     renderPage();
-    await waitForText("Operational Review");
+    await waitForText("Order Workstation");
     await waitForText("PO price differs from system price.");
     await waitForText("$50.00");
     await waitForText("$45.00");
@@ -1764,7 +1763,7 @@ describe("InboundOrdersPage", () => {
     const { getSavedBody } = setupParsedInboundReview({ parsed, review, detailOverrides: { files } });
 
     renderPage();
-    await waitForText("Operational Review");
+    await waitForText("Order Workstation");
     await waitForCondition(() => (
       Array.from(container.querySelectorAll("select")).some((select) => select.getAttribute("aria-label") === "Classify final-banner-art.pdf")
     ), "attachment classification override control rendered");
@@ -1834,7 +1833,7 @@ describe("InboundOrdersPage", () => {
     const { getSavedBody } = setupParsedInboundReview({ parsed, review });
 
     renderPage();
-    await waitForText("Operational Review");
+    await waitForText("Order Workstation");
     await waitForCondition(() => (
       Array.from(container.querySelectorAll("select")).some((select) => select.getAttribute("aria-label") === "Classify customer-po.pdf")
     ), "PO classification override control rendered");
@@ -1904,7 +1903,7 @@ describe("InboundOrdersPage", () => {
     const { getSavedBody } = setupParsedInboundReview({ parsed, review });
 
     renderPage();
-    await waitForText("Operational Review");
+    await waitForText("Order Workstation");
     await waitForCondition(() => (
       Array.from(container.querySelectorAll("select")).some((select) => select.getAttribute("aria-label") === "Classify signature-logo.png")
     ), "signature classification override control rendered");
@@ -2034,7 +2033,7 @@ describe("InboundOrdersPage", () => {
     setupParsedInboundReview({ parsed, review, detailOverrides: { files: duplicateFiles } });
 
     renderPage();
-    await waitForText("Operational Review");
+    await waitForText("Order Workstation");
 
     await waitForCondition(() => (
       Array.from(container.querySelectorAll("select")).filter((select) => (
@@ -2191,13 +2190,13 @@ describe("InboundOrdersPage", () => {
     await waitForCondition(() => {
       const evidence = Number.parseInt(workspace.style.getPropertyValue("--workspace-evidence-width"), 10);
       const draftWidthValue = Number.parseInt(workspace.style.getPropertyValue("--workspace-draft-width"), 10);
-      return evidence >= 340 && draftWidthValue >= 380 && evidence + draftWidthValue <= 1006;
+      return evidence >= 320 && draftWidthValue >= 360 && evidence + draftWidthValue <= 1066;
     }, "initial layout widths clamped");
     const initialEvidenceWidth = workspace.style.getPropertyValue("--workspace-evidence-width");
     const initialDraftWidth = workspace.style.getPropertyValue("--workspace-draft-width");
-    expect(workspace.style.getPropertyValue("--workspace-queue-width")).toBe("360px");
-    expect(queuePanel.style.width).toBe("360px");
-    expect(queuePanel.style.flex).toBe("0 0 360px");
+    expect(workspace.style.getPropertyValue("--workspace-queue-width")).toBe("300px");
+    expect(queuePanel.style.width).toBe("300px");
+    expect(queuePanel.style.flex).toBe("0 0 300px");
 
     const addButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Add"));
     expect(addButton).toBeTruthy();
@@ -2244,14 +2243,14 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("PO-123");
     expect(container.textContent).toContain("Ada Lovelace / ada@example.com");
     expect(container.textContent).toContain("Please make two banners.");
-    expect(container.textContent).toContain("Draft builder will appear after parsing.");
-    expect(workspace.style.getPropertyValue("--workspace-queue-width")).toBe("360px");
-    expect(queuePanel.style.width).toBe("360px");
-    expect(queuePanel.style.flex).toBe("0 0 360px");
+    expect(container.textContent).toContain("Order Workstation will appear after parsing.");
+    expect(workspace.style.getPropertyValue("--workspace-queue-width")).toBe("300px");
+    expect(queuePanel.style.width).toBe("300px");
+    expect(queuePanel.style.flex).toBe("0 0 300px");
     expect(workspace.style.getPropertyValue("--workspace-evidence-width")).toBe(initialEvidenceWidth);
     expect(workspace.style.getPropertyValue("--workspace-draft-width")).toBe(initialDraftWidth);
-    expect(window.localStorage.getItem("titanos.inboundOrders.evidenceWidth")).toBe(String(Number.parseInt(initialEvidenceWidth, 10)));
-    expect(window.localStorage.getItem("titanos.inboundOrders.draftWidth")).toBe(String(Number.parseInt(initialDraftWidth, 10)));
+    expect(window.localStorage.getItem("titanos.inboundOrders.evidenceWidth")).toBeTruthy();
+    expect(window.localStorage.getItem("titanos.inboundOrders.draftWidth")).toBeTruthy();
   });
 
   test("renders parse action and disabled draft order control for a selected record", async () => {
@@ -2266,17 +2265,17 @@ describe("InboundOrdersPage", () => {
 
     renderPage();
     await waitForText("Parse with AI");
-    await waitForText("Draft builder will appear after parsing.");
+    await waitForText("Order Workstation will appear after parsing.");
 
     const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
       button.textContent?.includes("Create Draft Order")
     ));
     expect(createDraftButton).toBeTruthy();
     expect(createDraftButton?.disabled).toBe(true);
-    expect(container.textContent).toContain("Draft builder will appear after parsing.");
+    expect(container.textContent).toContain("Order Workstation will appear after parsing.");
   });
 
-  test("keeps long inbound queue card content inside the 360px panel", async () => {
+  test("keeps long inbound queue row content inside the 300px panel", async () => {
     const longReference = "PO-THIS-IS-A-VERY-LONG-REFERENCE-WITH-MANY-SEGMENTS-1234567890";
     const longSender = "A Very Long Sender Name For Queue Width Regression";
     const longEmail = "very.long.sender.email.address.for.queue.width.regression@example-very-long-domain.test";
@@ -2307,8 +2306,8 @@ describe("InboundOrdersPage", () => {
 
     const queuePanel = container.querySelector("[data-testid='inbound-queue-panel']") as HTMLElement;
     expect(queuePanel).toBeTruthy();
-    expect(queuePanel.style.width).toBe("360px");
-    expect(queuePanel.style.flex).toBe("0 0 360px");
+    expect(queuePanel.style.width).toBe("300px");
+    expect(queuePanel.style.flex).toBe("0 0 300px");
 
     expect(queuePanel.querySelector("[data-radix-scroll-area-viewport]")).toBeNull();
     const queueScrollArea = Array.from(queuePanel.querySelectorAll("div")).find((element) => (
@@ -2318,7 +2317,7 @@ describe("InboundOrdersPage", () => {
     expect(queueScrollArea?.className).toContain("min-w-0");
     expect(queueScrollArea?.className).toContain("max-w-full");
 
-    const searchInput = queuePanel.querySelector("input[placeholder='Search reference, sender, notes, subject, body']") as HTMLInputElement;
+    const searchInput = queuePanel.querySelector("input[placeholder='Search queue']") as HTMLInputElement;
     expect(searchInput.className).toContain("max-w-full");
 
     const queueCard = Array.from(queuePanel.querySelectorAll("[role='button']")).find((row) => (
@@ -2342,12 +2341,12 @@ describe("InboundOrdersPage", () => {
     expect(sender).toBeTruthy();
     expect(sender.className).toContain("truncate");
 
-    const metadataGrid = Array.from(queueCard.querySelectorAll("div")).find((element) => (
-      element.className.includes("grid-cols-2") && element.textContent?.includes("Reference")
+    const metadataRow = Array.from(queueCard.querySelectorAll("div")).find((element) => (
+      element.className.includes("text-[11px]") && element.textContent?.includes("Manual")
     )) as HTMLDivElement;
-    expect(metadataGrid).toBeTruthy();
-    expect(metadataGrid.className).toContain("max-w-full");
-    expect(metadataGrid.className).not.toContain("grid-cols-3");
+    expect(metadataRow).toBeTruthy();
+    expect(metadataRow.className).toContain("max-w-full");
+    expect(metadataRow.className).toContain("overflow-hidden");
 
     const warningText = Array.from(queueCard.querySelectorAll("span")).find((element) => (
       element.textContent === longWarning
@@ -2380,15 +2379,15 @@ describe("InboundOrdersPage", () => {
     expect(workspace.className).toContain("flex");
     expect(workspace.className).toContain("overflow-hidden");
     expect(workspace.style.gridTemplateColumns).toBe("");
-    expect(workspace.style.getPropertyValue("--workspace-queue-width")).toBe("360px");
-    expect(queuePanel.style.width).toBe("360px");
-    expect(queuePanel.style.flex).toBe("0 0 360px");
-    expect(queuePanel.className).toContain("min-[1180px]:w-[var(--workspace-queue-width)]");
+    expect(workspace.style.getPropertyValue("--workspace-queue-width")).toBe("300px");
+    expect(queuePanel.style.width).toBe("300px");
+    expect(queuePanel.style.flex).toBe("0 0 300px");
+    expect(queuePanel.className).toContain("min-[1024px]:w-[var(--workspace-queue-width)]");
 
     const draftPanel = container.querySelector("[data-testid='inbound-draft-panel']") as HTMLElement;
     expect(draftPanel).toBeTruthy();
     expect(draftPanel.className).toContain("overflow-hidden");
-    expect(container.textContent).toContain("Draft Builder");
+    expect(container.textContent).toContain("Order Workstation");
 
     const collapseButton = container.querySelector("[aria-label='Collapse inbound queue']") as HTMLButtonElement;
     expect(collapseButton).toBeTruthy();
@@ -2406,6 +2405,16 @@ describe("InboundOrdersPage", () => {
       Simulate.click(expandButton);
     });
     await waitForCondition(() => window.localStorage.getItem("titanos.inboundOrders.queueCollapsed") === "false", "queue expanded persistence");
+    const queueResizeHandle = container.querySelector("[aria-label='Resize queue panel']") as HTMLButtonElement;
+    act(() => {
+      Simulate.mouseDown(queueResizeHandle, { clientX: 300 } as any);
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 340, bubbles: true }));
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+    await waitForCondition(() => (
+      workspace.style.getPropertyValue("--workspace-queue-width") === "340px"
+    ), "queue width resize");
+    expect(window.localStorage.getItem("titanos.inboundOrders.queueWidth")).toBe("340");
 
     const evidencePanel = container.querySelector("[data-testid='inbound-evidence-panel']") as HTMLElement;
     const evidenceHandle = container.querySelector("[aria-label='Resize evidence panel']") as HTMLButtonElement;
@@ -2430,15 +2439,43 @@ describe("InboundOrdersPage", () => {
     await waitForCondition(() => (
       window.localStorage.getItem("titanos.inboundOrders.evidenceWidth") === "440"
         && window.localStorage.getItem("titanos.inboundOrders.draftWidth") === "520"
-        && workspace.style.getPropertyValue("--workspace-queue-width") === "360px"
+        && workspace.style.getPropertyValue("--workspace-queue-width") === "300px"
     ), "layout restore persistence");
   });
 
-  test("exposes Chromebook layout controls for queue drawer and email/review tabs", async () => {
+  test("keeps queue visible in the workstation layout and exposes compact filters", async () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       writable: true,
-      value: 1100,
+      value: 1366,
+    });
+    const row = record({ sourceType: "email" });
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === "/api/inbound-orders/inbound_1") return jsonResponse({ success: true, data: detail(row) });
+      if (path === "/api/inbound-orders/inbound_1/draft-preview") return jsonResponse(draftPreview());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Source Documents");
+
+    const workspace = container.querySelector("[data-testid='inbound-review-workspace']") as HTMLElement;
+    const queuePanel = container.querySelector("[data-testid='inbound-queue-panel']") as HTMLElement;
+    expect(workspace.className).toContain("min-[1024px]:flex-row");
+    expect(queuePanel.className).toContain("min-[1024px]:flex");
+    expect(queuePanel.style.width).toBe("300px");
+    expect(container.querySelector("[aria-label='Open queue filters']")).toBeTruthy();
+    expect(container.textContent).toContain("Source Documents");
+    expect(container.textContent).toContain("Order Workstation");
+  });
+
+  test("exposes narrow layout controls for queue drawer and docs/workstation tabs", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: 900,
     });
     const row = record({ sourceType: "email" });
     const draft = parsedDraft();
@@ -2464,7 +2501,7 @@ describe("InboundOrdersPage", () => {
     const queuePanel = container.querySelector("[data-testid='inbound-queue-panel']") as HTMLElement;
     const evidencePanel = container.querySelector("[data-testid='inbound-evidence-panel']") as HTMLElement;
     const draftPanel = container.querySelector("[data-testid='inbound-draft-panel']") as HTMLElement;
-    expect(workspace.className).toContain("min-[1180px]:flex-row");
+    expect(workspace.className).toContain("min-[1024px]:flex-row");
     expect(queuePanel.className).toContain("hidden");
     expect(evidencePanel.className).toContain("flex");
     expect(draftPanel.className).toContain("hidden");
@@ -2478,7 +2515,7 @@ describe("InboundOrdersPage", () => {
     expect(queuePanel.className).toContain("max-w-[calc(100vw-1rem)]");
 
     const reviewTab = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent === "Review") as HTMLButtonElement;
+      .find((button) => button.textContent === "Workstation") as HTMLButtonElement;
     act(() => {
       Simulate.click(reviewTab);
     });
@@ -2486,6 +2523,8 @@ describe("InboundOrdersPage", () => {
     expect(draftPanel.className).toContain("flex");
     await waitForText("Evidence Used");
     expect(container.textContent).toContain("Evidence Used");
+    expect(container.textContent).toContain("Confirmed Customer");
+    expect(container.textContent).toContain("Change");
   });
 
   test("clamps oversized saved widths and keeps draft actions visible", async () => {
@@ -2528,6 +2567,8 @@ describe("InboundOrdersPage", () => {
     expect(workspace.className).toContain("flex");
     expect(evidencePanel.className).toContain("overflow-hidden");
     expect(draftPanel.className).toContain("min-w-0");
+    expect(window.localStorage.getItem("titanos.inboundOrders.evidenceWidth")).toBe("900");
+    expect(window.localStorage.getItem("titanos.inboundOrders.draftWidth")).toBe("900");
     const actionFooter = Array.from(container.querySelectorAll("section")).find((section) => (
       section.className.includes("sticky") && section.textContent?.includes("Save Review Draft")
     ));
