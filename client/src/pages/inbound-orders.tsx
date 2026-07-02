@@ -1504,6 +1504,154 @@ function PoSummaryGrid({ summary }: { summary: NonNullable<InboundOrderParsedDra
   );
 }
 
+type ParsedEvidenceItem = InboundOrderParsedDraft["evidence"]["items"][number];
+
+function formatOptionalCents(value: number | null | undefined) {
+  if (value == null) return null;
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value / 100);
+}
+
+function poSummaryPrice(summary: NonNullable<ParsedEvidenceItem["poSummary"]>) {
+  return summary.price
+    ?? formatOptionalCents(summary.pricing?.totalPriceCents)
+    ?? formatOptionalCents(summary.pricing?.extendedPriceCents)
+    ?? formatOptionalCents(summary.pricing?.approvedPriceCents);
+}
+
+function SourceDocumentPoPanel({
+  recordId,
+  poFiles,
+  poEvidenceItems,
+}: {
+  recordId: string;
+  poFiles: ClientInboundOrderFile[];
+  poEvidenceItems: ParsedEvidenceItem[];
+}) {
+  const extractedPoItems = poEvidenceItems.filter((item) => item.poSummary);
+  return (
+    <div className="space-y-2">
+      <section className="rounded-md border border-border bg-card p-2">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-foreground">PO Documents</h3>
+          <Badge variant="outline">{poFiles.length}</Badge>
+        </div>
+        <div className="mt-2 space-y-1.5">
+          {poFiles.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border px-3 py-6 text-sm text-muted-foreground">
+              No purchase order documents are linked to this inbound record.
+            </div>
+          ) : poFiles.map((file) => (
+            <InboundAttachmentCard key={file.id} recordId={recordId} file={file} />
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-md border border-border bg-card p-2">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-foreground">PO Extraction Summary</h3>
+          <Badge variant="outline">{extractedPoItems.length}</Badge>
+        </div>
+        <div className="mt-2 space-y-2">
+          {extractedPoItems.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border px-3 py-6 text-sm text-muted-foreground">
+              {poFiles.length > 0
+                ? "PO PDF downloaded, text not extracted yet. Run Parse to use this document as evidence."
+                : "No PO extraction summary is available."}
+            </div>
+          ) : extractedPoItems.map((item) => {
+            const summary = item.poSummary!;
+            return (
+              <div key={`${item.sourceId ?? item.label}-po-summary`} className="rounded-md border border-border bg-background p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-foreground">{item.fileName || item.label}</div>
+                    <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                      <span>Extraction: {titleCase(item.extractionStatus)}</span>
+                      <span>Confidence: {item.documentConfidence}%</span>
+                      {item.pageCount ? <span>Pages: {item.pageCount}</span> : null}
+                    </div>
+                  </div>
+                  <Badge variant={item.extractionStatus === "successful" ? "secondary" : item.extractionStatus === "failed" ? "destructive" : "outline"}>
+                    {item.documentType === "purchase_order" ? "PO candidate" : titleCase(item.documentType)}
+                  </Badge>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <InlineField label="PO Number" value={summary.poNumber} />
+                  <InlineField label="Due Date" value={summary.dueDate} />
+                  <InlineField label="Quantity" value={summary.quantity} />
+                  <InlineField label="Total Price" value={poSummaryPrice(summary)} />
+                  <InlineField label="Rush Fee" value={formatOptionalCents(summary.pricing?.rushFeesCents)} />
+                  <InlineField label="Status" value={titleCase(item.extractionStatus)} />
+                </div>
+                {(summary.productDescription || summary.material || summary.dimensions) && (
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <InlineField label="Product" value={summary.productDescription} />
+                    <InlineField label="Material" value={summary.material} />
+                    <InlineField label="Dimensions" value={summary.dimensions} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function SourceDocumentArtworkPanel({
+  recordId,
+  artworkFiles,
+  referenceFiles,
+  signatureFiles,
+}: {
+  recordId: string;
+  artworkFiles: ClientInboundOrderFile[];
+  referenceFiles: ClientInboundOrderFile[];
+  signatureFiles: ClientInboundOrderFile[];
+}) {
+  const renderGroup = (title: string, items: ClientInboundOrderFile[], emptyText: string) => (
+    <section className="rounded-md border border-border bg-card p-2">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+        <Badge variant="outline">{items.length}</Badge>
+      </div>
+      <div className="mt-2 space-y-1.5">
+        {items.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">{emptyText}</div>
+        ) : items.map((file) => (
+          <InboundAttachmentCard key={file.id} recordId={recordId} file={file} />
+        ))}
+      </div>
+    </section>
+  );
+
+  return (
+    <div className="space-y-2">
+      {renderGroup("Artwork Files", artworkFiles, "No artwork files are linked to this inbound record.")}
+      {renderGroup("References", referenceFiles, "No reference attachments are linked to this inbound record.")}
+      <details className="rounded-md border border-border bg-card p-2">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-foreground">
+          <span>Junk / Signature Images</span>
+          <Badge variant="outline">{signatureFiles.length}</Badge>
+        </summary>
+        <div className="mt-2 space-y-1.5">
+          {signatureFiles.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+              No inline signature images were detected.
+            </div>
+          ) : signatureFiles.map((file) => (
+            <InboundAttachmentCard key={file.id} recordId={recordId} file={file} compact />
+          ))}
+        </div>
+      </details>
+      <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+        Manual reclassification controls are preserved in Order Workstation &gt; Attachments so staff changes save with the review draft.
+      </div>
+    </div>
+  );
+}
+
 const fieldSourceLabels: Record<string, string> = {
   poNumber: "PO Number",
   dueDate: "Due Date",
@@ -2631,6 +2779,7 @@ function OperationalEmailPanel({
   selectedRecord,
   isLoading,
   latestAttempt,
+  draftPreview,
   parseError,
   isParsing,
   activeTab = "email",
@@ -2641,6 +2790,7 @@ function OperationalEmailPanel({
   selectedRecord: ClientInboundOrderRecord | null;
   isLoading: boolean;
   latestAttempt: ClientInboundOrderParseAttempt | null;
+  draftPreview: ClientInboundOrderDraftPreviewResponse["data"] | undefined;
   parseError: Error | null;
   isParsing: boolean;
   activeTab?: SourceDocumentTab;
@@ -2670,21 +2820,10 @@ function OperationalEmailPanel({
   const attachmentGroups = groupFilesByThreadMessage(files, evidence.thread);
   const poFiles = files.filter((file) => file.role === "po");
   const artworkFiles = files.filter((file) => file.role === "artwork");
-  const renderAttachmentList = (items: ClientInboundOrderFile[], emptyText: string) => (
-    <section className="rounded-md border border-border bg-card p-2">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold text-foreground">Integrated Evidence</h3>
-        <Badge variant="outline">{items.length}</Badge>
-      </div>
-      <div className="mt-2 space-y-1.5">
-        {items.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border px-3 py-6 text-sm text-muted-foreground">{emptyText}</div>
-        ) : items.map((file) => (
-          <InboundAttachmentCard key={file.id} recordId={record.id} file={file} />
-        ))}
-      </div>
-    </section>
-  );
+  const signatureFiles = files.filter(isLikelySignatureInlineFile);
+  const referenceFiles = files.filter((file) => file.role === "reference");
+  const poEvidenceItems = (draftPreview?.draft?.evidence?.items ?? [])
+    .filter((item) => item.type === "PDF_ATTACHMENT" && (item.documentType === "purchase_order" || item.poSummary));
 
   return (
     <ScrollArea className="h-full">
@@ -2854,8 +2993,21 @@ function OperationalEmailPanel({
           </>
         )}
 
-        {activeTab === "po" && renderAttachmentList(poFiles, "No purchase order documents are linked to this inbound record.")}
-        {activeTab === "artwork" && renderAttachmentList(artworkFiles, "No artwork files are linked to this inbound record.")}
+        {activeTab === "po" && (
+          <SourceDocumentPoPanel
+            recordId={record.id}
+            poFiles={poFiles}
+            poEvidenceItems={poEvidenceItems}
+          />
+        )}
+        {activeTab === "artwork" && (
+          <SourceDocumentArtworkPanel
+            recordId={record.id}
+            artworkFiles={artworkFiles}
+            referenceFiles={referenceFiles}
+            signatureFiles={signatureFiles}
+          />
+        )}
         {activeTab === "history" && (
           <section className="rounded-md border border-border bg-card p-2">
             <ThreadTimeline thread={evidence.thread} compact />
@@ -6312,6 +6464,7 @@ export default function InboundOrdersPage() {
                 selectedRecord={selectedRecord}
                 isLoading={detailQuery.isLoading}
                 latestAttempt={draftPreviewQuery.data?.data.latestAttempt ?? null}
+                draftPreview={draftPreviewQuery.data?.data}
                 parseError={parseMutation.error as Error | null}
                 isParsing={isSelectedRecordParsing}
                 activeTab={sourceDocumentTab}
