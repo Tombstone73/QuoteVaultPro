@@ -195,6 +195,8 @@ type CleanHighlightTarget =
   | "po"
   | "dueDate"
   | "pricing";
+type CleanFocusOptions = { inspectSource?: boolean };
+type CleanFocusTargetHandler = (target: CleanHighlightTarget, options?: CleanFocusOptions) => void;
 
 const defaultQueueFilters: QueueFilters = {
   statusGroup: "active",
@@ -998,12 +1000,35 @@ function cleanHighlightClass(target: CleanHighlightTarget, activeTarget: CleanHi
     : "";
 }
 
+function cleanEvidenceHighlightClass(target: CleanHighlightTarget, activeTarget: CleanHighlightTarget | null) {
+  return activeTarget === target
+    ? "bg-blue-100 text-blue-950 shadow-[0_0_0_2px_rgba(59,130,246,0.28)]"
+    : "";
+}
+
 function cleanSourceLabel(source: string | null | undefined) {
   if (!source) return "Source: AI parse";
+  if (source === "attachment") return "Source: Attachment";
   if (source === "staff_selected") return "Source: Staff";
   if (source.includes("email") || source.includes("source") || source.includes("deterministic")) return "Source: Email body";
   if (source.includes("pdf") || source.includes("po")) return "Source: PO";
   return `Source: ${selectionSourceLabel(source, null)}`;
+}
+
+function cleanShortSourceLabel(source: string | null | undefined, target?: CleanHighlightTarget) {
+  if (target === "artwork") return "Attachment";
+  if (source === "attachment") return "Attachment";
+  if (source?.includes("pdf") || source?.includes("po")) return "PO PDF";
+  if (source?.includes("email") || source?.includes("source") || source?.includes("deterministic")) return "Email";
+  if (source === "staff_selected") return "Staff";
+  if (!source) return "AI";
+  return selectionSourceLabel(source, null).replace(/^Source /, "");
+}
+
+function cleanConfidenceLabel(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) return "Confidence pending";
+  const normalized = value > 0 && value <= 1 ? Math.round(value * 100) : Math.round(value);
+  return `${Math.max(0, Math.min(100, normalized))}%`;
 }
 
 function numberWord(value: number | null | undefined): string | null {
@@ -1042,24 +1067,113 @@ function cleanCompletionChecklist(
   ];
 }
 
+function cleanEvidenceComparison(
+  target: CleanHighlightTarget | null,
+  form: ReviewDraftFormState,
+  draft: InboundOrderParsedDraft,
+) {
+  if (!target) return null;
+  const firstLine = form.reviewedLineItemsJson[0] ?? null;
+  const parsedLine = draft.lineItems[0] ?? null;
+  const targetLabel: Record<CleanHighlightTarget, string> = {
+    customer: "Customer",
+    product: "Product",
+    quantity: "Quantity",
+    dimensions: "Size",
+    artwork: "Artwork",
+    po: "PO number",
+    dueDate: "Due date",
+    pricing: "Pricing",
+  };
+  const primarySource = target === "customer"
+    ? form.reviewedCustomerJson.selectedCustomerSource
+    : target === "product"
+      ? firstLine?.selectedProductSource
+      : target === "quantity"
+        ? firstLine?.quantitySource
+        : target === "dimensions"
+          ? firstLine?.dimensionsSource
+          : target === "artwork"
+            ? "attachment"
+            : "po_pdf";
+  const confidence = target === "customer"
+    ? form.reviewedCustomerJson.selectedCustomerConfidence
+    : target === "product"
+      ? firstLine?.interpretedProductConfidence
+      : target === "artwork"
+        ? draft.artwork[0]?.confidence
+        : parsedLine?.confidence ?? draft.order.confidence;
+  const warningText = [
+    ...form.warningsJson.map((warning) => warning.message),
+    ...form.missingDecisionsJson.map((decision) => `${decision.label} ${decision.reason}`),
+  ].join(" ").toLowerCase();
+  const conflict = warningText.includes(targetLabel[target].toLowerCase())
+    || (target === "dimensions" && warningText.includes("size"))
+    || (target === "po" && warningText.includes("po"))
+    || (target === "artwork" && warningText.includes("artwork"));
+  return {
+    label: targetLabel[target],
+    primary: cleanShortSourceLabel(primarySource, target),
+    secondary: target === "artwork" ? "Email" : target === "po" || target === "dueDate" ? "Email" : "PO PDF",
+    confidence: cleanConfidenceLabel(confidence),
+    conflict,
+  };
+}
+
 function CleanInlineSourceButton({
   children,
   target,
   onFocusTarget,
+  activeTarget,
 }: {
   children: ReactNode;
   target: CleanHighlightTarget;
-  onFocusTarget: (target: CleanHighlightTarget) => void;
+  onFocusTarget: CleanFocusTargetHandler;
+  activeTarget: CleanHighlightTarget | null;
 }) {
   return (
     <button
       type="button"
-      className="rounded bg-blue-100 px-1 font-semibold text-blue-800 underline decoration-blue-300 decoration-2 underline-offset-2 hover:bg-blue-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+      className={cn(
+        "rounded px-1 font-semibold text-blue-800 underline decoration-blue-300 decoration-2 underline-offset-2 transition-colors hover:bg-blue-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
+        activeTarget === target ? "bg-blue-200" : "bg-blue-100",
+      )}
       onClick={() => onFocusTarget(target)}
       onMouseEnter={() => onFocusTarget(target)}
+      onFocus={() => onFocusTarget(target)}
       data-clean-source-target={target}
+      data-highlighted={activeTarget === target ? "true" : "false"}
     >
       {children}
+    </button>
+  );
+}
+
+function CleanSourceChip({
+  target,
+  source,
+  confidence,
+  onFocusTarget,
+}: {
+  target: CleanHighlightTarget;
+  source: string | null | undefined;
+  confidence?: number | null;
+  onFocusTarget: CleanFocusTargetHandler;
+}) {
+  return (
+    <button
+      type="button"
+      className="inline-flex max-w-full items-center gap-1 rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-200 hover:border-blue-300 hover:text-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+      onClick={(event) => {
+        event.stopPropagation();
+        onFocusTarget(target, { inspectSource: true });
+      }}
+      onFocus={() => onFocusTarget(target)}
+      data-testid={`clean-source-chip-${target}`}
+      title={`${cleanSourceLabel(source)} / ${cleanConfidenceLabel(confidence)}`}
+    >
+      <span>{cleanShortSourceLabel(source, target)}</span>
+      {confidence != null && <span className="text-slate-500">{cleanConfidenceLabel(confidence)}</span>}
     </button>
   );
 }
@@ -1068,12 +1182,16 @@ function CleanInteractiveEmailText({
   text,
   lineItem,
   poNumber,
+  dueDate,
   onFocusTarget,
+  activeTarget,
 }: {
   text: string | null;
   lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number] | null;
   poNumber: string | null | undefined;
-  onFocusTarget: (target: CleanHighlightTarget) => void;
+  dueDate: string | null | undefined;
+  onFocusTarget: CleanFocusTargetHandler;
+  activeTarget: CleanHighlightTarget | null;
 }) {
   if (!text) {
     return <EmailDocumentBodySurface html={null} text={text} />;
@@ -1081,7 +1199,7 @@ function CleanInteractiveEmailText({
   const product = lineItem?.productName ?? null;
   const size = lineItem?.width && lineItem?.height ? `${lineItem.width} x ${lineItem.height}` : null;
   const quantity = numberWord(lineItem?.quantity ?? null);
-  const escaped = [poNumber, product, size, quantity]
+  const escaped = [poNumber, dueDate, product, size, quantity]
     .filter((value): value is string => Boolean(value))
     .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   if (escaped.length === 0) {
@@ -1095,16 +1213,19 @@ function CleanInteractiveEmailText({
         {parts.map((part, index) => {
           const normalized = part.toLowerCase();
           if (poNumber && normalized === poNumber.toLowerCase()) {
-            return <CleanInlineSourceButton key={`${part}-${index}`} target="po" onFocusTarget={onFocusTarget}>{part}</CleanInlineSourceButton>;
+            return <CleanInlineSourceButton key={`${part}-${index}`} target="po" onFocusTarget={onFocusTarget} activeTarget={activeTarget}>{part}</CleanInlineSourceButton>;
+          }
+          if (dueDate && normalized === dueDate.toLowerCase()) {
+            return <CleanInlineSourceButton key={`${part}-${index}`} target="dueDate" onFocusTarget={onFocusTarget} activeTarget={activeTarget}>{part}</CleanInlineSourceButton>;
           }
           if (product && normalized === product.toLowerCase()) {
-            return <CleanInlineSourceButton key={`${part}-${index}`} target="product" onFocusTarget={onFocusTarget}>{part}</CleanInlineSourceButton>;
+            return <CleanInlineSourceButton key={`${part}-${index}`} target="product" onFocusTarget={onFocusTarget} activeTarget={activeTarget}>{part}</CleanInlineSourceButton>;
           }
           if (size && normalized === size.toLowerCase()) {
-            return <CleanInlineSourceButton key={`${part}-${index}`} target="dimensions" onFocusTarget={onFocusTarget}>{part}</CleanInlineSourceButton>;
+            return <CleanInlineSourceButton key={`${part}-${index}`} target="dimensions" onFocusTarget={onFocusTarget} activeTarget={activeTarget}>{part}</CleanInlineSourceButton>;
           }
           if (quantity && normalized === quantity.toLowerCase()) {
-            return <CleanInlineSourceButton key={`${part}-${index}`} target="quantity" onFocusTarget={onFocusTarget}>{part}</CleanInlineSourceButton>;
+            return <CleanInlineSourceButton key={`${part}-${index}`} target="quantity" onFocusTarget={onFocusTarget} activeTarget={activeTarget}>{part}</CleanInlineSourceButton>;
           }
           return <span key={`${part}-${index}`}>{part}</span>;
         })}
@@ -3435,7 +3556,7 @@ function CleanSourceDocuments({
   onClassifyAttachment: (link: InboundOrderArtworkLink, classification: InboundAttachmentClassification) => void;
   form: ReviewDraftFormState | null;
   activeTarget: CleanHighlightTarget | null;
-  onFocusTarget: (target: CleanHighlightTarget) => void;
+  onFocusTarget: CleanFocusTargetHandler;
 }) {
   if (!selectedRecord) {
     return <section className="flex min-h-0 flex-1 items-center justify-center bg-slate-950 text-slate-500">Select an inbound item.</section>;
@@ -3500,13 +3621,15 @@ function CleanSourceDocuments({
                 {emailEvidence?.bodyHtml ? (
                   <EmailDocumentBodySurface html={sanitizeEmailHtml(emailEvidence.bodyHtml)} text={evidence.bodyText} />
                 ) : (
-                  <CleanInteractiveEmailText
-                    text={evidence.bodyText}
-                    lineItem={firstLine}
-                    poNumber={form?.reviewedOrderJson.poNumber}
-                    onFocusTarget={onFocusTarget}
-                  />
-                )}
+                    <CleanInteractiveEmailText
+                      text={evidence.bodyText}
+                      lineItem={firstLine}
+                      poNumber={form?.reviewedOrderJson.poNumber}
+                      dueDate={form?.reviewedOrderJson.dueDate}
+                      onFocusTarget={onFocusTarget}
+                      activeTarget={activeTarget}
+                    />
+                  )}
               </div>
               <div className="border-t border-slate-200 px-5 py-4">
                 <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">Integrated Evidence ({files.length})</div>
@@ -3522,6 +3645,7 @@ function CleanSourceDocuments({
                         "block w-full rounded text-left transition-shadow",
                         file.role === "artwork" && cleanHighlightClass("artwork", activeTarget),
                         file.role === "po" && cleanHighlightClass("po", activeTarget),
+                        file.role !== "po" && file.role !== "artwork" && activeTarget === "artwork" && "ring-1 ring-blue-300",
                       )}
                       onClick={() => onFocusTarget(file.role === "po" ? "po" : file.role === "artwork" ? "artwork" : "artwork")}
                       onMouseEnter={() => onFocusTarget(file.role === "po" ? "po" : file.role === "artwork" ? "artwork" : "artwork")}
@@ -3560,6 +3684,7 @@ function CleanSourceDocuments({
                     onFocusTarget("po");
                   }
                 }}
+                data-clean-source-target="po"
               >
                 <InboundAttachmentCard recordId={record.id} file={file} compact minimal />
               </div>
@@ -3585,6 +3710,8 @@ function CleanSourceDocuments({
                     className="block w-full text-left"
                     onClick={() => onFocusTarget("artwork")}
                     onMouseEnter={() => onFocusTarget("artwork")}
+                    onFocus={() => onFocusTarget("artwork")}
+                    data-clean-source-target="artwork"
                   >
                     <div className="truncate text-sm font-semibold text-slate-100">{link.filename || link.fileId}</div>
                     <div className="mt-1 text-xs text-slate-500">{describeArtworkLink(link)}</div>
@@ -3633,7 +3760,7 @@ function CleanProductionTicketCard({
   index: number;
   onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
   activeTarget: CleanHighlightTarget | null;
-  onFocusTarget: (target: CleanHighlightTarget) => void;
+  onFocusTarget: CleanFocusTargetHandler;
 }) {
   const requiredComplete = Boolean((lineItem.selectedProductId || lineItem.productName || lineItem.productUnresolved) && lineItem.quantity && lineItem.width && lineItem.height);
   const [detailsOpen, setDetailsOpen] = useState(!requiredComplete);
@@ -3651,11 +3778,11 @@ function CleanProductionTicketCard({
         <Badge variant={requiredComplete ? "secondary" : "destructive"}>{productionStatus}</Badge>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <CleanTicketMetric label="Product" value={lineItem.productName || "Unselected"} target="product" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-        <CleanTicketMetric label="Material" value={lineItem.materialText || "-"} />
-        <CleanTicketMetric label="Qty" value={lineItem.quantity ?? "-"} target="quantity" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-        <CleanTicketMetric label="Size" value={dimensions} target="dimensions" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-        <CleanTicketMetric label="Artwork status" value={activeArtworkLinks.length ? "Attached" : "Missing"} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+        <CleanTicketMetric label="Product" value={lineItem.productName || "Unselected"} target="product" source={lineItem.selectedProductSource} confidence={lineItem.interpretedProductConfidence} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+        <CleanTicketMetric label="Material" value={lineItem.materialText || "-"} source={lineItem.materialSource} />
+        <CleanTicketMetric label="Qty" value={lineItem.quantity ?? "-"} target="quantity" source={lineItem.quantitySource} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+        <CleanTicketMetric label="Size" value={dimensions} target="dimensions" source={lineItem.dimensionsSource} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+        <CleanTicketMetric label="Artwork status" value={activeArtworkLinks.length ? "Attached" : "Missing"} target="artwork" source="attachment" confidence={activeArtworkLinks[0]?.confidence ?? null} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
         <CleanTicketMetric label="Production status" value={productionStatus} />
       </div>
       <button
@@ -3722,19 +3849,28 @@ function CleanTicketMetric({
   label,
   value,
   target,
+  source,
+  confidence,
   activeTarget,
   onFocusTarget,
 }: {
   label: string;
   value: ReactNode;
   target?: CleanHighlightTarget;
+  source?: string | null;
+  confidence?: number | null;
   activeTarget?: CleanHighlightTarget | null;
-  onFocusTarget?: (target: CleanHighlightTarget) => void;
+  onFocusTarget?: CleanFocusTargetHandler;
 }) {
   const className = cn("min-w-0 rounded transition-shadow", target && cleanHighlightClass(target, activeTarget ?? null));
   const content = (
     <>
-      <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="flex min-w-0 items-center justify-between gap-1">
+        <div className="truncate text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</div>
+        {target && onFocusTarget && (
+          <CleanSourceChip target={target} source={source} confidence={confidence} onFocusTarget={onFocusTarget} />
+        )}
+      </div>
       <div className="mt-1 truncate rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm font-semibold text-slate-100">{value}</div>
     </>
   );
@@ -3742,16 +3878,24 @@ function CleanTicketMetric({
     return <div className={className}>{content}</div>;
   }
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       className={cn(className, "text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300")}
       onClick={() => onFocusTarget(target)}
       onMouseEnter={() => onFocusTarget(target)}
+      onFocus={() => onFocusTarget(target)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onFocusTarget(target, { inspectSource: true });
+        }
+      }}
       data-clean-destination-target={target}
       data-highlighted={activeTarget === target ? "true" : "false"}
     >
       {content}
-    </button>
+    </div>
   );
 }
 
@@ -3759,6 +3903,7 @@ function CleanAiSummaryRow({
   label,
   value,
   source,
+  confidence,
   target,
   activeTarget,
   onFocusTarget,
@@ -3766,27 +3911,41 @@ function CleanAiSummaryRow({
   label: string;
   value: ReactNode;
   source: string | null | undefined;
+  confidence?: number | null;
   target: CleanHighlightTarget;
   activeTarget: CleanHighlightTarget | null;
-  onFocusTarget: (target: CleanHighlightTarget) => void;
+  onFocusTarget: CleanFocusTargetHandler;
 }) {
+  const confidenceValue = typeof confidence === "number" ? confidence : null;
+  const lowConfidence = confidenceValue != null && confidenceValue < 70;
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       className={cn(
         "grid grid-cols-[88px_1fr] items-start gap-2 rounded px-2 py-1.5 text-left transition-shadow hover:bg-slate-800",
         cleanHighlightClass(target, activeTarget),
       )}
       onClick={() => onFocusTarget(target)}
       onMouseEnter={() => onFocusTarget(target)}
+      onFocus={() => onFocusTarget(target)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onFocusTarget(target, { inspectSource: true });
+        }
+      }}
       data-clean-summary-target={target}
     >
       <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</span>
       <span className="min-w-0">
         <span className="block truncate text-sm font-semibold text-slate-100">{value || "-"}</span>
-        <span className="block truncate text-[11px] text-blue-200">{cleanSourceLabel(source)}</span>
+        <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1">
+          <CleanSourceChip target={target} source={source} confidence={confidenceValue} onFocusTarget={onFocusTarget} />
+          {lowConfidence && <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">Low</span>}
+        </span>
       </span>
-    </button>
+    </div>
   );
 }
 
@@ -3841,7 +4000,7 @@ function CleanOrderWorkstation({
   form: ReviewDraftFormState | null;
   updateForm: (patch: Partial<ReviewDraftFormState>) => void;
   activeTarget: CleanHighlightTarget | null;
-  onFocusTarget: (target: CleanHighlightTarget) => void;
+  onFocusTarget: CleanFocusTargetHandler;
 }) {
   const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
   const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
@@ -3892,6 +4051,7 @@ function CleanOrderWorkstation({
   const firstLineSize = firstLine?.width && firstLine?.height ? `${firstLine.width} x ${firstLine.height}${firstLine.dimensionsUnit ? ` ${firstLine.dimensionsUnit}` : ""}` : null;
   const firstLineArtworkLinked = firstLine?.artworkLinks.some((link) => link.source !== "staff_removed") || form.reviewedArtworkJson.status === "supplied";
   const completionChecklist = cleanCompletionChecklist(form, reviewDraft);
+  const activeEvidenceComparison = cleanEvidenceComparison(activeTarget, form, draftPreview.draft);
 
   return (
     <section className="flex min-h-0 w-[520px] shrink-0 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
@@ -3917,18 +4077,55 @@ function CleanOrderWorkstation({
           </div>
         </div>
         <div className="mb-3 rounded border border-blue-400/30 bg-blue-400/10 p-3" data-testid="clean-ai-summary">
-          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-blue-100">AI believes:</div>
+          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-blue-100">Order Summary</div>
           <div className="grid gap-1">
-            <CleanAiSummaryRow label="Customer" value={form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName} source={form.reviewedCustomerJson.selectedCustomerSource} target="customer" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Product" value={firstLine?.productName} source={firstLine?.selectedProductSource} target="product" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Quantity" value={firstLine?.quantity ?? null} source={firstLine?.quantitySource} target="quantity" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Size" value={firstLineSize} source={firstLine?.dimensionsSource} target="dimensions" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Artwork" value={firstLineArtworkLinked ? "Attached" : "Missing"} source={firstLineArtworkLinked ? "source_evidence" : null} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Customer" value={form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName} source={form.reviewedCustomerJson.selectedCustomerSource} confidence={form.reviewedCustomerJson.selectedCustomerConfidence} target="customer" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Product" value={firstLine?.productName} source={firstLine?.selectedProductSource} confidence={firstLine?.interpretedProductConfidence} target="product" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Quantity" value={firstLine?.quantity ?? null} source={firstLine?.quantitySource} confidence={draftPreview.draft.lineItems[0]?.confidence} target="quantity" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Size" value={firstLineSize} source={firstLine?.dimensionsSource} confidence={draftPreview.draft.lineItems[0]?.confidence} target="dimensions" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Artwork" value={firstLineArtworkLinked ? "Attached" : "Missing"} source={firstLineArtworkLinked ? "attachment" : null} confidence={draftPreview.draft.artwork[0]?.confidence} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
           </div>
+          {activeEvidenceComparison && (
+            <div className="mt-3 rounded border border-blue-300/30 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200" data-testid="clean-evidence-comparison">
+              <div className="font-bold uppercase tracking-wide text-blue-100">{activeEvidenceComparison.label} evidence</div>
+              <div className="mt-1 grid grid-cols-3 gap-2">
+                <span>Primary: {activeEvidenceComparison.primary}</span>
+                <span>Secondary: {activeEvidenceComparison.secondary}</span>
+                <span>Confidence: {activeEvidenceComparison.confidence}</span>
+              </div>
+              {activeEvidenceComparison.conflict && <div className="mt-1 font-semibold text-amber-200">Conflict detected</div>}
+            </div>
+          )}
         </div>
         <div className="mb-4 grid grid-cols-2 gap-2">
-          <OrderEntryField label="PO Ref" className={cleanHighlightClass("po", activeTarget)}><Input data-testid="clean-po-field" data-highlighted={activeTarget === "po" ? "true" : "false"} value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} /></OrderEntryField>
-          <OrderEntryField label="Due date" className={cleanHighlightClass("dueDate", activeTarget)}><Input type="date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} /></OrderEntryField>
+          <div
+            className={cn("rounded transition-shadow", cleanHighlightClass("po", activeTarget))}
+            onMouseEnter={() => onFocusTarget("po")}
+            onFocus={() => onFocusTarget("po")}
+            data-clean-destination-target="po"
+            data-highlighted={activeTarget === "po" ? "true" : "false"}
+          >
+            <OrderEntryField label="PO Ref">
+              <Input data-testid="clean-po-field" data-highlighted={activeTarget === "po" ? "true" : "false"} value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} />
+            </OrderEntryField>
+            <div className="mt-1">
+              <CleanSourceChip target="po" source="po_pdf" confidence={draftPreview.draft.order.confidence} onFocusTarget={onFocusTarget} />
+            </div>
+          </div>
+          <div
+            className={cn("rounded transition-shadow", cleanHighlightClass("dueDate", activeTarget))}
+            onMouseEnter={() => onFocusTarget("dueDate")}
+            onFocus={() => onFocusTarget("dueDate")}
+            data-clean-destination-target="dueDate"
+            data-highlighted={activeTarget === "dueDate" ? "true" : "false"}
+          >
+            <OrderEntryField label="Due date">
+              <Input type="date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} />
+            </OrderEntryField>
+            <div className="mt-1">
+              <CleanSourceChip target="dueDate" source="po_pdf" confidence={draftPreview.draft.order.confidence} onFocusTarget={onFocusTarget} />
+            </div>
+          </div>
           <OrderEntryField label="Priority">
             <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedOrderJson.priority ?? "normal"} onChange={(event) => updateOrder({ priority: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["priority"] })}>
               <option value="rush">Rush</option>
@@ -6858,6 +7055,18 @@ export default function InboundOrdersPage() {
       current[recordId] === dirty ? current : { ...current, [recordId]: dirty }
     ));
   }, []);
+  const focusCleanTarget = useCallback<CleanFocusTargetHandler>((target, options) => {
+    setCleanActiveTarget(target);
+    if (!options?.inspectSource || typeof window === "undefined") return;
+    if (target === "po" || target === "dueDate") setSourceDocumentTab("po");
+    if (target === "artwork") setSourceDocumentTab("artwork");
+    if (target === "customer" || target === "product" || target === "quantity" || target === "dimensions") setSourceDocumentTab("email");
+    window.setTimeout(() => {
+      const source = document.querySelector(`[data-clean-source-target="${target}"]`) as HTMLElement | null;
+      source?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+      source?.focus?.({ preventScroll: true });
+    }, 80);
+  }, []);
   const runParseForSelectedRecord = () => {
     if (!selectedId || parseInFlightRef.current) return;
     if (selectedReviewDraftHasUnsavedEdits) {
@@ -7340,7 +7549,7 @@ export default function InboundOrdersPage() {
             onClassifyAttachment={overrideCleanAttachmentClassification}
             form={cleanForm}
             activeTarget={cleanActiveTarget}
-            onFocusTarget={setCleanActiveTarget}
+            onFocusTarget={focusCleanTarget}
           />
           <CleanOrderWorkstation
             selectedRecord={selectedRecord}
@@ -7377,7 +7586,7 @@ export default function InboundOrdersPage() {
             form={cleanForm}
             updateForm={updateCleanForm}
             activeTarget={cleanActiveTarget}
-            onFocusTarget={setCleanActiveTarget}
+            onFocusTarget={focusCleanTarget}
           />
         </div>
       ) : (
