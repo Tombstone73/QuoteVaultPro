@@ -527,6 +527,16 @@ function labeledControl(labelText: string, selector: string) {
   return control as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 }
 
+function openSelectedQueueActions() {
+  const actionsButton = Array.from(container.querySelectorAll("button")).find((button) => (
+    button.getAttribute("aria-label")?.startsWith("Queue actions for ")
+  )) as HTMLButtonElement;
+  if (!actionsButton) throw new Error("Missing selected queue Actions button");
+  act(() => {
+    Simulate.click(actionsButton);
+  });
+}
+
 function setupParsedInboundReview({
   row = record(),
   parsed = parsedDraft(),
@@ -639,8 +649,10 @@ describe("InboundOrdersPage", () => {
 
     expect(container.textContent).toContain("Customer Communication");
     expect(container.textContent).toContain("New Buyer");
+    expect(container.textContent).toContain("Untrusted");
     expect(container.textContent).not.toContain("Auto-download");
     expect(container.textContent).not.toContain("Pending Trust");
+    expect(container.textContent).not.toContain("Trust Sender + Download Attachments");
   });
 
   test("debounces queue search without clearing the selected workspace immediately", async () => {
@@ -925,9 +937,10 @@ describe("InboundOrdersPage", () => {
 
     try {
       renderPage();
-      await waitForText("Trust Sender + Download Attachments");
-      const trustButton = container.querySelector(`[data-testid='queue-trust-action-${untrusted.id}-trust_sender']`)
-        ?? container.querySelector(`[data-testid='review-trust-action-${untrusted.id}-trust_sender']`) as HTMLButtonElement;
+      await waitForText("Actions");
+      expect(container.querySelector(`[data-testid='queue-trust-action-${untrusted.id}-trust_sender']`)).toBeNull();
+      openSelectedQueueActions();
+      const trustButton = container.querySelector(`[data-testid='queue-trust-action-${untrusted.id}-trust_sender']`) as HTMLButtonElement;
       act(() => {
         Simulate.click(trustButton);
       });
@@ -986,9 +999,10 @@ describe("InboundOrdersPage", () => {
 
     try {
       renderPage();
-      await waitForText("Trust Sender + Download Attachments");
-      const trustButton = container.querySelector(`[data-testid='queue-trust-action-${row.id}-trust_sender']`)
-        ?? container.querySelector(`[data-testid='review-trust-action-${row.id}-trust_sender']`) as HTMLButtonElement;
+      await waitForText("Actions");
+      expect(container.querySelector(`[data-testid='queue-trust-action-${row.id}-trust_sender']`)).toBeNull();
+      openSelectedQueueActions();
+      const trustButton = container.querySelector(`[data-testid='queue-trust-action-${row.id}-trust_sender']`) as HTMLButtonElement;
       act(() => {
         Simulate.click(trustButton);
       });
@@ -1034,9 +1048,10 @@ describe("InboundOrdersPage", () => {
 
     try {
       renderPage();
-      await waitForText("Trust Domain + Download Attachments");
-      const trustButton = container.querySelector(`[data-testid='queue-trust-action-${row.id}-trust_domain']`)
-        ?? container.querySelector(`[data-testid='review-trust-action-${row.id}-trust_domain']`) as HTMLButtonElement;
+      await waitForText("Actions");
+      expect(container.querySelector(`[data-testid='queue-trust-action-${row.id}-trust_domain']`)).toBeNull();
+      openSelectedQueueActions();
+      const trustButton = container.querySelector(`[data-testid='queue-trust-action-${row.id}-trust_domain']`) as HTMLButtonElement;
       act(() => {
         Simulate.click(trustButton);
       });
@@ -1091,9 +1106,10 @@ describe("InboundOrdersPage", () => {
     });
 
     renderPage();
-    await waitForText("Trust Sender + Download Attachments");
-    const trustDownloadButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Trust Sender + Download Attachments") as HTMLButtonElement;
+    await waitForText("Actions");
+    expect(container.querySelector(`[data-testid='queue-trust-action-${row.id}-trust_sender_and_download']`)).toBeNull();
+    openSelectedQueueActions();
+    const trustDownloadButton = container.querySelector(`[data-testid='queue-trust-action-${row.id}-trust_sender_and_download']`) as HTMLButtonElement;
     act(() => {
       Simulate.click(trustDownloadButton);
     });
@@ -2384,7 +2400,7 @@ describe("InboundOrdersPage", () => {
     expect(sender.className).toContain("truncate");
 
     const metadataRow = Array.from(queueCard.querySelectorAll("div")).find((element) => (
-      element.className.includes("text-[11px]") && element.textContent?.includes("Review issue")
+      element.className.includes("text-[11px]") && element.textContent?.includes("Issue")
     )) as HTMLDivElement;
     expect(metadataRow).toBeTruthy();
     expect(metadataRow.className).toContain("max-w-full");

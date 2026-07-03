@@ -298,6 +298,16 @@ function shouldShowInlineTrustActions(record: ClientInboundOrderRecord): boolean
     && (record.senderTrustStatus === "untrusted" || record.attachmentDownloadPolicy === "pending_trust");
 }
 
+function getQueueIssueChip(record: ClientInboundOrderRecord): string | null {
+  if (record.attachmentDownloadPolicy === "pending_trust" || record.senderTrustStatus === "untrusted") return "Untrusted";
+  const reason = record.reviewRequiredReason?.toLowerCase() ?? "";
+  if (reason.includes("artwork")) return "Artwork Missing";
+  if (reason.includes("price") || reason.includes("pricing")) return "PO Price";
+  if (!record.parsedAt && (record.status === "received" || record.status === "processing")) return "Needs Parse";
+  if (record.requiresHumanDecision) return "Issue";
+  return null;
+}
+
 function recordTrustActionLabel(action: InboundRecordTrustAction): string {
   if (action === "trust_sender") return "Trust Sender";
   if (action === "trust_domain") return "Trust Domain";
@@ -2314,6 +2324,7 @@ function InboundQueuePanel({
   onToggleSelected: (id: string, selected: boolean) => void;
   onTrustAction: (record: ClientInboundOrderRecord, action: InboundRecordTrustAction) => void;
 }) {
+  const [expandedActionsRecordId, setExpandedActionsRecordId] = useState<string | null>(null);
   if (records.length === 0) {
     return (
       <EmptyPanel
@@ -2328,16 +2339,13 @@ function InboundQueuePanel({
       <div className="box-border w-full min-w-0 max-w-full divide-y divide-border overflow-x-hidden">
         {records.map((record) => {
           const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
-          const thread = record.sourceType === "email" ? (evidence as ReturnType<typeof getInboundEmailEvidence>).thread : null;
           const intentLabel = record.sourceType === "email" ? getInboundIntentLabel(record) : null;
-          const threadMessageCount = typeof thread?.messageCount === "number" ? thread.messageCount : null;
-          const latestThreadActivity = stringFromUnknown(thread?.latestActivityAt);
-          const latestThreadSender = [stringFromUnknown(thread?.latestSenderName), stringFromUnknown(thread?.latestSenderEmail)]
-            .filter(Boolean)
-            .join(" / ");
           const recordAge = formatRelative(record.createdAt);
           const queueCustomer = getSenderLabel(record);
           const queueRequest = evidence.reference || getRecordTitle(record);
+          const issueChip = getQueueIssueChip(record);
+          const isSelected = selectedId === record.id;
+          const actionsExpanded = isSelected && expandedActionsRecordId === record.id;
           return (
             <div
               key={record.id}
@@ -2348,10 +2356,11 @@ function InboundQueuePanel({
               role="button"
               tabIndex={0}
               className={cn(
-                "block box-border w-full min-w-0 max-w-full cursor-pointer overflow-x-hidden px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                selectedId === record.id
-                  ? "bg-primary/10"
+                "block box-border w-full min-w-0 max-w-full cursor-pointer overflow-x-hidden border-l-2 px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                isSelected
+                  ? "border-l-primary bg-primary/10"
                   : "bg-card hover:bg-muted/50",
+                !isSelected && "border-l-transparent",
               )}
             >
               <div className="flex min-w-0 max-w-full items-start justify-between gap-2 overflow-hidden">
@@ -2371,49 +2380,63 @@ function InboundQueuePanel({
                         <div className="block max-w-full truncate text-xs font-medium text-muted-foreground">{queueRequest}</div>
                       </div>
                     </div>
-                    {threadMessageCount != null && (
-                      <div className="mt-0.5 block max-w-full truncate text-[11px] text-muted-foreground">
-                        {threadMessageCount} msg
-                        {latestThreadSender ? ` / latest ${latestThreadSender}` : ""}
-                        {latestThreadActivity ? ` / ${formatRelative(latestThreadActivity)}` : ""}
-                      </div>
-                    )}
-                    <div className="mt-1 flex max-w-full flex-wrap items-center gap-1">
+                    <div className="mt-1 flex max-w-full flex-wrap items-center gap-x-1.5 gap-y-1">
                       {intentLabel ? (
-                        <Badge variant="outline" className="h-5 max-w-full truncate px-1.5 text-[10px]">
+                        <Badge variant="outline" className="h-5 max-w-full truncate border-0 px-0 text-[11px] font-medium text-muted-foreground shadow-none">
                           {intentLabel}
                         </Badge>
                       ) : null}
-                      {record.requiresHumanDecision && (
+                      {intentLabel ? <span className="text-[11px] text-muted-foreground">/</span> : null}
+                      <span className="text-[11px] font-medium text-muted-foreground">{statusLabels[record.status]}</span>
+                      {issueChip && (
                         <Badge variant="outline" className="h-5 border-amber-300 bg-amber-50 px-1.5 text-[10px] text-amber-800">
-                          Issue
+                          {issueChip}
                         </Badge>
                       )}
                     </div>
                   </div>
                 </div>
-                <div className="shrink-0">
+                <div className="shrink-0 sm:hidden">
                   <StatusBadge status={record.status} />
                 </div>
               </div>
               <div className="mt-1 flex max-w-full items-center gap-2 overflow-hidden text-[11px] text-muted-foreground">
                 <span className="truncate">{recordAge}</span>
-                {record.requiresHumanDecision && (
+                {issueChip && (
                   <>
                     <span className="shrink-0">/</span>
-                    <span className="truncate text-amber-700">{record.reviewRequiredReason ? "Review issue" : "Needs review"}</span>
+                    <span className="truncate text-amber-700">{issueChip}</span>
                   </>
                 )}
               </div>
-              {shouldShowInlineTrustActions(record) && (
-                <div className="mt-1.5 flex max-w-full flex-wrap gap-1">
+              {isSelected && shouldShowInlineTrustActions(record) && (
+                <div className="mt-1.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-1.5 text-[10px]"
+                    aria-expanded={actionsExpanded}
+                    aria-label={`Queue actions for ${getRecordTitle(record)}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setExpandedActionsRecordId((current) => current === record.id ? null : record.id);
+                    }}
+                  >
+                    Actions
+                    <ChevronDown className={cn("ml-1 h-3 w-3 transition-transform", actionsExpanded && "rotate-180")} />
+                  </Button>
+                </div>
+              )}
+              {actionsExpanded && (
+                <div className="mt-1.5 grid max-w-full grid-cols-1 gap-1">
                   {(["trust_sender", "trust_domain", "trust_sender_and_download", "trust_domain_and_download"] as InboundRecordTrustAction[]).map((action) => (
                     <Button
                       key={action}
                       type="button"
                       size="sm"
                       variant="outline"
-                      className="h-6 px-1.5 text-[10px]"
+                      className="h-6 justify-start px-1.5 text-[10px]"
                       aria-label={`${recordTrustActionLabel(action)} for ${getRecordTitle(record)}`}
                       data-testid={`queue-trust-action-${record.id}-${action}`}
                       onClick={(event) => {
