@@ -1325,8 +1325,11 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-source-documents']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-order-workstation']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-ai-summary']")).toBeTruthy();
-    expect(container.textContent).toContain("AI believes:");
-    expect(container.textContent).toContain("Source: Email body");
+    expect(container.textContent).toContain("Order Summary");
+    expect(container.textContent).toContain("Email");
+    expect(container.textContent).toContain("92%");
+    expect(container.querySelector("[data-testid='clean-source-chip-product']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-source-chip-quantity']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-completion-checklist']")).toBeTruthy();
     expect(container.textContent).toContain("Customer matched");
     expect(container.textContent).toContain("Product resolved");
@@ -1354,12 +1357,27 @@ describe("InboundOrdersPage", () => {
       Simulate.click(productSource);
     });
     expect(container.querySelector("[data-clean-destination-target='product']")?.getAttribute("data-highlighted")).toBe("true");
+    expect(container.querySelector("[data-testid='clean-evidence-comparison']")?.textContent).toContain("Product evidence");
+
+    const quantityDestination = container.querySelector("[data-clean-destination-target='quantity']") as HTMLElement;
+    act(() => {
+      Simulate.mouseEnter(quantityDestination);
+    });
+    expect(container.querySelector("[data-clean-source-target='quantity']")?.getAttribute("data-highlighted")).toBe("true");
 
     const poSource = container.querySelector("[data-clean-source-target='po']") as HTMLButtonElement;
     act(() => {
       Simulate.click(poSource);
     });
     expect(container.querySelector("[data-testid='clean-po-field']")?.getAttribute("data-highlighted")).toBe("true");
+
+    const productSourceChip = container.querySelector("[data-testid='clean-source-chip-product']") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(productSourceChip);
+    });
+    await waitForCondition(() => (
+      container.querySelector("[data-clean-source-target='product']")?.getAttribute("data-highlighted") === "true"
+    ), "product source chip highlights source evidence");
 
     const artworkSource = container.querySelector("[data-clean-source-target='artwork']") as HTMLButtonElement;
     act(() => {
