@@ -1541,7 +1541,7 @@ function SourceDocumentPoPanel({
               No purchase order documents are linked to this inbound record.
             </div>
           ) : poFiles.map((file) => (
-            <InboundAttachmentCard key={file.id} recordId={recordId} file={file} />
+            <InboundAttachmentCard key={file.id} recordId={recordId} file={file} minimal />
           ))}
         </div>
       </section>
@@ -1620,7 +1620,7 @@ function SourceDocumentArtworkPanel({
         {items.length === 0 ? (
           <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">{emptyText}</div>
         ) : items.map((file) => (
-          <InboundAttachmentCard key={file.id} recordId={recordId} file={file} />
+          <InboundAttachmentCard key={file.id} recordId={recordId} file={file} minimal />
         ))}
       </div>
     </section>
@@ -1641,7 +1641,7 @@ function SourceDocumentArtworkPanel({
               No inline signature images were detected.
             </div>
           ) : signatureFiles.map((file) => (
-            <InboundAttachmentCard key={file.id} recordId={recordId} file={file} compact />
+            <InboundAttachmentCard key={file.id} recordId={recordId} file={file} compact minimal />
           ))}
         </div>
       </details>
@@ -2173,41 +2173,18 @@ function InboundQueuePanel({
                         {latestThreadActivity ? ` / ${formatRelative(latestThreadActivity)}` : ""}
                       </div>
                     )}
-                    {record.sourceType === "email" && (
-                      <div className="mt-1 flex max-w-full flex-wrap items-center gap-1">
-                        {intentLabel ? (
-                          <Badge variant="outline" className="h-5 max-w-full truncate px-1.5 text-[10px]">
-                            {intentLabel}
-                          </Badge>
-                        ) : null}
-                        <button
-                          type="button"
-                          className="max-w-full"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            if (shouldShowInlineTrustActions(record)) onTrustAction(record, "trust_sender");
-                          }}
-                          aria-label={`Trust sender for ${getRecordTitle(record)}`}
-                        >
-                          <Badge variant={getSenderTrustBadgeVariant(record.senderTrustStatus)} className="h-5 max-w-full truncate px-1.5 text-[10px]">
-                            {senderTrustLabels[record.senderTrustStatus]}
-                          </Badge>
-                        </button>
-                        <button
-                          type="button"
-                          className="max-w-full"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            if (shouldShowInlineTrustActions(record)) onTrustAction(record, "trust_sender_and_download");
-                          }}
-                          aria-label={`Trust sender and download attachments for ${getRecordTitle(record)}`}
-                        >
-                          <Badge variant={getAttachmentPolicyBadgeVariant(record.attachmentDownloadPolicy)} className="h-5 max-w-full truncate px-1.5 text-[10px]">
-                            {attachmentPolicyLabels[record.attachmentDownloadPolicy]}
-                          </Badge>
-                        </button>
-                      </div>
-                    )}
+                    <div className="mt-1 flex max-w-full flex-wrap items-center gap-1">
+                      {intentLabel ? (
+                        <Badge variant="outline" className="h-5 max-w-full truncate px-1.5 text-[10px]">
+                          {intentLabel}
+                        </Badge>
+                      ) : null}
+                      {record.requiresHumanDecision && (
+                        <Badge variant="outline" className="h-5 border-amber-300 bg-amber-50 px-1.5 text-[10px] text-amber-800">
+                          Issue
+                        </Badge>
+                      )}
+                    </div>
                   </div>
                 </div>
                 <div className="shrink-0">
@@ -2215,22 +2192,14 @@ function InboundQueuePanel({
                 </div>
               </div>
               <div className="mt-1 flex max-w-full items-center gap-2 overflow-hidden text-[11px] text-muted-foreground">
-                <span className="truncate">{titleCase(record.sourceType)}</span>
-                <span className="shrink-0">/</span>
                 <span className="truncate">{recordAge}</span>
                 {record.requiresHumanDecision && (
                   <>
                     <span className="shrink-0">/</span>
-                    <span className="truncate text-amber-700">Warning</span>
+                    <span className="truncate text-amber-700">{record.reviewRequiredReason ? "Review issue" : "Needs review"}</span>
                   </>
                 )}
               </div>
-              {record.requiresHumanDecision && (
-                <div className="mt-1.5 flex min-w-0 max-w-full items-start gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-900">
-                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span className="min-w-0 flex-1 whitespace-normal break-words">{record.reviewRequiredReason || "Needs staff review"}</span>
-                </div>
-              )}
               {shouldShowInlineTrustActions(record) && (
                 <div className="mt-1.5 flex max-w-full flex-wrap gap-1">
                   {(["trust_sender", "trust_domain", "trust_sender_and_download", "trust_domain_and_download"] as InboundRecordTrustAction[]).map((action) => (
@@ -2264,10 +2233,12 @@ function InboundAttachmentCard({
   recordId,
   file,
   compact = false,
+  minimal = false,
 }: {
   recordId: string;
   file: ClientInboundOrderFile;
   compact?: boolean;
+  minimal?: boolean;
 }) {
   const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
     ? `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(file.id)}/download`
@@ -2282,16 +2253,16 @@ function InboundAttachmentCard({
         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span>{file.mimeType || "unknown type"}</span>
           <span>{formatFileSize(file.sizeBytes)}</span>
-          <span>Status: {titleCase(file.status)}</span>
+          {!minimal && <span>Status: {titleCase(file.status)}</span>}
           <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
             {inboundAttachmentRoleLabel(file.role)}
           </Badge>
           {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
         </div>
-        {file.reviewNotes && (
+        {!minimal && file.reviewNotes && (
           <div className="mt-1 text-xs text-muted-foreground">{file.reviewNotes}</div>
         )}
-        <AttachmentSafetyDetails recordId={recordId} file={file} />
+        {!minimal && <AttachmentSafetyDetails recordId={recordId} file={file} />}
       </div>
       {downloadUrl && (
         <div className="flex shrink-0 gap-2">
@@ -2936,20 +2907,41 @@ function OperationalEmailPanel({
         </section>
 
         {activeTab === "email" && (
-          <>
-            <ThreadTimeline thread={evidence.thread} compact />
+          <section
+            className="mx-auto w-full max-w-3xl rounded-lg border border-border bg-muted/20 p-3"
+            data-testid="source-document-viewer"
+          >
+            {threadMessageCount && threadMessageCount > 1 ? (
+              <details className="mb-3 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                <summary className="cursor-pointer list-none font-medium text-foreground">
+                  Previous interactions ({threadMessageCount - 1}) collapsed
+                </summary>
+                <div className="mt-2">
+                  <ThreadTimeline thread={evidence.thread} compact />
+                </div>
+              </details>
+            ) : null}
 
-            <section className="rounded-md border border-border bg-card p-2">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold text-foreground">Email Source Document</h3>
-                <Badge variant="outline">{threadMessageCount && threadMessageCount > 1 ? "Thread messages" : sanitizedHtml ? "HTML" : "Text"}</Badge>
+            <div className="rounded-md border border-border bg-background shadow-sm">
+              <div className="border-b border-border px-4 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="truncate text-base font-semibold text-foreground">Email Source Document</h3>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {getSenderLabel(record)} / {formatTimestamp(evidence.receivedAt)}
+                    </div>
+                  </div>
+                  <Badge variant="outline">{threadMessageCount && threadMessageCount > 1 ? "Thread" : sanitizedHtml ? "HTML" : "Text"}</Badge>
+                </div>
               </div>
-              <ThreadMessageBlocks thread={evidence.thread} fallbackHtml={sanitizedHtml} fallbackText={evidence.bodyText} />
-            </section>
+              <div className="p-3">
+                <ThreadMessageBlocks thread={evidence.thread} fallbackHtml={sanitizedHtml} fallbackText={evidence.bodyText} />
+              </div>
+            </div>
 
-            <section className="rounded-md border border-border bg-card p-2">
+            <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
               <div className="flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold text-foreground">Integrated Attachments</h3>
+                <h3 className="text-sm font-semibold text-foreground">Integrated Evidence</h3>
                 <Badge variant="outline">{files.length}</Badge>
               </div>
               <div className="mt-2 space-y-1.5">
@@ -2958,28 +2950,20 @@ function OperationalEmailPanel({
                 ) : (
                   attachmentGroups.map((group) => {
                     const visibleFiles = group.files.filter((file) => !isLikelySignatureInlineFile(file));
-                    const signatureFiles = group.files.filter(isLikelySignatureInlineFile);
+                    const groupSignatureFiles = group.files.filter(isLikelySignatureInlineFile);
                     return (
                       <div key={group.key} className="space-y-1.5">
-                        <div className="rounded-md bg-muted/40 px-2 py-1 text-xs">
-                          <div className="font-semibold text-foreground">{group.label}</div>
-                          {group.detail && <div className="text-muted-foreground">{group.detail}</div>}
-                        </div>
-                        {visibleFiles.length === 0 && signatureFiles.length > 0 ? (
-                          <div className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">
-                            Only inline signature images were found for this message.
-                          </div>
-                        ) : visibleFiles.map((file) => (
-                          <InboundAttachmentCard key={file.id} recordId={record.id} file={file} />
+                        {visibleFiles.map((file) => (
+                          <InboundAttachmentCard key={file.id} recordId={record.id} file={file} minimal />
                         ))}
-                        {signatureFiles.length > 0 && (
+                        {groupSignatureFiles.length > 0 && (
                           <details className="rounded-md border border-border bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
                             <summary className="cursor-pointer font-medium text-foreground">
-                              Signature/inline images ({signatureFiles.length})
+                              Signature/inline images ({groupSignatureFiles.length})
                             </summary>
                             <div className="mt-2 space-y-1.5">
-                              {signatureFiles.map((file) => (
-                                <InboundAttachmentCard key={file.id} recordId={record.id} file={file} compact />
+                              {groupSignatureFiles.map((file) => (
+                                <InboundAttachmentCard key={file.id} recordId={record.id} file={file} compact minimal />
                               ))}
                             </div>
                           </details>
@@ -2989,8 +2973,8 @@ function OperationalEmailPanel({
                   })
                 )}
               </div>
-            </section>
-          </>
+            </div>
+          </section>
         )}
 
         {activeTab === "po" && (
@@ -3441,11 +3425,14 @@ function DraftBuilderPanel({
   saveError,
   markReadyError,
   convertError,
+  parseDisabled = false,
+  isParsing = false,
   onSave,
   onMarkReady,
   onReopen,
   onRefreshFromLatestParse,
   onConvert,
+  onParse,
   isRejecting = false,
   isCleaningUp = false,
   rejectDisabled = false,
@@ -3469,11 +3456,14 @@ function DraftBuilderPanel({
   saveError: Error | null;
   markReadyError: (Error & { errors?: string[] }) | null;
   convertError: (Error & { errors?: string[] }) | null;
+  parseDisabled?: boolean;
+  isParsing?: boolean;
   onSave: (draft: ReviewDraftFormState) => Promise<void>;
   onMarkReady: (draft: ReviewDraftFormState, dirty: boolean) => Promise<void>;
   onReopen: () => Promise<void>;
   onRefreshFromLatestParse: () => Promise<void>;
   onConvert: () => Promise<void>;
+  onParse?: () => void;
   isRejecting?: boolean;
   isCleaningUp?: boolean;
   rejectDisabled?: boolean;
@@ -3579,23 +3569,41 @@ function DraftBuilderPanel({
   const latestAttempt = draftPreview?.latestAttempt ?? null;
 
   if (!draft) {
+    const evidence = selectedRecord.sourceType === "email" ? getInboundEmailEvidence(selectedRecord) : getManualInboundEvidence(selectedRecord);
+    const files = dedupeAttachmentFiles(detail?.files ?? []);
     return (
-      <div className="flex h-full min-h-[260px] flex-col items-center justify-center px-6 text-center">
-        <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-muted">
-          <Sparkles className="h-5 w-5 text-muted-foreground" />
-        </div>
-        <div className="mt-4 text-sm font-semibold text-foreground">Order Workstation will appear after parsing.</div>
-        <div className="mt-1 max-w-sm text-sm text-muted-foreground">
-          Phase 4 conversion starts after a successful parse and ready review.
-        </div>
-        {latestAttempt?.status === "failed" && (
-          <div className="mt-3 max-w-sm rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            Last parse failed. Source evidence remains available for retry.
+      <div className="flex h-full min-h-[260px] flex-col justify-center px-5">
+        <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-muted">
+              <Sparkles className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-base font-semibold text-foreground">Parse this email to build an order draft.</div>
+              <div className="mt-1 text-sm text-muted-foreground">Order Workstation will appear after parsing.</div>
+              <div className="mt-3 grid gap-2 text-xs text-muted-foreground">
+                <div><span className="font-medium text-foreground">Sender:</span> {getSenderLabel(selectedRecord)}</div>
+                <div><span className="font-medium text-foreground">Subject:</span> {evidence.subject || evidence.reference || "No subject"}</div>
+                <div><span className="font-medium text-foreground">Attachments:</span> {files.length}</div>
+              </div>
+            </div>
           </div>
-        )}
-        <Button type="button" className="mt-4" disabled title="Create Draft Order is available after ready review.">
-          Create Draft Order
-        </Button>
+          {latestAttempt?.status === "failed" && (
+            <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              Last parse failed. Source evidence remains available for retry.
+            </div>
+          )}
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button type="button" onClick={onParse} disabled={parseDisabled || !onParse}>
+              {isParsing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+              Parse
+            </Button>
+            <Button type="button" variant="outline" disabled title="Create Draft Order is available after ready review.">
+              Create Draft Order
+            </Button>
+          </div>
+          <div className="mt-2 text-xs text-muted-foreground">Phase 4 conversion starts after a successful parse and ready review.</div>
+        </div>
       </div>
     );
   }
@@ -3994,10 +4002,10 @@ function DraftBuilderPanel({
           </section>
         )}
 
-        <EvidenceUsedSection draft={draft} detail={detail} />
-
         {!isOperationalMode && (
           <>
+            <EvidenceUsedSection draft={draft} detail={detail} />
+
             <section className="rounded-md border border-border p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-sm font-semibold text-foreground">Review Readiness</h3>
@@ -6558,6 +6566,8 @@ export default function InboundOrdersPage() {
               saveError={(saveReviewDraftMutation.error ?? refreshReviewDraftFromLatestParseMutation.error) as Error | null}
               markReadyError={markReviewDraftReadyMutation.error as (Error & { errors?: string[] }) | null}
               convertError={convertToOrderMutation.error as (Error & { errors?: string[] }) | null}
+              parseDisabled={isParseInFlight || selectedRecordIsTerminal}
+              isParsing={isSelectedRecordParsing}
               onSave={async (draft) => {
                 if (!selectedId) return;
                 await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft });
@@ -6578,6 +6588,7 @@ export default function InboundOrdersPage() {
                 await refreshReviewDraftFromLatestParseMutation.mutateAsync(selectedId);
               }}
               onConvert={convertSelectedRecordToOrder}
+              onParse={runParseForSelectedRecord}
               isRejecting={rejectInboundOrderMutation.isPending}
               isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
               rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}

@@ -598,7 +598,7 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Order Workstation");
   });
 
-  test("shows sender trust badges and attachment policies in the queue", async () => {
+  test("shows compact intent and issue badges in the queue without repeated trust metadata", async () => {
     const trusted = record({
       id: "trusted_1",
       sourceType: "email",
@@ -635,12 +635,12 @@ describe("InboundOrdersPage", () => {
     });
 
     renderPage();
-    await waitForText("Trusted Sender");
+    await waitForText("Customer Communication");
 
     expect(container.textContent).toContain("Customer Communication");
-    expect(container.textContent).toContain("Auto-download");
-    expect(container.textContent).toContain("Untrusted");
-    expect(container.textContent).toContain("Pending Trust");
+    expect(container.textContent).toContain("New Buyer");
+    expect(container.textContent).not.toContain("Auto-download");
+    expect(container.textContent).not.toContain("Pending Trust");
   });
 
   test("debounces queue search without clearing the selected workspace immediately", async () => {
@@ -925,7 +925,6 @@ describe("InboundOrdersPage", () => {
 
     try {
       renderPage();
-      await waitForText("Untrusted");
       await waitForText("Trust Sender + Download Attachments");
       const trustButton = container.querySelector(`[data-testid='queue-trust-action-${untrusted.id}-trust_sender']`)
         ?? container.querySelector(`[data-testid='review-trust-action-${untrusted.id}-trust_sender']`) as HTMLButtonElement;
@@ -934,9 +933,8 @@ describe("InboundOrdersPage", () => {
       });
 
       await waitForCondition(() => trustBody?.action === "trust_sender", "inline-trust-sender-body");
-      await waitForText("Trusted Sender");
       expect(confirmSpy).not.toHaveBeenCalled();
-      expect(container.textContent).toContain("Auto-download");
+      expect(container.textContent).not.toContain("Pending Trust");
     } finally {
       confirmSpy.mockRestore();
     }
@@ -988,7 +986,6 @@ describe("InboundOrdersPage", () => {
 
     try {
       renderPage();
-      await waitForText("Ignored");
       await waitForText("Trust Sender + Download Attachments");
       const trustButton = container.querySelector(`[data-testid='queue-trust-action-${row.id}-trust_sender']`)
         ?? container.querySelector(`[data-testid='review-trust-action-${row.id}-trust_sender']`) as HTMLButtonElement;
@@ -1037,7 +1034,6 @@ describe("InboundOrdersPage", () => {
 
     try {
       renderPage();
-      await waitForText("Untrusted");
       await waitForText("Trust Domain + Download Attachments");
       const trustButton = container.querySelector(`[data-testid='queue-trust-action-${row.id}-trust_domain']`)
         ?? container.querySelector(`[data-testid='review-trust-action-${row.id}-trust_domain']`) as HTMLButtonElement;
@@ -1095,7 +1091,7 @@ describe("InboundOrdersPage", () => {
     });
 
     renderPage();
-    await waitForText("Pending Trust");
+    await waitForText("Trust Sender + Download Attachments");
     const trustDownloadButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "Trust Sender + Download Attachments") as HTMLButtonElement;
     act(() => {
@@ -1196,8 +1192,8 @@ describe("InboundOrdersPage", () => {
     await waitForText("Artwork candidate");
     await waitForText("Offset House Visual PO.pdf");
     expect(container.textContent).toContain("Metadata only");
-    expect(container.textContent).toContain("Status: Quarantined");
-    expect(container.textContent).toContain("Attachment download failed: Gmail attachment unavailable");
+    expect(container.textContent).not.toContain("Status: Quarantined");
+    expect(container.textContent).not.toContain("Attachment download failed: Gmail attachment unavailable");
     expect(container.textContent).toContain("orders@printer.test");
     expect(container.textContent).toContain("csr@printer.test");
 
@@ -1214,6 +1210,8 @@ describe("InboundOrdersPage", () => {
     });
     await waitForText("Source Evidence");
     await waitForText("Draft Builder");
+    await waitForText("Status: Quarantined");
+    await waitForText("Attachment download failed: Gmail attachment unavailable");
     await waitForText("Intent evidence");
     await waitForText("subject contains \"New Order\"");
     await waitForText("quantity detected");
@@ -1528,6 +1526,7 @@ describe("InboundOrdersPage", () => {
 
     await waitForText("Source Documents");
     await waitForText("Artwork attached.");
+    expect(container.querySelector("[data-testid='source-document-viewer']")).toBeTruthy();
     expect(container.textContent).toContain("Expand previous messages (1)");
     expect(container.textContent).not.toContain("Please see attached PO.");
     expect(container.textContent).toContain("Quoted content in this message");
@@ -1536,9 +1535,7 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("PO candidate");
     expect(container.textContent).toContain("yard-sign-art.pdf");
     expect(container.textContent).toContain("Artwork candidate");
-    await waitForText("Evidence Used");
-    expect(container.textContent).toContain("PO PDFs");
-    expect(container.textContent).toContain("1 purchase order PDF used");
+    expect(container.textContent).not.toContain("Evidence Used");
 
     const expandPrevious = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Expand previous messages")) as HTMLButtonElement;
@@ -2369,19 +2366,14 @@ describe("InboundOrdersPage", () => {
     expect(sender.className).toContain("truncate");
 
     const metadataRow = Array.from(queueCard.querySelectorAll("div")).find((element) => (
-      element.className.includes("text-[11px]") && element.textContent?.includes("Manual")
+      element.className.includes("text-[11px]") && element.textContent?.includes("Review issue")
     )) as HTMLDivElement;
     expect(metadataRow).toBeTruthy();
     expect(metadataRow.className).toContain("max-w-full");
     expect(metadataRow.className).toContain("overflow-hidden");
 
-    const warningText = Array.from(queueCard.querySelectorAll("span")).find((element) => (
-      element.textContent === longWarning
-    )) as HTMLSpanElement;
-    expect(warningText).toBeTruthy();
-    expect(warningText.className).toContain("flex-1");
-    expect(warningText.className).toContain("whitespace-normal");
-    expect(warningText.className).toContain("break-words");
+    expect(queueCard.textContent).not.toContain(longWarning);
+    expect(queueCard.textContent).toContain("Issue");
     expect(queueCard.textContent).toContain("Needs Review");
   });
 
@@ -2548,8 +2540,8 @@ describe("InboundOrdersPage", () => {
     });
     expect(evidencePanel.className).toContain("hidden");
     expect(draftPanel.className).toContain("flex");
-    await waitForText("Evidence Used");
-    expect(container.textContent).toContain("Evidence Used");
+    await waitForText("Confirmed Customer");
+    expect(container.textContent).not.toContain("Evidence Used");
     expect(container.textContent).toContain("Confirmed Customer");
     expect(container.textContent).toContain("Change");
   });
