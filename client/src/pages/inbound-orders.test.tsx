@@ -1235,6 +1235,106 @@ describe("InboundOrdersPage", () => {
     expect(window.localStorage.getItem("titanos.inboundOrders.reviewMode")).toBe("debug");
   });
 
+  test("renders Clean View as a separate workstation and preserves existing views", async () => {
+    const row = record({
+      sourceType: "email",
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        sender: { name: "Rick Clark", email: "rick@example.com" },
+        subject: "Magnets",
+        bodyText: "Can you make me two magnets that are 12 x 12 of the attached file thank you",
+      },
+      normalizedPayloadJson: {
+        inboundIntent: "CUSTOMER_COMMUNICATION",
+      },
+    });
+    const { getSavedBody } = setupParsedInboundReview({
+      row,
+      detailOverrides: {
+        files: [{
+          id: "file_art",
+          inboundRecordId: row.id,
+          fileRecordId: "file_record_art",
+          role: "artwork",
+          status: "uploaded",
+          sourceFilename: "Lindsay X2.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 509_800,
+          providerAttachmentId: "att_art",
+          reviewNotes: null,
+        }],
+      },
+    });
+
+    renderPage();
+    await waitForText("Operational View");
+    expect(container.textContent).toContain("Clean View");
+    expect(container.textContent).toContain("Debug View");
+
+    const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(cleanButton);
+    });
+
+    await waitForText("Source Documents");
+    await waitForText("Order Workstation");
+    expect(container.querySelector("[data-testid='clean-inbound-workspace']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-inbound-queue']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-source-documents']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-order-workstation']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='inbound-operational-email-panel']")).toBeNull();
+    expect(container.textContent).not.toContain("Draft Builder");
+
+    const poTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "PO") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(poTab);
+    });
+    await waitForText("PO Documents");
+
+    const artworkTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Artwork") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(artworkTab);
+    });
+    await waitForText("Artwork Files");
+    const classifySelect = container.querySelector("select[aria-label='Classify Lindsay X2.pdf']") as HTMLSelectElement;
+    expect(classifySelect).toBeTruthy();
+    act(() => {
+      Simulate.change(classifySelect, { target: { value: "REFERENCE" } } as any);
+    });
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(saveButton);
+    });
+    await waitForCondition(() => Boolean(getSavedBody()), "clean view manual attachment override saved");
+    expect(getSavedBody().reviewedArtworkJson.unassignedAttachments).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        filename: "Lindsay X2.pdf",
+        classification: "REFERENCE",
+        classificationSource: "manual_override",
+      }),
+    ]));
+
+    const historyTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "History") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(historyTab);
+    });
+    await waitForText("No thread history captured.");
+
+    const operationalButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Operational View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(operationalButton);
+    });
+    await waitForText("Order Workstation");
+    await waitForText("Draft Builder");
+    const debugButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Debug View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(debugButton);
+    });
+    await waitForText("Source Evidence");
+    await waitForText("Draft Builder");
+  });
+
   test("falls back to plain text when original email HTML is missing", async () => {
     const row = record({
       sourceType: "email",
