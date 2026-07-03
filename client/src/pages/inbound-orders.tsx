@@ -768,6 +768,211 @@ function groupFilesByThreadMessage(files: ClientInboundOrderFile[], thread: Reco
   return groups.length > 0 ? groups : [{ key: "attachments", label: "Attachments", detail: null, files: uniqueFiles }];
 }
 
+function compactRecipientLine(values: string[]) {
+  if (values.length === 0) return "-";
+  if (values.length <= 2) return values.join(", ");
+  return `${values.slice(0, 2).join(", ")} +${values.length - 2}`;
+}
+
+function SourceEvidenceFileCard({
+  recordId,
+  file,
+}: {
+  recordId: string;
+  file: ClientInboundOrderFile;
+}) {
+  const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
+    ? `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(file.id)}/download`
+    : null;
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2">
+      <div className="min-w-0">
+        <div className="truncate text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
+            {inboundAttachmentRoleLabel(file.role)}
+          </Badge>
+          <span>{titleCase(file.status)}</span>
+          <span>{formatFileSize(file.sizeBytes)}</span>
+          {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
+        </div>
+      </div>
+      {downloadUrl && (
+        <div className="flex shrink-0 items-center gap-1">
+          <Button asChild size="sm" variant="ghost" className="h-8 px-2">
+            <a href={downloadUrl} target="_blank" rel="noreferrer">
+              <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+              Open
+            </a>
+          </Button>
+          <Button asChild size="sm" variant="ghost" className="h-8 px-2">
+            <a href={downloadUrl} download>
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              Download
+            </a>
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmailDocumentBodySurface({
+  html,
+  text,
+}: {
+  html: string | null;
+  text: string | null;
+}) {
+  if (html) {
+    return (
+      <div
+        className="prose prose-sm max-w-none rounded-md bg-white p-6 text-slate-950 shadow-sm [&_*]:max-w-full"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  }
+  if (text) {
+    const split = splitQuotedMessageText(text);
+    return (
+      <div className="rounded-md border border-border bg-background p-5 text-sm leading-6 text-foreground shadow-sm">
+        <div className="whitespace-pre-wrap">{split.current || text}</div>
+        {split.quoted && (
+          <details className="mt-4 rounded-md border border-dashed border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+            <summary className="cursor-pointer font-medium text-foreground">Quoted content in this message</summary>
+            <div className="mt-2 whitespace-pre-wrap leading-5">{split.quoted}</div>
+          </details>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-md border border-dashed border-border bg-background p-6 text-sm text-muted-foreground">
+      No email body was captured.
+    </div>
+  );
+}
+
+function SourceEmailDocumentViewer({
+  record,
+  evidence,
+  files,
+}: {
+  record: ClientInboundOrderRecord;
+  evidence: ReturnType<typeof getInboundEmailEvidence>;
+  files: ClientInboundOrderFile[];
+}) {
+  const messages = threadMessagesLatestFirst(evidence.thread);
+  const latest = messages[0] ?? null;
+  const subject = latest
+    ? stringFromUnknown(latest.displaySubject) ?? stringFromUnknown(latest.subject) ?? evidence.subject
+    : evidence.subject;
+  const sender = latest
+    ? [stringFromUnknown(latest.senderName), stringFromUnknown(latest.senderEmail)].filter(Boolean).join(" / ")
+    : getSenderLabel(record);
+  const receivedAt = latest ? stringFromUnknown(latest.receivedAt) ?? evidence.receivedAt : evidence.receivedAt;
+  const to = latest ? threadMessageRecipients(latest, "to") : evidence.recipients;
+  const cc = latest ? threadMessageRecipients(latest, "cc") : evidence.cc;
+  const html = latest ? stringFromUnknown(latest.bodyHtml) : evidence.bodyHtml;
+  const text = latest ? stringFromUnknown(latest.bodyText) : evidence.bodyText;
+  const threadMessageCount = typeof evidence.thread?.messageCount === "number"
+    ? evidence.thread.messageCount
+    : messages.length || null;
+
+  return (
+    <section
+      className="mx-auto flex min-h-full w-full max-w-[760px] flex-col justify-start px-3 py-4"
+      data-testid="source-document-viewer"
+    >
+      <div className="rounded-lg border border-border bg-muted/20 p-3 shadow-sm">
+        <div className="rounded-md border border-border bg-background px-4 py-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="truncate text-base font-semibold text-foreground">Email Source Document</h3>
+              <div className="mt-1 truncate text-sm font-medium text-foreground">{subject || "No subject"}</div>
+            </div>
+            <Badge variant="outline">{html ? "HTML" : "Text"}</Badge>
+          </div>
+          <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+            <div><span className="font-medium text-foreground">From:</span> {sender || "-"}</div>
+            <div><span className="font-medium text-foreground">Received:</span> {formatTimestamp(receivedAt)}</div>
+            <div><span className="font-medium text-foreground">To:</span> {compactRecipientLine(to)}</div>
+            <div><span className="font-medium text-foreground">Thread:</span> {threadMessageCount ? `${threadMessageCount} message${threadMessageCount === 1 ? "" : "s"}` : "Single message"}</div>
+            {cc.length > 0 && <div className="sm:col-span-2"><span className="font-medium text-foreground">Cc:</span> {compactRecipientLine(cc)}</div>}
+          </div>
+        </div>
+
+        <div className="mt-3">
+          <EmailDocumentBodySurface html={html ? sanitizeEmailHtml(html) : null} text={text} />
+        </div>
+
+        <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-foreground">Integrated Evidence</h3>
+            <Badge variant="outline">{files.length}</Badge>
+          </div>
+          <div className="mt-2 space-y-1.5">
+            {files.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
+                No attachments linked to this inbound record.
+              </div>
+            ) : files.map((file) => (
+              <SourceEvidenceFileCard key={file.id} recordId={record.id} file={file} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SourceHistoryPanel({
+  thread,
+}: {
+  thread: Record<string, unknown> | null | undefined;
+}) {
+  const messages = threadMessagesFromEvidence(thread);
+  if (messages.length === 0) {
+    return (
+      <div className="p-3">
+        <div className="rounded-md border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+          No thread history captured.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <section className="space-y-2 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-foreground">Thread Timeline</h3>
+        <Badge variant="outline">{messages.length} messages</Badge>
+      </div>
+      {messages.map((message, index) => {
+        const key = stringFromUnknown(message.messageId) ?? `history_${index}`;
+        const isLatest = index === messages.length - 1;
+        return (
+          <details key={key} className="rounded-md border border-border bg-card p-2" open={isLatest}>
+            <summary className="cursor-pointer list-none rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold uppercase text-muted-foreground">Message {index + 1}</div>
+                  <div className="truncate text-sm font-semibold text-foreground">
+                    {stringFromUnknown(message.displaySubject) ?? stringFromUnknown(message.subject) ?? `Message ${index + 1}`}
+                  </div>
+                </div>
+                <Badge variant="outline">{stringFromUnknown(message.receivedAt) ? formatTimestamp(stringFromUnknown(message.receivedAt)) : "No date"}</Badge>
+              </div>
+            </summary>
+            <div className="mt-2">
+              <ThreadMessageBlock message={message} index={index + 1} />
+            </div>
+          </details>
+        );
+      })}
+    </section>
+  );
+}
+
 function ThreadTimeline({ thread, compact = false }: { thread: Record<string, unknown> | null | undefined; compact?: boolean }) {
   const messages = threadMessagesFromEvidence(thread);
   if (messages.length === 0) return null;
@@ -2784,11 +2989,9 @@ function OperationalEmailPanel({
 
   const record = detail?.record ?? selectedRecord;
   const evidence = getInboundEmailEvidence(record);
-  const sanitizedHtml = evidence.bodyHtml ? sanitizeEmailHtml(evidence.bodyHtml) : null;
   const files = dedupeAttachmentFiles(detail?.files ?? []);
   const threadMessageCount = typeof evidence.thread?.messageCount === "number" ? evidence.thread.messageCount : null;
   const latestThreadActivity = stringFromUnknown(evidence.thread?.latestActivityAt);
-  const attachmentGroups = groupFilesByThreadMessage(files, evidence.thread);
   const poFiles = files.filter((file) => file.role === "po");
   const artworkFiles = files.filter((file) => file.role === "artwork");
   const signatureFiles = files.filter(isLikelySignatureInlineFile);
@@ -2907,74 +3110,11 @@ function OperationalEmailPanel({
         </section>
 
         {activeTab === "email" && (
-          <section
-            className="mx-auto w-full max-w-3xl rounded-lg border border-border bg-muted/20 p-3"
-            data-testid="source-document-viewer"
-          >
-            {threadMessageCount && threadMessageCount > 1 ? (
-              <details className="mb-3 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-                <summary className="cursor-pointer list-none font-medium text-foreground">
-                  Previous interactions ({threadMessageCount - 1}) collapsed
-                </summary>
-                <div className="mt-2">
-                  <ThreadTimeline thread={evidence.thread} compact />
-                </div>
-              </details>
-            ) : null}
-
-            <div className="rounded-md border border-border bg-background shadow-sm">
-              <div className="border-b border-border px-4 py-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="truncate text-base font-semibold text-foreground">Email Source Document</h3>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {getSenderLabel(record)} / {formatTimestamp(evidence.receivedAt)}
-                    </div>
-                  </div>
-                  <Badge variant="outline">{threadMessageCount && threadMessageCount > 1 ? "Thread" : sanitizedHtml ? "HTML" : "Text"}</Badge>
-                </div>
-              </div>
-              <div className="p-3">
-                <ThreadMessageBlocks thread={evidence.thread} fallbackHtml={sanitizedHtml} fallbackText={evidence.bodyText} />
-              </div>
-            </div>
-
-            <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
-              <div className="flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold text-foreground">Integrated Evidence</h3>
-                <Badge variant="outline">{files.length}</Badge>
-              </div>
-              <div className="mt-2 space-y-1.5">
-                {files.length === 0 ? (
-                  <div className="text-sm text-muted-foreground">No attachments linked to this inbound record.</div>
-                ) : (
-                  attachmentGroups.map((group) => {
-                    const visibleFiles = group.files.filter((file) => !isLikelySignatureInlineFile(file));
-                    const groupSignatureFiles = group.files.filter(isLikelySignatureInlineFile);
-                    return (
-                      <div key={group.key} className="space-y-1.5">
-                        {visibleFiles.map((file) => (
-                          <InboundAttachmentCard key={file.id} recordId={record.id} file={file} minimal />
-                        ))}
-                        {groupSignatureFiles.length > 0 && (
-                          <details className="rounded-md border border-border bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
-                            <summary className="cursor-pointer font-medium text-foreground">
-                              Signature/inline images ({groupSignatureFiles.length})
-                            </summary>
-                            <div className="mt-2 space-y-1.5">
-                              {groupSignatureFiles.map((file) => (
-                                <InboundAttachmentCard key={file.id} recordId={record.id} file={file} compact minimal />
-                              ))}
-                            </div>
-                          </details>
-                        )}
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          </section>
+          <SourceEmailDocumentViewer
+            record={record}
+            evidence={evidence}
+            files={files.filter((file) => !isLikelySignatureInlineFile(file))}
+          />
         )}
 
         {activeTab === "po" && (
@@ -2993,9 +3133,7 @@ function OperationalEmailPanel({
           />
         )}
         {activeTab === "history" && (
-          <section className="rounded-md border border-border bg-card p-2">
-            <ThreadTimeline thread={evidence.thread} compact />
-          </section>
+          <SourceHistoryPanel thread={evidence.thread} />
         )}
       </div>
     </ScrollArea>
