@@ -186,6 +186,15 @@ type QueueFilters = {
 
 type InboundReviewWorkspaceMode = "operational" | "clean" | "debug";
 type SourceDocumentTab = "email" | "po" | "artwork" | "history";
+type CleanHighlightTarget =
+  | "customer"
+  | "product"
+  | "quantity"
+  | "dimensions"
+  | "artwork"
+  | "po"
+  | "dueDate"
+  | "pricing";
 
 const defaultQueueFilters: QueueFilters = {
   statusGroup: "active",
@@ -980,6 +989,127 @@ function SourceHistoryPanel({
         );
       })}
     </section>
+  );
+}
+
+function cleanHighlightClass(target: CleanHighlightTarget, activeTarget: CleanHighlightTarget | null) {
+  return activeTarget === target
+    ? "ring-2 ring-blue-300 ring-offset-2 ring-offset-slate-950 border-blue-300 shadow-[0_0_0_1px_rgba(147,197,253,0.35)]"
+    : "";
+}
+
+function cleanSourceLabel(source: string | null | undefined) {
+  if (!source) return "Source: AI parse";
+  if (source === "staff_selected") return "Source: Staff";
+  if (source.includes("email") || source.includes("source") || source.includes("deterministic")) return "Source: Email body";
+  if (source.includes("pdf") || source.includes("po")) return "Source: PO";
+  return `Source: ${selectionSourceLabel(source, null)}`;
+}
+
+function numberWord(value: number | null | undefined): string | null {
+  if (value === 1) return "one";
+  if (value === 2) return "two";
+  if (value === 3) return "three";
+  if (value === 4) return "four";
+  if (value === 5) return "five";
+  return value == null ? null : String(value);
+}
+
+function cleanCompletionChecklist(
+  form: ReviewDraftFormState,
+  reviewDraft: InboundOrderReviewDraftDto,
+) {
+  const firstLine = form.reviewedLineItemsJson[0] ?? null;
+  const hasCustomer = Boolean(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || form.reviewedCustomerJson.unresolvedCustomer);
+  const hasProduct = Boolean(firstLine?.selectedProductId || firstLine?.productName || firstLine?.productUnresolved);
+  const hasQuantity = Boolean(firstLine?.quantity);
+  const artworkLinked = form.reviewedArtworkJson.status === "supplied"
+    || form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some((link) => link.source !== "staff_removed"));
+  const dueDate = Boolean(form.reviewedOrderJson.dueDate);
+  const pricingReviewed = form.reviewedLineItemsJson.every((lineItem) => (
+    !lineItem.pricingReviewJson
+    || lineItem.pricingReviewJson.status === "matched"
+    || lineItem.pricingReviewJson.status === "not_available"
+    || Boolean(lineItem.pricingReviewJson.acknowledged && lineItem.pricingReviewJson.resolution)
+  ));
+  return [
+    { label: "Customer matched", complete: hasCustomer },
+    { label: "Product resolved", complete: hasProduct },
+    { label: "Quantity confirmed", complete: hasQuantity },
+    { label: "Artwork linked", complete: artworkLinked },
+    { label: "Due date identified", complete: dueDate },
+    { label: "Pricing reviewed", complete: pricingReviewed && reviewDraft.validationErrors.every((error) => !error.toLowerCase().includes("price")) },
+  ];
+}
+
+function CleanInlineSourceButton({
+  children,
+  target,
+  onFocusTarget,
+}: {
+  children: ReactNode;
+  target: CleanHighlightTarget;
+  onFocusTarget: (target: CleanHighlightTarget) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="rounded bg-blue-100 px-1 font-semibold text-blue-800 underline decoration-blue-300 decoration-2 underline-offset-2 hover:bg-blue-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+      onClick={() => onFocusTarget(target)}
+      onMouseEnter={() => onFocusTarget(target)}
+      data-clean-source-target={target}
+    >
+      {children}
+    </button>
+  );
+}
+
+function CleanInteractiveEmailText({
+  text,
+  lineItem,
+  poNumber,
+  onFocusTarget,
+}: {
+  text: string | null;
+  lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number] | null;
+  poNumber: string | null | undefined;
+  onFocusTarget: (target: CleanHighlightTarget) => void;
+}) {
+  if (!text) {
+    return <EmailDocumentBodySurface html={null} text={text} />;
+  }
+  const product = lineItem?.productName ?? null;
+  const size = lineItem?.width && lineItem?.height ? `${lineItem.width} x ${lineItem.height}` : null;
+  const quantity = numberWord(lineItem?.quantity ?? null);
+  const escaped = [poNumber, product, size, quantity]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (escaped.length === 0) {
+    return <EmailDocumentBodySurface html={null} text={text} />;
+  }
+  const pattern = new RegExp(`(${escaped.join("|")})`, "gi");
+  const parts = text.split(pattern);
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-5 text-sm leading-6 text-slate-950 shadow-sm">
+      <div className="whitespace-pre-wrap">
+        {parts.map((part, index) => {
+          const normalized = part.toLowerCase();
+          if (poNumber && normalized === poNumber.toLowerCase()) {
+            return <CleanInlineSourceButton key={`${part}-${index}`} target="po" onFocusTarget={onFocusTarget}>{part}</CleanInlineSourceButton>;
+          }
+          if (product && normalized === product.toLowerCase()) {
+            return <CleanInlineSourceButton key={`${part}-${index}`} target="product" onFocusTarget={onFocusTarget}>{part}</CleanInlineSourceButton>;
+          }
+          if (size && normalized === size.toLowerCase()) {
+            return <CleanInlineSourceButton key={`${part}-${index}`} target="dimensions" onFocusTarget={onFocusTarget}>{part}</CleanInlineSourceButton>;
+          }
+          if (quantity && normalized === quantity.toLowerCase()) {
+            return <CleanInlineSourceButton key={`${part}-${index}`} target="quantity" onFocusTarget={onFocusTarget}>{part}</CleanInlineSourceButton>;
+          }
+          return <span key={`${part}-${index}`}>{part}</span>;
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -3287,6 +3417,9 @@ function CleanSourceDocuments({
   onParse,
   attachmentLinks,
   onClassifyAttachment,
+  form,
+  activeTarget,
+  onFocusTarget,
 }: {
   selectedRecord: ClientInboundOrderRecord | null;
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
@@ -3300,6 +3433,9 @@ function CleanSourceDocuments({
   onParse: () => void;
   attachmentLinks: InboundOrderArtworkLink[];
   onClassifyAttachment: (link: InboundOrderArtworkLink, classification: InboundAttachmentClassification) => void;
+  form: ReviewDraftFormState | null;
+  activeTarget: CleanHighlightTarget | null;
+  onFocusTarget: (target: CleanHighlightTarget) => void;
 }) {
   if (!selectedRecord) {
     return <section className="flex min-h-0 flex-1 items-center justify-center bg-slate-950 text-slate-500">Select an inbound item.</section>;
@@ -3314,6 +3450,7 @@ function CleanSourceDocuments({
   const signatureLinks = attachmentLinks.filter((link) => classificationForLink(link) === "IGNORE_INLINE");
   const poEvidenceItems = (draftPreview?.draft?.evidence?.items ?? [])
     .filter((item) => item.type === "PDF_ATTACHMENT" && (item.documentType === "purchase_order" || item.poSummary));
+  const firstLine = form?.reviewedLineItemsJson[0] ?? null;
 
   return (
     <section className="flex min-h-0 flex-[1.05] flex-col border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-source-documents">
@@ -3360,7 +3497,16 @@ function CleanSourceDocuments({
                 <Badge variant="outline">{emailEvidence?.bodyHtml ? "HTML" : "Text"}</Badge>
               </div>
               <div className="px-5 py-5">
-                <EmailDocumentBodySurface html={emailEvidence?.bodyHtml ? sanitizeEmailHtml(emailEvidence.bodyHtml) : null} text={evidence.bodyText} />
+                {emailEvidence?.bodyHtml ? (
+                  <EmailDocumentBodySurface html={sanitizeEmailHtml(emailEvidence.bodyHtml)} text={evidence.bodyText} />
+                ) : (
+                  <CleanInteractiveEmailText
+                    text={evidence.bodyText}
+                    lineItem={firstLine}
+                    poNumber={form?.reviewedOrderJson.poNumber}
+                    onFocusTarget={onFocusTarget}
+                  />
+                )}
               </div>
               <div className="border-t border-slate-200 px-5 py-4">
                 <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">Integrated Evidence ({files.length})</div>
@@ -3368,7 +3514,27 @@ function CleanSourceDocuments({
                   {files.length === 0 ? (
                     <div className="rounded border border-dashed border-slate-300 px-3 py-3 text-sm text-slate-500">No attachments linked.</div>
                   ) : files.filter((file) => !isLikelySignatureInlineFile(file)).slice(0, 5).map((file) => (
-                    <SourceEvidenceFileCard key={file.id} recordId={record.id} file={file} />
+                    <div
+                      key={file.id}
+                      role="button"
+                      tabIndex={0}
+                      className={cn(
+                        "block w-full rounded text-left transition-shadow",
+                        file.role === "artwork" && cleanHighlightClass("artwork", activeTarget),
+                        file.role === "po" && cleanHighlightClass("po", activeTarget),
+                      )}
+                      onClick={() => onFocusTarget(file.role === "po" ? "po" : file.role === "artwork" ? "artwork" : "artwork")}
+                      onMouseEnter={() => onFocusTarget(file.role === "po" ? "po" : file.role === "artwork" ? "artwork" : "artwork")}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          onFocusTarget(file.role === "po" ? "po" : file.role === "artwork" ? "artwork" : "artwork");
+                        }
+                      }}
+                      data-clean-source-target={file.role === "po" ? "po" : "artwork"}
+                    >
+                      <SourceEvidenceFileCard recordId={record.id} file={file} />
+                    </div>
                   ))}
                 </div>
               </div>
@@ -3380,7 +3546,24 @@ function CleanSourceDocuments({
             <div className="mb-3 text-sm font-bold text-slate-100">PO Documents</div>
             {poFiles.length === 0 ? (
               <div className="rounded border border-dashed border-slate-700 px-3 py-10 text-center text-sm text-slate-500">No PO detected.</div>
-            ) : poFiles.map((file) => <InboundAttachmentCard key={file.id} recordId={record.id} file={file} compact minimal />)}
+            ) : poFiles.map((file) => (
+              <div
+                key={file.id}
+                role="button"
+                tabIndex={0}
+                className={cn("mb-2 block w-full rounded text-left", cleanHighlightClass("po", activeTarget))}
+                onClick={() => onFocusTarget("po")}
+                onMouseEnter={() => onFocusTarget("po")}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onFocusTarget("po");
+                  }
+                }}
+              >
+                <InboundAttachmentCard recordId={record.id} file={file} compact minimal />
+              </div>
+            ))}
             {poEvidenceItems.length > 0 && (
               <div className="mt-4 rounded border border-slate-800 bg-slate-950 p-3">
                 <div className="text-xs font-bold uppercase tracking-wide text-slate-400">PO Extraction Summary</div>
@@ -3393,9 +3576,19 @@ function CleanSourceDocuments({
             <div className="rounded border border-slate-800 bg-slate-900 p-3">
               <div className="mb-2 text-sm font-bold text-slate-100">Artwork Files</div>
               {artworkLinks.length === 0 ? <div className="text-sm text-slate-500">No artwork detected.</div> : artworkLinks.map((link) => (
-                <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-3 py-2">
-                  <div className="truncate text-sm font-semibold text-slate-100">{link.filename || link.fileId}</div>
-                  <div className="mt-1 text-xs text-slate-500">{describeArtworkLink(link)}</div>
+                <div
+                  key={artworkLinkKey(link)}
+                  className={cn("mb-2 rounded border border-slate-800 bg-slate-950 px-3 py-2", cleanHighlightClass("artwork", activeTarget))}
+                >
+                  <button
+                    type="button"
+                    className="block w-full text-left"
+                    onClick={() => onFocusTarget("artwork")}
+                    onMouseEnter={() => onFocusTarget("artwork")}
+                  >
+                    <div className="truncate text-sm font-semibold text-slate-100">{link.filename || link.fileId}</div>
+                    <div className="mt-1 text-xs text-slate-500">{describeArtworkLink(link)}</div>
+                  </button>
                   <select
                     className="mt-2 h-8 w-full rounded border border-slate-700 bg-slate-900 px-2 text-xs text-slate-100"
                     aria-label={`Classify ${link.filename || link.fileId}`}
@@ -3433,28 +3626,46 @@ function CleanProductionTicketCard({
   lineItem,
   index,
   onChange,
+  activeTarget,
+  onFocusTarget,
 }: {
   lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
   index: number;
   onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
+  activeTarget: CleanHighlightTarget | null;
+  onFocusTarget: (target: CleanHighlightTarget) => void;
 }) {
+  const requiredComplete = Boolean((lineItem.selectedProductId || lineItem.productName || lineItem.productUnresolved) && lineItem.quantity && lineItem.width && lineItem.height);
+  const [detailsOpen, setDetailsOpen] = useState(!requiredComplete);
+  const [userControlledOpen, setUserControlledOpen] = useState(false);
+  useEffect(() => {
+    if (!userControlledOpen) setDetailsOpen(!requiredComplete);
+  }, [requiredComplete, userControlledOpen]);
   const activeArtworkLinks = lineItem.artworkLinks.filter((link) => link.source !== "staff_removed");
-  const dimensions = lineItem.width && lineItem.height ? `${lineItem.width}" x ${lineItem.height}"` : "-";
+  const dimensions = lineItem.width && lineItem.height ? `${lineItem.width} x ${lineItem.height}` : "-";
+  const productionStatus = requiredComplete ? "Ready to review" : "Needs details";
   return (
     <div className="border border-slate-700 bg-slate-900 p-3" data-testid="clean-production-ticket-card">
       <div className="flex items-center justify-between gap-2">
         <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Production Ticket {index + 1}</div>
-        {lineItem.productUnresolved && <Badge variant="destructive">Product unresolved</Badge>}
+        <Badge variant={requiredComplete ? "secondary" : "destructive"}>{productionStatus}</Badge>
       </div>
-      <div className="mt-3 grid grid-cols-[1fr_1fr_70px] gap-2">
-        <CleanTicketMetric label="Product" value={lineItem.productName || "Unselected"} />
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <CleanTicketMetric label="Product" value={lineItem.productName || "Unselected"} target="product" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
         <CleanTicketMetric label="Material" value={lineItem.materialText || "-"} />
-        <CleanTicketMetric label="Qty" value={lineItem.quantity ?? "-"} />
-        <CleanTicketMetric label="Dimensions" value={dimensions} />
-        <CleanTicketMetric label="Finishing" value={lineItem.finishingTexts.join(", ") || lineItem.optionTexts.join(", ") || "-"} />
-        <CleanTicketMetric label="Artwork" value={activeArtworkLinks.length ? `${activeArtworkLinks.length} linked` : "Missing"} />
+        <CleanTicketMetric label="Qty" value={lineItem.quantity ?? "-"} target="quantity" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+        <CleanTicketMetric label="Size" value={dimensions} target="dimensions" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+        <CleanTicketMetric label="Artwork status" value={activeArtworkLinks.length ? "Attached" : "Missing"} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+        <CleanTicketMetric label="Production status" value={productionStatus} />
       </div>
-      <div className="mt-3 flex items-center gap-3 rounded border border-slate-800 bg-slate-950 px-3 py-2">
+      <button
+        type="button"
+        className={cn("mt-3 flex w-full items-center gap-3 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-left", cleanHighlightClass("artwork", activeTarget))}
+        onClick={() => onFocusTarget("artwork")}
+        onMouseEnter={() => onFocusTarget("artwork")}
+        data-testid="clean-artwork-target"
+        data-highlighted={activeTarget === "artwork" ? "true" : "false"}
+      >
         <div className="flex h-8 w-10 items-center justify-center rounded bg-slate-800">
           <Paperclip className="h-4 w-4 text-slate-400" />
         </div>
@@ -3462,21 +3673,40 @@ function CleanProductionTicketCard({
           <div className="truncate text-xs font-semibold text-slate-200">{activeArtworkLinks[0]?.filename || "No artwork linked"}</div>
           <div className="text-[11px] uppercase tracking-wide text-slate-500">Preflight {activeArtworkLinks.length ? "attached" : "pending"}</div>
         </div>
-      </div>
-      <details className="group mt-3 rounded border border-slate-800 bg-slate-950">
-        <summary className="flex h-8 cursor-pointer list-none items-center justify-between px-3 text-xs font-bold text-slate-300">
+      </button>
+      <details className="group mt-3 rounded border border-slate-800 bg-slate-950" open={detailsOpen} data-testid="clean-ticket-details">
+        <summary
+          className="flex h-8 cursor-pointer list-none items-center justify-between px-3 text-xs font-bold text-slate-300"
+          onClick={(event) => {
+            event.preventDefault();
+            setUserControlledOpen(true);
+            setDetailsOpen((current) => !current);
+          }}
+        >
           Edit details
           <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
         </summary>
         <div className="grid gap-2 border-t border-slate-800 p-3 sm:grid-cols-2">
-          <OrderEntryField label="Product">
+          <OrderEntryField label="Product" className={cleanHighlightClass("product", activeTarget)} >
             <Input value={lineItem.productName ?? ""} onChange={(event) => onChange({ productName: trimToNull(event.target.value), productUnresolved: !trimToNull(event.target.value) })} />
           </OrderEntryField>
-          <OrderEntryField label="Quantity">
+          <OrderEntryField label="Quantity" className={cleanHighlightClass("quantity", activeTarget)}>
             <Input value={lineItem.quantity ?? ""} onChange={(event) => onChange({ quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })} />
           </OrderEntryField>
           <OrderEntryField label="Material">
             <Input value={lineItem.materialText ?? ""} onChange={(event) => onChange({ materialText: trimToNull(event.target.value), materialSource: "staff_selected" })} />
+          </OrderEntryField>
+          <OrderEntryField label="Width" className={cleanHighlightClass("dimensions", activeTarget)}>
+            <Input value={lineItem.width ?? ""} onChange={(event) => onChange({ width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
+          </OrderEntryField>
+          <OrderEntryField label="Height" className={cleanHighlightClass("dimensions", activeTarget)}>
+            <Input value={lineItem.height ?? ""} onChange={(event) => onChange({ height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
+          </OrderEntryField>
+          <OrderEntryField label="Unit">
+            <Input value={lineItem.dimensionsUnit ?? ""} onChange={(event) => onChange({ dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })} />
+          </OrderEntryField>
+          <OrderEntryField label="Options">
+            <Input value={lineItem.optionTexts.join(", ")} onChange={(event) => onChange({ optionTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), optionTextsSource: "staff_selected" })} />
           </OrderEntryField>
           <OrderEntryField label="Finishing">
             <Input value={lineItem.finishingTexts.join(", ")} onChange={(event) => onChange({ finishingTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), finishingTextsSource: "staff_selected" })} />
@@ -3488,12 +3718,75 @@ function CleanProductionTicketCard({
   );
 }
 
-function CleanTicketMetric({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="min-w-0">
+function CleanTicketMetric({
+  label,
+  value,
+  target,
+  activeTarget,
+  onFocusTarget,
+}: {
+  label: string;
+  value: ReactNode;
+  target?: CleanHighlightTarget;
+  activeTarget?: CleanHighlightTarget | null;
+  onFocusTarget?: (target: CleanHighlightTarget) => void;
+}) {
+  const className = cn("min-w-0 rounded transition-shadow", target && cleanHighlightClass(target, activeTarget ?? null));
+  const content = (
+    <>
       <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</div>
       <div className="mt-1 truncate rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm font-semibold text-slate-100">{value}</div>
-    </div>
+    </>
+  );
+  if (!target || !onFocusTarget) {
+    return <div className={className}>{content}</div>;
+  }
+  return (
+    <button
+      type="button"
+      className={cn(className, "text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300")}
+      onClick={() => onFocusTarget(target)}
+      onMouseEnter={() => onFocusTarget(target)}
+      data-clean-destination-target={target}
+      data-highlighted={activeTarget === target ? "true" : "false"}
+    >
+      {content}
+    </button>
+  );
+}
+
+function CleanAiSummaryRow({
+  label,
+  value,
+  source,
+  target,
+  activeTarget,
+  onFocusTarget,
+}: {
+  label: string;
+  value: ReactNode;
+  source: string | null | undefined;
+  target: CleanHighlightTarget;
+  activeTarget: CleanHighlightTarget | null;
+  onFocusTarget: (target: CleanHighlightTarget) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        "grid grid-cols-[88px_1fr] items-start gap-2 rounded px-2 py-1.5 text-left transition-shadow hover:bg-slate-800",
+        cleanHighlightClass(target, activeTarget),
+      )}
+      onClick={() => onFocusTarget(target)}
+      onMouseEnter={() => onFocusTarget(target)}
+      data-clean-summary-target={target}
+    >
+      <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</span>
+      <span className="min-w-0">
+        <span className="block truncate text-sm font-semibold text-slate-100">{value || "-"}</span>
+        <span className="block truncate text-[11px] text-blue-200">{cleanSourceLabel(source)}</span>
+      </span>
+    </button>
   );
 }
 
@@ -3521,6 +3814,8 @@ function CleanOrderWorkstation({
   onDirtyChange,
   form,
   updateForm,
+  activeTarget,
+  onFocusTarget,
 }: {
   selectedRecord: ClientInboundOrderRecord | null;
   draftPreview: ClientInboundOrderDraftPreviewResponse["data"] | undefined;
@@ -3545,6 +3840,8 @@ function CleanOrderWorkstation({
   onDirtyChange: (recordId: string | null, dirty: boolean) => void;
   form: ReviewDraftFormState | null;
   updateForm: (patch: Partial<ReviewDraftFormState>) => void;
+  activeTarget: CleanHighlightTarget | null;
+  onFocusTarget: (target: CleanHighlightTarget) => void;
 }) {
   const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
   const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
@@ -3591,6 +3888,10 @@ function CleanOrderWorkstation({
     ...validationErrors,
   ].filter(Boolean) as string[];
   const canCreateDraftOrder = selectedRecord.status === "ready" && reviewDraft.status === "ready_to_convert" && validationErrors.length === 0;
+  const firstLine = form.reviewedLineItemsJson[0] ?? null;
+  const firstLineSize = firstLine?.width && firstLine?.height ? `${firstLine.width} x ${firstLine.height}${firstLine.dimensionsUnit ? ` ${firstLine.dimensionsUnit}` : ""}` : null;
+  const firstLineArtworkLinked = firstLine?.artworkLinks.some((link) => link.source !== "staff_removed") || form.reviewedArtworkJson.status === "supplied";
+  const completionChecklist = cleanCompletionChecklist(form, reviewDraft);
 
   return (
     <section className="flex min-h-0 w-[520px] shrink-0 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
@@ -3602,7 +3903,11 @@ function CleanOrderWorkstation({
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        <div className="mb-3 rounded border border-slate-700 bg-slate-900 px-3 py-2">
+        <div
+          className={cn("mb-3 block w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-left transition-shadow", cleanHighlightClass("customer", activeTarget))}
+          onMouseEnter={() => onFocusTarget("customer")}
+          data-clean-destination-target="customer"
+        >
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="truncate text-sm font-bold">{form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || "Customer unresolved"}</div>
@@ -3611,9 +3916,19 @@ function CleanOrderWorkstation({
             <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200">Change</Button>
           </div>
         </div>
+        <div className="mb-3 rounded border border-blue-400/30 bg-blue-400/10 p-3" data-testid="clean-ai-summary">
+          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-blue-100">AI believes:</div>
+          <div className="grid gap-1">
+            <CleanAiSummaryRow label="Customer" value={form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName} source={form.reviewedCustomerJson.selectedCustomerSource} target="customer" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Product" value={firstLine?.productName} source={firstLine?.selectedProductSource} target="product" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Quantity" value={firstLine?.quantity ?? null} source={firstLine?.quantitySource} target="quantity" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Size" value={firstLineSize} source={firstLine?.dimensionsSource} target="dimensions" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Artwork" value={firstLineArtworkLinked ? "Attached" : "Missing"} source={firstLineArtworkLinked ? "source_evidence" : null} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+          </div>
+        </div>
         <div className="mb-4 grid grid-cols-2 gap-2">
-          <OrderEntryField label="PO Ref"><Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} /></OrderEntryField>
-          <OrderEntryField label="Due date"><Input type="date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} /></OrderEntryField>
+          <OrderEntryField label="PO Ref" className={cleanHighlightClass("po", activeTarget)}><Input data-testid="clean-po-field" data-highlighted={activeTarget === "po" ? "true" : "false"} value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} /></OrderEntryField>
+          <OrderEntryField label="Due date" className={cleanHighlightClass("dueDate", activeTarget)}><Input type="date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} /></OrderEntryField>
           <OrderEntryField label="Priority">
             <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedOrderJson.priority ?? "normal"} onChange={(event) => updateOrder({ priority: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["priority"] })}>
               <option value="rush">Rush</option>
@@ -3632,17 +3947,23 @@ function CleanOrderWorkstation({
             {form.reviewedLineItemsJson.length === 0 ? (
               <div className="rounded border border-dashed border-slate-700 px-3 py-8 text-center text-sm text-slate-500">No production tickets.</div>
             ) : form.reviewedLineItemsJson.map((lineItem, index) => (
-              <CleanProductionTicketCard key={index} lineItem={lineItem} index={index} onChange={(patch) => updateLineItem(index, patch)} />
+              <CleanProductionTicketCard key={index} lineItem={lineItem} index={index} onChange={(patch) => updateLineItem(index, patch)} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
             ))}
           </div>
         </div>
-        {(form.missingDecisionsJson.length > 0 || form.warningsJson.length > 0 || minimumConversionIssues.length > 0) && (
-          <div className="mb-4 grid gap-2">
-            {[...form.missingDecisionsJson.map((decision) => decision.label), ...form.warningsJson.map((warning) => warning.message), ...minimumConversionIssues].slice(0, 4).map((message, index) => (
-              <div key={`${message}-${index}`} className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{message}</div>
+        <div className="mb-4 rounded border border-slate-800 bg-slate-900 p-3" data-testid="clean-completion-checklist">
+          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Completion Checklist</div>
+          <div className="grid gap-1.5">
+            {completionChecklist.map((item) => (
+              <div key={item.label} className="flex items-center gap-2 text-xs text-slate-200" data-clean-checklist-item={item.label} data-complete={item.complete ? "true" : "false"}>
+                <span className={cn("flex h-4 w-4 items-center justify-center rounded border text-[10px]", item.complete ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-600 text-slate-500")}>
+                  {item.complete ? "x" : ""}
+                </span>
+                <span>{item.label}</span>
+              </div>
             ))}
           </div>
-        )}
+        </div>
         <details className="rounded border border-slate-800 bg-slate-900" open={Boolean(form.reviewedOrderJson.customerNotes || form.reviewedOrderJson.internalNotes)}>
           <summary className="cursor-pointer list-none px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-400">Notes</summary>
           <div className="grid gap-2 border-t border-slate-800 p-3">
@@ -6038,6 +6359,7 @@ export default function InboundOrdersPage() {
   const [lastConvertedOrderId, setLastConvertedOrderId] = useState<string | null>(null);
   const [reviewDraftDirtyByRecordId, setReviewDraftDirtyByRecordId] = useState<Record<string, boolean>>({});
   const [cleanForm, setCleanForm] = useState<ReviewDraftFormState | null>(null);
+  const [cleanActiveTarget, setCleanActiveTarget] = useState<CleanHighlightTarget | null>(null);
   const [reviewMode, setReviewMode] = useState<InboundReviewWorkspaceMode>(() => {
     if (typeof window === "undefined") return "operational";
     const storedMode = window.localStorage.getItem(workspaceLayoutStorageKeys.reviewMode);
@@ -6206,10 +6528,12 @@ export default function InboundOrdersPage() {
   useEffect(() => {
     if (!reviewDraftQuery.data?.data) {
       setCleanForm(null);
+      setCleanActiveTarget(null);
       return;
     }
     setCleanForm(cloneReviewDraft(reviewDraftQuery.data.data));
-  }, [reviewDraftQuery.data?.data.snapshotId, reviewDraftQuery.data?.data.updatedAt, reviewDraftQuery.data?.data.status]);
+    setCleanActiveTarget(null);
+  }, [reviewDraftQuery.data?.data.snapshotId, reviewDraftQuery.data?.data.updatedAt, reviewDraftQuery.data?.data.status, selectedId]);
 
   const createManualMutation = useMutation({
     mutationFn: (payload: ManualInboundOrderCreateRequest) => (
@@ -7014,6 +7338,9 @@ export default function InboundOrdersPage() {
             onParse={runParseForSelectedRecord}
             attachmentLinks={cleanAttachmentLinks}
             onClassifyAttachment={overrideCleanAttachmentClassification}
+            form={cleanForm}
+            activeTarget={cleanActiveTarget}
+            onFocusTarget={setCleanActiveTarget}
           />
           <CleanOrderWorkstation
             selectedRecord={selectedRecord}
@@ -7049,6 +7376,8 @@ export default function InboundOrdersPage() {
             onDirtyChange={handleReviewDraftDirtyChange}
             form={cleanForm}
             updateForm={updateCleanForm}
+            activeTarget={cleanActiveTarget}
+            onFocusTarget={setCleanActiveTarget}
           />
         </div>
       ) : (

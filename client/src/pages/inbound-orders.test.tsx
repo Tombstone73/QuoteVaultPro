@@ -1242,14 +1242,56 @@ describe("InboundOrdersPage", () => {
         intakeMode: "TEMP_INBOUND",
         sender: { name: "Rick Clark", email: "rick@example.com" },
         subject: "Magnets",
-        bodyText: "Can you make me two magnets that are 12 x 12 of the attached file thank you",
+        bodyText: "Can you make me two Magnets that are 12 x 12 for PO-321 of the attached file thank you",
       },
       normalizedPayloadJson: {
         inboundIntent: "CUSTOMER_COMMUNICATION",
       },
     });
+    const baseParsed = parsedDraft();
+    const cleanParsed = parsedDraft({
+      order: {
+        ...baseParsed.order,
+        poNumber: "PO-321",
+      },
+      lineItems: [{
+        ...baseParsed.lineItems[0],
+        sourceText: "two Magnets that are 12 x 12",
+        productName: "Magnets",
+        quantity: 2,
+        width: 12,
+        height: 12,
+        dimensionsUnit: "in",
+        materialText: "30 mil Magnetic",
+        optionTexts: [],
+        finishingTexts: ["Round Corners (0.25\")"],
+        artworkLinks: [{
+          fileId: "file_art",
+          filename: "Lindsay X2.pdf",
+          role: "artwork",
+          source: "ai_suggested",
+          confidence: 88,
+        }],
+      }],
+      artwork: [{
+        filename: "Lindsay X2.pdf",
+        sourceReference: "attached file",
+        likelyLineItemIndex: 0,
+        purpose: "artwork",
+        confidence: 88,
+        warnings: [],
+      }],
+      missingDecisions: [],
+      globalWarnings: [],
+    });
+    const cleanReview = reviewDraft(cleanParsed);
+    cleanReview.reviewedLineItemsJson[0].quantitySource = "source_evidence";
+    cleanReview.reviewedLineItemsJson[0].dimensionsSource = "source_evidence";
+    cleanReview.reviewedLineItemsJson[0].selectedProductSource = "source_evidence";
     const { getSavedBody } = setupParsedInboundReview({
       row,
+      parsed: cleanParsed,
+      review: cleanReview,
       detailOverrides: {
         files: [{
           id: "file_art",
@@ -1282,8 +1324,48 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-inbound-queue']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-source-documents']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-order-workstation']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-ai-summary']")).toBeTruthy();
+    expect(container.textContent).toContain("AI believes:");
+    expect(container.textContent).toContain("Source: Email body");
+    expect(container.querySelector("[data-testid='clean-completion-checklist']")).toBeTruthy();
+    expect(container.textContent).toContain("Customer matched");
+    expect(container.textContent).toContain("Product resolved");
     expect(container.querySelector("[data-testid='inbound-operational-email-panel']")).toBeNull();
     expect(container.textContent).not.toContain("Draft Builder");
+
+    const ticketDetails = container.querySelector("[data-testid='clean-ticket-details']") as HTMLDetailsElement;
+    expect(ticketDetails).toBeTruthy();
+    expect(ticketDetails.open).toBe(false);
+    const editSummary = Array.from(ticketDetails.querySelectorAll("summary")).find((summary) => summary.textContent?.includes("Edit details")) as HTMLElement;
+    act(() => {
+      Simulate.click(editSummary);
+    });
+    expect(ticketDetails.open).toBe(true);
+
+    const sizeSource = container.querySelector("[data-clean-source-target='dimensions']") as HTMLButtonElement;
+    expect(sizeSource).toBeTruthy();
+    act(() => {
+      Simulate.click(sizeSource);
+    });
+    expect(container.querySelector("[data-clean-destination-target='dimensions']")?.getAttribute("data-highlighted")).toBe("true");
+
+    const productSource = container.querySelector("[data-clean-source-target='product']") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(productSource);
+    });
+    expect(container.querySelector("[data-clean-destination-target='product']")?.getAttribute("data-highlighted")).toBe("true");
+
+    const poSource = container.querySelector("[data-clean-source-target='po']") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(poSource);
+    });
+    expect(container.querySelector("[data-testid='clean-po-field']")?.getAttribute("data-highlighted")).toBe("true");
+
+    const artworkSource = container.querySelector("[data-clean-source-target='artwork']") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(artworkSource);
+    });
+    expect(container.querySelector("[data-testid='clean-artwork-target']")?.getAttribute("data-highlighted")).toBe("true");
 
     const poTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "PO") as HTMLButtonElement;
     act(() => {
@@ -1333,6 +1415,45 @@ describe("InboundOrdersPage", () => {
     });
     await waitForText("Source Evidence");
     await waitForText("Draft Builder");
+  });
+
+  test("updates Clean View completion checklist as production ticket fields are resolved", async () => {
+    const baseParsed = parsedDraft();
+    const cleanParsed = parsedDraft({
+      lineItems: [{
+        ...baseParsed.lineItems[0],
+        productName: "Magnets",
+        quantity: null,
+        width: 12,
+        height: 12,
+        dimensionsUnit: "in",
+      }],
+      missingDecisions: [],
+      globalWarnings: [],
+    });
+    const cleanReview = reviewDraft(cleanParsed);
+    cleanReview.reviewedLineItemsJson[0].quantity = null;
+    cleanReview.reviewedLineItemsJson[0].quantitySource = null;
+    setupParsedInboundReview({ parsed: cleanParsed, review: cleanReview });
+
+    renderPage();
+    await waitForText("Operational View");
+    const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(cleanButton);
+    });
+
+    await waitForText("Completion Checklist");
+    const quantityChecklistItem = () => container.querySelector("[data-clean-checklist-item='Quantity confirmed']");
+    expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("false");
+    const ticketDetails = container.querySelector("[data-testid='clean-ticket-details']") as HTMLDetailsElement;
+    expect(ticketDetails.open).toBe(true);
+
+    const quantityInput = labeledControl("Quantity", "input");
+    act(() => {
+      Simulate.change(quantityInput, { target: { value: "2" } } as any);
+    });
+    expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("true");
   });
 
   test("falls back to plain text when original email HTML is missing", async () => {
