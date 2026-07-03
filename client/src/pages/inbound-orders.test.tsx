@@ -1343,6 +1343,12 @@ describe("InboundOrdersPage", () => {
     await waitForText("Backfill Attachments");
     await waitForText("Thread messages: 2");
     await waitForText("Thread messages: 2");
+    expect(container.textContent).not.toContain("Thread Timeline");
+    const historyTab = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "History") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(historyTab);
+    });
     await waitForText("Thread Timeline");
     await waitForText("Message 2");
     const backfillButton = Array.from(container.querySelectorAll("button"))
@@ -1527,23 +1533,16 @@ describe("InboundOrdersPage", () => {
     await waitForText("Source Documents");
     await waitForText("Artwork attached.");
     expect(container.querySelector("[data-testid='source-document-viewer']")).toBeTruthy();
-    expect(container.textContent).toContain("Expand previous messages (1)");
+    expect(container.textContent).not.toContain("Thread Timeline");
+    expect(container.textContent).not.toContain("Expand previous messages (1)");
     expect(container.textContent).not.toContain("Please see attached PO.");
     expect(container.textContent).toContain("Quoted content in this message");
-    expect(container.textContent).toContain("Signature/inline images");
+    expect(container.textContent).not.toContain("Signature/inline images");
     expect(container.textContent).toContain("Purchase Order 151534.pdf");
     expect(container.textContent).toContain("PO candidate");
     expect(container.textContent).toContain("yard-sign-art.pdf");
     expect(container.textContent).toContain("Artwork candidate");
     expect(container.textContent).not.toContain("Evidence Used");
-
-    const expandPrevious = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Expand previous messages")) as HTMLButtonElement;
-    act(() => {
-      Simulate.click(expandPrevious);
-    });
-
-    await waitForText("Please see attached PO.");
 
     const poTab = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "PO") as HTMLButtonElement;
@@ -1571,6 +1570,9 @@ describe("InboundOrdersPage", () => {
       Simulate.click(historyTab);
     });
     await waitForText("Thread Timeline");
+    expect(container.textContent).toContain("Message 1");
+    expect(container.textContent).toContain("Message 2");
+    expect(container.textContent).toContain("Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26");
   });
 
   test("supports operational line item add, duplicate, remove, and product picker rendering", async () => {
