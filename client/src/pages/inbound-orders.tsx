@@ -184,7 +184,7 @@ type QueueFilters = {
   search: string;
 };
 
-type InboundReviewWorkspaceMode = "operational" | "debug";
+type InboundReviewWorkspaceMode = "operational" | "clean" | "debug";
 type SourceDocumentTab = "email" | "po" | "artwork" | "history";
 
 const defaultQueueFilters: QueueFilters = {
@@ -3163,6 +3163,516 @@ function OperationalEmailPanel({
   );
 }
 
+function CleanInboundQueue({
+  records,
+  selectedId,
+  filters,
+  searchValue,
+  summary,
+  isLoading,
+  onSelect,
+  onChange,
+  onSearchChange,
+}: {
+  records: ClientInboundOrderRecord[];
+  selectedId: string | null;
+  filters: QueueFilters;
+  searchValue: string;
+  summary: InboundOrderQueueSummary | null;
+  isLoading: boolean;
+  onSelect: (id: string) => void;
+  onChange: (filters: QueueFilters) => void;
+  onSearchChange: (value: string) => void;
+}) {
+  return (
+    <aside className="flex min-h-0 w-[300px] shrink-0 flex-col border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-inbound-queue">
+      <div className="border-b border-slate-700 px-3 py-2">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Queue</div>
+            <div className="text-[11px] text-slate-500">{records.length} active</div>
+          </div>
+          <details className="group relative">
+            <summary className="flex h-7 cursor-pointer list-none items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 text-[11px] font-semibold text-slate-200">
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              Filters
+            </summary>
+            <div className="absolute left-0 top-8 z-30 grid w-64 gap-2 rounded-md border border-slate-700 bg-slate-950 p-3 shadow-xl">
+              <Input
+                value={searchValue}
+                onChange={(event) => onSearchChange(event.target.value)}
+                placeholder="Search queue"
+                className="h-8 border-slate-700 bg-slate-900 text-xs text-slate-100"
+              />
+              <select
+                aria-label="Clean queue status filter"
+                className="h-8 rounded-md border border-slate-700 bg-slate-900 px-2 text-xs text-slate-100"
+                value={filters.statusGroup}
+                onChange={(event) => onChange({ ...filters, statusGroup: event.target.value as QueueStatusFilter })}
+              >
+                <option value="active">Active queue</option>
+                <option value="needs_review">Needs Review</option>
+                <option value="ready">Ready</option>
+                <option value="all">All statuses</option>
+              </select>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={filters.hasWarnings}
+                  onChange={(event) => onChange({ ...filters, hasWarnings: event.target.checked })}
+                />
+                Warnings only
+              </label>
+            </div>
+          </details>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {isLoading ? (
+          <div className="space-y-2 p-3">
+            <Skeleton className="h-16 bg-slate-800" />
+            <Skeleton className="h-16 bg-slate-800" />
+          </div>
+        ) : records.length === 0 ? (
+          <div className="p-4 text-sm text-slate-500">No inbound records.</div>
+        ) : records.map((record) => {
+          const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
+          const selected = selectedId === record.id;
+          const issue = getQueueIssueChip(record);
+          const intent = getInboundIntentLabel(record);
+          return (
+            <button
+              key={record.id}
+              type="button"
+              className={cn(
+                "block w-full border-b border-slate-800 px-3 py-2 text-left transition-colors",
+                selected ? "bg-slate-800 shadow-[inset_2px_0_0_#93c5fd]" : "hover:bg-slate-900",
+              )}
+              onClick={() => onSelect(record.id)}
+            >
+              <div className="truncate text-sm font-bold text-slate-100">{getSenderLabel(record)}</div>
+              <div className="mt-0.5 truncate text-xs font-semibold text-slate-300">{evidence.reference || evidence.subject || getRecordTitle(record)}</div>
+              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
+                <span>{intent ?? "Unknown"}</span>
+                <span>/</span>
+                <span>{statusLabels[record.status]}</span>
+              </div>
+              <div className="mt-1 flex items-center gap-1 text-[11px]">
+                <span className="text-slate-500">{formatRelative(record.createdAt)}</span>
+                {issue && (
+                  <>
+                    <span className="text-slate-600">/</span>
+                    <span className="rounded border border-amber-500/60 bg-amber-500/10 px-1.5 py-0.5 font-semibold text-amber-200">{issue}</span>
+                  </>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </aside>
+  );
+}
+
+function CleanSourceDocuments({
+  selectedRecord,
+  detail,
+  draftPreview,
+  activeTab,
+  isLoading,
+  isParsing,
+  parseDisabled,
+  parseError,
+  onTabChange,
+  onParse,
+  attachmentLinks,
+  onClassifyAttachment,
+}: {
+  selectedRecord: ClientInboundOrderRecord | null;
+  detail: ClientInboundOrderDetailResponse["data"] | undefined;
+  draftPreview: ClientInboundOrderDraftPreviewResponse["data"] | undefined;
+  activeTab: SourceDocumentTab;
+  isLoading: boolean;
+  isParsing: boolean;
+  parseDisabled: boolean;
+  parseError: Error | null;
+  onTabChange: (tab: SourceDocumentTab) => void;
+  onParse: () => void;
+  attachmentLinks: InboundOrderArtworkLink[];
+  onClassifyAttachment: (link: InboundOrderArtworkLink, classification: InboundAttachmentClassification) => void;
+}) {
+  if (!selectedRecord) {
+    return <section className="flex min-h-0 flex-1 items-center justify-center bg-slate-950 text-slate-500">Select an inbound item.</section>;
+  }
+  const record = detail?.record ?? selectedRecord;
+  const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
+  const emailEvidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : null;
+  const files = dedupeAttachmentFiles(detail?.files ?? []);
+  const poFiles = files.filter((file) => file.role === "po");
+  const artworkLinks = attachmentLinks.filter((link) => classificationForLink(link) === "ARTWORK");
+  const referenceLinks = attachmentLinks.filter((link) => classificationForLink(link) === "REFERENCE" || classificationForLink(link) === "OTHER");
+  const signatureLinks = attachmentLinks.filter((link) => classificationForLink(link) === "IGNORE_INLINE");
+  const poEvidenceItems = (draftPreview?.draft?.evidence?.items ?? [])
+    .filter((item) => item.type === "PDF_ATTACHMENT" && (item.documentType === "purchase_order" || item.poSummary));
+
+  return (
+    <section className="flex min-h-0 flex-[1.05] flex-col border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-source-documents">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700 px-3">
+        <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Source Documents</div>
+        <Button type="button" size="sm" className="h-8 bg-blue-300 px-3 text-xs font-bold text-slate-950 hover:bg-blue-200" onClick={onParse} disabled={parseDisabled}>
+          {isParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
+          Re-scan
+        </Button>
+      </div>
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-slate-800 px-3">
+        {(["email", "po", "artwork", "history"] as SourceDocumentTab[]).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            className={cn(
+              "h-8 min-w-20 border-b-2 px-3 text-xs font-bold uppercase tracking-wide",
+              activeTab === tab ? "border-blue-300 bg-slate-800 text-blue-100" : "border-transparent text-slate-400 hover:text-slate-200",
+            )}
+            onClick={() => onTabChange(tab)}
+          >
+            {tab === "po" ? "PO" : titleCase(tab)}
+          </button>
+        ))}
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-5">
+        {isLoading ? (
+          <Skeleton className="mx-auto h-[520px] max-w-[760px] bg-slate-800" />
+        ) : activeTab === "email" ? (
+          <div className="mx-auto max-w-[760px]">
+            <div className="mb-2 flex items-center justify-between rounded border border-slate-800 bg-slate-900 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+              <span>Previous interaction</span>
+              <span>{emailEvidence?.thread?.messageCount ? `${emailEvidence.thread.messageCount} messages` : "Single message"}</span>
+            </div>
+            <article className="bg-white text-slate-950 shadow-xl">
+              <div className="flex items-start gap-3 border-b border-slate-200 px-5 py-4">
+                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-sm font-bold text-blue-700">
+                  {(evidence.senderName || evidence.senderEmail || "?").slice(0, 1).toUpperCase()}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-bold">{evidence.subject || "No subject"}</div>
+                  <div className="truncate text-xs text-slate-500">{getSenderLabel(record)} / {formatTimestamp(emailEvidence?.receivedAt ?? record.createdAt)}</div>
+                </div>
+                <Badge variant="outline">{emailEvidence?.bodyHtml ? "HTML" : "Text"}</Badge>
+              </div>
+              <div className="px-5 py-5">
+                <EmailDocumentBodySurface html={emailEvidence?.bodyHtml ? sanitizeEmailHtml(emailEvidence.bodyHtml) : null} text={evidence.bodyText} />
+              </div>
+              <div className="border-t border-slate-200 px-5 py-4">
+                <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">Integrated Evidence ({files.length})</div>
+                <div className="grid gap-2">
+                  {files.length === 0 ? (
+                    <div className="rounded border border-dashed border-slate-300 px-3 py-3 text-sm text-slate-500">No attachments linked.</div>
+                  ) : files.filter((file) => !isLikelySignatureInlineFile(file)).slice(0, 5).map((file) => (
+                    <SourceEvidenceFileCard key={file.id} recordId={record.id} file={file} />
+                  ))}
+                </div>
+              </div>
+            </article>
+            {parseError && <div className="mt-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">{parseError.message}</div>}
+          </div>
+        ) : activeTab === "po" ? (
+          <div className="mx-auto max-w-[760px] rounded border border-slate-800 bg-slate-900 p-4">
+            <div className="mb-3 text-sm font-bold text-slate-100">PO Documents</div>
+            {poFiles.length === 0 ? (
+              <div className="rounded border border-dashed border-slate-700 px-3 py-10 text-center text-sm text-slate-500">No PO detected.</div>
+            ) : poFiles.map((file) => <InboundAttachmentCard key={file.id} recordId={record.id} file={file} compact minimal />)}
+            {poEvidenceItems.length > 0 && (
+              <div className="mt-4 rounded border border-slate-800 bg-slate-950 p-3">
+                <div className="text-xs font-bold uppercase tracking-wide text-slate-400">PO Extraction Summary</div>
+                {poEvidenceItems[0]?.poSummary && <PoSummaryGrid summary={poEvidenceItems[0].poSummary} />}
+              </div>
+            )}
+          </div>
+        ) : activeTab === "artwork" ? (
+          <div className="mx-auto grid max-w-[760px] gap-3">
+            <div className="rounded border border-slate-800 bg-slate-900 p-3">
+              <div className="mb-2 text-sm font-bold text-slate-100">Artwork Files</div>
+              {artworkLinks.length === 0 ? <div className="text-sm text-slate-500">No artwork detected.</div> : artworkLinks.map((link) => (
+                <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-3 py-2">
+                  <div className="truncate text-sm font-semibold text-slate-100">{link.filename || link.fileId}</div>
+                  <div className="mt-1 text-xs text-slate-500">{describeArtworkLink(link)}</div>
+                  <select
+                    className="mt-2 h-8 w-full rounded border border-slate-700 bg-slate-900 px-2 text-xs text-slate-100"
+                    aria-label={`Classify ${link.filename || link.fileId}`}
+                    value={classificationForLink(link)}
+                    onChange={(event) => onClassifyAttachment(link, event.target.value as InboundAttachmentClassification)}
+                  >
+                    <option value="ARTWORK">Artwork</option>
+                    <option value="PO">Purchase Order</option>
+                    <option value="REFERENCE">Reference</option>
+                    <option value="IGNORE_INLINE">Junk / Signature</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded border border-slate-800 bg-slate-900 p-3">
+                <div className="mb-2 text-sm font-bold text-slate-100">Reference</div>
+                {referenceLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : referenceLinks.map((link) => <div key={artworkLinkKey(link)} className="truncate text-xs text-slate-300">{link.filename || link.fileId}</div>)}
+              </div>
+              <div className="rounded border border-slate-800 bg-slate-900 p-3">
+                <div className="mb-2 text-sm font-bold text-slate-100">Junk / Signature</div>
+                {signatureLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : signatureLinks.map((link) => <div key={artworkLinkKey(link)} className="truncate text-xs text-slate-500">{link.filename || link.fileId}</div>)}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <SourceHistoryPanel thread={emailEvidence?.thread} />
+        )}
+      </div>
+    </section>
+  );
+}
+
+function CleanProductionTicketCard({
+  lineItem,
+  index,
+  onChange,
+}: {
+  lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
+  index: number;
+  onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
+}) {
+  const activeArtworkLinks = lineItem.artworkLinks.filter((link) => link.source !== "staff_removed");
+  const dimensions = lineItem.width && lineItem.height ? `${lineItem.width}" x ${lineItem.height}"` : "-";
+  return (
+    <div className="border border-slate-700 bg-slate-900 p-3" data-testid="clean-production-ticket-card">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Production Ticket {index + 1}</div>
+        {lineItem.productUnresolved && <Badge variant="destructive">Product unresolved</Badge>}
+      </div>
+      <div className="mt-3 grid grid-cols-[1fr_1fr_70px] gap-2">
+        <CleanTicketMetric label="Product" value={lineItem.productName || "Unselected"} />
+        <CleanTicketMetric label="Material" value={lineItem.materialText || "-"} />
+        <CleanTicketMetric label="Qty" value={lineItem.quantity ?? "-"} />
+        <CleanTicketMetric label="Dimensions" value={dimensions} />
+        <CleanTicketMetric label="Finishing" value={lineItem.finishingTexts.join(", ") || lineItem.optionTexts.join(", ") || "-"} />
+        <CleanTicketMetric label="Artwork" value={activeArtworkLinks.length ? `${activeArtworkLinks.length} linked` : "Missing"} />
+      </div>
+      <div className="mt-3 flex items-center gap-3 rounded border border-slate-800 bg-slate-950 px-3 py-2">
+        <div className="flex h-8 w-10 items-center justify-center rounded bg-slate-800">
+          <Paperclip className="h-4 w-4 text-slate-400" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-xs font-semibold text-slate-200">{activeArtworkLinks[0]?.filename || "No artwork linked"}</div>
+          <div className="text-[11px] uppercase tracking-wide text-slate-500">Preflight {activeArtworkLinks.length ? "attached" : "pending"}</div>
+        </div>
+      </div>
+      <details className="group mt-3 rounded border border-slate-800 bg-slate-950">
+        <summary className="flex h-8 cursor-pointer list-none items-center justify-between px-3 text-xs font-bold text-slate-300">
+          Edit details
+          <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="grid gap-2 border-t border-slate-800 p-3 sm:grid-cols-2">
+          <OrderEntryField label="Product">
+            <Input value={lineItem.productName ?? ""} onChange={(event) => onChange({ productName: trimToNull(event.target.value), productUnresolved: !trimToNull(event.target.value) })} />
+          </OrderEntryField>
+          <OrderEntryField label="Quantity">
+            <Input value={lineItem.quantity ?? ""} onChange={(event) => onChange({ quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })} />
+          </OrderEntryField>
+          <OrderEntryField label="Material">
+            <Input value={lineItem.materialText ?? ""} onChange={(event) => onChange({ materialText: trimToNull(event.target.value), materialSource: "staff_selected" })} />
+          </OrderEntryField>
+          <OrderEntryField label="Finishing">
+            <Input value={lineItem.finishingTexts.join(", ")} onChange={(event) => onChange({ finishingTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), finishingTextsSource: "staff_selected" })} />
+          </OrderEntryField>
+        </div>
+      </details>
+      <PricingReviewCard review={lineItem.pricingReviewJson} onChange={(pricingReviewJson) => onChange({ pricingReviewJson })} />
+    </div>
+  );
+}
+
+function CleanTicketMetric({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mt-1 truncate rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm font-semibold text-slate-100">{value}</div>
+    </div>
+  );
+}
+
+function CleanOrderWorkstation({
+  selectedRecord,
+  draftPreview,
+  reviewDraft,
+  detail,
+  isLoading,
+  isSaving,
+  isMarkingReady,
+  isReopening,
+  isConverting,
+  markReadyError,
+  convertError,
+  isRejecting,
+  isCleaningUp,
+  rejectDisabled,
+  onSave,
+  onMarkReady,
+  onReopen,
+  onConvert,
+  onReject,
+  onQueueAction,
+  onDirtyChange,
+  form,
+  updateForm,
+}: {
+  selectedRecord: ClientInboundOrderRecord | null;
+  draftPreview: ClientInboundOrderDraftPreviewResponse["data"] | undefined;
+  reviewDraft: InboundOrderReviewDraftDto | undefined;
+  detail: ClientInboundOrderDetailResponse["data"] | undefined;
+  isLoading: boolean;
+  isSaving: boolean;
+  isMarkingReady: boolean;
+  isReopening: boolean;
+  isConverting: boolean;
+  markReadyError: (Error & { errors?: string[] }) | null;
+  convertError: (Error & { errors?: string[] }) | null;
+  isRejecting: boolean;
+  isCleaningUp: boolean;
+  rejectDisabled: boolean;
+  onSave: (draft: ReviewDraftFormState) => Promise<void>;
+  onMarkReady: (draft: ReviewDraftFormState, dirty: boolean) => Promise<void>;
+  onReopen: () => Promise<void>;
+  onConvert: () => Promise<void>;
+  onReject: () => void;
+  onQueueAction: (action: InboundQueueCleanupAction) => void;
+  onDirtyChange: (recordId: string | null, dirty: boolean) => void;
+  form: ReviewDraftFormState | null;
+  updateForm: (patch: Partial<ReviewDraftFormState>) => void;
+}) {
+  const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
+  const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
+  useEffect(() => {
+    if (reviewDraft) setBaseForm(cloneReviewDraft(reviewDraft));
+  }, [reviewDraft?.snapshotId, reviewDraft?.updatedAt, reviewDraft?.status]);
+  const dirty = Boolean(form && baseForm && !formStatesEqual(form, baseForm));
+  useEffect(() => {
+    const recordId = selectedRecord?.id ?? null;
+    const previous = lastReportedDirtyRef.current;
+    if (previous?.recordId === recordId && previous.dirty === dirty) return;
+    lastReportedDirtyRef.current = { recordId, dirty };
+    onDirtyChange(recordId, dirty);
+  }, [dirty, onDirtyChange, selectedRecord?.id]);
+
+  if (!selectedRecord) return <section className="flex min-h-0 flex-1 items-center justify-center bg-slate-950 text-slate-500">Order Workstation</section>;
+  if (isLoading || !form || !reviewDraft || !draftPreview?.draft) {
+    return <section className="flex min-h-0 w-[520px] flex-col border-l border-slate-700 bg-slate-950 p-4"><Skeleton className="h-40 bg-slate-800" /></section>;
+  }
+
+  const updateOrder = (patch: Partial<ReviewDraftFormState["reviewedOrderJson"]>) => {
+    updateForm({ reviewedOrderJson: { ...form.reviewedOrderJson, ...patch } });
+  };
+  const updateLineItem = (index: number, patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => {
+    updateForm({
+      reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item),
+    });
+  };
+  const validationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
+  const conversionErrors = convertError?.errors ?? [];
+  const unresolvedPricingIssues = form.reviewedLineItemsJson.flatMap((lineItem, index) => (
+    lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)
+      ? [`Line ${index + 1}: PO price differs from system price.`]
+      : []
+  ));
+  const minimumConversionIssues = [
+    !form.reviewedCustomerJson.selectedCustomerId && !form.reviewedCustomerJson.unresolvedCustomer ? "Select a customer or mark customer unresolved." : null,
+    form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
+    ...form.reviewedLineItemsJson.flatMap((lineItem, index) => [
+      !lineItem.quantity ? `Line ${index + 1}: enter quantity.` : null,
+      !lineItem.selectedProductId && !lineItem.productUnresolved ? `Line ${index + 1}: select a product or mark unresolved.` : null,
+    ]),
+    ...unresolvedPricingIssues,
+    ...validationErrors,
+  ].filter(Boolean) as string[];
+  const canCreateDraftOrder = selectedRecord.status === "ready" && reviewDraft.status === "ready_to_convert" && validationErrors.length === 0;
+
+  return (
+    <section className="flex min-h-0 w-[520px] shrink-0 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700 px-3">
+        <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Order Workstation</div>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-slate-400">Reset</Button>
+          <Badge variant="outline">Draft</Badge>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <div className="mb-3 rounded border border-slate-700 bg-slate-900 px-3 py-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-bold">{form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || "Customer unresolved"}</div>
+              <div className="truncate text-xs text-slate-500">{form.reviewedCustomerJson.sourceEmail || "No contact selected"}</div>
+            </div>
+            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200">Change</Button>
+          </div>
+        </div>
+        <div className="mb-4 grid grid-cols-2 gap-2">
+          <OrderEntryField label="PO Ref"><Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} /></OrderEntryField>
+          <OrderEntryField label="Due date"><Input type="date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} /></OrderEntryField>
+          <OrderEntryField label="Priority">
+            <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedOrderJson.priority ?? "normal"} onChange={(event) => updateOrder({ priority: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["priority"] })}>
+              <option value="rush">Rush</option>
+              <option value="normal">Normal</option>
+              <option value="low">Low</option>
+            </select>
+          </OrderEntryField>
+          <OrderEntryField label="Carrier"><Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: trimToNull(event.target.value) })} /></OrderEntryField>
+        </div>
+        <div className="mb-4">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-sm font-bold text-slate-100">Production Tickets</div>
+            <Badge variant="outline">{form.reviewedLineItemsJson.length}</Badge>
+          </div>
+          <div className="grid gap-3">
+            {form.reviewedLineItemsJson.length === 0 ? (
+              <div className="rounded border border-dashed border-slate-700 px-3 py-8 text-center text-sm text-slate-500">No production tickets.</div>
+            ) : form.reviewedLineItemsJson.map((lineItem, index) => (
+              <CleanProductionTicketCard key={index} lineItem={lineItem} index={index} onChange={(patch) => updateLineItem(index, patch)} />
+            ))}
+          </div>
+        </div>
+        {(form.missingDecisionsJson.length > 0 || form.warningsJson.length > 0 || minimumConversionIssues.length > 0) && (
+          <div className="mb-4 grid gap-2">
+            {[...form.missingDecisionsJson.map((decision) => decision.label), ...form.warningsJson.map((warning) => warning.message), ...minimumConversionIssues].slice(0, 4).map((message, index) => (
+              <div key={`${message}-${index}`} className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{message}</div>
+            ))}
+          </div>
+        )}
+        <details className="rounded border border-slate-800 bg-slate-900" open={Boolean(form.reviewedOrderJson.customerNotes || form.reviewedOrderJson.internalNotes)}>
+          <summary className="cursor-pointer list-none px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-400">Notes</summary>
+          <div className="grid gap-2 border-t border-slate-800 p-3">
+            <OrderEntryField label="Production Notes"><Textarea value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: trimToNull(event.target.value) })} /></OrderEntryField>
+            <OrderEntryField label="Internal Notes"><Textarea value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: trimToNull(event.target.value) })} /></OrderEntryField>
+          </div>
+        </details>
+      </div>
+      <div className="shrink-0 border-t border-slate-700 bg-slate-900 px-3 py-2">
+        {conversionErrors.length > 0 && <div className="mb-2 text-xs text-red-300">{conversionErrors.join(" ")}</div>}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={onReject} disabled={rejectDisabled || isCleaningUp}>{isRejecting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}Reject</Button>
+          <Button type="button" size="sm" className="h-8 px-2 text-xs" onClick={() => { void onSave(form).catch(() => undefined); }} disabled={!dirty || isSaving}>{isSaving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}Save Draft</Button>
+          {reviewDraft.status === "ready_to_convert" ? (
+            <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs" onClick={() => { void onReopen().catch(() => undefined); }}>Reopen</Button>
+          ) : (
+            <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs" onClick={() => { void onMarkReady(form, dirty).catch(() => undefined); }} disabled={isMarkingReady}>{isMarkingReady && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}Mark Ready</Button>
+          )}
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs" disabled>Convert to Draft Quote</Button>
+          <Button type="button" size="sm" className="h-8 px-2 text-xs" onClick={() => { void onConvert().catch(() => undefined); }} disabled={!canCreateDraftOrder || isConverting}>
+            {isConverting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+            Convert to Draft Order
+          </Button>
+        </div>
+        {minimumConversionIssues.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{minimumConversionIssues[0]}</div>}
+      </div>
+    </section>
+  );
+}
+
 type ReviewSelectOption = {
   id: string;
   label: string;
@@ -5527,9 +6037,11 @@ export default function InboundOrdersPage() {
   const [parsingRecordId, setParsingRecordId] = useState<string | null>(null);
   const [lastConvertedOrderId, setLastConvertedOrderId] = useState<string | null>(null);
   const [reviewDraftDirtyByRecordId, setReviewDraftDirtyByRecordId] = useState<Record<string, boolean>>({});
+  const [cleanForm, setCleanForm] = useState<ReviewDraftFormState | null>(null);
   const [reviewMode, setReviewMode] = useState<InboundReviewWorkspaceMode>(() => {
     if (typeof window === "undefined") return "operational";
-    return window.localStorage.getItem(workspaceLayoutStorageKeys.reviewMode) === "debug" ? "debug" : "operational";
+    const storedMode = window.localStorage.getItem(workspaceLayoutStorageKeys.reviewMode);
+    return storedMode === "debug" || storedMode === "clean" ? storedMode : "operational";
   });
   const [responsivePanel, setResponsivePanel] = useState<"email" | "review">("email");
   const [sourceDocumentTab, setSourceDocumentTab] = useState<SourceDocumentTab>("email");
@@ -5690,6 +6202,14 @@ export default function InboundOrdersPage() {
     queryFn: () => readJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${selectedId}/review-draft`),
     enabled: Boolean(selectedId && draftPreviewQuery.data?.data.draft),
   });
+
+  useEffect(() => {
+    if (!reviewDraftQuery.data?.data) {
+      setCleanForm(null);
+      return;
+    }
+    setCleanForm(cloneReviewDraft(reviewDraftQuery.data.data));
+  }, [reviewDraftQuery.data?.data.snapshotId, reviewDraftQuery.data?.data.updatedAt, reviewDraftQuery.data?.data.status]);
 
   const createManualMutation = useMutation({
     mutationFn: (payload: ManualInboundOrderCreateRequest) => (
@@ -6106,6 +6626,76 @@ export default function InboundOrdersPage() {
     emailReprocessMutation.mutate({ recordId: record.id, action });
   };
 
+  const updateCleanForm = (patch: Partial<ReviewDraftFormState>) => {
+    setCleanForm((current) => current ? { ...current, ...patch } : current);
+  };
+  const cleanStoredAttachmentLinks = dedupeAttachmentFiles(detailQuery.data?.data.files ?? [])
+    .map((file) => artworkLinkFromInboundFile(file, "unresolved"));
+  const cleanAttachmentLinks = cleanForm
+    ? dedupeAttachmentLinks(Array.from(new Map([
+      ...cleanStoredAttachmentLinks,
+      ...cleanForm.reviewedArtworkJson.unassignedAttachments,
+      ...cleanForm.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
+    ].map((link) => [artworkLinkKey(link), link])).values()))
+    : cleanStoredAttachmentLinks;
+  const overrideCleanAttachmentClassification = (link: InboundOrderArtworkLink, classification: InboundAttachmentClassification) => {
+    if (!cleanForm || !selectedRecord) return;
+    const key = artworkLinkKey(link);
+    const nextLink: InboundOrderArtworkLink = {
+      ...link,
+      role: attachmentRoleForClassification(classification),
+      classification,
+      classificationConfidence: 100,
+      classificationReasons: [`Staff manually classified as ${attachmentClassificationLabel(classification)}.`],
+      classificationSource: "manual_override",
+      automaticClassification: automaticClassificationForLink(link),
+      automaticClassificationConfidence: link.automaticClassificationConfidence ?? link.classificationConfidence ?? link.confidence ?? null,
+      automaticClassificationReasons: link.automaticClassificationReasons ?? link.classificationReasons ?? [],
+      classificationBreakdown: {
+        filename: link.classificationBreakdown?.filename ?? [],
+        content: link.classificationBreakdown?.content ?? [],
+        metadata: link.classificationBreakdown?.metadata ?? [],
+        manual: [`Staff manually classified as ${attachmentClassificationLabel(classification)}.`],
+        scores: link.classificationBreakdown?.scores ?? {},
+      },
+      manualOverride: true,
+      confidence: 100,
+      reason: `Staff manually classified as ${attachmentClassificationLabel(classification)}.`,
+      learningEvidence: {
+        inboundRecordId: selectedRecord.id,
+        attachmentKey: key,
+        attachmentId: link.fileId,
+        fileRecordId: link.fileRecordId ?? null,
+        senderEmail: getManualInboundEvidence(selectedRecord).senderEmail ?? null,
+        senderDomain: senderDomainFromEmail(getManualInboundEvidence(selectedRecord).senderEmail),
+        subject: getManualInboundEvidence(selectedRecord).subject ?? null,
+        filename: link.filename ?? null,
+        extension: fileExtension(link.filename),
+        originalAutomaticClassification: automaticClassificationForLink(link),
+        correctedManualClassification: classification,
+        automaticConfidence: link.automaticClassificationConfidence ?? link.classificationConfidence ?? link.confidence ?? null,
+        automaticReasons: link.automaticClassificationReasons ?? link.classificationReasons ?? [],
+        capturedAt: new Date().toISOString(),
+        userId: null,
+        note: "Manual correction captured for future classification learning.",
+      },
+    };
+    const upsertLink = (items: InboundOrderArtworkLink[]) => {
+      const found = items.some((item) => artworkLinkKey(item) === key);
+      return found ? items.map((item) => artworkLinkKey(item) === key ? nextLink : item) : [...items, nextLink];
+    };
+    updateCleanForm({
+      reviewedLineItemsJson: cleanForm.reviewedLineItemsJson.map((lineItem) => ({
+        ...lineItem,
+        artworkLinks: lineItem.artworkLinks.map((item) => artworkLinkKey(item) === key ? nextLink : item),
+      })),
+      reviewedArtworkJson: {
+        ...cleanForm.reviewedArtworkJson,
+        unassignedAttachments: upsertLink(cleanForm.reviewedArtworkJson.unassignedAttachments),
+      },
+    });
+  };
+
   const toggleQueueRecordSelected = (recordId: string, selected: boolean) => {
     setSelectedQueueRecordIds((current) => {
       const next = new Set(current);
@@ -6288,6 +6878,15 @@ export default function InboundOrdersPage() {
               <Button
                 type="button"
                 size="sm"
+                variant={reviewMode === "clean" ? "default" : "ghost"}
+                className="h-8"
+                onClick={() => setReviewMode("clean")}
+              >
+                Clean View
+              </Button>
+              <Button
+                type="button"
+                size="sm"
                 variant={reviewMode === "debug" ? "default" : "ghost"}
                 className="h-8"
                 onClick={() => setReviewMode("debug")}
@@ -6388,6 +6987,69 @@ export default function InboundOrdersPage() {
               No scheduled or manual email pulls will run. Existing TEMP_INBOUND records are retained and can be accessed again after the feature is enabled.
             </p>
           </div>
+        </div>
+      ) : reviewMode === "clean" ? (
+        <div className="flex min-h-0 flex-1 overflow-hidden bg-slate-950" data-testid="clean-inbound-workspace">
+          <CleanInboundQueue
+            records={records}
+            selectedId={selectedId}
+            filters={queueFilters}
+            searchValue={queueSearchText}
+            summary={queueSummary}
+            isLoading={listQuery.isLoading || listQuery.isFetching}
+            onSelect={setSelectedId}
+            onChange={applyQueueFilters}
+            onSearchChange={updateQueueSearchText}
+          />
+          <CleanSourceDocuments
+            selectedRecord={selectedRecord}
+            detail={detailQuery.data?.data}
+            draftPreview={draftPreviewQuery.data?.data}
+            activeTab={sourceDocumentTab}
+            isLoading={detailQuery.isLoading}
+            isParsing={isSelectedRecordParsing}
+            parseDisabled={isParseInFlight || selectedRecordIsTerminal}
+            parseError={parseMutation.error as Error | null}
+            onTabChange={setSourceDocumentTab}
+            onParse={runParseForSelectedRecord}
+            attachmentLinks={cleanAttachmentLinks}
+            onClassifyAttachment={overrideCleanAttachmentClassification}
+          />
+          <CleanOrderWorkstation
+            selectedRecord={selectedRecord}
+            draftPreview={draftPreviewQuery.data?.data}
+            reviewDraft={reviewDraftQuery.data?.data}
+            detail={detailQuery.data?.data}
+            isLoading={detailQuery.isLoading || draftPreviewQuery.isLoading || reviewDraftQuery.isLoading}
+            isSaving={saveReviewDraftMutation.isPending}
+            isMarkingReady={markReviewDraftReadyMutation.isPending}
+            isReopening={reopenReviewDraftMutation.isPending}
+            isConverting={convertToOrderMutation.isPending}
+            markReadyError={markReviewDraftReadyMutation.error as (Error & { errors?: string[] }) | null}
+            convertError={convertToOrderMutation.error as (Error & { errors?: string[] }) | null}
+            isRejecting={rejectInboundOrderMutation.isPending}
+            isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
+            rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
+            onSave={async (draft) => {
+              if (!selectedId) return;
+              await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft });
+            }}
+            onMarkReady={async (draft, dirty) => {
+              if (!selectedId) return;
+              if (dirty) await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft });
+              await markReviewDraftReadyMutation.mutateAsync(selectedId);
+            }}
+            onReopen={async () => {
+              if (!selectedId) return;
+              await reopenReviewDraftMutation.mutateAsync(selectedId);
+            }}
+            onConvert={convertSelectedRecordToOrder}
+            onReject={rejectSelectedRecord}
+            onQueueAction={runQueueCleanupAction}
+            onDirtyChange={handleReviewDraftDirtyChange}
+            form={cleanForm}
+            updateForm={updateCleanForm}
+          />
         </div>
       ) : (
         <>
