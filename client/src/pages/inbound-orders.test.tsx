@@ -1581,6 +1581,22 @@ describe("InboundOrdersPage", () => {
     renderPage();
     await waitForText("Order Workstation");
     await waitForText("Add line item");
+    await waitForText("Production ticket 1");
+    expect(container.textContent).toContain("Line Items / Products");
+    expect(container.textContent).toContain("Edit details");
+    const editDetails = Array.from(container.querySelectorAll("details")).find((details) => (
+      details.textContent?.includes("Edit details")
+    )) as HTMLDetailsElement;
+    expect(editDetails).toBeTruthy();
+    expect(editDetails.open).toBe(false);
+    act(() => {
+      Simulate.click(editDetails.querySelector("summary") as HTMLElement);
+    });
+    expect(editDetails.open).toBe(true);
+    act(() => {
+      Simulate.click(editDetails.querySelector("summary") as HTMLElement);
+    });
+    expect(editDetails.open).toBe(false);
     expect(labeledControl("Product", "select")).toHaveProperty("value", "product_1");
 
     const addButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Add line item")) as HTMLButtonElement;
@@ -2542,9 +2558,9 @@ describe("InboundOrdersPage", () => {
     });
     expect(evidencePanel.className).toContain("hidden");
     expect(draftPanel.className).toContain("flex");
-    await waitForText("Confirmed Customer");
+    await waitForText("Confirmed customer");
     expect(container.textContent).not.toContain("Evidence Used");
-    expect(container.textContent).toContain("Confirmed Customer");
+    expect(container.textContent).toContain("Confirmed customer");
     expect(container.textContent).toContain("Change");
   });
 
@@ -3300,7 +3316,7 @@ describe("InboundOrdersPage", () => {
     });
 
     renderPage();
-    await waitForText("Unsupported Requests");
+    await waitForText("Review Tasks");
     expect(container.textContent).toContain("grommets in the corners");
     expect(container.textContent).toContain("Review Required");
     expect(container.textContent).toContain("No compatible PBV2 option found.");

@@ -3613,6 +3613,9 @@ function DraftBuilderPanel({
   const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
   const [reviewNotesExpanded, setReviewNotesExpanded] = useState(false);
   const [customerIntelligenceExpanded, setCustomerIntelligenceExpanded] = useState(false);
+  const [customerEditorExpanded, setCustomerEditorExpanded] = useState(false);
+  const [orderNotesExpanded, setOrderNotesExpanded] = useState(false);
+  const [expandedOperationalLineItems, setExpandedOperationalLineItems] = useState<Set<number>>(() => new Set());
   const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
   const [contactSearch, setContactSearch] = useState("");
@@ -3633,6 +3636,9 @@ function DraftBuilderPanel({
     setCustomerSearch("");
     setContactSearch("");
     setProductSearch("");
+    setExpandedOperationalLineItems(new Set());
+    setCustomerEditorExpanded(false);
+    setOrderNotesExpanded(false);
   }, [selectedRecord?.id]);
 
   const draftForSelectors = draftPreview?.draft ?? null;
@@ -4055,6 +4061,21 @@ function DraftBuilderPanel({
       links: allAttachmentLinks.filter((link) => classificationForLink(link) === "IGNORE_INLINE"),
     },
   ];
+  const customerSummaryName = form.reviewedCustomerJson.companyName
+    || form.reviewedCustomerJson.sourceName
+    || (form.reviewedCustomerJson.unresolvedCustomer ? "Customer unresolved" : "Select customer");
+  const contactSummary = form.reviewedCustomerJson.sourceEmail
+    || form.reviewedCustomerJson.selectedContactId
+    || form.reviewedCustomerJson.selectedCustomerId
+    || (form.reviewedCustomerJson.unresolvedContact ? "Contact unresolved" : "No contact selected");
+  const customerMatchConfidence = form.reviewedCustomerJson.selectedContactConfidence
+    ?? form.reviewedCustomerJson.selectedCustomerConfidence
+    ?? null;
+  const customerMatchSource = form.reviewedCustomerJson.selectedContactSource
+    ?? form.reviewedCustomerJson.selectedCustomerSource
+    ?? null;
+  const customerNeedsAttention = form.reviewedCustomerJson.unresolvedCustomer || form.reviewedCustomerJson.unresolvedContact;
+  const hasOrderNotes = Boolean(form.reviewedOrderJson.customerNotes || form.reviewedOrderJson.internalNotes);
 
   return (
     <ScrollArea className="h-full">
@@ -4167,28 +4188,49 @@ function DraftBuilderPanel({
         {isOperationalMode ? (
           <>
             <DocumentMetaCard contentClassName="p-2">
-              <div className="grid gap-2 xl:grid-cols-[minmax(220px,0.75fr)_minmax(420px,1.25fr)]">
-                <div className="space-y-2">
-                  <details
-                    className="group rounded-md border border-border/60 bg-muted/20 p-2"
-                    open={form.reviewedCustomerJson.unresolvedCustomer || !(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName)}
+              <div className="space-y-3">
+                <details
+                  className={cn(
+                    "group rounded-md border p-2",
+                    customerNeedsAttention ? "border-amber-500/50 bg-amber-500/10" : "border-border/60 bg-muted/20",
+                  )}
+                  open={customerEditorExpanded || customerNeedsAttention || !(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName)}
+                >
+                  <summary
+                    className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      if (customerNeedsAttention || !(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName)) return;
+                      setCustomerEditorExpanded((current) => !current);
+                    }}
                   >
-                    <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
-                      <div className="min-w-0">
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Confirmed Customer</div>
-                        <div className="truncate text-sm font-semibold text-foreground">
-                          {form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || "Customer unresolved"}
-                        </div>
-                        <div className="truncate text-xs text-muted-foreground">
-                          {form.reviewedCustomerJson.sourceEmail || form.reviewedCustomerJson.selectedCustomerId || "Select or mark unresolved"}
-                        </div>
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                      <div className={cn(
+                        "flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+                        customerNeedsAttention ? "border-amber-400/60 bg-amber-500/20 text-amber-100" : "border-emerald-500/40 bg-emerald-500/15 text-emerald-100",
+                      )}>
+                        {customerNeedsAttention ? "!" : "OK"}
                       </div>
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Confirmed customer</div>
+                        <div className="truncate text-sm font-semibold text-foreground">{customerSummaryName}</div>
+                        <div className="truncate text-xs text-muted-foreground">{contactSummary}</div>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {customerMatchSource && (
+                        <Badge variant="outline" className="hidden h-6 px-1.5 text-[11px] sm:inline-flex">
+                          {customerSelectionIntro(customerMatchSource)}
+                          {customerMatchConfidence != null ? ` ${customerMatchConfidence}%` : ""}
+                        </Badge>
+                      )}
                       <span className="pointer-events-none inline-flex h-7 items-center rounded-md border border-input bg-background px-2 text-xs font-medium text-foreground">
                         Change
                         <ChevronDown className="ml-1 h-3.5 w-3.5 transition-transform group-open:rotate-180" />
                       </span>
-                    </summary>
-                    <div className="mt-2 space-y-2 border-t border-border/60 pt-2">
+                    </div>
+                  </summary>
+                  <div className="mt-2 space-y-2 border-t border-border/60 pt-2">
                   <SearchableReviewSelector
                     label="Selected customer"
                     searchLabel="Customer search"
@@ -4261,13 +4303,12 @@ function DraftBuilderPanel({
                       Contact unresolved
                     </label>
                   </div>
-                    </div>
-                  </details>
-                </div>
+                  </div>
+                </details>
 
                 <div className="space-y-2">
                   <OrderEntrySectionTitle title="Order Details" />
-                  <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-2 xl:grid-cols-6">
                     <OrderEntryField label="PO Ref">
                       <Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} />
                     </OrderEntryField>
@@ -4315,22 +4356,6 @@ function DraftBuilderPanel({
                       <Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: trimToNull(event.target.value) })} />
                     </OrderEntryField>
                   </div>
-                  <details
-                    className="rounded-md border border-border/60 bg-muted/20 px-2 py-1.5"
-                    open={Boolean(form.reviewedOrderJson.customerNotes || form.reviewedOrderJson.internalNotes)}
-                  >
-                    <summary className="cursor-pointer list-none text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
-                      Notes {form.reviewedOrderJson.customerNotes || form.reviewedOrderJson.internalNotes ? "(populated)" : "(empty)"}
-                    </summary>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                      <OrderEntryField label="Customer notes">
-                        <Textarea className="min-h-[60px]" value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: trimToNull(event.target.value) })} />
-                      </OrderEntryField>
-                      <OrderEntryField label="Internal notes">
-                        <Textarea className="min-h-[60px]" value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: trimToNull(event.target.value) })} />
-                      </OrderEntryField>
-                    </div>
-                  </details>
                 </div>
               </div>
             </DocumentMetaCard>
@@ -4359,6 +4384,18 @@ function DraftBuilderPanel({
                         : [],
                     );
                     const activeArtworkLinks = lineItem.artworkLinks.filter((link) => link.source !== "staff_removed");
+                    const dimensionsLabel = lineItem.width && lineItem.height
+                      ? `${lineItem.width}x${lineItem.height} ${lineItem.dimensionsUnit ?? ""}`.trim()
+                      : null;
+                    const optionSummary = [
+                      ...lineItem.printSpecs,
+                      ...lineItem.optionTexts,
+                      ...lineItem.finishingTexts,
+                    ].filter(Boolean).slice(0, 3);
+                    const pricingNeedsAttention = lineItem.pricingReviewJson?.status === "mismatch"
+                      && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution);
+                    const requiredFieldsOpen = lineItem.productUnresolved || !lineItem.selectedProductId || !lineItem.quantity || !lineItem.width || !lineItem.height || pricingNeedsAttention;
+                    const detailsOpen = requiredFieldsOpen || expandedOperationalLineItems.has(index);
                     return (
                       <div key={index} className="group flex gap-3 rounded-lg border border-border/60 bg-background/40 p-3 transition-colors hover:bg-muted/30">
                         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-muted">
@@ -4367,11 +4404,13 @@ function DraftBuilderPanel({
                         <div className="min-w-0 flex-1 space-y-3">
                           <div className="flex flex-wrap items-start justify-between gap-2">
                             <div className="min-w-0">
-                              <div className="truncate text-sm font-medium text-foreground">{lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`}</div>
+                              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Production ticket {index + 1}</div>
+                              <div className="truncate text-sm font-semibold text-foreground">{lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`}</div>
                               <div className="mt-1 flex flex-wrap gap-1">
                                 {lineItem.materialText && <Badge variant="outline" className="py-0 text-[11px]">{lineItem.materialText}</Badge>}
-                                {lineItem.printSpecs.slice(0, 2).map((spec) => <Badge key={spec} variant="outline" className="py-0 text-[11px]">{spec}</Badge>)}
-                                {lineItem.productUnresolved && <Badge variant="outline" className="py-0 text-[11px]">Product unresolved</Badge>}
+                                {optionSummary.map((spec) => <Badge key={spec} variant="outline" className="py-0 text-[11px]">{spec}</Badge>)}
+                                {lineItem.productUnresolved && <Badge variant="destructive" className="py-0 text-[11px]">Product unresolved</Badge>}
+                                {pricingNeedsAttention && <Badge variant="outline" className="border-amber-500/60 py-0 text-[11px] text-amber-200">Pricing warning</Badge>}
                               </div>
                             </div>
                             <div className="flex shrink-0 flex-wrap gap-1">
@@ -4386,10 +4425,18 @@ function DraftBuilderPanel({
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-3 gap-2 text-xs">
+                          <div className="grid grid-cols-2 gap-2 text-xs xl:grid-cols-5">
+                            <div className="flex items-center justify-between gap-2 rounded-md bg-muted/40 px-2 py-1">
+                              <span className="text-muted-foreground">Product</span>
+                              <span className="truncate font-medium text-foreground">{lineItem.selectedProductId ? (lineItem.productName || lineItem.selectedProductId) : "Unselected"}</span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2 rounded-md bg-muted/40 px-2 py-1">
+                              <span className="text-muted-foreground">Material</span>
+                              <span className="truncate font-medium text-foreground">{lineItem.materialText || "-"}</span>
+                            </div>
                             <div className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1">
                               <span className="text-muted-foreground">Size</span>
-                              <span className="font-mono">{lineItem.width && lineItem.height ? `${lineItem.width}x${lineItem.height} ${lineItem.dimensionsUnit ?? ""}` : "-"}</span>
+                              <span className="font-mono">{dimensionsLabel || "-"}</span>
                             </div>
                             <div className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1">
                               <span className="text-muted-foreground">Qty</span>
@@ -4401,6 +4448,30 @@ function DraftBuilderPanel({
                             </div>
                           </div>
 
+                          <details
+                            className="group/details rounded-md border border-border/60 bg-muted/10"
+                            open={detailsOpen}
+                          >
+                            <summary
+                              className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                if (requiredFieldsOpen) return;
+                                setExpandedOperationalLineItems((current) => {
+                                  const next = new Set(current);
+                                  if (next.has(index)) {
+                                    next.delete(index);
+                                  } else {
+                                    next.add(index);
+                                  }
+                                  return next;
+                                });
+                              }}
+                            >
+                              <span>{requiredFieldsOpen ? "Edit required details" : "Edit details"}</span>
+                              <ChevronDown className="h-4 w-4 transition-transform group-open/details:rotate-180" />
+                            </summary>
+                            <div className="space-y-3 border-t border-border/60 p-3">
                           <div className="grid gap-2 lg:grid-cols-2">
                             <OrderEntryField label="Product">
                               <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={lineItem.selectedProductId ?? ""} onChange={(event) => {
@@ -4434,6 +4505,10 @@ function DraftBuilderPanel({
                               <Input value={lineItem.quantity ?? ""} onChange={(event) => updateLineItem(index, { quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })} />
                             </OrderEntryField>
                           </div>
+                          <label className="flex items-center gap-2 text-sm text-foreground">
+                            <input type="checkbox" checked={lineItem.productUnresolved} onChange={(event) => updateLineItem(index, { productUnresolved: event.target.checked })} />
+                            Product unresolved
+                          </label>
                           <div className="grid grid-cols-3 gap-2">
                             <OrderEntryField label="Width">
                               <Input value={lineItem.width ?? ""} onChange={(event) => updateLineItem(index, { width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
@@ -4499,6 +4574,8 @@ function DraftBuilderPanel({
                           <OrderEntryField label="Line item notes">
                             <Textarea className="min-h-[60px]" value={lineItem.notes ?? ""} onChange={(event) => updateLineItem(index, { notes: trimToNull(event.target.value) })} />
                           </OrderEntryField>
+                            </div>
+                          </details>
                         </div>
                       </div>
                     );
@@ -4506,6 +4583,33 @@ function DraftBuilderPanel({
                 )}
               </div>
             </section>
+
+            <DocumentMetaCard contentClassName="p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <OrderEntrySectionTitle title="Notes" />
+                {!hasOrderNotes && <Badge variant="outline">Empty</Badge>}
+              </div>
+              <details className="mt-3 rounded-md border border-border/60 bg-muted/20" open={orderNotesExpanded || hasOrderNotes}>
+                <summary
+                  className="cursor-pointer list-none px-3 py-2 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    if (hasOrderNotes) return;
+                    setOrderNotesExpanded((current) => !current);
+                  }}
+                >
+                  {hasOrderNotes ? "Review production and internal notes" : "Add production or internal notes"}
+                </summary>
+                <div className="grid gap-2 border-t border-border/60 p-3 sm:grid-cols-2">
+                  <OrderEntryField label="Production Notes">
+                    <Textarea className="min-h-[76px]" value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: trimToNull(event.target.value) })} />
+                  </OrderEntryField>
+                  <OrderEntryField label="Internal Notes">
+                    <Textarea className="min-h-[76px]" value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: trimToNull(event.target.value) })} />
+                  </OrderEntryField>
+                </div>
+              </details>
+            </DocumentMetaCard>
 
             <DocumentMetaCard contentClassName="p-3">
               <OrderEntrySectionTitle title="Attachments" count={inboundFiles.length} />
@@ -4612,37 +4716,35 @@ function DraftBuilderPanel({
 
             {(unsupportedRequests.length > 0 || form.missingDecisionsJson.length > 0 || form.warningsJson.length > 0) && (
               <DocumentMetaCard contentClassName="p-3">
-                <div className="grid gap-3 xl:grid-cols-3">
-                  <div>
-                    <OrderEntrySectionTitle title="Unsupported Requests" count={unsupportedRequests.length} />
-                    <div className="mt-2 space-y-2">
+                <OrderEntrySectionTitle title="Review Tasks" count={unsupportedRequests.length + form.missingDecisionsJson.length + form.warningsJson.length} />
+                <div className="mt-3 grid gap-2">
+                  <div className={cn("space-y-2", unsupportedRequests.length === 0 && "hidden")}>
                       {unsupportedRequests.length === 0 ? (
                         <div className="text-xs text-muted-foreground">None</div>
                       ) : unsupportedRequests.map((finding, index) => (
-                        <div key={`${finding.category}-${index}`} className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
+                        <div key={`${finding.category}-${index}`} className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="text-sm font-medium text-foreground">{finding.requestedText}</div>
+                            <div className="text-sm font-semibold text-foreground">{finding.requestedText || "Unsupported request"}</div>
                             <Badge variant="outline">Review Required</Badge>
                           </div>
                           <div className="mt-1 text-xs text-muted-foreground">{finding.reason}</div>
                           <div className="mt-1 text-xs text-muted-foreground">{finding.suggestedAction}</div>
                         </div>
                       ))}
-                    </div>
                   </div>
-                  <div>
-                    <OrderEntrySectionTitle title="Missing Decisions" count={form.missingDecisionsJson.length} />
-                    <div className="mt-2 space-y-2">
+                  <div className={cn("space-y-2", form.missingDecisionsJson.length === 0 && "hidden")}>
                       {form.missingDecisionsJson.length === 0 ? (
                         <div className="text-xs text-muted-foreground">None</div>
                       ) : form.missingDecisionsJson.map((decision, index) => (
-                        <div key={decision.field} className="rounded-md border border-border bg-muted/20 px-2 py-1.5">
+                        <div key={decision.field} className="rounded-md border border-border bg-muted/20 px-3 py-2">
                           <div className="flex items-center justify-between gap-2">
-                            <div className="text-sm font-medium text-foreground">{decision.label}</div>
+                            <div className="text-sm font-semibold text-foreground">
+                              {`${decision.field} ${decision.label}`.toLowerCase().includes("artwork") ? "Artwork Missing" : decision.label}
+                            </div>
                             <Badge variant={decision.severity === "blocking" ? "destructive" : "outline"}>{titleCase(decision.severity)}</Badge>
                           </div>
                           <div className="mt-1 text-xs text-muted-foreground">{decision.reason}</div>
-                          <div className="mt-2 grid gap-2">
+                          <div className="mt-2 grid gap-2 sm:grid-cols-[160px_1fr]">
                             <select className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground" value={decision.status} onChange={(event) => updateDecision(index, { status: event.target.value as ReviewDraftFormState["missingDecisionsJson"][number]["status"] })}>
                               <option value="resolved">Resolved</option>
                               <option value="acknowledged">Acknowledged</option>
@@ -4652,16 +4754,13 @@ function DraftBuilderPanel({
                           </div>
                         </div>
                       ))}
-                    </div>
                   </div>
-                  <div>
-                    <OrderEntrySectionTitle title="Warnings" count={form.warningsJson.length} />
-                    <div className="mt-2 space-y-2">
+                  <div className={cn("space-y-2", form.warningsJson.length === 0 && "hidden")}>
                       {form.warningsJson.length === 0 ? (
                         <div className="text-xs text-muted-foreground">None</div>
                       ) : form.warningsJson.map((warning, index) => (
-                        <div key={`${warning.code}-${index}`} className="rounded-md border border-border bg-muted/20 px-2 py-1.5">
-                          <div className="text-sm font-medium text-foreground">{warning.code}</div>
+                        <div key={`${warning.code}-${index}`} className="rounded-md border border-border bg-muted/20 px-3 py-2">
+                          <div className="text-sm font-semibold text-foreground">{titleCase(warning.code.replaceAll("_", " "))}</div>
                           <div className="text-xs text-muted-foreground">{warning.message}</div>
                           <label className="mt-2 flex items-center gap-2 text-sm text-foreground">
                             <input type="checkbox" checked={warning.acknowledged} onChange={(event) => updateWarning(index, { acknowledged: event.target.checked })} />
@@ -4669,7 +4768,6 @@ function DraftBuilderPanel({
                           </label>
                         </div>
                       ))}
-                    </div>
                   </div>
                 </div>
               </DocumentMetaCard>
