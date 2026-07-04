@@ -3752,13 +3752,23 @@ function CleanSourceDocuments({
 function CleanProductionTicketCard({
   lineItem,
   index,
+  productOptions,
+  productSearch,
+  isProductSearchFetching,
+  attachmentLinkOptions,
   onChange,
+  onProductSearchChange,
   activeTarget,
   onFocusTarget,
 }: {
   lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
   index: number;
+  productOptions: ReviewSelectOption[];
+  productSearch: string;
+  isProductSearchFetching: boolean;
+  attachmentLinkOptions: InboundOrderArtworkLink[];
   onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
+  onProductSearchChange: (value: string) => void;
   activeTarget: CleanHighlightTarget | null;
   onFocusTarget: CleanFocusTargetHandler;
 }) {
@@ -3770,20 +3780,30 @@ function CleanProductionTicketCard({
   }, [requiredComplete, userControlledOpen]);
   const activeArtworkLinks = lineItem.artworkLinks.filter((link) => link.source !== "staff_removed");
   const dimensions = lineItem.width && lineItem.height ? `${lineItem.width} x ${lineItem.height}` : "-";
-  const productionStatus = requiredComplete ? "Ready to review" : "Needs details";
+  const reviewStatus = requiredComplete ? "Ready to review" : "Needs details";
+  const selectedOptions = Object.entries(ensurePbv2Selections(lineItem.optionSelectionsJson).selected ?? {})
+    .map(([key, entry]) => `${key}: ${String(entry?.value ?? "")}`)
+    .filter((value) => !value.endsWith(": "))
+    .slice(0, 3);
+  const keyOptionSummary = selectedOptions.length > 0
+    ? selectedOptions.join(", ")
+    : [...lineItem.printSpecs, ...lineItem.optionTexts, ...lineItem.finishingTexts].filter(Boolean).slice(0, 3).join(", ") || "-";
+  const availableArtworkOptions = attachmentLinkOptions.filter((link) => (
+    !activeArtworkLinks.some((activeLink) => artworkLinkKey(activeLink) === artworkLinkKey(link))
+  ));
   return (
     <div className="border border-slate-700 bg-slate-900 p-3" data-testid="clean-production-ticket-card">
       <div className="flex items-center justify-between gap-2">
-        <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Production Ticket {index + 1}</div>
-        <Badge variant={requiredComplete ? "secondary" : "destructive"}>{productionStatus}</Badge>
+        <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Line Item {index + 1}</div>
+        <Badge variant={requiredComplete ? "secondary" : "destructive"}>{reviewStatus}</Badge>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2">
         <CleanTicketMetric label="Product" value={lineItem.productName || "Unselected"} target="product" source={lineItem.selectedProductSource} confidence={lineItem.interpretedProductConfidence} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
         <CleanTicketMetric label="Material" value={lineItem.materialText || "-"} source={lineItem.materialSource} />
         <CleanTicketMetric label="Qty" value={lineItem.quantity ?? "-"} target="quantity" source={lineItem.quantitySource} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
         <CleanTicketMetric label="Size" value={dimensions} target="dimensions" source={lineItem.dimensionsSource} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+        <CleanTicketMetric label="Key options" value={keyOptionSummary} />
         <CleanTicketMetric label="Artwork status" value={activeArtworkLinks.length ? "Attached" : "Missing"} target="artwork" source="attachment" confidence={activeArtworkLinks[0]?.confidence ?? null} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-        <CleanTicketMetric label="Production status" value={productionStatus} />
       </div>
       <button
         type="button"
@@ -3815,7 +3835,34 @@ function CleanProductionTicketCard({
         </summary>
         <div className="grid gap-2 border-t border-slate-800 p-3 sm:grid-cols-2">
           <OrderEntryField label="Product" className={cleanHighlightClass("product", activeTarget)} >
-            <Input value={lineItem.productName ?? ""} onChange={(event) => onChange({ productName: trimToNull(event.target.value), productUnresolved: !trimToNull(event.target.value) })} />
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+              value={lineItem.selectedProductId ?? ""}
+              onChange={(event) => {
+                const productId = trimToNull(event.target.value);
+                const selectedOption = productOptions.find((option) => option.id === productId);
+                onChange({
+                  productName: productId ? selectedOption?.label ?? lineItem.productName : null,
+                  selectedProductId: productId,
+                  selectedProductSource: productId ? "staff_selected" : null,
+                  interpretedProductId: null,
+                  interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
+                  interpretedProductConfidence: null,
+                  productUnresolved: !productId,
+                  optionSelectionsJson: null,
+                  pbv2TreeVersionId: null,
+                  pbv2OptionSuggestions: [],
+                });
+              }}
+              data-testid="clean-product-catalog-select"
+            >
+              <option value="">Unselected</option>
+              {isProductSearchFetching && <option value="" disabled>Searching catalog...</option>}
+              {productOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+            </select>
+          </OrderEntryField>
+          <OrderEntryField label="Search active catalog products">
+            <Input value={productSearch} onChange={(event) => onProductSearchChange(event.target.value)} placeholder="Search product catalog" />
           </OrderEntryField>
           <OrderEntryField label="Quantity" className={cleanHighlightClass("quantity", activeTarget)}>
             <Input value={lineItem.quantity ?? ""} onChange={(event) => onChange({ quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })} />
@@ -3829,14 +3876,46 @@ function CleanProductionTicketCard({
           <OrderEntryField label="Height" className={cleanHighlightClass("dimensions", activeTarget)}>
             <Input value={lineItem.height ?? ""} onChange={(event) => onChange({ height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
           </OrderEntryField>
-          <OrderEntryField label="Unit">
+          <OrderEntryField label="Size Unit">
             <Input value={lineItem.dimensionsUnit ?? ""} onChange={(event) => onChange({ dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })} />
           </OrderEntryField>
-          <OrderEntryField label="Options">
-            <Input value={lineItem.optionTexts.join(", ")} onChange={(event) => onChange({ optionTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), optionTextsSource: "staff_selected" })} />
+        </div>
+        <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={onChange} />
+        <div className="grid gap-2 border-t border-slate-800 p-3">
+          <OrderEntryField label="Artwork assignment">
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+              value=""
+              onChange={(event) => {
+                const key = trimToNull(event.target.value);
+                const selectedLink = attachmentLinkOptions.find((link) => artworkLinkKey(link) === key);
+                if (!selectedLink) return;
+                onChange({
+                  artworkLinks: [
+                    ...lineItem.artworkLinks.filter((link) => artworkLinkKey(link) !== key),
+                    {
+                      ...selectedLink,
+                      source: "staff_selected",
+                      confidence: 100,
+                      reason: "Staff selected artwork attachment for this line item.",
+                    },
+                  ],
+                });
+              }}
+            >
+              <option value="">{availableArtworkOptions.length > 0 ? "Attach stored file..." : "No artwork files available"}</option>
+              {availableArtworkOptions.map((link) => (
+                <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>{link.filename || link.fileId}</option>
+              ))}
+            </select>
           </OrderEntryField>
-          <OrderEntryField label="Finishing">
-            <Input value={lineItem.finishingTexts.join(", ")} onChange={(event) => onChange({ finishingTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), finishingTextsSource: "staff_selected" })} />
+          {activeArtworkLinks.length > 0 && (
+            <div className="flex flex-wrap gap-1 text-xs text-slate-300">
+              {activeArtworkLinks.map((link) => <Badge key={artworkLinkKey(link)} variant="outline">{link.filename || link.fileId}</Badge>)}
+            </div>
+          )}
+          <OrderEntryField label="Line item notes">
+            <Textarea value={lineItem.notes ?? ""} onChange={(event) => onChange({ notes: trimToNull(event.target.value) })} />
           </OrderEntryField>
         </div>
       </details>
@@ -4003,10 +4082,23 @@ function CleanOrderWorkstation({
   onFocusTarget: CleanFocusTargetHandler;
 }) {
   const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
+  const [productSearch, setProductSearch] = useState("");
   const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
   useEffect(() => {
     if (reviewDraft) setBaseForm(cloneReviewDraft(reviewDraft));
   }, [reviewDraft?.snapshotId, reviewDraft?.updatedAt, reviewDraft?.status]);
+  useEffect(() => {
+    setProductSearch("");
+  }, [selectedRecord?.id]);
+  const productSearchQuery = useQuery({
+    queryKey: ["/api/inbound-orders/product-search", "clean", productSearch],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: "20" });
+      if (productSearch.trim()) params.set("search", productSearch.trim());
+      return readJson<InboundProductSearchResponse>(`/api/inbound-orders/product-search?${params.toString()}`);
+    },
+    enabled: Boolean(selectedRecord && draftPreview?.draft && reviewDraft),
+  });
   const dirty = Boolean(form && baseForm && !formStatesEqual(form, baseForm));
   useEffect(() => {
     const recordId = selectedRecord?.id ?? null;
@@ -4029,6 +4121,15 @@ function CleanOrderWorkstation({
       reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item),
     });
   };
+  const productCatalogOptions = (productSearchQuery.data?.data ?? []).map(productToReviewOption);
+  const storedAttachmentLinks = dedupeAttachmentFiles(detail?.files ?? [])
+    .map((file) => artworkLinkFromInboundFile(file, "staff_selected"))
+    .filter((link) => classificationForLink(link) === "ARTWORK");
+  const attachmentLinkOptions = dedupeAttachmentLinks([
+    ...storedAttachmentLinks,
+    ...form.reviewedArtworkJson.unassignedAttachments,
+    ...form.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
+  ]).filter((link) => link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK");
   const validationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
   const conversionErrors = convertError?.errors ?? [];
   const unresolvedPricingIssues = form.reviewedLineItemsJson.flatMap((lineItem, index) => (
@@ -4047,11 +4148,12 @@ function CleanOrderWorkstation({
     ...validationErrors,
   ].filter(Boolean) as string[];
   const canCreateDraftOrder = selectedRecord.status === "ready" && reviewDraft.status === "ready_to_convert" && validationErrors.length === 0;
+  const cleanDraft = draftPreview.draft;
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
   const firstLineSize = firstLine?.width && firstLine?.height ? `${firstLine.width} x ${firstLine.height}${firstLine.dimensionsUnit ? ` ${firstLine.dimensionsUnit}` : ""}` : null;
   const firstLineArtworkLinked = firstLine?.artworkLinks.some((link) => link.source !== "staff_removed") || form.reviewedArtworkJson.status === "supplied";
   const completionChecklist = cleanCompletionChecklist(form, reviewDraft);
-  const activeEvidenceComparison = cleanEvidenceComparison(activeTarget, form, draftPreview.draft);
+  const activeEvidenceComparison = cleanEvidenceComparison(activeTarget, form, cleanDraft);
 
   return (
     <section className="flex min-h-0 w-[520px] shrink-0 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
@@ -4081,9 +4183,9 @@ function CleanOrderWorkstation({
           <div className="grid gap-1">
             <CleanAiSummaryRow label="Customer" value={form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName} source={form.reviewedCustomerJson.selectedCustomerSource} confidence={form.reviewedCustomerJson.selectedCustomerConfidence} target="customer" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
             <CleanAiSummaryRow label="Product" value={firstLine?.productName} source={firstLine?.selectedProductSource} confidence={firstLine?.interpretedProductConfidence} target="product" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Quantity" value={firstLine?.quantity ?? null} source={firstLine?.quantitySource} confidence={draftPreview.draft.lineItems[0]?.confidence} target="quantity" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Size" value={firstLineSize} source={firstLine?.dimensionsSource} confidence={draftPreview.draft.lineItems[0]?.confidence} target="dimensions" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Artwork" value={firstLineArtworkLinked ? "Attached" : "Missing"} source={firstLineArtworkLinked ? "attachment" : null} confidence={draftPreview.draft.artwork[0]?.confidence} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Quantity" value={firstLine?.quantity ?? null} source={firstLine?.quantitySource} confidence={cleanDraft.lineItems[0]?.confidence} target="quantity" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Size" value={firstLineSize} source={firstLine?.dimensionsSource} confidence={cleanDraft.lineItems[0]?.confidence} target="dimensions" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Artwork" value={firstLineArtworkLinked ? "Attached" : "Missing"} source={firstLineArtworkLinked ? "attachment" : null} confidence={cleanDraft.artwork[0]?.confidence} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
           </div>
           {activeEvidenceComparison && (
             <div className="mt-3 rounded border border-blue-300/30 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200" data-testid="clean-evidence-comparison">
@@ -4109,7 +4211,7 @@ function CleanOrderWorkstation({
               <Input data-testid="clean-po-field" data-highlighted={activeTarget === "po" ? "true" : "false"} value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} />
             </OrderEntryField>
             <div className="mt-1">
-              <CleanSourceChip target="po" source="po_pdf" confidence={draftPreview.draft.order.confidence} onFocusTarget={onFocusTarget} />
+              <CleanSourceChip target="po" source="po_pdf" confidence={cleanDraft.order.confidence} onFocusTarget={onFocusTarget} />
             </div>
           </div>
           <div
@@ -4123,7 +4225,7 @@ function CleanOrderWorkstation({
               <Input type="date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} />
             </OrderEntryField>
             <div className="mt-1">
-              <CleanSourceChip target="dueDate" source="po_pdf" confidence={draftPreview.draft.order.confidence} onFocusTarget={onFocusTarget} />
+              <CleanSourceChip target="dueDate" source="po_pdf" confidence={cleanDraft.order.confidence} onFocusTarget={onFocusTarget} />
             </div>
           </div>
           <OrderEntryField label="Priority">
@@ -4137,14 +4239,32 @@ function CleanOrderWorkstation({
         </div>
         <div className="mb-4">
           <div className="mb-2 flex items-center justify-between">
-            <div className="text-sm font-bold text-slate-100">Production Tickets</div>
+            <div className="text-sm font-bold text-slate-100">Line Items</div>
             <Badge variant="outline">{form.reviewedLineItemsJson.length}</Badge>
           </div>
           <div className="grid gap-3">
             {form.reviewedLineItemsJson.length === 0 ? (
-              <div className="rounded border border-dashed border-slate-700 px-3 py-8 text-center text-sm text-slate-500">No production tickets.</div>
+              <div className="rounded border border-dashed border-slate-700 px-3 py-8 text-center text-sm text-slate-500">No line items.</div>
             ) : form.reviewedLineItemsJson.map((lineItem, index) => (
-              <CleanProductionTicketCard key={index} lineItem={lineItem} index={index} onChange={(patch) => updateLineItem(index, patch)} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+              <CleanProductionTicketCard
+                key={index}
+                lineItem={lineItem}
+                index={index}
+                productOptions={mergeReviewOptions(
+                  (cleanDraft.lineItems[index]?.productCandidates ?? []).map(candidateToReviewOption),
+                  productCatalogOptions,
+                  lineItem.selectedProductId && !(cleanDraft.lineItems[index]?.productCandidates ?? []).some((candidate) => candidate.id === lineItem.selectedProductId)
+                    ? [{ id: lineItem.selectedProductId, label: lineItem.productName || lineItem.selectedProductId, description: null }]
+                    : [],
+                )}
+                productSearch={productSearch}
+                isProductSearchFetching={productSearchQuery.isFetching}
+                attachmentLinkOptions={attachmentLinkOptions}
+                onChange={(patch) => updateLineItem(index, patch)}
+                onProductSearchChange={setProductSearch}
+                activeTarget={activeTarget}
+                onFocusTarget={onFocusTarget}
+              />
             ))}
           </div>
         </div>
