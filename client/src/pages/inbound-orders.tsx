@@ -3788,6 +3788,9 @@ function CleanProductionTicketCard({
   const activeArtworkLinks = lineItem.artworkLinks.filter((link) => link.source !== "staff_removed");
   const dimensions = lineItem.width && lineItem.height ? `${lineItem.width} x ${lineItem.height}` : "-";
   const reviewStatus = requiredComplete ? "Ready to review" : "Needs details";
+  const parsedProductContext = [lineItem.sourceText, lineItem.productName]
+    .map((value) => value?.trim())
+    .filter(Boolean)[0] ?? null;
   const selectedOptions = Object.entries(ensurePbv2Selections(lineItem.optionSelectionsJson).selected ?? {})
     .map(([key, entry]) => `${key}: ${String(entry?.value ?? "")}`)
     .filter((value) => !value.endsWith(": "))
@@ -3833,6 +3836,11 @@ function CleanProductionTicketCard({
         </div>
         {needsProductSelection ? <Badge variant="destructive">Product unresolved</Badge> : <Badge variant="secondary">Product resolved</Badge>}
       </div>
+      {needsProductSelection && parsedProductContext && (
+        <div className="mb-2 rounded border border-blue-300/20 bg-slate-950/70 px-2 py-1.5 text-[11px] text-slate-300">
+          Parsed phrase: <span className="font-semibold text-blue-100">{parsedProductContext}</span>
+        </div>
+      )}
       <div className="grid gap-2 sm:grid-cols-[1fr_1fr]">
         <OrderEntryField label="Search active catalog">
           <Input value={productSearch} onChange={(event) => onProductSearchChange(event.target.value)} placeholder="Search active products..." data-testid="clean-product-catalog-search" />
@@ -3860,10 +3868,9 @@ function CleanProductionTicketCard({
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2">
         <CleanTicketMetric label="Product" value={lineItem.productName || "Unselected"} target="product" source={lineItem.selectedProductSource} confidence={lineItem.interpretedProductConfidence} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-        <CleanTicketMetric label="Material" value={lineItem.materialText || "-"} source={lineItem.materialSource} />
         <CleanTicketMetric label="Qty" value={lineItem.quantity ?? "-"} target="quantity" source={lineItem.quantitySource} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
         <CleanTicketMetric label="Size" value={dimensions} target="dimensions" source={lineItem.dimensionsSource} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-        <CleanTicketMetric label="Key options" value={keyOptionSummary} />
+        <CleanTicketMetric label="Product options" value={keyOptionSummary} />
         <CleanTicketMetric label="Artwork status" value={activeArtworkLinks.length ? "Attached" : "Missing"} target="artwork" source="attachment" confidence={activeArtworkLinks[0]?.confidence ?? null} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
       </div>
       {(needsProductSelection || productSelectorOpen) ? (
@@ -3875,25 +3882,51 @@ function CleanProductionTicketCard({
           </Button>
         </div>
       )}
-      {needsQuantity && (
-        <div
-          className={cn("mt-3 rounded border border-amber-400/40 bg-amber-400/10 p-3", cleanHighlightClass("quantity", activeTarget))}
-          data-clean-destination-target="quantity"
-          data-clean-resolution-target="quantity"
-          data-clean-resolution-primary="true"
-          data-highlighted={activeTarget === "quantity" ? "true" : "false"}
-          onMouseEnter={() => onFocusTarget("quantity")}
-        >
-          <OrderEntryField label="Confirm quantity">
+      <div
+        className={cn("mt-3 rounded border border-slate-800 bg-slate-950 p-3", needsQuantity && "border-amber-400/40 bg-amber-400/10")}
+        data-testid="clean-quantity-size-workflow"
+      >
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Quantity & Size</div>
+          {!lineItem.quantity && <Badge variant="destructive">Quantity needed</Badge>}
+        </div>
+        <div className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+          <div
+            className={cn(cleanHighlightClass("quantity", activeTarget))}
+            data-clean-destination-target="quantity"
+            data-clean-resolution-target="quantity"
+            data-clean-resolution-primary="true"
+            data-highlighted={activeTarget === "quantity" ? "true" : "false"}
+            onMouseEnter={() => onFocusTarget("quantity")}
+          >
+            <OrderEntryField label={needsQuantity ? "Confirm quantity" : "Quantity"}>
             <Input
               value={lineItem.quantity ?? ""}
               onChange={(event) => onChange({ quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })}
               data-testid="clean-inline-quantity-input"
               placeholder="Enter quantity"
             />
+            </OrderEntryField>
+          </div>
+          <OrderEntryField label="Width" className={cleanHighlightClass("dimensions", activeTarget)}>
+            <Input value={lineItem.width ?? ""} onChange={(event) => onChange({ width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
+          </OrderEntryField>
+          <OrderEntryField label="Height" className={cleanHighlightClass("dimensions", activeTarget)}>
+            <Input value={lineItem.height ?? ""} onChange={(event) => onChange({ height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
+          </OrderEntryField>
+          <OrderEntryField label="Unit">
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+              value={lineItem.dimensionsUnit ?? "in"}
+              onChange={(event) => onChange({ dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })}
+              aria-label="Dimension Unit"
+            >
+              <option value="in">In</option>
+              <option value="ft">Ft</option>
+            </select>
           </OrderEntryField>
         </div>
-      )}
+      </div>
       {!activeArtworkLinks.length && (
         <div
           className={cn("mt-3 rounded border border-slate-800 bg-slate-950 p-3", cleanHighlightClass("artwork", activeTarget))}
@@ -3967,41 +4000,6 @@ function CleanProductionTicketCard({
           <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
         </summary>
         <div className="grid gap-3 border-t border-slate-800 p-3">
-          <div className="grid gap-2 sm:grid-cols-2">
-          <OrderEntryField label="Quantity override" className={cleanHighlightClass("quantity", activeTarget)}>
-            <Input value={lineItem.quantity ?? ""} onChange={(event) => onChange({ quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })} />
-          </OrderEntryField>
-          {!hasSelectedProduct && (
-            <OrderEntryField label="Material">
-              <Input value={lineItem.materialText ?? ""} onChange={(event) => onChange({ materialText: trimToNull(event.target.value), materialSource: "staff_selected" })} />
-            </OrderEntryField>
-          )}
-          {hasSelectedProduct && lineItem.materialText && (
-            <div className="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300">
-              <div className="font-bold uppercase tracking-wide text-slate-500">Parsed material</div>
-              <div className="mt-1">{lineItem.materialText}</div>
-              <div className="mt-1 text-[11px] text-slate-500">Configured product options below control selectable materials, thicknesses, and finishing.</div>
-            </div>
-          )}
-          <OrderEntryField label="Width" className={cleanHighlightClass("dimensions", activeTarget)}>
-            <Input value={lineItem.width ?? ""} onChange={(event) => onChange({ width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
-          </OrderEntryField>
-          <OrderEntryField label="Height" className={cleanHighlightClass("dimensions", activeTarget)}>
-            <Input value={lineItem.height ?? ""} onChange={(event) => onChange({ height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
-          </OrderEntryField>
-          <OrderEntryField label="Dimension Unit">
-            <select
-              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-              value={lineItem.dimensionsUnit ?? "in"}
-              onChange={(event) => onChange({ dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })}
-            >
-              <option value="in">Inches</option>
-              <option value="ft">Feet</option>
-            </select>
-          </OrderEntryField>
-          </div>
-        </div>
-        <div className="grid gap-2 border-t border-slate-800 p-3">
           <OrderEntryField label="Artwork assignment">
             <select
               className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"

@@ -1359,6 +1359,9 @@ describe("InboundOrdersPage", () => {
     expect(ticketDetails.open).toBe(false);
     expect(container.querySelector("[data-testid='clean-product-catalog-selector']")).toBeTruthy();
     expect(container.textContent).toContain("Select product from catalog");
+    expect(container.textContent).toContain("Parsed phrase:");
+    expect(container.querySelector("[data-testid='clean-quantity-size-workflow']")).toBeTruthy();
+    expect(container.textContent).toContain("Quantity & Size");
     const catalogProductSelect = container.querySelector("[data-testid='clean-product-catalog-select']") as HTMLSelectElement;
     expect(catalogProductSelect).toBeTruthy();
     expect(catalogProductSelect.tagName).toBe("SELECT");
@@ -1431,10 +1434,11 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Product resolved");
     expect(container.textContent).not.toContain("Product unresolved");
     expect(container.querySelector("[data-clean-checklist-item='Product resolved']")?.getAttribute("data-complete")).toBe("true");
-    expect(container.textContent).toContain("Dimension Unit");
+    expect(container.querySelector("[aria-label='Dimension Unit']")).toBeTruthy();
     expect(container.textContent).not.toContain("Size Unit");
     expect(container.textContent).not.toContain("Finishing");
-    expect(container.textContent).toContain("Parsed material");
+    expect(container.textContent).not.toContain("Parsed material");
+    expect(Array.from(container.querySelectorAll("label")).some((label) => label.textContent?.trim() === "Material")).toBe(false);
     await waitForText("Product options");
     expect(container.querySelector("[data-testid='clean-dynamic-product-options']")).toBeTruthy();
     await waitForText("Thickness");
