@@ -29,6 +29,7 @@ import {
   type InboundOrderReviewReadinessScore,
   type InboundOrderReviewDraftSaveRequest,
   type InboundOrderRecordWithTrust,
+  type InboundOrderReviewValueSource,
   type InboundOrderReviewDraftStatus,
   type InboundSenderTrustStatus,
   type InboundSenderTrustSummary,
@@ -3206,6 +3207,12 @@ export class InboundOrderService {
     return parsed.success ? parsed.data : null;
   }
 
+  private reviewQuantitySource(lineItem: InboundOrderParsedDraft["lineItems"][number]): InboundOrderReviewValueSource {
+    return lineItem.warnings.some((warning) => warning.code === "quantity_inferred_from_number_word")
+      ? "source_evidence"
+      : "ai_inferred";
+  }
+
   private async buildEditableReviewDraftFromParse(args: {
     organizationId: string;
     record: InboundOrderRecord;
@@ -3254,7 +3261,7 @@ export class InboundOrderService {
           interpretedProductConfidence: productInterpretation?.confidence ?? null,
           productUnresolved: false,
           quantity: lineItem.quantity,
-          quantitySource: lineItem.quantity ? "ai_inferred" : null,
+          quantitySource: lineItem.quantity ? this.reviewQuantitySource(lineItem) : null,
           width: lineItem.width,
           height: lineItem.height,
           dimensionsUnit: lineItem.dimensionsUnit,
@@ -3298,7 +3305,7 @@ export class InboundOrderService {
         interpretedProductConfidence: productInterpretation?.confidence ?? null,
         productUnresolved: !selectedProductId,
         quantity: lineItem.quantity,
-        quantitySource: lineItem.quantity ? "ai_inferred" : null,
+        quantitySource: lineItem.quantity ? this.reviewQuantitySource(lineItem) : null,
         width: lineItem.width,
         height: lineItem.height,
         dimensionsUnit: lineItem.dimensionsUnit,

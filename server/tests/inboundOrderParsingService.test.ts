@@ -230,6 +230,54 @@ describe("InboundOrderParsingService", () => {
     expect(repo.matchLineItemProductWithEvent).not.toHaveBeenCalled();
   });
 
+  test("normalizes common quantity words from email body before missing decision detection", async () => {
+    const { repo } = makeRepository(inboundRecord({
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        reference: "PO-321",
+        sender: { name: "Rick Clark", email: "rick@example.com" },
+        subject: "Magnets",
+        bodyText: "Can you make me two magnets that are 12 x 12 of the attached file thank you",
+      },
+    }));
+    const provider = makeProvider(JSON.stringify(parsedDraft({
+      order: {
+        ...parsedDraft().order,
+        poNumber: "PO-321",
+        notes: "Can you make me two magnets that are 12 x 12 of the attached file thank you",
+      },
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: "Magnets that are 12 x 12",
+        productName: "Magnets",
+        quantity: null,
+        width: 12,
+        height: 12,
+        dimensionsUnit: "in",
+        materialText: null,
+      }],
+    })));
+    const service = new InboundOrderParsingService(repo as any, () => provider);
+
+    const result = await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(result.draft?.lineItems[0]).toMatchObject({
+      quantity: 2,
+      sourceText: expect.stringContaining("two magnets"),
+    });
+    expect(result.draft?.lineItems[0].warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "quantity_inferred_from_number_word",
+        fieldPath: "lineItems.0.quantity",
+      }),
+    ]));
+    expect(result.draft?.missingDecisions.some((decision) => decision.field === "lineItems.0.quantity")).toBe(false);
+  });
+
   test("adds compact customer intelligence to parse prompts and stored parsed drafts when customer resolution is confident", async () => {
     const { repo, attempts } = makeRepository();
     const provider = makeProvider(JSON.stringify(parsedDraft()));

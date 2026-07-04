@@ -1046,7 +1046,7 @@ function cleanCompletionChecklist(
 ) {
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
   const hasCustomer = Boolean(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || form.reviewedCustomerJson.unresolvedCustomer);
-  const hasProduct = Boolean(firstLine?.selectedProductId || firstLine?.productName || firstLine?.productUnresolved);
+  const hasProduct = Boolean(firstLine?.selectedProductId || (firstLine?.productName && !firstLine.productUnresolved));
   const hasQuantity = Boolean(firstLine?.quantity);
   const artworkLinked = form.reviewedArtworkJson.status === "supplied"
     || form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some((link) => link.source !== "staff_removed"));
@@ -1058,12 +1058,12 @@ function cleanCompletionChecklist(
     || Boolean(lineItem.pricingReviewJson.acknowledged && lineItem.pricingReviewJson.resolution)
   ));
   return [
-    { label: "Customer matched", complete: hasCustomer },
-    { label: "Product resolved", complete: hasProduct },
-    { label: "Quantity confirmed", complete: hasQuantity },
-    { label: "Artwork linked", complete: artworkLinked },
-    { label: "Due date identified", complete: dueDate },
-    { label: "Pricing reviewed", complete: pricingReviewed && reviewDraft.validationErrors.every((error) => !error.toLowerCase().includes("price")) },
+    { label: "Customer matched", complete: hasCustomer, target: "customer" as const },
+    { label: "Product resolved", complete: hasProduct, target: "product" as const },
+    { label: "Quantity confirmed", complete: hasQuantity, target: "quantity" as const },
+    { label: "Artwork linked", complete: artworkLinked, target: "artwork" as const },
+    { label: "Due date identified", complete: dueDate, target: "dueDate" as const },
+    { label: "Pricing reviewed", complete: pricingReviewed && reviewDraft.validationErrors.every((error) => !error.toLowerCase().includes("price")), target: "pricing" as const },
   ];
 }
 
@@ -3772,12 +3772,19 @@ function CleanProductionTicketCard({
   activeTarget: CleanHighlightTarget | null;
   onFocusTarget: CleanFocusTargetHandler;
 }) {
-  const requiredComplete = Boolean((lineItem.selectedProductId || lineItem.productName || lineItem.productUnresolved) && lineItem.quantity && lineItem.width && lineItem.height);
-  const [detailsOpen, setDetailsOpen] = useState(!requiredComplete);
+  const requiredComplete = Boolean(lineItem.selectedProductId && lineItem.quantity && lineItem.width && lineItem.height);
+  const needsProductSelection = !lineItem.selectedProductId || lineItem.productUnresolved;
+  const needsQuantity = !lineItem.quantity;
+  const advancedDetailsNeeded = !lineItem.width || !lineItem.height;
+  const [detailsOpen, setDetailsOpen] = useState(advancedDetailsNeeded);
   const [userControlledOpen, setUserControlledOpen] = useState(false);
+  const [productSelectorOpen, setProductSelectorOpen] = useState(needsProductSelection);
   useEffect(() => {
-    if (!userControlledOpen) setDetailsOpen(!requiredComplete);
-  }, [requiredComplete, userControlledOpen]);
+    if (!userControlledOpen) setDetailsOpen(advancedDetailsNeeded);
+  }, [advancedDetailsNeeded, userControlledOpen]);
+  useEffect(() => {
+    if (needsProductSelection) setProductSelectorOpen(true);
+  }, [needsProductSelection]);
   const activeArtworkLinks = lineItem.artworkLinks.filter((link) => link.source !== "staff_removed");
   const dimensions = lineItem.width && lineItem.height ? `${lineItem.width} x ${lineItem.height}` : "-";
   const reviewStatus = requiredComplete ? "Ready to review" : "Needs details";
@@ -3792,6 +3799,59 @@ function CleanProductionTicketCard({
     !activeArtworkLinks.some((activeLink) => artworkLinkKey(activeLink) === artworkLinkKey(link))
   ));
   const hasSelectedProduct = Boolean(lineItem.selectedProductId);
+  const handleProductSelection = (value: string) => {
+    const productId = trimToNull(value);
+    const selectedOption = productOptions.find((option) => option.id === productId);
+    onChange({
+      productName: productId ? selectedOption?.label ?? lineItem.productName : null,
+      selectedProductId: productId,
+      selectedProductSource: productId ? "staff_selected" : null,
+      interpretedProductId: null,
+      interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
+      interpretedProductConfidence: null,
+      productUnresolved: !productId,
+      optionSelectionsJson: null,
+      pbv2TreeVersionId: null,
+      pbv2OptionSuggestions: [],
+    });
+    if (productId) setProductSelectorOpen(false);
+  };
+  const productSelector = (
+    <div
+      className={cn("rounded border border-blue-400/40 bg-blue-400/10 p-3", cleanHighlightClass("product", activeTarget))}
+      data-testid="clean-product-catalog-selector"
+      data-clean-destination-target="product"
+      data-clean-resolution-target="product"
+      data-clean-resolution-primary="true"
+      data-highlighted={activeTarget === "product" ? "true" : "false"}
+      onMouseEnter={() => onFocusTarget("product")}
+    >
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-xs font-bold uppercase tracking-wide text-blue-100">Select product from catalog</div>
+          <div className="text-[11px] text-slate-400">Search active catalog products to resolve this line item.</div>
+        </div>
+        {needsProductSelection ? <Badge variant="destructive">Product unresolved</Badge> : <Badge variant="secondary">Product resolved</Badge>}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-[1fr_1fr]">
+        <OrderEntryField label="Search active catalog">
+          <Input value={productSearch} onChange={(event) => onProductSearchChange(event.target.value)} placeholder="Search active products..." data-testid="clean-product-catalog-search" />
+        </OrderEntryField>
+        <OrderEntryField label="Select product">
+          <select
+            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+            value={lineItem.selectedProductId ?? ""}
+            onChange={(event) => handleProductSelection(event.target.value)}
+            data-testid="clean-product-catalog-select"
+          >
+            <option value="">Unselected</option>
+            {isProductSearchFetching && <option value="" disabled>Searching catalog...</option>}
+            {productOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+          </select>
+        </OrderEntryField>
+      </div>
+    </div>
+  );
   return (
     <div className="border border-slate-700 bg-slate-900 p-3" data-testid="clean-production-ticket-card">
       <div className="flex items-center justify-between gap-2">
@@ -3806,6 +3866,73 @@ function CleanProductionTicketCard({
         <CleanTicketMetric label="Key options" value={keyOptionSummary} />
         <CleanTicketMetric label="Artwork status" value={activeArtworkLinks.length ? "Attached" : "Missing"} target="artwork" source="attachment" confidence={activeArtworkLinks[0]?.confidence ?? null} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
       </div>
+      {(needsProductSelection || productSelectorOpen) ? (
+        <div className="mt-3">{productSelector}</div>
+      ) : (
+        <div className="mt-2 flex justify-end">
+          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={() => setProductSelectorOpen(true)}>
+            Change product
+          </Button>
+        </div>
+      )}
+      {needsQuantity && (
+        <div
+          className={cn("mt-3 rounded border border-amber-400/40 bg-amber-400/10 p-3", cleanHighlightClass("quantity", activeTarget))}
+          data-clean-destination-target="quantity"
+          data-clean-resolution-target="quantity"
+          data-clean-resolution-primary="true"
+          data-highlighted={activeTarget === "quantity" ? "true" : "false"}
+          onMouseEnter={() => onFocusTarget("quantity")}
+        >
+          <OrderEntryField label="Confirm quantity">
+            <Input
+              value={lineItem.quantity ?? ""}
+              onChange={(event) => onChange({ quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })}
+              data-testid="clean-inline-quantity-input"
+              placeholder="Enter quantity"
+            />
+          </OrderEntryField>
+        </div>
+      )}
+      {!activeArtworkLinks.length && (
+        <div
+          className={cn("mt-3 rounded border border-slate-800 bg-slate-950 p-3", cleanHighlightClass("artwork", activeTarget))}
+          data-clean-destination-target="artwork"
+          data-clean-resolution-target="artwork"
+          data-clean-resolution-primary="true"
+          data-highlighted={activeTarget === "artwork" ? "true" : "false"}
+          onMouseEnter={() => onFocusTarget("artwork")}
+        >
+          <OrderEntryField label="Resolve artwork">
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+              value=""
+              onChange={(event) => {
+                const key = trimToNull(event.target.value);
+                const selectedLink = attachmentLinkOptions.find((link) => artworkLinkKey(link) === key);
+                if (!selectedLink) return;
+                onChange({
+                  artworkLinks: [
+                    ...lineItem.artworkLinks.filter((link) => artworkLinkKey(link) !== key),
+                    {
+                      ...selectedLink,
+                      source: "staff_selected",
+                      confidence: 100,
+                      reason: "Staff selected artwork attachment for this line item.",
+                    },
+                  ],
+                });
+              }}
+              data-testid="clean-inline-artwork-select"
+            >
+              <option value="">{availableArtworkOptions.length > 0 ? "Attach artwork file..." : "No artwork files available"}</option>
+              {availableArtworkOptions.map((link) => (
+                <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>{link.filename || link.fileId}</option>
+              ))}
+            </select>
+          </OrderEntryField>
+        </div>
+      )}
       <button
         type="button"
         className={cn("mt-3 flex w-full items-center gap-3 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-left", cleanHighlightClass("artwork", activeTarget))}
@@ -3822,6 +3949,11 @@ function CleanProductionTicketCard({
           <div className="text-[11px] uppercase tracking-wide text-slate-500">Preflight {activeArtworkLinks.length ? "attached" : "pending"}</div>
         </div>
       </button>
+      {hasSelectedProduct && (
+        <div className="mt-3" data-testid="clean-dynamic-product-options" data-clean-resolution-target="product-options">
+          <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={onChange} />
+        </div>
+      )}
       <details className="group mt-3 rounded border border-slate-800 bg-slate-950" open={detailsOpen} data-testid="clean-ticket-details">
         <summary
           className="flex h-8 cursor-pointer list-none items-center justify-between px-3 text-xs font-bold text-slate-300"
@@ -3835,49 +3967,8 @@ function CleanProductionTicketCard({
           <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
         </summary>
         <div className="grid gap-3 border-t border-slate-800 p-3">
-          <div className={cn("rounded border border-slate-800 bg-slate-900 p-3", cleanHighlightClass("product", activeTarget))} data-testid="clean-product-catalog-selector">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Active catalog product</div>
-                <div className="text-[11px] text-slate-500">Search and select the product that will carry configured options.</div>
-              </div>
-              {lineItem.productUnresolved ? <Badge variant="destructive">Product unresolved</Badge> : <Badge variant="secondary">Product resolved</Badge>}
-            </div>
-            <div className="grid gap-2 sm:grid-cols-[1fr_1fr]">
-              <OrderEntryField label="Search active catalog">
-                <Input value={productSearch} onChange={(event) => onProductSearchChange(event.target.value)} placeholder="Search active products..." data-testid="clean-product-catalog-search" />
-              </OrderEntryField>
-              <OrderEntryField label="Select product">
-                <select
-                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-                  value={lineItem.selectedProductId ?? ""}
-                  onChange={(event) => {
-                    const productId = trimToNull(event.target.value);
-                    const selectedOption = productOptions.find((option) => option.id === productId);
-                    onChange({
-                      productName: productId ? selectedOption?.label ?? lineItem.productName : null,
-                      selectedProductId: productId,
-                      selectedProductSource: productId ? "staff_selected" : null,
-                      interpretedProductId: null,
-                      interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
-                      interpretedProductConfidence: null,
-                      productUnresolved: !productId,
-                      optionSelectionsJson: null,
-                      pbv2TreeVersionId: null,
-                      pbv2OptionSuggestions: [],
-                    });
-                  }}
-                  data-testid="clean-product-catalog-select"
-                >
-                  <option value="">Unselected</option>
-                  {isProductSearchFetching && <option value="" disabled>Searching catalog...</option>}
-                  {productOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                </select>
-              </OrderEntryField>
-            </div>
-          </div>
           <div className="grid gap-2 sm:grid-cols-2">
-          <OrderEntryField label="Quantity" className={cleanHighlightClass("quantity", activeTarget)}>
+          <OrderEntryField label="Quantity override" className={cleanHighlightClass("quantity", activeTarget)}>
             <Input value={lineItem.quantity ?? ""} onChange={(event) => onChange({ quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })} />
           </OrderEntryField>
           {!hasSelectedProduct && (
@@ -3910,11 +4001,6 @@ function CleanProductionTicketCard({
           </OrderEntryField>
           </div>
         </div>
-        {hasSelectedProduct && (
-          <div className="border-t border-slate-800 p-3" data-testid="clean-dynamic-product-options">
-            <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={onChange} />
-          </div>
-        )}
         <div className="grid gap-2 border-t border-slate-800 p-3">
           <OrderEntryField label="Artwork assignment">
             <select
@@ -3953,7 +4039,9 @@ function CleanProductionTicketCard({
           </OrderEntryField>
         </div>
       </details>
-      <PricingReviewCard review={lineItem.pricingReviewJson} onChange={(pricingReviewJson) => onChange({ pricingReviewJson })} />
+      <div data-clean-resolution-target="pricing">
+        <PricingReviewCard review={lineItem.pricingReviewJson} onChange={(pricingReviewJson) => onChange({ pricingReviewJson })} />
+      </div>
     </div>
   );
 }
@@ -4005,6 +4093,7 @@ function CleanTicketMetric({
         }
       }}
       data-clean-destination-target={target}
+      data-clean-resolution-target={target}
       data-highlighted={activeTarget === target ? "true" : "false"}
     >
       {content}
@@ -4188,6 +4277,18 @@ function CleanOrderWorkstation({
   const firstLineArtworkLinked = firstLine?.artworkLinks.some((link) => link.source !== "staff_removed") || form.reviewedArtworkJson.status === "supplied";
   const completionChecklist = cleanCompletionChecklist(form, reviewDraft);
   const activeEvidenceComparison = cleanEvidenceComparison(activeTarget, form, cleanDraft);
+  const focusResolutionTarget = (target: CleanHighlightTarget) => {
+    onFocusTarget(target, { inspectSource: false });
+    window.setTimeout(() => {
+      const selector = `[data-clean-resolution-target="${target}"][data-clean-resolution-primary="true"], [data-clean-resolution-target="${target}"]`;
+      const targetElement = document.querySelector(selector) as HTMLElement | null;
+      targetElement?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+      const focusable = targetElement?.matches("input, select, textarea, button, [tabindex]")
+        ? targetElement
+        : targetElement?.querySelector("input, select, textarea, button, [tabindex]") as HTMLElement | null;
+      focusable?.focus();
+    }, 0);
+  };
 
   return (
     <section className="flex min-h-0 w-[520px] shrink-0 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
@@ -4236,10 +4337,11 @@ function CleanOrderWorkstation({
         <div className="mb-4 grid grid-cols-2 gap-2">
           <div
             className={cn("rounded transition-shadow", cleanHighlightClass("po", activeTarget))}
-            onMouseEnter={() => onFocusTarget("po")}
-            onFocus={() => onFocusTarget("po")}
-            data-clean-destination-target="po"
-            data-highlighted={activeTarget === "po" ? "true" : "false"}
+          onMouseEnter={() => onFocusTarget("po")}
+          onFocus={() => onFocusTarget("po")}
+          data-clean-destination-target="po"
+          data-clean-resolution-target="po"
+          data-highlighted={activeTarget === "po" ? "true" : "false"}
           >
             <OrderEntryField label="PO Ref">
               <Input data-testid="clean-po-field" data-highlighted={activeTarget === "po" ? "true" : "false"} value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} />
@@ -4250,10 +4352,11 @@ function CleanOrderWorkstation({
           </div>
           <div
             className={cn("rounded transition-shadow", cleanHighlightClass("dueDate", activeTarget))}
-            onMouseEnter={() => onFocusTarget("dueDate")}
-            onFocus={() => onFocusTarget("dueDate")}
-            data-clean-destination-target="dueDate"
-            data-highlighted={activeTarget === "dueDate" ? "true" : "false"}
+          onMouseEnter={() => onFocusTarget("dueDate")}
+          onFocus={() => onFocusTarget("dueDate")}
+          data-clean-destination-target="dueDate"
+          data-clean-resolution-target="dueDate"
+          data-highlighted={activeTarget === "dueDate" ? "true" : "false"}
           >
             <OrderEntryField label="Due date">
               <Input type="date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} />
@@ -4306,12 +4409,19 @@ function CleanOrderWorkstation({
           <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Completion Checklist</div>
           <div className="grid gap-1.5">
             {completionChecklist.map((item) => (
-              <div key={item.label} className="flex items-center gap-2 text-xs text-slate-200" data-clean-checklist-item={item.label} data-complete={item.complete ? "true" : "false"}>
+              <button
+                key={item.label}
+                type="button"
+                className="flex items-center gap-2 rounded px-1.5 py-1 text-left text-xs text-slate-200 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+                data-clean-checklist-item={item.label}
+                data-complete={item.complete ? "true" : "false"}
+                onClick={() => focusResolutionTarget(item.target)}
+              >
                 <span className={cn("flex h-4 w-4 items-center justify-center rounded border text-[10px]", item.complete ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-600 text-slate-500")}>
                   {item.complete ? "x" : ""}
                 </span>
                 <span>{item.label}</span>
-              </div>
+              </button>
             ))}
           </div>
         </div>

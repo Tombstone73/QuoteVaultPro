@@ -1352,16 +1352,13 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).not.toContain("Production Ticket 1");
     expect(container.querySelector("[data-testid='inbound-operational-email-panel']")).toBeNull();
     expect(container.textContent).not.toContain("Draft Builder");
+    expect(container.querySelector("[data-clean-checklist-item='Product resolved']")?.getAttribute("data-complete")).toBe("false");
 
     const ticketDetails = container.querySelector("[data-testid='clean-ticket-details']") as HTMLDetailsElement;
     expect(ticketDetails).toBeTruthy();
     expect(ticketDetails.open).toBe(false);
-    const editSummary = Array.from(ticketDetails.querySelectorAll("summary")).find((summary) => summary.textContent?.includes("Edit details")) as HTMLElement;
-    act(() => {
-      Simulate.click(editSummary);
-    });
-    expect(ticketDetails.open).toBe(true);
     expect(container.querySelector("[data-testid='clean-product-catalog-selector']")).toBeTruthy();
+    expect(container.textContent).toContain("Select product from catalog");
     const catalogProductSelect = container.querySelector("[data-testid='clean-product-catalog-select']") as HTMLSelectElement;
     expect(catalogProductSelect).toBeTruthy();
     expect(catalogProductSelect.tagName).toBe("SELECT");
@@ -1369,6 +1366,20 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Product unresolved");
     const productSearchInput = container.querySelector("[data-testid='clean-product-catalog-search']") as HTMLInputElement;
     expect(productSearchInput).toBeTruthy();
+    const productChecklistButton = container.querySelector("[data-clean-checklist-item='Product resolved']") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(productChecklistButton);
+    });
+    await waitForCondition(() => (
+      document.activeElement === productSearchInput
+        || container.querySelector("[data-testid='clean-product-catalog-selector']")?.getAttribute("data-highlighted") === "true"
+    ), "product checklist focuses inline catalog selector");
+
+    const editSummary = Array.from(ticketDetails.querySelectorAll("summary")).find((summary) => summary.textContent?.includes("Edit details")) as HTMLElement;
+    act(() => {
+      Simulate.click(editSummary);
+    });
+    expect(ticketDetails.open).toBe(true);
 
     const sizeSource = container.querySelector("[data-clean-source-target='dimensions']") as HTMLButtonElement;
     expect(sizeSource).toBeTruthy();
@@ -1419,7 +1430,7 @@ describe("InboundOrdersPage", () => {
     });
     expect(container.textContent).toContain("Product resolved");
     expect(container.textContent).not.toContain("Product unresolved");
-    expect(labeledControl("Select product", "select")).toHaveProperty("value", "product_pvc");
+    expect(container.querySelector("[data-clean-checklist-item='Product resolved']")?.getAttribute("data-complete")).toBe("true");
     expect(container.textContent).toContain("Dimension Unit");
     expect(container.textContent).not.toContain("Size Unit");
     expect(container.textContent).not.toContain("Finishing");
@@ -1525,11 +1536,19 @@ describe("InboundOrdersPage", () => {
     const quantityChecklistItem = () => container.querySelector("[data-clean-checklist-item='Quantity confirmed']");
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("false");
     const ticketDetails = container.querySelector("[data-testid='clean-ticket-details']") as HTMLDetailsElement;
-    expect(ticketDetails.open).toBe(true);
-
-    const quantityInput = labeledControl("Quantity", "input");
+    expect(ticketDetails.open).toBe(false);
+    const inlineQuantityInput = container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
+    expect(inlineQuantityInput).toBeTruthy();
     act(() => {
-      Simulate.change(quantityInput, { target: { value: "2" } } as any);
+      Simulate.click(quantityChecklistItem() as Element);
+    });
+    await waitForCondition(() => (
+      document.activeElement === inlineQuantityInput
+        || container.querySelector("[data-clean-resolution-target='quantity']")?.getAttribute("data-highlighted") === "true"
+    ), "quantity checklist focuses inline quantity input");
+
+    act(() => {
+      Simulate.change(inlineQuantityInput, { target: { value: "2" } } as any);
     });
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("true");
   });
