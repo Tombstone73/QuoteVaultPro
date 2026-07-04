@@ -57,6 +57,43 @@ function numberValue(value: unknown): number | null {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
 }
 
+const QUANTITY_WORD_VALUES: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  dozen: 12,
+};
+
+const PRINT_ITEM_WORDS = [
+  "banner",
+  "banners",
+  "decal",
+  "decals",
+  "magnet",
+  "magnets",
+  "poster",
+  "posters",
+  "print",
+  "prints",
+  "sign",
+  "signs",
+  "sticker",
+  "stickers",
+  "wrap",
+  "wraps",
+];
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function warning(code: string, message: string, severity: InboundOrderParseWarning["severity"] = "warning", fieldPath?: string): InboundOrderParseWarning {
   return { code, message, severity, fieldPath: fieldPath ?? null };
 }
@@ -537,7 +574,8 @@ export class InboundOrderParsingService {
       evidenceBundle?.items.some((item) => item.documentType === "purchase_order" && item.poSummary?.dueDate),
     );
     const dateRefined = hasPurchaseOrderDueDate ? evidenceRefined : this.applyDateInference(record, evidenceRefined);
-    const decisionsRefined = this.applyMissingDecisionDetection(dateRefined);
+    const quantityRefined = this.applyQuantityWordInference(record, dateRefined);
+    const decisionsRefined = this.applyMissingDecisionDetection(quantityRefined);
     return evidenceBundle
       ? {
         ...decisionsRefined,
@@ -552,6 +590,83 @@ export class InboundOrderParsingService {
         ],
       }
       : decisionsRefined;
+  }
+
+  applyQuantityWordInference(record: InboundOrderRecord, draft: InboundOrderParsedDraft): InboundOrderParsedDraft {
+    if (draft.lineItems.length === 0 || draft.lineItems.every((lineItem) => lineItem.quantity)) return draft;
+    const evidence = getManualInboundEvidence(record);
+    const sharedEvidenceText = [
+      evidence.bodyText,
+      evidence.notes,
+      evidence.subject,
+      draft.order.notes,
+    ].filter(Boolean).join("\n");
+
+    let changed = false;
+    const lineItems = draft.lineItems.map((lineItem, index) => {
+      if (lineItem.quantity) return lineItem;
+      const inference = this.inferQuantityWordForLineItem(lineItem, sharedEvidenceText);
+      if (!inference) return lineItem;
+      changed = true;
+      return {
+        ...lineItem,
+        quantity: inference.quantity,
+        sourceText: lineItem.sourceText
+          ? lineItem.sourceText.includes(inference.sourceText) ? lineItem.sourceText : `${lineItem.sourceText} ${inference.sourceText}`.trim()
+          : inference.sourceText,
+        confidence: Math.max(lineItem.confidence, 82),
+        warnings: [
+          ...lineItem.warnings,
+          warning(
+            "quantity_inferred_from_number_word",
+            `Quantity ${inference.quantity} inferred from email body phrase "${inference.sourceText}".`,
+            "info",
+            `lineItems.${index}.quantity`,
+          ),
+        ],
+      };
+    });
+
+    return changed ? { ...draft, lineItems } : draft;
+  }
+
+  private inferQuantityWordForLineItem(
+    lineItem: InboundOrderParsedDraft["lineItems"][number],
+    evidenceText: string,
+  ): { quantity: number; sourceText: string } | null {
+    const text = [lineItem.sourceText, evidenceText].filter(Boolean).join("\n");
+    if (!text.trim()) return null;
+
+    const productTerms = new Set<string>();
+    const addWords = (value: string | null | undefined) => {
+      if (!value) return;
+      value
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .map((word) => word.trim())
+        .filter((word) => word.length >= 3)
+        .forEach((word) => {
+          productTerms.add(word);
+          if (!word.endsWith("s")) productTerms.add(`${word}s`);
+        });
+    };
+    addWords(lineItem.productName);
+    addWords(lineItem.materialText);
+    lineItem.optionTexts.forEach(addWords);
+    lineItem.finishingTexts.forEach(addWords);
+    PRINT_ITEM_WORDS.forEach((word) => productTerms.add(word));
+
+    const quantityWords = Object.keys(QUANTITY_WORD_VALUES).join("|");
+    const productAlternates = Array.from(productTerms).map(escapeRegex).join("|");
+    const pattern = new RegExp(`\\b(${quantityWords})\\b\\s+(?:[\\w./#-]+\\s+){0,3}?(${productAlternates})\\b`, "i");
+    const match = text.match(pattern);
+    if (!match) return null;
+    const quantity = QUANTITY_WORD_VALUES[match[1].toLowerCase()];
+    if (!quantity) return null;
+    return {
+      quantity,
+      sourceText: match[0].replace(/\s+/g, " ").trim(),
+    };
   }
 
   applyReconciledEvidence(draft: InboundOrderParsedDraft, evidenceBundle: InboundOrderEvidenceBundle): InboundOrderParsedDraft {
