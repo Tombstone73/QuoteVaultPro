@@ -443,7 +443,7 @@ function pbv2OptionsResponse(overrides: Record<string, any> = {}) {
           sides: {
             id: "sides",
             kind: "question",
-            label: "Sides",
+            label: "Print Sides",
             input: { type: "select", required: true, selectionKey: "sides" },
             choices: [{ id: "single", value: "single", label: "Single Sided / 4/0" }],
           },
@@ -451,7 +451,7 @@ function pbv2OptionsResponse(overrides: Record<string, any> = {}) {
       },
       requiredOptions: [
         { nodeId: "thickness", selectionKey: "thickness", label: "Thickness", inputType: "select" },
-        { nodeId: "sides", selectionKey: "sides", label: "Sides", inputType: "select" },
+        { nodeId: "sides", selectionKey: "sides", label: "Print Sides", inputType: "select" },
       ],
       suggestedSelections: {
         schemaVersion: 2,
@@ -1333,6 +1333,10 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-completion-checklist']")).toBeTruthy();
     expect(container.textContent).toContain("Customer matched");
     expect(container.textContent).toContain("Product resolved");
+    expect(container.textContent).toContain("Line Items");
+    expect(container.textContent).toContain("Line Item 1");
+    expect(container.textContent).not.toContain("Production Tickets");
+    expect(container.textContent).not.toContain("Production Ticket 1");
     expect(container.querySelector("[data-testid='inbound-operational-email-panel']")).toBeNull();
     expect(container.textContent).not.toContain("Draft Builder");
 
@@ -1344,6 +1348,16 @@ describe("InboundOrdersPage", () => {
       Simulate.click(editSummary);
     });
     expect(ticketDetails.open).toBe(true);
+    const catalogProductSelect = container.querySelector("[data-testid='clean-product-catalog-select']") as HTMLSelectElement;
+    expect(catalogProductSelect).toBeTruthy();
+    expect(catalogProductSelect.tagName).toBe("SELECT");
+    expect(labeledControl("Product", "select")).toHaveProperty("value", "product_1");
+    expect(container.textContent).toContain("Search active catalog products");
+    expect(container.textContent).toContain("Size Unit");
+    expect(container.textContent).not.toContain("Finishing");
+    await waitForText("Product options");
+    await waitForText("Thickness");
+    await waitForText("Print Sides");
 
     const sizeSource = container.querySelector("[data-clean-source-target='dimensions']") as HTMLButtonElement;
     expect(sizeSource).toBeTruthy();
@@ -1407,6 +1421,16 @@ describe("InboundOrdersPage", () => {
       Simulate.click(saveButton);
     });
     await waitForCondition(() => Boolean(getSavedBody()), "clean view manual attachment override saved");
+    expect(getSavedBody().reviewedLineItemsJson[0]).toEqual(expect.objectContaining({
+      selectedProductId: "product_1",
+      selectedProductSource: "source_evidence",
+    }));
+    expect(getSavedBody().reviewedLineItemsJson[0].optionSelectionsJson).toEqual(expect.objectContaining({
+      schemaVersion: 2,
+      selected: expect.objectContaining({
+        thickness: expect.objectContaining({ value: "3mm_white" }),
+      }),
+    }));
     expect(getSavedBody().reviewedArtworkJson.unassignedAttachments).toEqual(expect.arrayContaining([
       expect.objectContaining({
         filename: "Lindsay X2.pdf",
@@ -1435,7 +1459,7 @@ describe("InboundOrdersPage", () => {
     await waitForText("Draft Builder");
   });
 
-  test("updates Clean View completion checklist as production ticket fields are resolved", async () => {
+  test("updates Clean View completion checklist as line item fields are resolved", async () => {
     const baseParsed = parsedDraft();
     const cleanParsed = parsedDraft({
       lineItems: [{
@@ -4057,7 +4081,7 @@ describe("InboundOrdersPage", () => {
     await waitForText("Product options");
     await waitForText("Source evidence");
     await waitForText("Evidence: \"3mm White PVC\"");
-    await waitForText("Missing required options: Sides");
+    await waitForText("Missing required options: Print Sides");
 
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) => (
       button.textContent?.includes("Save Review Draft")
