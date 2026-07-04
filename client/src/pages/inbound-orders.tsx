@@ -3791,6 +3791,7 @@ function CleanProductionTicketCard({
   const availableArtworkOptions = attachmentLinkOptions.filter((link) => (
     !activeArtworkLinks.some((activeLink) => artworkLinkKey(activeLink) === artworkLinkKey(link))
   ));
+  const hasSelectedProduct = Boolean(lineItem.selectedProductId);
   return (
     <div className="border border-slate-700 bg-slate-900 p-3" data-testid="clean-production-ticket-card">
       <div className="flex items-center justify-between gap-2">
@@ -3833,54 +3834,87 @@ function CleanProductionTicketCard({
           Edit details
           <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
         </summary>
-        <div className="grid gap-2 border-t border-slate-800 p-3 sm:grid-cols-2">
-          <OrderEntryField label="Product" className={cleanHighlightClass("product", activeTarget)} >
-            <select
-              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-              value={lineItem.selectedProductId ?? ""}
-              onChange={(event) => {
-                const productId = trimToNull(event.target.value);
-                const selectedOption = productOptions.find((option) => option.id === productId);
-                onChange({
-                  productName: productId ? selectedOption?.label ?? lineItem.productName : null,
-                  selectedProductId: productId,
-                  selectedProductSource: productId ? "staff_selected" : null,
-                  interpretedProductId: null,
-                  interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
-                  interpretedProductConfidence: null,
-                  productUnresolved: !productId,
-                  optionSelectionsJson: null,
-                  pbv2TreeVersionId: null,
-                  pbv2OptionSuggestions: [],
-                });
-              }}
-              data-testid="clean-product-catalog-select"
-            >
-              <option value="">Unselected</option>
-              {isProductSearchFetching && <option value="" disabled>Searching catalog...</option>}
-              {productOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-            </select>
-          </OrderEntryField>
-          <OrderEntryField label="Search active catalog products">
-            <Input value={productSearch} onChange={(event) => onProductSearchChange(event.target.value)} placeholder="Search product catalog" />
-          </OrderEntryField>
+        <div className="grid gap-3 border-t border-slate-800 p-3">
+          <div className={cn("rounded border border-slate-800 bg-slate-900 p-3", cleanHighlightClass("product", activeTarget))} data-testid="clean-product-catalog-selector">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Active catalog product</div>
+                <div className="text-[11px] text-slate-500">Search and select the product that will carry configured options.</div>
+              </div>
+              {lineItem.productUnresolved ? <Badge variant="destructive">Product unresolved</Badge> : <Badge variant="secondary">Product resolved</Badge>}
+            </div>
+            <div className="grid gap-2 sm:grid-cols-[1fr_1fr]">
+              <OrderEntryField label="Search active catalog">
+                <Input value={productSearch} onChange={(event) => onProductSearchChange(event.target.value)} placeholder="Search active products..." data-testid="clean-product-catalog-search" />
+              </OrderEntryField>
+              <OrderEntryField label="Select product">
+                <select
+                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                  value={lineItem.selectedProductId ?? ""}
+                  onChange={(event) => {
+                    const productId = trimToNull(event.target.value);
+                    const selectedOption = productOptions.find((option) => option.id === productId);
+                    onChange({
+                      productName: productId ? selectedOption?.label ?? lineItem.productName : null,
+                      selectedProductId: productId,
+                      selectedProductSource: productId ? "staff_selected" : null,
+                      interpretedProductId: null,
+                      interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
+                      interpretedProductConfidence: null,
+                      productUnresolved: !productId,
+                      optionSelectionsJson: null,
+                      pbv2TreeVersionId: null,
+                      pbv2OptionSuggestions: [],
+                    });
+                  }}
+                  data-testid="clean-product-catalog-select"
+                >
+                  <option value="">Unselected</option>
+                  {isProductSearchFetching && <option value="" disabled>Searching catalog...</option>}
+                  {productOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                </select>
+              </OrderEntryField>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
           <OrderEntryField label="Quantity" className={cleanHighlightClass("quantity", activeTarget)}>
             <Input value={lineItem.quantity ?? ""} onChange={(event) => onChange({ quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })} />
           </OrderEntryField>
-          <OrderEntryField label="Material">
-            <Input value={lineItem.materialText ?? ""} onChange={(event) => onChange({ materialText: trimToNull(event.target.value), materialSource: "staff_selected" })} />
-          </OrderEntryField>
+          {!hasSelectedProduct && (
+            <OrderEntryField label="Material">
+              <Input value={lineItem.materialText ?? ""} onChange={(event) => onChange({ materialText: trimToNull(event.target.value), materialSource: "staff_selected" })} />
+            </OrderEntryField>
+          )}
+          {hasSelectedProduct && lineItem.materialText && (
+            <div className="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300">
+              <div className="font-bold uppercase tracking-wide text-slate-500">Parsed material</div>
+              <div className="mt-1">{lineItem.materialText}</div>
+              <div className="mt-1 text-[11px] text-slate-500">Configured product options below control selectable materials, thicknesses, and finishing.</div>
+            </div>
+          )}
           <OrderEntryField label="Width" className={cleanHighlightClass("dimensions", activeTarget)}>
             <Input value={lineItem.width ?? ""} onChange={(event) => onChange({ width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
           </OrderEntryField>
           <OrderEntryField label="Height" className={cleanHighlightClass("dimensions", activeTarget)}>
             <Input value={lineItem.height ?? ""} onChange={(event) => onChange({ height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
           </OrderEntryField>
-          <OrderEntryField label="Size Unit">
-            <Input value={lineItem.dimensionsUnit ?? ""} onChange={(event) => onChange({ dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })} />
+          <OrderEntryField label="Dimension Unit">
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+              value={lineItem.dimensionsUnit ?? "in"}
+              onChange={(event) => onChange({ dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })}
+            >
+              <option value="in">Inches</option>
+              <option value="ft">Feet</option>
+            </select>
           </OrderEntryField>
+          </div>
         </div>
-        <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={onChange} />
+        {hasSelectedProduct && (
+          <div className="border-t border-slate-800 p-3" data-testid="clean-dynamic-product-options">
+            <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={onChange} />
+          </div>
+        )}
         <div className="grid gap-2 border-t border-slate-800 p-3">
           <OrderEntryField label="Artwork assignment">
             <select

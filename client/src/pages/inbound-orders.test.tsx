@@ -542,11 +542,13 @@ function setupParsedInboundReview({
   parsed = parsedDraft(),
   review = reviewDraft(parsed),
   detailOverrides = {},
+  productSearchResults = [],
 }: {
   row?: any;
   parsed?: any;
   review?: any;
   detailOverrides?: Record<string, any>;
+  productSearchResults?: any[];
 } = {}) {
   const attempt = parseAttempt({ parsedDraft: parsed, confidence: 82, warnings: parsed.globalWarnings });
   let savedBody: any = null;
@@ -567,7 +569,7 @@ function setupParsedInboundReview({
     }
     if (path === `/api/inbound-orders/${row.id}/review-draft`) return jsonResponse({ success: true, data: review });
     if (path === "/api/inbound-orders/customer-search?limit=20") return jsonResponse({ success: true, data: [] });
-    if (path === "/api/inbound-orders/product-search?limit=20") return jsonResponse({ success: true, data: [] });
+    if (path.startsWith("/api/inbound-orders/product-search?")) return jsonResponse({ success: true, data: productSearchResults });
     if (path.startsWith("/api/inbound-orders/contact-search?")) return jsonResponse({ success: true, data: [] });
     if (path.startsWith("/api/inbound-orders/product-options/") && options?.method === "POST") return jsonResponse(pbv2OptionsResponse());
     return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
@@ -1285,13 +1287,24 @@ describe("InboundOrdersPage", () => {
       globalWarnings: [],
     });
     const cleanReview = reviewDraft(cleanParsed);
+    cleanReview.reviewedLineItemsJson[0].selectedProductId = null;
     cleanReview.reviewedLineItemsJson[0].quantitySource = "source_evidence";
     cleanReview.reviewedLineItemsJson[0].dimensionsSource = "source_evidence";
     cleanReview.reviewedLineItemsJson[0].selectedProductSource = "source_evidence";
+    cleanReview.reviewedLineItemsJson[0].productUnresolved = true;
+    cleanReview.reviewedLineItemsJson[0].optionSelectionsJson = null;
     const { getSavedBody } = setupParsedInboundReview({
       row,
       parsed: cleanParsed,
       review: cleanReview,
+      productSearchResults: [{
+        id: "product_pvc",
+        name: "PVC Signs",
+        category: "Rigid Signs",
+        pricingMode: "pbv2",
+        pbv2ActiveTreeVersionId: "tree_pvc",
+        description: "PVC sign product",
+      }],
       detailOverrides: {
         files: [{
           id: "file_art",
@@ -1348,16 +1361,14 @@ describe("InboundOrdersPage", () => {
       Simulate.click(editSummary);
     });
     expect(ticketDetails.open).toBe(true);
+    expect(container.querySelector("[data-testid='clean-product-catalog-selector']")).toBeTruthy();
     const catalogProductSelect = container.querySelector("[data-testid='clean-product-catalog-select']") as HTMLSelectElement;
     expect(catalogProductSelect).toBeTruthy();
     expect(catalogProductSelect.tagName).toBe("SELECT");
-    expect(labeledControl("Product", "select")).toHaveProperty("value", "product_1");
-    expect(container.textContent).toContain("Search active catalog products");
-    expect(container.textContent).toContain("Size Unit");
-    expect(container.textContent).not.toContain("Finishing");
-    await waitForText("Product options");
-    await waitForText("Thickness");
-    await waitForText("Print Sides");
+    expect(labeledControl("Select product", "select")).toHaveProperty("value", "");
+    expect(container.textContent).toContain("Product unresolved");
+    const productSearchInput = container.querySelector("[data-testid='clean-product-catalog-search']") as HTMLInputElement;
+    expect(productSearchInput).toBeTruthy();
 
     const sizeSource = container.querySelector("[data-clean-source-target='dimensions']") as HTMLButtonElement;
     expect(sizeSource).toBeTruthy();
@@ -1399,6 +1410,29 @@ describe("InboundOrdersPage", () => {
     });
     expect(container.querySelector("[data-testid='clean-artwork-target']")?.getAttribute("data-highlighted")).toBe("true");
 
+    act(() => {
+      Simulate.change(productSearchInput, { target: { value: "PVC" } } as any);
+    });
+    await waitForCondition(() => Array.from(catalogProductSelect.options).some((option) => option.value === "product_pvc"), "clean catalog search returns active product option");
+    act(() => {
+      Simulate.change(catalogProductSelect, { target: { value: "product_pvc" } } as any);
+    });
+    expect(container.textContent).toContain("Product resolved");
+    expect(container.textContent).not.toContain("Product unresolved");
+    expect(labeledControl("Select product", "select")).toHaveProperty("value", "product_pvc");
+    expect(container.textContent).toContain("Dimension Unit");
+    expect(container.textContent).not.toContain("Size Unit");
+    expect(container.textContent).not.toContain("Finishing");
+    expect(container.textContent).toContain("Parsed material");
+    await waitForText("Product options");
+    expect(container.querySelector("[data-testid='clean-dynamic-product-options']")).toBeTruthy();
+    await waitForText("Thickness");
+    await waitForText("Print Sides");
+    const keyOptionsEditor = Array.from(container.querySelectorAll("label")).find((label) => (
+      label.textContent?.includes("Key Options") && Boolean(label.querySelector("input, select, textarea"))
+    ));
+    expect(keyOptionsEditor).toBeUndefined();
+
     const poTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "PO") as HTMLButtonElement;
     act(() => {
       Simulate.click(poTab);
@@ -1422,8 +1456,10 @@ describe("InboundOrdersPage", () => {
     });
     await waitForCondition(() => Boolean(getSavedBody()), "clean view manual attachment override saved");
     expect(getSavedBody().reviewedLineItemsJson[0]).toEqual(expect.objectContaining({
-      selectedProductId: "product_1",
-      selectedProductSource: "source_evidence",
+      selectedProductId: "product_pvc",
+      productName: "PVC Signs",
+      selectedProductSource: "staff_selected",
+      productUnresolved: false,
     }));
     expect(getSavedBody().reviewedLineItemsJson[0].optionSelectionsJson).toEqual(expect.objectContaining({
       schemaVersion: 2,
