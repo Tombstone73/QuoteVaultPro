@@ -3781,6 +3781,9 @@ function CleanProductionTicketCard({
   }, [needsProductSelection]);
   const activeArtworkLinks = lineItem.artworkLinks.filter((link) => link.source !== "staff_removed");
   const dimensions = lineItem.width && lineItem.height ? `${lineItem.width} x ${lineItem.height}` : "-";
+  const sizeDisplay = lineItem.width && lineItem.height
+    ? `${lineItem.width} x ${lineItem.height} ${lineItem.dimensionsUnit === "ft" ? "feet" : "inches"}`
+    : "Size needed";
   const hasSelectedProduct = Boolean(lineItem.selectedProductId);
   const parsedProductContext = [lineItem.sourceText, lineItem.productName]
     .map((value) => value?.trim())
@@ -3879,12 +3882,29 @@ function CleanProductionTicketCard({
           )}
         </div>
       </div>
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        <CleanTicketMetric label="Product" value={lineItem.productName || "Unselected"} target="product" source={lineItem.selectedProductSource} confidence={lineItem.interpretedProductConfidence} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-        <CleanTicketMetric label="Qty" value={lineItem.quantity ?? "-"} target="quantity" source={lineItem.quantitySource} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-        <CleanTicketMetric label="Size" value={dimensions} target="dimensions" source={lineItem.dimensionsSource} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-        <CleanTicketMetric label="Product options" value={keyOptionSummary} />
-        <CleanTicketMetric label="Artwork status" value={activeArtworkLinks.length ? "Attached" : "Missing"} target="artwork" source="attachment" confidence={activeArtworkLinks[0]?.confidence ?? null} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+      <div className="mt-3 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300">
+        <div className="grid gap-2 sm:grid-cols-5">
+          <div className="min-w-0">
+            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Product</div>
+            <div className="truncate font-semibold text-slate-100">{lineItem.productName || "Unselected"}</div>
+          </div>
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Qty</div>
+            <div className="font-semibold text-slate-100">{lineItem.quantity ?? "-"}</div>
+          </div>
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Size</div>
+            <div className="font-semibold text-slate-100">{sizeDisplay}</div>
+          </div>
+          <div className="min-w-0">
+            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Artwork</div>
+            <div className="truncate font-semibold text-slate-100">{activeArtworkLinks.length ? "Linked" : "Missing"}</div>
+          </div>
+          <div className="min-w-0">
+            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Product Options</div>
+            <div className="truncate font-semibold text-slate-100">{keyOptionSummary}</div>
+          </div>
+        </div>
       </div>
       <div className="mt-3 grid gap-1.5 sm:grid-cols-5" data-testid="clean-line-item-decision-strip">
         {decisionSteps.map((step) => (
@@ -3896,135 +3916,181 @@ function CleanProductionTicketCard({
       </div>
       {!workflowOpen && workflowComplete && (
         <div className="mt-3 rounded border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-xs text-emerald-100" data-testid="clean-line-item-collapsed-summary">
-          {lineItem.productName || "Product"} · {lineItem.quantity ?? "-"} · {dimensions} · {activeArtworkLinks[0]?.filename || "Artwork attached"} · {keyOptionSummary}
+          {lineItem.productName || "Product"} / Qty {lineItem.quantity ?? "-"} / {sizeDisplay} / {activeArtworkLinks.length ? "Artwork linked" : "Artwork pending"} / {workflowComplete ? "Ready" : keyOptionSummary}
         </div>
       )}
       {workflowOpen && (
-        <>
-      {(needsProductSelection || productSelectorOpen) ? (
-        <div className="mt-3">{productSelector}</div>
-      ) : (
-        <div className="mt-2 flex justify-end">
-          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={() => setProductSelectorOpen(true)}>
-            Change product
-          </Button>
-        </div>
-      )}
-      <div
-        className={cn("mt-3 rounded border border-slate-800 bg-slate-950 p-3", needsQuantity && "border-amber-400/40 bg-amber-400/10")}
-        data-testid="clean-quantity-size-workflow"
-      >
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Quantity & Size</div>
-          {!lineItem.quantity && <Badge variant="destructive">Quantity needed</Badge>}
-        </div>
-        <div className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
-          <div
-            className={cn(cleanHighlightClass("quantity", activeTarget))}
-            data-clean-destination-target="quantity"
-            data-clean-resolution-target="quantity"
+        <div className="mt-3 grid gap-3" data-testid="clean-line-item-task-list">
+          <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-line-item-task-product">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 1</div>
+                <div className="text-sm font-bold text-slate-100">Product</div>
+              </div>
+              <Badge variant={hasSelectedProduct && !lineItem.productUnresolved ? "secondary" : "destructive"}>{hasSelectedProduct && !lineItem.productUnresolved ? "Done" : "Needs decision"}</Badge>
+            </div>
+            {(needsProductSelection || productSelectorOpen) ? (
+              productSelector
+            ) : (
+              <div
+                className={cn("rounded border border-slate-800 bg-slate-900 px-3 py-2", cleanHighlightClass("product", activeTarget))}
+                data-clean-destination-target="product"
+                data-clean-resolution-target="product"
+                data-highlighted={activeTarget === "product" ? "true" : "false"}
+                onMouseEnter={() => onFocusTarget("product")}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-slate-100">{lineItem.productName || "Selected product"}</div>
+                    <div className="text-[11px] text-slate-500">Product determines the available option controls.</div>
+                  </div>
+                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={() => setProductSelectorOpen(true)}>
+                    Change product
+                  </Button>
+                </div>
+              </div>
+            )}
+          </section>
+          <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-quantity-size-workflow">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 2</div>
+                <div className="text-sm font-bold text-slate-100">Quantity & Size</div>
+              </div>
+              <Badge variant={lineItem.quantity && lineItem.width && lineItem.height ? "secondary" : "destructive"}>{lineItem.quantity && lineItem.width && lineItem.height ? "Done" : "Needs decision"}</Badge>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-[130px_1fr]">
+              <div
+                className={cn(cleanHighlightClass("quantity", activeTarget))}
+                data-clean-destination-target="quantity"
+                data-clean-resolution-target="quantity"
+                data-clean-resolution-primary="true"
+                data-highlighted={activeTarget === "quantity" ? "true" : "false"}
+                onMouseEnter={() => onFocusTarget("quantity")}
+              >
+                <OrderEntryField label="How many?">
+                  <Input
+                    value={lineItem.quantity ?? ""}
+                    onChange={(event) => onChange({ quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })}
+                    data-testid="clean-inline-quantity-input"
+                    placeholder="Qty"
+                  />
+                </OrderEntryField>
+              </div>
+              <div
+                className={cn("rounded transition-shadow", cleanHighlightClass("dimensions", activeTarget))}
+                data-clean-destination-target="dimensions"
+                data-clean-resolution-target="dimensions"
+                data-highlighted={activeTarget === "dimensions" ? "true" : "false"}
+                onMouseEnter={() => onFocusTarget("dimensions")}
+              >
+                <div className="space-y-1 text-xs text-muted-foreground">
+                  Size
+                  <div className="grid grid-cols-[1fr_auto_1fr_72px] items-center gap-2">
+                    <Input aria-label="Width" value={lineItem.width ?? ""} onChange={(event) => onChange({ width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} placeholder="Width" />
+                    <span className="text-slate-500">x</span>
+                    <Input aria-label="Height" value={lineItem.height ?? ""} onChange={(event) => onChange({ height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} placeholder="Height" />
+                    <select
+                      className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                      value={lineItem.dimensionsUnit ?? "in"}
+                      onChange={(event) => onChange({ dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })}
+                      aria-label="Dimension Unit"
+                    >
+                      <option value="in">In</option>
+                      <option value="ft">Ft</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section
+            className={cn("rounded border border-slate-800 bg-slate-950 p-3", cleanHighlightClass("artwork", activeTarget))}
+            data-testid="clean-line-item-task-artwork"
+            data-clean-destination-target="artwork"
+            data-clean-resolution-target="artwork"
             data-clean-resolution-primary="true"
-            data-highlighted={activeTarget === "quantity" ? "true" : "false"}
-            onMouseEnter={() => onFocusTarget("quantity")}
+            data-highlighted={activeTarget === "artwork" ? "true" : "false"}
+            onMouseEnter={() => onFocusTarget("artwork")}
           >
-            <OrderEntryField label={needsQuantity ? "Confirm quantity" : "Quantity"}>
-            <Input
-              value={lineItem.quantity ?? ""}
-              onChange={(event) => onChange({ quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })}
-              data-testid="clean-inline-quantity-input"
-              placeholder="Enter quantity"
-            />
-            </OrderEntryField>
-          </div>
-          <OrderEntryField label="Width" className={cleanHighlightClass("dimensions", activeTarget)}>
-            <Input value={lineItem.width ?? ""} onChange={(event) => onChange({ width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
-          </OrderEntryField>
-          <OrderEntryField label="Height" className={cleanHighlightClass("dimensions", activeTarget)}>
-            <Input value={lineItem.height ?? ""} onChange={(event) => onChange({ height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
-          </OrderEntryField>
-          <OrderEntryField label="Unit">
-            <select
-              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-              value={lineItem.dimensionsUnit ?? "in"}
-              onChange={(event) => onChange({ dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })}
-              aria-label="Dimension Unit"
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 3</div>
+                <div className="text-sm font-bold text-slate-100">Artwork</div>
+              </div>
+              <Badge variant={activeArtworkLinks.length ? "secondary" : "destructive"}>{activeArtworkLinks.length ? "Attached" : "Needs assignment"}</Badge>
+            </div>
+            <button
+              type="button"
+              className="mb-3 flex w-full items-center gap-3 rounded border border-slate-800 bg-slate-900 px-3 py-2 text-left"
+              onClick={() => onFocusTarget("artwork")}
+              data-testid="clean-artwork-target"
+              data-highlighted={activeTarget === "artwork" ? "true" : "false"}
             >
-              <option value="in">In</option>
-              <option value="ft">Ft</option>
-            </select>
-          </OrderEntryField>
-        </div>
-      </div>
-      <div
-        className={cn("mt-3 rounded border border-slate-800 bg-slate-950 p-3", cleanHighlightClass("artwork", activeTarget))}
-        data-clean-destination-target="artwork"
-        data-clean-resolution-target="artwork"
-        data-clean-resolution-primary="true"
-        data-highlighted={activeTarget === "artwork" ? "true" : "false"}
-        onMouseEnter={() => onFocusTarget("artwork")}
-      >
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Artwork</div>
-          <Badge variant={activeArtworkLinks.length ? "secondary" : "destructive"}>{activeArtworkLinks.length ? "Attached" : "Pending"}</Badge>
-        </div>
-        <button
-          type="button"
-          className="mb-3 flex w-full items-center gap-3 rounded border border-slate-800 bg-slate-900 px-3 py-2 text-left"
-          onClick={() => onFocusTarget("artwork")}
-          data-testid="clean-artwork-target"
-          data-highlighted={activeTarget === "artwork" ? "true" : "false"}
-        >
-          <div className="flex h-8 w-10 items-center justify-center rounded bg-slate-800">
-            <Paperclip className="h-4 w-4 text-slate-400" />
+              <div className="flex h-8 w-10 items-center justify-center rounded bg-slate-800">
+                <Paperclip className="h-4 w-4 text-slate-400" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-semibold text-slate-200">{activeArtworkLinks[0]?.filename || "No artwork linked"}</div>
+                <div className="text-[11px] uppercase tracking-wide text-slate-500">Preflight {activeArtworkLinks.length ? "attached" : "pending"}</div>
+              </div>
+            </button>
+            <OrderEntryField label="Artwork assignment">
+              <select
+                className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                value=""
+                onChange={(event) => {
+                  const key = trimToNull(event.target.value);
+                  const selectedLink = attachmentLinkOptions.find((link) => artworkLinkKey(link) === key);
+                  if (!selectedLink) return;
+                  onChange({
+                    artworkLinks: [
+                      ...lineItem.artworkLinks.filter((link) => artworkLinkKey(link) !== key),
+                      {
+                        ...selectedLink,
+                        source: "staff_selected",
+                        confidence: 100,
+                        reason: "Staff selected artwork attachment for this line item.",
+                      },
+                    ],
+                  });
+                }}
+                data-testid="clean-inline-artwork-select"
+              >
+                <option value="">{availableArtworkOptions.length > 0 ? "Attach artwork file..." : "No artwork files available"}</option>
+                {availableArtworkOptions.map((link) => (
+                  <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>{link.filename || link.fileId}</option>
+                ))}
+              </select>
+            </OrderEntryField>
+            {activeArtworkLinks.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1 text-xs text-slate-300">
+                {activeArtworkLinks.map((link) => <Badge key={artworkLinkKey(link)} variant="outline">{link.filename || link.fileId}</Badge>)}
+              </div>
+            )}
+          </section>
+          <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-line-item-task-options" data-clean-resolution-target="product-options">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 4</div>
+                <div className="text-sm font-bold text-slate-100">Product Options</div>
+              </div>
+              <Badge variant={productOptionsComplete ? "secondary" : "outline"}>{productOptionsComplete ? "Done" : hasSelectedProduct ? "Review" : "Waiting"}</Badge>
+            </div>
+            {hasSelectedProduct ? (
+              <div data-testid="clean-dynamic-product-options">
+                <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={onChange} />
+              </div>
+            ) : (
+              <div className="rounded border border-dashed border-slate-700 px-3 py-4 text-center text-xs text-slate-500">
+                Select a product to load product-specific options.
+              </div>
+            )}
+          </section>
+          <div data-clean-resolution-target="pricing">
+            <PricingReviewCard review={lineItem.pricingReviewJson} onChange={(pricingReviewJson) => onChange({ pricingReviewJson })} />
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-xs font-semibold text-slate-200">{activeArtworkLinks[0]?.filename || "No artwork linked"}</div>
-            <div className="text-[11px] uppercase tracking-wide text-slate-500">Preflight {activeArtworkLinks.length ? "attached" : "pending"}</div>
-          </div>
-        </button>
-        <OrderEntryField label="Artwork assignment">
-          <select
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-            value=""
-            onChange={(event) => {
-              const key = trimToNull(event.target.value);
-              const selectedLink = attachmentLinkOptions.find((link) => artworkLinkKey(link) === key);
-              if (!selectedLink) return;
-              onChange({
-                artworkLinks: [
-                  ...lineItem.artworkLinks.filter((link) => artworkLinkKey(link) !== key),
-                  {
-                    ...selectedLink,
-                    source: "staff_selected",
-                    confidence: 100,
-                    reason: "Staff selected artwork attachment for this line item.",
-                  },
-                ],
-              });
-            }}
-            data-testid="clean-inline-artwork-select"
-          >
-            <option value="">{availableArtworkOptions.length > 0 ? "Attach artwork file..." : "No artwork files available"}</option>
-            {availableArtworkOptions.map((link) => (
-              <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>{link.filename || link.fileId}</option>
-            ))}
-          </select>
-        </OrderEntryField>
-        {activeArtworkLinks.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1 text-xs text-slate-300">
-            {activeArtworkLinks.map((link) => <Badge key={artworkLinkKey(link)} variant="outline">{link.filename || link.fileId}</Badge>)}
-          </div>
-        )}
-      </div>
-      {hasSelectedProduct && (
-        <div className="mt-3" data-testid="clean-dynamic-product-options" data-clean-resolution-target="product-options">
-          <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={onChange} />
         </div>
-      )}
-      <div data-clean-resolution-target="pricing">
-        <PricingReviewCard review={lineItem.pricingReviewJson} onChange={(pricingReviewJson) => onChange({ pricingReviewJson })} />
-      </div>
-        </>
       )}
     </div>
   );
