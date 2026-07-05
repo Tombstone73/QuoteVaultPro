@@ -1560,7 +1560,7 @@ describe("InboundOrdersPage", () => {
       Simulate.click(cleanButton);
     });
 
-    await waitForText("Completion Checklist");
+    await waitForText("Blocking Decisions");
     const quantityChecklistItem = () => container.querySelector("[data-clean-checklist-item='Quantity confirmed']");
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("false");
     expect(container.querySelector("[data-testid='clean-ticket-details']")).toBeNull();
@@ -1643,6 +1643,68 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-quantity-workflow']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-size-workflow']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-dynamic-product-options']")).toBeTruthy();
+  });
+
+  test("groups Clean View review tasks into operator-facing categories", async () => {
+    const cleanParsed = parsedDraft({
+      missingDecisions: [{
+        field: "lineItems.0.productName",
+        label: "productName",
+        reason: "lineItems.0.productName is missing.",
+        severity: "blocking",
+      }],
+      globalWarnings: [{
+        code: "requestedDueDate_missing",
+        message: "requestedDueDate was not found.",
+        severity: "info",
+        fieldPath: "order.requestedDueDate",
+      }],
+      evidence: {
+        items: [],
+        conflicts: [{
+          code: "evidence_quantity_conflict",
+          message: "lineItems.0.quantity differs between the purchase order and email.",
+          severity: "warning",
+          fieldPath: "lineItems.0.quantity",
+        }],
+      },
+      unsupportedRequests: [{
+        type: "UNSUPPORTED_REQUEST",
+        requestedText: "grommets in the corners",
+        category: "grommets",
+        matchedProduct: "PVC",
+        reason: "No compatible PBV2 option found.",
+        severity: "review_required",
+        suggestedAction: "Add manually or select a different product.",
+      }],
+    });
+    setupParsedInboundReview({ parsed: cleanParsed });
+
+    renderPage();
+    await waitForText("Operational View");
+    const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(cleanButton);
+    });
+
+    await waitForText("Review Tasks");
+    const reviewTasks = container.querySelector("[data-testid='clean-review-tasks']") as HTMLElement;
+    expect(reviewTasks).toBeTruthy();
+    const reviewText = reviewTasks.textContent ?? "";
+    expect(reviewText).toContain("Blocking Decisions");
+    expect(reviewText).toContain("Evidence Conflicts");
+    expect(reviewText).toContain("AI Suggestions");
+    expect(reviewText).toContain("Information");
+    expect(reviewText.indexOf("Blocking Decisions")).toBeLessThan(reviewText.indexOf("Evidence Conflicts"));
+    expect(reviewText.indexOf("Evidence Conflicts")).toBeLessThan(reviewText.indexOf("AI Suggestions"));
+    expect(reviewText.indexOf("AI Suggestions")).toBeLessThan(reviewText.indexOf("Information"));
+    expect(reviewText).toContain("Product not selected");
+    expect(reviewText).toContain("1 conflict");
+    expect(reviewText).toContain("The quantity in the purchase order differs from the email.");
+    expect(reviewText).toContain("Review manually or select a different product.");
+    expect(reviewText).not.toContain("lineItems");
+    expect(reviewText).not.toContain("productName");
+    expect(reviewText).not.toContain("requestedDueDate");
   });
 
   test("falls back to plain text when original email HTML is missing", async () => {
