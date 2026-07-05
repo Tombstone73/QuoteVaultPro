@@ -1418,6 +1418,13 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-artwork-target']")?.getAttribute("data-highlighted")).toBe("true");
     expect(container.textContent).toContain("Artwork");
     expect(container.querySelector("[data-testid='clean-inline-artwork-select']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-attachments-summary']")).toBeTruthy();
+    const cleanNotesSection = container.querySelector("[data-testid='clean-notes-section']") as HTMLDetailsElement;
+    expect(cleanNotesSection).toBeTruthy();
+    expect(cleanNotesSection.open).toBe(false);
+    const readinessSection = container.querySelector("[data-testid='clean-readiness-validation']") as HTMLDetailsElement;
+    expect(readinessSection).toBeTruthy();
+    expect(readinessSection.open).toBe(false);
 
     act(() => {
       Simulate.change(productSearchInput, { target: { value: "PVC" } } as any);
