@@ -3774,13 +3774,11 @@ function CleanLineItemCard({
 }) {
   const requiredComplete = Boolean(lineItem.selectedProductId && lineItem.quantity && lineItem.width && lineItem.height);
   const needsProductSelection = !lineItem.selectedProductId || lineItem.productUnresolved;
-  const needsQuantity = !lineItem.quantity;
   const [productSelectorOpen, setProductSelectorOpen] = useState(needsProductSelection);
   useEffect(() => {
     if (needsProductSelection) setProductSelectorOpen(true);
   }, [needsProductSelection]);
   const activeArtworkLinks = lineItem.artworkLinks.filter((link) => link.source !== "staff_removed");
-  const dimensions = lineItem.width && lineItem.height ? `${lineItem.width} x ${lineItem.height}` : "-";
   const sizeDisplay = lineItem.width && lineItem.height
     ? `${lineItem.width} x ${lineItem.height} ${lineItem.dimensionsUnit === "ft" ? "feet" : "inches"}`
     : "Size needed";
@@ -3797,6 +3795,19 @@ function CleanLineItemCard({
     : hasSelectedProduct ? "Review product options" : "Select product first";
   const productOptionsComplete = Boolean(lineItem.optionSelectionsJson && Object.keys(ensurePbv2Selections(lineItem.optionSelectionsJson).selected ?? {}).length > 0);
   const workflowComplete = Boolean(requiredComplete && activeArtworkLinks.length > 0 && productOptionsComplete);
+  const lineItemSummaryParts = workflowComplete
+    ? [
+      lineItem.productName || "Product",
+      `Qty ${lineItem.quantity ?? "-"}`,
+      sizeDisplay,
+      activeArtworkLinks.length ? "Artwork linked" : "Artwork pending",
+    ]
+    : [
+      hasSelectedProduct && !lineItem.productUnresolved ? lineItem.productName || "Product selected" : "Product unresolved",
+      lineItem.quantity ? `Qty ${lineItem.quantity}` : "Quantity needed",
+      lineItem.width && lineItem.height ? sizeDisplay : "Size needed",
+      activeArtworkLinks.length ? "Artwork linked" : "Artwork needed",
+    ];
   const [workflowOpen, setWorkflowOpen] = useState(!workflowComplete);
   useEffect(() => {
     if (!workflowComplete) setWorkflowOpen(true);
@@ -3845,11 +3856,6 @@ function CleanLineItemCard({
         </div>
         {needsProductSelection ? <Badge variant="destructive">Product unresolved</Badge> : <Badge variant="secondary">Product resolved</Badge>}
       </div>
-      {needsProductSelection && parsedProductContext && (
-        <div className="mb-2 rounded border border-blue-300/20 bg-slate-950/70 px-2 py-1.5 text-[11px] text-slate-300">
-          Parsed phrase: <span className="font-semibold text-blue-100">{parsedProductContext}</span>
-        </div>
-      )}
       <div className="grid gap-2 sm:grid-cols-[1fr_1fr]">
         <OrderEntryField label="Search active catalog">
           <Input value={productSearch} onChange={(event) => onProductSearchChange(event.target.value)} placeholder="Search active products..." data-testid="clean-product-catalog-search" />
@@ -3871,39 +3877,27 @@ function CleanLineItemCard({
   );
   return (
     <div className="border border-slate-700 bg-slate-900 p-3" data-testid="clean-line-item-card" data-workflow-complete={workflowComplete ? "true" : "false"}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Line Item {index + 1}</div>
-        <div className="flex items-center gap-2">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Line Item {index + 1}</div>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-100" data-testid="clean-line-item-header-summary">
+            {lineItemSummaryParts.map((part) => (
+              <span key={part} className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-xs">{part}</span>
+            ))}
+          </div>
+          {!workflowComplete && parsedProductContext && (
+            <div className="mt-2 text-[11px] text-slate-400">
+              AI detected: <span className="font-semibold text-blue-100">{parsedProductContext}</span>
+            </div>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
           <Badge variant={workflowComplete ? "secondary" : "destructive"}>{workflowComplete ? "Complete" : "Needs decisions"}</Badge>
           {workflowComplete && (
             <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={() => setWorkflowOpen((current) => !current)}>
               {workflowOpen ? "Collapse" : "Edit line item"}
             </Button>
           )}
-        </div>
-      </div>
-      <div className="mt-3 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300">
-        <div className="grid gap-2 sm:grid-cols-5">
-          <div className="min-w-0">
-            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Product</div>
-            <div className="truncate font-semibold text-slate-100">{lineItem.productName || "Unselected"}</div>
-          </div>
-          <div>
-            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Qty</div>
-            <div className="font-semibold text-slate-100">{lineItem.quantity ?? "-"}</div>
-          </div>
-          <div>
-            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Size</div>
-            <div className="font-semibold text-slate-100">{sizeDisplay}</div>
-          </div>
-          <div className="min-w-0">
-            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Artwork</div>
-            <div className="truncate font-semibold text-slate-100">{activeArtworkLinks.length ? "Linked" : "Missing"}</div>
-          </div>
-          <div className="min-w-0">
-            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Product Options</div>
-            <div className="truncate font-semibold text-slate-100">{keyOptionSummary}</div>
-          </div>
         </div>
       </div>
       <div className="mt-3 grid gap-1.5 sm:grid-cols-5" data-testid="clean-line-item-decision-strip">
@@ -3914,11 +3908,6 @@ function CleanLineItemCard({
           </div>
         ))}
       </div>
-      {!workflowOpen && workflowComplete && (
-        <div className="mt-3 rounded border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-xs text-emerald-100" data-testid="clean-line-item-collapsed-summary">
-          {lineItem.productName || "Product"} / Qty {lineItem.quantity ?? "-"} / {sizeDisplay} / {activeArtworkLinks.length ? "Artwork linked" : "Artwork pending"} / {workflowComplete ? "Ready" : keyOptionSummary}
-        </div>
-      )}
       {workflowOpen && (
         <div className="mt-3 grid gap-3" data-testid="clean-line-item-task-list">
           <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-line-item-task-product">
@@ -3951,56 +3940,60 @@ function CleanLineItemCard({
               </div>
             )}
           </section>
-          <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-quantity-size-workflow">
+          <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-quantity-workflow">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
                 <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 2</div>
-                <div className="text-sm font-bold text-slate-100">Quantity & Size</div>
+                <div className="text-sm font-bold text-slate-100">Quantity</div>
               </div>
-              <Badge variant={lineItem.quantity && lineItem.width && lineItem.height ? "secondary" : "destructive"}>{lineItem.quantity && lineItem.width && lineItem.height ? "Done" : "Needs decision"}</Badge>
+              <Badge variant={lineItem.quantity ? "secondary" : "destructive"}>{lineItem.quantity ? "Done" : "Needs decision"}</Badge>
             </div>
-            <div className="grid gap-3 sm:grid-cols-[130px_1fr]">
-              <div
-                className={cn(cleanHighlightClass("quantity", activeTarget))}
-                data-clean-destination-target="quantity"
-                data-clean-resolution-target="quantity"
-                data-clean-resolution-primary="true"
-                data-highlighted={activeTarget === "quantity" ? "true" : "false"}
-                onMouseEnter={() => onFocusTarget("quantity")}
-              >
-                <OrderEntryField label="How many?">
-                  <Input
-                    value={lineItem.quantity ?? ""}
-                    onChange={(event) => onChange({ quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })}
-                    data-testid="clean-inline-quantity-input"
-                    placeholder="Qty"
-                  />
-                </OrderEntryField>
+            <div
+              className={cn(cleanHighlightClass("quantity", activeTarget))}
+              data-clean-destination-target="quantity"
+              data-clean-resolution-target="quantity"
+              data-clean-resolution-primary="true"
+              data-highlighted={activeTarget === "quantity" ? "true" : "false"}
+              onMouseEnter={() => onFocusTarget("quantity")}
+            >
+              <OrderEntryField label="How many?">
+                <Input
+                  value={lineItem.quantity ?? ""}
+                  onChange={(event) => onChange({ quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })}
+                  data-testid="clean-inline-quantity-input"
+                  placeholder="Qty"
+                />
+              </OrderEntryField>
+            </div>
+          </section>
+          <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-size-workflow">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 3</div>
+                <div className="text-sm font-bold text-slate-100">Size</div>
               </div>
-              <div
-                className={cn("rounded transition-shadow", cleanHighlightClass("dimensions", activeTarget))}
-                data-clean-destination-target="dimensions"
-                data-clean-resolution-target="dimensions"
-                data-highlighted={activeTarget === "dimensions" ? "true" : "false"}
-                onMouseEnter={() => onFocusTarget("dimensions")}
-              >
-                <div className="space-y-1 text-xs text-muted-foreground">
-                  Size
-                  <div className="grid grid-cols-[1fr_auto_1fr_72px] items-center gap-2">
-                    <Input aria-label="Width" value={lineItem.width ?? ""} onChange={(event) => onChange({ width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} placeholder="Width" />
-                    <span className="text-slate-500">x</span>
-                    <Input aria-label="Height" value={lineItem.height ?? ""} onChange={(event) => onChange({ height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} placeholder="Height" />
-                    <select
-                      className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-                      value={lineItem.dimensionsUnit ?? "in"}
-                      onChange={(event) => onChange({ dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })}
-                      aria-label="Dimension Unit"
-                    >
-                      <option value="in">In</option>
-                      <option value="ft">Ft</option>
-                    </select>
-                  </div>
-                </div>
+              <Badge variant={lineItem.width && lineItem.height ? "secondary" : "destructive"}>{lineItem.width && lineItem.height ? "Done" : "Needs decision"}</Badge>
+            </div>
+            <div
+              className={cn("rounded transition-shadow", cleanHighlightClass("dimensions", activeTarget))}
+              data-clean-destination-target="dimensions"
+              data-clean-resolution-target="dimensions"
+              data-highlighted={activeTarget === "dimensions" ? "true" : "false"}
+              onMouseEnter={() => onFocusTarget("dimensions")}
+            >
+              <div className="grid grid-cols-[1fr_auto_1fr_72px] items-center gap-2">
+                <Input aria-label="Width" value={lineItem.width ?? ""} onChange={(event) => onChange({ width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} placeholder="Width" />
+                <span className="text-slate-500">x</span>
+                <Input aria-label="Height" value={lineItem.height ?? ""} onChange={(event) => onChange({ height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} placeholder="Height" />
+                <select
+                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                  value={lineItem.dimensionsUnit ?? "in"}
+                  onChange={(event) => onChange({ dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })}
+                  aria-label="Dimension Unit"
+                >
+                  <option value="in">In</option>
+                  <option value="ft">Ft</option>
+                </select>
               </div>
             </div>
           </section>
@@ -4015,7 +4008,7 @@ function CleanLineItemCard({
           >
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 3</div>
+                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 4</div>
                 <div className="text-sm font-bold text-slate-100">Artwork</div>
               </div>
               <Badge variant={activeArtworkLinks.length ? "secondary" : "destructive"}>{activeArtworkLinks.length ? "Attached" : "Needs assignment"}</Badge>
@@ -4072,8 +4065,8 @@ function CleanLineItemCard({
           <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-line-item-task-options" data-clean-resolution-target="product-options">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 4</div>
-                <div className="text-sm font-bold text-slate-100">Product Options</div>
+                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 5</div>
+                <div className="text-sm font-bold text-slate-100">PBV2 Product Options</div>
               </div>
               <Badge variant={productOptionsComplete ? "secondary" : "outline"}>{productOptionsComplete ? "Done" : hasSelectedProduct ? "Review" : "Waiting"}</Badge>
             </div>
@@ -4092,61 +4085,6 @@ function CleanLineItemCard({
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-function CleanTicketMetric({
-  label,
-  value,
-  target,
-  source,
-  confidence,
-  activeTarget,
-  onFocusTarget,
-}: {
-  label: string;
-  value: ReactNode;
-  target?: CleanHighlightTarget;
-  source?: string | null;
-  confidence?: number | null;
-  activeTarget?: CleanHighlightTarget | null;
-  onFocusTarget?: CleanFocusTargetHandler;
-}) {
-  const className = cn("min-w-0 rounded transition-shadow", target && cleanHighlightClass(target, activeTarget ?? null));
-  const content = (
-    <>
-      <div className="flex min-w-0 items-center justify-between gap-1">
-        <div className="truncate text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</div>
-        {target && onFocusTarget && (
-          <CleanSourceChip target={target} source={source} confidence={confidence} onFocusTarget={onFocusTarget} />
-        )}
-      </div>
-      <div className="mt-1 truncate rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm font-semibold text-slate-100">{value}</div>
-    </>
-  );
-  if (!target || !onFocusTarget) {
-    return <div className={className}>{content}</div>;
-  }
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      className={cn(className, "text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300")}
-      onClick={() => onFocusTarget(target)}
-      onMouseEnter={() => onFocusTarget(target)}
-      onFocus={() => onFocusTarget(target)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onFocusTarget(target, { inspectSource: true });
-        }
-      }}
-      data-clean-destination-target={target}
-      data-clean-resolution-target={target}
-      data-highlighted={activeTarget === target ? "true" : "false"}
-    >
-      {content}
     </div>
   );
 }

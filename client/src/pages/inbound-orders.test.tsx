@@ -1361,12 +1361,15 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-line-item-task-product']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-line-item-task-artwork']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-line-item-task-options']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-line-item-header-summary']")).toBeTruthy();
     expect(container.textContent).toContain("Select product from catalog");
-    expect(container.textContent).toContain("Parsed phrase:");
-    expect(container.querySelector("[data-testid='clean-quantity-size-workflow']")).toBeTruthy();
-    expect(container.textContent).toContain("Quantity & Size");
+    expect(container.textContent).toContain("AI detected:");
+    expect(container.querySelector("[data-testid='clean-quantity-workflow']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-size-workflow']")).toBeTruthy();
+    expect(container.textContent).toContain("Quantity");
+    expect(container.textContent).toContain("Size");
     expect(container.textContent).toContain("Step 1");
-    expect(container.textContent).toContain("Step 4");
+    expect(container.textContent).toContain("Step 5");
     const catalogProductSelect = container.querySelector("[data-testid='clean-product-catalog-select']") as HTMLSelectElement;
     expect(catalogProductSelect).toBeTruthy();
     expect(catalogProductSelect.tagName).toBe("SELECT");
@@ -1460,7 +1463,7 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).not.toContain("Line item notes");
     expect(container.textContent).not.toContain("Parsed material");
     expect(Array.from(container.querySelectorAll("label")).some((label) => label.textContent?.trim() === "Material")).toBe(false);
-    await waitForText("Product options");
+    await waitForText("PBV2 Product Options");
     expect(container.querySelector("[data-testid='clean-dynamic-product-options']")).toBeTruthy();
     await waitForText("Thickness");
     await waitForText("Print Sides");
@@ -1626,15 +1629,19 @@ describe("InboundOrdersPage", () => {
     expect(lineItemCard).toBeTruthy();
     expect(lineItemCard.getAttribute("data-workflow-complete")).toBe("true");
     expect(container.querySelector("[data-testid='clean-line-item-decision-strip']")).toBeTruthy();
-    expect(container.querySelector("[data-testid='clean-line-item-collapsed-summary']")?.textContent).toContain("Magnets");
-    expect(container.querySelector("[data-testid='clean-quantity-size-workflow']")).toBeNull();
+    expect(container.querySelector("[data-testid='clean-line-item-header-summary']")?.textContent).toContain("Magnets");
+    expect(container.querySelector("[data-testid='clean-line-item-header-summary']")?.textContent).toContain("Qty 2");
+    expect(container.querySelector("[data-testid='clean-line-item-collapsed-summary']")).toBeNull();
+    expect(container.querySelector("[data-testid='clean-quantity-workflow']")).toBeNull();
+    expect(container.querySelector("[data-testid='clean-size-workflow']")).toBeNull();
     expect(container.querySelector("[data-testid='clean-dynamic-product-options']")).toBeNull();
 
     const editButton = Array.from(lineItemCard.querySelectorAll("button")).find((button) => button.textContent?.includes("Edit line item")) as HTMLButtonElement;
     act(() => {
       Simulate.click(editButton);
     });
-    expect(container.querySelector("[data-testid='clean-quantity-size-workflow']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-quantity-workflow']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-size-workflow']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-dynamic-product-options']")).toBeTruthy();
   });
 
