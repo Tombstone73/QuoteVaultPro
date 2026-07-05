@@ -1439,6 +1439,10 @@ describe("InboundOrdersPage", () => {
     expect(readinessSection).toBeTruthy();
     expect(readinessSection.open).toBe(false);
     expect(readinessSection.textContent).toContain("0 blocking issues");
+    const missingBeforeConversionSection = container.querySelector("[data-testid='clean-missing-before-conversion']") as HTMLDetailsElement;
+    expect(missingBeforeConversionSection).toBeTruthy();
+    expect(missingBeforeConversionSection.open).toBe(false);
+    expect(missingBeforeConversionSection.textContent).toContain("0 items");
 
     act(() => {
       Simulate.change(productSearchInput, { target: { value: "PVC" } } as any);
@@ -1618,7 +1622,7 @@ describe("InboundOrdersPage", () => {
     });
 
     await waitForText("Line Item 1");
-    const lineItemCard = container.querySelector("[data-testid='clean-production-ticket-card']") as HTMLElement;
+    const lineItemCard = container.querySelector("[data-testid='clean-line-item-card']") as HTMLElement;
     expect(lineItemCard).toBeTruthy();
     expect(lineItemCard.getAttribute("data-workflow-complete")).toBe("true");
     expect(container.querySelector("[data-testid='clean-line-item-decision-strip']")).toBeTruthy();

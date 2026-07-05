@@ -3749,7 +3749,7 @@ function CleanSourceDocuments({
   );
 }
 
-function CleanProductionTicketCard({
+function CleanLineItemCard({
   lineItem,
   index,
   productOptions,
@@ -3870,7 +3870,7 @@ function CleanProductionTicketCard({
     </div>
   );
   return (
-    <div className="border border-slate-700 bg-slate-900 p-3" data-testid="clean-production-ticket-card" data-workflow-complete={workflowComplete ? "true" : "false"}>
+    <div className="border border-slate-700 bg-slate-900 p-3" data-testid="clean-line-item-card" data-workflow-complete={workflowComplete ? "true" : "false"}>
       <div className="flex items-center justify-between gap-2">
         <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Line Item {index + 1}</div>
         <div className="flex items-center gap-2">
@@ -4553,7 +4553,7 @@ function CleanOrderWorkstation({
             {form.reviewedLineItemsJson.length === 0 ? (
               <div className="rounded border border-dashed border-slate-700 px-3 py-8 text-center text-sm text-slate-500">No line items.</div>
             ) : form.reviewedLineItemsJson.map((lineItem, index) => (
-              <CleanProductionTicketCard
+              <CleanLineItemCard
                 key={index}
                 lineItem={lineItem}
                 index={index}
@@ -4639,9 +4639,21 @@ function CleanOrderWorkstation({
           testId="clean-readiness-validation"
         >
           <div className="rounded border border-slate-800 bg-slate-950 p-3">
-            <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Missing Before Conversion</div>
             {conversionBlockerCount === 0 ? (
-              <div className="text-xs text-emerald-200">No readiness blockers.</div>
+              <div className="text-xs text-emerald-200">Ready validation has no blocking issues.</div>
+            ) : (
+              <div className="text-xs text-amber-200">Resolve the missing conversion items before converting this draft.</div>
+            )}
+          </div>
+        </CleanSupportDetails>
+        <CleanSupportDetails
+          title="Missing Before Conversion"
+          summary={`${conversionBlockerCount} item${conversionBlockerCount === 1 ? "" : "s"}`}
+          testId="clean-missing-before-conversion"
+        >
+          <div className="rounded border border-slate-800 bg-slate-950 p-3">
+            {conversionBlockerCount === 0 ? (
+              <div className="text-xs text-emerald-200">Nothing missing before conversion.</div>
             ) : (
               <ul className="space-y-1 text-xs text-amber-200">
                 {[...minimumConversionIssues, ...conversionErrors].map((issue) => <li key={issue}>{cleanOperatorIssueLabel(issue)}</li>)}
