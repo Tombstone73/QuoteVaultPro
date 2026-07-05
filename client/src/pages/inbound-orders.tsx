@@ -319,6 +319,28 @@ function getQueueIssueChip(record: ClientInboundOrderRecord): string | null {
   return null;
 }
 
+function isTrustedInboundRecord(record: ClientInboundOrderRecord): boolean {
+  return record.senderTrustStatus === "trusted_sender"
+    || record.senderTrustStatus === "trusted_domain"
+    || record.senderTrustStatus === "trusted_contact"
+    || record.senderTrustStatus === "trusted_customer_domain";
+}
+
+function isUntrustedInboundRecord(record: ClientInboundOrderRecord): boolean {
+  return record.senderTrustStatus === "untrusted"
+    || record.attachmentDownloadPolicy === "pending_trust";
+}
+
+function isLikelyPoEvidenceFile(file: ClientInboundOrderFile): boolean {
+  if (file.role === "po") return true;
+  const filename = String(file.sourceFilename ?? "").toLowerCase();
+  const mimeType = String(file.mimeType ?? "").toLowerCase();
+  const isPdf = mimeType.includes("pdf") || filename.endsWith(".pdf");
+  if (!isPdf) return false;
+  return /\b(po|p\.o\.|purchase\s*order|order\s*(no|number|#)|reference)\b/i.test(filename)
+    || file.role === "reference";
+}
+
 function recordTrustActionLabel(action: InboundRecordTrustAction): string {
   if (action === "trust_sender") return "Trust Sender";
   if (action === "trust_domain") return "Trust Domain";
@@ -806,10 +828,13 @@ function SourceEvidenceFileCard({
     ? `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(file.id)}/download`
     : null;
   return (
-    <div className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2">
-      <div className="min-w-0">
-        <div className="truncate text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
-        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+    <div
+      className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2 overflow-hidden rounded-md border border-border bg-background px-3 py-2"
+      data-testid="source-evidence-file-card"
+    >
+      <div className="min-w-0 flex-1">
+        <div className="min-w-0 truncate break-words text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
+        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
             {inboundAttachmentRoleLabel(file.role)}
           </Badge>
@@ -819,7 +844,7 @@ function SourceEvidenceFileCard({
         </div>
       </div>
       {downloadUrl && (
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
           <Button asChild size="sm" variant="ghost" className="h-8 px-2">
             <a href={downloadUrl} target="_blank" rel="noreferrer">
               <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
@@ -2724,12 +2749,12 @@ function InboundAttachmentCard({
     : null;
   return (
     <div className={cn(
-      "flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2",
+      "flex w-full min-w-0 flex-wrap items-center justify-between gap-3 overflow-hidden rounded-md border border-border bg-background px-3 py-2",
       compact && "px-2 py-1.5",
     )}>
-      <div className="min-w-0">
-        <div className="truncate text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
-        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <div className="min-w-0 flex-1">
+        <div className="min-w-0 truncate break-words text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
+        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span>{file.mimeType || "unknown type"}</span>
           <span>{formatFileSize(file.sizeBytes)}</span>
           {!minimal && <span>Status: {titleCase(file.status)}</span>}
@@ -2744,7 +2769,7 @@ function InboundAttachmentCard({
         {!minimal && <AttachmentSafetyDetails recordId={recordId} file={file} />}
       </div>
       {downloadUrl && (
-        <div className="flex shrink-0 gap-2">
+        <div className="flex shrink-0 flex-wrap justify-end gap-2">
           <Button asChild size="sm" variant="outline">
             <a href={downloadUrl} target="_blank" rel="noreferrer">
               <ExternalLink className="mr-2 h-4 w-4" />
@@ -3435,6 +3460,22 @@ function CleanInboundQueue({
   onChange: (filters: QueueFilters) => void;
   onSearchChange: (value: string) => void;
 }) {
+  const [quickFilters, setQuickFilters] = useState({
+    trusted: false,
+    untrusted: false,
+    issue: false,
+  });
+  const quickFilterActive = quickFilters.trusted || quickFilters.untrusted || quickFilters.issue;
+  const visibleRecords = quickFilterActive
+    ? records.filter((record) => (
+      (quickFilters.trusted && isTrustedInboundRecord(record))
+      || (quickFilters.untrusted && isUntrustedInboundRecord(record))
+      || (quickFilters.issue && Boolean(getQueueIssueChip(record)))
+    ))
+    : records;
+  const toggleQuickFilter = (key: keyof typeof quickFilters, checked: boolean) => {
+    setQuickFilters((current) => ({ ...current, [key]: checked }));
+  };
   return (
     <aside className="flex min-h-0 w-[300px] shrink-0 flex-col border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-inbound-queue">
       <div className="border-b border-slate-700 px-3 py-2">
@@ -3477,6 +3518,23 @@ function CleanInboundQueue({
             </div>
           </details>
         </div>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-300" data-testid="clean-queue-quick-filters">
+          {([
+            ["trusted", "Trusted"],
+            ["untrusted", "Untrusted"],
+            ["issue", "Issue"],
+          ] as const).map(([key, label]) => (
+            <label key={key} className="flex items-center gap-1 rounded border border-slate-800 bg-slate-900 px-1.5 py-1">
+              <input
+                type="checkbox"
+                className="h-3 w-3"
+                checked={quickFilters[key]}
+                onChange={(event) => toggleQuickFilter(key, event.target.checked)}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading ? (
@@ -3484,9 +3542,9 @@ function CleanInboundQueue({
             <Skeleton className="h-16 bg-slate-800" />
             <Skeleton className="h-16 bg-slate-800" />
           </div>
-        ) : records.length === 0 ? (
+        ) : visibleRecords.length === 0 ? (
           <div className="p-4 text-sm text-slate-500">No inbound records.</div>
-        ) : records.map((record) => {
+        ) : visibleRecords.map((record) => {
           const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
           const selected = selectedId === record.id;
           const issue = getQueueIssueChip(record);
@@ -3529,6 +3587,7 @@ function CleanSourceDocuments({
   selectedRecord,
   detail,
   draftPreview,
+  reviewDraft,
   activeTab,
   isLoading,
   isParsing,
@@ -3545,6 +3604,7 @@ function CleanSourceDocuments({
   selectedRecord: ClientInboundOrderRecord | null;
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
   draftPreview: ClientInboundOrderDraftPreviewResponse["data"] | undefined;
+  reviewDraft: InboundOrderReviewDraftDto | undefined;
   activeTab: SourceDocumentTab;
   isLoading: boolean;
   isParsing: boolean;
@@ -3565,7 +3625,8 @@ function CleanSourceDocuments({
   const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
   const emailEvidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : null;
   const files = dedupeAttachmentFiles(detail?.files ?? []);
-  const poFiles = files.filter((file) => file.role === "po");
+  const poFiles = files.filter(isLikelyPoEvidenceFile);
+  const needsInitialParse = !record.parsedAt || !reviewDraft;
   const artworkLinks = attachmentLinks.filter((link) => classificationForLink(link) === "ARTWORK");
   const referenceLinks = attachmentLinks.filter((link) => classificationForLink(link) === "REFERENCE" || classificationForLink(link) === "OTHER");
   const signatureLinks = attachmentLinks.filter((link) => classificationForLink(link) === "IGNORE_INLINE");
@@ -3574,13 +3635,21 @@ function CleanSourceDocuments({
   const firstLine = form?.reviewedLineItemsJson[0] ?? null;
 
   return (
-    <section className="flex min-h-0 flex-[1.05] flex-col border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-source-documents">
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700 px-3">
+    <section className="flex min-h-0 min-w-0 flex-[1.05] flex-col overflow-hidden border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-source-documents">
+      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-700 px-3">
         <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Source Documents</div>
-        <Button type="button" size="sm" className="h-8 bg-blue-300 px-3 text-xs font-bold text-slate-950 hover:bg-blue-200" onClick={onParse} disabled={parseDisabled}>
-          {isParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
-          Re-scan
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          {needsInitialParse && (
+            <Button type="button" size="sm" className="h-8 bg-blue-300 px-3 text-xs font-bold text-slate-950 hover:bg-blue-200" onClick={onParse} disabled={parseDisabled}>
+              {isParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
+              Parse
+            </Button>
+          )}
+          <Button type="button" size="sm" variant={needsInitialParse ? "outline" : "default"} className={cn("h-8 px-3 text-xs font-bold", !needsInitialParse && "bg-blue-300 text-slate-950 hover:bg-blue-200")} onClick={onParse} disabled={parseDisabled}>
+            {isParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
+            Re-scan
+          </Button>
+        </div>
       </div>
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-slate-800 px-3">
         {(["email", "po", "artwork", "history"] as SourceDocumentTab[]).map((tab) => (
@@ -3597,16 +3666,16 @@ function CleanSourceDocuments({
           </button>
         ))}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-5">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto p-5">
         {isLoading ? (
           <Skeleton className="mx-auto h-[520px] max-w-[760px] bg-slate-800" />
         ) : activeTab === "email" ? (
-          <div className="mx-auto max-w-[760px]">
+          <div className="mx-auto w-full max-w-[760px] min-w-0">
             <div className="mb-2 flex items-center justify-between rounded border border-slate-800 bg-slate-900 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
               <span>Previous interaction</span>
               <span>{emailEvidence?.thread?.messageCount ? `${emailEvidence.thread.messageCount} messages` : "Single message"}</span>
             </div>
-            <article className="bg-white text-slate-950 shadow-xl">
+            <article className="min-w-0 overflow-hidden bg-white text-slate-950 shadow-xl">
               <div className="flex items-start gap-3 border-b border-slate-200 px-5 py-4">
                 <div className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-sm font-bold text-blue-700">
                   {(evidence.senderName || evidence.senderEmail || "?").slice(0, 1).toUpperCase()}
@@ -3633,7 +3702,7 @@ function CleanSourceDocuments({
               </div>
               <div className="border-t border-slate-200 px-5 py-4">
                 <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">Integrated Evidence ({files.length})</div>
-                <div className="grid gap-2">
+                <div className="grid min-w-0 gap-2">
                   {files.length === 0 ? (
                     <div className="rounded border border-dashed border-slate-300 px-3 py-3 text-sm text-slate-500">No attachments linked.</div>
                   ) : files.filter((file) => !isLikelySignatureInlineFile(file)).slice(0, 5).map((file) => (
@@ -3642,7 +3711,7 @@ function CleanSourceDocuments({
                       role="button"
                       tabIndex={0}
                       className={cn(
-                        "block w-full rounded text-left transition-shadow",
+                        "block w-full min-w-0 overflow-hidden rounded text-left transition-shadow",
                         file.role === "artwork" && cleanHighlightClass("artwork", activeTarget),
                         file.role === "po" && cleanHighlightClass("po", activeTarget),
                         file.role !== "po" && file.role !== "artwork" && activeTarget === "artwork" && "ring-1 ring-blue-300",
@@ -3666,7 +3735,7 @@ function CleanSourceDocuments({
             {parseError && <div className="mt-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">{parseError.message}</div>}
           </div>
         ) : activeTab === "po" ? (
-          <div className="mx-auto max-w-[760px] rounded border border-slate-800 bg-slate-900 p-4">
+          <div className="mx-auto w-full max-w-[760px] min-w-0 rounded border border-slate-800 bg-slate-900 p-4">
             <div className="mb-3 text-sm font-bold text-slate-100">PO Documents</div>
             {poFiles.length === 0 ? (
               <div className="rounded border border-dashed border-slate-700 px-3 py-10 text-center text-sm text-slate-500">No PO detected.</div>
@@ -3687,6 +3756,9 @@ function CleanSourceDocuments({
                 data-clean-source-target="po"
               >
                 <InboundAttachmentCard recordId={record.id} file={file} compact minimal />
+                {file.role !== "po" && (
+                  <div className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-200">Likely PO / Reference PDF</div>
+                )}
               </div>
             ))}
             {poEvidenceItems.length > 0 && (
@@ -8097,6 +8169,7 @@ export default function InboundOrdersPage() {
             selectedRecord={selectedRecord}
             detail={detailQuery.data?.data}
             draftPreview={draftPreviewQuery.data?.data}
+            reviewDraft={reviewDraftQuery.data?.data}
             activeTab={sourceDocumentTab}
             isLoading={detailQuery.isLoading}
             isParsing={isSelectedRecordParsing}
