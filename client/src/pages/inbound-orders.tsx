@@ -4445,7 +4445,7 @@ function CleanOrderWorkstation({
   const remainingChecklistItems = completionChecklist.filter((item) => !item.complete).length;
   const internalNoteCount = form.reviewedOrderJson.internalNotes ? 1 : 0;
   const productionNoteCount = form.reviewedOrderJson.customerNotes ? 1 : 0;
-  const hasConversionBlockers = minimumConversionIssues.length > 0 || conversionErrors.length > 0;
+  const conversionBlockerCount = minimumConversionIssues.length + conversionErrors.length;
   const activeEvidenceComparison = cleanEvidenceComparison(activeTarget, form, cleanDraft);
   const focusResolutionTarget = (target: CleanHighlightTarget) => {
     onFocusTarget(target, { inspectSource: false });
@@ -4633,24 +4633,22 @@ function CleanOrderWorkstation({
             <CustomerIntelligencePanel intelligence={reviewDraft.customerIntelligenceJson} />
           </CleanSupportDetails>
         )}
-        {hasConversionBlockers && (
-          <CleanSupportDetails
-            title="Ready Validation"
-            summary={`${minimumConversionIssues.length + conversionErrors.length} blocker${minimumConversionIssues.length + conversionErrors.length === 1 ? "" : "s"}`}
-            testId="clean-readiness-validation"
-          >
-            <div className="rounded border border-slate-800 bg-slate-950 p-3">
-              <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Missing Before Conversion</div>
-              {minimumConversionIssues.length === 0 && conversionErrors.length === 0 ? (
-                <div className="text-xs text-emerald-200">No readiness blockers.</div>
-              ) : (
-                <ul className="space-y-1 text-xs text-amber-200">
-                  {[...minimumConversionIssues, ...conversionErrors].map((issue) => <li key={issue}>{cleanOperatorIssueLabel(issue)}</li>)}
-                </ul>
-              )}
-            </div>
-          </CleanSupportDetails>
-        )}
+        <CleanSupportDetails
+          title="Ready Validation"
+          summary={`${conversionBlockerCount} blocking issue${conversionBlockerCount === 1 ? "" : "s"}`}
+          testId="clean-readiness-validation"
+        >
+          <div className="rounded border border-slate-800 bg-slate-950 p-3">
+            <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Missing Before Conversion</div>
+            {conversionBlockerCount === 0 ? (
+              <div className="text-xs text-emerald-200">No readiness blockers.</div>
+            ) : (
+              <ul className="space-y-1 text-xs text-amber-200">
+                {[...minimumConversionIssues, ...conversionErrors].map((issue) => <li key={issue}>{cleanOperatorIssueLabel(issue)}</li>)}
+              </ul>
+            )}
+          </div>
+        </CleanSupportDetails>
       </div>
       <div className="shrink-0 border-t border-slate-700 bg-slate-900 px-3 py-2">
         {conversionErrors.length > 0 && <div className="mb-2 text-xs text-red-300">{conversionErrors.join(" ")}</div>}

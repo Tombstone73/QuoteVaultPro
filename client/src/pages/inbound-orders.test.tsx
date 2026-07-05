@@ -1435,7 +1435,10 @@ describe("InboundOrdersPage", () => {
     const reviewTasksSection = container.querySelector("[data-testid='clean-review-tasks']") as HTMLDetailsElement;
     expect(reviewTasksSection).toBeTruthy();
     expect(reviewTasksSection.open).toBe(false);
-    expect(container.querySelector("[data-testid='clean-readiness-validation']")).toBeNull();
+    const readinessSection = container.querySelector("[data-testid='clean-readiness-validation']") as HTMLDetailsElement;
+    expect(readinessSection).toBeTruthy();
+    expect(readinessSection.open).toBe(false);
+    expect(readinessSection.textContent).toContain("0 blocking issues");
 
     act(() => {
       Simulate.change(productSearchInput, { target: { value: "PVC" } } as any);
