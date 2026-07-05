@@ -4135,6 +4135,69 @@ function CleanAiSummaryRow({
   );
 }
 
+function cleanOperatorIssueLabel(issue: string): string {
+  const lower = issue.toLowerCase();
+  if (lower.includes("customer")) return "Customer not matched";
+  if (lower.includes("contact")) return "Contact not selected";
+  if (lower.includes("product")) return "Product not selected";
+  if (lower.includes("quantity") || lower.includes("enter quantity")) return "Quantity missing";
+  if (lower.includes("artwork")) return "Artwork not linked";
+  if (lower.includes("duedate") || lower.includes("due date") || lower.includes("requesteddue")) return "Due date missing";
+  if (lower.includes("price") || lower.includes("pricing")) return "Pricing needs review";
+  if (lower.includes("material")) return "Product options need review";
+  return issue
+    .replace(/reviewed[A-Za-z]+Json\./g, "")
+    .replace(/lineItems\.\d+\./g, "")
+    .replace(/requestedDueDate/g, "due date")
+    .replace(/_/g, " ");
+}
+
+function CleanCompactAttachments({
+  selectedRecord,
+  files,
+}: {
+  selectedRecord: ClientInboundOrderRecord;
+  files: ClientInboundOrderFile[];
+}) {
+  if (files.length === 0) return null;
+  const visibleFiles = files.slice(0, 3);
+  return (
+    <section className="mb-3 rounded border border-slate-800 bg-slate-900 p-3" data-testid="clean-attachments-summary">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Attachments</div>
+        <Badge variant="outline">{files.length}</Badge>
+      </div>
+      <div className="grid gap-1.5">
+        {visibleFiles.map((file) => {
+          const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
+            ? `/api/inbound-orders/${encodeURIComponent(selectedRecord.id)}/files/${encodeURIComponent(file.id)}/download`
+            : null;
+          return (
+            <div key={file.id} className="flex min-w-0 items-center justify-between gap-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs">
+              <div className="min-w-0">
+                <div className="truncate font-semibold text-slate-200">{file.sourceFilename || "Attachment"}</div>
+                <div className="mt-0.5 flex flex-wrap gap-1.5 text-[11px] text-slate-500">
+                  <span>{inboundAttachmentRoleLabel(file.role)}</span>
+                  <span>{formatFileSize(file.sizeBytes)}</span>
+                  {!file.fileRecordId && <span>Metadata only</span>}
+                </div>
+              </div>
+              {downloadUrl && (
+                <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-[11px]">
+                  <a href={downloadUrl} target="_blank" rel="noreferrer">Open</a>
+                </Button>
+              )}
+            </div>
+          );
+        })}
+        {files.length > visibleFiles.length && (
+          <div className="text-[11px] text-slate-500">+{files.length - visibleFiles.length} more attachments in Source Documents</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function CleanOrderWorkstation({
   selectedRecord,
   draftPreview,
@@ -4229,6 +4292,7 @@ function CleanOrderWorkstation({
     });
   };
   const productCatalogOptions = (productSearchQuery.data?.data ?? []).map(productToReviewOption);
+  const inboundFiles = dedupeAttachmentFiles(detail?.files ?? []);
   const storedAttachmentLinks = dedupeAttachmentFiles(detail?.files ?? [])
     .map((file) => artworkLinkFromInboundFile(file, "staff_selected"))
     .filter((link) => classificationForLink(link) === "ARTWORK");
@@ -4254,6 +4318,15 @@ function CleanOrderWorkstation({
     ...unresolvedPricingIssues,
     ...validationErrors,
   ].filter(Boolean) as string[];
+  const reviewTaskIssues = [
+    ...(form.unsupportedRequestsJson ?? []).map((finding) => finding.suggestedAction || finding.reason || finding.requestedText),
+    ...form.missingDecisionsJson.map((decision) => [decision.label, decision.reason].filter(Boolean).join(": ")),
+    ...form.warningsJson.map((warning) => warning.message),
+  ].filter(Boolean);
+  const operatorIssues = Array.from(new Set([
+    ...minimumConversionIssues,
+    ...reviewTaskIssues,
+  ].map(cleanOperatorIssueLabel)));
   const canCreateDraftOrder = selectedRecord.status === "ready" && reviewDraft.status === "ready_to_convert" && validationErrors.length === 0;
   const cleanDraft = draftPreview.draft;
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
@@ -4389,33 +4462,60 @@ function CleanOrderWorkstation({
             ))}
           </div>
         </div>
-        <div className="mb-4 rounded border border-slate-800 bg-slate-900 p-3" data-testid="clean-completion-checklist">
-          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Completion Checklist</div>
-          <div className="grid gap-1.5">
-            {completionChecklist.map((item) => (
-              <button
-                key={item.label}
-                type="button"
-                className="flex items-center gap-2 rounded px-1.5 py-1 text-left text-xs text-slate-200 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
-                data-clean-checklist-item={item.label}
-                data-complete={item.complete ? "true" : "false"}
-                onClick={() => focusResolutionTarget(item.target)}
-              >
-                <span className={cn("flex h-4 w-4 items-center justify-center rounded border text-[10px]", item.complete ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-600 text-slate-500")}>
-                  {item.complete ? "x" : ""}
-                </span>
-                <span>{item.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-        <details className="rounded border border-slate-800 bg-slate-900" open={Boolean(form.reviewedOrderJson.customerNotes || form.reviewedOrderJson.internalNotes)}>
+        <CleanCompactAttachments selectedRecord={selectedRecord} files={inboundFiles} />
+        <details className="mb-3 rounded border border-slate-800 bg-slate-900" data-testid="clean-notes-section">
           <summary className="cursor-pointer list-none px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-400">Notes</summary>
           <div className="grid gap-2 border-t border-slate-800 p-3">
             <OrderEntryField label="Production Notes"><Textarea value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: trimToNull(event.target.value) })} /></OrderEntryField>
             <OrderEntryField label="Internal Notes"><Textarea value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: trimToNull(event.target.value) })} /></OrderEntryField>
           </div>
         </details>
+        <details className="mb-3 rounded border border-slate-800 bg-slate-900" data-testid="clean-readiness-validation">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-400">
+            Readiness & Validation
+            <Badge variant={operatorIssues.length > 0 ? "destructive" : "secondary"}>{operatorIssues.length}</Badge>
+          </summary>
+          <div className="grid gap-3 border-t border-slate-800 p-3">
+            <div className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-completion-checklist">
+              <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Completion Checklist</div>
+              <div className="grid gap-1.5">
+                {completionChecklist.map((item) => (
+                  <button
+                    key={item.label}
+                    type="button"
+                    className="flex items-center gap-2 rounded px-1.5 py-1 text-left text-xs text-slate-200 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+                    data-clean-checklist-item={item.label}
+                    data-complete={item.complete ? "true" : "false"}
+                    onClick={() => focusResolutionTarget(item.target)}
+                  >
+                    <span className={cn("flex h-4 w-4 items-center justify-center rounded border text-[10px]", item.complete ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-600 text-slate-500")}>
+                      {item.complete ? "x" : ""}
+                    </span>
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="rounded border border-slate-800 bg-slate-950 p-3">
+              <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Remaining actions</div>
+              {operatorIssues.length === 0 ? (
+                <div className="text-xs text-emerald-200">No readiness blockers.</div>
+              ) : (
+                <ul className="space-y-1 text-xs text-amber-200">
+                  {operatorIssues.map((issue) => <li key={issue}>{issue}</li>)}
+                </ul>
+              )}
+            </div>
+          </div>
+        </details>
+        {reviewDraft.customerIntelligenceJson && (
+          <details className="mb-3 rounded border border-slate-800 bg-slate-900" data-testid="clean-customer-intelligence">
+            <summary className="cursor-pointer list-none px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-400">Customer Intelligence</summary>
+            <div className="border-t border-slate-800 p-3">
+              <CustomerIntelligencePanel intelligence={reviewDraft.customerIntelligenceJson} />
+            </div>
+          </details>
+        )}
       </div>
       <div className="shrink-0 border-t border-slate-700 bg-slate-900 px-3 py-2">
         {conversionErrors.length > 0 && <div className="mb-2 text-xs text-red-300">{conversionErrors.join(" ")}</div>}
