@@ -4218,6 +4218,33 @@ function cleanOperatorIssueLabel(issue: string): string {
     .replace(/_/g, " ");
 }
 
+function CleanSupportDetails({
+  title,
+  summary,
+  children,
+  testId,
+}: {
+  title: string;
+  summary: ReactNode;
+  children: ReactNode;
+  testId?: string;
+}) {
+  return (
+    <details className="mb-2 rounded border border-slate-800 bg-slate-900" data-testid={testId}>
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-xs text-slate-300 marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300">
+        <span className="font-bold uppercase tracking-wide text-slate-400">{title}</span>
+        <span className="flex min-w-0 items-center gap-2 text-[11px] text-slate-500">
+          <span className="truncate">{summary}</span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+        </span>
+      </summary>
+      <div className="border-t border-slate-800 p-3">
+        {children}
+      </div>
+    </details>
+  );
+}
+
 function CleanCompactAttachments({
   selectedRecord,
   files,
@@ -4225,42 +4252,61 @@ function CleanCompactAttachments({
   selectedRecord: ClientInboundOrderRecord;
   files: ClientInboundOrderFile[];
 }) {
-  if (files.length === 0) return null;
-  const visibleFiles = files.slice(0, 3);
+  const filesWithClassification = files.map((file) => ({
+    file,
+    classification: classificationForLink(artworkLinkFromInboundFile(file, "staff_selected")),
+  }));
+  const attachmentCategories = [
+    { key: "artwork", label: "Artwork", files: filesWithClassification.filter((item) => item.classification === "ARTWORK").map((item) => item.file) },
+    { key: "po", label: "Purchase Orders", files: filesWithClassification.filter((item) => item.classification === "PO").map((item) => item.file) },
+    { key: "other", label: "Reference / Other", files: filesWithClassification.filter((item) => item.classification === "REFERENCE" || item.classification === "OTHER").map((item) => item.file) },
+    { key: "inline", label: "Ignored / Inline Images", files: filesWithClassification.filter((item) => item.classification === "IGNORE_INLINE").map((item) => item.file) },
+  ];
+  const artworkCount = attachmentCategories.find((category) => category.key === "artwork")?.files.length ?? 0;
+  const poCount = attachmentCategories.find((category) => category.key === "po")?.files.length ?? 0;
   return (
-    <section className="mb-3 rounded border border-slate-800 bg-slate-900 p-3" data-testid="clean-attachments-summary">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Attachments</div>
-        <Badge variant="outline">{files.length}</Badge>
-      </div>
-      <div className="grid gap-1.5">
-        {visibleFiles.map((file) => {
-          const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
-            ? `/api/inbound-orders/${encodeURIComponent(selectedRecord.id)}/files/${encodeURIComponent(file.id)}/download`
-            : null;
-          return (
-            <div key={file.id} className="flex min-w-0 items-center justify-between gap-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs">
-              <div className="min-w-0">
-                <div className="truncate font-semibold text-slate-200">{file.sourceFilename || "Attachment"}</div>
-                <div className="mt-0.5 flex flex-wrap gap-1.5 text-[11px] text-slate-500">
-                  <span>{inboundAttachmentRoleLabel(file.role)}</span>
-                  <span>{formatFileSize(file.sizeBytes)}</span>
-                  {!file.fileRecordId && <span>Metadata only</span>}
-                </div>
-              </div>
-              {downloadUrl && (
-                <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-[11px]">
-                  <a href={downloadUrl} target="_blank" rel="noreferrer">Open</a>
-                </Button>
-              )}
+    <CleanSupportDetails
+      title="Attachments"
+      summary={`${files.length} attachment${files.length === 1 ? "" : "s"} / ${artworkCount} artwork / ${poCount} purchase orders`}
+      testId="clean-attachments-summary"
+    >
+      <div className="grid gap-2">
+        {attachmentCategories.map((category) => (
+          <section key={category.key} className="rounded border border-slate-800 bg-slate-950">
+            <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs">
+              <span className="font-semibold text-slate-300">{category.label}</span>
+              <Badge variant="outline">{category.files.length} item{category.files.length === 1 ? "" : "s"}</Badge>
             </div>
-          );
-        })}
-        {files.length > visibleFiles.length && (
-          <div className="text-[11px] text-slate-500">+{files.length - visibleFiles.length} more attachments in Source Documents</div>
-        )}
+            {category.files.length > 0 && (
+              <div className="grid gap-1 border-t border-slate-800 p-2">
+                {category.files.map((file) => {
+                  const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
+                    ? `/api/inbound-orders/${encodeURIComponent(selectedRecord.id)}/files/${encodeURIComponent(file.id)}/download`
+                    : null;
+                  return (
+                    <div key={file.id} className="flex min-w-0 items-center justify-between gap-2 rounded border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs">
+                      <div className="min-w-0">
+                        <div className="truncate font-semibold text-slate-200">{file.sourceFilename || "Attachment"}</div>
+                        <div className="mt-0.5 flex flex-wrap gap-1.5 text-[11px] text-slate-500">
+                          <span>{inboundAttachmentRoleLabel(file.role)}</span>
+                          <span>{formatFileSize(file.sizeBytes)}</span>
+                          {!file.fileRecordId && <span>Metadata only</span>}
+                        </div>
+                      </div>
+                      {downloadUrl && (
+                        <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-[11px]">
+                          <a href={downloadUrl} target="_blank" rel="noreferrer">Open</a>
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        ))}
       </div>
-    </section>
+    </CleanSupportDetails>
   );
 }
 
@@ -4389,16 +4435,17 @@ function CleanOrderWorkstation({
     ...form.missingDecisionsJson.map((decision) => [decision.label, decision.reason].filter(Boolean).join(": ")),
     ...form.warningsJson.map((warning) => warning.message),
   ].filter(Boolean);
-  const operatorIssues = Array.from(new Set([
-    ...minimumConversionIssues,
-    ...reviewTaskIssues,
-  ].map(cleanOperatorIssueLabel)));
+  const reviewTaskLabels = Array.from(new Set(reviewTaskIssues.map(cleanOperatorIssueLabel)));
   const canCreateDraftOrder = selectedRecord.status === "ready" && reviewDraft.status === "ready_to_convert" && validationErrors.length === 0;
   const cleanDraft = draftPreview.draft;
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
   const firstLineSize = firstLine?.width && firstLine?.height ? `${firstLine.width} x ${firstLine.height}${firstLine.dimensionsUnit ? ` ${firstLine.dimensionsUnit}` : ""}` : null;
   const firstLineArtworkLinked = firstLine?.artworkLinks.some((link) => link.source !== "staff_removed") || form.reviewedArtworkJson.status === "supplied";
   const completionChecklist = cleanCompletionChecklist(form, reviewDraft);
+  const remainingChecklistItems = completionChecklist.filter((item) => !item.complete).length;
+  const internalNoteCount = form.reviewedOrderJson.internalNotes ? 1 : 0;
+  const productionNoteCount = form.reviewedOrderJson.customerNotes ? 1 : 0;
+  const hasConversionBlockers = minimumConversionIssues.length > 0 || conversionErrors.length > 0;
   const activeEvidenceComparison = cleanEvidenceComparison(activeTarget, form, cleanDraft);
   const focusResolutionTarget = (target: CleanHighlightTarget) => {
     onFocusTarget(target, { inspectSource: false });
@@ -4528,20 +4575,23 @@ function CleanOrderWorkstation({
             ))}
           </div>
         </div>
-        <CleanCompactAttachments selectedRecord={selectedRecord} files={inboundFiles} />
-        <details className="mb-3 rounded border border-slate-800 bg-slate-900" data-testid="clean-notes-section">
-          <summary className="cursor-pointer list-none px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-400">Notes</summary>
-          <div className="grid gap-2 border-t border-slate-800 p-3">
+        <CleanSupportDetails
+          title="Notes"
+          summary={`Internal: ${internalNoteCount} / Production: ${productionNoteCount}`}
+          testId="clean-notes-section"
+        >
+          <div className="grid gap-2">
             <OrderEntryField label="Production Notes"><Textarea value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: trimToNull(event.target.value) })} /></OrderEntryField>
             <OrderEntryField label="Internal Notes"><Textarea value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: trimToNull(event.target.value) })} /></OrderEntryField>
           </div>
-        </details>
-        <details className="mb-3 rounded border border-slate-800 bg-slate-900" data-testid="clean-readiness-validation">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-400">
-            Readiness & Validation
-            <Badge variant={operatorIssues.length > 0 ? "destructive" : "secondary"}>{operatorIssues.length}</Badge>
-          </summary>
-          <div className="grid gap-3 border-t border-slate-800 p-3">
+        </CleanSupportDetails>
+        <CleanCompactAttachments selectedRecord={selectedRecord} files={inboundFiles} />
+        <CleanSupportDetails
+          title="Review Tasks"
+          summary={`${remainingChecklistItems} remaining`}
+          testId="clean-review-tasks"
+        >
+          <div className="grid gap-3">
             <div className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-completion-checklist">
               <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Completion Checklist</div>
               <div className="grid gap-1.5">
@@ -4563,24 +4613,43 @@ function CleanOrderWorkstation({
               </div>
             </div>
             <div className="rounded border border-slate-800 bg-slate-950 p-3">
-              <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Remaining actions</div>
-              {operatorIssues.length === 0 ? (
-                <div className="text-xs text-emerald-200">No readiness blockers.</div>
+              <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Operator Actions</div>
+              {reviewTaskLabels.length === 0 ? (
+                <div className="text-xs text-emerald-200">No extra review tasks.</div>
               ) : (
                 <ul className="space-y-1 text-xs text-amber-200">
-                  {operatorIssues.map((issue) => <li key={issue}>{issue}</li>)}
+                  {reviewTaskLabels.map((issue) => <li key={issue}>{issue}</li>)}
                 </ul>
               )}
             </div>
           </div>
-        </details>
+        </CleanSupportDetails>
         {reviewDraft.customerIntelligenceJson && (
-          <details className="mb-3 rounded border border-slate-800 bg-slate-900" data-testid="clean-customer-intelligence">
-            <summary className="cursor-pointer list-none px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-400">Customer Intelligence</summary>
-            <div className="border-t border-slate-800 p-3">
-              <CustomerIntelligencePanel intelligence={reviewDraft.customerIntelligenceJson} />
+          <CleanSupportDetails
+            title="Customer Intelligence"
+            summary="Available"
+            testId="clean-customer-intelligence"
+          >
+            <CustomerIntelligencePanel intelligence={reviewDraft.customerIntelligenceJson} />
+          </CleanSupportDetails>
+        )}
+        {hasConversionBlockers && (
+          <CleanSupportDetails
+            title="Ready Validation"
+            summary={`${minimumConversionIssues.length + conversionErrors.length} blocker${minimumConversionIssues.length + conversionErrors.length === 1 ? "" : "s"}`}
+            testId="clean-readiness-validation"
+          >
+            <div className="rounded border border-slate-800 bg-slate-950 p-3">
+              <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Missing Before Conversion</div>
+              {minimumConversionIssues.length === 0 && conversionErrors.length === 0 ? (
+                <div className="text-xs text-emerald-200">No readiness blockers.</div>
+              ) : (
+                <ul className="space-y-1 text-xs text-amber-200">
+                  {[...minimumConversionIssues, ...conversionErrors].map((issue) => <li key={issue}>{cleanOperatorIssueLabel(issue)}</li>)}
+                </ul>
+              )}
             </div>
-          </details>
+          </CleanSupportDetails>
         )}
       </div>
       <div className="shrink-0 border-t border-slate-700 bg-slate-900 px-3 py-2">
