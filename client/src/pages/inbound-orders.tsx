@@ -4149,11 +4149,55 @@ function cleanOperatorIssueLabel(issue: string): string {
   if (lower.includes("duedate") || lower.includes("due date") || lower.includes("requesteddue")) return "Due date missing";
   if (lower.includes("price") || lower.includes("pricing")) return "Pricing needs review";
   if (lower.includes("material")) return "Product options need review";
-  return issue
+  return cleanOperatorText(issue)
+    || "Review the inbound request.";
+}
+
+function cleanOperatorText(value: string | null | undefined): string {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  return text
     .replace(/reviewed[A-Za-z]+Json\./g, "")
-    .replace(/lineItems\.\d+\./g, "")
+    .replace(/lineItems\.\d+\.productName/g, "product description")
+    .replace(/lineItems\.\d+\./g, "line item ")
+    .replace(/\blineItems\b/g, "line items")
+    .replace(/\bproductName\b/g, "product description")
     .replace(/requestedDueDate/g, "due date")
-    .replace(/_/g, " ");
+    .replace(/\bmaterial\b/gi, "product options")
+    .replace(/\bPBV2\b/g, "product")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanEvidenceConflictLabel(warning: { code?: string | null; message?: string | null; fieldPath?: string | null }): string {
+  const text = `${warning.code ?? ""} ${warning.message ?? ""} ${warning.fieldPath ?? ""}`.toLowerCase();
+  if (text.includes("quantity")) return "The quantity in the purchase order differs from the email.";
+  if (text.includes("duedate") || text.includes("due date") || text.includes("requesteddue")) return "The requested due date differs between documents.";
+  if (text.includes("product")) return "The product description differs between documents.";
+  if (text.includes("dimension") || text.includes("size") || text.includes("width") || text.includes("height")) return "The size differs between documents.";
+  if (text.includes("material")) return "The product options differ between documents.";
+  if (text.includes("artwork")) return "Artwork evidence differs between documents.";
+  if (text.includes("price") || text.includes("pricing")) return "Pricing differs between documents.";
+  return cleanOperatorText(warning.message) || "Source documents disagree.";
+}
+
+function isEvidenceConflictWarning(warning: { code?: string | null; message?: string | null; fieldPath?: string | null }): boolean {
+  const text = `${warning.code ?? ""} ${warning.message ?? ""} ${warning.fieldPath ?? ""}`.toLowerCase();
+  return text.includes("conflict") || text.includes("differs") || text.includes("disagree");
+}
+
+function cleanAiSuggestionText(value: string | null | undefined): string {
+  const text = cleanOperatorText(value);
+  if (!text) return "";
+  return text
+    .replace(/No compatible product option found\./i, "No configured product option supports this request.")
+    .replace(/Add manually/i, "Review manually")
+    .trim();
+}
+
+function cleanUniqueItems(items: string[]): string[] {
+  return Array.from(new Set(items.map(cleanOperatorText).filter(Boolean)));
 }
 
 function CleanSupportDetails({
@@ -4178,6 +4222,57 @@ function CleanSupportDetails({
       </summary>
       <div className="border-t border-slate-800 p-3">
         {children}
+      </div>
+    </details>
+  );
+}
+
+function CleanReviewTaskCategory({
+  title,
+  items,
+  emptyLabel,
+  testId,
+}: {
+  title: string;
+  items: string[];
+  emptyLabel: string;
+  testId: string;
+}) {
+  return (
+    <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid={testId}>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-xs font-bold uppercase tracking-wide text-slate-400">{title}</div>
+        <Badge variant={items.length > 0 ? "outline" : "secondary"}>{items.length}</Badge>
+      </div>
+      {items.length === 0 ? (
+        <div className="text-xs text-emerald-200">{emptyLabel}</div>
+      ) : (
+        <ul className="space-y-1 text-xs text-slate-200">
+          {items.map((item) => <li key={item}>{item}</li>)}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function CleanEvidenceConflictGroup({ conflicts }: { conflicts: string[] }) {
+  return (
+    <details className="rounded border border-slate-800 bg-slate-950" data-testid="clean-evidence-conflict-group">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-xs marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300">
+        <span className="font-bold uppercase tracking-wide text-slate-400">Evidence Conflicts</span>
+        <span className="flex items-center gap-2 text-[11px] text-slate-500">
+          <span>{conflicts.length} conflict{conflicts.length === 1 ? "" : "s"}</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </span>
+      </summary>
+      <div className="border-t border-slate-800 p-3">
+        {conflicts.length === 0 ? (
+          <div className="text-xs text-emerald-200">No document conflicts found.</div>
+        ) : (
+          <ul className="space-y-1 text-xs text-amber-200">
+            {conflicts.map((conflict) => <li key={conflict}>{conflict}</li>)}
+          </ul>
+        )}
       </div>
     </details>
   );
@@ -4368,19 +4463,41 @@ function CleanOrderWorkstation({
     ...unresolvedPricingIssues,
     ...validationErrors,
   ].filter(Boolean) as string[];
-  const reviewTaskIssues = [
-    ...(form.unsupportedRequestsJson ?? []).map((finding) => finding.suggestedAction || finding.reason || finding.requestedText),
-    ...form.missingDecisionsJson.map((decision) => [decision.label, decision.reason].filter(Boolean).join(": ")),
-    ...form.warningsJson.map((warning) => warning.message),
-  ].filter(Boolean);
-  const reviewTaskLabels = Array.from(new Set(reviewTaskIssues.map(cleanOperatorIssueLabel)));
   const canCreateDraftOrder = selectedRecord.status === "ready" && reviewDraft.status === "ready_to_convert" && validationErrors.length === 0;
   const cleanDraft = draftPreview.draft;
+  const evidenceConflictItems = cleanUniqueItems([
+    ...(cleanDraft.evidence?.conflicts ?? []).map(cleanEvidenceConflictLabel),
+    ...form.warningsJson.filter(isEvidenceConflictWarning).map(cleanEvidenceConflictLabel),
+  ]);
+  const blockingDecisionItems = cleanUniqueItems([
+    ...form.missingDecisionsJson
+      .filter((decision) => decision.status === "still_blocking" || decision.severity === "blocking")
+      .map((decision) => cleanOperatorIssueLabel([decision.label, decision.reason].filter(Boolean).join(": "))),
+  ]);
+  const aiSuggestionItems = cleanUniqueItems([
+    ...(form.unsupportedRequestsJson ?? []).map((finding) => (
+      cleanAiSuggestionText(finding.suggestedAction)
+      || cleanAiSuggestionText(finding.reason)
+      || cleanAiSuggestionText(finding.requestedText)
+    )),
+    ...form.reviewedLineItemsJson.flatMap((lineItem) => (
+      (lineItem.pbv2OptionSuggestions ?? [])
+        .filter((suggestion) => suggestion.origin !== "DEFAULT")
+        .map((suggestion) => cleanAiSuggestionText(`AI recommends ${suggestion.label}: ${suggestion.choiceLabel}. ${suggestion.reason}`))
+    )),
+  ]);
+  const informationItems = cleanUniqueItems([
+    ...form.warningsJson.filter((warning) => !isEvidenceConflictWarning(warning)).map((warning) => cleanOperatorText(warning.message)),
+    ...form.missingDecisionsJson
+      .filter((decision) => decision.status !== "still_blocking" && decision.severity !== "blocking")
+      .map((decision) => cleanOperatorText([decision.label, decision.reason].filter(Boolean).join(": "))),
+  ]);
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
   const firstLineSize = firstLine?.width && firstLine?.height ? `${firstLine.width} x ${firstLine.height}${firstLine.dimensionsUnit ? ` ${firstLine.dimensionsUnit}` : ""}` : null;
   const firstLineArtworkLinked = firstLine?.artworkLinks.some((link) => link.source !== "staff_removed") || form.reviewedArtworkJson.status === "supplied";
   const completionChecklist = cleanCompletionChecklist(form, reviewDraft);
   const remainingChecklistItems = completionChecklist.filter((item) => !item.complete).length;
+  const blockingDecisionCount = remainingChecklistItems + blockingDecisionItems.length;
   const internalNoteCount = form.reviewedOrderJson.internalNotes ? 1 : 0;
   const productionNoteCount = form.reviewedOrderJson.customerNotes ? 1 : 0;
   const conversionBlockerCount = minimumConversionIssues.length + conversionErrors.length;
@@ -4526,12 +4643,15 @@ function CleanOrderWorkstation({
         <CleanCompactAttachments selectedRecord={selectedRecord} files={inboundFiles} />
         <CleanSupportDetails
           title="Review Tasks"
-          summary={`${remainingChecklistItems} remaining`}
+          summary={`${blockingDecisionCount} blocking / ${evidenceConflictItems.length} conflicts / ${aiSuggestionItems.length} suggestions`}
           testId="clean-review-tasks"
         >
           <div className="grid gap-3">
             <div className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-completion-checklist">
-              <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Completion Checklist</div>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Blocking Decisions</div>
+                <Badge variant={blockingDecisionCount > 0 ? "destructive" : "secondary"}>{blockingDecisionCount}</Badge>
+              </div>
               <div className="grid gap-1.5">
                 {completionChecklist.map((item) => (
                   <button
@@ -4549,17 +4669,25 @@ function CleanOrderWorkstation({
                   </button>
                 ))}
               </div>
-            </div>
-            <div className="rounded border border-slate-800 bg-slate-950 p-3">
-              <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Operator Actions</div>
-              {reviewTaskLabels.length === 0 ? (
-                <div className="text-xs text-emerald-200">No extra review tasks.</div>
-              ) : (
-                <ul className="space-y-1 text-xs text-amber-200">
-                  {reviewTaskLabels.map((issue) => <li key={issue}>{issue}</li>)}
+              {blockingDecisionItems.length > 0 && (
+                <ul className="mt-3 space-y-1 border-t border-slate-800 pt-3 text-xs text-amber-200">
+                  {blockingDecisionItems.map((item) => <li key={item}>{item}</li>)}
                 </ul>
               )}
             </div>
+            <CleanEvidenceConflictGroup conflicts={evidenceConflictItems} />
+            <CleanReviewTaskCategory
+              title="AI Suggestions"
+              items={aiSuggestionItems}
+              emptyLabel="No AI suggestions need review."
+              testId="clean-ai-suggestions"
+            />
+            <CleanReviewTaskCategory
+              title="Information"
+              items={informationItems}
+              emptyLabel="No extra information."
+              testId="clean-review-information"
+            />
           </div>
         </CleanSupportDetails>
         {reviewDraft.customerIntelligenceJson && (
