@@ -1424,13 +1424,18 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-artwork-target']")?.getAttribute("data-highlighted")).toBe("true");
     expect(container.textContent).toContain("Artwork");
     expect(container.querySelector("[data-testid='clean-inline-artwork-select']")).toBeTruthy();
-    expect(container.querySelector("[data-testid='clean-attachments-summary']")).toBeTruthy();
+    const cleanAttachmentsSection = container.querySelector("[data-testid='clean-attachments-summary']") as HTMLDetailsElement;
+    expect(cleanAttachmentsSection).toBeTruthy();
+    expect(cleanAttachmentsSection.open).toBe(false);
     const cleanNotesSection = container.querySelector("[data-testid='clean-notes-section']") as HTMLDetailsElement;
     expect(cleanNotesSection).toBeTruthy();
     expect(cleanNotesSection.open).toBe(false);
-    const readinessSection = container.querySelector("[data-testid='clean-readiness-validation']") as HTMLDetailsElement;
-    expect(readinessSection).toBeTruthy();
-    expect(readinessSection.open).toBe(false);
+    expect(cleanNotesSection.textContent).toContain("Internal: 0");
+    expect(cleanNotesSection.textContent).toContain("Production: 1");
+    const reviewTasksSection = container.querySelector("[data-testid='clean-review-tasks']") as HTMLDetailsElement;
+    expect(reviewTasksSection).toBeTruthy();
+    expect(reviewTasksSection.open).toBe(false);
+    expect(container.querySelector("[data-testid='clean-readiness-validation']")).toBeNull();
 
     act(() => {
       Simulate.change(productSearchInput, { target: { value: "PVC" } } as any);
