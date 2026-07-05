@@ -1552,6 +1552,67 @@ describe("InboundOrdersPage", () => {
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("true");
   });
 
+  test("collapses a completed Clean View line item into a compact summary", async () => {
+    const baseParsed = parsedDraft();
+    const cleanParsed = parsedDraft({
+      lineItems: [{
+        ...baseParsed.lineItems[0],
+        sourceText: "two magnets 12 x 12",
+        productName: "Magnets",
+        quantity: 2,
+        width: 12,
+        height: 12,
+        dimensionsUnit: "in",
+        optionSelectionsJson: {
+          schemaVersion: 2,
+          selected: {
+            thickness: { value: "30mil", note: "Staff selected", origin: "USER_SELECTED", evidence: null },
+          },
+        },
+        pbv2TreeVersionId: "tree_magnets",
+        artworkLinks: [{
+          fileId: "file_art",
+          filename: "Lindsay X2.pdf",
+          role: "artwork",
+          source: "staff_selected",
+          confidence: 100,
+        }],
+      }],
+      missingDecisions: [],
+      globalWarnings: [],
+    });
+    const cleanReview = reviewDraft(cleanParsed);
+    Object.assign(cleanReview.reviewedLineItemsJson[0], {
+      selectedProductId: "product_magnets",
+      selectedProductSource: "staff_selected",
+      productUnresolved: false,
+    });
+    setupParsedInboundReview({ parsed: cleanParsed, review: cleanReview });
+
+    renderPage();
+    await waitForText("Operational View");
+    const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(cleanButton);
+    });
+
+    await waitForText("Line Item 1");
+    const lineItemCard = container.querySelector("[data-testid='clean-production-ticket-card']") as HTMLElement;
+    expect(lineItemCard).toBeTruthy();
+    expect(lineItemCard.getAttribute("data-workflow-complete")).toBe("true");
+    expect(container.querySelector("[data-testid='clean-line-item-decision-strip']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-line-item-collapsed-summary']")?.textContent).toContain("Magnets");
+    expect(container.querySelector("[data-testid='clean-quantity-size-workflow']")).toBeNull();
+    expect(container.querySelector("[data-testid='clean-dynamic-product-options']")).toBeNull();
+
+    const editButton = Array.from(lineItemCard.querySelectorAll("button")).find((button) => button.textContent?.includes("Edit line item")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(editButton);
+    });
+    expect(container.querySelector("[data-testid='clean-quantity-size-workflow']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-dynamic-product-options']")).toBeTruthy();
+  });
+
   test("falls back to plain text when original email HTML is missing", async () => {
     const row = record({
       sourceType: "email",
