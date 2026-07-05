@@ -3781,7 +3781,6 @@ function CleanProductionTicketCard({
   }, [needsProductSelection]);
   const activeArtworkLinks = lineItem.artworkLinks.filter((link) => link.source !== "staff_removed");
   const dimensions = lineItem.width && lineItem.height ? `${lineItem.width} x ${lineItem.height}` : "-";
-  const reviewStatus = requiredComplete ? "Ready to review" : "Needs details";
   const hasSelectedProduct = Boolean(lineItem.selectedProductId);
   const parsedProductContext = [lineItem.sourceText, lineItem.productName]
     .map((value) => value?.trim())
@@ -3793,6 +3792,19 @@ function CleanProductionTicketCard({
   const keyOptionSummary = selectedOptions.length > 0
     ? selectedOptions.join(", ")
     : hasSelectedProduct ? "Review product options" : "Select product first";
+  const productOptionsComplete = Boolean(lineItem.optionSelectionsJson && Object.keys(ensurePbv2Selections(lineItem.optionSelectionsJson).selected ?? {}).length > 0);
+  const workflowComplete = Boolean(requiredComplete && activeArtworkLinks.length > 0 && productOptionsComplete);
+  const [workflowOpen, setWorkflowOpen] = useState(!workflowComplete);
+  useEffect(() => {
+    if (!workflowComplete) setWorkflowOpen(true);
+  }, [workflowComplete]);
+  const decisionSteps = [
+    { label: "Product", complete: Boolean(hasSelectedProduct && !lineItem.productUnresolved) },
+    { label: "Quantity", complete: Boolean(lineItem.quantity) },
+    { label: "Size", complete: Boolean(lineItem.width && lineItem.height) },
+    { label: "Artwork", complete: activeArtworkLinks.length > 0 },
+    { label: "Product Options", complete: productOptionsComplete },
+  ];
   const availableArtworkOptions = attachmentLinkOptions.filter((link) => (
     !activeArtworkLinks.some((activeLink) => artworkLinkKey(activeLink) === artworkLinkKey(link))
   ));
@@ -3855,10 +3867,17 @@ function CleanProductionTicketCard({
     </div>
   );
   return (
-    <div className="border border-slate-700 bg-slate-900 p-3" data-testid="clean-production-ticket-card">
+    <div className="border border-slate-700 bg-slate-900 p-3" data-testid="clean-production-ticket-card" data-workflow-complete={workflowComplete ? "true" : "false"}>
       <div className="flex items-center justify-between gap-2">
         <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Line Item {index + 1}</div>
-        <Badge variant={requiredComplete ? "secondary" : "destructive"}>{reviewStatus}</Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant={workflowComplete ? "secondary" : "destructive"}>{workflowComplete ? "Complete" : "Needs decisions"}</Badge>
+          {workflowComplete && (
+            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={() => setWorkflowOpen((current) => !current)}>
+              {workflowOpen ? "Collapse" : "Edit line item"}
+            </Button>
+          )}
+        </div>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2">
         <CleanTicketMetric label="Product" value={lineItem.productName || "Unselected"} target="product" source={lineItem.selectedProductSource} confidence={lineItem.interpretedProductConfidence} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
@@ -3867,6 +3886,21 @@ function CleanProductionTicketCard({
         <CleanTicketMetric label="Product options" value={keyOptionSummary} />
         <CleanTicketMetric label="Artwork status" value={activeArtworkLinks.length ? "Attached" : "Missing"} target="artwork" source="attachment" confidence={activeArtworkLinks[0]?.confidence ?? null} activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
       </div>
+      <div className="mt-3 grid gap-1.5 sm:grid-cols-5" data-testid="clean-line-item-decision-strip">
+        {decisionSteps.map((step) => (
+          <div key={step.label} className={cn("flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-semibold", step.complete ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-100" : "border-slate-700 bg-slate-950 text-slate-400")}>
+            <span className={cn("flex h-3.5 w-3.5 items-center justify-center rounded-full border text-[9px]", step.complete ? "border-emerald-300 text-emerald-200" : "border-slate-600 text-slate-500")}>{step.complete ? "x" : ""}</span>
+            <span className="truncate">{step.label}</span>
+          </div>
+        ))}
+      </div>
+      {!workflowOpen && workflowComplete && (
+        <div className="mt-3 rounded border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-xs text-emerald-100" data-testid="clean-line-item-collapsed-summary">
+          {lineItem.productName || "Product"} · {lineItem.quantity ?? "-"} · {dimensions} · {activeArtworkLinks[0]?.filename || "Artwork attached"} · {keyOptionSummary}
+        </div>
+      )}
+      {workflowOpen && (
+        <>
       {(needsProductSelection || productSelectorOpen) ? (
         <div className="mt-3">{productSelector}</div>
       ) : (
@@ -3990,6 +4024,8 @@ function CleanProductionTicketCard({
       <div data-clean-resolution-target="pricing">
         <PricingReviewCard review={lineItem.pricingReviewJson} onChange={(pricingReviewJson) => onChange({ pricingReviewJson })} />
       </div>
+        </>
+      )}
     </div>
   );
 }
