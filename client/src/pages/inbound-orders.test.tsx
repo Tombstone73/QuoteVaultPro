@@ -1317,6 +1317,17 @@ describe("InboundOrdersPage", () => {
           sizeBytes: 509_800,
           providerAttachmentId: "att_art",
           reviewNotes: null,
+        }, {
+          id: "file_po_reference",
+          inboundRecordId: row.id,
+          fileRecordId: "file_record_po_reference",
+          role: "reference",
+          status: "uploaded",
+          sourceFilename: "Order No 321 Very Long Purchase Order Reference Document For Magnets.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 618_400,
+          providerAttachmentId: "att_po_reference",
+          reviewNotes: null,
         }],
       },
     });
@@ -1362,6 +1373,12 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-line-item-task-artwork']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-line-item-task-options']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-line-item-header-summary']")).toBeTruthy();
+    expect(container.textContent).toContain("Re-scan");
+    expect(container.textContent).toContain("Parse");
+    const evidenceCards = container.querySelectorAll("[data-testid='source-evidence-file-card']");
+    expect(evidenceCards.length).toBeGreaterThan(0);
+    expect(evidenceCards[0].className).toContain("min-w-0");
+    expect(evidenceCards[0].className).toContain("overflow-hidden");
     expect(container.textContent).toContain("Select product from catalog");
     expect(container.textContent).toContain("AI detected:");
     expect(container.querySelector("[data-testid='clean-quantity-workflow']")).toBeTruthy();
@@ -1477,6 +1494,8 @@ describe("InboundOrdersPage", () => {
       Simulate.click(poTab);
     });
     await waitForText("PO Documents");
+    await waitForText("Order No 321 Very Long Purchase Order Reference Document For Magnets.pdf");
+    await waitForText("Likely PO / Reference PDF");
 
     const artworkTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Artwork") as HTMLButtonElement;
     act(() => {
@@ -1532,6 +1551,118 @@ describe("InboundOrdersPage", () => {
     });
     await waitForText("Source Evidence");
     await waitForText("Draft Builder");
+  });
+
+  test("filters the Clean View queue by trusted, untrusted, and issue categories", async () => {
+    const trusted = record({
+      id: "trusted_clean",
+      externalReference: "Trusted clean queue item",
+      sourceType: "email",
+      requiresHumanDecision: false,
+      reviewRequiredReason: null,
+      senderTrustStatus: "trusted_sender",
+      canAutoDownloadAttachments: true,
+      attachmentDownloadPolicy: "auto_download_allowed",
+      rawPayloadJson: {
+        sender: { name: "Trusted Buyer", email: "trusted@example.com" },
+        subject: "Trusted clean queue item",
+        bodyText: "Trusted customer order.",
+      },
+      normalizedPayloadJson: {
+        inboundIntent: "ORDER_REQUEST",
+      },
+    });
+    const untrusted = record({
+      id: "untrusted_clean",
+      externalReference: "Untrusted clean queue item",
+      sourceType: "email",
+      requiresHumanDecision: false,
+      reviewRequiredReason: null,
+      senderTrustStatus: "untrusted",
+      canAutoDownloadAttachments: false,
+      attachmentDownloadPolicy: "pending_trust",
+      rawPayloadJson: {
+        sender: { name: "Untrusted Sender", email: "new@example.net" },
+        subject: "Untrusted clean queue item",
+        bodyText: "New sender order.",
+      },
+      normalizedPayloadJson: {
+        inboundIntent: "QUOTE_REQUEST",
+      },
+    });
+    const issue = record({
+      id: "issue_clean",
+      externalReference: "Issue clean queue item",
+      sourceType: "email",
+      requiresHumanDecision: true,
+      reviewRequiredReason: "Artwork needs review.",
+      senderTrustStatus: "unknown",
+      attachmentDownloadPolicy: "no_attachments",
+      rawPayloadJson: {
+        sender: { name: "Issue Sender", email: "issue@example.org" },
+        subject: "Issue clean queue item",
+        bodyText: "Needs artwork decision.",
+      },
+      normalizedPayloadJson: {
+        inboundIntent: "CUSTOMER_COMMUNICATION",
+      },
+    });
+    const rows = [trusted, untrusted, issue];
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse(rows));
+      const detailRow = rows.find((row) => path === `/api/inbound-orders/${row.id}`);
+      if (detailRow) return jsonResponse({ success: true, data: detail(detailRow) });
+      const draftRow = rows.find((row) => path === `/api/inbound-orders/${row.id}/draft-preview`);
+      if (draftRow) return jsonResponse(draftPreview());
+      const reviewRow = rows.find((row) => path === `/api/inbound-orders/${row.id}/review-draft`);
+      if (reviewRow && options?.method !== "PUT") return jsonResponse({ success: true, data: reviewDraft(parsedDraft()) });
+      if (path === "/api/inbound-orders/customer-search?limit=20") return jsonResponse({ success: true, data: [] });
+      if (path.startsWith("/api/inbound-orders/product-search?")) return jsonResponse({ success: true, data: [] });
+      if (path.startsWith("/api/inbound-orders/contact-search?")) return jsonResponse({ success: true, data: [] });
+      if (path.startsWith("/api/inbound-orders/product-options/") && options?.method === "POST") return jsonResponse(pbv2OptionsResponse());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Trusted clean queue item");
+
+    const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(cleanButton);
+    });
+
+    await waitForText("Source Documents");
+    const cleanQueue = container.querySelector("[data-testid='clean-inbound-queue']") as HTMLElement;
+    expect(cleanQueue.textContent).toContain("Trusted clean queue item");
+    expect(cleanQueue.textContent).toContain("Untrusted clean queue item");
+    expect(cleanQueue.textContent).toContain("Issue clean queue item");
+
+    const quickFilters = container.querySelector("[data-testid='clean-queue-quick-filters']") as HTMLElement;
+    const [trustedFilter, untrustedFilter, issueFilter] = Array.from(quickFilters.querySelectorAll("input")) as HTMLInputElement[];
+    act(() => {
+      Simulate.change(untrustedFilter, { target: { checked: true } } as any);
+    });
+    expect(cleanQueue.textContent).not.toContain("Trusted clean queue item");
+    expect(cleanQueue.textContent).toContain("Untrusted clean queue item");
+    expect(cleanQueue.textContent).not.toContain("Issue clean queue item");
+
+    act(() => {
+      Simulate.change(issueFilter, { target: { checked: true } } as any);
+    });
+    expect(cleanQueue.textContent).not.toContain("Trusted clean queue item");
+    expect(cleanQueue.textContent).toContain("Untrusted clean queue item");
+    expect(cleanQueue.textContent).toContain("Issue clean queue item");
+
+    act(() => {
+      Simulate.change(untrustedFilter, { target: { checked: false } } as any);
+      Simulate.change(issueFilter, { target: { checked: false } } as any);
+      Simulate.change(trustedFilter, { target: { checked: true } } as any);
+    });
+    expect(cleanQueue.textContent).toContain("Trusted clean queue item");
+    expect(cleanQueue.textContent).not.toContain("Untrusted clean queue item");
+    expect(cleanQueue.textContent).not.toContain("Issue clean queue item");
   });
 
   test("updates Clean View completion checklist as line item fields are resolved", async () => {
