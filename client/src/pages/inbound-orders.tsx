@@ -3775,19 +3775,14 @@ function CleanProductionTicketCard({
   const requiredComplete = Boolean(lineItem.selectedProductId && lineItem.quantity && lineItem.width && lineItem.height);
   const needsProductSelection = !lineItem.selectedProductId || lineItem.productUnresolved;
   const needsQuantity = !lineItem.quantity;
-  const advancedDetailsNeeded = !lineItem.width || !lineItem.height;
-  const [detailsOpen, setDetailsOpen] = useState(advancedDetailsNeeded);
-  const [userControlledOpen, setUserControlledOpen] = useState(false);
   const [productSelectorOpen, setProductSelectorOpen] = useState(needsProductSelection);
-  useEffect(() => {
-    if (!userControlledOpen) setDetailsOpen(advancedDetailsNeeded);
-  }, [advancedDetailsNeeded, userControlledOpen]);
   useEffect(() => {
     if (needsProductSelection) setProductSelectorOpen(true);
   }, [needsProductSelection]);
   const activeArtworkLinks = lineItem.artworkLinks.filter((link) => link.source !== "staff_removed");
   const dimensions = lineItem.width && lineItem.height ? `${lineItem.width} x ${lineItem.height}` : "-";
   const reviewStatus = requiredComplete ? "Ready to review" : "Needs details";
+  const hasSelectedProduct = Boolean(lineItem.selectedProductId);
   const parsedProductContext = [lineItem.sourceText, lineItem.productName]
     .map((value) => value?.trim())
     .filter(Boolean)[0] ?? null;
@@ -3797,11 +3792,10 @@ function CleanProductionTicketCard({
     .slice(0, 3);
   const keyOptionSummary = selectedOptions.length > 0
     ? selectedOptions.join(", ")
-    : [...lineItem.printSpecs, ...lineItem.optionTexts, ...lineItem.finishingTexts].filter(Boolean).slice(0, 3).join(", ") || "-";
+    : hasSelectedProduct ? "Review product options" : "Select product first";
   const availableArtworkOptions = attachmentLinkOptions.filter((link) => (
     !activeArtworkLinks.some((activeLink) => artworkLinkKey(activeLink) === artworkLinkKey(link))
   ));
-  const hasSelectedProduct = Boolean(lineItem.selectedProductId);
   const handleProductSelection = (value: string) => {
     const productId = trimToNull(value);
     const selectedOption = productOptions.find((option) => option.id === productId);
@@ -3927,116 +3921,72 @@ function CleanProductionTicketCard({
           </OrderEntryField>
         </div>
       </div>
-      {!activeArtworkLinks.length && (
-        <div
-          className={cn("mt-3 rounded border border-slate-800 bg-slate-950 p-3", cleanHighlightClass("artwork", activeTarget))}
-          data-clean-destination-target="artwork"
-          data-clean-resolution-target="artwork"
-          data-clean-resolution-primary="true"
-          data-highlighted={activeTarget === "artwork" ? "true" : "false"}
-          onMouseEnter={() => onFocusTarget("artwork")}
-        >
-          <OrderEntryField label="Resolve artwork">
-            <select
-              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-              value=""
-              onChange={(event) => {
-                const key = trimToNull(event.target.value);
-                const selectedLink = attachmentLinkOptions.find((link) => artworkLinkKey(link) === key);
-                if (!selectedLink) return;
-                onChange({
-                  artworkLinks: [
-                    ...lineItem.artworkLinks.filter((link) => artworkLinkKey(link) !== key),
-                    {
-                      ...selectedLink,
-                      source: "staff_selected",
-                      confidence: 100,
-                      reason: "Staff selected artwork attachment for this line item.",
-                    },
-                  ],
-                });
-              }}
-              data-testid="clean-inline-artwork-select"
-            >
-              <option value="">{availableArtworkOptions.length > 0 ? "Attach artwork file..." : "No artwork files available"}</option>
-              {availableArtworkOptions.map((link) => (
-                <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>{link.filename || link.fileId}</option>
-              ))}
-            </select>
-          </OrderEntryField>
-        </div>
-      )}
-      <button
-        type="button"
-        className={cn("mt-3 flex w-full items-center gap-3 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-left", cleanHighlightClass("artwork", activeTarget))}
-        onClick={() => onFocusTarget("artwork")}
-        onMouseEnter={() => onFocusTarget("artwork")}
-        data-testid="clean-artwork-target"
+      <div
+        className={cn("mt-3 rounded border border-slate-800 bg-slate-950 p-3", cleanHighlightClass("artwork", activeTarget))}
+        data-clean-destination-target="artwork"
+        data-clean-resolution-target="artwork"
+        data-clean-resolution-primary="true"
         data-highlighted={activeTarget === "artwork" ? "true" : "false"}
+        onMouseEnter={() => onFocusTarget("artwork")}
       >
-        <div className="flex h-8 w-10 items-center justify-center rounded bg-slate-800">
-          <Paperclip className="h-4 w-4 text-slate-400" />
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Artwork</div>
+          <Badge variant={activeArtworkLinks.length ? "secondary" : "destructive"}>{activeArtworkLinks.length ? "Attached" : "Pending"}</Badge>
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-semibold text-slate-200">{activeArtworkLinks[0]?.filename || "No artwork linked"}</div>
-          <div className="text-[11px] uppercase tracking-wide text-slate-500">Preflight {activeArtworkLinks.length ? "attached" : "pending"}</div>
-        </div>
-      </button>
+        <button
+          type="button"
+          className="mb-3 flex w-full items-center gap-3 rounded border border-slate-800 bg-slate-900 px-3 py-2 text-left"
+          onClick={() => onFocusTarget("artwork")}
+          data-testid="clean-artwork-target"
+          data-highlighted={activeTarget === "artwork" ? "true" : "false"}
+        >
+          <div className="flex h-8 w-10 items-center justify-center rounded bg-slate-800">
+            <Paperclip className="h-4 w-4 text-slate-400" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-xs font-semibold text-slate-200">{activeArtworkLinks[0]?.filename || "No artwork linked"}</div>
+            <div className="text-[11px] uppercase tracking-wide text-slate-500">Preflight {activeArtworkLinks.length ? "attached" : "pending"}</div>
+          </div>
+        </button>
+        <OrderEntryField label="Artwork assignment">
+          <select
+            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+            value=""
+            onChange={(event) => {
+              const key = trimToNull(event.target.value);
+              const selectedLink = attachmentLinkOptions.find((link) => artworkLinkKey(link) === key);
+              if (!selectedLink) return;
+              onChange({
+                artworkLinks: [
+                  ...lineItem.artworkLinks.filter((link) => artworkLinkKey(link) !== key),
+                  {
+                    ...selectedLink,
+                    source: "staff_selected",
+                    confidence: 100,
+                    reason: "Staff selected artwork attachment for this line item.",
+                  },
+                ],
+              });
+            }}
+            data-testid="clean-inline-artwork-select"
+          >
+            <option value="">{availableArtworkOptions.length > 0 ? "Attach artwork file..." : "No artwork files available"}</option>
+            {availableArtworkOptions.map((link) => (
+              <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>{link.filename || link.fileId}</option>
+            ))}
+          </select>
+        </OrderEntryField>
+        {activeArtworkLinks.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1 text-xs text-slate-300">
+            {activeArtworkLinks.map((link) => <Badge key={artworkLinkKey(link)} variant="outline">{link.filename || link.fileId}</Badge>)}
+          </div>
+        )}
+      </div>
       {hasSelectedProduct && (
         <div className="mt-3" data-testid="clean-dynamic-product-options" data-clean-resolution-target="product-options">
           <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={onChange} />
         </div>
       )}
-      <details className="group mt-3 rounded border border-slate-800 bg-slate-950" open={detailsOpen} data-testid="clean-ticket-details">
-        <summary
-          className="flex h-8 cursor-pointer list-none items-center justify-between px-3 text-xs font-bold text-slate-300"
-          onClick={(event) => {
-            event.preventDefault();
-            setUserControlledOpen(true);
-            setDetailsOpen((current) => !current);
-          }}
-        >
-          Edit details
-          <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-        </summary>
-        <div className="grid gap-3 border-t border-slate-800 p-3">
-          <OrderEntryField label="Artwork assignment">
-            <select
-              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-              value=""
-              onChange={(event) => {
-                const key = trimToNull(event.target.value);
-                const selectedLink = attachmentLinkOptions.find((link) => artworkLinkKey(link) === key);
-                if (!selectedLink) return;
-                onChange({
-                  artworkLinks: [
-                    ...lineItem.artworkLinks.filter((link) => artworkLinkKey(link) !== key),
-                    {
-                      ...selectedLink,
-                      source: "staff_selected",
-                      confidence: 100,
-                      reason: "Staff selected artwork attachment for this line item.",
-                    },
-                  ],
-                });
-              }}
-            >
-              <option value="">{availableArtworkOptions.length > 0 ? "Attach stored file..." : "No artwork files available"}</option>
-              {availableArtworkOptions.map((link) => (
-                <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>{link.filename || link.fileId}</option>
-              ))}
-            </select>
-          </OrderEntryField>
-          {activeArtworkLinks.length > 0 && (
-            <div className="flex flex-wrap gap-1 text-xs text-slate-300">
-              {activeArtworkLinks.map((link) => <Badge key={artworkLinkKey(link)} variant="outline">{link.filename || link.fileId}</Badge>)}
-            </div>
-          )}
-          <OrderEntryField label="Line item notes">
-            <Textarea value={lineItem.notes ?? ""} onChange={(event) => onChange({ notes: trimToNull(event.target.value) })} />
-          </OrderEntryField>
-        </div>
-      </details>
       <div data-clean-resolution-target="pricing">
         <PricingReviewCard review={lineItem.pricingReviewJson} onChange={(pricingReviewJson) => onChange({ pricingReviewJson })} />
       </div>

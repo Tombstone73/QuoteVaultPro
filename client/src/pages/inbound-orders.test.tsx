@@ -1354,9 +1354,8 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).not.toContain("Draft Builder");
     expect(container.querySelector("[data-clean-checklist-item='Product resolved']")?.getAttribute("data-complete")).toBe("false");
 
-    const ticketDetails = container.querySelector("[data-testid='clean-ticket-details']") as HTMLDetailsElement;
-    expect(ticketDetails).toBeTruthy();
-    expect(ticketDetails.open).toBe(false);
+    expect(container.querySelector("[data-testid='clean-ticket-details']")).toBeNull();
+    expect(container.textContent).not.toContain("Edit details");
     expect(container.querySelector("[data-testid='clean-product-catalog-selector']")).toBeTruthy();
     expect(container.textContent).toContain("Select product from catalog");
     expect(container.textContent).toContain("Parsed phrase:");
@@ -1377,12 +1376,6 @@ describe("InboundOrdersPage", () => {
       document.activeElement === productSearchInput
         || container.querySelector("[data-testid='clean-product-catalog-selector']")?.getAttribute("data-highlighted") === "true"
     ), "product checklist focuses inline catalog selector");
-
-    const editSummary = Array.from(ticketDetails.querySelectorAll("summary")).find((summary) => summary.textContent?.includes("Edit details")) as HTMLElement;
-    act(() => {
-      Simulate.click(editSummary);
-    });
-    expect(ticketDetails.open).toBe(true);
 
     const sizeSource = container.querySelector("[data-clean-source-target='dimensions']") as HTMLButtonElement;
     expect(sizeSource).toBeTruthy();
@@ -1423,6 +1416,8 @@ describe("InboundOrdersPage", () => {
       Simulate.click(artworkSource);
     });
     expect(container.querySelector("[data-testid='clean-artwork-target']")?.getAttribute("data-highlighted")).toBe("true");
+    expect(container.textContent).toContain("Artwork");
+    expect(container.querySelector("[data-testid='clean-inline-artwork-select']")).toBeTruthy();
 
     act(() => {
       Simulate.change(productSearchInput, { target: { value: "PVC" } } as any);
@@ -1437,6 +1432,7 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[aria-label='Dimension Unit']")).toBeTruthy();
     expect(container.textContent).not.toContain("Size Unit");
     expect(container.textContent).not.toContain("Finishing");
+    expect(container.textContent).not.toContain("Line item notes");
     expect(container.textContent).not.toContain("Parsed material");
     expect(Array.from(container.querySelectorAll("label")).some((label) => label.textContent?.trim() === "Material")).toBe(false);
     await waitForText("Product options");
@@ -1539,8 +1535,7 @@ describe("InboundOrdersPage", () => {
     await waitForText("Completion Checklist");
     const quantityChecklistItem = () => container.querySelector("[data-clean-checklist-item='Quantity confirmed']");
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("false");
-    const ticketDetails = container.querySelector("[data-testid='clean-ticket-details']") as HTMLDetailsElement;
-    expect(ticketDetails.open).toBe(false);
+    expect(container.querySelector("[data-testid='clean-ticket-details']")).toBeNull();
     const inlineQuantityInput = container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
     expect(inlineQuantityInput).toBeTruthy();
     act(() => {
