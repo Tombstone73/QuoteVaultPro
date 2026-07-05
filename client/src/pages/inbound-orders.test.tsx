@@ -1357,10 +1357,16 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-ticket-details']")).toBeNull();
     expect(container.textContent).not.toContain("Edit details");
     expect(container.querySelector("[data-testid='clean-product-catalog-selector']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-line-item-task-list']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-line-item-task-product']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-line-item-task-artwork']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-line-item-task-options']")).toBeTruthy();
     expect(container.textContent).toContain("Select product from catalog");
     expect(container.textContent).toContain("Parsed phrase:");
     expect(container.querySelector("[data-testid='clean-quantity-size-workflow']")).toBeTruthy();
     expect(container.textContent).toContain("Quantity & Size");
+    expect(container.textContent).toContain("Step 1");
+    expect(container.textContent).toContain("Step 4");
     const catalogProductSelect = container.querySelector("[data-testid='clean-product-catalog-select']") as HTMLSelectElement;
     expect(catalogProductSelect).toBeTruthy();
     expect(catalogProductSelect.tagName).toBe("SELECT");
