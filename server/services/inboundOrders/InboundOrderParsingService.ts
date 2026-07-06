@@ -194,6 +194,31 @@ function missingDecision(field: string, label: string, reason: string, severity:
   return { field, label, reason, severity };
 }
 
+function parseResultSummary(draft: unknown): Record<string, unknown> {
+  if (!draft || typeof draft !== "object" || Array.isArray(draft)) {
+    return {
+      extractedCustomer: null,
+      extractedContact: null,
+      extractedLineItemCount: 0,
+      extractedAttachmentCount: 0,
+      poCandidateCount: 0,
+      missingDecisionCount: 0,
+      reviewDraftPersisted: false,
+    };
+  }
+  const parsedDraft = draft as Partial<InboundOrderParsedDraft>;
+  const evidenceItems = parsedDraft.evidence?.items ?? [];
+  return {
+    extractedCustomer: parsedDraft.customer?.companyName ?? parsedDraft.customer?.sourceName ?? null,
+    extractedContact: parsedDraft.customer?.sourceEmail ?? null,
+    extractedLineItemCount: parsedDraft.lineItems?.length ?? 0,
+    extractedAttachmentCount: parsedDraft.artwork?.length ?? 0,
+    poCandidateCount: evidenceItems.filter((item) => item.type === "PDF_ATTACHMENT" && item.documentType === "purchase_order").length,
+    missingDecisionCount: parsedDraft.missingDecisions?.length ?? 0,
+    reviewDraftPersisted: false,
+  };
+}
+
 export class InboundOrderParsingService {
   constructor(
     private readonly repository = inboundOrdersRepository,
@@ -1145,6 +1170,7 @@ export class InboundOrderParsingService {
           confidence: attempt.confidence,
           warningCount: Array.isArray(attempt.warnings) ? attempt.warnings.length : 0,
           errorCount: Array.isArray(attempt.errors) ? attempt.errors.length : 0,
+          parseResultSummary: parseResultSummary(args.attempt.parsedDraft),
           reviewOnly: true,
         },
       },

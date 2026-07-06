@@ -1737,10 +1737,12 @@ describe("InboundOrdersPage", () => {
             record: { ...row, parsedAt: "2026-06-09T12:02:00.000Z" },
             draft,
             latestAttempt: attempt,
+            reviewDraft: reviewDraft(draft),
           },
         }));
       });
-      await waitForCondition(() => refreshFromLatestParseCalled === 1, "re-scan hydrates review draft");
+      await waitForCondition(() => !rescanButton.querySelector(".animate-spin"), "re-scan finishes independently");
+      expect(refreshFromLatestParseCalled).toBe(0);
 
       act(() => {
         Simulate.click(parseButton);
@@ -1755,10 +1757,12 @@ describe("InboundOrdersPage", () => {
             record: { ...row, parsedAt: "2026-06-09T12:03:00.000Z" },
             draft,
             latestAttempt: attempt,
+            reviewDraft: reviewDraft(draft),
           },
         }));
       });
-      await waitForCondition(() => refreshFromLatestParseCalled === 2, "parse hydrates review draft");
+      await waitForCondition(() => !parseButton.querySelector(".animate-spin"), "parse finishes independently");
+      expect(refreshFromLatestParseCalled).toBe(0);
     } finally {
       confirmSpy.mockRestore();
     }
@@ -3763,6 +3767,7 @@ describe("InboundOrdersPage", () => {
     });
     const attempt = parseAttempt({ parsedDraft: draft, confidence: 82, warnings: draft.globalWarnings });
     let refreshFromLatestParseCalled = false;
+    let parseCompleted = false;
 
     apiFetchMock.mockImplementation(async (url: any, options?: any) => {
       const path = String(url);
@@ -3784,12 +3789,18 @@ describe("InboundOrdersPage", () => {
         });
       }
       if (path === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST") {
+        parseCompleted = true;
         return jsonResponse({
           success: true,
           data: {
             draft,
             latestAttempt: attempt,
             record: { ...row, status: "needs_review", parsedAt: "2026-06-09T12:01:00.000Z" },
+            reviewDraft: reviewDraft(draft, {
+              id: "review_snapshot_after_parse",
+              snapshotId: "review_snapshot_after_parse",
+              initializedFromParse: true,
+            }),
           },
         });
       }
@@ -3807,7 +3818,8 @@ describe("InboundOrdersPage", () => {
     });
 
     await waitForText("Phase 4: Create draft order from reviewed inbound record.");
-    await waitForCondition(() => refreshFromLatestParseCalled, "review draft refreshed after parse");
+    await waitForCondition(() => parseCompleted, "parse completed");
+    expect(refreshFromLatestParseCalled).toBe(false);
     const debugButton = Array.from(container.querySelectorAll("button")).find((button) => (
       button.textContent?.includes("Debug View")
     )) as HTMLButtonElement;
@@ -3944,6 +3956,7 @@ describe("InboundOrdersPage", () => {
     });
     const latestAttempt = parseAttempt({ id: "attempt_2", parsedDraft: latestDraft, confidence: 96, warnings: [] });
     let refreshFromLatestParseCalled = false;
+    let parseCompleted = false;
 
     apiFetchMock.mockImplementation(async (url: any, options?: any) => {
       const path = String(url);
@@ -3956,12 +3969,20 @@ describe("InboundOrdersPage", () => {
         return jsonResponse({ success: true, data: reviewDraft(staleDraft) });
       }
       if (path === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST") {
+        parseCompleted = true;
         return jsonResponse({
           success: true,
           data: {
             draft: latestDraft,
             latestAttempt,
             record: { ...row, status: "needs_review", parsedAt: "2026-06-09T12:05:00.000Z" },
+            reviewDraft: reviewDraft(latestDraft, {
+              id: "review_snapshot_latest",
+              snapshotId: "review_snapshot_latest",
+              sourceParseAttemptId: "attempt_2",
+              sourceParseAttemptCreatedAt: "2026-06-09T12:01:00.000Z",
+              initializedFromParse: true,
+            }),
           },
         });
       }
@@ -4003,7 +4024,8 @@ describe("InboundOrdersPage", () => {
       Simulate.click(parseButton!);
     });
 
-    await waitForCondition(() => refreshFromLatestParseCalled, "latest parse auto-applied to review draft");
+    await waitForCondition(() => parseCompleted, "latest parse auto-applied to review draft");
+    expect(refreshFromLatestParseCalled).toBe(false);
     await waitForCondition(
       () => (labeledControl("Material", "input") as HTMLInputElement).value === "3mm white PVC",
       "latest parsed material in editable control",

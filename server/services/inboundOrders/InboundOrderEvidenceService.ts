@@ -57,8 +57,29 @@ function warning(code: string, message: string, severity: InboundOrderParseWarni
   return { code, message, severity, fieldPath: fieldPath ?? null };
 }
 
+function metadataString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function isLikelyPurchaseOrderAttachment(file: InboundOrderFile): boolean {
+  if (file.role === "po") return true;
+  const metadata = file.metadataJson && typeof file.metadataJson === "object" && !Array.isArray(file.metadataJson)
+    ? file.metadataJson as Record<string, unknown>
+    : {};
+  if (metadata.poCandidate === true) return true;
+  const text = [
+    file.sourceFilename,
+    file.reviewNotes,
+    metadataString(metadata.sourceFilename),
+    metadataString(metadata.filename),
+    metadataString(metadata.attachmentSafetyReason),
+    metadataString(metadata.sourceHint),
+  ].filter(Boolean).join(" ");
+  return /\b(?:po|p\.o\.|purchase\s*order|order\s*(?:no|number|#)|customer\s*po|reference\s*(?:po|order))\b/i.test(text);
+}
+
 function attachmentDocumentFallback(file: InboundOrderFile): Pick<InboundOrderEvidenceItem, "documentType" | "documentConfidence"> {
-  if (file.role === "po") return { documentType: "purchase_order", documentConfidence: 70 };
+  if (isLikelyPurchaseOrderAttachment(file)) return { documentType: "purchase_order", documentConfidence: file.role === "po" ? 70 : 62 };
   if (file.role === "artwork") return { documentType: "artwork_reference", documentConfidence: 70 };
   return { documentType: "unknown", documentConfidence: 0 };
 }
@@ -866,6 +887,7 @@ export class InboundOrderEvidenceService {
       try {
         const buffer = file.fileRecordId ? await this.readCanonicalFile(file.fileRecordId) : null;
         if (!buffer) {
+          const likelyPo = isLikelyPurchaseOrderAttachment(file);
           return applyManualClassificationToEvidence({
             ...base,
             type: "PDF_ATTACHMENT",
@@ -876,7 +898,7 @@ export class InboundOrderEvidenceService {
             poSummary: null,
             warnings: [warning(
               "attachment_unreadable",
-              file.role === "po"
+              likelyPo
                 ? "PO candidate PDF was stored, but text was not extracted."
                 : "PDF attachment could not be read for parsing.",
               "warning",

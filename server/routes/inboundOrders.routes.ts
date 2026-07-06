@@ -42,6 +42,7 @@ import {
   inboundOrderService,
 } from "../services/inboundOrders/InboundOrderService";
 import { inboundOrderParsingService } from "../services/inboundOrders/InboundOrderParsingService";
+import { inboundOrdersRepository } from "../storage/inboundOrders.repo";
 import { inboundEmailIntakeSettingsService } from "../services/inboundEmailIntakeSettingsService";
 import {
   InboundEmailIngestionError,
@@ -322,6 +323,7 @@ export function registerInboundOrderRoutes(
     assertInternalUser: (req: any, res: any) => boolean;
     inboundOrderService?: typeof inboundOrderService;
     inboundOrderParsingService?: typeof inboundOrderParsingService;
+    inboundOrdersRepository?: typeof inboundOrdersRepository;
     inboundEmailIntakeSettingsService?: typeof inboundEmailIntakeSettingsService;
     inboundEmailIngestionService?: typeof inboundEmailIngestionService;
     inboundEmailMailboxSettingsService?: typeof inboundEmailMailboxSettingsService;
@@ -330,6 +332,7 @@ export function registerInboundOrderRoutes(
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
   const service = middleware.inboundOrderService ?? inboundOrderService;
   const parsingService = middleware.inboundOrderParsingService ?? inboundOrderParsingService;
+  const eventRepository = middleware.inboundOrdersRepository ?? inboundOrdersRepository;
   const emailSettingsService = middleware.inboundEmailIntakeSettingsService ?? inboundEmailIntakeSettingsService;
   const emailIngestionService = middleware.inboundEmailIngestionService ?? inboundEmailIngestionService;
   const emailMailboxSettingsService = middleware.inboundEmailMailboxSettingsService ?? inboundEmailMailboxSettingsService;
@@ -1237,7 +1240,73 @@ export function registerInboundOrderRoutes(
         actorUserId,
       });
 
-      res.json({ success: true, data: result });
+      if (!result.draft) {
+        const firstError = Array.isArray(result.latestAttempt.errors)
+          ? result.latestAttempt.errors.find((item: any) => typeof item?.message === "string")?.message
+          : null;
+        return res.status(422).json({
+          success: false,
+          message: firstError || "Parse completed but did not produce a usable review draft.",
+          data: result,
+        });
+      }
+
+      try {
+        const reviewDraft = await service.refreshReviewDraftFromLatestParse({
+          organizationId,
+          inboundRecordId: String(req.params.id),
+          actorUserId,
+        });
+        await eventRepository.createEvent({
+          organizationId,
+          inboundRecordId: String(req.params.id),
+          actorUserId,
+          actorType: "user",
+          eventType: "parse.review_draft_persisted",
+          fromStatus: result.record.status,
+          toStatus: reviewDraft.status === "ready_to_convert" ? "ready" : result.record.status,
+          message: "Editable review draft persisted after parse.",
+          metadataJson: {
+            parseAttemptId: result.latestAttempt.id,
+            reviewDraftId: reviewDraft.id,
+            reviewDraftStatus: reviewDraft.status,
+            extractedLineItemCount: result.draft.lineItems.length,
+            extractedAttachmentCount: result.draft.artwork.length,
+            poCandidateCount: (result.draft.evidence?.items ?? []).filter((item) => item.type === "PDF_ATTACHMENT" && item.documentType === "purchase_order").length,
+            missingDecisionCount: result.draft.missingDecisions.length,
+            warningCount: result.draft.globalWarnings.length,
+            reviewDraftPersisted: true,
+          },
+        });
+        res.json({ success: true, data: { ...result, reviewDraft } });
+      } catch (draftError) {
+        const message = draftError instanceof Error ? draftError.message : "Failed to persist review draft after parse.";
+        await eventRepository.createEvent({
+          organizationId,
+          inboundRecordId: String(req.params.id),
+          actorUserId,
+          actorType: "system",
+          eventType: "parse.review_draft_persistence_failed",
+          fromStatus: result.record.status,
+          toStatus: result.record.status,
+          message,
+          metadataJson: {
+            parseAttemptId: result.latestAttempt.id,
+            extractedLineItemCount: result.draft.lineItems.length,
+            extractedAttachmentCount: result.draft.artwork.length,
+            poCandidateCount: (result.draft.evidence?.items ?? []).filter((item) => item.type === "PDF_ATTACHMENT" && item.documentType === "purchase_order").length,
+            missingDecisionCount: result.draft.missingDecisions.length,
+            warningCount: result.draft.globalWarnings.length,
+            reviewDraftPersisted: false,
+            errorMessage: message,
+          },
+        });
+        return res.status(500).json({
+          success: false,
+          message: `Parse completed, but review draft persistence failed: ${message}`,
+          data: result,
+        });
+      }
     } catch (error) {
       if (error instanceof InboundOrderTransitionError) {
         return res.status(error.statusCode).json({ message: error.message });

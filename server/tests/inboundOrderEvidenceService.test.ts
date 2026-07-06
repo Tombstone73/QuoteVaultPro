@@ -101,6 +101,28 @@ describe("InboundOrderEvidenceService attachment evidence", () => {
     expect(attachment?.warnings?.[0]?.message).toContain("PO candidate PDF was stored");
   });
 
+  test("surfaces PO-like reference PDFs as purchase-order evidence without changing stored role", async () => {
+    const bundle = await inboundOrderEvidenceService.buildEvidenceBundle({
+      organizationId: "org_1",
+      record: record(),
+      files: [inboundFile({
+        role: "reference",
+        sourceFilename: "Purchase Order No 151753 Titan Compass ACM Sign.pdf",
+        metadataJson: { poCandidate: false },
+      })],
+    });
+
+    const attachment = bundle.items.find((item) => item.sourceId === "file_1");
+    expect(attachment).toEqual(expect.objectContaining({
+      type: "PDF_ATTACHMENT",
+      documentType: "purchase_order",
+      documentConfidence: 62,
+      extractionStatus: "failed",
+      rawText: null,
+    }));
+    expect(attachment?.warnings?.[0]?.message).toContain("PO candidate PDF was stored");
+  });
+
   test("manual PO classification is authoritative parse evidence", async () => {
     const bundle = await inboundOrderEvidenceService.buildEvidenceBundle({
       organizationId: "org_1",

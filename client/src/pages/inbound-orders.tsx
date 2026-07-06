@@ -7496,9 +7496,23 @@ export default function InboundOrdersPage() {
       return;
     }
     if (keepCurrentDraftAfterParseRef.current) {
-      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] });
+      queryClient.setQueryData<ClientInboundOrderReviewDraftResponse | undefined>(["/api/inbound-orders", parsedRecordId, "review-draft"], (current) => (
+        current?.data
+          ? { ...current, data: { ...current.data, hasNewerParse: true } }
+          : current
+      ));
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"], refetchType: "none" });
+    } else if (response.data.reviewDraft) {
+      queryClient.setQueryData(["/api/inbound-orders", parsedRecordId, "review-draft"], {
+        success: true,
+        data: response.data.reviewDraft,
+      } satisfies ClientInboundOrderReviewDraftResponse);
     } else {
-      const refreshedDraft = await refreshReviewDraftFromLatestParseMutation.mutateAsync(parsedRecordId);
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] });
+      const refreshedDraft = await queryClient.fetchQuery({
+        queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"],
+        queryFn: () => readJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${parsedRecordId}/review-draft`),
+      });
       if (!refreshedDraft?.data) setParseCompletedWithoutDraftRecordId(parsedRecordId);
     }
     setSelectedId(parsedRecordId);

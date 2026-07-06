@@ -954,6 +954,7 @@ export type InboundOrderParseResponse = {
     draft: InboundOrderParsedDraft | null;
     latestAttempt: InboundOrderParseAttemptDto;
     record: InboundOrderRecord;
+    reviewDraft?: InboundOrderReviewDraftDto | null;
   };
 };
 
