@@ -386,6 +386,14 @@ function reviewDraft(overrides: Record<string, any> = {}) {
   };
 }
 
+const defaultInboundOrdersRepository = {
+  createEvent: jest.fn<(...args: any[]) => Promise<any>>(async (values) => ({
+    id: "event_1",
+    createdAt: new Date("2026-06-09T12:03:00.000Z"),
+    ...values,
+  })),
+};
+
 function buildApp(
   service: Record<string, any>,
   options: {
@@ -395,6 +403,7 @@ function buildApp(
     inboundEmailIntakeSettingsService?: Record<string, any>;
     inboundEmailIngestionService?: Record<string, any>;
     inboundEmailMailboxSettingsService?: Record<string, any>;
+    inboundOrdersRepository?: Record<string, any>;
     userRole?: string;
   } = {},
 ) {
@@ -426,6 +435,7 @@ function buildApp(
     inboundEmailIntakeSettingsService: options.inboundEmailIntakeSettingsService as any,
     inboundEmailIngestionService: options.inboundEmailIngestionService as any,
     inboundEmailMailboxSettingsService: options.inboundEmailMailboxSettingsService as any,
+    inboundOrdersRepository: (options.inboundOrdersRepository ?? defaultInboundOrdersRepository) as any,
   });
   return app;
 }
@@ -1478,11 +1488,13 @@ describe("inbound order routes", () => {
   test("parses an inbound record through the review-only parse route", async () => {
     const draft = parsedDraft();
     const attempt = parseAttempt({ parsedDraft: draft });
-    parsingService.parseInboundOrderRecord.mockResolvedValue({
+    const persistedDraft = reviewDraft({ sourceParseAttemptId: attempt.id });
+    parsingService.parseInboundOrderRecord.mockResolvedValueOnce({
       draft,
       latestAttempt: attempt,
       record: inboundRecord({ parsedAt: new Date("2026-06-09T12:01:00.000Z") }),
     });
+    service.refreshReviewDraftFromLatestParse.mockResolvedValueOnce(persistedDraft);
 
     const response = await request(buildApp(service, { parsingService }))
       .post("/api/inbound-orders/inbound_1/parse")
@@ -1490,13 +1502,54 @@ describe("inbound order routes", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.data.draft.customer.customerCandidates[0].label).toBe("Ada Signs");
+    expect(response.body.data.reviewDraft.id).toBe(persistedDraft.id);
     expect(response.body.data.latestAttempt.status).toBe("success");
     expect(parsingService.parseInboundOrderRecord).toHaveBeenCalledWith({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
       actorUserId: "user_1",
     });
+    expect(service.refreshReviewDraftFromLatestParse).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    expect(defaultInboundOrdersRepository.createEvent).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "parse.review_draft_persisted",
+      metadataJson: expect.objectContaining({
+        parseAttemptId: attempt.id,
+        reviewDraftId: persistedDraft.id,
+        reviewDraftPersisted: true,
+      }),
+    }));
     expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+  });
+
+  test("returns a clear error when parse succeeds but review draft persistence fails", async () => {
+    const draft = parsedDraft();
+    const attempt = parseAttempt({ parsedDraft: draft });
+    parsingService.parseInboundOrderRecord.mockResolvedValueOnce({
+      draft,
+      latestAttempt: attempt,
+      record: inboundRecord({ parsedAt: new Date("2026-06-09T12:01:00.000Z") }),
+    });
+    service.refreshReviewDraftFromLatestParse.mockRejectedValueOnce(new Error("snapshot insert failed"));
+
+    const response = await request(buildApp(service, { parsingService }))
+      .post("/api/inbound-orders/inbound_1/parse")
+      .send({});
+
+    expect(response.status).toBe(500);
+    expect(response.body.message).toContain("review draft persistence failed");
+    expect(response.body.message).toContain("snapshot insert failed");
+    expect(defaultInboundOrdersRepository.createEvent).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "parse.review_draft_persistence_failed",
+      metadataJson: expect.objectContaining({
+        parseAttemptId: attempt.id,
+        reviewDraftPersisted: false,
+        errorMessage: "snapshot insert failed",
+      }),
+    }));
   });
 
   test("returns safe JSON when parse target is not found", async () => {
@@ -1754,7 +1807,7 @@ describe("inbound order routes", () => {
     expect(response.body.errors).toEqual(["Select an existing customer before creating a draft order."]);
   });
 
-  test("returns failed parse attempts without exposing internals", async () => {
+  test("returns failed parse attempts without claiming a review draft was produced", async () => {
     const failedAttempt = parseAttempt({
       status: "failed",
       provider: null,
@@ -1764,7 +1817,7 @@ describe("inbound order routes", () => {
       warnings: [],
       errors: [{ code: "provider_unavailable", message: "AI provider is not configured." }],
     });
-    parsingService.parseInboundOrderRecord.mockResolvedValue({
+    parsingService.parseInboundOrderRecord.mockResolvedValueOnce({
       draft: null,
       latestAttempt: failedAttempt,
       record: inboundRecord(),
@@ -1774,10 +1827,12 @@ describe("inbound order routes", () => {
       .post("/api/inbound-orders/inbound_1/parse")
       .send({});
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(422);
+    expect(response.body.message).toBe("AI provider is not configured.");
     expect(response.body.data.draft).toBeNull();
     expect(response.body.data.latestAttempt.status).toBe("failed");
     expect(response.body.data.latestAttempt.errors[0].message).toBe("AI provider is not configured.");
+    expect(service.refreshReviewDraftFromLatestParse).not.toHaveBeenCalled();
   });
 
   test("fails softly when inbound tables are not migrated", async () => {

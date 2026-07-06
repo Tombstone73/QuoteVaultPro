@@ -106,6 +106,7 @@ type InboundEmailProcessingOutcome =
   | "updated_thread_container"
   | "duplicate"
   | "ignored_rule"
+  | "internal_sender_skipped"
   | "rejected"
   | "failed"
   | "classification_skipped"
@@ -938,6 +939,57 @@ function senderDomainFromMessage(message: Pick<InboundEmailProviderMessage, "sen
   return domain || null;
 }
 
+function domainFromEmail(value: string | null | undefined): string | null {
+  const email = String(value ?? "").trim().toLowerCase();
+  const domain = email.includes("@") ? email.split("@")[1]?.trim().toLowerCase() : null;
+  return domain || null;
+}
+
+function isClearForwardedInboundRequest(message: InboundEmailProviderMessage): boolean {
+  const subject = String(message.subject ?? "");
+  const body = [message.bodyText, message.bodyHtml].filter(Boolean).join("\n").slice(0, 12000);
+  const hasForwardSubject = /^\s*(fw|fwd|forwarded)\s*:/i.test(subject);
+  const hasForwardHeaders = /\bfrom:\s*[^@\n<>]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(body)
+    && /\b(to|sent|date|subject):\s+/i.test(body);
+  if (!hasForwardSubject && !hasForwardHeaders) return false;
+  const internalDomains = new Set(["titan-graphics.com"]);
+  const forwardedFrom = body.match(/\bfrom:\s*(?:.*?<)?([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})>?/i)?.[1]?.toLowerCase() ?? null;
+  const forwardedDomain = domainFromEmail(forwardedFrom);
+  return Boolean(forwardedDomain && !internalDomains.has(forwardedDomain));
+}
+
+export function isInternalOutboundInboundEmailMessage(
+  mailbox: Pick<InboundEmailMailbox, "emailAddress" | "settingsJson">,
+  message: InboundEmailProviderMessage,
+): { internal: boolean; reason: string | null; senderEmail: string | null; senderDomain: string | null } {
+  const senderEmail = senderEmailFromMessage(message);
+  const senderDomain = senderDomainFromMessage(message);
+  if (!senderEmail && !senderDomain) return { internal: false, reason: null, senderEmail, senderDomain };
+  if (isClearForwardedInboundRequest(message)) return { internal: false, reason: null, senderEmail, senderDomain };
+
+  const mailboxEmail = String(mailbox.emailAddress ?? "").trim().toLowerCase();
+  const configuredDomains = Array.isArray((mailbox.settingsJson as any)?.ownedDomains)
+    ? (mailbox.settingsJson as any).ownedDomains
+      .map((domain: unknown) => String(domain ?? "").trim().toLowerCase())
+      .filter(Boolean)
+    : [];
+  const configuredAddresses = Array.isArray((mailbox.settingsJson as any)?.internalAddresses)
+    ? (mailbox.settingsJson as any).internalAddresses
+      .map((email: unknown) => String(email ?? "").trim().toLowerCase())
+      .filter(Boolean)
+    : [];
+  const internalDomains = new Set(["titan-graphics.com", ...configuredDomains]);
+  const internalAddresses = new Set(["dale@titan-graphics.com", mailboxEmail, ...configuredAddresses].filter(Boolean));
+
+  if (senderEmail && internalAddresses.has(senderEmail)) {
+    return { internal: true, reason: `Sender ${senderEmail} is an organization/internal mailbox address.`, senderEmail, senderDomain };
+  }
+  if (senderDomain && internalDomains.has(senderDomain)) {
+    return { internal: true, reason: `Sender domain ${senderDomain} is organization/internal.`, senderEmail, senderDomain };
+  }
+  return { internal: false, reason: null, senderEmail, senderDomain };
+}
+
 function processingDiagnosticForMessage(
   message: InboundEmailProviderMessage,
   result: {
@@ -1518,9 +1570,10 @@ export class InboundEmailIngestionService {
             message.processingOutcome === "duplicate"
             || message.processingOutcome === "classification_skipped"
             || message.processingOutcome === "missing_required_data"
+            || message.processingOutcome === "internal_sender_skipped"
             || message.processingOutcome === "other"
           )),
-          ignoredMessages: processedMessages.filter((message) => message.processingOutcome === "ignored_rule"),
+          ignoredMessages: processedMessages.filter((message) => message.processingOutcome === "ignored_rule" || message.processingOutcome === "internal_sender_skipped"),
           failedMessages: processedMessages.filter((message) => message.processingOutcome === "failed"),
           result,
         });
@@ -1540,9 +1593,10 @@ export class InboundEmailIngestionService {
             message.processingOutcome === "duplicate"
             || message.processingOutcome === "classification_skipped"
             || message.processingOutcome === "missing_required_data"
+            || message.processingOutcome === "internal_sender_skipped"
             || message.processingOutcome === "other"
           )),
-          ignoredMessages: processedMessages.filter((message) => message.processingOutcome === "ignored_rule"),
+          ignoredMessages: processedMessages.filter((message) => message.processingOutcome === "ignored_rule" || message.processingOutcome === "internal_sender_skipped"),
           failedMessages: [
             ...processedMessages.filter((message) => message.processingOutcome === "failed"),
             {
@@ -2580,6 +2634,14 @@ export class InboundEmailIngestionService {
     adapter: InboundEmailProviderAdapter,
   ): Promise<InboundEmailProcessMessageResult> {
     message = await this.messageWithRecoveredProviderAttachments(mailbox, message, adapter);
+    const internalSender = isInternalOutboundInboundEmailMessage(mailbox, message);
+    if (internalSender.internal) {
+      return {
+        status: "ignored",
+        processingOutcome: "internal_sender_skipped",
+        reason: internalSender.reason ?? "Sender belongs to an organization/internal domain.",
+      };
+    }
     if (message.threadId && adapter.getThreadMessages) {
       return this.processThreadMessage(organizationId, actorUserId, mailbox, source, message, adapter);
     }

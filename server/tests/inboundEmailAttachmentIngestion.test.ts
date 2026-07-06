@@ -502,6 +502,51 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     }));
   });
 
+  test("pullLatestEmails skips internal outbound Titan senders before TEMP record creation", async () => {
+    const { repo, storage } = serviceHarness();
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => [message({
+        messageId: "gmail_internal_outbound",
+        threadId: null,
+        senderName: "Dale Hensley",
+        senderEmail: "dale@titan-graphics.com",
+        subject: "Invoice REF PO message",
+        bodyText: "Attached is your invoice.",
+        attachments: [{
+          filename: "invoice.pdf",
+          mimeType: "application/pdf",
+          size: 8,
+          attachmentId: "att_internal",
+          contentDisposition: "attachment",
+        }],
+      })]),
+      downloadAttachment: jest.fn(async () => ({
+        buffer: Buffer.from("%PDF"),
+        mimeType: "application/pdf",
+        sizeBytes: 4,
+      })),
+    };
+    const dbHarness = pullLatestFreshRecordDbHarness(record);
+    const service = new InboundEmailIngestionService(
+      dbHarness as any,
+      { gmail: adapter },
+      repo as any,
+      storage as any,
+    );
+    const ingestSpy = jest.spyOn(service as any, "ingestAttachments");
+
+    const result = await service.pullLatestEmails({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      limit: 1,
+    });
+
+    expect(result.summary).toEqual({ created: 0, skippedDuplicates: 0, ignored: 1, failed: 0 });
+    expect(dbHarness.insertedRecords).toHaveLength(0);
+    expect(ingestSpy).not.toHaveBeenCalled();
+    expect(adapter.downloadAttachment).not.toHaveBeenCalled();
+  });
+
   test("pullLatestEmails creates a TEMP_INBOUND record for no-subject Gmail messages", async () => {
     const { repo, storage } = serviceHarness();
     const adapter: InboundEmailProviderAdapter = {
