@@ -1665,6 +1665,194 @@ describe("InboundOrdersPage", () => {
     expect(cleanQueue.textContent).not.toContain("Issue clean queue item");
   });
 
+  test("keeps Clean View Parse and Re-scan loading states independent while hydrating parse results", async () => {
+    const row = record({
+      id: "clean_parse_1",
+      sourceType: "email",
+      parsedAt: null,
+      rawPayloadJson: {
+        sender: { name: "Parse Sender", email: "parse@example.com" },
+        subject: "Parse clean queue item",
+        bodyText: "Please make two magnets.",
+      },
+    });
+    const draft = parsedDraft();
+    const attempt = parseAttempt({ parsedDraft: draft, status: "completed" });
+    const parseResolvers: Array<(response: any) => void> = [];
+    const parseRequests: string[] = [];
+    let refreshFromLatestParseCalled = 0;
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
+      if (path === `/api/inbound-orders/${row.id}`) return jsonResponse({ success: true, data: detail(row) });
+      if (path === `/api/inbound-orders/${row.id}/draft-preview`) return jsonResponse(draftPreview({ draft, latestAttempt: null }));
+      if (path === `/api/inbound-orders/${row.id}/review-draft`) return jsonResponse({ success: true, data: null });
+      if (path === `/api/inbound-orders/${row.id}/review-draft/refresh-from-latest-parse` && options?.method === "POST") {
+        refreshFromLatestParseCalled += 1;
+        return jsonResponse({ success: true, data: reviewDraft(draft) });
+      }
+      if (path === `/api/inbound-orders/${row.id}/parse` && options?.method === "POST") {
+        parseRequests.push(path);
+        return new Promise((resolve) => {
+          parseResolvers.push(resolve);
+        });
+      }
+      if (path === "/api/inbound-orders/customer-search?limit=20") return jsonResponse({ success: true, data: [] });
+      if (path.startsWith("/api/inbound-orders/product-search?")) return jsonResponse({ success: true, data: [] });
+      if (path.startsWith("/api/inbound-orders/contact-search?")) return jsonResponse({ success: true, data: [] });
+      if (path.startsWith("/api/inbound-orders/product-options/") && options?.method === "POST") return jsonResponse(pbv2OptionsResponse());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    try {
+      renderPage();
+      await waitForText("Clean View");
+      const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+      act(() => {
+        Simulate.click(cleanButton);
+      });
+      await waitForText("Source Documents");
+
+      const cleanSource = container.querySelector("[data-testid='clean-source-documents']") as HTMLElement;
+      const buttonByText = (text: string) => Array.from(cleanSource.querySelectorAll("button")).find((button) => (
+        button.textContent?.trim() === text
+      )) as HTMLButtonElement;
+      const parseButton = buttonByText("Parse");
+      const rescanButton = buttonByText("Re-scan");
+      expect(parseButton).toBeTruthy();
+      expect(rescanButton).toBeTruthy();
+
+      act(() => {
+        Simulate.click(rescanButton);
+      });
+      await waitForCondition(() => parseRequests.length === 1, "re-scan posts to parse endpoint");
+      expect(rescanButton.querySelector(".animate-spin")).toBeTruthy();
+      expect(parseButton.querySelector(".animate-spin")).toBeFalsy();
+      await act(async () => {
+        parseResolvers.shift()?.(jsonResponse({
+          success: true,
+          data: {
+            record: { ...row, parsedAt: "2026-06-09T12:02:00.000Z" },
+            draft,
+            latestAttempt: attempt,
+          },
+        }));
+      });
+      await waitForCondition(() => refreshFromLatestParseCalled === 1, "re-scan hydrates review draft");
+
+      act(() => {
+        Simulate.click(parseButton);
+      });
+      await waitForCondition(() => parseRequests.length === 2, "parse posts to parse endpoint");
+      expect(parseButton.querySelector(".animate-spin")).toBeTruthy();
+      expect(rescanButton.querySelector(".animate-spin")).toBeFalsy();
+      await act(async () => {
+        parseResolvers.shift()?.(jsonResponse({
+          success: true,
+          data: {
+            record: { ...row, parsedAt: "2026-06-09T12:03:00.000Z" },
+            draft,
+            latestAttempt: attempt,
+          },
+        }));
+      });
+      await waitForCondition(() => refreshFromLatestParseCalled === 2, "parse hydrates review draft");
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  test("runs Clean View bulk actions against the visible filtered queue selection", async () => {
+    const trusted = record({
+      id: "trusted_bulk_clean",
+      externalReference: "Trusted bulk clean item",
+      sourceType: "email",
+      requiresHumanDecision: false,
+      reviewRequiredReason: null,
+      senderTrustStatus: "trusted_sender",
+      attachmentDownloadPolicy: "auto_download_allowed",
+      rawPayloadJson: {
+        sender: { name: "Trusted Bulk", email: "trusted-bulk@example.com" },
+        subject: "Trusted bulk clean item",
+      },
+    });
+    const untrusted = record({
+      id: "untrusted_bulk_clean",
+      externalReference: "Untrusted bulk clean item",
+      sourceType: "email",
+      requiresHumanDecision: false,
+      reviewRequiredReason: null,
+      senderTrustStatus: "untrusted",
+      attachmentDownloadPolicy: "pending_trust",
+      rawPayloadJson: {
+        sender: { name: "Untrusted Bulk", email: "untrusted-bulk@example.net" },
+        subject: "Untrusted bulk clean item",
+      },
+    });
+    const rows = [trusted, untrusted];
+    let bulkBody: any = null;
+    const promptSpy = jest.spyOn(window, "prompt").mockReturnValue("clean bulk note");
+
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse(rows));
+      const detailRow = rows.find((row) => path === `/api/inbound-orders/${row.id}`);
+      if (detailRow) return jsonResponse({ success: true, data: detail(detailRow) });
+      const draftRow = rows.find((row) => path === `/api/inbound-orders/${row.id}/draft-preview`);
+      if (draftRow) return jsonResponse(draftPreview());
+      const reviewRow = rows.find((row) => path === `/api/inbound-orders/${row.id}/review-draft`);
+      if (reviewRow && options?.method !== "PUT") return jsonResponse({ success: true, data: reviewDraft(parsedDraft()) });
+      if (path === "/api/inbound-orders/bulk-action" && options?.method === "POST") {
+        bulkBody = JSON.parse(options.body);
+        return jsonResponse({ success: true, data: { updatedIds: bulkBody.recordIds, errors: [] } });
+      }
+      if (path === "/api/inbound-orders/customer-search?limit=20") return jsonResponse({ success: true, data: [] });
+      if (path.startsWith("/api/inbound-orders/product-search?")) return jsonResponse({ success: true, data: [] });
+      if (path.startsWith("/api/inbound-orders/contact-search?")) return jsonResponse({ success: true, data: [] });
+      if (path.startsWith("/api/inbound-orders/product-options/") && options?.method === "POST") return jsonResponse(pbv2OptionsResponse());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    try {
+      renderPage();
+      await waitForText("Clean View");
+      const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+      act(() => {
+        Simulate.click(cleanButton);
+      });
+      await waitForText("Source Documents");
+
+      const cleanQueue = container.querySelector("[data-testid='clean-inbound-queue']") as HTMLElement;
+      const quickFilters = container.querySelector("[data-testid='clean-queue-quick-filters']") as HTMLElement;
+      const [, untrustedFilter] = Array.from(quickFilters.querySelectorAll("input")) as HTMLInputElement[];
+      act(() => {
+        Simulate.change(untrustedFilter, { target: { checked: true } } as any);
+      });
+      expect(cleanQueue.textContent).not.toContain("Trusted bulk clean item");
+      expect(cleanQueue.textContent).toContain("Untrusted bulk clean item");
+
+      const selectVisible = cleanQueue.querySelector("input[aria-label='Select all visible Clean View queue records']") as HTMLInputElement;
+      act(() => {
+        Simulate.change(selectVisible, { target: { checked: true } } as any);
+      });
+      await waitForText("1 selected");
+      const ignoreOnceButton = Array.from(cleanQueue.querySelectorAll("button")).find((button) => button.textContent?.includes("Ignore Once")) as HTMLButtonElement;
+      await act(async () => {
+        Simulate.click(ignoreOnceButton);
+      });
+      await waitForCondition(() => Boolean(bulkBody), "clean bulk action submitted");
+      expect(bulkBody).toMatchObject({
+        action: "ignore_once",
+        note: "clean bulk note",
+        recordIds: ["untrusted_bulk_clean"],
+      });
+    } finally {
+      promptSpy.mockRestore();
+    }
+  });
+
   test("updates Clean View completion checklist as line item fields are resolved", async () => {
     const baseParsed = parsedDraft();
     const cleanParsed = parsedDraft({
