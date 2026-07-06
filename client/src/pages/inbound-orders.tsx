@@ -123,6 +123,19 @@ type ClientInboundOrderParseResponse = Omit<InboundOrderParseResponse, "data"> &
   };
 };
 
+function inboundFileDownloadUrl(recordId: string, file: ClientInboundOrderFile) {
+  return file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
+    ? `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(file.id)}/download`
+    : null;
+}
+
+function inboundFileUnavailableLabel(file: ClientInboundOrderFile) {
+  if (!file.fileRecordId) return "Metadata only";
+  if (file.status === "quarantined") return "Quarantined";
+  if (file.status === "rejected") return "Rejected";
+  return "Unavailable";
+}
+
 type InboundCustomerSearchResponse = {
   success: true;
   data: InboundMatchedCustomerSummary[];
@@ -877,13 +890,12 @@ function compactRecipientLine(values: string[]) {
 function SourceEvidenceFileCard({
   recordId,
   file,
+  onClassify,
 }: {
   recordId: string;
   file: ClientInboundOrderFile;
+  onClassify?: () => void;
 }) {
-  const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
-    ? `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(file.id)}/download`
-    : null;
   return (
     <div
       className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2 overflow-hidden rounded-md border border-border bg-background px-3 py-2"
@@ -900,21 +912,87 @@ function SourceEvidenceFileCard({
           {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
         </div>
       </div>
-      {downloadUrl && (
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
-          <Button asChild size="sm" variant="ghost" className="h-8 px-2">
-            <a href={downloadUrl} target="_blank" rel="noreferrer">
+      <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} />
+    </div>
+  );
+}
+
+function CleanAttachmentFileActions({
+  recordId,
+  file,
+  onClassify,
+  className,
+}: {
+  recordId: string;
+  file: ClientInboundOrderFile;
+  onClassify?: () => void;
+  className?: string;
+}) {
+  const { toast } = useToast();
+  const downloadUrl = inboundFileDownloadUrl(recordId, file);
+  const filename = file.sourceFilename || "attachment";
+  const handleDownload = async (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (!downloadUrl) return;
+    try {
+      const response = await fetch(downloadUrl, { credentials: "include" });
+      if (!response.ok) {
+        const message = await response.text().catch(() => "");
+        throw new Error(message || `Download failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = blobUrl;
+      anchor.download = filename;
+      anchor.rel = "noopener";
+      anchor.style.display = "none";
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      toast({
+        title: "Attachment download failed",
+        description: error instanceof Error ? error.message : "The file could not be downloaded.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  return (
+    <div className={cn("flex shrink-0 flex-wrap items-center justify-end gap-1", className)} data-testid="clean-attachment-actions">
+      {downloadUrl ? (
+        <>
+          <Button asChild size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={(event) => event.stopPropagation()}>
+            <a href={downloadUrl} target="_blank" rel="noreferrer" aria-label={`Open ${filename}`}>
               <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
               Open
             </a>
           </Button>
-          <Button asChild size="sm" variant="ghost" className="h-8 px-2">
-            <a href={downloadUrl} download>
-              <Download className="mr-1.5 h-3.5 w-3.5" />
-              Download
-            </a>
+          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleDownload} aria-label={`Download ${filename}`}>
+            <Download className="mr-1.5 h-3.5 w-3.5" />
+            Download
           </Button>
-        </div>
+        </>
+      ) : (
+        <span className="rounded border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground" title={`${filename} is ${inboundFileUnavailableLabel(file).toLowerCase()} and has no available file action.`}>
+          {inboundFileUnavailableLabel(file)}
+        </span>
+      )}
+      {onClassify && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 px-2 text-xs"
+          onClick={(event) => {
+            event.stopPropagation();
+            onClassify();
+          }}
+        >
+          Classify
+        </Button>
       )}
     </div>
   );
@@ -2928,15 +3006,14 @@ function InboundAttachmentCard({
   file,
   compact = false,
   minimal = false,
+  onClassify,
 }: {
   recordId: string;
   file: ClientInboundOrderFile;
   compact?: boolean;
   minimal?: boolean;
+  onClassify?: () => void;
 }) {
-  const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
-    ? `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(file.id)}/download`
-    : null;
   return (
     <div className={cn(
       "flex w-full min-w-0 flex-wrap items-center justify-between gap-3 overflow-hidden rounded-md border border-border bg-background px-3 py-2",
@@ -2958,22 +3035,7 @@ function InboundAttachmentCard({
         )}
         {!minimal && <AttachmentSafetyDetails recordId={recordId} file={file} />}
       </div>
-      {downloadUrl && (
-        <div className="flex shrink-0 flex-wrap justify-end gap-2">
-          <Button asChild size="sm" variant="outline">
-            <a href={downloadUrl} target="_blank" rel="noreferrer">
-              <ExternalLink className="mr-2 h-4 w-4" />
-              Open
-            </a>
-          </Button>
-          <Button asChild size="sm" variant="ghost">
-            <a href={downloadUrl} download>
-              <Download className="mr-2 h-4 w-4" />
-              Download
-            </a>
-          </Button>
-        </div>
-      )}
+      <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} />
     </div>
   );
 }
@@ -3910,6 +3972,11 @@ function CleanSourceDocuments({
   const firstLine = form?.reviewedLineItemsJson[0] ?? null;
   const linkByFileId = new Map(attachmentLinks.map((link) => [link.fileId, link]));
   const linkForFile = (file: ClientInboundOrderFile) => linkByFileId.get(file.id) ?? artworkLinkFromInboundFile(file, "unresolved");
+  const fileForLink = (link: InboundOrderArtworkLink) => files.find((file) => (
+    file.id === link.fileId
+      || (link.fileRecordId && file.fileRecordId === link.fileRecordId)
+      || (link.filename && file.sourceFilename === link.filename)
+  )) ?? null;
 
   return (
     <section className="flex min-h-0 min-w-0 flex-[1.05] flex-col overflow-hidden border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-source-documents">
@@ -4006,21 +4073,7 @@ function CleanSourceDocuments({
                       }}
                       data-clean-source-target={file.role === "po" ? "po" : "artwork"}
                     >
-                      <SourceEvidenceFileCard recordId={record.id} file={file} />
-                      <div className="mt-1 flex justify-end">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 px-2 text-xs"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onClassifyAttachment(linkForFile(file));
-                          }}
-                        >
-                          Classify
-                        </Button>
-                      </div>
+                      <SourceEvidenceFileCard recordId={record.id} file={file} onClassify={() => onClassifyAttachment(linkForFile(file))} />
                     </div>
                   ))}
                 </div>
@@ -4054,24 +4107,10 @@ function CleanSourceDocuments({
                 }}
                 data-clean-source-target="po"
               >
-                <InboundAttachmentCard recordId={record.id} file={file} compact minimal />
+                <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(linkForFile(file))} />
                 {file.role !== "po" && (
                   <div className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-200">Likely PO / Reference PDF</div>
                 )}
-                <div className="mt-1 flex justify-end">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onClassifyAttachment(linkForFile(file));
-                    }}
-                  >
-                    Classify
-                  </Button>
-                </div>
               </div>
             ))}
             {poEvidenceItems.length > 0 && (
@@ -4090,41 +4129,77 @@ function CleanSourceDocuments({
                   key={artworkLinkKey(link)}
                   className={cn("mb-2 rounded border border-slate-800 bg-slate-950 px-3 py-2", cleanHighlightClass("artwork", activeTarget))}
                 >
-                  <button
-                    type="button"
-                    className="block w-full text-left"
-                    onClick={() => onFocusTarget("artwork")}
-                    onMouseEnter={() => onFocusTarget("artwork")}
-                    onFocus={() => onFocusTarget("artwork")}
-                    data-clean-source-target="artwork"
-                  >
-                    <div className="truncate text-sm font-semibold text-slate-100">{link.filename || link.fileId}</div>
-                    <div className="mt-1 text-xs text-slate-500">{describeArtworkLink(link)}</div>
-                  </button>
-                  <Button type="button" variant="outline" size="sm" className="mt-2 h-8 w-full text-xs" onClick={() => onClassifyAttachment(link)}>
-                    Classify as {attachmentClassificationLabel(classificationForLink(link))}
-                  </Button>
+                  {(() => {
+                    const file = fileForLink(link);
+                    return file ? (
+                      <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} />
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="block w-full text-left"
+                          onClick={() => onFocusTarget("artwork")}
+                          onMouseEnter={() => onFocusTarget("artwork")}
+                          onFocus={() => onFocusTarget("artwork")}
+                          data-clean-source-target="artwork"
+                        >
+                          <div className="truncate text-sm font-semibold text-slate-100">{link.filename || link.fileId}</div>
+                          <div className="mt-1 text-xs text-slate-500">{describeArtworkLink(link)}</div>
+                        </button>
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <span className="rounded border border-slate-700 px-2 py-1 text-[11px] font-medium text-slate-500">Metadata only</span>
+                          <Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={() => onClassifyAttachment(link)}>
+                            Classify
+                          </Button>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               ))}
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded border border-slate-800 bg-slate-900 p-3">
                 <div className="mb-2 text-sm font-bold text-slate-100">Reference</div>
-                {referenceLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : referenceLinks.map((link) => (
-                  <div key={artworkLinkKey(link)} className="flex items-center justify-between gap-2 text-xs text-slate-300">
-                    <span className="truncate">{link.filename || link.fileId}</span>
-                    <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onClassifyAttachment(link)}>Classify</Button>
-                  </div>
-                ))}
+                {referenceLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : referenceLinks.map((link) => {
+                  const file = fileForLink(link);
+                  return (
+                    <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
+                      {file ? (
+                        <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} />
+                      ) : (
+                        <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-slate-300">
+                          <span className="min-w-0 truncate">{link.filename || link.fileId}</span>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <span className="rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-500">Metadata only</span>
+                            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onClassifyAttachment(link)}>Classify</Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
               <div className="rounded border border-slate-800 bg-slate-900 p-3">
                 <div className="mb-2 text-sm font-bold text-slate-100">Junk / Signature</div>
-                {signatureLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : signatureLinks.map((link) => (
-                  <div key={artworkLinkKey(link)} className="flex items-center justify-between gap-2 text-xs text-slate-500">
-                    <span className="truncate">{link.filename || link.fileId}</span>
-                    <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onClassifyAttachment(link)}>Classify</Button>
-                  </div>
-                ))}
+                {signatureLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : signatureLinks.map((link) => {
+                  const file = fileForLink(link);
+                  return (
+                    <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
+                      {file ? (
+                        <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} />
+                      ) : (
+                        <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-slate-500">
+                          <span className="min-w-0 truncate">{link.filename || link.fileId}</span>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <span className="rounded border border-slate-700 px-2 py-1 text-[11px]">Metadata only</span>
+                            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onClassifyAttachment(link)}>Classify</Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -4699,28 +4774,19 @@ function CleanCompactAttachments({
             </div>
             {category.files.length > 0 && (
               <div className="grid gap-1 border-t border-slate-800 p-2">
-                {category.files.map((file) => {
-                  const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
-                    ? `/api/inbound-orders/${encodeURIComponent(selectedRecord.id)}/files/${encodeURIComponent(file.id)}/download`
-                    : null;
-                  return (
-                    <div key={file.id} className="flex min-w-0 items-center justify-between gap-2 rounded border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs">
-                      <div className="min-w-0">
-                        <div className="truncate font-semibold text-slate-200">{file.sourceFilename || "Attachment"}</div>
-                        <div className="mt-0.5 flex flex-wrap gap-1.5 text-[11px] text-slate-500">
-                          <span>{inboundAttachmentRoleLabel(file.role)}</span>
-                          <span>{formatFileSize(file.sizeBytes)}</span>
-                          {!file.fileRecordId && <span>Metadata only</span>}
-                        </div>
+                {category.files.map((file) => (
+                  <div key={file.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs">
+                    <div className="min-w-0 flex-1">
+                      <div className="break-words font-semibold text-slate-200">{file.sourceFilename || "Attachment"}</div>
+                      <div className="mt-0.5 flex flex-wrap gap-1.5 text-[11px] text-slate-500">
+                        <span>{inboundAttachmentRoleLabel(file.role)}</span>
+                        <span>{formatFileSize(file.sizeBytes)}</span>
+                        {!file.fileRecordId && <span>Metadata only</span>}
                       </div>
-                      {downloadUrl && (
-                        <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-[11px]">
-                          <a href={downloadUrl} target="_blank" rel="noreferrer">Open</a>
-                        </Button>
-                      )}
                     </div>
-                  );
-                })}
+                    <CleanAttachmentFileActions recordId={selectedRecord.id} file={file} className="text-slate-300" />
+                  </div>
+                ))}
               </div>
             )}
           </section>
