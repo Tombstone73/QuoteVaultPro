@@ -1431,7 +1431,7 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-line-item-task-options']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-line-item-header-summary']")).toBeTruthy();
     expect(container.textContent).toContain("Re-scan");
-    expect(container.textContent).toContain("Parse");
+    expect(container.textContent).toContain("Reparse");
     const evidenceCards = container.querySelectorAll("[data-testid='source-evidence-file-card']");
     expect(evidenceCards.length).toBeGreaterThan(0);
     expect(evidenceCards[0].className).toContain("min-w-0");
@@ -1583,6 +1583,8 @@ describe("InboundOrdersPage", () => {
       Simulate.click(saveClassificationButton);
     });
     await waitForCondition(() => Boolean(getClassificationBody()), "clean view attachment classification persisted");
+    expect(container.textContent).toContain("Classification changed. Reparse to update draft.");
+    expect(container.textContent).toContain("Reparse");
     expect(getClassificationBody()).toEqual(expect.objectContaining({
       classification: "REFERENCE",
       rememberForCustomer: true,
@@ -1764,7 +1766,9 @@ describe("InboundOrdersPage", () => {
     const draft = parsedDraft();
     const attempt = parseAttempt({ parsedDraft: draft, status: "completed" });
     const parseResolvers: Array<(response: any) => void> = [];
+    const reprocessResolvers: Array<(response: any) => void> = [];
     const parseRequests: string[] = [];
+    const reprocessRequests: string[] = [];
     let refreshFromLatestParseCalled = 0;
     const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
 
@@ -1782,6 +1786,12 @@ describe("InboundOrdersPage", () => {
         parseRequests.push(path);
         return new Promise((resolve) => {
           parseResolvers.push(resolve);
+        });
+      }
+      if (path === `/api/inbound-orders/${row.id}/email-reprocess` && options?.method === "POST") {
+        reprocessRequests.push(path);
+        return new Promise((resolve) => {
+          reprocessResolvers.push(resolve);
         });
       }
       if (path === "/api/inbound-orders/customer-search?limit=20") return jsonResponse({ success: true, data: [] });
@@ -1812,17 +1822,30 @@ describe("InboundOrdersPage", () => {
       act(() => {
         Simulate.click(rescanButton);
       });
-      await waitForCondition(() => parseRequests.length === 1, "re-scan posts to parse endpoint");
+      await waitForCondition(() => reprocessRequests.length === 1, "re-scan posts to email reprocess endpoint");
+      expect(parseRequests.length).toBe(0);
       expect(rescanButton.querySelector(".animate-spin")).toBeTruthy();
       expect(parseButton.querySelector(".animate-spin")).toBeFalsy();
       await act(async () => {
-        parseResolvers.shift()?.(jsonResponse({
+        reprocessResolvers.shift()?.(jsonResponse({
           success: true,
           data: {
-            record: { ...row, parsedAt: "2026-06-09T12:02:00.000Z" },
-            draft,
-            latestAttempt: attempt,
-            reviewDraft: reviewDraft(draft),
+            result: {
+              action: "reprocess_email",
+              inboundRecordId: row.id,
+              providerMessageId: "gmail_msg_1",
+              providerThreadId: "thread_1",
+              threadMessagesInspected: 1,
+              latestThreadActivity: "2026-06-09T12:02:00.000Z",
+              candidatesFound: 1,
+              attempted: 1,
+              stored: 0,
+              metadataOnly: 0,
+              failed: 0,
+              skipped: 1,
+              diagnosticsByMessage: [],
+            },
+            inbound: detail({ ...row, parsedAt: null }),
           },
         }));
       });
@@ -1832,7 +1855,7 @@ describe("InboundOrdersPage", () => {
       act(() => {
         Simulate.click(parseButton);
       });
-      await waitForCondition(() => parseRequests.length === 2, "parse posts to parse endpoint");
+      await waitForCondition(() => parseRequests.length === 1, "parse posts to parse endpoint");
       expect(parseButton.querySelector(".animate-spin")).toBeTruthy();
       expect(rescanButton.querySelector(".animate-spin")).toBeFalsy();
       await act(async () => {

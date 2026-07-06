@@ -468,6 +468,30 @@ async function putJson<T>(url: string, payload: unknown): Promise<T> {
   return json as T;
 }
 
+function parseAttemptNoDraftMessage(attempt: ClientInboundOrderParseAttempt | null | undefined): string {
+  const errors = Array.isArray(attempt?.errors) ? attempt.errors : [];
+  const warnings = Array.isArray(attempt?.warnings) ? attempt.warnings : [];
+  const firstDetail = [...errors, ...warnings]
+    .map((item: unknown) => {
+      if (typeof item === "string") return item;
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        const record = item as Record<string, unknown>;
+        return typeof record.message === "string"
+          ? record.message
+          : typeof record.reason === "string"
+            ? record.reason
+            : typeof record.error === "string"
+              ? record.error
+              : null;
+      }
+      return null;
+    })
+    .find((value): value is string => Boolean(value?.trim()));
+  return firstDetail
+    ? `Parse completed, but no review draft was produced: ${firstDetail}`
+    : "Parse completed, but no review draft was produced. Reparse this record or use Debug View to inspect the latest parse attempt.";
+}
+
 function trimToNull(value: string) {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
@@ -3834,6 +3858,8 @@ function CleanSourceDocuments({
   rescanDisabled,
   parseError,
   parseCompletedWithoutDraft,
+  parseCompletedWithoutDraftMessage,
+  sourceChanged,
   onTabChange,
   onParse,
   onRescan,
@@ -3855,6 +3881,8 @@ function CleanSourceDocuments({
   rescanDisabled: boolean;
   parseError: Error | null;
   parseCompletedWithoutDraft: boolean;
+  parseCompletedWithoutDraftMessage: string | null;
+  sourceChanged: boolean;
   onTabChange: (tab: SourceDocumentTab) => void;
   onParse: () => void;
   onRescan: () => void;
@@ -3872,7 +3900,8 @@ function CleanSourceDocuments({
   const emailEvidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : null;
   const files = dedupeAttachmentFiles(detail?.files ?? []);
   const poFiles = files.filter(isLikelyPoEvidenceFile);
-  const needsInitialParse = !record.parsedAt || !reviewDraft;
+  const needsInitialParse = !reviewDraft;
+  const parseLabel = needsInitialParse ? "Parse" : "Reparse";
   const artworkLinks = attachmentLinks.filter((link) => classificationForLink(link) === "ARTWORK");
   const referenceLinks = attachmentLinks.filter((link) => classificationForLink(link) === "REFERENCE" || classificationForLink(link) === "OTHER");
   const signatureLinks = attachmentLinks.filter((link) => classificationForLink(link) === "IGNORE_INLINE");
@@ -3885,16 +3914,19 @@ function CleanSourceDocuments({
   return (
     <section className="flex min-h-0 min-w-0 flex-[1.05] flex-col overflow-hidden border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-source-documents">
       <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-700 px-3">
-        <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Source Documents</div>
-        <div className="flex shrink-0 items-center gap-2">
-          {needsInitialParse && (
-            <Button type="button" size="sm" className="h-8 bg-blue-300 px-3 text-xs font-bold text-slate-950 hover:bg-blue-200" onClick={onParse} disabled={parseDisabled}>
-              {isParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
-              Parse
-            </Button>
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Source Documents</div>
+          {sourceChanged && (
+            <div className="mt-0.5 text-[11px] font-semibold text-amber-200">Classification changed. Reparse to update draft.</div>
           )}
-          <Button type="button" size="sm" variant={needsInitialParse ? "outline" : "default"} className={cn("h-8 px-3 text-xs font-bold", !needsInitialParse && "bg-blue-300 text-slate-950 hover:bg-blue-200")} onClick={onRescan} disabled={rescanDisabled}>
-            {isRescanning ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button type="button" size="sm" className="h-8 bg-blue-300 px-3 text-xs font-bold text-slate-950 hover:bg-blue-200" onClick={onParse} disabled={parseDisabled}>
+            {isParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
+            {parseLabel}
+          </Button>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-3 text-xs font-bold" onClick={onRescan} disabled={rescanDisabled}>
+            {isRescanning ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
             Re-scan
           </Button>
         </div>
@@ -3997,7 +4029,7 @@ function CleanSourceDocuments({
             {parseError && <div className="mt-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">{parseError.message}</div>}
             {parseCompletedWithoutDraft && (
               <div className="mt-3 rounded border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
-                Parse completed, but no review draft was produced. Re-scan this record or use Debug View to inspect the latest parse attempt.
+                {parseCompletedWithoutDraftMessage ?? "Parse completed, but no review draft was produced. Reparse this record or use Debug View to inspect the latest parse attempt."}
               </div>
             )}
           </div>
@@ -7467,10 +7499,11 @@ export default function InboundOrdersPage() {
   const [queueSearchText, setQueueSearchText] = useState(defaultQueueFilters.search);
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
   const [parsingRecordId, setParsingRecordId] = useState<string | null>(null);
-  const [rescanningRecordId, setRescanningRecordId] = useState<string | null>(null);
   const [parseCompletedWithoutDraftRecordId, setParseCompletedWithoutDraftRecordId] = useState<string | null>(null);
+  const [parseCompletedWithoutDraftMessage, setParseCompletedWithoutDraftMessage] = useState<string | null>(null);
   const [lastConvertedOrderId, setLastConvertedOrderId] = useState<string | null>(null);
   const [reviewDraftDirtyByRecordId, setReviewDraftDirtyByRecordId] = useState<Record<string, boolean>>({});
+  const [sourceChangedByRecordId, setSourceChangedByRecordId] = useState<Record<string, boolean>>({});
   const [cleanForm, setCleanForm] = useState<ReviewDraftFormState | null>(null);
   const [cleanActiveTarget, setCleanActiveTarget] = useState<CleanHighlightTarget | null>(null);
   const [classificationDialog, setClassificationDialog] = useState<AttachmentClassificationDialogState | null>(null);
@@ -7690,10 +7723,14 @@ export default function InboundOrdersPage() {
     } satisfies ClientInboundOrderDraftPreviewResponse);
     if (!response.data.draft) {
       setParseCompletedWithoutDraftRecordId(parsedRecordId);
+      setParseCompletedWithoutDraftMessage(parseAttemptNoDraftMessage(response.data.latestAttempt));
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] });
       setSelectedId(parsedRecordId);
       return;
     }
+    setSourceChangedByRecordId((current) => (
+      current[parsedRecordId] ? { ...current, [parsedRecordId]: false } : current
+    ));
     if (keepCurrentDraftAfterParseRef.current) {
       queryClient.setQueryData<ClientInboundOrderReviewDraftResponse | undefined>(["/api/inbound-orders", parsedRecordId, "review-draft"], (current) => (
         current?.data
@@ -7712,7 +7749,10 @@ export default function InboundOrdersPage() {
         queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"],
         queryFn: () => readJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${parsedRecordId}/review-draft`),
       });
-      if (!refreshedDraft?.data) setParseCompletedWithoutDraftRecordId(parsedRecordId);
+      if (!refreshedDraft?.data) {
+        setParseCompletedWithoutDraftRecordId(parsedRecordId);
+        setParseCompletedWithoutDraftMessage(parseAttemptNoDraftMessage(response.data.latestAttempt));
+      }
     }
     setSelectedId(parsedRecordId);
   };
@@ -7729,17 +7769,6 @@ export default function InboundOrdersPage() {
       parseInFlightRef.current = false;
       keepCurrentDraftAfterParseRef.current = false;
       setParsingRecordId(null);
-    },
-  });
-
-  const rescanMutation = useMutation({
-    mutationFn: (recordId: string) => postJson<ClientInboundOrderParseResponse>(`/api/inbound-orders/${recordId}/parse`, {}),
-    onSuccess: hydrateParsedRecord,
-    onError: handleParseFailure,
-    onSettled: () => {
-      parseInFlightRef.current = false;
-      keepCurrentDraftAfterParseRef.current = false;
-      setRescanningRecordId(null);
     },
   });
 
@@ -7999,6 +8028,7 @@ export default function InboundOrdersPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId, "draft-preview"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId, "review-draft"] });
       queryClient.invalidateQueries({ predicate: isInboundOrderListQuery });
+      setSourceChangedByRecordId((current) => ({ ...current, [variables.recordId]: true }));
       toast({
         title: "Attachment classified",
         description: response.data.warning ?? "The attachment classification was updated.",
@@ -8037,9 +8067,14 @@ export default function InboundOrdersPage() {
     },
   });
 
-  const isParseInFlight = Boolean(parsingRecordId) || parseMutation.isPending || Boolean(rescanningRecordId) || rescanMutation.isPending;
+  const isParseInFlight = Boolean(parsingRecordId) || parseMutation.isPending;
   const isSelectedRecordParsing = Boolean(selectedId && parsingRecordId === selectedId);
-  const isSelectedRecordRescanning = Boolean(selectedId && rescanningRecordId === selectedId);
+  const isSelectedRecordRescanning = Boolean(
+    selectedId
+      && emailReprocessMutation.isPending
+      && emailReprocessMutation.variables?.recordId === selectedId
+      && emailReprocessMutation.variables?.action === "reprocess_email",
+  );
   const selectedRecordIsTerminal = Boolean(
     selectedRecord
       && (
@@ -8070,7 +8105,7 @@ export default function InboundOrdersPage() {
       source?.focus?.({ preventScroll: true });
     }, 80);
   }, []);
-  const runParseForSelectedRecord = (action: "parse" | "rescan" = "parse") => {
+  const runParseForSelectedRecord = () => {
     if (!selectedId || parseInFlightRef.current) return;
     if (selectedReviewDraftHasUnsavedEdits) {
       const applyLatestParse = window.confirm("Applying the latest parse will overwrite your draft changes.");
@@ -8080,13 +8115,17 @@ export default function InboundOrdersPage() {
     }
     parseInFlightRef.current = true;
     setParseCompletedWithoutDraftRecordId(null);
-    if (action === "rescan") {
-      setRescanningRecordId(selectedId);
-      rescanMutation.mutate(selectedId);
-    } else {
-      setParsingRecordId(selectedId);
-      parseMutation.mutate(selectedId);
+    setParseCompletedWithoutDraftMessage(null);
+    setParsingRecordId(selectedId);
+    parseMutation.mutate(selectedId);
+  };
+  const runSourceRescanForSelectedRecord = () => {
+    if (!selectedRecord || emailReprocessMutation.isPending || selectedRecordIsTerminal) return;
+    if (selectedRecord.sourceType !== "email") {
+      toast({ title: "Re-scan unavailable", description: "Only email-source inbound records can refresh source documents.", variant: "destructive" });
+      return;
     }
+    emailReprocessMutation.mutate({ recordId: selectedRecord.id, action: "reprocess_email" });
   };
   const rejectSelectedRecord = () => {
     if (!selectedId || rejectInboundOrderMutation.isPending || selectedRecordIsTerminal) return;
@@ -8603,12 +8642,14 @@ export default function InboundOrdersPage() {
             isParsing={isSelectedRecordParsing}
             isRescanning={isSelectedRecordRescanning}
             parseDisabled={isParseInFlight || selectedRecordIsTerminal}
-            rescanDisabled={isParseInFlight || selectedRecordIsTerminal}
-            parseError={(parseMutation.error || rescanMutation.error) as Error | null}
+            rescanDisabled={emailReprocessMutation.isPending || selectedRecordIsTerminal || selectedRecord?.sourceType !== "email"}
+            parseError={parseMutation.error as Error | null}
             parseCompletedWithoutDraft={selectedId === parseCompletedWithoutDraftRecordId}
+            parseCompletedWithoutDraftMessage={selectedId === parseCompletedWithoutDraftRecordId ? parseCompletedWithoutDraftMessage : null}
+            sourceChanged={Boolean(selectedId && sourceChangedByRecordId[selectedId])}
             onTabChange={setSourceDocumentTab}
             onParse={runParseForSelectedRecord}
-            onRescan={() => runParseForSelectedRecord("rescan")}
+            onRescan={runSourceRescanForSelectedRecord}
             attachmentLinks={cleanAttachmentLinks}
             onClassifyAttachment={openCleanAttachmentClassificationDialog}
             form={cleanForm}
