@@ -1385,6 +1385,17 @@ describe("InboundOrdersPage", () => {
           sizeBytes: 618_400,
           providerAttachmentId: "att_po_reference",
           reviewNotes: null,
+        }, {
+          id: "file_metadata_only",
+          inboundRecordId: row.id,
+          fileRecordId: null,
+          role: "reference",
+          status: "pending_trust",
+          sourceFilename: "Metadata Only Customer Supplied Reference.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 91_200,
+          providerAttachmentId: "att_metadata_only",
+          reviewNotes: null,
         }],
       },
     });
@@ -1436,6 +1447,10 @@ describe("InboundOrdersPage", () => {
     expect(evidenceCards.length).toBeGreaterThan(0);
     expect(evidenceCards[0].className).toContain("min-w-0");
     expect(evidenceCards[0].className).toContain("overflow-hidden");
+    expect(container.querySelector("a[aria-label='Open Lindsay X2.pdf']")).toBeTruthy();
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Download Lindsay X2.pdf")).toBe(true);
+    expect(container.querySelector("a[aria-label='Open Metadata Only Customer Supplied Reference.pdf']")).toBeNull();
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Download Metadata Only Customer Supplied Reference.pdf")).toBe(false);
     expect(container.textContent).toContain("Select product from catalog");
     expect(container.textContent).toContain("AI detected:");
     expect(container.querySelector("[data-testid='clean-quantity-workflow']")).toBeTruthy();
@@ -1553,14 +1568,18 @@ describe("InboundOrdersPage", () => {
     await waitForText("PO Documents");
     await waitForText("Order No 321 Very Long Purchase Order Reference Document For Magnets.pdf");
     await waitForText("Likely PO / Reference PDF");
+    expect(container.querySelector("a[aria-label='Open Order No 321 Very Long Purchase Order Reference Document For Magnets.pdf']")).toBeTruthy();
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Download Order No 321 Very Long Purchase Order Reference Document For Magnets.pdf")).toBe(true);
 
     const artworkTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Artwork") as HTMLButtonElement;
     act(() => {
       Simulate.click(artworkTab);
     });
     await waitForText("Artwork Files");
+    expect(container.querySelector("a[aria-label='Open Lindsay X2.pdf']")).toBeTruthy();
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Download Lindsay X2.pdf")).toBe(true);
     const classifyButton = Array.from(container.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes("Classify as Artwork")
+      button.textContent?.trim() === "Classify"
     )) as HTMLButtonElement;
     expect(classifyButton).toBeTruthy();
     act(() => {
