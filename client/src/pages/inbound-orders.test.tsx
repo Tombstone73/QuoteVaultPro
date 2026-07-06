@@ -4,6 +4,31 @@ import { Simulate } from "react-dom/test-utils";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 
+const mockPdfRender = jest.fn(() => ({ promise: Promise.resolve() }));
+const mockPdfGetDocument = jest.fn(() => ({
+  promise: Promise.resolve({
+    numPages: 2,
+    destroy: jest.fn(() => Promise.resolve()),
+    getPage: jest.fn((pageNumber: number) => Promise.resolve({
+      rotate: 0,
+      getViewport: ({ scale }: { scale: number }) => ({
+        width: 500 * scale,
+        height: 700 * scale,
+      }),
+      render: mockPdfRender,
+      pageNumber,
+    })),
+  }),
+}));
+
+jest.mock("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url", () => "pdf-worker-url", { virtual: true });
+jest.mock("pdfjs-dist/cmaps/78-EUC-H.bcmap?url", () => "/pdf-cmaps/78-EUC-H.bcmap", { virtual: true });
+jest.mock("pdfjs-dist/standard_fonts/FoxitFixed.pfb?url", () => "/pdf-standard-fonts/FoxitFixed.pfb", { virtual: true });
+jest.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
+  GlobalWorkerOptions: {},
+  getDocument: mockPdfGetDocument,
+}));
+
 import InboundOrdersPage from "./inbound-orders";
 import { apiFetch } from "@/lib/queryClient";
 
@@ -674,6 +699,12 @@ beforeEach(() => {
   URL.createObjectURL = jest.fn((blob: Blob) => `blob:${blob.type || "attachment"}`) as any;
   URL.revokeObjectURL = jest.fn() as any;
   HTMLAnchorElement.prototype.click = jest.fn();
+  HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+    setTransform: jest.fn(),
+    clearRect: jest.fn(),
+  })) as any;
+  mockPdfGetDocument.mockClear();
+  mockPdfRender.mockClear();
   window.localStorage.clear();
 });
 
@@ -1508,8 +1539,26 @@ describe("InboundOrdersPage", () => {
     await waitForText("Document Viewer");
     expect(container.querySelector("[data-testid='clean-inline-attachment-viewer']")).toBeTruthy();
     expect(container.textContent).toContain("Order Workstation");
-    expect(container.querySelector("[data-testid='clean-attachment-pdf-viewer']")).toBeTruthy();
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-attachment-pdf-viewer']")), "app-controlled PDF viewer renders");
+    expect(container.querySelector("[data-testid='clean-inline-attachment-viewer'] iframe")).toBeNull();
+    expect(container.querySelector("[data-testid='clean-pdf-controls']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-pdf-canvas-stage']")?.getAttribute("data-fit-mode")).toBe("width");
     expect(apiFetchMock.mock.calls.some(([url]) => String(url) === "/api/inbound-orders/inbound_1/files/file_art/download")).toBe(true);
+    const zoomLabel = container.querySelector("[data-testid='clean-pdf-zoom-label']") as HTMLElement;
+    const zoomBefore = zoomLabel.textContent;
+    const zoomInButton = Array.from(container.querySelectorAll("button")).find((button) => button.getAttribute("aria-label") === "Zoom in PDF") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(zoomInButton);
+    });
+    await waitForCondition(() => zoomLabel.textContent !== zoomBefore, "PDF zoom in updates rendered scale");
+    expect(container.querySelector("[data-testid='clean-pdf-canvas-stage']")?.getAttribute("data-fit-mode")).toBe("custom");
+    const fitWidthButton = container.querySelector("[data-testid='clean-pdf-fit-width']") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(fitWidthButton);
+    });
+    expect(container.querySelector("[data-testid='clean-pdf-canvas-stage']")?.getAttribute("data-fit-mode")).toBe("width");
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Previous PDF page")).toBe(true);
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Next PDF page")).toBe(true);
     const expandButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Expand") as HTMLButtonElement;
     act(() => {
       Simulate.click(expandButton);
