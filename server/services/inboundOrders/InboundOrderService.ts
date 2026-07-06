@@ -41,6 +41,7 @@ import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
 import {
   inboundAttachmentClassificationToRole,
   inboundAttachmentRoleToClassification,
+  type InboundAttachmentClassification,
   type InboundAttachmentClassificationResult,
 } from "@shared/inboundAttachmentClassification";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
@@ -61,6 +62,7 @@ import {
   type InboundOrderListFilters,
   type InboundOrderQueueSummary,
   type UpdateInboundOrderRecordValues,
+  type CreateInboundAttachmentClassificationRuleValues,
 } from "../../storage/inboundOrders.repo";
 import {
   OrdersRepository,
@@ -191,6 +193,21 @@ export type InboundOrderIgnoreActionInput = {
   action: InboundOrderIgnoreAction;
   note?: string | null;
   resolveConflict?: "disable_conflicting_rule";
+};
+
+export type InboundAttachmentClassificationUpdateInput = {
+  organizationId: string;
+  inboundRecordId: string;
+  fileId: string;
+  actorUserId: string;
+  classification: InboundAttachmentClassification;
+  rememberForCustomer?: boolean;
+  rule?: {
+    customerId?: string | null;
+    senderDomain?: string | null;
+    matchType: CreateInboundAttachmentClassificationRuleValues["matchType"];
+    matchValue: string;
+  } | null;
 };
 
 export type InboundOrderBulkActionInput = {
@@ -786,6 +803,21 @@ function attachmentClassificationFromInboundFile(file: InboundOrderFile): Inboun
   };
 }
 
+function inboundAttachmentClassificationToRuleClassification(
+  classification: InboundAttachmentClassification,
+): CreateInboundAttachmentClassificationRuleValues["classification"] {
+  if (classification === "PO") return "purchase_order";
+  if (classification === "ARTWORK") return "artwork";
+  if (classification === "REFERENCE") return "reference";
+  if (classification === "IGNORE_INLINE") return "junk_signature";
+  return "ignore";
+}
+
+function inboundOrderFileRoleForClassification(classification: InboundAttachmentClassification): InboundOrderFile["role"] {
+  const role = inboundAttachmentClassificationToRole(classification);
+  return role === "other" ? "other" : role;
+}
+
 function arrayOfStrings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
 }
@@ -1139,6 +1171,129 @@ export class InboundOrderService {
       ? customerIntelligenceService
       : new CustomerIntelligenceService(repository as any),
   ) {}
+
+  async updateAttachmentClassification(args: InboundAttachmentClassificationUpdateInput): Promise<{
+    file: InboundOrderFile;
+    rule: Awaited<ReturnType<typeof inboundOrdersRepository.createAttachmentClassificationRule>> | null;
+    warning: string | null;
+  }> {
+    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) throw new InboundOrderTransitionError("Inbound order record not found.", 404);
+    const file = await this.repository.getFile(args.organizationId, args.inboundRecordId, args.fileId);
+    if (!file) throw new InboundOrderTransitionError("Inbound attachment not found.", 404);
+
+    const reason = `Staff manually classified as ${args.classification}.`;
+    const previousMetadata = (file.metadataJson ?? {}) as Record<string, unknown>;
+    const existingClassification = attachmentClassificationFromInboundFile(file);
+    const classificationResult: InboundAttachmentClassificationResult = {
+      classification: args.classification,
+      confidence: 100,
+      reasons: [reason],
+      source: "manual_override",
+      breakdown: {
+        filename: existingClassification.breakdown.filename,
+        content: existingClassification.breakdown.content,
+        metadata: existingClassification.breakdown.metadata,
+        manual: [reason],
+        scores: existingClassification.breakdown.scores,
+      },
+    };
+
+    let rule: Awaited<ReturnType<typeof inboundOrdersRepository.createAttachmentClassificationRule>> | null = null;
+    let warning: string | null = null;
+
+    if (args.rememberForCustomer) {
+      const customerId = args.rule?.customerId?.trim() || record.matchedCustomerId || null;
+      const matchValue = args.rule?.matchValue?.trim() || null;
+      if (!customerId) {
+        warning = "Classification updated, but no matched customer was available for a customer-specific rule.";
+      } else if (!args.rule?.matchType || !matchValue) {
+        warning = "Classification updated, but the rule matcher was incomplete.";
+      } else {
+        try {
+          rule = await this.repository.createAttachmentClassificationRule({
+            organizationId: args.organizationId,
+            customerId,
+            senderDomain: args.rule.senderDomain ?? null,
+            matchType: args.rule.matchType,
+            matchValue,
+            classification: inboundAttachmentClassificationToRuleClassification(args.classification),
+            createdByUserId: args.actorUserId,
+            enabled: true,
+          });
+          await this.repository.createEvent({
+            organizationId: args.organizationId,
+            inboundRecordId: record.id,
+            actorUserId: args.actorUserId,
+            actorType: "user",
+            eventType: "attachment.classification_rule.created",
+            fromStatus: null,
+            toStatus: null,
+            message: `Created customer attachment classification rule for ${file.sourceFilename || "attachment"}.`,
+            metadataJson: {
+              fileId: file.id,
+              ruleId: rule.id,
+              customerId,
+              senderDomain: args.rule.senderDomain ?? null,
+              matchType: args.rule.matchType,
+              matchValue,
+              classification: args.classification,
+            },
+          });
+        } catch (error) {
+          warning = error instanceof Error
+            ? `Classification updated, but the learning rule was not saved: ${error.message}`
+            : "Classification updated, but the learning rule was not saved.";
+        }
+      }
+    }
+
+    const updated = await this.repository.updateFile({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+      fileId: args.fileId,
+      patch: {
+        role: inboundOrderFileRoleForClassification(args.classification),
+        metadataJson: {
+          ...previousMetadata,
+          attachmentClassification: classificationResult,
+          attachmentClassificationUpdatedAt: new Date().toISOString(),
+          attachmentClassificationUpdatedByUserId: args.actorUserId,
+          attachmentClassificationRuleId: rule?.id ?? previousMetadata.attachmentClassificationRuleId ?? null,
+          manualAttachmentClassification: true,
+          poCandidate: args.classification === "PO",
+          artworkCandidate: args.classification === "ARTWORK",
+        },
+        reviewNotes: reason,
+      },
+    });
+    if (!updated) throw new InboundOrderTransitionError("Inbound attachment classification could not be updated.", 500);
+
+    await this.repository.createEvent({
+      organizationId: args.organizationId,
+      inboundRecordId: record.id,
+      actorUserId: args.actorUserId,
+      actorType: "user",
+      eventType: "attachment.classification.updated",
+      fromStatus: null,
+      toStatus: null,
+      message: `Updated inbound attachment classification for ${updated.sourceFilename || "attachment"}.`,
+      metadataJson: {
+        fileId: updated.id,
+        fileRecordId: updated.fileRecordId,
+        classification: args.classification,
+        previousClassification: existingClassification.classification,
+        ruleId: rule?.id ?? null,
+        rememberForCustomer: Boolean(args.rememberForCustomer),
+        createsQuote: false,
+        createsOrder: false,
+        createsArtwork: false,
+        createsProofs: false,
+      },
+    });
+
+    return { file: updated, rule, warning };
+  }
 
   private async resolveSenderTrustSummary(args: {
     organizationId: string;

@@ -475,6 +475,7 @@ describe("inbound order routes", () => {
     createEmailTrustRule: jest.fn<(...args: any[]) => Promise<any>>(),
     updateEmailTrustRule: jest.fn<(...args: any[]) => Promise<any>>(),
     deleteEmailTrustRule: jest.fn<(...args: any[]) => Promise<any>>(),
+    updateAttachmentClassification: jest.fn<(...args: any[]) => Promise<any>>(),
   };
   const parsingService = {
     parseInboundOrderRecord: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -1125,6 +1126,60 @@ describe("inbound order routes", () => {
       action: "download_once",
       note: null,
     });
+  });
+
+  test("updates inbound attachment classification and can remember it for a customer", async () => {
+    service.updateAttachmentClassification.mockResolvedValue({
+      file: {
+        id: "file_1",
+        inboundRecordId: "inbound_1",
+        sourceFilename: "Purchase Order No 151866 Titan Merchants Sign 7_6_26.pdf",
+        role: "po",
+        metadataJson: {
+          attachmentClassification: { classification: "PO", source: "manual_override", confidence: 100 },
+        },
+      },
+      rule: {
+        id: "rule_1",
+        customerId: "customer_1",
+        matchType: "filename_contains",
+        matchValue: "Purchase Order",
+        classification: "purchase_order",
+      },
+      warning: null,
+    });
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/inbound_1/files/file_1/classification")
+      .send({
+        classification: "PO",
+        rememberForCustomer: true,
+        rule: {
+          customerId: "customer_1",
+          senderDomain: "brainstormprint.com",
+          matchType: "filename_contains",
+          matchValue: "Purchase Order",
+        },
+      });
+
+    expect(response.status).toBe(200);
+    expect(service.updateAttachmentClassification).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      fileId: "file_1",
+      classification: "PO",
+      rememberForCustomer: true,
+      rule: {
+        customerId: "customer_1",
+        senderDomain: "brainstormprint.com",
+        matchType: "filename_contains",
+        matchValue: "Purchase Order",
+      },
+    });
+    expect(response.body.data.file.role).toBe("po");
+    expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+    expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
   });
 
   test("applies inbound record trust action and returns refreshed inbound detail", async () => {

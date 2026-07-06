@@ -51,6 +51,9 @@ const jobProductTermPatterns = [
 ];
 const strongPoFilenamePatterns = [
   /(^|[-_\s.])(?:po|p\.o\.)(?:[-_\s.#]|\d|$)/i,
+  /\b(?:po|p\.o\.)\s*(?:no|number|#)\b/i,
+  /\border\s*(?:no|number|#)\b/i,
+  /\bpurchase\s+order\s*(?:no|number|#)?\b/i,
   /\b(?:purchase[-_\s]?order|order[-_\s]?form|invoice|estimate)\b/i,
 ];
 const strongPoTextPatterns = [
@@ -262,7 +265,7 @@ export function classifyInboundAttachment(input: InboundAttachmentClassification
   if (strongArtworkExtensions.has(extension) || imageExtensions.has(extension) || /^image\//i.test(mimeType)) {
     return finalizeClassification("ARTWORK", scores.ARTWORK, "automatic", breakdown);
   }
-  if (hasStrongPoEvidence && scores.PO >= 60) {
+  if (hasStrongPoEvidence && scores.PO >= 50 && !strongArtworkExtensions.has(extension) && !imageExtensions.has(extension)) {
     return finalizeClassification("PO", scores.PO, "automatic", breakdown);
   }
   if (isPdf && scores.PO > 0 && scores.ARTWORK > 0) {

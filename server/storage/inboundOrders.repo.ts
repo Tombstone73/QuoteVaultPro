@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 
 import { db } from "../db";
 import {
@@ -8,6 +8,7 @@ import {
   inboundEmailMailboxes,
   inboundEmailIgnoreRules,
   inboundEmailTrustRules,
+  inboundAttachmentClassificationRules,
   inboundOrderDecisionFlags,
   inboundOrderEvents,
   inboundOrderFiles,
@@ -41,6 +42,9 @@ import {
   type InboundEmailIgnoreRuleType,
   type InboundEmailTrustRule,
   type InboundEmailTrustRuleType,
+  type InboundAttachmentClassificationRule,
+  type InboundAttachmentClassificationRuleClassification,
+  type InboundAttachmentClassificationRuleMatchType,
   type Customer,
   type CustomerContact,
   type Product,
@@ -102,6 +106,17 @@ export type CreateInboundEmailTrustRuleValues = {
   ruleType: InboundEmailTrustRuleType;
   ruleValue: string;
   notes?: string | null;
+  createdByUserId?: string | null;
+  enabled?: boolean;
+};
+
+export type CreateInboundAttachmentClassificationRuleValues = {
+  organizationId: string;
+  customerId?: string | null;
+  senderDomain?: string | null;
+  matchType: InboundAttachmentClassificationRuleMatchType;
+  matchValue: string;
+  classification: InboundAttachmentClassificationRuleClassification;
   createdByUserId?: string | null;
   enabled?: boolean;
 };
@@ -649,6 +664,128 @@ export class InboundOrdersRepository {
         updatedAt: new Date(),
       })
       .where(eq(inboundEmailTrustRules.id, ruleId));
+  }
+
+  async createAttachmentClassificationRule(values: CreateInboundAttachmentClassificationRuleValues): Promise<InboundAttachmentClassificationRule> {
+    const matchValue = values.matchValue.trim();
+    if (!matchValue) throw new Error("Attachment classification rule match value is required");
+    const [created] = await this.dbInstance
+      .insert(inboundAttachmentClassificationRules)
+      .values({
+        organizationId: values.organizationId,
+        customerId: values.customerId ?? null,
+        senderDomain: values.senderDomain?.trim().toLowerCase() || null,
+        matchType: values.matchType,
+        matchValue,
+        classification: values.classification,
+        enabled: values.enabled ?? true,
+        createdByUserId: values.createdByUserId ?? null,
+      })
+      .returning();
+
+    if (!created) throw new Error("Failed to create inbound attachment classification rule");
+    return created;
+  }
+
+  async listEnabledAttachmentClassificationRules(args: {
+    organizationId: string;
+    customerId?: string | null;
+    senderDomain?: string | null;
+  }): Promise<InboundAttachmentClassificationRule[]> {
+    const filters = [
+      eq(inboundAttachmentClassificationRules.organizationId, args.organizationId),
+      eq(inboundAttachmentClassificationRules.enabled, true),
+    ];
+    const scopedFilters = [];
+    if (args.customerId) scopedFilters.push(eq(inboundAttachmentClassificationRules.customerId, args.customerId));
+    if (args.senderDomain) scopedFilters.push(eq(inboundAttachmentClassificationRules.senderDomain, args.senderDomain.trim().toLowerCase()));
+    if (scopedFilters.length === 0) return [];
+
+    return this.dbInstance
+      .select()
+      .from(inboundAttachmentClassificationRules)
+      .where(and(...filters, scopedFilters.length === 1 ? scopedFilters[0] : or(...scopedFilters)))
+      .orderBy(desc(inboundAttachmentClassificationRules.updatedAt));
+  }
+
+  async recordAttachmentClassificationRuleMatch(ruleId: string): Promise<void> {
+    await this.dbInstance
+      .update(inboundAttachmentClassificationRules)
+      .set({
+        matchCount: sql`${inboundAttachmentClassificationRules.matchCount} + 1`,
+        lastMatchedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(inboundAttachmentClassificationRules.id, ruleId));
+  }
+
+  async resolveCustomerIdForSender(organizationId: string, email: string | null, domain: string | null): Promise<string | null> {
+    const normalizedEmail = email?.trim().toLowerCase() || null;
+    const normalizedDomain = domain?.trim().toLowerCase() || null;
+    if (normalizedEmail) {
+      const [linkedContact] = await this.dbInstance
+        .select({ customerId: customerContactLinks.customerId })
+        .from(customerContacts)
+        .innerJoin(customerContactLinks, eq(customerContactLinks.contactId, customerContacts.id))
+        .where(and(
+          eq(customerContacts.organizationId, organizationId),
+          eq(customerContactLinks.organizationId, organizationId),
+          eq(customerContacts.status, "active"),
+          eq(customerContactLinks.status, "active"),
+          sql`lower(${customerContacts.email}) = ${normalizedEmail}`,
+        ))
+        .limit(1);
+      if (linkedContact?.customerId) return linkedContact.customerId;
+
+      const [legacyContact] = await this.dbInstance
+        .select({ customerId: customerContacts.customerId })
+        .from(customerContacts)
+        .where(and(
+          eq(customerContacts.organizationId, organizationId),
+          eq(customerContacts.status, "active"),
+          sql`lower(${customerContacts.email}) = ${normalizedEmail}`,
+        ))
+        .limit(1);
+      if (legacyContact?.customerId) return legacyContact.customerId;
+
+      const [customerMatch] = await this.dbInstance
+        .select({ customerId: customers.id })
+        .from(customers)
+        .where(and(
+          eq(customers.organizationId, organizationId),
+          sql`lower(${customers.email}) = ${normalizedEmail}`,
+        ))
+        .limit(1);
+      if (customerMatch?.customerId) return customerMatch.customerId;
+    }
+
+    if (normalizedDomain && !isPublicFreeEmailDomain(normalizedDomain)) {
+      const [customerDomainMatch] = await this.dbInstance
+        .select({ customerId: customers.id })
+        .from(customers)
+        .where(and(
+          eq(customers.organizationId, organizationId),
+          sql`lower(split_part(${customers.email}, '@', 2)) = ${normalizedDomain}`,
+        ))
+        .limit(1);
+      if (customerDomainMatch?.customerId) return customerDomainMatch.customerId;
+
+      const [linkedDomainContact] = await this.dbInstance
+        .select({ customerId: customerContactLinks.customerId })
+        .from(customerContacts)
+        .innerJoin(customerContactLinks, eq(customerContactLinks.contactId, customerContacts.id))
+        .where(and(
+          eq(customerContacts.organizationId, organizationId),
+          eq(customerContactLinks.organizationId, organizationId),
+          eq(customerContacts.status, "active"),
+          eq(customerContactLinks.status, "active"),
+          sql`lower(split_part(${customerContacts.email}, '@', 2)) = ${normalizedDomain}`,
+        ))
+        .limit(1);
+      if (linkedDomainContact?.customerId) return linkedDomainContact.customerId;
+    }
+
+    return null;
   }
 
   async senderEmailMatchesCustomerContact(organizationId: string, email: string): Promise<boolean> {

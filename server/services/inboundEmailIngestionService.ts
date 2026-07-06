@@ -12,6 +12,7 @@ import {
   type InboundEmailMailbox,
   type InboundEmailTrustRule,
   type InboundEmailTrustRuleType,
+  type InboundAttachmentClassificationRule,
   type InboundOrderFile,
   type InboundOrderRecord,
   type InboundOrderSource,
@@ -21,6 +22,7 @@ import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
 import {
   classifyInboundAttachment,
   inboundAttachmentClassificationToRole,
+  type InboundAttachmentClassification,
   type InboundAttachmentClassificationResult,
 } from "@shared/inboundAttachmentClassification";
 import { inboundOrdersRepository, type InboundOrdersRepository } from "../storage/inboundOrders.repo";
@@ -1260,6 +1262,76 @@ export function classifyInboundEmailAttachmentForMessage(
     customerAttachmentCount: Math.max(1, message.attachments.length),
   });
   return { ...base, sourceHint };
+}
+
+function ruleClassificationToInboundClassification(
+  classification: InboundAttachmentClassificationRule["classification"],
+): InboundAttachmentClassification {
+  if (classification === "purchase_order") return "PO";
+  if (classification === "artwork") return "ARTWORK";
+  if (classification === "reference") return "REFERENCE";
+  if (classification === "junk_signature") return "IGNORE_INLINE";
+  return "OTHER";
+}
+
+function ruleMatchTypePriority(matchType: InboundAttachmentClassificationRule["matchType"]): number {
+  if (matchType === "filename_exact") return 0;
+  if (matchType === "filename_starts_with") return 1;
+  if (matchType === "filename_ends_with") return 2;
+  if (matchType === "filename_contains") return 3;
+  return 4;
+}
+
+function attachmentClassificationRuleMatches(
+  rule: InboundAttachmentClassificationRule,
+  attachment: InboundEmailAttachmentMetadata,
+): boolean {
+  const matchValue = normalizeLower(rule.matchValue);
+  if (!matchValue) return false;
+  const filename = normalizeLower(attachment.filename);
+  const mimeType = normalizeLower(attachment.mimeType);
+  if (rule.matchType === "filename_exact") return filename === matchValue;
+  if (rule.matchType === "filename_starts_with") return filename.startsWith(matchValue);
+  if (rule.matchType === "filename_ends_with") return filename.endsWith(matchValue);
+  if (rule.matchType === "filename_contains") return filename.includes(matchValue);
+  return mimeType === matchValue || mimeType.includes(matchValue);
+}
+
+function classificationFromRule(
+  rule: InboundAttachmentClassificationRule,
+  base: ReturnType<typeof classifyInboundEmailAttachmentForMessage>,
+): ReturnType<typeof classifyInboundEmailAttachmentForMessage> {
+  const classification = ruleClassificationToInboundClassification(rule.classification);
+  const role = inboundAttachmentClassificationToRole(classification);
+  const reason = `Customer attachment classification rule matched: ${rule.matchType.replace(/_/g, " ")} "${rule.matchValue}".`;
+  const result: InboundAttachmentClassificationResult = {
+    classification,
+    confidence: 100,
+    reasons: [reason],
+    source: "automatic",
+    breakdown: {
+      filename: [reason],
+      content: base.classification.breakdown.content,
+      metadata: [
+        ...base.classification.breakdown.metadata,
+        `rule ${rule.id}`,
+      ],
+      manual: base.classification.breakdown.manual,
+      scores: {
+        ...base.classification.breakdown.scores,
+        [classification]: 100,
+      },
+    },
+  };
+  return {
+    role,
+    poCandidate: classification === "PO",
+    artworkCandidate: classification === "ARTWORK",
+    safeToDownload: classification !== "OTHER" && classification !== "IGNORE_INLINE",
+    reason,
+    classification: result,
+    sourceHint: base.sourceHint,
+  };
 }
 
 function normalizeText(value: string | null | undefined): string {
@@ -3955,7 +4027,13 @@ export class InboundEmailIngestionService {
       const providerMessageId = attachment.providerMessageId ?? args.message.messageId;
       const dedupeKeys = attachmentDedupeKeysForCandidate(attachment, providerMessageId);
       const attachmentDedupeKey = attachment.dedupeKey ?? dedupeKeys[0] ?? attachmentGlobalMetadataDedupeKey(attachment) ?? null;
-      const classification = classifyInboundEmailAttachmentForMessage(attachment, args.message);
+      const classification = await this.classifyAttachmentForIngestion({
+        organizationId: args.organizationId,
+        record: args.record,
+        attachment,
+        message: args.message,
+        actorUserId: args.actorUserId,
+      });
       const safetyDecision = this.evaluateAttachmentSafety(attachment, classification, trustDecision);
       const filename = normalizeAttachmentFileName(attachment.filename);
       const contentDisposition = truncate(attachment.contentDisposition ?? null, 100);
@@ -3977,6 +4055,8 @@ export class InboundEmailIngestionService {
         safeToDownload: classification.safeToDownload,
         detectionReason: classification.reason,
         attachmentClassification: classification.classification,
+        attachmentClassificationRuleId: classification.matchedClassificationRuleId ?? null,
+        attachmentClassificationRuleMatched: Boolean(classification.matchedClassificationRuleId),
         senderTrustStatus: trustDecision.trusted ? "trusted" : "untrusted",
         senderTrustSource: trustDecision.trustSource,
         senderTrustRuleId: trustDecision.ruleId,
@@ -4265,6 +4345,69 @@ export class InboundEmailIngestionService {
       diagnostics,
     });
     return diagnostics;
+  }
+
+  private async classifyAttachmentForIngestion(args: {
+    organizationId: string;
+    record: InboundOrderRecord;
+    attachment: InboundEmailAttachmentMetadata;
+    message: InboundEmailProviderMessage;
+    actorUserId: string;
+  }): Promise<ReturnType<typeof classifyInboundEmailAttachmentForMessage> & {
+    matchedClassificationRuleId?: string | null;
+  }> {
+    const base = classifyInboundEmailAttachmentForMessage(args.attachment, args.message);
+    const senderEmail = senderEmailFromMessage(args.message);
+    const senderDomain = senderDomainFromMessage(args.message);
+    try {
+      const customerId = args.record.matchedCustomerId
+        ?? await this.inboundRepository.resolveCustomerIdForSender(args.organizationId, senderEmail, senderDomain);
+      const rules = await this.inboundRepository.listEnabledAttachmentClassificationRules({
+        organizationId: args.organizationId,
+        customerId,
+        senderDomain,
+      });
+      const matchingRule = rules
+        .slice()
+        .sort((left, right) => ruleMatchTypePriority(left.matchType) - ruleMatchTypePriority(right.matchType))
+        .find((rule) => attachmentClassificationRuleMatches(rule, args.attachment));
+      if (!matchingRule) return base;
+
+      await this.inboundRepository.recordAttachmentClassificationRuleMatch(matchingRule.id);
+      await this.inboundRepository.createEvent({
+        organizationId: args.organizationId,
+        inboundRecordId: args.record.id,
+        actorUserId: args.actorUserId,
+        actorType: "system",
+        eventType: "attachment.classification_rule.matched",
+        fromStatus: null,
+        toStatus: null,
+        message: `Inbound attachment classification rule matched ${args.attachment.filename || "attachment"}.`,
+        metadataJson: {
+          ruleId: matchingRule.id,
+          customerId,
+          senderDomain,
+          matchType: matchingRule.matchType,
+          matchValue: matchingRule.matchValue,
+          classification: matchingRule.classification,
+          filename: args.attachment.filename,
+          mimeType: args.attachment.mimeType,
+        },
+      });
+      return {
+        ...classificationFromRule(matchingRule, base),
+        matchedClassificationRuleId: matchingRule.id,
+      };
+    } catch (error) {
+      console.warn("[Inbound Email Pull] Attachment classification rule matching failed", {
+        organizationId: args.organizationId,
+        inboundRecordId: args.record.id,
+        messageId: args.message.messageId,
+        filename: args.attachment.filename,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return base;
+    }
   }
 
   private async recordAttachmentIngestionDiagnostics(args: {

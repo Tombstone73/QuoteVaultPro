@@ -28,8 +28,32 @@ jest.mock("@/components/ui/button", () => ({
   },
 }));
 
+jest.mock("@/components/ui/dialog", () => ({
+  Dialog: ({ children, open }: any) => open ? <div>{children}</div> : null,
+  DialogContent: ({ children, ...props }: any) => <div role="dialog" {...props}>{children}</div>,
+  DialogDescription: ({ children }: any) => <p>{children}</p>,
+  DialogFooter: ({ children }: any) => <div>{children}</div>,
+  DialogHeader: ({ children }: any) => <div>{children}</div>,
+  DialogTitle: ({ children }: any) => <h2>{children}</h2>,
+}));
+
+jest.mock("@/components/ui/checkbox", () => ({
+  Checkbox: ({ checked, onCheckedChange, ...props }: any) => (
+    <input
+      type="checkbox"
+      checked={Boolean(checked)}
+      onChange={(event) => onCheckedChange?.((event.target as HTMLInputElement).checked)}
+      {...props}
+    />
+  ),
+}));
+
 jest.mock("@/components/ui/input", () => ({
   Input: (props: any) => <input {...props} />,
+}));
+
+jest.mock("@/components/ui/label", () => ({
+  Label: ({ children, ...props }: any) => <label {...props}>{children}</label>,
 }));
 
 jest.mock("@/components/ui/scroll-area", () => ({
@@ -552,6 +576,7 @@ function setupParsedInboundReview({
 } = {}) {
   const attempt = parseAttempt({ parsedDraft: parsed, confidence: 82, warnings: parsed.globalWarnings });
   let savedBody: any = null;
+  let classificationBody: any = null;
   apiFetchMock.mockImplementation(async (url: any, options?: any) => {
     const path = String(url);
     if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
@@ -568,6 +593,37 @@ function setupParsedInboundReview({
       });
     }
     if (path === `/api/inbound-orders/${row.id}/review-draft`) return jsonResponse({ success: true, data: review });
+    if (path.includes(`/api/inbound-orders/${row.id}/files/`) && path.endsWith("/classification")) {
+      classificationBody = JSON.parse(options?.body ?? "{}");
+      const fileId = path.split("/files/")[1]?.split("/classification")[0];
+      const existingFile = (detailOverrides.files ?? []).find((file: any) => file.id === fileId) ?? { id: fileId };
+      return jsonResponse({
+        success: true,
+        data: {
+          file: {
+            ...existingFile,
+            role: classificationBody.classification === "PO"
+              ? "po"
+              : classificationBody.classification === "ARTWORK"
+                ? "artwork"
+                : classificationBody.classification === "REFERENCE"
+                  ? "reference"
+                  : "other",
+            metadataJson: {
+              ...(existingFile.metadataJson ?? {}),
+              attachmentClassification: {
+                classification: classificationBody.classification,
+                confidence: 100,
+                source: "manual_override",
+                reasons: [`Staff manually classified as ${classificationBody.classification}.`],
+              },
+            },
+          },
+          rule: classificationBody.rememberForCustomer ? { id: "attachment_rule_1" } : null,
+          warning: null,
+        },
+      });
+    }
     if (path === "/api/inbound-orders/customer-search?limit=20") return jsonResponse({ success: true, data: [] });
     if (path.startsWith("/api/inbound-orders/product-search?")) return jsonResponse({ success: true, data: productSearchResults });
     if (path.startsWith("/api/inbound-orders/contact-search?")) return jsonResponse({ success: true, data: [] });
@@ -576,6 +632,7 @@ function setupParsedInboundReview({
   });
   return {
     getSavedBody: () => savedBody,
+    getClassificationBody: () => classificationBody,
   };
 }
 
@@ -1293,7 +1350,7 @@ describe("InboundOrdersPage", () => {
     cleanReview.reviewedLineItemsJson[0].selectedProductSource = "source_evidence";
     cleanReview.reviewedLineItemsJson[0].productUnresolved = true;
     cleanReview.reviewedLineItemsJson[0].optionSelectionsJson = null;
-    const { getSavedBody } = setupParsedInboundReview({
+    const { getSavedBody, getClassificationBody } = setupParsedInboundReview({
       row,
       parsed: cleanParsed,
       review: cleanReview,
@@ -1502,11 +1559,39 @@ describe("InboundOrdersPage", () => {
       Simulate.click(artworkTab);
     });
     await waitForText("Artwork Files");
-    const classifySelect = container.querySelector("select[aria-label='Classify Lindsay X2.pdf']") as HTMLSelectElement;
-    expect(classifySelect).toBeTruthy();
+    const classifyButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Classify as Artwork")
+    )) as HTMLButtonElement;
+    expect(classifyButton).toBeTruthy();
     act(() => {
-      Simulate.change(classifySelect, { target: { value: "REFERENCE" } } as any);
+      Simulate.click(classifyButton);
     });
+    await waitForText("Classify attachment");
+    const dialogClassificationSelect = labeledControl("Classification", "select") as HTMLSelectElement;
+    act(() => {
+      Simulate.change(dialogClassificationSelect, { target: { value: "REFERENCE" } } as any);
+    });
+    const rememberCheckbox = Array.from(container.querySelectorAll("input[type='checkbox']")).find((input) => (
+      input.closest("label")?.textContent?.includes("Remember for this customer")
+    )) as HTMLInputElement;
+    expect(rememberCheckbox).toBeTruthy();
+    act(() => {
+      Simulate.change(rememberCheckbox, { target: { checked: true } } as any);
+    });
+    const saveClassificationButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save classification")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(saveClassificationButton);
+    });
+    await waitForCondition(() => Boolean(getClassificationBody()), "clean view attachment classification persisted");
+    expect(getClassificationBody()).toEqual(expect.objectContaining({
+      classification: "REFERENCE",
+      rememberForCustomer: true,
+      rule: expect.objectContaining({
+        customerId: "customer_1",
+        senderDomain: "example.com",
+        matchType: "filename_contains",
+      }),
+    }));
 
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
     await act(async () => {
