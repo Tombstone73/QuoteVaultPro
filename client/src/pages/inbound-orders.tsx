@@ -1,9 +1,14 @@
 import { type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
+import pdfCMapProbeUrl from "pdfjs-dist/cmaps/78-EUC-H.bcmap?url";
+import pdfStandardFontProbeUrl from "pdfjs-dist/standard_fonts/FoxitFixed.pfb?url";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
   AlertTriangle,
   Calendar,
+  ChevronLeft,
+  ChevronRight,
   ChevronDown,
   ChevronsLeft,
   ChevronsRight,
@@ -26,6 +31,8 @@ import {
   Sparkles,
   Trash2,
   XCircle,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -167,6 +174,21 @@ function downloadBlob(blob: Blob, filename: string) {
   anchor.click();
   document.body.removeChild(anchor);
   URL.revokeObjectURL(blobUrl);
+}
+
+function getPdfAssetBaseUrl(assetUrl: string) {
+  const normalized = (assetUrl || "").trim();
+  if (!normalized) return undefined;
+  const index = normalized.lastIndexOf("/");
+  if (index < 0) return undefined;
+  return normalized.slice(0, index + 1);
+}
+
+const pdfCMapUrl = getPdfAssetBaseUrl(pdfCMapProbeUrl);
+const pdfStandardFontDataUrl = getPdfAssetBaseUrl(pdfStandardFontProbeUrl);
+
+function clampCleanViewerZoom(value: number) {
+  return Math.min(3, Math.max(0.5, value));
 }
 
 type InboundCustomerSearchResponse = {
@@ -1059,11 +1081,22 @@ function CleanInlineAttachmentViewer({
   const [mimeType, setMimeType] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [pdfDocument, setPdfDocument] = useState<any | null>(null);
+  const [pdfPageCount, setPdfPageCount] = useState(0);
+  const [pdfPageNumber, setPdfPageNumber] = useState(1);
+  const [pdfFitMode, setPdfFitMode] = useState<"width" | "custom">("width");
+  const [pdfZoomLevel, setPdfZoomLevel] = useState(1);
+  const [pdfRenderedScale, setPdfRenderedScale] = useState(1);
+  const [pdfStageWidth, setPdfStageWidth] = useState(0);
+  const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pdfStageRef = useRef<HTMLDivElement | null>(null);
+  const pdfRenderTaskRef = useRef<any | null>(null);
   const file = selection?.file ?? null;
   const recordId = selection?.recordId ?? null;
   const filename = file?.sourceFilename || "attachment";
   const isPdfPreview = Boolean(file && (mimeType === "application/pdf" || filename.toLowerCase().endsWith(".pdf")));
   const isImagePreview = Boolean(mimeType?.startsWith("image/"));
+  const displayedPdfScale = pdfFitMode === "custom" ? pdfZoomLevel : pdfRenderedScale;
 
   useEffect(() => {
     if (!selection) {
@@ -1075,23 +1108,59 @@ function CleanInlineAttachmentViewer({
       setError(null);
       setLoading(false);
       setModalOpen(false);
+      setPdfDocument(null);
+      setPdfPageCount(0);
+      setPdfPageNumber(1);
+      setPdfFitMode("width");
+      setPdfZoomLevel(1);
+      setPdfRenderedScale(1);
       return;
     }
     let cancelled = false;
     let nextObjectUrl: string | null = null;
+    let loadedPdfDocument: any | null = null;
     setLoading(true);
     setError(null);
     setMimeType(null);
+    setPdfDocument(null);
+    setPdfPageCount(0);
+    setPdfPageNumber(1);
+    setPdfFitMode("width");
+    setPdfZoomLevel(1);
+    setPdfRenderedScale(1);
     setObjectUrl((previous) => {
       if (previous) URL.revokeObjectURL(previous);
       return null;
     });
     fetchInboundAttachmentBlob(selection.recordId, selection.file)
-      .then(({ blob, mimeType: nextMimeType }) => {
+      .then(async ({ blob, mimeType: nextMimeType }) => {
         if (cancelled) return;
         nextObjectUrl = URL.createObjectURL(blob);
         setObjectUrl(nextObjectUrl);
         setMimeType(nextMimeType);
+        const shouldRenderPdf = nextMimeType === "application/pdf" || selection.file.sourceFilename?.toLowerCase().endsWith(".pdf");
+        if (shouldRenderPdf) {
+          const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+          if (cancelled) return;
+          pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+          const loadingTask = pdfjs.getDocument({
+            data: new Uint8Array(await blob.arrayBuffer()),
+            cMapUrl: pdfCMapUrl,
+            cMapPacked: true,
+            standardFontDataUrl: pdfStandardFontDataUrl,
+            useWorkerFetch: false,
+            isEvalSupported: false,
+            stopAtErrors: true,
+          });
+          loadedPdfDocument = await loadingTask.promise;
+          if (cancelled) {
+            await loadedPdfDocument.destroy().catch(() => undefined);
+            return;
+          }
+          setPdfDocument(loadedPdfDocument);
+          setPdfPageCount(loadedPdfDocument.numPages ?? 0);
+          setPdfPageNumber(1);
+        }
       })
       .catch((fetchError) => {
         if (cancelled) return;
@@ -1104,9 +1173,97 @@ function CleanInlineAttachmentViewer({
       });
     return () => {
       cancelled = true;
+      if (pdfRenderTaskRef.current) {
+        try {
+          pdfRenderTaskRef.current.cancel();
+        } catch {
+          // ignore render cancellation
+        }
+        pdfRenderTaskRef.current = null;
+      }
+      if (loadedPdfDocument) void loadedPdfDocument.destroy().catch(() => undefined);
       if (nextObjectUrl) URL.revokeObjectURL(nextObjectUrl);
     };
   }, [selection?.recordId, selection?.file.id]);
+
+  useEffect(() => {
+    if (!isPdfPreview || !pdfStageRef.current) return;
+    const element = pdfStageRef.current;
+    const measure = () => {
+      const rect = element.getBoundingClientRect();
+      setPdfStageWidth(Math.max(240, Math.round(rect.width || element.clientWidth || 640)));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [isPdfPreview, objectUrl]);
+
+  useEffect(() => {
+    if (!isPdfPreview || !pdfDocument || !pdfCanvasRef.current || !pdfStageWidth) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const page = await pdfDocument.getPage(pdfPageNumber);
+        if (cancelled) return;
+        const baseViewport = page.getViewport({ scale: 1 });
+        const fitWidthScale = Math.max(0.1, (pdfStageWidth - 24) / Math.max(baseViewport.width, 1));
+        const targetScale = pdfFitMode === "width" ? fitWidthScale : pdfZoomLevel;
+        const clampedScale = clampCleanViewerZoom(targetScale);
+        const viewport = page.getViewport({ scale: clampedScale });
+        const canvas = pdfCanvasRef.current;
+        if (!canvas) return;
+        const context = canvas.getContext("2d");
+        if (!context) {
+          setError("Canvas preview unavailable.");
+          return;
+        }
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        canvas.width = Math.floor(viewport.width * devicePixelRatio);
+        canvas.height = Math.floor(viewport.height * devicePixelRatio);
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        if (pdfRenderTaskRef.current) {
+          try {
+            pdfRenderTaskRef.current.cancel();
+          } catch {
+            // ignore render cancellation
+          }
+        }
+        const renderTask = page.render({
+          canvasContext: context,
+          viewport,
+          transform: devicePixelRatio === 1 ? undefined : [devicePixelRatio, 0, 0, devicePixelRatio, 0, 0],
+        });
+        pdfRenderTaskRef.current = renderTask;
+        await renderTask.promise;
+        if (!cancelled) {
+          setPdfRenderedScale(clampedScale);
+          setError(null);
+        }
+      } catch (renderError: any) {
+        if (cancelled || renderError?.name === "RenderingCancelledException") return;
+        setError(renderError instanceof Error ? renderError.message : "Unable to render PDF page.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (pdfRenderTaskRef.current) {
+        try {
+          pdfRenderTaskRef.current.cancel();
+        } catch {
+          // ignore render cancellation
+        }
+        pdfRenderTaskRef.current = null;
+      }
+    };
+  }, [isPdfPreview, pdfDocument, pdfFitMode, pdfPageNumber, pdfStageWidth, pdfZoomLevel]);
 
   const handleDownload = async (event?: ReactMouseEvent<HTMLButtonElement>) => {
     event?.stopPropagation();
@@ -1133,11 +1290,101 @@ function CleanInlineAttachmentViewer({
         </div>
       );
     }
+    if (objectUrl && isPdfPreview) {
+      return (
+        <div className="overflow-hidden rounded border border-slate-800 bg-slate-950" data-testid="clean-attachment-pdf-viewer">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-slate-900 px-2 py-2 text-xs text-slate-200" data-testid="clean-pdf-controls">
+            <div className="flex items-center gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2"
+                onClick={() => setPdfPageNumber((page) => Math.max(1, page - 1))}
+                disabled={pdfPageNumber <= 1 || pdfPageCount <= 1}
+                aria-label="Previous PDF page"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </Button>
+              <span className="min-w-20 text-center font-semibold">
+                {pdfPageCount > 0 ? `${pdfPageNumber} / ${pdfPageCount}` : "Page -"}
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2"
+                onClick={() => setPdfPageNumber((page) => Math.min(pdfPageCount || page, page + 1))}
+                disabled={pdfPageCount <= 1 || pdfPageNumber >= pdfPageCount}
+                aria-label="Next PDF page"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <div className="flex items-center gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2"
+                onClick={() => {
+                  setPdfFitMode("custom");
+                  setPdfZoomLevel((zoom) => clampCleanViewerZoom(zoom - 0.15));
+                }}
+                aria-label="Zoom out PDF"
+              >
+                <ZoomOut className="h-3.5 w-3.5" />
+              </Button>
+              <span className="min-w-14 text-center font-semibold" data-testid="clean-pdf-zoom-label">{Math.round(displayedPdfScale * 100)}%</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2"
+                onClick={() => {
+                  setPdfFitMode("custom");
+                  setPdfZoomLevel((zoom) => clampCleanViewerZoom(zoom + 0.15));
+                }}
+                aria-label="Zoom in PDF"
+              >
+                <ZoomIn className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant={pdfFitMode === "width" ? "outline" : "ghost"}
+                size="sm"
+                className="h-7 px-2"
+                onClick={() => setPdfFitMode("width")}
+                data-testid="clean-pdf-fit-width"
+              >
+                Fit width
+              </Button>
+            </div>
+          </div>
+          <div
+            ref={pdfStageRef}
+            className={cn("min-w-0 overflow-auto bg-slate-800 p-3", frameHeight)}
+            data-fit-mode={pdfFitMode}
+            data-testid="clean-pdf-canvas-stage"
+          >
+            {error ? (
+              <div className="rounded border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">{error}</div>
+            ) : pdfDocument ? (
+              <div className="flex min-w-max justify-center">
+                <canvas ref={pdfCanvasRef} className="rounded bg-white shadow-lg" data-testid="clean-pdf-page-canvas" />
+              </div>
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-slate-400">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Preparing PDF preview...
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
     if (error) {
       return <div className="rounded border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">{error}</div>;
-    }
-    if (objectUrl && isPdfPreview) {
-      return <iframe title={`Preview ${filename}`} src={objectUrl} className={cn("w-full rounded bg-white", frameHeight)} data-testid="clean-attachment-pdf-viewer" />;
     }
     if (objectUrl && isImagePreview) {
       return <img src={objectUrl} alt={filename} className={cn("w-full rounded object-contain", frameHeight)} data-testid="clean-attachment-image-viewer" />;
