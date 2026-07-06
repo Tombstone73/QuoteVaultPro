@@ -3446,9 +3446,14 @@ function CleanInboundQueue({
   searchValue,
   summary,
   isLoading,
+  selectedRecordIds,
+  isBulkActionPending,
   onSelect,
   onChange,
   onSearchChange,
+  onToggleSelected,
+  onToggleVisibleSelected,
+  onBulkAction,
 }: {
   records: ClientInboundOrderRecord[];
   selectedId: string | null;
@@ -3456,9 +3461,14 @@ function CleanInboundQueue({
   searchValue: string;
   summary: InboundOrderQueueSummary | null;
   isLoading: boolean;
+  selectedRecordIds: Set<string>;
+  isBulkActionPending: boolean;
   onSelect: (id: string) => void;
   onChange: (filters: QueueFilters) => void;
   onSearchChange: (value: string) => void;
+  onToggleSelected: (id: string, selected: boolean) => void;
+  onToggleVisibleSelected: (ids: string[], selected: boolean) => void;
+  onBulkAction: (action: InboundQueueCleanupAction) => void;
 }) {
   const [quickFilters, setQuickFilters] = useState({
     trusted: false,
@@ -3476,6 +3486,9 @@ function CleanInboundQueue({
   const toggleQuickFilter = (key: keyof typeof quickFilters, checked: boolean) => {
     setQuickFilters((current) => ({ ...current, [key]: checked }));
   };
+  const visibleRecordIds = visibleRecords.map((record) => record.id);
+  const selectedVisibleCount = visibleRecordIds.filter((id) => selectedRecordIds.has(id)).length;
+  const allVisibleSelected = visibleRecordIds.length > 0 && selectedVisibleCount === visibleRecordIds.length;
   return (
     <aside className="flex min-h-0 w-[300px] shrink-0 flex-col border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-inbound-queue">
       <div className="border-b border-slate-700 px-3 py-2">
@@ -3535,6 +3548,53 @@ function CleanInboundQueue({
             </label>
           ))}
         </div>
+        {visibleRecords.length > 0 && (
+          <div className="mt-2 flex min-w-0 items-center justify-between gap-2 border-t border-slate-800 pt-2 text-[11px] text-slate-300">
+            <label className="flex min-w-0 items-center gap-1.5">
+              <input
+                type="checkbox"
+                className="h-3 w-3"
+                checked={allVisibleSelected}
+                onChange={(event) => onToggleVisibleSelected(visibleRecordIds, event.target.checked)}
+                aria-label="Select all visible Clean View queue records"
+              />
+              <span className="truncate">Select visible</span>
+            </label>
+            <span className="shrink-0 text-slate-500">{selectedVisibleCount}/{visibleRecords.length}</span>
+          </div>
+        )}
+        {selectedRecordIds.size > 0 && (
+          <details className="mt-2 rounded border border-slate-800 bg-slate-900/80" data-testid="clean-queue-bulk-actions">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-2 py-1.5 text-[11px] font-semibold text-slate-200">
+              <span>{selectedRecordIds.size} selected</span>
+              <ChevronDown className="h-3.5 w-3.5" />
+            </summary>
+            <div className="grid grid-cols-2 gap-1 border-t border-slate-800 p-1.5">
+              {([
+                ["trust_sender", "Trust Sender"],
+                ["trust_domain", "Trust Domain"],
+                ["ignore_once", "Ignore Once"],
+                ["ignore_sender", "Ignore Sender"],
+                ["ignore_domain", "Ignore Domain"],
+                ["reject", "Reject"],
+                ["delete", "Delete"],
+              ] as const).map(([action, label]) => (
+                <Button
+                  key={action}
+                  type="button"
+                  size="sm"
+                  variant={action === "delete" ? "ghost" : "outline"}
+                  className="h-7 justify-start px-2 text-[10px]"
+                  disabled={isBulkActionPending}
+                  onClick={() => onBulkAction(action)}
+                >
+                  {action === "delete" && <Trash2 className="mr-1 h-3 w-3" />}
+                  {label}
+                </Button>
+              ))}
+            </div>
+          </details>
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading ? (
@@ -3559,8 +3619,20 @@ function CleanInboundQueue({
               )}
               onClick={() => onSelect(record.id)}
             >
-              <div className="truncate text-sm font-bold text-slate-100">{getSenderLabel(record)}</div>
-              <div className="mt-0.5 truncate text-xs font-semibold text-slate-300">{evidence.reference || evidence.subject || getRecordTitle(record)}</div>
+              <div className="flex min-w-0 items-start gap-2">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                  checked={selectedRecordIds.has(record.id)}
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={(event) => onToggleSelected(record.id, event.target.checked)}
+                  aria-label={`Select Clean View inbound record ${getRecordTitle(record)}`}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-bold text-slate-100">{getSenderLabel(record)}</div>
+                  <div className="mt-0.5 truncate text-xs font-semibold text-slate-300">{evidence.reference || evidence.subject || getRecordTitle(record)}</div>
+                </div>
+              </div>
               <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
                 <span>{intent ?? "Unknown"}</span>
                 <span>/</span>
@@ -3591,10 +3663,14 @@ function CleanSourceDocuments({
   activeTab,
   isLoading,
   isParsing,
+  isRescanning,
   parseDisabled,
+  rescanDisabled,
   parseError,
+  parseCompletedWithoutDraft,
   onTabChange,
   onParse,
+  onRescan,
   attachmentLinks,
   onClassifyAttachment,
   form,
@@ -3608,10 +3684,14 @@ function CleanSourceDocuments({
   activeTab: SourceDocumentTab;
   isLoading: boolean;
   isParsing: boolean;
+  isRescanning: boolean;
   parseDisabled: boolean;
+  rescanDisabled: boolean;
   parseError: Error | null;
+  parseCompletedWithoutDraft: boolean;
   onTabChange: (tab: SourceDocumentTab) => void;
   onParse: () => void;
+  onRescan: () => void;
   attachmentLinks: InboundOrderArtworkLink[];
   onClassifyAttachment: (link: InboundOrderArtworkLink, classification: InboundAttachmentClassification) => void;
   form: ReviewDraftFormState | null;
@@ -3645,8 +3725,8 @@ function CleanSourceDocuments({
               Parse
             </Button>
           )}
-          <Button type="button" size="sm" variant={needsInitialParse ? "outline" : "default"} className={cn("h-8 px-3 text-xs font-bold", !needsInitialParse && "bg-blue-300 text-slate-950 hover:bg-blue-200")} onClick={onParse} disabled={parseDisabled}>
-            {isParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
+          <Button type="button" size="sm" variant={needsInitialParse ? "outline" : "default"} className={cn("h-8 px-3 text-xs font-bold", !needsInitialParse && "bg-blue-300 text-slate-950 hover:bg-blue-200")} onClick={onRescan} disabled={rescanDisabled}>
+            {isRescanning ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
             Re-scan
           </Button>
         </div>
@@ -3733,6 +3813,11 @@ function CleanSourceDocuments({
               </div>
             </article>
             {parseError && <div className="mt-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">{parseError.message}</div>}
+            {parseCompletedWithoutDraft && (
+              <div className="mt-3 rounded border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
+                Parse completed, but no review draft was produced. Re-scan this record or use Debug View to inspect the latest parse attempt.
+              </div>
+            )}
           </div>
         ) : activeTab === "po" ? (
           <div className="mx-auto w-full max-w-[760px] min-w-0 rounded border border-slate-800 bg-slate-900 p-4">
@@ -7184,6 +7269,8 @@ export default function InboundOrdersPage() {
   const [queueSearchText, setQueueSearchText] = useState(defaultQueueFilters.search);
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
   const [parsingRecordId, setParsingRecordId] = useState<string | null>(null);
+  const [rescanningRecordId, setRescanningRecordId] = useState<string | null>(null);
+  const [parseCompletedWithoutDraftRecordId, setParseCompletedWithoutDraftRecordId] = useState<string | null>(null);
   const [lastConvertedOrderId, setLastConvertedOrderId] = useState<string | null>(null);
   const [reviewDraftDirtyByRecordId, setReviewDraftDirtyByRecordId] = useState<Record<string, boolean>>({});
   const [cleanForm, setCleanForm] = useState<ReviewDraftFormState | null>(null);
@@ -7353,15 +7440,17 @@ export default function InboundOrdersPage() {
     enabled: Boolean(selectedId && draftPreviewQuery.data?.data.draft),
   });
 
+  const reviewDraftData = reviewDraftQuery.data?.data ?? null;
+
   useEffect(() => {
-    if (!reviewDraftQuery.data?.data) {
+    if (!reviewDraftData) {
       setCleanForm(null);
       setCleanActiveTarget(null);
       return;
     }
-    setCleanForm(cloneReviewDraft(reviewDraftQuery.data.data));
+    setCleanForm(cloneReviewDraft(reviewDraftData));
     setCleanActiveTarget(null);
-  }, [reviewDraftQuery.data?.data.snapshotId, reviewDraftQuery.data?.data.updatedAt, reviewDraftQuery.data?.data.status, selectedId]);
+  }, [reviewDraftData?.snapshotId, reviewDraftData?.updatedAt, reviewDraftData?.status, selectedId]);
 
   const createManualMutation = useMutation({
     mutationFn: (payload: ManualInboundOrderCreateRequest) => (
@@ -7386,32 +7475,58 @@ export default function InboundOrdersPage() {
     },
   });
 
+  const hydrateParsedRecord = async (response: ClientInboundOrderParseResponse) => {
+    const parsedRecordId = response.data.record.id;
+    setParseCompletedWithoutDraftRecordId(null);
+    await Promise.all([
+      queryClient.invalidateQueries({ predicate: isInboundOrderListQuery }),
+      queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId], exact: true }),
+    ]);
+    queryClient.setQueryData(["/api/inbound-orders", parsedRecordId, "draft-preview"], {
+      success: true,
+      data: {
+        draft: response.data.draft,
+        latestAttempt: response.data.latestAttempt,
+      },
+    } satisfies ClientInboundOrderDraftPreviewResponse);
+    if (!response.data.draft) {
+      setParseCompletedWithoutDraftRecordId(parsedRecordId);
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] });
+      setSelectedId(parsedRecordId);
+      return;
+    }
+    if (keepCurrentDraftAfterParseRef.current) {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] });
+    } else {
+      const refreshedDraft = await refreshReviewDraftFromLatestParseMutation.mutateAsync(parsedRecordId);
+      if (!refreshedDraft?.data) setParseCompletedWithoutDraftRecordId(parsedRecordId);
+    }
+    setSelectedId(parsedRecordId);
+  };
+
+  const handleParseFailure = (error: Error) => {
+    toast({ title: "Parse failed", description: error.message, variant: "destructive" });
+  };
+
   const parseMutation = useMutation({
     mutationFn: (recordId: string) => postJson<ClientInboundOrderParseResponse>(`/api/inbound-orders/${recordId}/parse`, {}),
-    onSuccess: async (response) => {
-      const parsedRecordId = response.data.record.id;
-      await Promise.all([
-        queryClient.invalidateQueries({ predicate: isInboundOrderListQuery }),
-        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId], exact: true }),
-      ]);
-      queryClient.setQueryData(["/api/inbound-orders", parsedRecordId, "draft-preview"], {
-        success: true,
-        data: {
-          draft: response.data.draft,
-          latestAttempt: response.data.latestAttempt,
-        },
-      } satisfies ClientInboundOrderDraftPreviewResponse);
-      if (keepCurrentDraftAfterParseRef.current) {
-        await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] });
-      } else {
-        await refreshReviewDraftFromLatestParseMutation.mutateAsync(parsedRecordId);
-      }
-      setSelectedId(parsedRecordId);
-    },
+    onSuccess: hydrateParsedRecord,
+    onError: handleParseFailure,
     onSettled: () => {
       parseInFlightRef.current = false;
       keepCurrentDraftAfterParseRef.current = false;
       setParsingRecordId(null);
+    },
+  });
+
+  const rescanMutation = useMutation({
+    mutationFn: (recordId: string) => postJson<ClientInboundOrderParseResponse>(`/api/inbound-orders/${recordId}/parse`, {}),
+    onSuccess: hydrateParsedRecord,
+    onError: handleParseFailure,
+    onSettled: () => {
+      parseInFlightRef.current = false;
+      keepCurrentDraftAfterParseRef.current = false;
+      setRescanningRecordId(null);
     },
   });
 
@@ -7666,8 +7781,9 @@ export default function InboundOrdersPage() {
     },
   });
 
-  const isParseInFlight = Boolean(parsingRecordId) || parseMutation.isPending;
+  const isParseInFlight = Boolean(parsingRecordId) || parseMutation.isPending || Boolean(rescanningRecordId) || rescanMutation.isPending;
   const isSelectedRecordParsing = Boolean(selectedId && parsingRecordId === selectedId);
+  const isSelectedRecordRescanning = Boolean(selectedId && rescanningRecordId === selectedId);
   const selectedRecordIsTerminal = Boolean(
     selectedRecord
       && (
@@ -7698,7 +7814,7 @@ export default function InboundOrdersPage() {
       source?.focus?.({ preventScroll: true });
     }, 80);
   }, []);
-  const runParseForSelectedRecord = () => {
+  const runParseForSelectedRecord = (action: "parse" | "rescan" = "parse") => {
     if (!selectedId || parseInFlightRef.current) return;
     if (selectedReviewDraftHasUnsavedEdits) {
       const applyLatestParse = window.confirm("Applying the latest parse will overwrite your draft changes.");
@@ -7707,8 +7823,14 @@ export default function InboundOrdersPage() {
       keepCurrentDraftAfterParseRef.current = false;
     }
     parseInFlightRef.current = true;
-    setParsingRecordId(selectedId);
-    parseMutation.mutate(selectedId);
+    setParseCompletedWithoutDraftRecordId(null);
+    if (action === "rescan") {
+      setRescanningRecordId(selectedId);
+      rescanMutation.mutate(selectedId);
+    } else {
+      setParsingRecordId(selectedId);
+      parseMutation.mutate(selectedId);
+    }
   };
   const rejectSelectedRecord = () => {
     if (!selectedId || rejectInboundOrderMutation.isPending || selectedRecordIsTerminal) return;
@@ -7868,17 +7990,20 @@ export default function InboundOrdersPage() {
       return next;
     });
   };
-
-  const allVisibleQueueRecordsSelected = records.length > 0 && records.every((record) => selectedQueueRecordIds.has(record.id));
-  const toggleAllVisibleQueueRecordsSelected = (selected: boolean) => {
+  const toggleQueueRecordIdsSelected = (recordIds: string[], selected: boolean) => {
     setSelectedQueueRecordIds((current) => {
       const next = new Set(current);
-      for (const record of records) {
-        if (selected) next.add(record.id);
-        else next.delete(record.id);
+      for (const recordId of recordIds) {
+        if (selected) next.add(recordId);
+        else next.delete(recordId);
       }
       return next;
     });
+  };
+
+  const allVisibleQueueRecordsSelected = records.length > 0 && records.every((record) => selectedQueueRecordIds.has(record.id));
+  const toggleAllVisibleQueueRecordsSelected = (selected: boolean) => {
+    toggleQueueRecordIdsSelected(records.map((record) => record.id), selected);
   };
 
   const runBulkQueueAction = (action: InboundQueueCleanupAction) => {
@@ -8161,9 +8286,14 @@ export default function InboundOrdersPage() {
             searchValue={queueSearchText}
             summary={queueSummary}
             isLoading={listQuery.isLoading || listQuery.isFetching}
+            selectedRecordIds={selectedQueueRecordIds}
+            isBulkActionPending={bulkQueueActionMutation.isPending}
             onSelect={setSelectedId}
             onChange={applyQueueFilters}
             onSearchChange={updateQueueSearchText}
+            onToggleSelected={toggleQueueRecordSelected}
+            onToggleVisibleSelected={toggleQueueRecordIdsSelected}
+            onBulkAction={runBulkQueueAction}
           />
           <CleanSourceDocuments
             selectedRecord={selectedRecord}
@@ -8173,10 +8303,14 @@ export default function InboundOrdersPage() {
             activeTab={sourceDocumentTab}
             isLoading={detailQuery.isLoading}
             isParsing={isSelectedRecordParsing}
+            isRescanning={isSelectedRecordRescanning}
             parseDisabled={isParseInFlight || selectedRecordIsTerminal}
-            parseError={parseMutation.error as Error | null}
+            rescanDisabled={isParseInFlight || selectedRecordIsTerminal}
+            parseError={(parseMutation.error || rescanMutation.error) as Error | null}
+            parseCompletedWithoutDraft={selectedId === parseCompletedWithoutDraftRecordId}
             onTabChange={setSourceDocumentTab}
             onParse={runParseForSelectedRecord}
+            onRescan={() => runParseForSelectedRecord("rescan")}
             attachmentLinks={cleanAttachmentLinks}
             onClassifyAttachment={overrideCleanAttachmentClassification}
             form={cleanForm}
@@ -8488,7 +8622,7 @@ export default function InboundOrdersPage() {
               <div className="flex shrink-0 items-center gap-1">
               {reviewMode === "operational" && selectedRecord && (
                 <div className="flex items-center gap-1">
-                  <Button type="button" size="sm" className="h-8 px-3 text-xs font-semibold shadow-sm min-[1024px]:h-7 min-[1024px]:px-2" onClick={runParseForSelectedRecord} disabled={isParseInFlight || selectedRecordIsTerminal}>
+                  <Button type="button" size="sm" className="h-8 px-3 text-xs font-semibold shadow-sm min-[1024px]:h-7 min-[1024px]:px-2" onClick={() => runParseForSelectedRecord()} disabled={isParseInFlight || selectedRecordIsTerminal}>
                     {isSelectedRecordParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
                     Parse<span className="sr-only"> with AI</span>
                   </Button>
