@@ -104,6 +104,20 @@ describe("inbound email ingestion classifier", () => {
     });
   });
 
+  test("classifies Brainstorm-style purchase order filenames as PO candidates", () => {
+    const classification = classifyInboundEmailAttachment({
+      filename: "Purchase Order No 151866 Titan Merchants Sign 7_6_26.pdf",
+      mimeType: "application/pdf",
+    });
+
+    expect(classification).toMatchObject({
+      role: "po",
+      poCandidate: true,
+      artworkCandidate: false,
+      classification: expect.objectContaining({ classification: "PO" }),
+    });
+  });
+
   test("classifies PO PDFs by extracted text", () => {
     const classification = classifyInboundEmailAttachment({
       filename: "customer-document.pdf",

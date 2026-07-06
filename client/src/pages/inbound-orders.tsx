@@ -31,7 +31,17 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
@@ -116,6 +126,29 @@ type ClientInboundOrderParseResponse = Omit<InboundOrderParseResponse, "data"> &
 type InboundCustomerSearchResponse = {
   success: true;
   data: InboundMatchedCustomerSummary[];
+};
+
+type AttachmentClassificationRuleMatchType =
+  | "filename_contains"
+  | "filename_starts_with"
+  | "filename_ends_with"
+  | "filename_exact"
+  | "mime_type";
+
+type AttachmentClassificationDialogState = {
+  recordId: string;
+  link: InboundOrderArtworkLink;
+  customerId: string | null;
+  senderDomain: string | null;
+};
+
+type AttachmentClassificationUpdateResponse = {
+  success: true;
+  data: {
+    file: ClientInboundOrderFile;
+    rule: Record<string, unknown> | null;
+    warning: string | null;
+  };
 };
 
 type InboundContactSearchResponse = {
@@ -1481,7 +1514,140 @@ function attachmentClassificationLabel(classification: InboundAttachmentClassifi
   if (classification === "ARTWORK") return "Artwork";
   if (classification === "REFERENCE") return "Reference";
   if (classification === "IGNORE_INLINE") return "Junk / Signature";
+  if (classification === "OTHER") return "Ignore";
   return "Other";
+}
+
+function suggestAttachmentClassificationMatcher(link: InboundOrderArtworkLink): {
+  matchType: AttachmentClassificationRuleMatchType;
+  matchValue: string;
+} {
+  const filename = String(link.filename ?? "").trim();
+  const mimeType = String(link.mimeType ?? "").trim();
+  if (/purchase\s+order/i.test(filename)) {
+    return { matchType: "filename_contains", matchValue: "Purchase Order" };
+  }
+  if (/\b(?:po|p\.o\.)\s*(?:no|number|#)?\b/i.test(filename)) {
+    return { matchType: "filename_contains", matchValue: "PO" };
+  }
+  const imagePrefix = filename.match(/^(image\d{2,}|logo|signature|sig)/i)?.[1];
+  if (imagePrefix) {
+    return { matchType: "filename_starts_with", matchValue: imagePrefix };
+  }
+  const base = filename.replace(/\.[a-z0-9]+$/i, "").replace(/[_-]\d{4,}$/i, "").trim();
+  if (base) return { matchType: "filename_contains", matchValue: base.slice(0, 120) };
+  return { matchType: "mime_type", matchValue: mimeType || "application/pdf" };
+}
+
+function AttachmentClassificationDialog({
+  state,
+  isSubmitting,
+  onOpenChange,
+  onSubmit,
+}: {
+  state: AttachmentClassificationDialogState | null;
+  isSubmitting: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSubmit: (payload: {
+    classification: InboundAttachmentClassification;
+    rememberForCustomer: boolean;
+    matchType: AttachmentClassificationRuleMatchType;
+    matchValue: string;
+  }) => void;
+}) {
+  const suggested = state ? suggestAttachmentClassificationMatcher(state.link) : { matchType: "filename_contains" as const, matchValue: "" };
+  const [classification, setClassification] = useState<InboundAttachmentClassification>("REFERENCE");
+  const [rememberForCustomer, setRememberForCustomer] = useState(false);
+  const [matchType, setMatchType] = useState<AttachmentClassificationRuleMatchType>(suggested.matchType);
+  const [matchValue, setMatchValue] = useState(suggested.matchValue);
+
+  useEffect(() => {
+    if (!state) return;
+    const next = suggestAttachmentClassificationMatcher(state.link);
+    setClassification(classificationForLink(state.link));
+    setRememberForCustomer(false);
+    setMatchType(next.matchType);
+    setMatchValue(next.matchValue);
+  }, [state]);
+
+  return (
+    <Dialog open={Boolean(state)} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Classify attachment</DialogTitle>
+          <DialogDescription>
+            Update the current attachment now. Optionally remember this filename pattern for the matched customer.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+            <div className="font-medium text-foreground">{state?.link.filename || state?.link.fileId || "Attachment"}</div>
+            <div className="mt-1 text-xs text-muted-foreground">{state?.link.mimeType || "Unknown type"}</div>
+          </div>
+          <Label className="space-y-1 text-xs text-muted-foreground">
+            Classification
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+              value={classification}
+              onChange={(event) => setClassification(event.target.value as InboundAttachmentClassification)}
+            >
+              <option value="ARTWORK">Artwork</option>
+              <option value="PO">Purchase Order</option>
+              <option value="REFERENCE">Reference</option>
+              <option value="IGNORE_INLINE">Junk / Signature</option>
+              <option value="OTHER">Ignore</option>
+            </select>
+          </Label>
+          <label className="flex items-start gap-2 rounded-md border border-border px-3 py-2 text-sm">
+            <Checkbox
+              checked={rememberForCustomer}
+              disabled={!state?.customerId}
+              onCheckedChange={(checked) => setRememberForCustomer(checked === true)}
+            />
+            <span>
+              <span className="block font-medium text-foreground">Remember for this customer</span>
+              <span className="block text-xs text-muted-foreground">
+                {state?.customerId ? "Future attachments matching this pattern will use this classification." : "Select or match a customer before creating customer-specific rules."}
+              </span>
+            </span>
+          </label>
+          {rememberForCustomer && (
+            <div className="grid gap-3 rounded-md border border-border bg-muted/20 p-3 sm:grid-cols-[160px_1fr]">
+              <Label className="space-y-1 text-xs text-muted-foreground">
+                Matcher
+                <select
+                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                  value={matchType}
+                  onChange={(event) => setMatchType(event.target.value as AttachmentClassificationRuleMatchType)}
+                >
+                  <option value="filename_contains">Filename contains</option>
+                  <option value="filename_starts_with">Filename starts with</option>
+                  <option value="filename_ends_with">Filename ends with</option>
+                  <option value="filename_exact">Filename exact</option>
+                  <option value="mime_type">MIME type</option>
+                </select>
+              </Label>
+              <Label className="space-y-1 text-xs text-muted-foreground">
+                Match value
+                <Input value={matchValue} onChange={(event) => setMatchValue(event.target.value)} />
+              </Label>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isSubmitting}>Cancel</Button>
+          <Button
+            type="button"
+            onClick={() => onSubmit({ classification, rememberForCustomer, matchType, matchValue })}
+            disabled={isSubmitting || (rememberForCustomer && !matchValue.trim())}
+          >
+            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Save classification
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function attachmentRoleForClassification(classification: InboundAttachmentClassification): InboundOrderArtworkLink["role"] {
@@ -3693,7 +3859,7 @@ function CleanSourceDocuments({
   onParse: () => void;
   onRescan: () => void;
   attachmentLinks: InboundOrderArtworkLink[];
-  onClassifyAttachment: (link: InboundOrderArtworkLink, classification: InboundAttachmentClassification) => void;
+  onClassifyAttachment: (link: InboundOrderArtworkLink) => void;
   form: ReviewDraftFormState | null;
   activeTarget: CleanHighlightTarget | null;
   onFocusTarget: CleanFocusTargetHandler;
@@ -3713,6 +3879,8 @@ function CleanSourceDocuments({
   const poEvidenceItems = (draftPreview?.draft?.evidence?.items ?? [])
     .filter((item) => item.type === "PDF_ATTACHMENT" && (item.documentType === "purchase_order" || item.poSummary));
   const firstLine = form?.reviewedLineItemsJson[0] ?? null;
+  const linkByFileId = new Map(attachmentLinks.map((link) => [link.fileId, link]));
+  const linkForFile = (file: ClientInboundOrderFile) => linkByFileId.get(file.id) ?? artworkLinkFromInboundFile(file, "unresolved");
 
   return (
     <section className="flex min-h-0 min-w-0 flex-[1.05] flex-col overflow-hidden border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-source-documents">
@@ -3807,6 +3975,20 @@ function CleanSourceDocuments({
                       data-clean-source-target={file.role === "po" ? "po" : "artwork"}
                     >
                       <SourceEvidenceFileCard recordId={record.id} file={file} />
+                      <div className="mt-1 flex justify-end">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onClassifyAttachment(linkForFile(file));
+                          }}
+                        >
+                          Classify
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -3844,6 +4026,20 @@ function CleanSourceDocuments({
                 {file.role !== "po" && (
                   <div className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-200">Likely PO / Reference PDF</div>
                 )}
+                <div className="mt-1 flex justify-end">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onClassifyAttachment(linkForFile(file));
+                    }}
+                  >
+                    Classify
+                  </Button>
+                </div>
               </div>
             ))}
             {poEvidenceItems.length > 0 && (
@@ -3873,28 +4069,30 @@ function CleanSourceDocuments({
                     <div className="truncate text-sm font-semibold text-slate-100">{link.filename || link.fileId}</div>
                     <div className="mt-1 text-xs text-slate-500">{describeArtworkLink(link)}</div>
                   </button>
-                  <select
-                    className="mt-2 h-8 w-full rounded border border-slate-700 bg-slate-900 px-2 text-xs text-slate-100"
-                    aria-label={`Classify ${link.filename || link.fileId}`}
-                    value={classificationForLink(link)}
-                    onChange={(event) => onClassifyAttachment(link, event.target.value as InboundAttachmentClassification)}
-                  >
-                    <option value="ARTWORK">Artwork</option>
-                    <option value="PO">Purchase Order</option>
-                    <option value="REFERENCE">Reference</option>
-                    <option value="IGNORE_INLINE">Junk / Signature</option>
-                  </select>
+                  <Button type="button" variant="outline" size="sm" className="mt-2 h-8 w-full text-xs" onClick={() => onClassifyAttachment(link)}>
+                    Classify as {attachmentClassificationLabel(classificationForLink(link))}
+                  </Button>
                 </div>
               ))}
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded border border-slate-800 bg-slate-900 p-3">
                 <div className="mb-2 text-sm font-bold text-slate-100">Reference</div>
-                {referenceLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : referenceLinks.map((link) => <div key={artworkLinkKey(link)} className="truncate text-xs text-slate-300">{link.filename || link.fileId}</div>)}
+                {referenceLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : referenceLinks.map((link) => (
+                  <div key={artworkLinkKey(link)} className="flex items-center justify-between gap-2 text-xs text-slate-300">
+                    <span className="truncate">{link.filename || link.fileId}</span>
+                    <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onClassifyAttachment(link)}>Classify</Button>
+                  </div>
+                ))}
               </div>
               <div className="rounded border border-slate-800 bg-slate-900 p-3">
                 <div className="mb-2 text-sm font-bold text-slate-100">Junk / Signature</div>
-                {signatureLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : signatureLinks.map((link) => <div key={artworkLinkKey(link)} className="truncate text-xs text-slate-500">{link.filename || link.fileId}</div>)}
+                {signatureLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : signatureLinks.map((link) => (
+                  <div key={artworkLinkKey(link)} className="flex items-center justify-between gap-2 text-xs text-slate-500">
+                    <span className="truncate">{link.filename || link.fileId}</span>
+                    <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onClassifyAttachment(link)}>Classify</Button>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -7275,6 +7473,7 @@ export default function InboundOrdersPage() {
   const [reviewDraftDirtyByRecordId, setReviewDraftDirtyByRecordId] = useState<Record<string, boolean>>({});
   const [cleanForm, setCleanForm] = useState<ReviewDraftFormState | null>(null);
   const [cleanActiveTarget, setCleanActiveTarget] = useState<CleanHighlightTarget | null>(null);
+  const [classificationDialog, setClassificationDialog] = useState<AttachmentClassificationDialogState | null>(null);
   const [reviewMode, setReviewMode] = useState<InboundReviewWorkspaceMode>(() => {
     if (typeof window === "undefined") return "operational";
     const storedMode = window.localStorage.getItem(workspaceLayoutStorageKeys.reviewMode);
@@ -7768,6 +7967,49 @@ export default function InboundOrdersPage() {
     },
   });
 
+  const classifyAttachmentMutation = useMutation({
+    mutationFn: ({ recordId, fileId, payload }: {
+      recordId: string;
+      fileId: string;
+      payload: {
+        classification: InboundAttachmentClassification;
+        rememberForCustomer: boolean;
+        rule: {
+          customerId: string | null;
+          senderDomain: string | null;
+          matchType: AttachmentClassificationRuleMatchType;
+          matchValue: string;
+        } | null;
+      };
+    }) => postJson<AttachmentClassificationUpdateResponse>(
+      `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(fileId)}/classification`,
+      payload,
+    ),
+    onSuccess: (response, variables) => {
+      queryClient.setQueryData<ClientInboundOrderDetailResponse | undefined>(["/api/inbound-orders", variables.recordId], (current) => {
+        if (!current?.data) return current;
+        return {
+          ...current,
+          data: {
+            ...current.data,
+            files: current.data.files.map((file) => file.id === response.data.file.id ? response.data.file : file),
+          },
+        };
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId, "draft-preview"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId, "review-draft"] });
+      queryClient.invalidateQueries({ predicate: isInboundOrderListQuery });
+      toast({
+        title: "Attachment classified",
+        description: response.data.warning ?? "The attachment classification was updated.",
+        variant: response.data.warning ? "default" : undefined,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Classification failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   const convertToOrderMutation = useMutation({
     mutationFn: (recordId: string) => (
       postJson<InboundOrderConvertToOrderResponse>(`/api/inbound-orders/${recordId}/convert-to-order`, {})
@@ -7992,6 +8234,48 @@ export default function InboundOrdersPage() {
       reviewedArtworkJson: {
         ...cleanForm.reviewedArtworkJson,
         unassignedAttachments: upsertLink(cleanForm.reviewedArtworkJson.unassignedAttachments),
+      },
+    });
+  };
+
+  const openCleanAttachmentClassificationDialog = (link: InboundOrderArtworkLink) => {
+    if (!selectedRecord) return;
+    const evidence = getManualInboundEvidence(selectedRecord);
+    setClassificationDialog({
+      recordId: selectedRecord.id,
+      link,
+      customerId: cleanForm?.reviewedCustomerJson.selectedCustomerId ?? selectedRecord.matchedCustomerId ?? null,
+      senderDomain: senderDomainFromEmail(evidence.senderEmail),
+    });
+  };
+
+  const submitCleanAttachmentClassification = (payload: {
+    classification: InboundAttachmentClassification;
+    rememberForCustomer: boolean;
+    matchType: AttachmentClassificationRuleMatchType;
+    matchValue: string;
+  }) => {
+    if (!classificationDialog) return;
+    const dialog = classificationDialog;
+    classifyAttachmentMutation.mutate({
+      recordId: dialog.recordId,
+      fileId: dialog.link.fileId,
+      payload: {
+        classification: payload.classification,
+        rememberForCustomer: payload.rememberForCustomer,
+        rule: payload.rememberForCustomer
+          ? {
+              customerId: dialog.customerId,
+              senderDomain: dialog.senderDomain,
+              matchType: payload.matchType,
+              matchValue: payload.matchValue,
+            }
+          : null,
+      },
+    }, {
+      onSuccess: () => {
+        overrideCleanAttachmentClassification(dialog.link, payload.classification);
+        setClassificationDialog(null);
       },
     });
   };
@@ -8326,7 +8610,7 @@ export default function InboundOrdersPage() {
             onParse={runParseForSelectedRecord}
             onRescan={() => runParseForSelectedRecord("rescan")}
             attachmentLinks={cleanAttachmentLinks}
-            onClassifyAttachment={overrideCleanAttachmentClassification}
+            onClassifyAttachment={openCleanAttachmentClassificationDialog}
             form={cleanForm}
             activeTarget={cleanActiveTarget}
             onFocusTarget={focusCleanTarget}
@@ -8367,6 +8651,14 @@ export default function InboundOrdersPage() {
             updateForm={updateCleanForm}
             activeTarget={cleanActiveTarget}
             onFocusTarget={focusCleanTarget}
+          />
+          <AttachmentClassificationDialog
+            state={classificationDialog}
+            isSubmitting={classifyAttachmentMutation.isPending}
+            onOpenChange={(open) => {
+              if (!open && !classifyAttachmentMutation.isPending) setClassificationDialog(null);
+            }}
+            onSubmit={submitCleanAttachmentClassification}
           />
         </div>
       ) : (

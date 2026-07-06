@@ -30,6 +30,8 @@ import {
   normalizeInboundOrderStatusForStorage,
 } from "@shared/inboundOrdersApi";
 import type { InboundEmailIgnoreRule, InboundEmailTrustRule } from "@shared/schema";
+import { inboundAttachmentClassificationRuleMatchTypeSchema } from "@shared/schema";
+import { inboundAttachmentClassificationValues } from "@shared/inboundAttachmentClassification";
 import {
   inboundEmailMailboxSettingsSchema,
   inboundEmailMailboxViewSchema,
@@ -191,6 +193,17 @@ const inboundEmailTrustRuleParamsSchema = z.object({
 const inboundAttachmentParamsSchema = z.object({
   id: z.string().trim().min(1),
   fileId: z.string().trim().min(1),
+});
+
+const inboundAttachmentClassificationUpdateSchema = z.object({
+  classification: z.enum(inboundAttachmentClassificationValues),
+  rememberForCustomer: z.boolean().optional().default(false),
+  rule: z.object({
+    customerId: z.string().trim().min(1).optional().nullable(),
+    senderDomain: z.string().trim().min(1).max(255).optional().nullable(),
+    matchType: inboundAttachmentClassificationRuleMatchTypeSchema,
+    matchValue: z.string().trim().min(1).max(500),
+  }).optional().nullable(),
 });
 
 const inboundEmailReprocessActionSchema = z.object({
@@ -1128,6 +1141,40 @@ export function registerInboundOrderRoutes(
       }
       console.error("Error applying inbound attachment trust action:", error);
       res.status(500).json({ success: false, message: "Failed to apply inbound attachment trust action" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/files/:fileId/classification", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: "User ID not found" });
+
+      const params = inboundAttachmentParamsSchema.parse(req.params);
+      const input = inboundAttachmentClassificationUpdateSchema.parse(req.body ?? {});
+      const result = await service.updateAttachmentClassification({
+        organizationId,
+        actorUserId,
+        inboundRecordId: params.id,
+        fileId: params.fileId,
+        classification: input.classification,
+        rememberForCustomer: input.rememberForCustomer,
+        rule: input.rule ?? null,
+      });
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ success: false, message: error.message });
+      }
+      console.error("Error updating inbound attachment classification:", error);
+      res.status(500).json({ success: false, message: "Failed to update inbound attachment classification" });
     }
   });
 

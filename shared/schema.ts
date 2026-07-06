@@ -7327,6 +7327,22 @@ export const inboundEmailTrustRuleTypeValues = [
   "customer_domain",
 ] as const;
 
+export const inboundAttachmentClassificationRuleMatchTypeValues = [
+  "filename_contains",
+  "filename_starts_with",
+  "filename_ends_with",
+  "filename_exact",
+  "mime_type",
+] as const;
+
+export const inboundAttachmentClassificationRuleClassificationValues = [
+  "artwork",
+  "purchase_order",
+  "reference",
+  "junk_signature",
+  "ignore",
+] as const;
+
 export const inboundOrderSourceTypeSchema = z.enum(inboundOrderSourceTypeValues);
 export const inboundOrderSourceStatusSchema = z.enum(inboundOrderSourceStatusValues);
 export const inboundOrderSourceTrustLevelSchema = z.enum(inboundOrderSourceTrustLevelValues);
@@ -7342,6 +7358,8 @@ export const inboundOrderReviewSnapshotTypeSchema = z.enum(inboundOrderReviewSna
 export const inboundOrderParseAttemptStatusSchema = z.enum(inboundOrderParseAttemptStatusValues);
 export const inboundEmailIgnoreRuleTypeSchema = z.enum(inboundEmailIgnoreRuleTypeValues);
 export const inboundEmailTrustRuleTypeSchema = z.enum(inboundEmailTrustRuleTypeValues);
+export const inboundAttachmentClassificationRuleMatchTypeSchema = z.enum(inboundAttachmentClassificationRuleMatchTypeValues);
+export const inboundAttachmentClassificationRuleClassificationSchema = z.enum(inboundAttachmentClassificationRuleClassificationValues);
 
 export type InboundOrderSourceType = (typeof inboundOrderSourceTypeValues)[number];
 export type InboundOrderSourceStatus = (typeof inboundOrderSourceStatusValues)[number];
@@ -7358,6 +7376,8 @@ export type InboundOrderReviewSnapshotType = (typeof inboundOrderReviewSnapshotT
 export type InboundOrderParseAttemptStatus = (typeof inboundOrderParseAttemptStatusValues)[number];
 export type InboundEmailIgnoreRuleType = (typeof inboundEmailIgnoreRuleTypeValues)[number];
 export type InboundEmailTrustRuleType = (typeof inboundEmailTrustRuleTypeValues)[number];
+export type InboundAttachmentClassificationRuleMatchType = (typeof inboundAttachmentClassificationRuleMatchTypeValues)[number];
+export type InboundAttachmentClassificationRuleClassification = (typeof inboundAttachmentClassificationRuleClassificationValues)[number];
 
 export const inboundOrderSourceTypeEnum = pgEnum("inbound_order_source_type", inboundOrderSourceTypeValues);
 export const inboundOrderSourceStatusEnum = pgEnum("inbound_order_source_status", inboundOrderSourceStatusValues);
@@ -7372,6 +7392,14 @@ export const inboundOrderDecisionFlagStatusEnum = pgEnum("inbound_order_decision
 export const inboundOrderEventActorTypeEnum = pgEnum("inbound_order_event_actor_type", inboundOrderEventActorTypeValues);
 export const inboundOrderReviewSnapshotTypeEnum = pgEnum("inbound_order_review_snapshot_type", inboundOrderReviewSnapshotTypeValues);
 export const inboundOrderParseAttemptStatusEnum = pgEnum("inbound_order_parse_attempt_status", inboundOrderParseAttemptStatusValues);
+export const inboundAttachmentClassificationRuleMatchTypeEnum = pgEnum(
+  "inbound_attachment_classification_rule_match_type",
+  inboundAttachmentClassificationRuleMatchTypeValues,
+);
+export const inboundAttachmentClassificationRuleClassificationEnum = pgEnum(
+  "inbound_attachment_classification_rule_classification",
+  inboundAttachmentClassificationRuleClassificationValues,
+);
 
 export const inboundOrderSources = pgTable("inbound_order_sources", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -7451,6 +7479,27 @@ export const inboundEmailTrustRules = pgTable("inbound_email_trust_rules", {
   index("inbound_email_trust_rules_org_enabled_idx").on(table.organizationId, table.enabled),
   index("inbound_email_trust_rules_org_type_value_idx").on(table.organizationId, table.ruleType, table.ruleValue),
   uniqueIndex("inbound_email_trust_rules_org_type_value_uidx").on(table.organizationId, table.ruleType, table.ruleValue),
+]);
+
+export const inboundAttachmentClassificationRules = pgTable("inbound_attachment_classification_rules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  customerId: varchar("customer_id").references(() => customers.id, { onDelete: "cascade" }),
+  senderDomain: varchar("sender_domain", { length: 255 }),
+  matchType: inboundAttachmentClassificationRuleMatchTypeEnum("match_type").notNull(),
+  matchValue: text("match_value").notNull(),
+  classification: inboundAttachmentClassificationRuleClassificationEnum("classification").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  matchCount: integer("match_count").notNull().default(0),
+  lastMatchedAt: timestamp("last_matched_at", { withTimezone: true }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("inbound_attachment_class_rules_org_enabled_idx").on(table.organizationId, table.enabled),
+  index("inbound_attachment_class_rules_org_customer_idx").on(table.organizationId, table.customerId, table.enabled),
+  index("inbound_attachment_class_rules_org_sender_domain_idx").on(table.organizationId, table.senderDomain, table.enabled),
+  index("inbound_attachment_class_rules_org_match_idx").on(table.organizationId, table.matchType, table.matchValue),
 ]);
 
 export const inboundOrderRecords = pgTable("inbound_order_records", {
@@ -7834,6 +7883,26 @@ export const updateInboundEmailTrustRuleSchema = insertInboundEmailTrustRuleSche
   id: z.string(),
 });
 
+export const insertInboundAttachmentClassificationRuleSchema = createInsertSchema(inboundAttachmentClassificationRules).omit({
+  id: true,
+  organizationId: true,
+  matchCount: true,
+  lastMatchedAt: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  enabled: z.boolean().default(true),
+  customerId: z.string().trim().min(1).optional().nullable(),
+  senderDomain: z.string().trim().min(1).max(255).optional().nullable(),
+  matchType: inboundAttachmentClassificationRuleMatchTypeSchema,
+  matchValue: z.string().trim().min(1).max(500),
+  classification: inboundAttachmentClassificationRuleClassificationSchema,
+});
+
+export const updateInboundAttachmentClassificationRuleSchema = insertInboundAttachmentClassificationRuleSchema.partial().extend({
+  id: z.string(),
+});
+
 export const insertInboundOrderRecordSchema = createInsertSchema(inboundOrderRecords).omit({
   id: true,
   organizationId: true,
@@ -7969,6 +8038,11 @@ export type SelectInboundEmailTrustRule = typeof inboundEmailTrustRules.$inferSe
 export type InsertInboundEmailTrustRule = z.infer<typeof insertInboundEmailTrustRuleSchema>;
 export type UpdateInboundEmailTrustRule = z.infer<typeof updateInboundEmailTrustRuleSchema>;
 export type InboundEmailTrustRule = SelectInboundEmailTrustRule;
+
+export type SelectInboundAttachmentClassificationRule = typeof inboundAttachmentClassificationRules.$inferSelect;
+export type InsertInboundAttachmentClassificationRule = z.infer<typeof insertInboundAttachmentClassificationRuleSchema>;
+export type UpdateInboundAttachmentClassificationRule = z.infer<typeof updateInboundAttachmentClassificationRuleSchema>;
+export type InboundAttachmentClassificationRule = SelectInboundAttachmentClassificationRule;
 
 export type SelectInboundOrderRecord = typeof inboundOrderRecords.$inferSelect;
 export type InsertInboundOrderRecord = z.infer<typeof insertInboundOrderRecordSchema>;

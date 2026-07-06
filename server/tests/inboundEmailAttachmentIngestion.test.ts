@@ -132,6 +132,9 @@ function serviceHarness() {
     })),
     senderEmailMatchesCustomerContact: jest.fn(async () => false),
     senderDomainMatchesCustomerDomain: jest.fn(async () => false),
+    resolveCustomerIdForSender: jest.fn<(...args: any[]) => Promise<string | null>>(async () => null),
+    listEnabledAttachmentClassificationRules: jest.fn<(...args: any[]) => Promise<any[]>>(async () => []),
+    recordAttachmentClassificationRuleMatch: jest.fn(async () => undefined),
     findFileByProviderAttachment: jest.fn<(...args: any[]) => Promise<any>>(async () => null),
     getRecord: jest.fn(async () => record),
     getFile: jest.fn(async (_organizationId: string, _inboundRecordId: string, fileId: string) => createdFiles.find((file) => file.id === fileId) ?? null),
@@ -413,6 +416,64 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       artworkCandidate: false,
     }));
     expect(events[0]).toEqual(expect.objectContaining({ eventType: "email.attachment_stored" }));
+  });
+
+  test("applies customer attachment classification rules to future inbound attachments", async () => {
+    const { service, repo, createdFiles, events } = serviceHarness();
+    repo.resolveCustomerIdForSender.mockResolvedValue("customer_1");
+    repo.listEnabledAttachmentClassificationRules.mockResolvedValue([{
+      id: "rule_1",
+      organizationId: "org_1",
+      customerId: "customer_1",
+      senderDomain: null,
+      matchType: "filename_contains",
+      matchValue: "Vendor Order",
+      classification: "purchase_order",
+      enabled: true,
+      matchCount: 0,
+      lastMatchedAt: null,
+      createdByUserId: "user_1",
+      createdAt: new Date("2026-07-06T12:00:00.000Z"),
+      updatedAt: new Date("2026-07-06T12:00:00.000Z"),
+    }]);
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => []),
+      downloadAttachment: jest.fn(async () => ({
+        buffer: Buffer.from("%PDF sample"),
+        mimeType: "application/pdf",
+        sizeBytes: 11,
+      })),
+    };
+
+    await (service as any).ingestAttachments({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      mailbox,
+      message: message({
+        senderEmail: "buyer@example.com",
+        attachments: [{
+          filename: "Vendor Order 151866.pdf",
+          mimeType: "application/pdf",
+          size: 11,
+          attachmentId: "att_rule_1",
+          contentDisposition: "attachment",
+        }],
+      }),
+      record,
+      adapter,
+      skippedReason: null,
+    });
+
+    expect(repo.recordAttachmentClassificationRuleMatch).toHaveBeenCalledWith("rule_1");
+    expect(createdFiles[0]).toEqual(expect.objectContaining({ role: "po" }));
+    expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+      poCandidate: true,
+      artworkCandidate: false,
+      attachmentClassificationRuleId: "rule_1",
+      attachmentClassificationRuleMatched: true,
+      attachmentClassification: expect.objectContaining({ classification: "PO" }),
+    }));
+    expect(events.some((event) => event.eventType === "attachment.classification_rule.matched")).toBe(true);
   });
 
   test("pullLatestEmails reaches attachment ingestion for a fresh Gmail message with candidates", async () => {
