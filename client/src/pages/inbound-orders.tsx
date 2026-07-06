@@ -891,11 +891,14 @@ function SourceEvidenceFileCard({
   recordId,
   file,
   onClassify,
+  useInAppViewer = false,
 }: {
   recordId: string;
   file: ClientInboundOrderFile;
   onClassify?: () => void;
+  useInAppViewer?: boolean;
 }) {
+  const downloadUrl = inboundFileDownloadUrl(recordId, file);
   return (
     <div
       className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2 overflow-hidden rounded-md border border-border bg-background px-3 py-2"
@@ -912,7 +915,24 @@ function SourceEvidenceFileCard({
           {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
         </div>
       </div>
-      <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} />
+      {useInAppViewer ? (
+        <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} />
+      ) : downloadUrl ? (
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+          <Button asChild size="sm" variant="ghost" className="h-8 px-2">
+            <a href={downloadUrl} target="_blank" rel="noreferrer">
+              <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+              Open
+            </a>
+          </Button>
+          <Button asChild size="sm" variant="ghost" className="h-8 px-2">
+            <a href={downloadUrl} download>
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              Download
+            </a>
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -931,16 +951,60 @@ function CleanAttachmentFileActions({
   const { toast } = useToast();
   const downloadUrl = inboundFileDownloadUrl(recordId, file);
   const filename = file.sourceFilename || "attachment";
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerLoading, setViewerLoading] = useState(false);
+  const [viewerObjectUrl, setViewerObjectUrl] = useState<string | null>(null);
+  const [viewerMimeType, setViewerMimeType] = useState<string | null>(null);
+  const [viewerError, setViewerError] = useState<string | null>(null);
+  const isPdfPreview = viewerMimeType === "application/pdf" || filename.toLowerCase().endsWith(".pdf");
+  const isImagePreview = Boolean(viewerMimeType?.startsWith("image/"));
+
+  const fetchAttachmentBlob = async () => {
+    if (!downloadUrl) throw new Error("This attachment has no downloadable file.");
+    const response = await apiFetch(downloadUrl);
+    if (!response.ok) {
+      const message = await response.text().catch(() => "");
+      throw new Error(message || `File access failed (${response.status})`);
+    }
+    const blob = await response.blob();
+    return {
+      blob,
+      mimeType: response.headers.get("content-type") || blob.type || file.mimeType || null,
+    };
+  };
+
+  useEffect(() => () => {
+    if (viewerObjectUrl) URL.revokeObjectURL(viewerObjectUrl);
+  }, [viewerObjectUrl]);
+
+  const handleOpen = async (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (!downloadUrl) return;
+    setViewerOpen(true);
+    setViewerLoading(true);
+    setViewerError(null);
+    try {
+      const { blob, mimeType } = await fetchAttachmentBlob();
+      const objectUrl = URL.createObjectURL(blob);
+      setViewerObjectUrl((previous) => {
+        if (previous) URL.revokeObjectURL(previous);
+        return objectUrl;
+      });
+      setViewerMimeType(mimeType);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The file could not be opened.";
+      setViewerError(message);
+      toast({ title: "Attachment open failed", description: message, variant: "destructive" });
+    } finally {
+      setViewerLoading(false);
+    }
+  };
+
   const handleDownload = async (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     if (!downloadUrl) return;
     try {
-      const response = await fetch(downloadUrl, { credentials: "include" });
-      if (!response.ok) {
-        const message = await response.text().catch(() => "");
-        throw new Error(message || `Download failed (${response.status})`);
-      }
-      const blob = await response.blob();
+      const { blob } = await fetchAttachmentBlob();
       const blobUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = blobUrl;
@@ -961,40 +1025,86 @@ function CleanAttachmentFileActions({
   };
 
   return (
-    <div className={cn("flex shrink-0 flex-wrap items-center justify-end gap-1", className)} data-testid="clean-attachment-actions">
-      {downloadUrl ? (
-        <>
-          <Button asChild size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={(event) => event.stopPropagation()}>
-            <a href={downloadUrl} target="_blank" rel="noreferrer" aria-label={`Open ${filename}`}>
+    <>
+      <div className={cn("flex shrink-0 flex-wrap items-center justify-end gap-1", className)} data-testid="clean-attachment-actions">
+        {downloadUrl ? (
+          <>
+            <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleOpen} aria-label={`Open ${filename}`}>
               <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
               Open
-            </a>
+            </Button>
+            <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleDownload} aria-label={`Download ${filename}`}>
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              Download
+            </Button>
+          </>
+        ) : (
+          <span className="rounded border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground" title={`${filename} is ${inboundFileUnavailableLabel(file).toLowerCase()} and has no available file action.`}>
+            {inboundFileUnavailableLabel(file)}
+          </span>
+        )}
+        {onClassify && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 px-2 text-xs"
+            onClick={(event) => {
+              event.stopPropagation();
+              onClassify();
+            }}
+          >
+            Classify
           </Button>
-          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleDownload} aria-label={`Download ${filename}`}>
-            <Download className="mr-1.5 h-3.5 w-3.5" />
-            Download
-          </Button>
-        </>
-      ) : (
-        <span className="rounded border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground" title={`${filename} is ${inboundFileUnavailableLabel(file).toLowerCase()} and has no available file action.`}>
-          {inboundFileUnavailableLabel(file)}
-        </span>
-      )}
-      {onClassify && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-8 px-2 text-xs"
-          onClick={(event) => {
-            event.stopPropagation();
-            onClassify();
-          }}
-        >
-          Classify
-        </Button>
-      )}
-    </div>
+        )}
+      </div>
+      <Dialog open={viewerOpen} onOpenChange={(open) => {
+        setViewerOpen(open);
+        if (!open) {
+          setViewerError(null);
+          setViewerLoading(false);
+        }
+      }}>
+        <DialogContent className="max-w-5xl">
+          <DialogHeader>
+            <DialogTitle>Attachment Viewer</DialogTitle>
+            <DialogDescription>{filename}</DialogDescription>
+          </DialogHeader>
+          <div className="min-h-[420px] rounded-md border border-border bg-muted/20 p-3" data-testid="clean-attachment-viewer">
+            {viewerLoading ? (
+              <div className="flex h-[420px] items-center justify-center text-sm text-muted-foreground">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Loading attachment...
+              </div>
+            ) : viewerError ? (
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+                {viewerError}
+              </div>
+            ) : viewerObjectUrl && isPdfPreview ? (
+              <iframe title={`Preview ${filename}`} src={viewerObjectUrl} className="h-[70vh] w-full rounded bg-white" data-testid="clean-attachment-pdf-viewer" />
+            ) : viewerObjectUrl && isImagePreview ? (
+              <img src={viewerObjectUrl} alt={filename} className="max-h-[70vh] w-full rounded object-contain" data-testid="clean-attachment-image-viewer" />
+            ) : (
+              <div className="flex h-[420px] flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+                <FileText className="h-8 w-8" />
+                <div className="font-medium text-foreground">Preview unavailable</div>
+                <div>{file.mimeType || viewerMimeType || "Unknown file type"}</div>
+                <div>Use Download to inspect this attachment.</div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setViewerOpen(false)}>Close</Button>
+            {downloadUrl && (
+              <Button type="button" onClick={handleDownload}>
+                <Download className="mr-2 h-4 w-4" />
+                Download
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -3007,13 +3117,16 @@ function InboundAttachmentCard({
   compact = false,
   minimal = false,
   onClassify,
+  useInAppViewer = false,
 }: {
   recordId: string;
   file: ClientInboundOrderFile;
   compact?: boolean;
   minimal?: boolean;
   onClassify?: () => void;
+  useInAppViewer?: boolean;
 }) {
+  const downloadUrl = inboundFileDownloadUrl(recordId, file);
   return (
     <div className={cn(
       "flex w-full min-w-0 flex-wrap items-center justify-between gap-3 overflow-hidden rounded-md border border-border bg-background px-3 py-2",
@@ -3035,7 +3148,24 @@ function InboundAttachmentCard({
         )}
         {!minimal && <AttachmentSafetyDetails recordId={recordId} file={file} />}
       </div>
-      <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} />
+      {useInAppViewer ? (
+        <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} />
+      ) : downloadUrl ? (
+        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+          <Button asChild size="sm" variant="outline">
+            <a href={downloadUrl} target="_blank" rel="noreferrer">
+              <ExternalLink className="mr-2 h-4 w-4" />
+              Open
+            </a>
+          </Button>
+          <Button asChild size="sm" variant="ghost">
+            <a href={downloadUrl} download>
+              <Download className="mr-2 h-4 w-4" />
+              Download
+            </a>
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -4073,7 +4203,7 @@ function CleanSourceDocuments({
                       }}
                       data-clean-source-target={file.role === "po" ? "po" : "artwork"}
                     >
-                      <SourceEvidenceFileCard recordId={record.id} file={file} onClassify={() => onClassifyAttachment(linkForFile(file))} />
+                      <SourceEvidenceFileCard recordId={record.id} file={file} onClassify={() => onClassifyAttachment(linkForFile(file))} useInAppViewer />
                     </div>
                   ))}
                 </div>
@@ -4107,7 +4237,7 @@ function CleanSourceDocuments({
                 }}
                 data-clean-source-target="po"
               >
-                <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(linkForFile(file))} />
+                <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(linkForFile(file))} useInAppViewer />
                 {file.role !== "po" && (
                   <div className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-200">Likely PO / Reference PDF</div>
                 )}
@@ -4132,7 +4262,7 @@ function CleanSourceDocuments({
                   {(() => {
                     const file = fileForLink(link);
                     return file ? (
-                      <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} />
+                      <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer />
                     ) : (
                       <>
                         <button
@@ -4166,7 +4296,7 @@ function CleanSourceDocuments({
                   return (
                     <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
                       {file ? (
-                        <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} />
+                        <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer />
                       ) : (
                         <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-slate-300">
                           <span className="min-w-0 truncate">{link.filename || link.fileId}</span>
@@ -4187,7 +4317,7 @@ function CleanSourceDocuments({
                   return (
                     <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
                       {file ? (
-                        <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} />
+                        <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer />
                       ) : (
                         <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-slate-500">
                           <span className="min-w-0 truncate">{link.filename || link.fileId}</span>

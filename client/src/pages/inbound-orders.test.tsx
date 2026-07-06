@@ -87,6 +87,17 @@ function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 500) {
   } as any;
 }
 
+function blobResponse(mimeType = "application/pdf", body = "file-bytes", ok = true, status = ok ? 200 : 500) {
+  const blob = new Blob([body], { type: mimeType });
+  return {
+    ok,
+    status,
+    headers: new Headers({ "content-type": mimeType }),
+    blob: async () => blob,
+    text: async () => ok ? body : "Unauthorized",
+  } as any;
+}
+
 function record(overrides: Record<string, any> = {}) {
   return {
     id: "inbound_1",
@@ -567,12 +578,14 @@ function setupParsedInboundReview({
   review = reviewDraft(parsed),
   detailOverrides = {},
   productSearchResults = [],
+  downloadFailures = {},
 }: {
   row?: any;
   parsed?: any;
   review?: any;
   detailOverrides?: Record<string, any>;
   productSearchResults?: any[];
+  downloadFailures?: Record<string, { status?: number; message?: string }>;
 } = {}) {
   const attempt = parseAttempt({ parsedDraft: parsed, confidence: 82, warnings: parsed.globalWarnings });
   let savedBody: any = null;
@@ -624,6 +637,16 @@ function setupParsedInboundReview({
         },
       });
     }
+    if (path.includes(`/api/inbound-orders/${row.id}/files/`) && path.endsWith("/download")) {
+      const fileId = path.split("/files/")[1]?.split("/download")[0];
+      const existingFile = (detailOverrides.files ?? []).find((file: any) => file.id === fileId);
+      if (!existingFile?.fileRecordId) return blobResponse("application/json", "Unauthorized", false, 401);
+      if (downloadFailures[fileId]) {
+        const failure = downloadFailures[fileId];
+        return blobResponse("application/json", failure.message ?? "Unauthorized", false, failure.status ?? 401);
+      }
+      return blobResponse(existingFile.mimeType ?? "application/octet-stream");
+    }
     if (path === "/api/inbound-orders/customer-search?limit=20") return jsonResponse({ success: true, data: [] });
     if (path.startsWith("/api/inbound-orders/product-search?")) return jsonResponse({ success: true, data: productSearchResults });
     if (path.startsWith("/api/inbound-orders/contact-search?")) return jsonResponse({ success: true, data: [] });
@@ -648,6 +671,9 @@ beforeEach(() => {
   root = createRoot(container);
   apiFetchMock.mockReset();
   mockToast.mockReset();
+  URL.createObjectURL = jest.fn((blob: Blob) => `blob:${blob.type || "attachment"}`) as any;
+  URL.revokeObjectURL = jest.fn() as any;
+  HTMLAnchorElement.prototype.click = jest.fn();
   window.localStorage.clear();
 });
 
@@ -1350,6 +1376,18 @@ describe("InboundOrdersPage", () => {
     cleanReview.reviewedLineItemsJson[0].selectedProductSource = "source_evidence";
     cleanReview.reviewedLineItemsJson[0].productUnresolved = true;
     cleanReview.reviewedLineItemsJson[0].optionSelectionsJson = null;
+    cleanReview.reviewedArtworkJson.unassignedAttachments.push({
+      fileId: "file_art_image",
+      fileRecordId: "file_record_art_image",
+      filename: "magnet-proof.png",
+      role: "artwork",
+      source: "staff_selected",
+      confidence: 96,
+      mimeType: "image/png",
+      sizeBytes: 123_400,
+      classification: "ARTWORK",
+      classificationSource: "manual_override",
+    });
     const { getSavedBody, getClassificationBody } = setupParsedInboundReview({
       row,
       parsed: cleanParsed,
@@ -1373,6 +1411,17 @@ describe("InboundOrdersPage", () => {
           mimeType: "application/pdf",
           sizeBytes: 509_800,
           providerAttachmentId: "att_art",
+          reviewNotes: null,
+        }, {
+          id: "file_art_image",
+          inboundRecordId: row.id,
+          fileRecordId: "file_record_art_image",
+          role: "artwork",
+          status: "uploaded",
+          sourceFilename: "magnet-proof.png",
+          mimeType: "image/png",
+          sizeBytes: 123_400,
+          providerAttachmentId: "att_art_image",
           reviewNotes: null,
         }, {
           id: "file_po_reference",
@@ -1447,10 +1496,30 @@ describe("InboundOrdersPage", () => {
     expect(evidenceCards.length).toBeGreaterThan(0);
     expect(evidenceCards[0].className).toContain("min-w-0");
     expect(evidenceCards[0].className).toContain("overflow-hidden");
-    expect(container.querySelector("a[aria-label='Open Lindsay X2.pdf']")).toBeTruthy();
+    expect(container.querySelector("a[aria-label='Open Lindsay X2.pdf']")).toBeNull();
+    const emailOpenButton = Array.from(container.querySelectorAll("button")).find((button) => button.getAttribute("aria-label") === "Open Lindsay X2.pdf") as HTMLButtonElement;
+    expect(emailOpenButton).toBeTruthy();
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Download Lindsay X2.pdf")).toBe(true);
     expect(container.querySelector("a[aria-label='Open Metadata Only Customer Supplied Reference.pdf']")).toBeNull();
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Download Metadata Only Customer Supplied Reference.pdf")).toBe(false);
+    await act(async () => {
+      Simulate.click(emailOpenButton);
+    });
+    await waitForText("Attachment Viewer");
+    expect(container.querySelector("[data-testid='clean-attachment-pdf-viewer']")).toBeTruthy();
+    expect(apiFetchMock.mock.calls.some(([url]) => String(url) === "/api/inbound-orders/inbound_1/files/file_art/download")).toBe(true);
+    const closeViewerButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Close") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(closeViewerButton);
+    });
+    const downloadCallsBefore = apiFetchMock.mock.calls.filter(([url]) => String(url) === "/api/inbound-orders/inbound_1/files/file_art/download").length;
+    const emailDownloadButton = Array.from(container.querySelectorAll("button")).find((button) => button.getAttribute("aria-label") === "Download Lindsay X2.pdf") as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(emailDownloadButton);
+    });
+    await waitForCondition(() => (
+      apiFetchMock.mock.calls.filter(([url]) => String(url) === "/api/inbound-orders/inbound_1/files/file_art/download").length > downloadCallsBefore
+    ), "download uses authenticated file fetch");
     expect(container.textContent).toContain("Select product from catalog");
     expect(container.textContent).toContain("AI detected:");
     expect(container.querySelector("[data-testid='clean-quantity-workflow']")).toBeTruthy();
@@ -1568,16 +1637,34 @@ describe("InboundOrdersPage", () => {
     await waitForText("PO Documents");
     await waitForText("Order No 321 Very Long Purchase Order Reference Document For Magnets.pdf");
     await waitForText("Likely PO / Reference PDF");
-    expect(container.querySelector("a[aria-label='Open Order No 321 Very Long Purchase Order Reference Document For Magnets.pdf']")).toBeTruthy();
+    expect(container.querySelector("a[aria-label='Open Order No 321 Very Long Purchase Order Reference Document For Magnets.pdf']")).toBeNull();
+    const poOpenButton = Array.from(container.querySelectorAll("button")).find((button) => button.getAttribute("aria-label") === "Open Order No 321 Very Long Purchase Order Reference Document For Magnets.pdf") as HTMLButtonElement;
+    expect(poOpenButton).toBeTruthy();
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Download Order No 321 Very Long Purchase Order Reference Document For Magnets.pdf")).toBe(true);
+    await act(async () => {
+      Simulate.click(poOpenButton);
+    });
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-attachment-pdf-viewer']")), "PO PDF opens in authenticated viewer");
+    act(() => {
+      Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Close") as HTMLButtonElement);
+    });
 
     const artworkTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Artwork") as HTMLButtonElement;
     act(() => {
       Simulate.click(artworkTab);
     });
     await waitForText("Artwork Files");
-    expect(container.querySelector("a[aria-label='Open Lindsay X2.pdf']")).toBeTruthy();
+    expect(container.querySelector("a[aria-label='Open Lindsay X2.pdf']")).toBeNull();
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Download Lindsay X2.pdf")).toBe(true);
+    const imageOpenButton = Array.from(container.querySelectorAll("button")).find((button) => button.getAttribute("aria-label") === "Open magnet-proof.png") as HTMLButtonElement;
+    expect(imageOpenButton).toBeTruthy();
+    await act(async () => {
+      Simulate.click(imageOpenButton);
+    });
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-attachment-image-viewer']")), "artwork image opens in authenticated viewer");
+    act(() => {
+      Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Close") as HTMLButtonElement);
+    });
     const classifyButton = Array.from(container.querySelectorAll("button")).find((button) => (
       button.textContent?.trim() === "Classify"
     )) as HTMLButtonElement;
@@ -1657,6 +1744,57 @@ describe("InboundOrdersPage", () => {
     });
     await waitForText("Source Evidence");
     await waitForText("Draft Builder");
+  });
+
+  test("shows a Clean View attachment error when authenticated file access fails", async () => {
+    const row = record({
+      sourceType: "email",
+      rawPayloadJson: {
+        sender: { name: "Rick Clark", email: "rick@example.com" },
+        subject: "PO access test",
+        bodyText: "Please review the attached PO.",
+      },
+    });
+    setupParsedInboundReview({
+      row,
+      detailOverrides: {
+        files: [{
+          id: "file_blocked",
+          inboundRecordId: row.id,
+          fileRecordId: "file_record_blocked",
+          role: "po",
+          status: "uploaded",
+          sourceFilename: "Blocked PO.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 1024,
+          providerAttachmentId: "att_blocked",
+          reviewNotes: null,
+        }],
+      },
+      downloadFailures: {
+        file_blocked: { status: 401, message: "Unauthorized" },
+      },
+    });
+
+    renderPage();
+    await waitForText("Clean View");
+    const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(cleanButton);
+    });
+    await waitForText("Blocked PO.pdf");
+    const openButton = Array.from(container.querySelectorAll("button")).find((button) => button.getAttribute("aria-label") === "Open Blocked PO.pdf") as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(openButton);
+    });
+    await waitForText("Attachment Viewer");
+    await waitForText("Unauthorized");
+    expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Attachment open failed",
+      description: expect.stringContaining("Unauthorized"),
+      variant: "destructive",
+    }));
+    expect(container.querySelector("a[href='/api/inbound-orders/inbound_1/files/file_blocked/download']")).toBeNull();
   });
 
   test("filters the Clean View queue by trusted, untrusted, and issue categories", async () => {
