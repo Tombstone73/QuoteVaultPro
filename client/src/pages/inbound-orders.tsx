@@ -123,6 +123,11 @@ type ClientInboundOrderParseResponse = Omit<InboundOrderParseResponse, "data"> &
   };
 };
 
+type CleanInlineAttachmentSelection = {
+  recordId: string;
+  file: ClientInboundOrderFile;
+} | null;
+
 function inboundFileDownloadUrl(recordId: string, file: ClientInboundOrderFile) {
   return file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
     ? `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(file.id)}/download`
@@ -134,6 +139,34 @@ function inboundFileUnavailableLabel(file: ClientInboundOrderFile) {
   if (file.status === "quarantined") return "Quarantined";
   if (file.status === "rejected") return "Rejected";
   return "Unavailable";
+}
+
+async function fetchInboundAttachmentBlob(recordId: string, file: ClientInboundOrderFile) {
+  const downloadUrl = inboundFileDownloadUrl(recordId, file);
+  if (!downloadUrl) throw new Error("This attachment has no downloadable file.");
+  const response = await apiFetch(downloadUrl);
+  if (!response.ok) {
+    const message = await response.text().catch(() => "");
+    throw new Error(message || `File access failed (${response.status})`);
+  }
+  const blob = await response.blob();
+  return {
+    blob,
+    mimeType: response.headers.get("content-type") || blob.type || file.mimeType || null,
+  };
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const blobUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = blobUrl;
+  anchor.download = filename;
+  anchor.rel = "noopener";
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(blobUrl);
 }
 
 type InboundCustomerSearchResponse = {
@@ -892,11 +925,13 @@ function SourceEvidenceFileCard({
   file,
   onClassify,
   useInAppViewer = false,
+  onOpenAttachment,
 }: {
   recordId: string;
   file: ClientInboundOrderFile;
   onClassify?: () => void;
   useInAppViewer?: boolean;
+  onOpenAttachment?: (recordId: string, file: ClientInboundOrderFile) => void;
 }) {
   const downloadUrl = inboundFileDownloadUrl(recordId, file);
   return (
@@ -916,7 +951,7 @@ function SourceEvidenceFileCard({
         </div>
       </div>
       {useInAppViewer ? (
-        <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} />
+        <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} onOpenAttachment={onOpenAttachment} />
       ) : downloadUrl ? (
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
           <Button asChild size="sm" variant="ghost" className="h-8 px-2">
@@ -942,79 +977,30 @@ function CleanAttachmentFileActions({
   file,
   onClassify,
   className,
+  onOpenAttachment,
 }: {
   recordId: string;
   file: ClientInboundOrderFile;
   onClassify?: () => void;
   className?: string;
+  onOpenAttachment?: (recordId: string, file: ClientInboundOrderFile) => void;
 }) {
   const { toast } = useToast();
   const downloadUrl = inboundFileDownloadUrl(recordId, file);
   const filename = file.sourceFilename || "attachment";
-  const [viewerOpen, setViewerOpen] = useState(false);
-  const [viewerLoading, setViewerLoading] = useState(false);
-  const [viewerObjectUrl, setViewerObjectUrl] = useState<string | null>(null);
-  const [viewerMimeType, setViewerMimeType] = useState<string | null>(null);
-  const [viewerError, setViewerError] = useState<string | null>(null);
-  const isPdfPreview = viewerMimeType === "application/pdf" || filename.toLowerCase().endsWith(".pdf");
-  const isImagePreview = Boolean(viewerMimeType?.startsWith("image/"));
-
-  const fetchAttachmentBlob = async () => {
-    if (!downloadUrl) throw new Error("This attachment has no downloadable file.");
-    const response = await apiFetch(downloadUrl);
-    if (!response.ok) {
-      const message = await response.text().catch(() => "");
-      throw new Error(message || `File access failed (${response.status})`);
-    }
-    const blob = await response.blob();
-    return {
-      blob,
-      mimeType: response.headers.get("content-type") || blob.type || file.mimeType || null,
-    };
-  };
-
-  useEffect(() => () => {
-    if (viewerObjectUrl) URL.revokeObjectURL(viewerObjectUrl);
-  }, [viewerObjectUrl]);
 
   const handleOpen = async (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     if (!downloadUrl) return;
-    setViewerOpen(true);
-    setViewerLoading(true);
-    setViewerError(null);
-    try {
-      const { blob, mimeType } = await fetchAttachmentBlob();
-      const objectUrl = URL.createObjectURL(blob);
-      setViewerObjectUrl((previous) => {
-        if (previous) URL.revokeObjectURL(previous);
-        return objectUrl;
-      });
-      setViewerMimeType(mimeType);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "The file could not be opened.";
-      setViewerError(message);
-      toast({ title: "Attachment open failed", description: message, variant: "destructive" });
-    } finally {
-      setViewerLoading(false);
-    }
+    onOpenAttachment?.(recordId, file);
   };
 
   const handleDownload = async (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     if (!downloadUrl) return;
     try {
-      const { blob } = await fetchAttachmentBlob();
-      const blobUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = blobUrl;
-      anchor.download = filename;
-      anchor.rel = "noopener";
-      anchor.style.display = "none";
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-      URL.revokeObjectURL(blobUrl);
+      const { blob } = await fetchInboundAttachmentBlob(recordId, file);
+      downloadBlob(blob, filename);
     } catch (error) {
       toast({
         title: "Attachment download failed",
@@ -1025,86 +1011,190 @@ function CleanAttachmentFileActions({
   };
 
   return (
-    <>
-      <div className={cn("flex shrink-0 flex-wrap items-center justify-end gap-1", className)} data-testid="clean-attachment-actions">
-        {downloadUrl ? (
-          <>
-            <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleOpen} aria-label={`Open ${filename}`}>
-              <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-              Open
-            </Button>
-            <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleDownload} aria-label={`Download ${filename}`}>
-              <Download className="mr-1.5 h-3.5 w-3.5" />
-              Download
-            </Button>
-          </>
-        ) : (
-          <span className="rounded border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground" title={`${filename} is ${inboundFileUnavailableLabel(file).toLowerCase()} and has no available file action.`}>
-            {inboundFileUnavailableLabel(file)}
-          </span>
-        )}
-        {onClassify && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-8 px-2 text-xs"
-            onClick={(event) => {
-              event.stopPropagation();
-              onClassify();
-            }}
-          >
-            Classify
+    <div className={cn("flex shrink-0 flex-wrap items-center justify-end gap-1", className)} data-testid="clean-attachment-actions">
+      {downloadUrl ? (
+        <>
+          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleOpen} aria-label={`Open ${filename}`}>
+            <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+            Open
           </Button>
-        )}
+          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleDownload} aria-label={`Download ${filename}`}>
+            <Download className="mr-1.5 h-3.5 w-3.5" />
+            Download
+          </Button>
+        </>
+      ) : (
+        <span className="rounded border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground" title={`${filename} is ${inboundFileUnavailableLabel(file).toLowerCase()} and has no available file action.`}>
+          {inboundFileUnavailableLabel(file)}
+        </span>
+      )}
+      {onClassify && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 px-2 text-xs"
+          onClick={(event) => {
+            event.stopPropagation();
+            onClassify();
+          }}
+        >
+          Classify
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function CleanInlineAttachmentViewer({
+  selection,
+  onClose,
+}: {
+  selection: CleanInlineAttachmentSelection;
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const [loading, setLoading] = useState(false);
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [mimeType, setMimeType] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const file = selection?.file ?? null;
+  const recordId = selection?.recordId ?? null;
+  const filename = file?.sourceFilename || "attachment";
+  const isPdfPreview = Boolean(file && (mimeType === "application/pdf" || filename.toLowerCase().endsWith(".pdf")));
+  const isImagePreview = Boolean(mimeType?.startsWith("image/"));
+
+  useEffect(() => {
+    if (!selection) {
+      setObjectUrl((previous) => {
+        if (previous) URL.revokeObjectURL(previous);
+        return null;
+      });
+      setMimeType(null);
+      setError(null);
+      setLoading(false);
+      setModalOpen(false);
+      return;
+    }
+    let cancelled = false;
+    let nextObjectUrl: string | null = null;
+    setLoading(true);
+    setError(null);
+    setMimeType(null);
+    setObjectUrl((previous) => {
+      if (previous) URL.revokeObjectURL(previous);
+      return null;
+    });
+    fetchInboundAttachmentBlob(selection.recordId, selection.file)
+      .then(({ blob, mimeType: nextMimeType }) => {
+        if (cancelled) return;
+        nextObjectUrl = URL.createObjectURL(blob);
+        setObjectUrl(nextObjectUrl);
+        setMimeType(nextMimeType);
+      })
+      .catch((fetchError) => {
+        if (cancelled) return;
+        const message = fetchError instanceof Error ? fetchError.message : "The file could not be opened.";
+        setError(message);
+        toast({ title: "Attachment open failed", description: message, variant: "destructive" });
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      if (nextObjectUrl) URL.revokeObjectURL(nextObjectUrl);
+    };
+  }, [selection?.recordId, selection?.file.id]);
+
+  const handleDownload = async (event?: ReactMouseEvent<HTMLButtonElement>) => {
+    event?.stopPropagation();
+    if (!selection) return;
+    try {
+      const { blob } = await fetchInboundAttachmentBlob(selection.recordId, selection.file);
+      downloadBlob(blob, filename);
+    } catch (downloadError) {
+      toast({
+        title: "Attachment download failed",
+        description: downloadError instanceof Error ? downloadError.message : "The file could not be downloaded.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const previewContent = (large = false) => {
+    const frameHeight = large ? "h-[70vh]" : "h-[440px]";
+    if (loading) {
+      return (
+        <div className={cn("flex items-center justify-center text-sm text-slate-400", frameHeight)}>
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          Loading attachment...
+        </div>
+      );
+    }
+    if (error) {
+      return <div className="rounded border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">{error}</div>;
+    }
+    if (objectUrl && isPdfPreview) {
+      return <iframe title={`Preview ${filename}`} src={objectUrl} className={cn("w-full rounded bg-white", frameHeight)} data-testid="clean-attachment-pdf-viewer" />;
+    }
+    if (objectUrl && isImagePreview) {
+      return <img src={objectUrl} alt={filename} className={cn("w-full rounded object-contain", frameHeight)} data-testid="clean-attachment-image-viewer" />;
+    }
+    return (
+      <div className={cn("flex flex-col items-center justify-center gap-2 rounded bg-slate-950 text-center text-sm text-slate-400", frameHeight)}>
+        <FileText className="h-8 w-8" />
+        <div className="font-semibold text-slate-100">Preview unavailable</div>
+        <div>{file?.mimeType || mimeType || "Unknown file type"}</div>
+        <div>Use Download to inspect this attachment.</div>
       </div>
-      <Dialog open={viewerOpen} onOpenChange={(open) => {
-        setViewerOpen(open);
-        if (!open) {
-          setViewerError(null);
-          setViewerLoading(false);
-        }
-      }}>
+    );
+  };
+
+  if (!selection || !file || !recordId) return null;
+
+  return (
+    <section className="mb-4 overflow-hidden rounded border border-blue-400/40 bg-slate-900 shadow-xl" data-testid="clean-inline-attachment-viewer">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
+        <div className="min-w-0">
+          <div className="text-[11px] font-bold uppercase tracking-wide text-blue-200">Document Viewer</div>
+          <div className="break-words text-sm font-semibold text-slate-100">{filename}</div>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-1">
+          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={() => setModalOpen(true)} disabled={!objectUrl && !error}>
+            <Maximize2 className="mr-1.5 h-3.5 w-3.5" />
+            Expand
+          </Button>
+          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleDownload} disabled={!inboundFileDownloadUrl(recordId, file)}>
+            <Download className="mr-1.5 h-3.5 w-3.5" />
+            Download
+          </Button>
+          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={onClose}>Close viewer</Button>
+        </div>
+      </div>
+      <div className="min-w-0 overflow-hidden p-3">
+        {previewContent(false)}
+      </div>
+      <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="max-w-5xl">
           <DialogHeader>
             <DialogTitle>Attachment Viewer</DialogTitle>
             <DialogDescription>{filename}</DialogDescription>
           </DialogHeader>
           <div className="min-h-[420px] rounded-md border border-border bg-muted/20 p-3" data-testid="clean-attachment-viewer">
-            {viewerLoading ? (
-              <div className="flex h-[420px] items-center justify-center text-sm text-muted-foreground">
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Loading attachment...
-              </div>
-            ) : viewerError ? (
-              <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
-                {viewerError}
-              </div>
-            ) : viewerObjectUrl && isPdfPreview ? (
-              <iframe title={`Preview ${filename}`} src={viewerObjectUrl} className="h-[70vh] w-full rounded bg-white" data-testid="clean-attachment-pdf-viewer" />
-            ) : viewerObjectUrl && isImagePreview ? (
-              <img src={viewerObjectUrl} alt={filename} className="max-h-[70vh] w-full rounded object-contain" data-testid="clean-attachment-image-viewer" />
-            ) : (
-              <div className="flex h-[420px] flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
-                <FileText className="h-8 w-8" />
-                <div className="font-medium text-foreground">Preview unavailable</div>
-                <div>{file.mimeType || viewerMimeType || "Unknown file type"}</div>
-                <div>Use Download to inspect this attachment.</div>
-              </div>
-            )}
+            {previewContent(true)}
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setViewerOpen(false)}>Close</Button>
-            {downloadUrl && (
-              <Button type="button" onClick={handleDownload}>
-                <Download className="mr-2 h-4 w-4" />
-                Download
-              </Button>
-            )}
+            <Button type="button" variant="outline" onClick={() => setModalOpen(false)}>Close</Button>
+            <Button type="button" onClick={handleDownload}>
+              <Download className="mr-2 h-4 w-4" />
+              Download
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </>
+    </section>
   );
 }
 
@@ -3118,6 +3208,7 @@ function InboundAttachmentCard({
   minimal = false,
   onClassify,
   useInAppViewer = false,
+  onOpenAttachment,
 }: {
   recordId: string;
   file: ClientInboundOrderFile;
@@ -3125,6 +3216,7 @@ function InboundAttachmentCard({
   minimal?: boolean;
   onClassify?: () => void;
   useInAppViewer?: boolean;
+  onOpenAttachment?: (recordId: string, file: ClientInboundOrderFile) => void;
 }) {
   const downloadUrl = inboundFileDownloadUrl(recordId, file);
   return (
@@ -3149,7 +3241,7 @@ function InboundAttachmentCard({
         {!minimal && <AttachmentSafetyDetails recordId={recordId} file={file} />}
       </div>
       {useInAppViewer ? (
-        <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} />
+        <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} onOpenAttachment={onOpenAttachment} />
       ) : downloadUrl ? (
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
           <Button asChild size="sm" variant="outline">
@@ -4060,6 +4152,9 @@ function CleanSourceDocuments({
   form,
   activeTarget,
   onFocusTarget,
+  inlineAttachmentSelection,
+  onOpenAttachment,
+  onCloseInlineAttachment,
 }: {
   selectedRecord: ClientInboundOrderRecord | null;
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
@@ -4083,6 +4178,9 @@ function CleanSourceDocuments({
   form: ReviewDraftFormState | null;
   activeTarget: CleanHighlightTarget | null;
   onFocusTarget: CleanFocusTargetHandler;
+  inlineAttachmentSelection: CleanInlineAttachmentSelection;
+  onOpenAttachment: (recordId: string, file: ClientInboundOrderFile) => void;
+  onCloseInlineAttachment: () => void;
 }) {
   if (!selectedRecord) {
     return <section className="flex min-h-0 flex-1 items-center justify-center bg-slate-950 text-slate-500">Select an inbound item.</section>;
@@ -4107,6 +4205,9 @@ function CleanSourceDocuments({
       || (link.fileRecordId && file.fileRecordId === link.fileRecordId)
       || (link.filename && file.sourceFilename === link.filename)
   )) ?? null;
+  const visibleInlineSelection = inlineAttachmentSelection?.recordId === record.id
+    ? inlineAttachmentSelection
+    : null;
 
   return (
     <section className="flex min-h-0 min-w-0 flex-[1.05] flex-col overflow-hidden border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-source-documents">
@@ -4148,6 +4249,7 @@ function CleanSourceDocuments({
           <Skeleton className="mx-auto h-[520px] max-w-[760px] bg-slate-800" />
         ) : activeTab === "email" ? (
           <div className="mx-auto w-full max-w-[760px] min-w-0">
+            <CleanInlineAttachmentViewer selection={visibleInlineSelection} onClose={onCloseInlineAttachment} />
             <div className="mb-2 flex items-center justify-between rounded border border-slate-800 bg-slate-900 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
               <span>Previous interaction</span>
               <span>{emailEvidence?.thread?.messageCount ? `${emailEvidence.thread.messageCount} messages` : "Single message"}</span>
@@ -4203,7 +4305,7 @@ function CleanSourceDocuments({
                       }}
                       data-clean-source-target={file.role === "po" ? "po" : "artwork"}
                     >
-                      <SourceEvidenceFileCard recordId={record.id} file={file} onClassify={() => onClassifyAttachment(linkForFile(file))} useInAppViewer />
+                      <SourceEvidenceFileCard recordId={record.id} file={file} onClassify={() => onClassifyAttachment(linkForFile(file))} useInAppViewer onOpenAttachment={onOpenAttachment} />
                     </div>
                   ))}
                 </div>
@@ -4218,6 +4320,7 @@ function CleanSourceDocuments({
           </div>
         ) : activeTab === "po" ? (
           <div className="mx-auto w-full max-w-[760px] min-w-0 rounded border border-slate-800 bg-slate-900 p-4">
+            <CleanInlineAttachmentViewer selection={visibleInlineSelection} onClose={onCloseInlineAttachment} />
             <div className="mb-3 text-sm font-bold text-slate-100">PO Documents</div>
             {poFiles.length === 0 ? (
               <div className="rounded border border-dashed border-slate-700 px-3 py-10 text-center text-sm text-slate-500">No PO detected.</div>
@@ -4237,7 +4340,7 @@ function CleanSourceDocuments({
                 }}
                 data-clean-source-target="po"
               >
-                <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(linkForFile(file))} useInAppViewer />
+                <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(linkForFile(file))} useInAppViewer onOpenAttachment={onOpenAttachment} />
                 {file.role !== "po" && (
                   <div className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-200">Likely PO / Reference PDF</div>
                 )}
@@ -4252,6 +4355,7 @@ function CleanSourceDocuments({
           </div>
         ) : activeTab === "artwork" ? (
           <div className="mx-auto grid max-w-[760px] gap-3">
+            <CleanInlineAttachmentViewer selection={visibleInlineSelection} onClose={onCloseInlineAttachment} />
             <div className="rounded border border-slate-800 bg-slate-900 p-3">
               <div className="mb-2 text-sm font-bold text-slate-100">Artwork Files</div>
               {artworkLinks.length === 0 ? <div className="text-sm text-slate-500">No artwork detected.</div> : artworkLinks.map((link) => (
@@ -4262,7 +4366,7 @@ function CleanSourceDocuments({
                   {(() => {
                     const file = fileForLink(link);
                     return file ? (
-                      <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer />
+                      <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer onOpenAttachment={onOpenAttachment} />
                     ) : (
                       <>
                         <button
@@ -4296,7 +4400,7 @@ function CleanSourceDocuments({
                   return (
                     <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
                       {file ? (
-                        <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer />
+                        <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer onOpenAttachment={onOpenAttachment} />
                       ) : (
                         <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-slate-300">
                           <span className="min-w-0 truncate">{link.filename || link.fileId}</span>
@@ -4317,7 +4421,7 @@ function CleanSourceDocuments({
                   return (
                     <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
                       {file ? (
-                        <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer />
+                        <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer onOpenAttachment={onOpenAttachment} />
                       ) : (
                         <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-slate-500">
                           <span className="min-w-0 truncate">{link.filename || link.fileId}</span>
@@ -4873,9 +4977,11 @@ function CleanEvidenceConflictGroup({ conflicts }: { conflicts: string[] }) {
 function CleanCompactAttachments({
   selectedRecord,
   files,
+  onOpenAttachment,
 }: {
   selectedRecord: ClientInboundOrderRecord;
   files: ClientInboundOrderFile[];
+  onOpenAttachment: (recordId: string, file: ClientInboundOrderFile) => void;
 }) {
   const filesWithClassification = files.map((file) => ({
     file,
@@ -4914,7 +5020,7 @@ function CleanCompactAttachments({
                         {!file.fileRecordId && <span>Metadata only</span>}
                       </div>
                     </div>
-                    <CleanAttachmentFileActions recordId={selectedRecord.id} file={file} className="text-slate-300" />
+                    <CleanAttachmentFileActions recordId={selectedRecord.id} file={file} className="text-slate-300" onOpenAttachment={onOpenAttachment} />
                   </div>
                 ))}
               </div>
@@ -4952,6 +5058,7 @@ function CleanOrderWorkstation({
   updateForm,
   activeTarget,
   onFocusTarget,
+  onOpenAttachment,
 }: {
   selectedRecord: ClientInboundOrderRecord | null;
   draftPreview: ClientInboundOrderDraftPreviewResponse["data"] | undefined;
@@ -4978,6 +5085,7 @@ function CleanOrderWorkstation({
   updateForm: (patch: Partial<ReviewDraftFormState>) => void;
   activeTarget: CleanHighlightTarget | null;
   onFocusTarget: CleanFocusTargetHandler;
+  onOpenAttachment: (recordId: string, file: ClientInboundOrderFile) => void;
 }) {
   const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
   const [productSearch, setProductSearch] = useState("");
@@ -5223,7 +5331,7 @@ function CleanOrderWorkstation({
             <OrderEntryField label="Internal Notes"><Textarea value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: trimToNull(event.target.value) })} /></OrderEntryField>
           </div>
         </CleanSupportDetails>
-        <CleanCompactAttachments selectedRecord={selectedRecord} files={inboundFiles} />
+        <CleanCompactAttachments selectedRecord={selectedRecord} files={inboundFiles} onOpenAttachment={onOpenAttachment} />
         <CleanSupportDetails
           title="Review Tasks"
           summary={`${blockingDecisionCount} blocking / ${evidenceConflictItems.length} conflicts / ${aiSuggestionItems.length} suggestions`}
@@ -7702,6 +7810,7 @@ export default function InboundOrdersPage() {
   const [sourceChangedByRecordId, setSourceChangedByRecordId] = useState<Record<string, boolean>>({});
   const [cleanForm, setCleanForm] = useState<ReviewDraftFormState | null>(null);
   const [cleanActiveTarget, setCleanActiveTarget] = useState<CleanHighlightTarget | null>(null);
+  const [cleanInlineAttachmentSelection, setCleanInlineAttachmentSelection] = useState<CleanInlineAttachmentSelection>(null);
   const [classificationDialog, setClassificationDialog] = useState<AttachmentClassificationDialogState | null>(null);
   const [reviewMode, setReviewMode] = useState<InboundReviewWorkspaceMode>(() => {
     if (typeof window === "undefined") return "operational";
@@ -7774,6 +7883,10 @@ export default function InboundOrdersPage() {
       setSelectedId(records[0].id);
     }
   }, [records, selectedId]);
+
+  useEffect(() => {
+    setCleanInlineAttachmentSelection(null);
+  }, [selectedId]);
 
   const applyQueueFilters = (nextFilters: QueueFilters) => {
     setQueueFilters(nextFilters);
@@ -8851,6 +8964,11 @@ export default function InboundOrdersPage() {
             form={cleanForm}
             activeTarget={cleanActiveTarget}
             onFocusTarget={focusCleanTarget}
+            inlineAttachmentSelection={cleanInlineAttachmentSelection}
+            onOpenAttachment={(recordId, file) => {
+              setCleanInlineAttachmentSelection({ recordId, file });
+            }}
+            onCloseInlineAttachment={() => setCleanInlineAttachmentSelection(null)}
           />
           <CleanOrderWorkstation
             selectedRecord={selectedRecord}
@@ -8888,6 +9006,10 @@ export default function InboundOrdersPage() {
             updateForm={updateCleanForm}
             activeTarget={cleanActiveTarget}
             onFocusTarget={focusCleanTarget}
+            onOpenAttachment={(recordId, file) => {
+              setSourceDocumentTab(file.role === "po" || isLikelyPoEvidenceFile(file) ? "po" : "artwork");
+              setCleanInlineAttachmentSelection({ recordId, file });
+            }}
           />
           <AttachmentClassificationDialog
             state={classificationDialog}

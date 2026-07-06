@@ -1505,10 +1505,21 @@ describe("InboundOrdersPage", () => {
     await act(async () => {
       Simulate.click(emailOpenButton);
     });
-    await waitForText("Attachment Viewer");
+    await waitForText("Document Viewer");
+    expect(container.querySelector("[data-testid='clean-inline-attachment-viewer']")).toBeTruthy();
+    expect(container.textContent).toContain("Order Workstation");
     expect(container.querySelector("[data-testid='clean-attachment-pdf-viewer']")).toBeTruthy();
     expect(apiFetchMock.mock.calls.some(([url]) => String(url) === "/api/inbound-orders/inbound_1/files/file_art/download")).toBe(true);
-    const closeViewerButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Close") as HTMLButtonElement;
+    const expandButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Expand") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(expandButton);
+    });
+    await waitForText("Attachment Viewer");
+    const closeModalButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Close") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(closeModalButton);
+    });
+    const closeViewerButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Close viewer") as HTMLButtonElement;
     act(() => {
       Simulate.click(closeViewerButton);
     });
@@ -1644,9 +1655,10 @@ describe("InboundOrdersPage", () => {
     await act(async () => {
       Simulate.click(poOpenButton);
     });
-    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-attachment-pdf-viewer']")), "PO PDF opens in authenticated viewer");
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-inline-attachment-viewer'] [data-testid='clean-attachment-pdf-viewer']")), "PO PDF opens in authenticated inline viewer");
+    expect(container.textContent).toContain("Order Workstation");
     act(() => {
-      Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Close") as HTMLButtonElement);
+      Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Close viewer") as HTMLButtonElement);
     });
 
     const artworkTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Artwork") as HTMLButtonElement;
@@ -1661,9 +1673,9 @@ describe("InboundOrdersPage", () => {
     await act(async () => {
       Simulate.click(imageOpenButton);
     });
-    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-attachment-image-viewer']")), "artwork image opens in authenticated viewer");
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-inline-attachment-viewer'] [data-testid='clean-attachment-image-viewer']")), "artwork image opens in authenticated inline viewer");
     act(() => {
-      Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Close") as HTMLButtonElement);
+      Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Close viewer") as HTMLButtonElement);
     });
     const classifyButton = Array.from(container.querySelectorAll("button")).find((button) => (
       button.textContent?.trim() === "Classify"
@@ -1787,7 +1799,8 @@ describe("InboundOrdersPage", () => {
     await act(async () => {
       Simulate.click(openButton);
     });
-    await waitForText("Attachment Viewer");
+    await waitForText("Document Viewer");
+    expect(container.querySelector("[data-testid='clean-inline-attachment-viewer']")).toBeTruthy();
     await waitForText("Unauthorized");
     expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({
       title: "Attachment open failed",
@@ -1795,6 +1808,74 @@ describe("InboundOrdersPage", () => {
       variant: "destructive",
     }));
     expect(container.querySelector("a[href='/api/inbound-orders/inbound_1/files/file_blocked/download']")).toBeNull();
+  });
+
+  test("clears the Clean View inline attachment viewer when switching records", async () => {
+    const first = record({
+      id: "inbound_first",
+      sourceType: "email",
+      rawPayloadJson: {
+        sender: { name: "First Customer", email: "first@example.com" },
+        subject: "First PO",
+        bodyText: "First attached PO.",
+      },
+    });
+    const second = record({
+      id: "inbound_second",
+      sourceType: "email",
+      rawPayloadJson: {
+        sender: { name: "Second Customer", email: "second@example.com" },
+        subject: "Second PO",
+        bodyText: "Second request.",
+      },
+    });
+    const firstFile = {
+      id: "file_first_po",
+      inboundRecordId: first.id,
+      fileRecordId: "file_record_first_po",
+      role: "po",
+      status: "uploaded",
+      sourceFilename: "First PO.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 1024,
+      providerAttachmentId: "att_first",
+      reviewNotes: null,
+    };
+    const parsed = parsedDraft();
+    const review = reviewDraft(parsed);
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([first, second]));
+      if (path === `/api/inbound-orders/${first.id}`) return jsonResponse({ success: true, data: detail(first, { files: [firstFile] }) });
+      if (path === `/api/inbound-orders/${second.id}`) return jsonResponse({ success: true, data: detail(second, { files: [] }) });
+      if (path === `/api/inbound-orders/${first.id}/draft-preview` || path === `/api/inbound-orders/${second.id}/draft-preview`) return jsonResponse(draftPreview({ draft: parsed }));
+      if (path === `/api/inbound-orders/${first.id}/review-draft` || path === `/api/inbound-orders/${second.id}/review-draft`) return jsonResponse({ success: true, data: review });
+      if (path === `/api/inbound-orders/${first.id}/files/${firstFile.id}/download`) return blobResponse("application/pdf");
+      if (path === "/api/inbound-orders/customer-search?limit=20") return jsonResponse({ success: true, data: [] });
+      if (path.startsWith("/api/inbound-orders/product-search?")) return jsonResponse({ success: true, data: [] });
+      if (path.startsWith("/api/inbound-orders/contact-search?")) return jsonResponse({ success: true, data: [] });
+      if (path.startsWith("/api/inbound-orders/product-options/") && options?.method === "POST") return jsonResponse(pbv2OptionsResponse());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("Clean View");
+    act(() => {
+      Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement);
+    });
+    await waitForText("First PO.pdf");
+    const openButton = Array.from(container.querySelectorAll("button")).find((button) => button.getAttribute("aria-label") === "Open First PO.pdf") as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(openButton);
+    });
+    await waitForText("Document Viewer");
+    expect(container.querySelector("[data-testid='clean-inline-attachment-viewer']")).toBeTruthy();
+    const secondRecordButton = Array.from(container.querySelectorAll("[data-testid='clean-inbound-queue'] button")).find((button) => button.textContent?.includes("Second Customer")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(secondRecordButton);
+    });
+    await waitForText("Second Customer");
+    await waitForCondition(() => !container.querySelector("[data-testid='clean-inline-attachment-viewer']"), "inline viewer clears after record switch");
   });
 
   test("filters the Clean View queue by trusted, untrusted, and issue categories", async () => {
