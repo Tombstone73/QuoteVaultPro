@@ -85,14 +85,29 @@ const GENERIC_RANKING_TERMS = new Set([
 
 const SEMANTIC_EXPANSIONS: Array<{ patterns: RegExp[]; terms: string[]; label: string }> = [
   {
-    patterns: [/\byard\s+signs?\b/i, /\blawn\s+signs?\b/i, /\bpolitical\s+signs?\b/i, /\brealtor\s+signs?\b/i],
-    terms: ["yard sign", "yard signs", "lawn sign", "political sign", "realtor sign", "event sign", "outdoor sign", "coroplast", "corrugated plastic", "signage"],
+    patterns: [/\bfoam\s*core\b/i, /\bfoamcore\b/i, /\bfoam\s+signs?\b/i],
+    terms: ["foam core", "foamcore", "foam board", "foam board sign", "foam sign", "display board", "indoor sign", "3/16 foam board", "3/16 foam core"],
+    label: "foam core language",
+  },
+  {
+    patterns: [/\byard\s+signs?\b/i, /\blawn\s+signs?\b/i, /\bpolitical\s+signs?\b/i, /\brealtor\s+signs?\b/i, /\bcoroplast\b/i, /\bcorrugated\s+plastic\b/i],
+    terms: ["yard sign", "yard signs", "lawn sign", "political sign", "realtor sign", "event sign", "outdoor sign", "coroplast", "corrugated plastic", "coro", "signage"],
     label: "yard sign language",
   },
   {
-    patterns: [/\bcar\s+magnets?\b/i, /\bvehicle\s+magnets?\b/i],
+    patterns: [/\bcar\s+magnets?\b/i, /\bvehicle\s+magnets?\b/i, /\bmagnets?\b/i, /\bmagnetic\b/i],
     terms: ["car magnet", "vehicle magnet", "magnetic", "magnet", ".030 magnetic"],
     label: "magnet language",
+  },
+  {
+    patterns: [/\bdibond\b/i, /\bdi\s*bond\b/i, /\baluminum\s+composite\b/i, /\baluminium\s+composite\b/i, /\bcomposite\s+panels?\b/i],
+    terms: ["acm", "dibond", "di bond", "aluminum composite", "aluminium composite", "composite panel", "max metal", "maxmetal", "polymetal"],
+    label: "ACM language",
+  },
+  {
+    patterns: [/\bpvc\b/i, /\bsintra\b/i],
+    terms: ["pvc", "sintra", "expanded pvc", "foam pvc", "plastic sign panel", "rigid pvc"],
+    label: "PVC language",
   },
   {
     patterns: [/\bwindow\s+perf\b/i, /\bperforated\s+window\b/i, /\bone\s+way\s+vision\b/i],
@@ -105,8 +120,8 @@ const SEMANTIC_EXPANSIONS: Array<{ patterns: RegExp[]; terms: string[]; label: s
     label: "poster language",
   },
   {
-    patterns: [/\bbanners?\b/i],
-    terms: ["banner", "banners", "vinyl banner", "hem", "grommet"],
+    patterns: [/\bbanners?\b/i, /\bbanner\s+vinyl\b/i, /\bscrim\s+banner\b/i],
+    terms: ["banner", "banners", "vinyl banner", "banner vinyl", "scrim banner", "hem", "grommet"],
     label: "banner language",
   },
   {
@@ -126,6 +141,35 @@ function unique(values: string[]): string[] {
 
 function tokens(value: string): string[] {
   return unique(value.split(/\s+/).filter((token) => token.length > 2 && !STOP_WORDS.has(token)));
+}
+
+function metadataAliasTerms(metadataText: string | null | undefined): string[] {
+  if (!metadataText) return [];
+  try {
+    const parsed = JSON.parse(metadataText);
+    const terms: string[] = [];
+    const visit = (value: unknown, key = "") => {
+      if (typeof value === "string") {
+        if (/(alias|aliases|synonym|synonyms|search|keyword|keywords|aka|alsoKnownAs)/i.test(key)) {
+          terms.push(value);
+        }
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach((item) => visit(item, key));
+        return;
+      }
+      if (value && typeof value === "object") {
+        for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+          visit(childValue, childKey);
+        }
+      }
+    };
+    visit(parsed);
+    return unique(terms);
+  } catch {
+    return [];
+  }
 }
 
 function isGenericRankingTerm(value: string): boolean {
@@ -217,6 +261,18 @@ const MATERIAL_SEPARATION_RULES: Array<{
       { label: "ACM/aluminum", pattern: /\b(acm|aluminum|aluminium|dibond|di\s*bond|polymetal|poly\s*metal|max\s*metal|maxmetal|aluminum\s+composite)\b/i, penalty: 58, cap: 35 },
       { label: "PVC", pattern: /\b(pvc|sintra|expanded\s+pvc|palight|foam\s*pvc)\b/i, penalty: 44, cap: 45 },
       { label: "vinyl", pattern: /\b(vinyl|decal|sticker|adhesive)\b/i, penalty: 70, cap: 20 },
+    ],
+  },
+  {
+    key: "foam core/foam board",
+    evidence: /\b(foam\s*core|foamcore|foam\s*board|gator\s*board|ultra\s*board|foam\s+signs?)\b/i,
+    strictEvidence: /\b(foam\s*core|foamcore|foam\s*board)\b/i,
+    compatible: /\b(foam\s*core|foamcore|foam\s*board|gator\s*board|ultra\s*board|display\s+board)\b/i,
+    conflicts: [
+      { label: "ACM/aluminum", pattern: /\b(acm|aluminum|aluminium|dibond|di\s*bond|polymetal|poly\s*metal|max\s*metal|maxmetal|aluminum\s+composite)\b/i, penalty: 62, cap: 28, strictPenalty: 76, strictCap: 16 },
+      { label: "PVC", pattern: /\b(pvc|sintra|expanded\s+pvc|palight|foam\s*pvc)\b/i, penalty: 48, cap: 38, strictPenalty: 58, strictCap: 32 },
+      { label: "coroplast", pattern: /\b(coroplast|corrugated\s+plastic|coro)\b/i, penalty: 54, cap: 34, strictPenalty: 66, strictCap: 22 },
+      { label: "vinyl", pattern: /\b(vinyl|decal|sticker|adhesive)\b/i, penalty: 70, cap: 20, strictPenalty: 82, strictCap: 10 },
     ],
   },
   {
@@ -371,6 +427,7 @@ export function scoreProductKnowledgeCandidates(
         candidate.materialCategory,
         candidate.materialAiParsingDescription,
         candidate.metadataText,
+        ...metadataAliasTerms(candidate.metadataText),
       ].filter(Boolean).join(" "));
       const name = scoreField(candidate.name, phrases, queryTokens);
       const aiParsing = scoreField(candidate.aiParsingDescription ?? "", phrases, queryTokens);
@@ -379,6 +436,7 @@ export function scoreProductKnowledgeCandidates(
       const material = scoreField([candidate.materialName, candidate.materialCategory].filter(Boolean).join(" "), phrases, queryTokens);
       const materialAiParsing = scoreField(candidate.materialAiParsingDescription ?? "", phrases, queryTokens);
       const metadata = scoreField(candidate.metadataText ?? "", phrases, queryTokens);
+      const aliases = scoreField(metadataAliasTerms(candidate.metadataText).join(" "), phrases, queryTokens);
       const aiParsingScore = Math.max(aiParsing.score, materialAiParsing.score);
       const accessoryPenalty = candidate.isService
         || /\b(accessor(?:y|ies)|hardware|stake|stakes|grommet|fee|setup|install|installation|design)\b/i.test(`${candidate.name} ${candidate.category ?? ""}`)
@@ -392,7 +450,7 @@ export function scoreProductKnowledgeCandidates(
         materialScore: material.score,
         categoryScore: category.score,
         descriptionScore: description.score,
-        metadataScore: metadata.score,
+        metadataScore: Math.max(metadata.score, aliases.score),
         positiveEvidenceBoost: positiveBoost,
         accessoryPenalty,
         negativeEvidencePenalty: negativeEvidence.penalty,
@@ -405,6 +463,7 @@ export function scoreProductKnowledgeCandidates(
         ...material.reasons.map((reason) => `material ${reason}`),
         ...materialAiParsing.reasons.map((reason) => `material AI parsing description ${reason}`),
         ...metadata.reasons.map((reason) => `metadata ${reason}`),
+        ...aliases.reasons.map((reason) => `metadata alias ${reason}`),
         ...description.reasons.map((reason) => `customer-facing description ${reason}`),
         ...negativeEvidence.reasons,
       ];
@@ -427,7 +486,7 @@ export function scoreProductKnowledgeCandidates(
             categoryScore: category.score,
             materialScore: material.score,
             materialAiParsingScore: materialAiParsing.score,
-            metadataScore: metadata.score,
+            metadataScore: Math.max(metadata.score, aliases.score),
             positiveEvidenceBoost: positiveBoost,
             accessoryPenalty,
             negativeEvidencePenalty: negativeEvidence.penalty,

@@ -2049,9 +2049,12 @@ export class InboundOrdersRepository {
         or ${products.category} ilike ${pattern}
         or ${products.description} ilike ${pattern}
         or ${products.aiParsingDescription} ilike ${pattern}
+        or ${products.optionsJson}::text ilike ${pattern}
+        or ${products.pricingProfileConfig}::text ilike ${pattern}
         or ${materials.name} ilike ${pattern}
         or ${materials.category} ilike ${pattern}
         or ${materials.aiParsingDescription} ilike ${pattern}
+        or ${materials.specsJson}::text ilike ${pattern}
       )`;
     });
     predicates.push(sql`(${sql.join(termPredicates, sql` or `)})`);

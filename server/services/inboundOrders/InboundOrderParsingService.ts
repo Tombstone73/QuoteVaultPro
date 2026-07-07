@@ -847,6 +847,14 @@ export class InboundOrderParsingService {
 
   private parseDimensionText(value: string | null): { width: number | null; height: number | null; unit: string | null } {
     if (!value) return { width: null, height: null, unit: null };
+    const quotedOrExplicit = value.match(/(\d+(?:\.\d+)?)\s*(?:"|”|in|inch|inches|ft|feet|mm|cm)?\s*(?:x|X|Ã—|×)\s*(\d+(?:\.\d+)?)\s*((?:"|”|in|inch|inches|ft|feet|mm|cm)?)?/i);
+    if (quotedOrExplicit) {
+      const rawUnit = quotedOrExplicit[3]?.toLowerCase() ?? (value.includes("\"") || value.includes("”") ? "\"" : "");
+      const unit = rawUnit === "\"" || rawUnit === "”"
+        ? "in"
+        : rawUnit.replace(/^inch(?:es)?$/, "in").replace(/^feet$/, "ft") || null;
+      return { width: Number(quotedOrExplicit[1]), height: Number(quotedOrExplicit[2]), unit };
+    }
     const match = value.match(/(\d+(?:\.\d+)?)\s*(?:in|inch|inches|ft|feet|mm|cm)?\s*[xX×]\s*(\d+(?:\.\d+)?)\s*(in|inch|inches|ft|feet|mm|cm)?/i);
     if (!match) return { width: null, height: null, unit: null };
     const unit = match[3]?.toLowerCase().replace(/^inch(?:es)?$/, "in").replace(/^feet$/, "ft") ?? null;
