@@ -496,6 +496,11 @@ export function scoreProductKnowledgeCandidates(
       };
     })
     .filter((candidate) => candidate.confidence >= 30)
-    .sort((left, right) => right.confidence - left.confidence || left.label.localeCompare(right.label))
+    .sort((left, right) => (
+      right.confidence - left.confidence
+      || right.metadata.matchBreakdown.nameScore - left.metadata.matchBreakdown.nameScore
+      || right.metadata.matchBreakdown.aiParsingScore - left.metadata.matchBreakdown.aiParsingScore
+      || left.label.localeCompare(right.label)
+    ))
     .slice(0, limit);
 }

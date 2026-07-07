@@ -678,6 +678,70 @@ describe("InboundOrderService editable review draft", () => {
     });
   });
 
+  test("resolves Foam Core PO evidence to the existing Foam Board product in the review draft", async () => {
+    const attempt = parseAttempt({
+      parsedDraft: parsedDraft({
+        lineItems: [{
+          ...parsedDraft().lineItems[0],
+          sourceText: "Product: Foam Core Sign Stock: 3/16\" Foam Core Final Trim: 24\" x 36\" QTY: 1",
+          productName: "Foam Core Sign",
+          candidateProductIds: ["product_foam"],
+          productCandidates: [{
+            id: "product_foam",
+            label: "Foam Board",
+            confidence: 82,
+            reason: "AI parsing description matched foam core, foamcore, foam core sign, foam board sign, 3/16 foam core, 3/16 foam board.",
+            metadata: {},
+          }],
+          quantity: 1,
+          width: 24,
+          height: 36,
+          dimensionsUnit: "in",
+          materialText: "3/16\" Foam Core",
+          optionTexts: [],
+          finishingTexts: [],
+        }],
+        missingDecisions: [],
+      }),
+    });
+    const { repo } = makeRepository(inboundRecord(), attempt);
+    (repo.searchProductCandidates as any).mockResolvedValue([{
+      id: "product_foam",
+      label: "Foam Board",
+      confidence: 82,
+      reason: "AI parsing description matched foam core aliases.",
+      metadata: {},
+    }]);
+    (repo.getProductActivePbv2Tree as any).mockImplementation(async (_organizationId: string, productId: string) => (
+      productId === "product_foam"
+        ? {
+            product: { id: "product_foam", name: "Foam Board", pbv2ActiveTreeVersionId: null },
+            activeTree: null,
+          }
+        : null
+    ));
+    const service = new InboundOrderService(repo as any);
+
+    const draft = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(draft.reviewedLineItemsJson[0]).toMatchObject({
+      selectedProductId: "product_foam",
+      interpretedProductId: "product_foam",
+      interpretedProductConfidence: 95,
+      productUnresolved: false,
+      productName: "Foam Board",
+      quantity: 1,
+      width: 24,
+      height: 36,
+      dimensionsUnit: "in",
+    });
+    expect(draft.reviewedLineItemsJson[0].interpretedProductReason).toContain("Exact material evidence matched Foam Board.");
+  });
+
   test("initializes a CSR-ready interpreted draft with customer, contact, date, product, and PBV2 defaults", async () => {
     const attempt = parseAttempt({
       parsedDraft: parsedDraft({
