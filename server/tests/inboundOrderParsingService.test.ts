@@ -278,6 +278,133 @@ describe("InboundOrderParsingService", () => {
     expect(result.draft?.missingDecisions.some((decision) => decision.field === "lineItems.0.quantity")).toBe(false);
   });
 
+  test("uses Foam Core PO evidence to populate size, quantity, and Foam Board product suggestion", async () => {
+    const poText = [
+      "Purchase Order No. 200222",
+      "Product: Foam Core Sign",
+      "Stock: 3/16\" Foam Core",
+      "Final Trim: 24\" x 36\"",
+      "QTY: 1",
+    ].join("\n");
+    const poSummary = extractPurchaseOrderFields({
+      text: poText,
+      receivedAt: "2026-06-19T12:00:00.000Z",
+      sourceDocument: "Foam Core PO.pdf",
+    });
+    const evidenceBundle: InboundOrderEvidenceBundle = {
+      items: [{
+        type: "PDF_ATTACHMENT",
+        label: "Foam Core PO.pdf",
+        sourceId: "file_po",
+        fileName: "Foam Core PO.pdf",
+        mimeType: "application/pdf",
+        rawText: poText,
+        pageCount: 1,
+        documentType: "purchase_order",
+        documentConfidence: 96,
+        extractionStatus: "successful",
+        poSummary,
+        warnings: [],
+      }],
+      conflicts: [],
+      reconciliation: reconcileInboundEvidence([{
+        type: "PDF_ATTACHMENT",
+        label: "Foam Core PO.pdf",
+        sourceId: "file_po",
+        fileName: "Foam Core PO.pdf",
+        mimeType: "application/pdf",
+        rawText: poText,
+        pageCount: 1,
+        documentType: "purchase_order",
+        documentConfidence: 96,
+        extractionStatus: "successful",
+        poSummary,
+        warnings: [],
+      }]),
+    };
+    const { repo } = makeRepository(inboundRecord({
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        reference: "PO-200222",
+        sender: { name: "Foam Buyer", email: "foam@example.com" },
+        subject: "Foam Core Sign PO",
+        bodyText: "See attached PO.",
+      },
+    }));
+    (repo.searchProductCandidates as any).mockImplementation(async (args: any) => scoreProductKnowledgeCandidates(
+      {
+        sourceText: args.sourceText,
+        productName: args.productName,
+        materialText: args.materialText,
+        optionTexts: args.optionTexts,
+        finishingTexts: args.finishingTexts,
+      },
+      [
+        {
+          id: "foam_board",
+          name: "Foam Board",
+          description: "Lightweight foam board display panels and indoor sign boards.",
+          category: "Display Boards",
+          materialName: "3/16 White Foam Board",
+          materialCategory: "Foam Board",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "pvc",
+          name: "PVC",
+          description: "Printable PVC signs and rigid display panels.",
+          category: "Rigid Signs",
+          materialName: "3mm White PVC",
+          materialCategory: "PVC",
+          metadataText: "{}",
+          isService: false,
+        },
+      ],
+      args.limit,
+    ));
+    const provider = makeProvider(JSON.stringify(parsedDraft({
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: null,
+        productName: null,
+        quantity: null,
+        width: null,
+        height: null,
+        dimensionsUnit: null,
+        materialText: null,
+        optionTexts: [],
+      }],
+      missingDecisions: [],
+    })));
+    const evidenceService = {
+      buildEvidenceBundle: jest.fn(async () => evidenceBundle),
+    };
+    const service = new InboundOrderParsingService(repo as any, () => provider, evidenceService as any);
+
+    const result = await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(result.draft?.lineItems[0]).toMatchObject({
+      productName: "Foam Core Sign",
+      quantity: 1,
+      width: 24,
+      height: 36,
+      dimensionsUnit: "in",
+      materialText: "3/16\" Foam Core",
+    });
+    expect(result.draft?.lineItems[0].productCandidates[0]).toMatchObject({
+      id: "foam_board",
+      label: "Foam Board",
+    });
+    expect(result.draft?.lineItems[0].candidateProductIds[0]).toBe("foam_board");
+    expect(result.draft?.evidence.reconciliation?.dimensions.sources[0].sourceText).toBe("Final Trim: 24\" x 36\"");
+    expect(result.draft?.evidence.reconciliation?.quantity.sources[0].sourceText).toBe("QTY: 1");
+  });
+
   test("adds compact customer intelligence to parse prompts and stored parsed drafts when customer resolution is confident", async () => {
     const { repo, attempts } = makeRepository();
     const provider = makeProvider(JSON.stringify(parsedDraft()));
@@ -587,6 +714,41 @@ describe("InboundOrderParsingService", () => {
       value: "2026-06-11",
       sourceText: "Arrival Due Date MUST EOD 6/11",
       confidence: expect.any(Number),
+    });
+  });
+
+  test("extracts Foam Core PO rows with final trim size and quantity", () => {
+    const poText = [
+      "Purchase Order No. 200222",
+      "Product: Foam Core Sign",
+      "Stock: 3/16\" Foam Core",
+      "Final Trim: 24\" x 36\"",
+      "QTY: 1",
+    ].join("\n");
+
+    const fields = extractPurchaseOrderFields({
+      text: poText,
+      receivedAt: "2026-06-19T12:00:00.000Z",
+    });
+
+    expect(fields).toMatchObject({
+      poNumber: "200222",
+      productDescription: "Foam Core Sign",
+      material: "3/16\" Foam Core",
+      dimensions: "24\" x 36\"",
+      quantity: 1,
+    });
+    expect(fields.fieldSources.productDescription).toMatchObject({
+      sourceText: "Product: Foam Core Sign",
+    });
+    expect(fields.fieldSources.material).toMatchObject({
+      sourceText: "Stock: 3/16\" Foam Core",
+    });
+    expect(fields.fieldSources.dimensions).toMatchObject({
+      sourceText: "Final Trim: 24\" x 36\"",
+    });
+    expect(fields.fieldSources.quantity).toMatchObject({
+      sourceText: "QTY: 1",
     });
   });
 
@@ -1258,6 +1420,53 @@ describe("InboundOrderParsingService", () => {
     expect(matches[0].metadata.matchBreakdown.materialScore).toBeGreaterThan(byId.acm?.metadata.matchBreakdown.materialScore ?? 0);
     expect(matches[0].metadata.matchBreakdown.combinedConfidence).toBeGreaterThan(byId.acm?.metadata.matchBreakdown.combinedConfidence ?? 0);
     expect(matches[0].metadata.matchBreakdown.keywordScore).toBeDefined();
+  });
+
+  test("product ranking maps Foam Core terminology to the existing Foam Board product", () => {
+    const matches = scoreProductKnowledgeCandidates(
+      {
+        sourceText: "Product: Foam Core Sign Stock: 3/16\" Foam Core Final Trim: 24\" x 36\" QTY: 1",
+        productName: "Foam Core Sign",
+        materialText: "3/16\" Foam Core",
+      },
+      [
+        {
+          id: "foam_board",
+          name: "Foam Board",
+          description: "Lightweight foam board display panels and indoor sign boards.",
+          category: "Display Boards",
+          materialName: "3/16 White Foam Board",
+          materialCategory: "Foam Board",
+          metadataText: JSON.stringify({ aliases: ["foam core", "foamcore", "foam sign"] }),
+          isService: false,
+        },
+        {
+          id: "pvc",
+          name: "PVC",
+          description: "Printable PVC signs and rigid display panels.",
+          category: "Rigid Signs",
+          materialName: "3mm White PVC",
+          materialCategory: "PVC",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "acm",
+          name: "ACM / Dibond / Max Metal",
+          description: "Rigid aluminum composite sign panels for outdoor business signs and displays.",
+          category: "Rigid Signs",
+          materialName: "Aluminum Composite Material",
+          materialCategory: "ACM",
+          metadataText: "{}",
+          isService: false,
+        },
+      ],
+      5,
+    );
+
+    expect(matches[0].id).toBe("foam_board");
+    expect(matches[0].confidence).toBeGreaterThanOrEqual(90);
+    expect(matches[0].metadata.matchReasons.join(" ")).toMatch(/foam core|foam board|metadata alias/i);
   });
 
   test("product ranking uses AI parsing description before customer-facing description fallback", () => {

@@ -288,6 +288,8 @@ function extractQuantityWithSource(text: string): { value: number; sourceText: s
 
 function extractDimensions(text: string): string | null {
   return firstMatch(text, [
+    /\b(?:final\s+trim|trim(?:med)?\s+size|size)\s*[:#]?\s*(\d+(?:\.\d+)?\s*(?:"|”|in|inch|inches|ft|feet|mm|cm)?\s*(?:x|X|Ã—|×)\s*\d+(?:\.\d+)?\s*(?:"|”|in|inch|inches|ft|feet|mm|cm)?)/i,
+    /\b(\d+(?:\.\d+)?\s*(?:"|”)\s*(?:x|X|Ã—|×)\s*\d+(?:\.\d+)?\s*(?:"|”))\b/i,
     /\b(\d+(?:\.\d+)?\s*(?:in|inch|inches|ft|feet|mm|cm)?\s*[xX×]\s*\d+(?:\.\d+)?\s*(?:in|inch|inches|ft|feet|mm|cm)?)\b/i,
     /\bsize\s*[:#]?\s*(\d+(?:\.\d+)?\s*[xX×]\s*\d+(?:\.\d+)?)\b/i,
   ]);
@@ -295,6 +297,8 @@ function extractDimensions(text: string): string | null {
 
 function extractDimensionsWithSource(text: string): { value: string; sourceText: string } | null {
   return firstMatchWithSource(text, [
+    /\b(?:final\s+trim|trim(?:med)?\s+size|size)\s*[:#]?\s*(\d+(?:\.\d+)?\s*(?:"|”|in|inch|inches|ft|feet|mm|cm)?\s*(?:x|X|Ã—|×)\s*\d+(?:\.\d+)?\s*(?:"|”|in|inch|inches|ft|feet|mm|cm)?)/i,
+    /\b(\d+(?:\.\d+)?\s*(?:"|”)\s*(?:x|X|Ã—|×)\s*\d+(?:\.\d+)?\s*(?:"|”))\b/i,
     /\b(\d+(?:\.\d+)?\s*(?:in|inch|inches|ft|feet|mm|cm)?\s*[xX×]\s*\d+(?:\.\d+)?\s*(?:in|inch|inches|ft|feet|mm|cm)?)\b/i,
     /\bsize\s*[:#]?\s*(\d+(?:\.\d+)?\s*[xX×]\s*\d+(?:\.\d+)?)\b/i,
   ]);
@@ -302,6 +306,14 @@ function extractDimensionsWithSource(text: string): { value: string; sourceText:
 
 function parseDimensions(value: string | null): { width: number | null; height: number | null; unit: string | null } {
   if (!value) return { width: null, height: null, unit: null };
+  const quotedOrExplicit = value.match(/(\d+(?:\.\d+)?)\s*(?:"|”|in|inch|inches|ft|feet|mm|cm)?\s*(?:x|X|Ã—|×)\s*(\d+(?:\.\d+)?)\s*((?:"|”|in|inch|inches|ft|feet|mm|cm)?)?/i);
+  if (quotedOrExplicit) {
+    const rawUnit = quotedOrExplicit[3]?.toLowerCase() ?? (value.includes("\"") || value.includes("”") ? "\"" : "");
+    const unit = rawUnit === "\"" || rawUnit === "”"
+      ? "in"
+      : rawUnit.replace(/^inch(?:es)?$/, "in").replace(/^feet$/, "ft") || null;
+    return { width: Number(quotedOrExplicit[1]), height: Number(quotedOrExplicit[2]), unit };
+  }
   const match = value.match(/(\d+(?:\.\d+)?)\s*(?:in|inch|inches|ft|feet|mm|cm)?\s*[xX×]\s*(\d+(?:\.\d+)?)\s*(in|inch|inches|ft|feet|mm|cm)?/i);
   if (!match) return { width: null, height: null, unit: null };
   const unit = match[3]?.toLowerCase().replace(/^inch(?:es)?$/, "in").replace(/^feet$/, "ft") ?? null;
@@ -394,10 +406,16 @@ export function extractPurchaseOrderFields(args: {
   ]);
   const sourceDocument = poNumber?.value ? `Purchase Order ${poNumber.value}` : args.sourceDocument;
   const material = firstMatchWithSource(text, [
+    /\bstock\s*[:#]?\s*(\d+\s*\/\s*\d+\s*(?:"|”)?\s*(?:white\s+)?foam\s*core)\b/i,
+    /\bstock\s*[:#]?\s*(\d+\s*\/\s*\d+\s*(?:"|”)?\s*(?:white\s+)?foam\s*board)\b/i,
+    /\b(\d+\s*\/\s*\d+\s*(?:"|”)?\s*(?:white\s+)?foam\s*core)\b/i,
+    /\b(\d+\s*\/\s*\d+\s*(?:"|”)?\s*(?:white\s+)?foam\s*board)\b/i,
     /\b(\d+(?:\.\d+)?\s*mm\s+(?:white\s+)?PVC)\b/i,
     /\b(\d+(?:\.\d+)?\s*mm\s+coroplast)\b/i,
     /\b(\.?\d+\s*magnetic)\b/i,
     /\b(one[-\s]?way vision vinyl|window perf(?:orated)? vinyl)\b/i,
+    /\b(foam\s*core)\b/i,
+    /\b(foam\s*board)\b/i,
     /\b((?:white\s+)?PVC)\b/i,
     /\b(coroplast)\b/i,
   ]);
