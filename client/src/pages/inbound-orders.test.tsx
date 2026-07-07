@@ -5,8 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 
 const mockPdfRender = jest.fn(() => ({ promise: Promise.resolve() }));
-const mockPdfGetDocument = jest.fn(() => ({
-  promise: Promise.resolve({
+const createMockPdfDocument = () => ({
     numPages: 2,
     destroy: jest.fn(() => Promise.resolve()),
     getPage: jest.fn((pageNumber: number) => Promise.resolve({
@@ -18,7 +17,9 @@ const mockPdfGetDocument = jest.fn(() => ({
       render: mockPdfRender,
       pageNumber,
     })),
-  }),
+});
+const mockPdfGetDocument = jest.fn(() => ({
+  promise: Promise.resolve(createMockPdfDocument()),
 }));
 
 jest.mock("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url", () => "pdf-worker-url", { virtual: true });
@@ -698,13 +699,28 @@ beforeEach(() => {
   mockToast.mockReset();
   URL.createObjectURL = jest.fn((blob: Blob) => `blob:${blob.type || "attachment"}`) as any;
   URL.revokeObjectURL = jest.fn() as any;
+  if (typeof Blob.prototype.arrayBuffer !== "function") {
+    Object.defineProperty(Blob.prototype, "arrayBuffer", {
+      configurable: true,
+      value: async function arrayBuffer(this: Blob) {
+        return new Promise<ArrayBuffer>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as ArrayBuffer);
+          reader.onerror = () => reject(reader.error ?? new Error("Unable to read blob."));
+          reader.readAsArrayBuffer(this);
+        });
+      },
+    });
+  }
   HTMLAnchorElement.prototype.click = jest.fn();
   HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
     setTransform: jest.fn(),
     clearRect: jest.fn(),
   })) as any;
-  mockPdfGetDocument.mockClear();
-  mockPdfRender.mockClear();
+  mockPdfRender.mockReset();
+  mockPdfRender.mockImplementation(() => ({ promise: Promise.resolve() }));
+  mockPdfGetDocument.mockReset();
+  mockPdfGetDocument.mockImplementation(() => ({ promise: Promise.resolve(createMockPdfDocument()) }));
   window.localStorage.clear();
 });
 
@@ -1543,6 +1559,12 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-inline-attachment-viewer'] iframe")).toBeNull();
     expect(container.querySelector("[data-testid='clean-pdf-controls']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-pdf-canvas-stage']")?.getAttribute("data-fit-mode")).toBe("width");
+    await waitForCondition(
+      () => Boolean(container.querySelector("[data-testid='clean-pdf-page-canvas']")),
+      "Clean View PDF page canvas rendered",
+    );
+    expect(container.querySelector("[data-testid='clean-pdf-page-canvas']")).toBeTruthy();
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith("blob:application/pdf");
     expect(apiFetchMock.mock.calls.some(([url]) => String(url) === "/api/inbound-orders/inbound_1/files/file_art/download")).toBe(true);
     const zoomLabel = container.querySelector("[data-testid='clean-pdf-zoom-label']") as HTMLElement;
     const zoomBefore = zoomLabel.textContent;
@@ -1857,6 +1879,52 @@ describe("InboundOrdersPage", () => {
       variant: "destructive",
     }));
     expect(container.querySelector("a[href='/api/inbound-orders/inbound_1/files/file_blocked/download']")).toBeNull();
+  });
+
+  test("shows a Clean View PDF render error instead of a blank viewer", async () => {
+    mockPdfGetDocument.mockImplementationOnce(() => ({
+      promise: Promise.reject(new Error("PDF render failed")),
+    }));
+    const row = record({
+      sourceType: "email",
+      rawPayloadJson: {
+        sender: { name: "PDF Customer", email: "pdf@example.com" },
+        subject: "Broken PDF",
+        bodyText: "Please review the attached PO.",
+      },
+    });
+    setupParsedInboundReview({
+      row,
+      detailOverrides: {
+        files: [{
+          id: "file_pdf_error",
+          inboundRecordId: row.id,
+          fileRecordId: "file_record_pdf_error",
+          role: "po",
+          status: "uploaded",
+          sourceFilename: "Broken PO.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 2048,
+          providerAttachmentId: "att_pdf_error",
+          reviewNotes: null,
+        }],
+      },
+    });
+
+    renderPage();
+    await waitForText("Clean View");
+    act(() => {
+      Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement);
+    });
+    await waitForText("Broken PO.pdf");
+    const openButton = Array.from(container.querySelectorAll("button")).find((button) => button.getAttribute("aria-label") === "Open Broken PO.pdf") as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(openButton);
+    });
+    await waitForText("Document Viewer");
+    await waitForText("PDF render failed");
+    expect(container.querySelector("[data-testid='clean-inline-attachment-viewer']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-inline-attachment-viewer'] iframe")).toBeNull();
   });
 
   test("clears the Clean View inline attachment viewer when switching records", async () => {
