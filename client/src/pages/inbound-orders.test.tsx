@@ -1508,10 +1508,38 @@ describe("InboundOrdersPage", () => {
 
     await waitForText("Source Documents");
     await waitForText("Order Workstation");
-    expect(container.querySelector("[data-testid='clean-inbound-workspace']")).toBeTruthy();
+    const cleanWorkspace = container.querySelector("[data-testid='clean-inbound-workspace']") as HTMLElement;
+    expect(cleanWorkspace).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-inbound-queue']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-source-documents']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-order-workstation']")).toBeTruthy();
+    const cleanQueuePanel = container.querySelector("[data-testid='clean-queue-panel']") as HTMLElement;
+    const cleanSourcePanel = container.querySelector("[data-testid='clean-source-panel']") as HTMLElement;
+    const cleanWorkstationPanel = container.querySelector("[data-testid='clean-workstation-panel']") as HTMLElement;
+    expect(cleanQueuePanel.style.width).toBe("300px");
+    expect(cleanQueuePanel.style.flex).toBe("0 0 300px");
+    expect(cleanSourcePanel.style.flex).toContain(cleanWorkspace.style.getPropertyValue("--workspace-evidence-width").replace("px", ""));
+    expect(cleanWorkstationPanel.style.flex).toContain(cleanWorkspace.style.getPropertyValue("--workspace-draft-width").replace("px", ""));
+    expect(cleanWorkspace.querySelector("[aria-label='Resize queue panel']")).toBeTruthy();
+    expect(cleanWorkspace.querySelector("[aria-label='Resize evidence panel']")).toBeTruthy();
+    expect(cleanWorkspace.querySelector("[aria-label='Resize draft builder panel']")).toBeTruthy();
+    act(() => {
+      Simulate.mouseDown(cleanWorkspace.querySelector("[aria-label='Resize queue panel']") as HTMLButtonElement, { clientX: 300 } as any);
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 340, bubbles: true }));
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+    await waitForCondition(() => cleanWorkspace.style.getPropertyValue("--workspace-queue-width") === "340px", "Clean View queue splitter resize");
+    expect(window.localStorage.getItem("titanos.inboundOrders.queueWidth")).toBe("340");
+    const startingCleanEvidenceWidth = Number.parseInt(cleanWorkspace.style.getPropertyValue("--workspace-evidence-width"), 10);
+    act(() => {
+      Simulate.mouseDown(cleanWorkspace.querySelector("[aria-label='Resize evidence panel']") as HTMLButtonElement, { clientX: 500 } as any);
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 540, bubbles: true }));
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+    await waitForCondition(() => (
+      cleanWorkspace.style.getPropertyValue("--workspace-evidence-width") === `${startingCleanEvidenceWidth + 40}px`
+    ), "Clean View source/workstation splitter resize");
+    expect(window.localStorage.getItem("titanos.inboundOrders.evidenceWidth")).toBe(String(startingCleanEvidenceWidth + 40));
     expect(container.querySelector("[data-testid='clean-ai-summary']")).toBeTruthy();
     expect(container.textContent).toContain("Order Summary");
     expect(container.textContent).toContain("Email");
