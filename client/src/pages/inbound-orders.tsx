@@ -1656,7 +1656,7 @@ function cleanSourceLabel(source: string | null | undefined) {
 function cleanShortSourceLabel(source: string | null | undefined, target?: CleanHighlightTarget) {
   if (target === "artwork") return "Attachment";
   if (source === "attachment") return "Attachment";
-  if (source?.includes("pdf") || source?.includes("po")) return "PO PDF";
+  if (source?.includes("pdf") || source?.includes("po")) return "PO document";
   if (source?.includes("email") || source?.includes("source") || source?.includes("deterministic")) return "Email";
   if (source === "staff_selected") return "Staff";
   if (!source) return "AI";
@@ -1752,7 +1752,7 @@ function cleanEvidenceComparison(
   return {
     label: targetLabel[target],
     primary: cleanShortSourceLabel(primarySource, target),
-    secondary: target === "artwork" ? "Email" : target === "po" || target === "dueDate" ? "Email" : "PO PDF",
+    secondary: target === "artwork" ? "Email" : target === "po" || target === "dueDate" ? "Email" : "PO document",
     confidence: cleanConfidenceLabel(confidence),
     conflict,
   };
@@ -2902,7 +2902,7 @@ function SourceDocumentPoPanel({
           {extractedPoItems.length === 0 ? (
             <div className="rounded-md border border-dashed border-border px-3 py-6 text-sm text-muted-foreground">
               {poFiles.length > 0
-                ? "PO PDF downloaded, text not extracted yet. Run Parse to use this document as evidence."
+                ? "PO document downloaded, text not extracted yet. Run Parse to use this document as evidence."
                 : "No PO extraction summary is available."}
             </div>
           ) : extractedPoItems.map((item) => {
@@ -3111,8 +3111,12 @@ function EvidenceUsedSection({
   const record = detail?.record ?? null;
   const evidence = record?.sourceType === "email" ? getInboundEmailEvidence(record) : record ? getManualInboundEvidence(record) : null;
   const files = dedupeAttachmentFiles(detail?.files ?? []);
-  const poItems = draft.evidence.items.filter((item) => item.type === "PDF_ATTACHMENT" && item.documentType === "purchase_order");
-  const pdfFailures = draft.evidence.items.filter((item) => item.type === "PDF_ATTACHMENT" && item.extractionStatus === "failed");
+  const poItems = draft.evidence.items.filter((item) => (
+    item.type === "PDF_ATTACHMENT" || item.type === "TEXT_ATTACHMENT"
+  ) && item.documentType === "purchase_order");
+  const documentFailures = draft.evidence.items.filter((item) => (
+    item.type === "PDF_ATTACHMENT" || item.type === "TEXT_ATTACHMENT"
+  ) && item.extractionStatus === "failed");
   const artworkFiles = files.filter((file) => file.role === "artwork");
   const threadCount = typeof (evidence as ReturnType<typeof getInboundEmailEvidence> | null)?.thread?.messageCount === "number"
     ? Number((evidence as ReturnType<typeof getInboundEmailEvidence>).thread?.messageCount)
@@ -3129,21 +3133,21 @@ function EvidenceUsedSection({
       detail: threadCount > 0 ? `${threadCount} message${threadCount === 1 ? "" : "s"} available` : "No thread timeline captured",
     },
     {
-      label: "PO PDFs",
+      label: "PO documents",
       status: poItems.some((item) => item.extractionStatus === "successful")
         ? "parsed"
-        : pdfFailures.length > 0
+        : documentFailures.length > 0
           ? "failed"
           : files.some((file) => file.role === "po")
             ? "skipped"
             : "not available",
       detail: poItems.length > 0
-        ? `${poItems.length} purchase order PDF${poItems.length === 1 ? "" : "s"} used`
-        : pdfFailures.length > 0
-          ? "PO PDF downloaded, text not extracted"
+        ? `${poItems.length} purchase order document${poItems.length === 1 ? "" : "s"} used`
+        : documentFailures.length > 0
+          ? "PO document downloaded, text not extracted"
           : files.some((file) => file.role === "po")
-            ? "PO PDF available for manual review"
-            : "No PO PDF detected",
+            ? "PO document available for manual review"
+            : "No PO document detected",
     },
     {
       label: "Artwork files",
@@ -4158,7 +4162,7 @@ function OperationalEmailPanel({
   const signatureFiles = files.filter(isLikelySignatureInlineFile);
   const referenceFiles = files.filter((file) => file.role === "reference");
   const poEvidenceItems = (draftPreview?.draft?.evidence?.items ?? [])
-    .filter((item) => item.type === "PDF_ATTACHMENT" && (item.documentType === "purchase_order" || item.poSummary));
+    .filter((item) => (item.type === "PDF_ATTACHMENT" || item.type === "TEXT_ATTACHMENT") && (item.documentType === "purchase_order" || item.poSummary));
 
   return (
     <ScrollArea className="h-full">
@@ -4584,7 +4588,7 @@ function CleanSourceDocuments({
   const referenceLinks = attachmentLinks.filter((link) => classificationForLink(link) === "REFERENCE" || classificationForLink(link) === "OTHER");
   const signatureLinks = attachmentLinks.filter((link) => classificationForLink(link) === "IGNORE_INLINE");
   const poEvidenceItems = (draftPreview?.draft?.evidence?.items ?? [])
-    .filter((item) => item.type === "PDF_ATTACHMENT" && (item.documentType === "purchase_order" || item.poSummary));
+    .filter((item) => (item.type === "PDF_ATTACHMENT" || item.type === "TEXT_ATTACHMENT") && (item.documentType === "purchase_order" || item.poSummary));
   const firstLine = form?.reviewedLineItemsJson[0] ?? null;
   const linkByFileId = new Map(attachmentLinks.map((link) => [link.fileId, link]));
   const linkForFile = (file: ClientInboundOrderFile) => linkByFileId.get(file.id) ?? artworkLinkFromInboundFile(file, "unresolved");

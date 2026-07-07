@@ -1,7 +1,54 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, jest, test } from "@jest/globals";
+import archiver from "archiver";
 
-import { inboundOrderEvidenceService } from "../services/inboundOrders/InboundOrderEvidenceService";
+import {
+  extractMachineReadableWordText,
+  inboundOrderEvidenceService,
+} from "../services/inboundOrders/InboundOrderEvidenceService";
 import type { InboundOrderFile, InboundOrderRecord } from "@shared/schema";
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function documentXml(text: string): string {
+  const paragraphs = text.split(/\r?\n/).map((line) => (
+    `<w:p><w:r><w:t xml:space="preserve">${escapeXml(line)}</w:t></w:r></w:p>`
+  )).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    ${paragraphs}
+    <w:sectPr/>
+  </w:body>
+</w:document>`;
+}
+
+function createDocxBuffer(text: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const archive = archiver("zip", { zlib: { level: 9 } });
+    const chunks: Buffer[] = [];
+    archive.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+    archive.on("error", reject);
+    archive.on("end", () => resolve(Buffer.concat(chunks)));
+    archive.append(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`, { name: "[Content_Types].xml" });
+    archive.append(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`, { name: "_rels/.rels" });
+    archive.append(documentXml(text), { name: "word/document.xml" });
+    void archive.finalize();
+  });
+}
 
 function record(): InboundOrderRecord {
   return {
@@ -83,6 +130,72 @@ function inboundFile(overrides: Partial<InboundOrderFile> = {}): InboundOrderFil
 }
 
 describe("InboundOrderEvidenceService attachment evidence", () => {
+  test("extracts readable text from Word document buffers", async () => {
+    const buffer = await createDocxBuffer([
+      "Purchase Order 151900",
+      "QTY: 1",
+      "Foam Core Sign",
+      "Stock: 3/16\" Foam Core",
+      "Final Trim: 24 x 36",
+    ].join("\n"));
+
+    const extracted = await extractMachineReadableWordText(buffer);
+
+    expect(extracted.text).toContain("Purchase Order 151900");
+    expect(extracted.text).toContain("QTY: 1");
+    expect(extracted.text).toContain("Final Trim: 24 x 36");
+  });
+
+  test("uses Word PO text as parse evidence with field sources", async () => {
+    const buffer = await createDocxBuffer([
+      "Purchase Order 151900",
+      "Arrival Due Date 6/24",
+      "QTY: 1",
+      "Product: Foam Core Sign",
+      "Stock: 3/16\" Foam Core",
+      "Final Trim: 24 x 36",
+    ].join("\n"));
+    const readSpy = jest
+      .spyOn(inboundOrderEvidenceService as unknown as { readCanonicalFile(fileRecordId: string): Promise<Buffer | null> }, "readCanonicalFile")
+      .mockResolvedValue(buffer);
+
+    try {
+      const bundle = await inboundOrderEvidenceService.buildEvidenceBundle({
+        organizationId: "org_1",
+        record: record(),
+        files: [inboundFile({
+          fileRecordId: "canonical_docx_1",
+          sourceFilename: "Purchase Order 151900.docx",
+          mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          sizeBytes: buffer.length,
+          metadataJson: { poCandidate: true },
+        })],
+      });
+
+      const attachment = bundle.items.find((item) => item.sourceId === "file_1");
+      expect(attachment).toEqual(expect.objectContaining({
+        type: "TEXT_ATTACHMENT",
+        documentType: "purchase_order",
+        extractionStatus: "successful",
+        rawText: expect.stringContaining("Foam Core Sign"),
+        poSummary: expect.objectContaining({
+          poNumber: "151900",
+          quantity: 1,
+          productDescription: "Foam Core Sign",
+          material: "3/16\" Foam Core",
+          dimensions: "24 x 36",
+        }),
+      }));
+      expect(attachment?.poSummary?.fieldSources.quantity?.sourceType).toBe("TEXT_ATTACHMENT");
+      expect(attachment?.poSummary?.fieldSources.dimensions?.sourceText).toContain("Final Trim: 24 x 36");
+      expect(bundle.reconciliation?.quantity.value).toBe(1);
+      expect(bundle.reconciliation?.dimensions.value).toBe("24 x 36");
+      expect(bundle.reconciliation?.material.value).toBe("3/16\" Foam Core");
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
   test("keeps metadata-only PO PDFs visible as PO candidates when text is not extracted", async () => {
     const bundle = await inboundOrderEvidenceService.buildEvidenceBundle({
       organizationId: "org_1",
