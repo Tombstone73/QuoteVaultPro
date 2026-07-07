@@ -1194,7 +1194,10 @@ export function registerInboundOrderRoutes(
       const file = detail.files.find((candidate) => candidate.id === String(req.params.fileId));
       if (!file) return res.status(404).json({ message: "Inbound attachment not found" });
       if (!file.fileRecordId) return res.status(404).json({ message: "Inbound attachment file is not stored" });
-      if (file.status === "quarantined" || file.status === "rejected") {
+      const metadata = file.metadataJson && typeof file.metadataJson === "object" && !Array.isArray(file.metadataJson)
+        ? file.metadataJson as Record<string, unknown>
+        : {};
+      if (file.status === "rejected" || metadata.attachmentState === "blocked_file_type") {
         return res.status(409).json({ message: "Inbound attachment is not available for download." });
       }
 

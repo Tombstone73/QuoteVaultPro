@@ -1153,7 +1153,7 @@ function getAttachmentDownloadPolicy(args: {
   if (!hasAttachments) return "no_attachments";
 
   const allKnownFilesBlocked = args.files.length > 0
-    && args.files.every((file) => getFileAttachmentState(file) === "blocked_file_type" || file.status === "quarantined");
+    && args.files.every((file) => getFileAttachmentState(file) === "blocked_file_type");
   if (allKnownFilesBlocked && candidateCount <= args.files.length) return "blocked_file_type_only";
 
   const hasPendingTrust = args.files.some((file) => getFileAttachmentState(file) === "pending_trust");
@@ -1463,7 +1463,7 @@ export class InboundOrderService {
     const allKnownFilesBlocked = recordFiles.length > 0
       && recordFiles.every((file) => {
         const metadata = asRecord(file.metadataJson);
-        return metadata?.attachmentState === "blocked_file_type" || file.status === "quarantined";
+        return metadata?.attachmentState === "blocked_file_type";
       });
     const hasPendingTrust = recordFiles.some((file) => asRecord(file.metadataJson)?.attachmentState === "pending_trust");
     const attachmentDownloadPolicy: InboundAttachmentDownloadPolicy = !hasAttachments

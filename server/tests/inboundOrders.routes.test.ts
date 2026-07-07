@@ -15,6 +15,9 @@ import {
   InboundOrderReviewDraftValidationError,
   InboundOrderTransitionError,
 } from "../services/inboundOrders/InboundOrderService";
+import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
+import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
+import { storageRegistry } from "../services/storage/StorageRegistry";
 
 function inboundRecord(overrides: Record<string, any> = {}) {
   const now = new Date("2026-06-09T12:00:00.000Z");
@@ -1180,6 +1183,74 @@ describe("inbound order routes", () => {
     expect(response.body.data.file.role).toBe("po");
     expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
     expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
+  });
+
+  test("allows authorized staff to download stored quarantined ZIP attachments without exposing storage paths", async () => {
+    const zipFile = {
+      id: "zip_file_1",
+      inboundRecordId: "inbound_1",
+      sourceFilename: "Glass Barn Tractor Signs - 2026[1].zip",
+      role: "artwork",
+      mimeType: "application/zip",
+      sizeBytes: 2,
+      fileRecordId: "file_record_zip",
+      status: "quarantined",
+      metadataJson: { attachmentState: "scan_pending", attachmentExtension: "zip" },
+    };
+    service.getInboundOrder.mockResolvedValue({
+      ...inboundDetail(inboundRecord()),
+      files: [zipFile],
+    });
+    const resolveSpy = jest.spyOn(canonicalFileReadResolver, "resolveOriginal").mockResolvedValue({
+      fileRecordId: "file_record_zip",
+      status: "available",
+      placementState: "active",
+      providerConfigId: "provider_1",
+      providerType: "titan_managed",
+      bucket: "private",
+      objectKey: "org_1/inbound/zip_file_1.zip",
+      localPathRef: null,
+      displayFilename: "Glass Barn Tractor Signs - 2026[1].zip",
+      mimeType: "application/zip",
+    });
+    const providerSpy = jest.spyOn(storageProviderConfigRepository, "getByIdForOrganization").mockResolvedValue({
+      id: "provider_1",
+      organizationId: "org_1",
+      providerType: "titan_managed",
+      role: "primary",
+      name: "Private storage",
+      configJson: {},
+      enabled: true,
+      createdAt: new Date("2026-06-09T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-09T12:00:00.000Z"),
+    } as any);
+    const storageSpy = jest.spyOn(storageRegistry, "getAdapter").mockReturnValue({
+      getDownloadHandle: jest.fn(async () => ({ kind: "signed_url", value: "https://storage.example/private/zip_file_1.zip" })),
+    } as any);
+    const fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({ "content-type": "application/zip" }),
+      arrayBuffer: async () => Buffer.from("PK").buffer,
+    } as any);
+
+    try {
+      const response = await request(buildApp(service))
+        .get("/api/inbound-orders/inbound_1/files/zip_file_1/download");
+
+      expect(response.status).toBe(200);
+      expect(response.headers["content-type"]).toContain("application/zip");
+      expect(response.headers["content-disposition"]).toContain("attachment;");
+      expect(response.headers["content-disposition"]).toContain("Glass Barn Tractor Signs - 2026[1].zip");
+      expect(response.text).not.toContain("storage.example");
+      expect(fetchSpy).toHaveBeenCalledWith("https://storage.example/private/zip_file_1.zip");
+    } finally {
+      resolveSpy.mockRestore();
+      providerSpy.mockRestore();
+      storageSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
   });
 
   test("applies inbound record trust action and returns refreshed inbound detail", async () => {

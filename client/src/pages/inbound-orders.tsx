@@ -136,14 +136,16 @@ type CleanInlineAttachmentSelection = {
 } | null;
 
 function inboundFileDownloadUrl(recordId: string, file: ClientInboundOrderFile) {
-  return file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
+  const metadata = attachmentSafetyMetadata(file);
+  const attachmentState = String(metadata.attachmentState ?? "");
+  return file.fileRecordId && file.status !== "rejected" && attachmentState !== "blocked_file_type"
     ? `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(file.id)}/download`
     : null;
 }
 
 function inboundFileUnavailableLabel(file: ClientInboundOrderFile) {
   if (!file.fileRecordId) return "Metadata only";
-  if (file.status === "quarantined") return "Quarantined";
+  if (String(attachmentSafetyMetadata(file).attachmentState ?? "") === "blocked_file_type") return "Blocked file type";
   if (file.status === "rejected") return "Rejected";
   return "Unavailable";
 }
@@ -977,6 +979,8 @@ function SourceEvidenceFileCard({
           <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
             {inboundAttachmentRoleLabel(file.role)}
           </Badge>
+          {isArchiveAttachment(file) && <Badge variant="outline">ZIP / archive</Badge>}
+          {isQuarantinedAttachment(file) && <Badge variant="destructive">Quarantined</Badge>}
           <span>{titleCase(file.status)}</span>
           <span>{formatFileSize(file.sizeBytes)}</span>
           {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
@@ -2388,6 +2392,15 @@ function attachmentSafetyMetadata(file: ClientInboundOrderFile): Record<string, 
     : {};
 }
 
+function isArchiveAttachment(file: ClientInboundOrderFile): boolean {
+  return /\.zip$/i.test(file.sourceFilename ?? "") || /(?:application\/zip|application\/x-zip-compressed|zip)/i.test(file.mimeType ?? "");
+}
+
+function isQuarantinedAttachment(file: ClientInboundOrderFile): boolean {
+  const metadata = attachmentSafetyMetadata(file);
+  return file.status === "quarantined" || String(metadata.attachmentState ?? "") === "scan_pending" || String(metadata.attachmentState ?? "") === "quarantined";
+}
+
 function AttachmentSafetyDetails({
   recordId,
   file,
@@ -3625,6 +3638,8 @@ function InboundAttachmentCard({
           <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
             {inboundAttachmentRoleLabel(file.role)}
           </Badge>
+          {isArchiveAttachment(file) && <Badge variant="outline">ZIP / archive</Badge>}
+          {isQuarantinedAttachment(file) && <Badge variant="destructive">Quarantined</Badge>}
           {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
         </div>
         {!minimal && file.reviewNotes && (
@@ -5409,6 +5424,8 @@ function CleanCompactAttachments({
                       <div className="mt-0.5 flex flex-wrap gap-1.5 text-[11px] text-slate-500">
                         <span>{inboundAttachmentRoleLabel(file.role)}</span>
                         <span>{formatFileSize(file.sizeBytes)}</span>
+                        {isArchiveAttachment(file) && <span>ZIP / archive</span>}
+                        {isQuarantinedAttachment(file) && <span className="text-amber-200">Quarantined</span>}
                         {!file.fileRecordId && <span>Metadata only</span>}
                       </div>
                     </div>
@@ -7319,9 +7336,7 @@ function DraftBuilderPanel({
                       ) : group.links.map((link) => {
                         const key = artworkLinkKey(link);
                         const file = inboundFileByAttachmentKey.get(key);
-                        const downloadUrl = file?.fileRecordId && file.status !== "quarantined" && file.status !== "rejected" && selectedRecord
-                          ? `/api/inbound-orders/${encodeURIComponent(selectedRecord.id)}/files/${encodeURIComponent(file.id)}/download`
-                          : null;
+                        const downloadUrl = file && selectedRecord ? inboundFileDownloadUrl(selectedRecord.id, file) : null;
                         const confidence = classificationConfidenceForLink(link);
                         return (
                           <div key={key} className="rounded-md border border-border bg-muted/20 px-2 py-1.5">
@@ -7350,6 +7365,7 @@ function DraftBuilderPanel({
                               <option value="PO">Purchase Order</option>
                               <option value="REFERENCE">Reference</option>
                               <option value="IGNORE_INLINE">Junk / Signature</option>
+                              <option value="OTHER">Ignore</option>
                             </select>
                           </div>
                         );
@@ -7963,6 +7979,7 @@ function DraftBuilderPanel({
                       <option value="PO">Purchase Order</option>
                       <option value="REFERENCE">Reference</option>
                       <option value="IGNORE_INLINE">Junk / Signature</option>
+                      <option value="OTHER">Ignore</option>
                     </select>
                   </div>
                   <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-3">

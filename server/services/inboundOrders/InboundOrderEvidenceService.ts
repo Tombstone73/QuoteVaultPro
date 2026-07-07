@@ -853,6 +853,10 @@ function isWordAttachment(mimeType: string, fileName?: string | null): boolean {
   return /(?:msword|wordprocessingml\.document)/i.test(mimeType) || /\.(?:doc|docx)$/i.test(fileName ?? "");
 }
 
+function isZipAttachment(mimeType: string, fileName?: string | null): boolean {
+  return /(?:application\/zip|application\/x-zip-compressed|\bzip\b)/i.test(mimeType) || /\.zip$/i.test(fileName ?? "");
+}
+
 function extractPdfTextFromCompressedStreams(buffer: Buffer | Uint8Array): { text: string; pageCount: number } {
   const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
   const binary = bytes.toString("latin1");
@@ -1061,6 +1065,19 @@ export class InboundOrderEvidenceService {
           ? extractPurchaseOrderFields({ text: rawText, receivedAt: record.receivedAt, sourceDocument: fileName, sourceType: "TEXT_ATTACHMENT" })
           : null,
         warnings: [],
+      }, manual, record);
+    }
+
+    if (isZipAttachment(mimeType, fileName)) {
+      return applyManualClassificationToEvidence({
+        ...base,
+        type: "TEXT_ATTACHMENT",
+        rawText: null,
+        pageCount: null,
+        ...attachmentDocumentFallback(file),
+        extractionStatus: "not_attempted",
+        poSummary: null,
+        warnings: [warning("zip_attachment_quarantined", "ZIP archive kept as manual-review attachment. Contents were not extracted or parsed.", "info")],
       }, manual, record);
     }
 

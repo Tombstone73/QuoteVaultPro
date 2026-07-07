@@ -196,6 +196,40 @@ describe("InboundOrderEvidenceService attachment evidence", () => {
     }
   });
 
+  test("keeps ZIP archives visible without extracting or parsing contents", async () => {
+    const bundle = await inboundOrderEvidenceService.buildEvidenceBundle({
+      organizationId: "org_1",
+      record: record(),
+      files: [inboundFile({
+        sourceFilename: "Glass Barn Tractor Signs - 2026[1].zip",
+        role: "artwork",
+        mimeType: "application/zip",
+        status: "quarantined",
+        fileRecordId: "canonical_zip_1",
+        reviewNotes: "ZIP archive stored for manual review. Contents were not extracted.",
+        metadataJson: { attachmentState: "scan_pending", attachmentExtension: "zip" },
+      })],
+    });
+
+    const attachment = bundle.items.find((item) => item.sourceId === "file_1");
+    expect(attachment).toEqual(expect.objectContaining({
+      type: "TEXT_ATTACHMENT",
+      rawText: null,
+      poSummary: null,
+      extractionStatus: "not_attempted",
+      documentType: "artwork_reference",
+    }));
+    expect(attachment?.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "zip_attachment_quarantined",
+        message: expect.stringContaining("Contents were not extracted or parsed"),
+      }),
+    ]));
+    expect(bundle.reconciliation?.product.value).toBeNull();
+    expect(bundle.reconciliation?.quantity.value).toBeNull();
+    expect(bundle.reconciliation?.dimensions.value).toBeNull();
+  });
+
   test("keeps metadata-only PO PDFs visible as PO candidates when text is not extracted", async () => {
     const bundle = await inboundOrderEvidenceService.buildEvidenceBundle({
       organizationId: "org_1",
