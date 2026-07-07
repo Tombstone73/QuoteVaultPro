@@ -2849,6 +2849,230 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Purchase Order No 151534 Titan IYSA Yard Signs 6_19_26");
   });
 
+  test("Clean View PO summary displays product resolved from PO material evidence", async () => {
+    const parsed = parsedDraft({
+      lineItems: [{
+        sourceText: "Foam Core Sign\nStock: 3/16\" Foam Core\nFinal Trim: 24 x 36\nQTY: 1",
+        productName: "Foam Core Sign",
+        quantity: 1,
+        width: 24,
+        height: 36,
+        dimensionsUnit: "in",
+        materialText: "3/16\" Foam Core",
+        productCandidates: [{
+          id: "product_foam",
+          label: "Foam Board",
+          confidence: 95,
+          reason: "AI Parsing Description matched foam core material evidence.",
+        }],
+        candidateProductIds: ["product_foam"],
+      }],
+      evidence: {
+        items: [{
+          type: "PDF_ATTACHMENT",
+          label: "Foam Core PO.pdf",
+          sourceId: "file_po_foam",
+          fileName: "Foam Core PO.pdf",
+          mimeType: "application/pdf",
+          rawText: "Foam Core Sign\nStock: 3/16\" Foam Core\nFinal Trim: 24 x 36\nQTY: 1",
+          pageCount: 1,
+          documentType: "purchase_order",
+          documentConfidence: 96,
+          extractionStatus: "successful",
+          poSummary: {
+            poNumber: "151900",
+            customer: "Brainstorm Print",
+            contact: "Shawn Fears",
+            dueDate: null,
+            quantity: 1,
+            productDescription: null,
+            material: "3/16\" Foam Core",
+            dimensions: "24 x 36",
+            printSpecs: [],
+            shippingNotes: null,
+            price: null,
+            versionCount: null,
+            dateCandidates: [],
+            fieldSources: {},
+          },
+          warnings: [],
+        }],
+        conflicts: [],
+      },
+    });
+    const review = reviewDraft(parsed);
+    Object.assign(review.reviewedLineItemsJson[0], {
+      productName: "Foam Board",
+      selectedProductId: "product_foam",
+      selectedProductSource: "source_evidence",
+      interpretedProductId: "product_foam",
+      interpretedProductReason: "Exact material evidence matched Foam Board.",
+      interpretedProductConfidence: 95,
+      productUnresolved: false,
+      materialText: "3/16\" Foam Core",
+      quantity: 1,
+      width: 24,
+      height: 36,
+      dimensionsUnit: "in",
+    });
+
+    setupParsedInboundReview({
+      parsed,
+      review,
+      detailOverrides: {
+        files: [{
+          id: "file_po_foam",
+          inboundRecordId: "inbound_1",
+          sourceFilename: "Foam Core PO.pdf",
+          role: "po",
+          status: "available",
+          fileRecordId: "file_record_foam",
+          providerAttachmentId: "att_foam",
+          providerMessageId: "gmail_msg_foam",
+          mimeType: "application/pdf",
+          sizeBytes: 64000,
+          contentDisposition: "attachment",
+          metadataJson: { attachmentState: "downloaded" },
+        }],
+      },
+    });
+
+    renderPage();
+    await waitForText("Operational View");
+    const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(cleanButton);
+    });
+    await waitForText("Source Documents");
+    const poTab = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "PO") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(poTab);
+    });
+
+    await waitForText("PO Extraction Summary");
+    const sourceDocumentsText = container.querySelector("[data-testid='clean-source-documents']")?.textContent ?? "";
+    expect(sourceDocumentsText).toContain("Product");
+    expect(sourceDocumentsText).toContain("Foam Board");
+    expect(sourceDocumentsText).toContain("Evidence: Resolved from 3/16\" Foam Core");
+    expect(sourceDocumentsText).toContain("Material");
+    expect(sourceDocumentsText).toContain("3/16\" Foam Core");
+    expect(sourceDocumentsText).toContain("24 x 36");
+    expect(sourceDocumentsText).not.toContain("Resolved product candidates");
+  });
+
+  test("Clean View PO summary does not pretend ambiguous multi-line products were directly printed", async () => {
+    const parsed = parsedDraft({
+      lineItems: [{
+        sourceText: "Stock: 3/16\" Foam Core\nFinal Trim: 24 x 36\nQTY: 1",
+        productName: "Foam Core Sign",
+        quantity: 1,
+        width: 24,
+        height: 36,
+        dimensionsUnit: "in",
+        materialText: "3/16\" Foam Core",
+        productCandidates: [{ id: "product_foam", label: "Foam Board", confidence: 95, reason: "Alias matched." }],
+        candidateProductIds: ["product_foam"],
+      }, {
+        sourceText: "Stock: 3/16\" Foam Core\nFinal Trim: 24 x 36\nQTY: 1",
+        productName: "Foam Core Display",
+        quantity: 1,
+        width: 24,
+        height: 36,
+        dimensionsUnit: "in",
+        materialText: "3/16\" Foam Core",
+        productCandidates: [{ id: "product_display", label: "Foam Core Display", confidence: 92, reason: "Alias matched." }],
+        candidateProductIds: ["product_display"],
+      }],
+      evidence: {
+        items: [{
+          type: "PDF_ATTACHMENT",
+          label: "Multi Line Foam PO.pdf",
+          sourceId: "file_po_multi",
+          fileName: "Multi Line Foam PO.pdf",
+          mimeType: "application/pdf",
+          rawText: "Stock: 3/16\" Foam Core\nFinal Trim: 24 x 36\nQTY: 1",
+          pageCount: 1,
+          documentType: "purchase_order",
+          documentConfidence: 96,
+          extractionStatus: "successful",
+          poSummary: {
+            poNumber: "151901",
+            customer: "Brainstorm Print",
+            contact: "Shawn Fears",
+            dueDate: null,
+            quantity: 1,
+            productDescription: null,
+            material: "3/16\" Foam Core",
+            dimensions: "24 x 36",
+            printSpecs: [],
+            shippingNotes: null,
+            price: null,
+            versionCount: null,
+            dateCandidates: [],
+            fieldSources: {},
+          },
+          warnings: [],
+        }],
+        conflicts: [],
+      },
+    });
+    const review = reviewDraft(parsed);
+    Object.assign(review.reviewedLineItemsJson[0], {
+      productName: "Foam Board",
+      selectedProductId: "product_foam",
+      productUnresolved: false,
+      materialText: "3/16\" Foam Core",
+    });
+    Object.assign(review.reviewedLineItemsJson[1], {
+      productName: "Foam Core Display",
+      selectedProductId: "product_display",
+      productUnresolved: false,
+      materialText: "3/16\" Foam Core",
+    });
+
+    setupParsedInboundReview({
+      parsed,
+      review,
+      detailOverrides: {
+        files: [{
+          id: "file_po_multi",
+          inboundRecordId: "inbound_1",
+          sourceFilename: "Multi Line Foam PO.pdf",
+          role: "po",
+          status: "available",
+          fileRecordId: "file_record_multi",
+          providerAttachmentId: "att_multi",
+          providerMessageId: "gmail_msg_multi",
+          mimeType: "application/pdf",
+          sizeBytes: 64000,
+          contentDisposition: "attachment",
+          metadataJson: { attachmentState: "downloaded" },
+        }],
+      },
+    });
+
+    renderPage();
+    await waitForText("Operational View");
+    const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(cleanButton);
+    });
+    await waitForText("Source Documents");
+    const poTab = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "PO") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(poTab);
+    });
+
+    await waitForText("Resolved product candidates");
+    const sourceDocumentsText = container.querySelector("[data-testid='clean-source-documents']")?.textContent ?? "";
+    expect(sourceDocumentsText).toContain("Resolved product candidates");
+    expect(sourceDocumentsText).toContain("Foam Board");
+    expect(sourceDocumentsText).toContain("Foam Core Display");
+    expect(sourceDocumentsText).toContain("Multiple line items may match this PO evidence");
+  });
+
   test("supports operational line item add, duplicate, remove, and product picker rendering", async () => {
     setupParsedInboundReview();
 

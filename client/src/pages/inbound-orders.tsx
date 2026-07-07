@@ -2728,15 +2728,125 @@ function ProductMatchReasoning({ candidates }: { candidates: InboundOrderParsedD
   );
 }
 
-function PoSummaryGrid({ summary }: { summary: NonNullable<InboundOrderParsedDraft["evidence"]["items"][number]["poSummary"]> }) {
+type ReviewLineItemState = ReviewDraftFormState["reviewedLineItemsJson"][number];
+
+type PoResolvedProductDisplay = {
+  status: "resolved" | "ambiguous";
+  productNames: string[];
+  evidenceText: string | null;
+};
+
+function normalizePoSummaryText(value: string | number | null | undefined) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/["']/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function poSummaryDimensionMatchesLineItem(
+  summary: NonNullable<InboundOrderParsedDraft["evidence"]["items"][number]["poSummary"]>,
+  lineItem: ReviewLineItemState,
+) {
+  const dimensions = normalizePoSummaryText(summary.dimensions);
+  if (!dimensions || lineItem.width == null || lineItem.height == null) return false;
+  const width = normalizePoSummaryText(lineItem.width);
+  const height = normalizePoSummaryText(lineItem.height);
+  return dimensions.includes(`${width}x${height}`)
+    || dimensions.includes(`${width} x ${height}`)
+    || dimensions.includes(`${width} ${height}`)
+    || dimensions.includes(`${height}x${width}`)
+    || dimensions.includes(`${height} x ${width}`);
+}
+
+function resolveProductForPoSummary(
+  summary: NonNullable<InboundOrderParsedDraft["evidence"]["items"][number]["poSummary"]>,
+  lineItems: ReviewLineItemState[] | null | undefined,
+): PoResolvedProductDisplay | null {
+  if (summary.productDescription || !lineItems?.length) return null;
+  const material = normalizePoSummaryText(summary.material);
+  const resolvedLineItems = lineItems
+    .filter((lineItem) => lineItem.selectedProductId && lineItem.productName && !lineItem.productUnresolved)
+    .map((lineItem, index) => {
+      const sourceText = normalizePoSummaryText(lineItem.sourceText);
+      const materialText = normalizePoSummaryText(lineItem.materialText);
+      const productName = normalizePoSummaryText(lineItem.productName);
+      const score = [
+        material && (sourceText.includes(material) || materialText.includes(material)) ? 4 : 0,
+        materialText && material.includes(materialText) ? 3 : 0,
+        poSummaryDimensionMatchesLineItem(summary, lineItem) ? 2 : 0,
+        summary.quantity != null && lineItem.quantity === Number(summary.quantity) ? 1 : 0,
+        productName && sourceText.includes(productName) ? 1 : 0,
+      ].reduce((total, value) => total + value, 0);
+      return { lineItem, index, score };
+    });
+
+  if (resolvedLineItems.length === 0) return null;
+  const ranked = [...resolvedLineItems].sort((left, right) => right.score - left.score || left.index - right.index);
+  const top = ranked[0];
+  const productNames = Array.from(new Set(ranked.map((item) => item.lineItem.productName).filter((value): value is string => Boolean(value))));
+  const evidenceText = summary.material ?? top.lineItem.materialText ?? top.lineItem.sourceText ?? null;
+
+  if (resolvedLineItems.length === 1 || (top.score > 0 && top.score > (ranked[1]?.score ?? -1))) {
+    return {
+      status: "resolved",
+      productNames: [top.lineItem.productName!],
+      evidenceText,
+    };
+  }
+
+  return {
+    status: "ambiguous",
+    productNames,
+    evidenceText,
+  };
+}
+
+function PoResolvedProductField({ resolvedProduct }: { resolvedProduct: PoResolvedProductDisplay }) {
+  if (resolvedProduct.status === "ambiguous") {
+    return (
+      <div className="min-w-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 sm:col-span-3">
+        <div className="text-xs text-amber-200">Resolved product candidates</div>
+        <div className="mt-1 break-words text-sm font-medium text-amber-50">{resolvedProduct.productNames.join(", ")}</div>
+        <div className="mt-1 text-xs text-amber-200/80">Multiple line items may match this PO evidence. Review line items before treating this as the printed PO product.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-w-0 rounded-md border border-border bg-muted/20 px-3 py-2">
+      <div className="text-xs text-muted-foreground">Product</div>
+      <div className="mt-1 break-words text-sm font-medium text-foreground">{resolvedProduct.productNames[0]}</div>
+      <div className="mt-1 text-xs text-muted-foreground">
+        Evidence: Resolved from {resolvedProduct.evidenceText || "PO material/stock text"}
+      </div>
+    </div>
+  );
+}
+
+function PoSummaryGrid({
+  summary,
+  lineItems,
+}: {
+  summary: NonNullable<InboundOrderParsedDraft["evidence"]["items"][number]["poSummary"]>;
+  lineItems?: ReviewLineItemState[] | null;
+}) {
+  const resolvedProduct = resolveProductForPoSummary(summary, lineItems);
   return (
     <div className="mt-2 grid grid-cols-2 gap-2">
       <InlineField label="PO Number" value={summary.poNumber} />
       <InlineField label="Due Date" value={summary.dueDate} />
       <InlineField label="Quantity" value={summary.quantity} />
-      <InlineField label="Product" value={summary.productDescription} />
+      {summary.productDescription || !resolvedProduct || resolvedProduct.status === "ambiguous" ? (
+        <InlineField label="Product" value={summary.productDescription} />
+      ) : (
+        <PoResolvedProductField resolvedProduct={resolvedProduct} />
+      )}
       <InlineField label="Material" value={summary.material} />
       <InlineField label="Size" value={summary.dimensions} />
+      {!summary.productDescription && resolvedProduct?.status === "ambiguous" && (
+        <PoResolvedProductField resolvedProduct={resolvedProduct} />
+      )}
     </div>
   );
 }
@@ -4627,7 +4737,7 @@ function CleanSourceDocuments({
             {poEvidenceItems.length > 0 && (
               <div className="mt-4 rounded border border-slate-800 bg-slate-950 p-3">
                 <div className="text-xs font-bold uppercase tracking-wide text-slate-400">PO Extraction Summary</div>
-                {poEvidenceItems[0]?.poSummary && <PoSummaryGrid summary={poEvidenceItems[0].poSummary} />}
+                {poEvidenceItems[0]?.poSummary && <PoSummaryGrid summary={poEvidenceItems[0].poSummary} lineItems={form?.reviewedLineItemsJson} />}
               </div>
             )}
           </div>
