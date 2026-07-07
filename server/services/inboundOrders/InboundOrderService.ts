@@ -4210,6 +4210,7 @@ export class InboundOrderService {
       { token: "Coroplast", positive: /\b(coroplast|corrugated\s+plastic)\b/, conflicts: /\b(pvc|acm|dibond|max\s*metal|magnet|magnetic)\b/ },
       { token: "ACM", positive: /\b(acm|dibond|max\s*metal|aluminum\s+composite)\b/, conflicts: /\b(pvc|coroplast|magnet|magnetic)\b/ },
       { token: "Magnetic", positive: /\b(magnet|magnetic)\b/, conflicts: /\b(pvc|coroplast|acm|dibond|max\s*metal)\b/ },
+      { token: "Foam Board", positive: /\b(foam\s*core|foamcore|foam\s*board|foam\s+signs?)\b/, conflicts: /\b(pvc|coroplast|acm|dibond|max\s*metal|aluminum|magnet|magnetic)\b/ },
     ];
 
     for (const rule of rules) {

@@ -344,6 +344,7 @@ describe("InboundOrderParsingService", () => {
           id: "foam_board",
           name: "Foam Board",
           description: "Lightweight foam board display panels and indoor sign boards.",
+          aiParsingDescription: "foam core, foamcore, foam core sign, foam board sign, 3/16 foam core, 3/16 foam board",
           category: "Display Boards",
           materialName: "3/16 White Foam Board",
           materialCategory: "Foam Board",
@@ -1467,6 +1468,44 @@ describe("InboundOrderParsingService", () => {
     expect(matches[0].id).toBe("foam_board");
     expect(matches[0].confidence).toBeGreaterThanOrEqual(90);
     expect(matches[0].metadata.matchReasons.join(" ")).toMatch(/foam core|foam board|metadata alias/i);
+  });
+
+  test("exact product name match still outranks AI parsing description alias matches", () => {
+    const matches = scoreProductKnowledgeCandidates(
+      {
+        sourceText: "Need one Foam Board sign 24 x 36",
+        productName: "Foam Board",
+        materialText: null,
+      },
+      [
+        {
+          id: "foam_board_exact",
+          name: "Foam Board",
+          description: "Lightweight foam board display panels and indoor sign boards.",
+          aiParsingDescription: "foam core, foamcore, foam core sign, foam board sign, 3/16 foam core, 3/16 foam board",
+          category: "Display Boards",
+          materialName: "3/16 White Foam Board",
+          materialCategory: "Foam Board",
+          metadataText: "{}",
+          isService: false,
+        },
+        {
+          id: "foam_display_alias",
+          name: "Display Board",
+          description: "Generic display board product.",
+          aiParsingDescription: "foam board, foam core, foam board sign",
+          category: "Display Boards",
+          materialName: "Foam Board",
+          materialCategory: "Foam Board",
+          metadataText: "{}",
+          isService: false,
+        },
+      ],
+      5,
+    );
+
+    expect(matches[0].id).toBe("foam_board_exact");
+    expect(matches[0].metadata.matchBreakdown.nameScore).toBeGreaterThanOrEqual(90);
   });
 
   test("product ranking uses AI parsing description before customer-facing description fallback", () => {
