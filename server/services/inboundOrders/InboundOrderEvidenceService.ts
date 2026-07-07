@@ -2,6 +2,7 @@ import { promises as fsPromises } from "fs";
 
 import type { InboundOrderFile, InboundOrderRecord } from "@shared/schema";
 import { inflateSync } from "zlib";
+import WordExtractor from "word-extractor";
 import {
   getManualInboundEvidence,
   type InboundOrderEvidenceReconciliation,
@@ -105,7 +106,12 @@ function applyManualClassificationToEvidence(
       ? "artwork_reference"
       : "unknown";
   const poSummary = manual.classification === "PO" && item.rawText
-    ? item.poSummary ?? extractPurchaseOrderFields({ text: item.rawText, receivedAt: record.receivedAt, sourceDocument: item.fileName ?? item.label })
+    ? item.poSummary ?? extractPurchaseOrderFields({
+      text: item.rawText,
+      receivedAt: record.receivedAt,
+      sourceDocument: item.fileName ?? item.label,
+      sourceType: item.type === "TEXT_ATTACHMENT" ? "TEXT_ATTACHMENT" : "PDF_ATTACHMENT",
+    })
     : null;
   const influence = manualClassificationInfluence(manual.classification);
   return {
@@ -320,10 +326,16 @@ function parseDimensions(value: string | null): { width: number | null; height: 
   return { width: Number(match[1]), height: Number(match[2]), unit };
 }
 
-function source(value: string | number | boolean | null, sourceText: string | null, confidence: number, sourceDocument?: string | null): FieldSource {
+function source(
+  value: string | number | boolean | null,
+  sourceText: string | null,
+  confidence: number,
+  sourceDocument?: string | null,
+  sourceType: FieldSource["sourceType"] = "PDF_ATTACHMENT",
+): FieldSource {
   return {
     value,
-    sourceType: "PDF_ATTACHMENT",
+    sourceType,
     sourceDocument: sourceDocument ?? null,
     sourceText,
     confidence,
@@ -394,8 +406,10 @@ export function extractPurchaseOrderFields(args: {
   text: string;
   receivedAt?: Date | string | null;
   sourceDocument?: string | null;
+  sourceType?: FieldSource["sourceType"];
 }): PurchaseOrderSummary {
   const text = normalizeWhitespace(args.text);
+  const fieldSourceType = args.sourceType ?? "PDF_ATTACHMENT";
   const dateCandidates = extractClassifiedDates({ text, receivedAt: args.receivedAt });
   const selectedDate = dateCandidates[0] ?? null;
   const dimensions = extractDimensionsWithSource(text);
@@ -457,19 +471,19 @@ export function extractPurchaseOrderFields(args: {
   const pricing = extractPurchaseOrderPricing(text, sourceDocument ?? null);
   const versionCount = firstMatchWithSource(text, [/\b(\d+)\s+versions?\b/i]);
   const fieldSources: PurchaseOrderSummary["fieldSources"] = {};
-  if (poNumber) fieldSources.poNumber = source(poNumber.value, poNumber.sourceText, 98, sourceDocument);
-  if (selectedDate) fieldSources.dueDate = source(selectedDate.parsedDate, selectedDate.sourceText, selectedDate.confidence, sourceDocument);
-  if (quantity) fieldSources.quantity = source(quantity.value, quantity.sourceText, 98, sourceDocument);
-  if (productDescription) fieldSources.productDescription = source(productDescription.value, productDescription.sourceText, 90, sourceDocument);
-  if (material) fieldSources.material = source(material.value, material.sourceText, 92, sourceDocument);
-  if (dimensions) fieldSources.dimensions = source(dimensions.value, dimensions.sourceText, 95, sourceDocument);
-  if (customer) fieldSources.customer = source(customer.value, customer.sourceText, 80, sourceDocument);
-  if (contact) fieldSources.contact = source(contact.value, contact.sourceText, 80, sourceDocument);
-  if (shippingNotes) fieldSources.shippingNotes = source(shippingNotes.value, shippingNotes.sourceText, 78, sourceDocument);
-  if (price) fieldSources.price = source(price.value, price.sourceText, 76, sourceDocument);
+  if (poNumber) fieldSources.poNumber = source(poNumber.value, poNumber.sourceText, 98, sourceDocument, fieldSourceType);
+  if (selectedDate) fieldSources.dueDate = source(selectedDate.parsedDate, selectedDate.sourceText, selectedDate.confidence, sourceDocument, fieldSourceType);
+  if (quantity) fieldSources.quantity = source(quantity.value, quantity.sourceText, 98, sourceDocument, fieldSourceType);
+  if (productDescription) fieldSources.productDescription = source(productDescription.value, productDescription.sourceText, 90, sourceDocument, fieldSourceType);
+  if (material) fieldSources.material = source(material.value, material.sourceText, 92, sourceDocument, fieldSourceType);
+  if (dimensions) fieldSources.dimensions = source(dimensions.value, dimensions.sourceText, 95, sourceDocument, fieldSourceType);
+  if (customer) fieldSources.customer = source(customer.value, customer.sourceText, 80, sourceDocument, fieldSourceType);
+  if (contact) fieldSources.contact = source(contact.value, contact.sourceText, 80, sourceDocument, fieldSourceType);
+  if (shippingNotes) fieldSources.shippingNotes = source(shippingNotes.value, shippingNotes.sourceText, 78, sourceDocument, fieldSourceType);
+  if (price) fieldSources.price = source(price.value, price.sourceText, 76, sourceDocument, fieldSourceType);
   if (versionCount) {
     const value = numberValue(versionCount.value);
-    if (value) fieldSources.versionCount = source(value, versionCount.sourceText, 78, sourceDocument);
+    if (value) fieldSources.versionCount = source(value, versionCount.sourceText, 78, sourceDocument, fieldSourceType);
   }
 
   return {
@@ -609,6 +623,7 @@ function extractQuantitySignalsFromText(item: InboundOrderEvidenceItem): Reconci
   const text = item.rawText ? normalizeWhitespace(item.rawText) : "";
   if (!text) return [];
   const signals: ReconciliationSignal[] = [];
+  const confidence = itemSourceTypeConfidence(item);
   const patterns = [
     /\btotal\s+qty\.?\s*[:#]?\s*(\d+(?:,\d{3})*)\b/gi,
     /\btotal\s+quantity\s*[:#]?\s*(\d+(?:,\d{3})*)\b/gi,
@@ -618,11 +633,11 @@ function extractQuantitySignalsFromText(item: InboundOrderEvidenceItem): Reconci
   for (const pattern of patterns) {
     for (const match of Array.from(text.matchAll(pattern))) {
       const value = numberValue(match[1] ?? null);
-      if (value) addSignal(signals, value, sourceForItem(item, match[0] ?? null, item.type === "PDF_ATTACHMENT" ? 96 : 82), item.type === "PDF_ATTACHMENT" ? 96 : 82);
+      if (value) addSignal(signals, value, sourceForItem(item, match[0] ?? null, confidence), confidence);
     }
   }
   const generic = extractQuantityWithSource(text);
-  if (generic) addSignal(signals, generic.value, sourceForItem(item, generic.sourceText, item.type === "PDF_ATTACHMENT" ? 90 : 76), item.type === "PDF_ATTACHMENT" ? 90 : 76);
+  if (generic) addSignal(signals, generic.value, sourceForItem(item, generic.sourceText, Math.max(76, confidence - 6)), Math.max(76, confidence - 6));
   return signals;
 }
 
@@ -816,6 +831,28 @@ export async function extractMachineReadablePdfText(buffer: Buffer | Uint8Array)
   }
 }
 
+export async function extractMachineReadableWordText(buffer: Buffer | Uint8Array): Promise<{ text: string }> {
+  const extractor = new WordExtractor();
+  const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  const doc = await extractor.extract(bytes);
+  const sections = [
+    doc.getBody?.(),
+    doc.getHeaders?.({ includeFooters: false }),
+    doc.getFooters?.(),
+    doc.getTextboxes?.(),
+    doc.getFootnotes?.(),
+    doc.getEndnotes?.(),
+    doc.getAnnotations?.(),
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return {
+    text: normalizeWhitespace(sections.join("\n\n")).slice(0, MAX_ATTACHMENT_TEXT_CHARS),
+  };
+}
+
+function isWordAttachment(mimeType: string, fileName?: string | null): boolean {
+  return /(?:msword|wordprocessingml\.document)/i.test(mimeType) || /\.(?:doc|docx)$/i.test(fileName ?? "");
+}
+
 function extractPdfTextFromCompressedStreams(buffer: Buffer | Uint8Array): { text: string; pageCount: number } {
   const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
   const binary = bytes.toString("latin1");
@@ -952,6 +989,62 @@ export class InboundOrderEvidenceService {
       }
     }
 
+    if (isWordAttachment(mimeType, fileName)) {
+      try {
+        const buffer = file.fileRecordId ? await this.readCanonicalFile(file.fileRecordId) : null;
+        if (!buffer) {
+          const likelyPo = isLikelyPurchaseOrderAttachment(file);
+          return applyManualClassificationToEvidence({
+            ...base,
+            type: "TEXT_ATTACHMENT",
+            rawText: null,
+            pageCount: null,
+            ...attachmentDocumentFallback(file),
+            extractionStatus: "failed",
+            poSummary: null,
+            warnings: [warning(
+              "word_attachment_unreadable",
+              likelyPo
+                ? "PO candidate Word document was stored, but text was not extracted."
+                : "Word attachment could not be read for parsing.",
+              "warning",
+            )],
+          }, manual, record);
+        }
+        const extracted = await extractMachineReadableWordText(buffer);
+        const detected = detectAttachmentDocument(extracted.text, fileName);
+        const poSummary = detected.documentType === "purchase_order"
+          ? extractPurchaseOrderFields({
+            text: extracted.text,
+            receivedAt: record.receivedAt,
+            sourceDocument: fileName,
+            sourceType: "TEXT_ATTACHMENT",
+          })
+          : null;
+        return applyManualClassificationToEvidence({
+          ...base,
+          type: "TEXT_ATTACHMENT",
+          rawText: extracted.text,
+          pageCount: null,
+          ...detected,
+          extractionStatus: "successful",
+          poSummary,
+          warnings: [warning("word_text_extracted", "Text extracted from Word attachment for parsing.", "info")],
+        }, manual, record);
+      } catch (error: any) {
+        return applyManualClassificationToEvidence({
+          ...base,
+          type: "TEXT_ATTACHMENT",
+          rawText: null,
+          pageCount: null,
+          ...attachmentDocumentFallback(file),
+          extractionStatus: "failed",
+          poSummary: null,
+          warnings: [warning("word_text_extraction_failed", error?.message ?? "Word text extraction failed.", "warning")],
+        }, manual, record);
+      }
+    }
+
     if (/^text\//i.test(mimeType) && file.fileRecordId) {
       const buffer = await this.readCanonicalFile(file.fileRecordId);
       const rawText = buffer?.toString("utf8").slice(0, MAX_ATTACHMENT_TEXT_CHARS) ?? null;
@@ -965,7 +1058,7 @@ export class InboundOrderEvidenceService {
         ...detected,
         extractionStatus: "successful",
         poSummary: detected.documentType === "purchase_order"
-          ? extractPurchaseOrderFields({ text: rawText, receivedAt: record.receivedAt, sourceDocument: fileName })
+          ? extractPurchaseOrderFields({ text: rawText, receivedAt: record.receivedAt, sourceDocument: fileName, sourceType: "TEXT_ATTACHMENT" })
           : null,
         warnings: [],
       }, manual, record);

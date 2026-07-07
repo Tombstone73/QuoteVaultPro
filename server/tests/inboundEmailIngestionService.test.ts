@@ -137,6 +137,36 @@ describe("inbound email ingestion classifier", () => {
     });
   });
 
+  test("classifies Word purchase orders by filename and extracted text", () => {
+    const byFilename = classifyInboundEmailAttachment({
+      filename: "Purchase Order 151900.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+    const byText = classifyInboundEmailAttachment({
+      filename: "customer-document.doc",
+      mimeType: "application/msword",
+      extractedText: "Purchase Order PO # 151900 Bill To Titan Graphics Ship To Main Office",
+    });
+
+    expect(byFilename).toMatchObject({
+      role: "po",
+      poCandidate: true,
+      safeToDownload: true,
+      classification: expect.objectContaining({ classification: "PO" }),
+    });
+    expect(byText).toMatchObject({
+      role: "po",
+      poCandidate: true,
+      safeToDownload: true,
+      classification: expect.objectContaining({
+        classification: "PO",
+        reasons: expect.arrayContaining([
+          expect.stringContaining("Word document text contains purchase-order language"),
+        ]),
+      }),
+    });
+  });
+
   test("classifies artwork by filename and production extensions", () => {
     expect(classifyInboundEmailAttachment({
       filename: "final-banner-art.pdf",

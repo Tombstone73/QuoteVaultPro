@@ -131,6 +131,8 @@ export function classifyInboundAttachment(input: InboundAttachmentClassification
   const extension = extensionFromFilename(filename);
   const sizeBytes = typeof input.sizeBytes === "number" ? input.sizeBytes : null;
   const isPdf = extension === "pdf" || mimeType.includes("pdf");
+  const isWord = extension === "doc" || extension === "docx" || mimeType.includes("msword") || mimeType.includes("wordprocessingml.document");
+  const isBusinessDocument = isPdf || isWord;
   const isImage = artworkExtensions.has(extension) || /^image\//i.test(mimeType);
   const isInline = contentDisposition.includes("inline") || Boolean(contentId);
   const smallImage = isImage && sizeBytes != null && sizeBytes > 0 && sizeBytes <= 40_000;
@@ -202,36 +204,36 @@ export function classifyInboundAttachment(input: InboundAttachmentClassification
     );
   }
 
-  if (isPdf) {
+  if (isBusinessDocument) {
     scores.PO += includesAny(
       extractedText,
       [/\bpurchase\s+order\b/i, /\bpo\s*#/i, /\bp\.o\./i],
       breakdown.content,
-      "PDF text contains purchase-order language",
+      isPdf ? "PDF text contains purchase-order language" : "Word document text contains purchase-order language",
       42,
     );
     scores.PO += includesAny(
       extractedText,
       [/\bbill\s+to\b/i, /\bship\s+to\b/i, /\bbuyer\b/i, /\bvendor\b/i],
       breakdown.content,
-      "PDF text contains bill-to, ship-to, buyer, or vendor fields",
+      isPdf ? "PDF text contains bill-to, ship-to, buyer, or vendor fields" : "Word document text contains bill-to, ship-to, buyer, or vendor fields",
       42,
     );
     if (scores.PO >= 40 && scores.ARTWORK < 60) {
       scores.PO += 12;
-      pushReason(breakdown.content, "PDF looks like a small business document or form");
+      pushReason(breakdown.content, isPdf ? "PDF looks like a small business document or form" : "Word document looks like a small business document or form");
     }
     if (scores.PO > 0 && scores.ARTWORK > 0) {
       scores.REFERENCE += 45;
-      pushReason(breakdown.content, "PDF has mixed purchase-order and artwork signals");
+      pushReason(breakdown.content, isPdf ? "PDF has mixed purchase-order and artwork signals" : "Word document has mixed purchase-order and artwork signals");
     }
     if (scores.PO === 0 && scores.ARTWORK === 0 && scores.REFERENCE === 0) {
       scores.REFERENCE += 38;
-      pushReason(breakdown.metadata, "PDF is useful evidence but lacks strong PO or artwork signals");
+      pushReason(breakdown.metadata, isPdf ? "PDF is useful evidence but lacks strong PO or artwork signals" : "Word document is useful evidence but lacks strong PO or artwork signals");
     }
   }
 
-  if (sourceHint && /\b(?:po|purchase\s*order)\b/i.test(sourceHint) && isPdf && scores.ARTWORK < 80) {
+  if (sourceHint && /\b(?:po|purchase\s*order)\b/i.test(sourceHint) && isBusinessDocument && scores.ARTWORK < 80) {
     scores.PO += 18;
     pushReason(breakdown.content, "email body references PO or purchase order");
   }
@@ -268,13 +270,13 @@ export function classifyInboundAttachment(input: InboundAttachmentClassification
   if (hasStrongPoEvidence && scores.PO >= 50 && !strongArtworkExtensions.has(extension) && !imageExtensions.has(extension)) {
     return finalizeClassification("PO", scores.PO, "automatic", breakdown);
   }
-  if (isPdf && scores.PO > 0 && scores.ARTWORK > 0) {
+  if (isBusinessDocument && scores.PO > 0 && scores.ARTWORK > 0) {
     return finalizeClassification("REFERENCE", Math.max(scores.REFERENCE, 64), "automatic", breakdown);
   }
   if (scores.PO >= 60 && scores.PO >= scores.ARTWORK) {
     return finalizeClassification("PO", scores.PO, "automatic", breakdown);
   }
-  if (scores.REFERENCE >= 55 || (isPdf && scores.PO > 0 && scores.ARTWORK > 0)) {
+  if (scores.REFERENCE >= 55 || (isBusinessDocument && scores.PO > 0 && scores.ARTWORK > 0)) {
     return finalizeClassification("REFERENCE", Math.max(scores.REFERENCE, 64), "automatic", breakdown);
   }
   if (scores.ARTWORK >= 55) {

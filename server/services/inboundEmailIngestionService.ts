@@ -543,6 +543,8 @@ const ALLOWED_INBOUND_ATTACHMENT_EXTENSIONS = new Set([
   "jpg",
   "jpeg",
   "png",
+  "doc",
+  "docx",
   "zip",
 ]);
 
