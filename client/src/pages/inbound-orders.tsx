@@ -4352,7 +4352,7 @@ function CleanInboundQueue({
   const selectedVisibleCount = visibleRecordIds.filter((id) => selectedRecordIds.has(id)).length;
   const allVisibleSelected = visibleRecordIds.length > 0 && selectedVisibleCount === visibleRecordIds.length;
   return (
-    <aside className="flex min-h-0 w-[300px] shrink-0 flex-col border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-inbound-queue">
+    <aside className="flex min-h-0 w-full shrink-0 flex-col border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-inbound-queue">
       <div className="border-b border-slate-700 px-3 py-2">
         <div className="flex items-center justify-between gap-2">
           <div>
@@ -5502,9 +5502,9 @@ function CleanOrderWorkstation({
     onDirtyChange(recordId, dirty);
   }, [dirty, onDirtyChange, selectedRecord?.id]);
 
-  if (!selectedRecord) return <section className="flex min-h-0 flex-1 items-center justify-center bg-slate-950 text-slate-500">Order Workstation</section>;
+  if (!selectedRecord) return <section className="flex min-h-0 w-full flex-1 items-center justify-center bg-slate-950 text-slate-500">Order Workstation</section>;
   if (isLoading || !form || !reviewDraft || !draftPreview?.draft) {
-    return <section className="flex min-h-0 w-[520px] flex-col border-l border-slate-700 bg-slate-950 p-4"><Skeleton className="h-40 bg-slate-800" /></section>;
+    return <section className="flex min-h-0 w-full flex-col border-l border-slate-700 bg-slate-950 p-4"><Skeleton className="h-40 bg-slate-800" /></section>;
   }
 
   const updateOrder = (patch: Partial<ReviewDraftFormState["reviewedOrderJson"]>) => {
@@ -5595,7 +5595,7 @@ function CleanOrderWorkstation({
   };
 
   return (
-    <section className="flex min-h-0 w-[520px] shrink-0 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
+    <section className="flex min-h-0 w-full shrink-0 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700 px-3">
         <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Order Workstation</div>
         <div className="flex items-center gap-2">
@@ -8344,6 +8344,20 @@ export default function InboundOrdersPage() {
     });
   }, [draftWidth, evidenceWidth, queueCollapsed, queueExpandedWidth, workspaceWidth]);
 
+  const cleanPanelWidths = useMemo(() => {
+    const measuredWidth = getMeasuredWorkspaceWidth(workspaceWidth);
+    if (measuredWidth < workspaceLayoutDefaults.desktopBreakpoint) {
+      return { evidenceWidth, draftWidth };
+    }
+    return reconcileWorkspacePanelWidths({
+      evidenceWidth,
+      draftWidth,
+      queueCollapsed: false,
+      queueExpandedWidth,
+      workspaceWidth: measuredWidth,
+    });
+  }, [draftWidth, evidenceWidth, queueExpandedWidth, workspaceWidth]);
+
   const selectedListRecord = useMemo(
     () => records.find((record) => record.id === selectedId) ?? null,
     [records, selectedId],
@@ -9079,6 +9093,7 @@ export default function InboundOrdersPage() {
   const startResize = (
     panel: "queue" | "evidence" | "draft",
     event: ReactMouseEvent<HTMLButtonElement>,
+    options?: { queueCollapsedOverride?: boolean },
   ) => {
     event.preventDefault();
     const startX = event.clientX;
@@ -9086,7 +9101,8 @@ export default function InboundOrdersPage() {
     const startingEvidenceWidth = evidenceWidth;
     const startingDraftWidth = draftWidth;
     const measuredWidth = getMeasuredWorkspaceWidth(workspaceWidth);
-    const availablePanelWidth = getWorkspaceAvailablePanelWidth({ queueCollapsed, queueExpandedWidth, workspaceWidth: measuredWidth });
+    const layoutQueueCollapsed = options?.queueCollapsedOverride ?? queueCollapsed;
+    const availablePanelWidth = getWorkspaceAvailablePanelWidth({ queueCollapsed: layoutQueueCollapsed, queueExpandedWidth, workspaceWidth: measuredWidth });
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const delta = moveEvent.clientX - startX;
@@ -9098,7 +9114,7 @@ export default function InboundOrdersPage() {
         ));
         return;
       }
-      const minimums = getWorkspacePanelMinimums({ queueCollapsed, queueExpandedWidth, workspaceWidth: measuredWidth });
+      const minimums = getWorkspacePanelMinimums({ queueCollapsed: layoutQueueCollapsed, queueExpandedWidth, workspaceWidth: measuredWidth });
       if (panel === "evidence") {
         const nextEvidenceWidth = clampWorkspaceWidth(
           startingEvidenceWidth + delta,
@@ -9312,93 +9328,150 @@ export default function InboundOrdersPage() {
           </div>
         </div>
       ) : reviewMode === "clean" ? (
-        <div className="flex min-h-0 flex-1 overflow-hidden bg-slate-950" data-testid="clean-inbound-workspace">
-          <CleanInboundQueue
-            records={records}
-            selectedId={selectedId}
-            filters={queueFilters}
-            searchValue={queueSearchText}
-            summary={queueSummary}
-            isLoading={listQuery.isLoading || listQuery.isFetching}
-            selectedRecordIds={selectedQueueRecordIds}
-            isBulkActionPending={bulkQueueActionMutation.isPending}
-            onSelect={setSelectedId}
-            onChange={applyQueueFilters}
-            onSearchChange={updateQueueSearchText}
-            onToggleSelected={toggleQueueRecordSelected}
-            onToggleVisibleSelected={toggleQueueRecordIdsSelected}
-            onBulkAction={runBulkQueueAction}
-          />
-          <CleanSourceDocuments
-            selectedRecord={selectedRecord}
-            detail={detailQuery.data?.data}
-            draftPreview={draftPreviewQuery.data?.data}
-            reviewDraft={reviewDraftQuery.data?.data}
-            activeTab={sourceDocumentTab}
-            isLoading={detailQuery.isLoading}
-            isParsing={isSelectedRecordParsing}
-            isRescanning={isSelectedRecordRescanning}
-            parseDisabled={isParseInFlight || selectedRecordIsTerminal}
-            rescanDisabled={emailReprocessMutation.isPending || selectedRecordIsTerminal || selectedRecord?.sourceType !== "email"}
-            parseError={parseMutation.error as Error | null}
-            parseCompletedWithoutDraft={selectedId === parseCompletedWithoutDraftRecordId}
-            parseCompletedWithoutDraftMessage={selectedId === parseCompletedWithoutDraftRecordId ? parseCompletedWithoutDraftMessage : null}
-            sourceChanged={Boolean(selectedId && sourceChangedByRecordId[selectedId])}
-            onTabChange={setSourceDocumentTab}
-            onParse={runParseForSelectedRecord}
-            onRescan={runSourceRescanForSelectedRecord}
-            attachmentLinks={cleanAttachmentLinks}
-            onClassifyAttachment={openCleanAttachmentClassificationDialog}
-            form={cleanForm}
-            activeTarget={cleanActiveTarget}
-            onFocusTarget={focusCleanTarget}
-            inlineAttachmentSelection={cleanInlineAttachmentSelection}
-            onOpenAttachment={(recordId, file) => {
-              setCleanInlineAttachmentSelection({ recordId, file });
-            }}
-            onCloseInlineAttachment={() => setCleanInlineAttachmentSelection(null)}
-          />
-          <CleanOrderWorkstation
-            selectedRecord={selectedRecord}
-            draftPreview={draftPreviewQuery.data?.data}
-            reviewDraft={reviewDraftQuery.data?.data}
-            detail={detailQuery.data?.data}
-            isLoading={detailQuery.isLoading || draftPreviewQuery.isLoading || reviewDraftQuery.isLoading}
-            isSaving={saveReviewDraftMutation.isPending}
-            isMarkingReady={markReviewDraftReadyMutation.isPending}
-            isReopening={reopenReviewDraftMutation.isPending}
-            isConverting={convertToOrderMutation.isPending}
-            markReadyError={markReviewDraftReadyMutation.error as (Error & { errors?: string[] }) | null}
-            convertError={convertToOrderMutation.error as (Error & { errors?: string[] }) | null}
-            isRejecting={rejectInboundOrderMutation.isPending}
-            isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
-            rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
-            onSave={async (draft) => {
-              if (!selectedId) return;
-              await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft });
-            }}
-            onMarkReady={async (draft, dirty) => {
-              if (!selectedId) return;
-              if (dirty) await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft });
-              await markReviewDraftReadyMutation.mutateAsync(selectedId);
-            }}
-            onReopen={async () => {
-              if (!selectedId) return;
-              await reopenReviewDraftMutation.mutateAsync(selectedId);
-            }}
-            onConvert={convertSelectedRecordToOrder}
-            onReject={rejectSelectedRecord}
-            onQueueAction={runQueueCleanupAction}
-            onDirtyChange={handleReviewDraftDirtyChange}
-            form={cleanForm}
-            updateForm={updateCleanForm}
-            activeTarget={cleanActiveTarget}
-            onFocusTarget={focusCleanTarget}
-            onOpenAttachment={(recordId, file) => {
-              setSourceDocumentTab(file.role === "po" || isLikelyPoEvidenceFile(file) ? "po" : "artwork");
-              setCleanInlineAttachmentSelection({ recordId, file });
-            }}
-          />
+        <div
+          ref={workspaceRef}
+          className="relative flex min-h-0 w-full max-w-none flex-1 overflow-hidden bg-slate-950 min-[1024px]:flex-row"
+          data-testid="clean-inbound-workspace"
+          style={{
+            "--workspace-queue-width": `${queueExpandedWidth}px`,
+            "--workspace-evidence-width": `${cleanPanelWidths.evidenceWidth}px`,
+            "--workspace-draft-width": `${cleanPanelWidths.draftWidth}px`,
+          } as CSSProperties}
+        >
+          <section
+            className="relative flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden min-[1024px]:h-full"
+            data-testid="clean-queue-panel"
+            style={{
+              width: `${queueExpandedWidth}px`,
+              flex: `0 0 ${queueExpandedWidth}px`,
+            } as CSSProperties}
+          >
+            <CleanInboundQueue
+              records={records}
+              selectedId={selectedId}
+              filters={queueFilters}
+              searchValue={queueSearchText}
+              summary={queueSummary}
+              isLoading={listQuery.isLoading || listQuery.isFetching}
+              selectedRecordIds={selectedQueueRecordIds}
+              isBulkActionPending={bulkQueueActionMutation.isPending}
+              onSelect={setSelectedId}
+              onChange={applyQueueFilters}
+              onSearchChange={updateQueueSearchText}
+              onToggleSelected={toggleQueueRecordSelected}
+              onToggleVisibleSelected={toggleQueueRecordIdsSelected}
+              onBulkAction={runBulkQueueAction}
+            />
+            <button
+              type="button"
+              className="absolute right-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-slate-500 hover:bg-slate-800/80 min-[1024px]:flex"
+              onMouseDown={(event) => startResize("queue", event)}
+              aria-label="Resize queue panel"
+              title="Drag to resize queue"
+            >
+              <GripVertical className="h-4 w-4" />
+            </button>
+          </section>
+          <section
+            className="relative flex min-h-0 min-w-0 flex-col overflow-hidden min-[1024px]:h-full"
+            data-testid="clean-source-panel"
+            style={{ flex: `1 1 ${cleanPanelWidths.evidenceWidth}px` } as CSSProperties}
+          >
+            <CleanSourceDocuments
+              selectedRecord={selectedRecord}
+              detail={detailQuery.data?.data}
+              draftPreview={draftPreviewQuery.data?.data}
+              reviewDraft={reviewDraftQuery.data?.data}
+              activeTab={sourceDocumentTab}
+              isLoading={detailQuery.isLoading}
+              isParsing={isSelectedRecordParsing}
+              isRescanning={isSelectedRecordRescanning}
+              parseDisabled={isParseInFlight || selectedRecordIsTerminal}
+              rescanDisabled={emailReprocessMutation.isPending || selectedRecordIsTerminal || selectedRecord?.sourceType !== "email"}
+              parseError={parseMutation.error as Error | null}
+              parseCompletedWithoutDraft={selectedId === parseCompletedWithoutDraftRecordId}
+              parseCompletedWithoutDraftMessage={selectedId === parseCompletedWithoutDraftRecordId ? parseCompletedWithoutDraftMessage : null}
+              sourceChanged={Boolean(selectedId && sourceChangedByRecordId[selectedId])}
+              onTabChange={setSourceDocumentTab}
+              onParse={runParseForSelectedRecord}
+              onRescan={runSourceRescanForSelectedRecord}
+              attachmentLinks={cleanAttachmentLinks}
+              onClassifyAttachment={openCleanAttachmentClassificationDialog}
+              form={cleanForm}
+              activeTarget={cleanActiveTarget}
+              onFocusTarget={focusCleanTarget}
+              inlineAttachmentSelection={cleanInlineAttachmentSelection}
+              onOpenAttachment={(recordId, file) => {
+                setCleanInlineAttachmentSelection({ recordId, file });
+              }}
+              onCloseInlineAttachment={() => setCleanInlineAttachmentSelection(null)}
+            />
+            <button
+              type="button"
+              className="absolute right-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-slate-500 hover:bg-slate-800/80 min-[1024px]:flex"
+              onMouseDown={(event) => startResize("evidence", event, { queueCollapsedOverride: false })}
+              aria-label="Resize evidence panel"
+              title="Drag to resize source documents"
+            >
+              <GripVertical className="h-4 w-4" />
+            </button>
+          </section>
+          <section
+            className="relative flex min-h-0 min-w-0 flex-col overflow-hidden min-[1024px]:h-full"
+            data-testid="clean-workstation-panel"
+            style={{ flex: `1.1 1 ${cleanPanelWidths.draftWidth}px` } as CSSProperties}
+          >
+            <button
+              type="button"
+              className="absolute left-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-slate-500 hover:bg-slate-800/80 min-[1024px]:flex"
+              onMouseDown={(event) => startResize("draft", event, { queueCollapsedOverride: false })}
+              aria-label="Resize draft builder panel"
+              title="Drag to resize order workstation"
+            >
+              <GripVertical className="h-4 w-4" />
+            </button>
+            <CleanOrderWorkstation
+              selectedRecord={selectedRecord}
+              draftPreview={draftPreviewQuery.data?.data}
+              reviewDraft={reviewDraftQuery.data?.data}
+              detail={detailQuery.data?.data}
+              isLoading={detailQuery.isLoading || draftPreviewQuery.isLoading || reviewDraftQuery.isLoading}
+              isSaving={saveReviewDraftMutation.isPending}
+              isMarkingReady={markReviewDraftReadyMutation.isPending}
+              isReopening={reopenReviewDraftMutation.isPending}
+              isConverting={convertToOrderMutation.isPending}
+              markReadyError={markReviewDraftReadyMutation.error as (Error & { errors?: string[] }) | null}
+              convertError={convertToOrderMutation.error as (Error & { errors?: string[] }) | null}
+              isRejecting={rejectInboundOrderMutation.isPending}
+              isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
+              rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
+              onSave={async (draft) => {
+                if (!selectedId) return;
+                await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft });
+              }}
+              onMarkReady={async (draft, dirty) => {
+                if (!selectedId) return;
+                if (dirty) await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft });
+                await markReviewDraftReadyMutation.mutateAsync(selectedId);
+              }}
+              onReopen={async () => {
+                if (!selectedId) return;
+                await reopenReviewDraftMutation.mutateAsync(selectedId);
+              }}
+              onConvert={convertSelectedRecordToOrder}
+              onReject={rejectSelectedRecord}
+              onQueueAction={runQueueCleanupAction}
+              onDirtyChange={handleReviewDraftDirtyChange}
+              form={cleanForm}
+              updateForm={updateCleanForm}
+              activeTarget={cleanActiveTarget}
+              onFocusTarget={focusCleanTarget}
+              onOpenAttachment={(recordId, file) => {
+                setSourceDocumentTab(file.role === "po" || isLikelyPoEvidenceFile(file) ? "po" : "artwork");
+                setCleanInlineAttachmentSelection({ recordId, file });
+              }}
+            />
+          </section>
           <AttachmentClassificationDialog
             state={classificationDialog}
             isSubmitting={classifyAttachmentMutation.isPending}
