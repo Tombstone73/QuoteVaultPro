@@ -1919,6 +1919,112 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("a[href='/api/inbound-orders/inbound_1/files/file_blocked/download']")).toBeNull();
   });
 
+  test("allows quarantined ZIP attachments to be downloaded, classified as artwork, and assigned in Clean View", async () => {
+    const zipFile = {
+      id: "file_zip",
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      inboundLineItemId: null,
+      fileRecordId: "file_record_zip",
+      sourceFilename: "Glass Barn Tractor Signs - 2026[1].zip",
+      role: "other",
+      mimeType: "application/zip",
+      sizeBytes: 61_440,
+      checksum: null,
+      status: "quarantined",
+      providerAttachmentId: "att_zip",
+      providerMessageId: "msg_1",
+      contentDisposition: "attachment",
+      metadataJson: {
+        attachmentState: "scan_pending",
+        attachmentExtension: "zip",
+        attachmentClassification: {
+          classification: "OTHER",
+          confidence: 35,
+          source: "automatic",
+          reasons: ["ZIP archive requires manual review."],
+          breakdown: { filename: [], content: [], metadata: ["ZIP archive requires manual review."], manual: [], scores: { OTHER: 35 } },
+        },
+      },
+      reviewNotes: "ZIP archive stored for manual review. Contents were not extracted.",
+      createdQuoteAttachmentId: null,
+      createdOrderAttachmentId: null,
+      createdAt: "2026-06-09T12:02:00.000Z",
+      updatedAt: "2026-06-09T12:02:00.000Z",
+    };
+    const parsed = parsedDraft({ artwork: [], missingDecisions: [] });
+    const review = reviewDraft(parsed);
+    const { getSavedBody, getClassificationBody } = setupParsedInboundReview({
+      parsed,
+      review,
+      detailOverrides: { files: [zipFile] },
+    });
+
+    renderPage();
+    await waitForText("Operational View");
+    act(() => {
+      Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement);
+    });
+    await waitForText("Source Documents");
+    await waitForText("Glass Barn Tractor Signs - 2026[1].zip");
+    expect(container.textContent).toContain("ZIP / archive");
+    expect(container.textContent).toContain("Quarantined");
+
+    const downloadButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.getAttribute("aria-label") === "Download Glass Barn Tractor Signs - 2026[1].zip"
+    )) as HTMLButtonElement;
+    expect(downloadButton).toBeTruthy();
+    await act(async () => {
+      Simulate.click(downloadButton);
+    });
+    await waitForCondition(() => (
+      apiFetchMock.mock.calls.some(([url]) => String(url) === "/api/inbound-orders/inbound_1/files/file_zip/download")
+    ), "quarantined ZIP download uses authenticated fetch");
+
+    const zipCard = Array.from(container.querySelectorAll("[data-testid='source-evidence-file-card']")).find((element) => (
+      element.textContent?.includes("Glass Barn Tractor Signs - 2026[1].zip")
+    )) as HTMLElement;
+    const classifyButton = Array.from(zipCard.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Classify") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(classifyButton);
+    });
+    await waitForText("Classify attachment");
+    const classificationSelect = Array.from(container.querySelectorAll("select")).find((select) => (
+      Array.from(select.options).some((option) => option.value === "ARTWORK")
+        && Array.from(select.options).some((option) => option.value === "OTHER")
+    )) as HTMLSelectElement;
+    act(() => {
+      Simulate.change(classificationSelect, { target: { value: "ARTWORK" } } as any);
+    });
+    const saveClassificationButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save classification")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(saveClassificationButton);
+    });
+    await waitForCondition(() => getClassificationBody()?.classification === "ARTWORK", "ZIP manual artwork classification saved");
+
+    const artworkSelect = container.querySelector("[data-testid='clean-inline-artwork-select']") as HTMLSelectElement;
+    await waitForCondition(() => (
+      Array.from(artworkSelect.options).some((option) => option.textContent === "Glass Barn Tractor Signs - 2026[1].zip")
+    ), "quarantined ZIP appears as artwork assignment option");
+    const zipOption = Array.from(artworkSelect.options).find((option) => option.textContent === "Glass Barn Tractor Signs - 2026[1].zip") as HTMLOptionElement;
+    act(() => {
+      Simulate.change(artworkSelect, { target: { value: zipOption.value } } as any);
+    });
+    await waitForText("Artwork linked");
+
+    const saveDraftButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(saveDraftButton);
+    });
+    await waitForCondition(() => Boolean(getSavedBody()), "quarantined ZIP artwork assignment saved");
+    expect(getSavedBody().reviewedLineItemsJson[0].artworkLinks[0]).toMatchObject({
+      fileId: "file_zip",
+      filename: "Glass Barn Tractor Signs - 2026[1].zip",
+      classification: "ARTWORK",
+      source: "staff_selected",
+    });
+  });
+
   test("shows a Clean View PDF render error instead of a blank viewer", async () => {
     mockPdfGetDocument.mockImplementationOnce(() => ({
       promise: Promise.reject(new Error("PDF render failed")),
