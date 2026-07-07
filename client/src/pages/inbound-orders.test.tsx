@@ -1513,6 +1513,16 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-inbound-queue']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-source-documents']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-order-workstation']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-inbound-queue']")?.className).toContain("h-full");
+    expect(container.querySelector("[data-testid='clean-source-documents']")?.className).toContain("h-full");
+    const cleanWorkstation = container.querySelector("[data-testid='clean-order-workstation']") as HTMLElement;
+    expect(cleanWorkstation.className).toContain("h-full");
+    expect(cleanWorkstation.className).toContain("flex-1");
+    expect(cleanWorkstation.className).toContain("min-h-0");
+    const cleanWorkstationScroller = Array.from(cleanWorkstation.children).find((element) => (
+      element.className.includes("overflow-y-auto") && element.className.includes("flex-1") && element.className.includes("min-h-0")
+    )) as HTMLElement;
+    expect(cleanWorkstationScroller).toBeTruthy();
     const cleanQueuePanel = container.querySelector("[data-testid='clean-queue-panel']") as HTMLElement;
     const cleanSourcePanel = container.querySelector("[data-testid='clean-source-panel']") as HTMLElement;
     const cleanWorkstationPanel = container.querySelector("[data-testid='clean-workstation-panel']") as HTMLElement;
