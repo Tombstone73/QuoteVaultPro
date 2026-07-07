@@ -176,6 +176,16 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(blobUrl);
 }
 
+function readBlobArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
+  if (typeof blob.arrayBuffer === "function") return blob.arrayBuffer();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as ArrayBuffer);
+    reader.onerror = () => reject(reader.error ?? new Error("Unable to read attachment bytes."));
+    reader.readAsArrayBuffer(blob);
+  });
+}
+
 function getPdfAssetBaseUrl(assetUrl: string) {
   const normalized = (assetUrl || "").trim();
   if (!normalized) return undefined;
@@ -1088,7 +1098,8 @@ function CleanInlineAttachmentViewer({
   const [pdfZoomLevel, setPdfZoomLevel] = useState(1);
   const [pdfRenderedScale, setPdfRenderedScale] = useState(1);
   const [pdfStageWidth, setPdfStageWidth] = useState(0);
-  const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [pdfCanvasElement, setPdfCanvasElement] = useState<HTMLCanvasElement | null>(null);
+  const [pdfRenderStatus, setPdfRenderStatus] = useState<"idle" | "loading" | "rendered" | "error">("idle");
   const pdfStageRef = useRef<HTMLDivElement | null>(null);
   const pdfRenderTaskRef = useRef<any | null>(null);
   const file = selection?.file ?? null;
@@ -1114,6 +1125,8 @@ function CleanInlineAttachmentViewer({
       setPdfFitMode("width");
       setPdfZoomLevel(1);
       setPdfRenderedScale(1);
+      setPdfCanvasElement(null);
+      setPdfRenderStatus("idle");
       return;
     }
     let cancelled = false;
@@ -1128,6 +1141,8 @@ function CleanInlineAttachmentViewer({
     setPdfFitMode("width");
     setPdfZoomLevel(1);
     setPdfRenderedScale(1);
+    setPdfCanvasElement(null);
+    setPdfRenderStatus("idle");
     setObjectUrl((previous) => {
       if (previous) URL.revokeObjectURL(previous);
       return null;
@@ -1143,8 +1158,10 @@ function CleanInlineAttachmentViewer({
           const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
           if (cancelled) return;
           pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+          const pdfBytes = await readBlobArrayBuffer(blob);
+          if (cancelled) return;
           const loadingTask = pdfjs.getDocument({
-            data: new Uint8Array(await blob.arrayBuffer()),
+            data: new Uint8Array(pdfBytes),
             cMapUrl: pdfCMapUrl,
             cMapPacked: true,
             standardFontDataUrl: pdfStandardFontDataUrl,
@@ -1204,22 +1221,24 @@ function CleanInlineAttachmentViewer({
   }, [isPdfPreview, objectUrl]);
 
   useEffect(() => {
-    if (!isPdfPreview || !pdfDocument || !pdfCanvasRef.current || !pdfStageWidth) return;
+    if (!isPdfPreview || !pdfDocument || !pdfCanvasElement) return;
     let cancelled = false;
+    setPdfRenderStatus("loading");
     void (async () => {
       try {
         const page = await pdfDocument.getPage(pdfPageNumber);
         if (cancelled) return;
         const baseViewport = page.getViewport({ scale: 1 });
-        const fitWidthScale = Math.max(0.1, (pdfStageWidth - 24) / Math.max(baseViewport.width, 1));
+        const measuredStageWidth = pdfStageWidth || pdfStageRef.current?.clientWidth || 640;
+        const fitWidthScale = Math.max(0.1, (measuredStageWidth - 24) / Math.max(baseViewport.width, 1));
         const targetScale = pdfFitMode === "width" ? fitWidthScale : pdfZoomLevel;
         const clampedScale = clampCleanViewerZoom(targetScale);
         const viewport = page.getViewport({ scale: clampedScale });
-        const canvas = pdfCanvasRef.current;
-        if (!canvas) return;
+        const canvas = pdfCanvasElement;
         const context = canvas.getContext("2d");
         if (!context) {
           setError("Canvas preview unavailable.");
+          setPdfRenderStatus("error");
           return;
         }
         const devicePixelRatio = window.devicePixelRatio || 1;
@@ -1245,10 +1264,12 @@ function CleanInlineAttachmentViewer({
         await renderTask.promise;
         if (!cancelled) {
           setPdfRenderedScale(clampedScale);
+          setPdfRenderStatus("rendered");
           setError(null);
         }
       } catch (renderError: any) {
         if (cancelled || renderError?.name === "RenderingCancelledException") return;
+        setPdfRenderStatus("error");
         setError(renderError instanceof Error ? renderError.message : "Unable to render PDF page.");
       }
     })();
@@ -1263,7 +1284,7 @@ function CleanInlineAttachmentViewer({
         pdfRenderTaskRef.current = null;
       }
     };
-  }, [isPdfPreview, pdfDocument, pdfFitMode, pdfPageNumber, pdfStageWidth, pdfZoomLevel]);
+  }, [isPdfPreview, pdfCanvasElement, pdfDocument, pdfFitMode, pdfPageNumber, pdfStageWidth, pdfZoomLevel]);
 
   const handleDownload = async (event?: ReactMouseEvent<HTMLButtonElement>) => {
     event?.stopPropagation();
@@ -1363,7 +1384,7 @@ function CleanInlineAttachmentViewer({
           </div>
           <div
             ref={pdfStageRef}
-            className={cn("min-w-0 overflow-auto bg-slate-800 p-3", frameHeight)}
+            className={cn("relative min-w-0 overflow-auto bg-slate-800 p-3", frameHeight)}
             data-fit-mode={pdfFitMode}
             data-testid="clean-pdf-canvas-stage"
           >
@@ -1371,7 +1392,17 @@ function CleanInlineAttachmentViewer({
               <div className="rounded border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">{error}</div>
             ) : pdfDocument ? (
               <div className="flex min-w-max justify-center">
-                <canvas ref={pdfCanvasRef} className="rounded bg-white shadow-lg" data-testid="clean-pdf-page-canvas" />
+                <canvas
+                  ref={setPdfCanvasElement}
+                  className={cn("rounded bg-white shadow-lg", pdfRenderStatus !== "rendered" && "opacity-30")}
+                  data-testid="clean-pdf-page-canvas"
+                />
+                {pdfRenderStatus !== "rendered" && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-slate-900/50 text-sm text-slate-100" data-testid="clean-pdf-render-loading">
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Rendering PDF page...
+                  </div>
+                )}
               </div>
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-slate-400">
