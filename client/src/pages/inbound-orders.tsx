@@ -4352,7 +4352,7 @@ function CleanInboundQueue({
   const selectedVisibleCount = visibleRecordIds.filter((id) => selectedRecordIds.has(id)).length;
   const allVisibleSelected = visibleRecordIds.length > 0 && selectedVisibleCount === visibleRecordIds.length;
   return (
-    <aside className="flex min-h-0 w-full shrink-0 flex-col border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-inbound-queue">
+    <aside className="flex h-full min-h-0 w-full flex-1 flex-col border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-inbound-queue">
       <div className="border-b border-slate-700 px-3 py-2">
         <div className="flex items-center justify-between gap-2">
           <div>
@@ -4571,7 +4571,7 @@ function CleanSourceDocuments({
   onCloseInlineAttachment: () => void;
 }) {
   if (!selectedRecord) {
-    return <section className="flex min-h-0 flex-1 items-center justify-center bg-slate-950 text-slate-500">Select an inbound item.</section>;
+    return <section className="flex h-full min-h-0 flex-1 items-center justify-center bg-slate-950 text-slate-500">Select an inbound item.</section>;
   }
   const record = detail?.record ?? selectedRecord;
   const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
@@ -4598,7 +4598,7 @@ function CleanSourceDocuments({
     : null;
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-[1.05] flex-col overflow-hidden border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-source-documents">
+    <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-source-documents">
       <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-700 px-3">
         <div>
           <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Source Documents</div>
@@ -5502,9 +5502,9 @@ function CleanOrderWorkstation({
     onDirtyChange(recordId, dirty);
   }, [dirty, onDirtyChange, selectedRecord?.id]);
 
-  if (!selectedRecord) return <section className="flex min-h-0 w-full flex-1 items-center justify-center bg-slate-950 text-slate-500">Order Workstation</section>;
+  if (!selectedRecord) return <section className="flex h-full min-h-0 w-full flex-1 items-center justify-center bg-slate-950 text-slate-500">Order Workstation</section>;
   if (isLoading || !form || !reviewDraft || !draftPreview?.draft) {
-    return <section className="flex min-h-0 w-full flex-col border-l border-slate-700 bg-slate-950 p-4"><Skeleton className="h-40 bg-slate-800" /></section>;
+    return <section className="flex h-full min-h-0 w-full flex-1 flex-col border-l border-slate-700 bg-slate-950 p-4"><Skeleton className="h-40 bg-slate-800" /></section>;
   }
 
   const updateOrder = (patch: Partial<ReviewDraftFormState["reviewedOrderJson"]>) => {
@@ -5595,7 +5595,7 @@ function CleanOrderWorkstation({
   };
 
   return (
-    <section className="flex min-h-0 w-full shrink-0 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
+    <section className="flex h-full min-h-0 w-full flex-1 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700 px-3">
         <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Order Workstation</div>
         <div className="flex items-center gap-2">
