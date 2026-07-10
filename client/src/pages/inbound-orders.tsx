@@ -4861,6 +4861,9 @@ function CleanLineItemCard({
   attachmentLinkOptions,
   onChange,
   onProductSearchChange,
+  onDuplicate,
+  onRemove,
+  onSplit,
   activeTarget,
   onFocusTarget,
 }: {
@@ -4872,6 +4875,9 @@ function CleanLineItemCard({
   attachmentLinkOptions: InboundOrderArtworkLink[];
   onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
   onProductSearchChange: (value: string) => void;
+  onDuplicate: () => void;
+  onRemove: () => void;
+  onSplit: () => void;
   activeTarget: CleanHighlightTarget | null;
   onFocusTarget: CleanFocusTargetHandler;
 }) {
@@ -4996,6 +5002,15 @@ function CleanLineItemCard({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Badge variant={workflowComplete ? "secondary" : "destructive"}>{workflowComplete ? "Complete" : "Needs decisions"}</Badge>
+          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={onSplit}>
+            Split
+          </Button>
+          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={onDuplicate}>
+            Duplicate
+          </Button>
+          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-red-200" onClick={onRemove}>
+            Remove
+          </Button>
           {workflowComplete && (
             <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={() => setWorkflowOpen((current) => !current)}>
               {workflowOpen ? "Collapse" : "Edit line item"}
@@ -5536,6 +5551,52 @@ function CleanOrderWorkstation({
       reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item),
     });
   };
+  const addLineItem = () => {
+    updateForm({
+      reviewedLineItemsJson: [
+        ...form.reviewedLineItemsJson,
+        createBlankReviewLineItem(form.reviewedLineItemsJson.length),
+      ],
+    });
+  };
+  const duplicateLineItem = (index: number) => {
+    const source = form.reviewedLineItemsJson[index];
+    if (!source) return;
+    const copy = cloneManualReviewLineItem(source, index + 1);
+    updateForm({
+      reviewedLineItemsJson: [
+        ...form.reviewedLineItemsJson.slice(0, index + 1),
+        copy,
+        ...form.reviewedLineItemsJson.slice(index + 1),
+      ],
+    });
+  };
+  const splitLineItem = (index: number) => {
+    const source = form.reviewedLineItemsJson[index];
+    if (!source) return;
+    const first = cloneManualReviewLineItem(source, index);
+    const second = cloneManualReviewLineItem(source, index + 1);
+    const splitQuantity = source.quantity === 2 ? 1 : source.quantity;
+    first.quantity = splitQuantity;
+    first.quantitySource = splitQuantity ? "staff_selected" : source.quantitySource;
+    first.sourceText = source.sourceText ? `${source.sourceText} (split 1)` : `Split line item ${index + 1}.1`;
+    second.quantity = splitQuantity;
+    second.quantitySource = splitQuantity ? "staff_selected" : source.quantitySource;
+    second.sourceText = source.sourceText ? `${source.sourceText} (split 2)` : `Split line item ${index + 1}.2`;
+    updateForm({
+      reviewedLineItemsJson: [
+        ...form.reviewedLineItemsJson.slice(0, index),
+        first,
+        second,
+        ...form.reviewedLineItemsJson.slice(index + 1),
+      ],
+    });
+  };
+  const removeLineItem = (index: number) => {
+    updateForm({
+      reviewedLineItemsJson: form.reviewedLineItemsJson.filter((_, itemIndex) => itemIndex !== index),
+    });
+  };
   const productCatalogOptions = (productSearchQuery.data?.data ?? []).map(productToReviewOption);
   const inboundFiles = dedupeAttachmentFiles(detail?.files ?? []);
   const storedAttachmentLinks = dedupeAttachmentFiles(detail?.files ?? [])
@@ -5564,6 +5625,7 @@ function CleanOrderWorkstation({
     ...validationErrors,
   ].filter(Boolean) as string[];
   const canCreateDraftOrder = selectedRecord.status === "ready" && reviewDraft.status === "ready_to_convert" && validationErrors.length === 0;
+  const actionPending = isSaving || isMarkingReady || isReopening || isConverting;
   const cleanDraft = draftPreview.draft;
   const evidenceConflictItems = cleanUniqueItems([
     ...(cleanDraft.evidence?.conflicts ?? []).map(cleanEvidenceConflictLabel),
@@ -5700,9 +5762,14 @@ function CleanOrderWorkstation({
           <OrderEntryField label="Carrier"><Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: trimToNull(event.target.value) })} /></OrderEntryField>
         </div>
         <div className="mb-4">
-          <div className="mb-2 flex items-center justify-between">
-            <div className="text-sm font-bold text-slate-100">Line Items</div>
-            <Badge variant="outline">{form.reviewedLineItemsJson.length}</Badge>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="text-sm font-bold text-slate-100">Line Items</div>
+              <Badge variant="outline">{form.reviewedLineItemsJson.length}</Badge>
+            </div>
+            <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={addLineItem} disabled={actionPending}>
+              Add line item
+            </Button>
           </div>
           <div className="grid gap-3">
             {form.reviewedLineItemsJson.length === 0 ? (
@@ -5724,6 +5791,9 @@ function CleanOrderWorkstation({
                 attachmentLinkOptions={attachmentLinkOptions}
                 onChange={(patch) => updateLineItem(index, patch)}
                 onProductSearchChange={setProductSearch}
+                onDuplicate={() => duplicateLineItem(index)}
+                onRemove={() => removeLineItem(index)}
+                onSplit={() => splitLineItem(index)}
                 activeTarget={activeTarget}
                 onFocusTarget={onFocusTarget}
               />

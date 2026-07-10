@@ -42,6 +42,14 @@ export type InboundOrderParseResult = {
   record: InboundOrderRecord;
 };
 
+type ParsedDimension = {
+  width: number;
+  height: number;
+  unit: "in";
+  sourceText: string;
+  index: number;
+};
+
 function clampConfidence(value: unknown): number {
   const numeric = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(numeric)) return 0;
@@ -188,6 +196,25 @@ function lineItemIntent(lineItem: InboundOrderParsedDraft["lineItems"][number]):
   if (/\b(stickers?|decals?|labels?)\b/.test(text)) return "sticker";
   if (/\bcustom\s+size\b/.test(text)) return "custom_size";
   return null;
+}
+
+function lineItemTemplate(): InboundOrderParsedDraft["lineItems"][number] {
+  return {
+    sourceText: null,
+    productName: null,
+    candidateProductIds: [],
+    productCandidates: [],
+    quantity: null,
+    width: null,
+    height: null,
+    dimensionsUnit: null,
+    materialText: null,
+    optionTexts: [],
+    finishingTexts: [],
+    artworkRefs: [],
+    confidence: 0,
+    warnings: [],
+  };
 }
 
 function missingDecision(field: string, label: string, reason: string, severity: "warning" | "blocking" = "warning") {
@@ -600,7 +627,8 @@ export class InboundOrderParsingService {
     );
     const dateRefined = hasPurchaseOrderDueDate ? evidenceRefined : this.applyDateInference(record, evidenceRefined);
     const quantityRefined = this.applyQuantityWordInference(record, dateRefined);
-    const decisionsRefined = this.applyMissingDecisionDetection(quantityRefined);
+    const segmentedRefined = this.applyLineItemSegmentation(record, quantityRefined, evidenceBundle);
+    const decisionsRefined = this.applyMissingDecisionDetection(segmentedRefined);
     return evidenceBundle
       ? {
         ...decisionsRefined,
@@ -694,25 +722,165 @@ export class InboundOrderParsingService {
     };
   }
 
+  applyLineItemSegmentation(
+    record: InboundOrderRecord,
+    draft: InboundOrderParsedDraft,
+    evidenceBundle?: InboundOrderEvidenceBundle,
+  ): InboundOrderParsedDraft {
+    if (draft.lineItems.length !== 1) return draft;
+    const baseLine = draft.lineItems[0] ?? lineItemTemplate();
+    const evidence = getManualInboundEvidence(record);
+    const evidenceText = [
+      baseLine.sourceText,
+      evidence.bodyText,
+      evidence.notes,
+      evidence.subject,
+      draft.order.notes,
+      ...(evidenceBundle?.items.map((item) => item.rawText).filter(Boolean) ?? []),
+    ].filter(Boolean).join("\n");
+    const dimensions = this.extractDistinctDimensions(evidenceText);
+    if (dimensions.length < 2) return draft;
+    const productName = baseLine.productName ?? this.inferSegmentProductName(evidenceText);
+    const sharedOptions = this.extractSharedOptionTexts(evidenceText);
+    const quantityEach = /\b(?:just\s+)?one\s+each\b/i.test(evidenceText)
+      || /\bone\b[\s\S]{0,80}\b(?:the\s+)?other\b/i.test(evidenceText)
+      || /\b(?:the\s+)?other\b[\s\S]{0,80}\bone\b/i.test(evidenceText);
+    const collapsedQuantity = baseLine.quantity != null && baseLine.quantity === dimensions.length;
+    const shouldSplit = quantityEach || collapsedQuantity || !baseLine.width || !baseLine.height;
+    if (!shouldSplit) return draft;
+
+    const lineItems = dimensions.map((dimension, index): InboundOrderParsedDraft["lineItems"][number] => {
+      const sourceText = this.sourceSnippetForDimension(evidenceText, dimension);
+      return {
+        ...baseLine,
+        sourceText: sourceText || dimension.sourceText,
+        productName,
+        candidateProductIds: [],
+        productCandidates: [],
+        quantity: quantityEach || collapsedQuantity ? 1 : baseLine.quantity,
+        width: dimension.width,
+        height: dimension.height,
+        dimensionsUnit: dimension.unit,
+        optionTexts: Array.from(new Set([
+          ...baseLine.optionTexts,
+          ...sharedOptions,
+        ])),
+        finishingTexts: Array.from(new Set([
+          ...baseLine.finishingTexts,
+          ...sharedOptions,
+        ])),
+        artworkRefs: this.artworkRefsForSegment(baseLine.artworkRefs, index),
+        confidence: Math.max(baseLine.confidence, 84),
+        warnings: [
+          ...baseLine.warnings,
+          warning(
+            "line_item_split_from_multiple_sizes",
+            `Line item ${index + 1} was split from source evidence because ${dimensions.length} different sizes were found.`,
+            "info",
+            `lineItems.${index}.dimensions`,
+          ),
+        ],
+      };
+    });
+
+    return {
+      ...draft,
+      lineItems,
+      globalWarnings: [
+        ...draft.globalWarnings,
+        warning(
+          "line_item_segmentation_review",
+          `${dimensions.length} different sizes were found. Review line-item separation.`,
+          "info",
+          "lineItems",
+        ),
+      ],
+    };
+  }
+
+  private extractDistinctDimensions(text: string): ParsedDimension[] {
+    const pattern = /(\d+(?:\.\d+)?)\s*("|'|in|inch|inches|ft|feet|foot)?\s*(?:x|X|by|×)\s*(\d+(?:\.\d+)?)\s*("|'|in|inch|inches|ft|feet|foot)?/gi;
+    const dimensions: ParsedDimension[] = [];
+    const seen = new Set<string>();
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      const parsed = this.normalizeDimensionMatch(match);
+      if (!parsed) continue;
+      const key = `${parsed.width}x${parsed.height}:${parsed.unit}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      dimensions.push(parsed);
+    }
+    return dimensions;
+  }
+
+  private normalizeDimensionMatch(match: RegExpExecArray): ParsedDimension | null {
+    const width = Number(match[1]);
+    const height = Number(match[3]);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+    const unit1 = this.normalizeDimensionUnit(match[2] ?? null);
+    const unit2 = this.normalizeDimensionUnit(match[4] ?? null);
+    const unit = unit2 ?? unit1 ?? "in";
+    const widthUnit = unit1 ?? unit;
+    const heightUnit = unit2 ?? unit;
+    return {
+      width: this.convertDimensionToInches(width, widthUnit),
+      height: this.convertDimensionToInches(height, heightUnit),
+      unit: "in",
+      sourceText: match[0].replace(/\s+/g, " ").trim(),
+      index: match.index,
+    };
+  }
+
+  private normalizeDimensionUnit(value: string | null): "in" | "ft" | null {
+    if (!value) return null;
+    const normalized = value.toLowerCase();
+    if (normalized === "\"" || /^in(?:ch|ches)?$/.test(normalized)) return "in";
+    if (normalized === "'" || /^(?:ft|feet|foot)$/.test(normalized)) return "ft";
+    return null;
+  }
+
+  private convertDimensionToInches(value: number, unit: "in" | "ft"): number {
+    const converted = unit === "ft" ? value * 12 : value;
+    return Number.isInteger(converted) ? converted : Number(converted.toFixed(3));
+  }
+
+  private inferSegmentProductName(text: string): string | null {
+    if (/\bbanners?\b/i.test(text)) return "Banner";
+    if (/\bmagnet(?:s|ic)?\b/i.test(text)) return "Magnet";
+    if (/\b(?:yard\s+)?signs?\b/i.test(text)) return "Sign";
+    if (/\bdecals?\b/i.test(text)) return "Decal";
+    if (/\bstickers?\b/i.test(text)) return "Sticker";
+    return null;
+  }
+
+  private extractSharedOptionTexts(text: string): string[] {
+    const options: string[] = [];
+    if (/\bhem(?:s|med)?\b/i.test(text)) options.push("hems");
+    if (/\bgrommet(?:s|ed)?\b/i.test(text)) options.push("grommets");
+    return options;
+  }
+
+  private sourceSnippetForDimension(text: string, dimension: ParsedDimension): string {
+    const start = Math.max(0, dimension.index - 120);
+    const end = Math.min(text.length, dimension.index + dimension.sourceText.length + 120);
+    const snippet = text.slice(start, end)
+      .split(/\n+/)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return snippet || dimension.sourceText;
+  }
+
+  private artworkRefsForSegment(artworkRefs: string[], index: number): string[] {
+    if (artworkRefs.length <= 1) return [...artworkRefs];
+    return [artworkRefs[index] ?? artworkRefs[0]].filter(Boolean);
+  }
+
   applyReconciledEvidence(draft: InboundOrderParsedDraft, evidenceBundle: InboundOrderEvidenceBundle): InboundOrderParsedDraft {
     const reconciliation = evidenceBundle.reconciliation;
     if (!reconciliation) return draft;
-    const firstLine = draft.lineItems[0] ?? {
-      sourceText: null,
-      productName: null,
-      candidateProductIds: [],
-      productCandidates: [],
-      quantity: null,
-      width: null,
-      height: null,
-      dimensionsUnit: null,
-      materialText: null,
-      optionTexts: [],
-      finishingTexts: [],
-      artworkRefs: [],
-      confidence: 0,
-      warnings: [],
-    };
+    const firstLine = draft.lineItems[0] ?? lineItemTemplate();
     const dimensions = typeof reconciliation.dimensions.value === "string"
       ? this.parseDimensionText(reconciliation.dimensions.value)
       : { width: null, height: null, unit: null };
@@ -790,22 +958,7 @@ export class InboundOrderParsingService {
     if (!summary) return draft;
 
     const dimensions = this.parseDimensionText(summary.dimensions ?? null);
-    const firstLine = draft.lineItems[0] ?? {
-      sourceText: null,
-      productName: null,
-      candidateProductIds: [],
-      productCandidates: [],
-      quantity: null,
-      width: null,
-      height: null,
-      dimensionsUnit: null,
-      materialText: null,
-      optionTexts: [],
-      finishingTexts: [],
-      artworkRefs: [],
-      confidence: 0,
-      warnings: [],
-    };
+    const firstLine = draft.lineItems[0] ?? lineItemTemplate();
     const enrichedLine = {
       ...firstLine,
       sourceText: [
@@ -847,18 +1000,10 @@ export class InboundOrderParsingService {
 
   private parseDimensionText(value: string | null): { width: number | null; height: number | null; unit: string | null } {
     if (!value) return { width: null, height: null, unit: null };
-    const quotedOrExplicit = value.match(/(\d+(?:\.\d+)?)\s*(?:"|”|in|inch|inches|ft|feet|mm|cm)?\s*(?:x|X|Ã—|×)\s*(\d+(?:\.\d+)?)\s*((?:"|”|in|inch|inches|ft|feet|mm|cm)?)?/i);
-    if (quotedOrExplicit) {
-      const rawUnit = quotedOrExplicit[3]?.toLowerCase() ?? (value.includes("\"") || value.includes("”") ? "\"" : "");
-      const unit = rawUnit === "\"" || rawUnit === "”"
-        ? "in"
-        : rawUnit.replace(/^inch(?:es)?$/, "in").replace(/^feet$/, "ft") || null;
-      return { width: Number(quotedOrExplicit[1]), height: Number(quotedOrExplicit[2]), unit };
-    }
-    const match = value.match(/(\d+(?:\.\d+)?)\s*(?:in|inch|inches|ft|feet|mm|cm)?\s*[xX×]\s*(\d+(?:\.\d+)?)\s*(in|inch|inches|ft|feet|mm|cm)?/i);
-    if (!match) return { width: null, height: null, unit: null };
-    const unit = match[3]?.toLowerCase().replace(/^inch(?:es)?$/, "in").replace(/^feet$/, "ft") ?? null;
-    return { width: Number(match[1]), height: Number(match[2]), unit };
+    const parsed = this.extractDistinctDimensions(value)[0];
+    return parsed
+      ? { width: parsed.width, height: parsed.height, unit: parsed.unit }
+      : { width: null, height: null, unit: null };
   }
 
   applyDateInference(record: InboundOrderRecord, draft: InboundOrderParsedDraft): InboundOrderParsedDraft {

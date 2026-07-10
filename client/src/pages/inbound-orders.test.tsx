@@ -2575,6 +2575,80 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-dynamic-product-options']")).toBeTruthy();
   });
 
+  test("Clean View exposes line item add, duplicate, remove, and split controls", async () => {
+    const baseParsed = parsedDraft();
+    const cleanParsed = parsedDraft({
+      lineItems: [{
+        ...baseParsed.lineItems[0],
+        sourceText: "One banner is 2' x 10'. The other banner is 30\" x 60\". All with hems and grommets, just one each.",
+        productName: "Banner",
+        quantity: 2,
+        width: 24,
+        height: 120,
+        dimensionsUnit: "in",
+        optionTexts: ["hems", "grommets"],
+        finishingTexts: ["hems", "grommets"],
+      }],
+      missingDecisions: [],
+      globalWarnings: [],
+    });
+    const cleanReview = reviewDraft(cleanParsed);
+    const { getSavedBody } = setupParsedInboundReview({ parsed: cleanParsed, review: cleanReview });
+
+    renderPage();
+    await waitForText("Operational View");
+    const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(cleanButton);
+    });
+
+    await waitForText("Line Items");
+    const cards = () => Array.from(container.querySelectorAll("[data-testid='clean-line-item-card']"));
+    expect(cards()).toHaveLength(1);
+
+    const addButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Add line item")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(addButton);
+    });
+    expect(cards()).toHaveLength(2);
+
+    let secondRemove = Array.from((cards()[1] as HTMLElement).querySelectorAll("button")).find((button) => button.textContent?.includes("Remove")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(secondRemove);
+    });
+    expect(cards()).toHaveLength(1);
+
+    const duplicateButton = Array.from((cards()[0] as HTMLElement).querySelectorAll("button")).find((button) => button.textContent?.includes("Duplicate")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(duplicateButton);
+    });
+    expect(cards()).toHaveLength(2);
+
+    secondRemove = Array.from((cards()[1] as HTMLElement).querySelectorAll("button")).find((button) => button.textContent?.includes("Remove")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(secondRemove);
+    });
+    expect(cards()).toHaveLength(1);
+
+    const splitButton = Array.from((cards()[0] as HTMLElement).querySelectorAll("button")).find((button) => button.textContent?.includes("Split")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(splitButton);
+    });
+    expect(cards()).toHaveLength(2);
+
+    const quantityInputs = Array.from(container.querySelectorAll("[data-testid='clean-inline-quantity-input']")) as HTMLInputElement[];
+    expect(quantityInputs.map((input) => input.value)).toEqual(["1", "1"]);
+
+    const saveDraftButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(saveDraftButton);
+    });
+    await waitForCondition(() => Boolean(getSavedBody()), "split line items saved");
+    expect(getSavedBody().reviewedLineItemsJson).toHaveLength(2);
+    expect(getSavedBody().reviewedLineItemsJson.map((lineItem: any) => lineItem.quantity)).toEqual([1, 1]);
+    expect(getSavedBody().reviewedLineItemsJson[0]).not.toBe(getSavedBody().reviewedLineItemsJson[1]);
+  });
+
   test("groups Clean View review tasks into operator-facing categories", async () => {
     const cleanParsed = parsedDraft({
       missingDecisions: [{
