@@ -278,6 +278,139 @@ describe("InboundOrderParsingService", () => {
     expect(result.draft?.missingDecisions.some((decision) => decision.field === "lineItems.0.quantity")).toBe(false);
   });
 
+  test("splits multiple banner sizes into separate TEMP review line items with shared options", async () => {
+    const bodyText = "One banner is 2' x 10'. The other banner is 30\" x 60\". All with hems and grommets, just one each.";
+    const { repo } = makeRepository(inboundRecord({
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        reference: "BANNER-SPLIT",
+        sender: { name: "Ada Lovelace", email: "ada@example.com" },
+        subject: "Two banners",
+        bodyText,
+      },
+    }));
+    const provider = makeProvider(JSON.stringify(parsedDraft({
+      order: {
+        ...parsedDraft().order,
+        poNumber: "BANNER-SPLIT",
+        notes: bodyText,
+      },
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: bodyText,
+        productName: "Banner",
+        quantity: 2,
+        width: null,
+        height: null,
+        dimensionsUnit: null,
+        optionTexts: [],
+        finishingTexts: [],
+      }],
+    })));
+    const evidenceService = {
+      buildEvidenceBundle: jest.fn(async () => ({
+        items: [{
+          type: "EMAIL_BODY",
+          label: "Email Body",
+          rawText: bodyText,
+          documentType: "unknown",
+          documentConfidence: 0,
+          extractionStatus: "not_attempted",
+          warnings: [],
+        }],
+        conflicts: [],
+      })),
+    };
+    const service = new InboundOrderParsingService(repo as any, () => provider, evidenceService as any);
+
+    const result = await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(result.draft?.lineItems).toHaveLength(2);
+    expect(result.draft?.lineItems[0]).toMatchObject({
+      productName: "Banner",
+      quantity: 1,
+      width: 24,
+      height: 120,
+      dimensionsUnit: "in",
+      optionTexts: expect.arrayContaining(["hems", "grommets"]),
+      finishingTexts: expect.arrayContaining(["hems", "grommets"]),
+    });
+    expect(result.draft?.lineItems[1]).toMatchObject({
+      productName: "Banner",
+      quantity: 1,
+      width: 30,
+      height: 60,
+      dimensionsUnit: "in",
+      optionTexts: expect.arrayContaining(["hems", "grommets"]),
+      finishingTexts: expect.arrayContaining(["hems", "grommets"]),
+    });
+    expect(result.draft?.lineItems[0].productCandidates[0]).toMatchObject({ id: "product_1" });
+    expect(result.draft?.lineItems[1].productCandidates[0]).toMatchObject({ id: "product_1" });
+    expect(repo.searchProductCandidates).toHaveBeenCalledTimes(2);
+    expect(result.draft?.missingDecisions.filter((decision) => decision.field.includes("quantity"))).toHaveLength(0);
+    expect(result.draft?.missingDecisions.filter((decision) => decision.field.includes("dimensions"))).toHaveLength(0);
+  });
+
+  test("keeps identical same-size items combined as one line item", async () => {
+    const bodyText = "Please make two banners that are 2' x 10' with hems and grommets.";
+    const { repo } = makeRepository(inboundRecord({
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        reference: "BANNER-COMBINED",
+        sender: { name: "Ada Lovelace", email: "ada@example.com" },
+        subject: "Two identical banners",
+        bodyText,
+      },
+    }));
+    const provider = makeProvider(JSON.stringify(parsedDraft({
+      order: {
+        ...parsedDraft().order,
+        poNumber: "BANNER-COMBINED",
+        notes: bodyText,
+      },
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: bodyText,
+        productName: "Banner",
+        quantity: 2,
+        width: null,
+        height: null,
+        dimensionsUnit: null,
+      }],
+    })));
+    const evidenceService = {
+      buildEvidenceBundle: jest.fn(async () => ({
+        items: [{
+          type: "EMAIL_BODY",
+          label: "Email Body",
+          rawText: bodyText,
+          documentType: "unknown",
+          documentConfidence: 0,
+          extractionStatus: "not_attempted",
+          warnings: [],
+        }],
+        conflicts: [],
+      })),
+    };
+    const service = new InboundOrderParsingService(repo as any, () => provider, evidenceService as any);
+
+    const result = await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(result.draft?.lineItems).toHaveLength(1);
+    expect(result.draft?.lineItems[0]).toMatchObject({
+      productName: "Banner",
+      quantity: 2,
+    });
+  });
+
   test("uses Foam Core PO evidence to populate size, quantity, and Foam Board product suggestion", async () => {
     const poText = [
       "Purchase Order No. 200222",
