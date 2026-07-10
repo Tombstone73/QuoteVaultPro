@@ -16,6 +16,44 @@ export interface CreateOrgPayload {
   name: string;
   slug?: string;
   ownerEmail: string; // always required; owner invite is always created
+  seedConfiguration?: {
+    enabled: boolean;
+    sourceOrganizationId?: string;
+  };
+}
+
+export interface ConfigurationCopyJobResult {
+  copyJobId?: string;
+  id?: string;
+  sourceOrganizationId: string;
+  destinationOrganizationId: string;
+  status: "pending" | "copying" | "completed" | "failed";
+  requestedByUserId?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  failedAt?: string | null;
+  entityCounts: Record<string, number>;
+  warnings: string[];
+  errorSummary?: string | null;
+  errorDetails?: Record<string, unknown> | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface PlatformSeedOrganization {
+  id: string;
+  name: string;
+  slug: string;
+  deleteState: string;
+  status: string;
+}
+
+export interface ConfigurationCopyPreview {
+  sourceOrganizationId: string;
+  sourceOrganizationName: string;
+  sourceOrganizationSlug: string;
+  entityCounts: Record<string, number>;
+  warnings: string[];
 }
 
 export interface CreateOrgResult {
@@ -25,6 +63,7 @@ export interface CreateOrgResult {
     slug: string;
     inviteLink: string;
     ownerEmail: string;
+    configurationCopy?: ConfigurationCopyJobResult | null;
   };
   code?: string;
   message?: string;
@@ -90,6 +129,48 @@ export async function createPlatformOrg(
 ): Promise<{ httpStatus: number; body: CreateOrgResult }> {
   const res = await postJson("/api/platform/orgs", payload);
   const body: CreateOrgResult = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export async function listPlatformSeedOrganizations(): Promise<{
+  httpStatus: number;
+  body: { success: boolean; data?: PlatformSeedOrganization[]; message?: string };
+}> {
+  const res = await fetch(getApiUrl("/api/platform/orgs"), { credentials: "include" });
+  const body = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export async function previewConfigurationCopy(sourceOrganizationId: string): Promise<{
+  httpStatus: number;
+  body: { success: boolean; data?: ConfigurationCopyPreview; message?: string; code?: string };
+}> {
+  const res = await fetch(
+    getApiUrl(`/api/platform/orgs/${encodeURIComponent(sourceOrganizationId)}/configuration-copy-preview`),
+    { credentials: "include" }
+  );
+  const body = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export async function listConfigurationCopyJobs(limit = 10): Promise<{
+  httpStatus: number;
+  body: { success: boolean; data?: ConfigurationCopyJobResult[]; message?: string };
+}> {
+  const res = await fetch(
+    getApiUrl(`/api/platform/organization-copy-jobs?limit=${encodeURIComponent(String(limit))}`),
+    { credentials: "include" }
+  );
+  const body = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export async function retryConfigurationCopyJob(jobId: string): Promise<{
+  httpStatus: number;
+  body: { success: boolean; data?: ConfigurationCopyJobResult; message?: string; code?: string };
+}> {
+  const res = await postJson(`/api/platform/organization-copy-jobs/${encodeURIComponent(jobId)}/retry`, {});
+  const body = await res.json();
   return { httpStatus: res.status, body };
 }
 

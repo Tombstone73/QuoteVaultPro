@@ -1,9 +1,11 @@
 import { Link } from "react-router-dom";
 import { Code2, DatabaseZap, FlaskConical, ShieldCheck } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import NotFound from "@/pages/not-found";
 import { ROUTES } from "@/config/routes";
 import { canUsePlatformTools } from "@/lib/platformAccess";
+import { listConfigurationCopyJobs, type ConfigurationCopyJobResult } from "@/lib/api/platform";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,6 +14,29 @@ import { Skeleton } from "@/components/ui/skeleton";
 export default function PlatformDeveloperToolsPage() {
   const { user, isLoading } = useAuth();
   const canAccessPlatformTools = canUsePlatformTools(user);
+  const [copyJobs, setCopyJobs] = useState<ConfigurationCopyJobResult[]>([]);
+  const [copyJobsLoading, setCopyJobsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!canAccessPlatformTools) return;
+    let cancelled = false;
+    setCopyJobsLoading(true);
+    listConfigurationCopyJobs(8)
+      .then(({ body }) => {
+        if (!cancelled && body.success) {
+          setCopyJobs(body.data ?? []);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setCopyJobs([]);
+      })
+      .finally(() => {
+        if (!cancelled) setCopyJobsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canAccessPlatformTools]);
 
   if (isLoading) {
     return (
@@ -50,6 +75,49 @@ export default function PlatformDeveloperToolsPage() {
               Settings and Admin Tools unless a utility is promoted out of Platform.
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-titan-bg-card-elevated">
+        <CardHeader className="pb-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <DatabaseZap className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">Organization Configuration Copy Jobs</CardTitle>
+            <Badge variant="secondary">Read-only</Badge>
+          </div>
+          <CardDescription>
+            Recent seed-copy diagnostics for new tenant setup. Counts and safe error summaries only.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {copyJobsLoading ? (
+            <Skeleton className="h-20 w-full" />
+          ) : copyJobs.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No recent configuration copy jobs.</p>
+          ) : (
+            <div className="space-y-2">
+              {copyJobs.map((job) => (
+                <div key={job.id ?? job.copyJobId} className="rounded-md border p-3 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="font-mono text-xs">{job.id ?? job.copyJobId}</div>
+                    <Badge variant={job.status === "completed" ? "default" : job.status === "failed" ? "destructive" : "secondary"}>
+                      {job.status}
+                    </Badge>
+                  </div>
+                  <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+                    <div>Source: <span className="font-mono">{job.sourceOrganizationId}</span></div>
+                    <div>Destination: <span className="font-mono">{job.destinationOrganizationId}</span></div>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                    {Object.entries(job.entityCounts ?? {}).slice(0, 8).map(([key, count]) => (
+                      <span key={key} className="rounded border px-2 py-0.5">{key}: {count}</span>
+                    ))}
+                  </div>
+                  {job.errorSummary && <p className="mt-2 text-xs text-destructive">{job.errorSummary}</p>}
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
