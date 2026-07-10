@@ -29,6 +29,15 @@ import { createOrgWithInvite, slugify, DuplicateInviteError } from "../services/
 import { organizations, auditLogs } from "@shared/schema";
 import { notifyDevCritical, notifyDev } from "../services/devNotify";
 import { bootstrapAdminBodySchema, bootstrapPlatformAdmin } from "../services/bootstrapAdminService";
+import {
+  copyOrganizationConfiguration,
+  getConfigurationCopyJob,
+  getConfigurationCopyPreview,
+  listPlatformOrganizationsForSeeding,
+  listRecentConfigurationCopyJobs,
+  OrganizationConfigurationCopyError,
+  retryConfigurationCopyJob,
+} from "../services/organizationConfigurationCopyService";
 
 // ─── Session type augmentation ────────────────────────────────────────────────
 declare module "express-session" {
@@ -161,6 +170,18 @@ const createOrgBodySchema = z.object({
   name: z.string().min(1, "Org name required").max(255),
   slug: z.string().max(100).regex(/^[a-z0-9-]*$/, "Slug must be lowercase alphanumeric with hyphens").optional(),
   ownerEmail: z.string().email("A valid owner email is required"),
+  seedConfiguration: z.object({
+    enabled: z.boolean().default(false),
+    sourceOrganizationId: z.string().min(1).optional(),
+  }).optional(),
+});
+
+const copyPreviewParamsSchema = z.object({
+  organizationId: z.string().min(1),
+});
+
+const copyJobParamsSchema = z.object({
+  jobId: z.string().min(1),
 });
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -315,6 +336,114 @@ export function registerPlatformRoutes(app: import("express").Express): void {
   });
 
   /**
+   * GET /api/platform/orgs
+   * Platform admin organization selector data for configuration seeding.
+   */
+  router.get("/orgs", requirePlatformAdminOr404, async (_req: Request, res: Response) => {
+    try {
+      const orgs = await listPlatformOrganizationsForSeeding();
+      return res.json({ success: true, data: orgs });
+    } catch (error) {
+      console.error("[platform/orgs] list error:", error);
+      return res.status(500).json({ success: false, message: "Failed to list organizations." });
+    }
+  });
+
+  /**
+   * GET /api/platform/orgs/:organizationId/configuration-copy-preview
+   * Read-only source configuration preview.
+   */
+  router.get(
+    "/orgs/:organizationId/configuration-copy-preview",
+    requirePlatformAdminOr404,
+    async (req: Request, res: Response) => {
+      const params = copyPreviewParamsSchema.safeParse(req.params);
+      if (!params.success) {
+        return res.status(400).json({ success: false, message: "Invalid organization ID." });
+      }
+      try {
+        const preview = await getConfigurationCopyPreview(params.data.organizationId);
+        return res.json({ success: true, data: preview });
+      } catch (error: any) {
+        if (error instanceof OrganizationConfigurationCopyError) {
+          return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+        }
+        console.error("[platform/configuration-copy-preview] error:", error);
+        return res.status(500).json({ success: false, message: "Failed to preview configuration copy." });
+      }
+    }
+  );
+
+  /**
+   * GET /api/platform/organization-copy-jobs
+   * Read-only recent configuration copy jobs for Developer Tools diagnostics.
+   */
+  router.get("/organization-copy-jobs", requirePlatformAdminOr404, async (req: Request, res: Response) => {
+    try {
+      const limit = Number.parseInt(String(req.query.limit ?? "10"), 10);
+      const jobs = await listRecentConfigurationCopyJobs(Number.isFinite(limit) ? limit : 10);
+      return res.json({ success: true, data: jobs });
+    } catch (error) {
+      console.error("[platform/organization-copy-jobs] list error:", error);
+      return res.status(500).json({ success: false, message: "Failed to list configuration copy jobs." });
+    }
+  });
+
+  /**
+   * GET /api/platform/organization-copy-jobs/:jobId
+   */
+  router.get("/organization-copy-jobs/:jobId", requirePlatformAdminOr404, async (req: Request, res: Response) => {
+    const params = copyJobParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      return res.status(400).json({ success: false, message: "Invalid copy job ID." });
+    }
+    const job = await getConfigurationCopyJob(params.data.jobId);
+    if (!job) {
+      return res.status(404).json({ success: false, message: "Copy job not found." });
+    }
+    return res.json({ success: true, data: job });
+  });
+
+  /**
+   * POST /api/platform/organization-copy-jobs/:jobId/retry
+   */
+  router.post(
+    "/organization-copy-jobs/:jobId/retry",
+    requirePlatformAdminOr404,
+    requireStepUp,
+    async (req: Request, res: Response) => {
+      const params = copyJobParamsSchema.safeParse(req.params);
+      if (!params.success) {
+        return res.status(400).json({ success: false, message: "Invalid copy job ID." });
+      }
+      const userId = getUserId(req.user);
+      const actorEmail = (req.user as any)?.email ?? "unknown";
+      if (!userId) {
+        return res.status(401).json({ success: false, message: "Unauthorized" });
+      }
+      try {
+        const result = await retryConfigurationCopyJob(params.data.jobId, userId);
+        await writePlatformAuditLog({
+          action: "org.configuration_copy.retry",
+          actorUserId: userId,
+          actorEmail,
+          req,
+          orgId: result.destinationOrganizationId,
+          metadata: { configurationCopy: result },
+        });
+        const status = result.status === "completed" ? 200 : 500;
+        return res.status(status).json({ success: result.status === "completed", data: result, message: result.errorSummary ?? undefined });
+      } catch (error: any) {
+        if (error instanceof OrganizationConfigurationCopyError) {
+          return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message, details: error.details });
+        }
+        console.error("[platform/organization-copy-jobs/retry] error:", error);
+        return res.status(500).json({ success: false, message: "Failed to retry configuration copy." });
+      }
+    }
+  );
+
+  /**
    * POST /api/platform/orgs
    * Platform-admin only + step-up required.
    */
@@ -329,8 +458,14 @@ export function registerPlatformRoutes(app: import("express").Express): void {
         return res.status(400).json({ success: false, message: parse.error.issues[0].message });
       }
 
-      const { name, slug: rawSlug, ownerEmail } = parse.data;
+      const { name, slug: rawSlug, ownerEmail, seedConfiguration } = parse.data;
       const resolvedSlug = (rawSlug && rawSlug.trim()) ? rawSlug.trim() : slugify(name);
+      const shouldSeedConfiguration = seedConfiguration?.enabled === true;
+      const sourceOrganizationId = seedConfiguration?.sourceOrganizationId?.trim();
+
+      if (shouldSeedConfiguration && !sourceOrganizationId) {
+        return res.status(400).json({ success: false, message: "Source organization is required when seeding configuration." });
+      }
 
       if (!resolvedSlug) {
         return res.status(400).json({ success: false, message: "Could not derive a valid slug from org name." });
@@ -340,6 +475,10 @@ export function registerPlatformRoutes(app: import("express").Express): void {
       const actorEmail = (req.user as any)?.email ?? "unknown";
 
       try {
+        if (shouldSeedConfiguration && sourceOrganizationId) {
+          await getConfigurationCopyPreview(sourceOrganizationId);
+        }
+
         const result = await createOrgWithInvite({
           name,
           slug: resolvedSlug,
@@ -366,6 +505,47 @@ export function registerPlatformRoutes(app: import("express").Express): void {
           },
         });
 
+        let configurationCopy = null;
+        if (shouldSeedConfiguration && sourceOrganizationId) {
+          configurationCopy = await copyOrganizationConfiguration({
+            sourceOrganizationId,
+            destinationOrganizationId: result.orgId,
+            requestedByUserId: userId,
+          });
+
+          await writePlatformAuditLog({
+            action: configurationCopy.status === "completed" ? "org.configuration_copy.completed" : "org.configuration_copy.failed",
+            actorUserId: userId,
+            actorEmail,
+            req,
+            orgId: result.orgId,
+            metadata: { configurationCopy },
+          });
+
+          if (configurationCopy.status !== "completed") {
+            return res.status(500).json({
+              success: false,
+              code: "CONFIGURATION_COPY_FAILED",
+              message: configurationCopy.errorSummary ?? "Organization created, but configuration copy failed.",
+              data: {
+                orgId: result.orgId,
+                slug: result.slug,
+                inviteLink,
+                ownerEmail: result.ownerEmail,
+                configurationCopy,
+              },
+            });
+          }
+        } else {
+          await db
+            .update(organizations)
+            .set({
+              settings: { setupStatus: "READY" },
+              updatedAt: new Date(),
+            } as any)
+            .where(eq(organizations.id, result.orgId));
+        }
+
         return res.status(201).json({
           success: true,
           data: {
@@ -373,6 +553,7 @@ export function registerPlatformRoutes(app: import("express").Express): void {
             slug: result.slug,
             inviteLink,
             ownerEmail: result.ownerEmail,
+            configurationCopy,
           },
         });
       } catch (err: any) {
@@ -386,6 +567,16 @@ export function registerPlatformRoutes(app: import("express").Express): void {
             metadata: { reason: "duplicate_invite", ownerEmail },
           });
           return res.status(409).json({ success: false, message: err.message });
+        }
+        if (err instanceof OrganizationConfigurationCopyError) {
+          await writePlatformAuditLog({
+            action: "org.create.failed",
+            actorUserId: userId,
+            actorEmail,
+            req,
+            metadata: { reason: err.code, sourceOrganizationId },
+          });
+          return res.status(err.statusCode).json({ success: false, code: err.code, message: err.message, details: err.details });
         }
         // Unique constraint on slug
         if (err?.message?.includes("unique") || err?.code === "23505") {

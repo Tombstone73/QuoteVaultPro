@@ -715,6 +715,13 @@
       "when": 1783900800000,
       "tag": "0106_inbound_attachment_classification_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1783987200000,
+      "tag": "0107_organization_configuration_copy_jobs",
+      "breakpoints": true
     }
   ]
 }

@@ -7,6 +7,22 @@ import PlatformDeveloperToolsPage from "./PlatformDeveloperToolsPage";
 
 let mockUser: any = { role: "employee", isPlatformDeveloper: true, isPlatformAdmin: false };
 let mockIsLoading = false;
+const mockListConfigurationCopyJobs = jest.fn(async (_limit?: number) => ({
+  httpStatus: 200,
+  body: {
+    success: true,
+    data: [
+      {
+        id: "job-1",
+        sourceOrganizationId: "org-source",
+        destinationOrganizationId: "org-destination",
+        status: "completed",
+        entityCounts: { products: 2, materials: 3 },
+        warnings: [],
+      },
+    ],
+  },
+}));
 
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children }: any) => <a href={typeof to === "string" ? to : String(to)}>{children}</a>,
@@ -19,6 +35,10 @@ jest.mock("@/hooks/useAuth", () => ({
 jest.mock("@/pages/not-found", () => ({
   __esModule: true,
   default: () => <div>Not Found</div>,
+}));
+
+jest.mock("@/lib/api/platform", () => ({
+  listConfigurationCopyJobs: (limit?: number) => mockListConfigurationCopyJobs(limit),
 }));
 
 function renderPage() {
@@ -36,6 +56,7 @@ afterEach(() => {
   document.body.innerHTML = "";
   mockUser = { role: "employee", isPlatformDeveloper: true, isPlatformAdmin: false };
   mockIsLoading = false;
+  mockListConfigurationCopyJobs.mockClear();
 });
 
 describe("PlatformDeveloperToolsPage visibility", () => {
@@ -46,6 +67,21 @@ describe("PlatformDeveloperToolsPage visibility", () => {
     expect(container.textContent).toContain("Catalog Migration Lab");
     expect(container.textContent).toContain("QB Invoice Inspector");
     expect(container.textContent).toContain("QB Customer Inspector");
+
+    act(() => root.unmount());
+  });
+
+  test("platform tools show read-only configuration copy diagnostics", async () => {
+    const { container, root } = renderPage();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockListConfigurationCopyJobs).toHaveBeenCalledWith(8);
+    expect(container.textContent).toContain("Organization Configuration Copy Jobs");
+    expect(container.textContent).toContain("job-1");
+    expect(container.textContent).toContain("products: 2");
 
     act(() => root.unmount());
   });

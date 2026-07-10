@@ -218,6 +218,8 @@ export const organizations = pgTable("organizations", {
       invoiceEmailSubject?: string;
       invoiceEmailBody?: string;
     };
+    setupStatus?: "DRAFT_REQUEST" | "ORGANIZATION_CREATED" | "CONFIGURATION_COPYING" | "READY" | "COPY_FAILED";
+    setupCopyJobId?: string;
   }>().default(sql`'{}'::jsonb`).notNull(),
   trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
   // Tax system fields
@@ -268,6 +270,34 @@ export const updateOrganizationSchema = insertOrganizationSchema.partial().exten
 export type InsertOrganization = z.infer<typeof insertOrganizationSchema>;
 export type UpdateOrganization = z.infer<typeof updateOrganizationSchema>;
 export type Organization = typeof organizations.$inferSelect;
+
+export const organizationConfigurationCopyJobs = pgTable("organization_configuration_copy_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  sourceOrganizationId: varchar("source_organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  destinationOrganizationId: varchar("destination_organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  status: varchar("status", { length: 32 })
+    .$type<"pending" | "copying" | "completed" | "failed">()
+    .notNull()
+    .default("pending"),
+  requestedByUserId: varchar("requested_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  failedAt: timestamp("failed_at", { withTimezone: true }),
+  entityCounts: jsonb("entity_counts").$type<Record<string, number>>().notNull().default(sql`'{}'::jsonb`),
+  warnings: jsonb("warnings").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  errorSummary: text("error_summary"),
+  errorDetails: jsonb("error_details").$type<Record<string, unknown>>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("org_config_copy_jobs_source_idx").on(table.sourceOrganizationId),
+  index("org_config_copy_jobs_destination_idx").on(table.destinationOrganizationId),
+  index("org_config_copy_jobs_status_idx").on(table.status),
+  index("org_config_copy_jobs_created_at_idx").on(table.createdAt),
+]);
+
+export type OrganizationConfigurationCopyJob = typeof organizationConfigurationCopyJobs.$inferSelect;
+export type InsertOrganizationConfigurationCopyJob = typeof organizationConfigurationCopyJobs.$inferInsert;
 
 // User-Organization membership role enum
 export const orgMemberRoleEnum = pgEnum('org_member_role', ['owner', 'admin', 'manager', 'member']);
