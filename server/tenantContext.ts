@@ -87,6 +87,7 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
         .select({
           role: userOrganizations.role,
           deleteState: organizations.deleteState,
+          isArchived: organizations.isArchived,
         })
         .from(userOrganizations)
         .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))
@@ -103,11 +104,12 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
       }
 
       // Block access to soft-deleted or pending-delete orgs
-      if (membership[0].deleteState !== 'active') {
+      if (membership[0].deleteState !== 'active' || membership[0].isArchived) {
         return res.status(403).json({ 
           code: 'ORG_DISABLED_OR_DELETED',
           message: "This organization is not accessible",
           deleteState: membership[0].deleteState,
+          isArchived: membership[0].isArchived,
         });
       }
       
@@ -130,6 +132,7 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
           slug: organizations.slug,
           orgRole: userOrganizations.role,
           deleteState: organizations.deleteState,
+          isArchived: organizations.isArchived,
         })
         .from(userOrganizations)
         .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))
@@ -143,11 +146,12 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
 
       if (lastActiveMembership) {
         // Block access to soft-deleted or pending-delete orgs
-        if (lastActiveMembership.deleteState !== 'active') {
+        if (lastActiveMembership.deleteState !== 'active' || lastActiveMembership.isArchived) {
           return res.status(403).json({ 
             code: 'ORG_DISABLED_OR_DELETED',
             message: "This organization is not accessible",
             deleteState: lastActiveMembership.deleteState,
+            isArchived: lastActiveMembership.isArchived,
           });
         }
 
@@ -166,6 +170,7 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
         slug: organizations.slug,
         orgRole: userOrganizations.role,
         deleteState: organizations.deleteState,
+        isArchived: organizations.isArchived,
       })
       .from(userOrganizations)
       .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))
@@ -179,11 +184,12 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
 
     if (defaultOrg.length > 0) {
       // Block access to soft-deleted or pending-delete orgs
-      if (defaultOrg[0].deleteState !== 'active') {
+      if (defaultOrg[0].deleteState !== 'active' || defaultOrg[0].isArchived) {
         return res.status(403).json({ 
           code: 'ORG_DISABLED_OR_DELETED',
           message: "This organization is not accessible",
           deleteState: defaultOrg[0].deleteState,
+          isArchived: defaultOrg[0].isArchived,
         });
       }
 
@@ -200,13 +206,14 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
         slug: organizations.slug,
         orgRole: userOrganizations.role,
         deleteState: organizations.deleteState,
+        isArchived: organizations.isArchived,
       })
       .from(userOrganizations)
       .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))
       .where(eq(userOrganizations.userId, user.id));
 
     // Filter out soft-deleted/pending orgs
-    const activeOrgs = allOrgs.filter(o => o.deleteState === 'active');
+    const activeOrgs = allOrgs.filter(o => o.deleteState === 'active' && !o.isArchived);
 
     if (activeOrgs.length === 1) {
       req.organizationId = activeOrgs[0].organizationId;

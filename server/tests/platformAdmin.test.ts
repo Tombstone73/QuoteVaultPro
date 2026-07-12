@@ -23,6 +23,18 @@ function slugify(text: string): string {
     .replace(/^-|-$/g, "");
 }
 
+const RESERVED_ORGANIZATION_SLUGS = new Set(["api", "admin", "platform", "settings", "www"]);
+
+function normalizeEditableOrganizationSlug(rawSlug: string, fallbackName?: string): string {
+  const trimmed = rawSlug.trim();
+  const normalized = trimmed ? trimmed.toLowerCase() : slugify(fallbackName ?? "");
+  if (!normalized) throw new Error("ORG_SLUG_REQUIRED");
+  if (normalized.length > 100) throw new Error("ORG_SLUG_TOO_LONG");
+  if (!/^[a-z0-9-]+$/.test(normalized)) throw new Error("ORG_SLUG_INVALID");
+  if (RESERVED_ORGANIZATION_SLUGS.has(normalized)) throw new Error("ORG_SLUG_RESERVED");
+  return normalized;
+}
+
 // ─── Inline: step-up window logic ─────────────────────────────────────────────
 
 const REAUTH_WINDOW_MS = 10 * 60 * 1000;
@@ -93,6 +105,24 @@ describe("slugify()", () => {
 
   it("returns empty string for non-slug-able input", () => {
     expect(slugify("!!!")).toBe("");
+  });
+});
+
+describe("organization editor slug validation", () => {
+  it("normalizes uppercase slug input", () => {
+    expect(normalizeEditableOrganizationSlug("Titan-Graphics-Archive")).toBe("titan-graphics-archive");
+  });
+
+  it("derives a slug from name when slug is blank", () => {
+    expect(normalizeEditableOrganizationSlug(" ", "Titan Graphics Archive")).toBe("titan-graphics-archive");
+  });
+
+  it("rejects invalid slug characters", () => {
+    expect(() => normalizeEditableOrganizationSlug("titan_graphics")).toThrow("ORG_SLUG_INVALID");
+  });
+
+  it("rejects reserved slugs", () => {
+    expect(() => normalizeEditableOrganizationSlug("platform")).toThrow("ORG_SLUG_RESERVED");
   });
 });
 

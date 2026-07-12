@@ -5,7 +5,13 @@ import { useAuth } from "@/hooks/useAuth";
 import NotFound from "@/pages/not-found";
 import { ROUTES } from "@/config/routes";
 import { canUsePlatformTools } from "@/lib/platformAccess";
-import { listConfigurationCopyJobs, type ConfigurationCopyJobResult } from "@/lib/api/platform";
+import {
+  listConfigurationCopyJobs,
+  listPlatformSeedOrganizations,
+  updatePlatformOrganization,
+  type ConfigurationCopyJobResult,
+  type PlatformSeedOrganization,
+} from "@/lib/api/platform";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,6 +22,14 @@ export default function PlatformDeveloperToolsPage() {
   const canAccessPlatformTools = canUsePlatformTools(user);
   const [copyJobs, setCopyJobs] = useState<ConfigurationCopyJobResult[]>([]);
   const [copyJobsLoading, setCopyJobsLoading] = useState(false);
+  const [organizations, setOrganizations] = useState<PlatformSeedOrganization[]>([]);
+  const [organizationsLoading, setOrganizationsLoading] = useState(false);
+  const [editingOrg, setEditingOrg] = useState<PlatformSeedOrganization | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editSlug, setEditSlug] = useState("");
+  const [editArchived, setEditArchived] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [savingOrg, setSavingOrg] = useState(false);
 
   useEffect(() => {
     if (!canAccessPlatformTools) return;
@@ -37,6 +51,71 @@ export default function PlatformDeveloperToolsPage() {
       cancelled = true;
     };
   }, [canAccessPlatformTools]);
+
+  const loadOrganizations = async () => {
+    setOrganizationsLoading(true);
+    try {
+      const { body } = await listPlatformSeedOrganizations();
+      if (body.success) {
+        setOrganizations(body.data ?? []);
+      }
+    } finally {
+      setOrganizationsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!canAccessPlatformTools) return;
+    void loadOrganizations();
+  }, [canAccessPlatformTools]);
+
+  const startEdit = (org: PlatformSeedOrganization) => {
+    setEditingOrg(org);
+    setEditName(org.name);
+    setEditSlug(org.slug);
+    setEditArchived(Boolean(org.isArchived));
+    setEditError(null);
+  };
+
+  const saveOrganization = async () => {
+    if (!editingOrg || savingOrg) return;
+    setEditError(null);
+    if (!editName.trim()) {
+      setEditError("Organization name is required.");
+      return;
+    }
+    if (!editSlug.trim()) {
+      setEditError("Organization slug is required.");
+      return;
+    }
+    if (editArchived !== Boolean(editingOrg.isArchived)) {
+      const ok = window.confirm(
+        editArchived
+          ? "Archive this organization? It will be hidden from normal organization selectors and blocked from normal tenant activity."
+          : "Restore this organization? It will become selectable again for authorized users."
+      );
+      if (!ok) return;
+    }
+    setSavingOrg(true);
+    try {
+      const payload: { name?: string; slug?: string; isArchived?: boolean } = {};
+      if (editName.trim() !== editingOrg.name) payload.name = editName.trim();
+      if (editSlug.trim() !== editingOrg.slug) payload.slug = editSlug.trim();
+      if (editArchived !== Boolean(editingOrg.isArchived)) payload.isArchived = editArchived;
+      const { body } = await updatePlatformOrganization(editingOrg.id, payload);
+      if (!body.success || !body.data) {
+        setEditError(body.message ?? "Failed to save organization.");
+        return;
+      }
+      setEditingOrg(body.data);
+      setEditName(body.data.name);
+      setEditSlug(body.data.slug);
+      setEditArchived(Boolean(body.data.isArchived));
+      await loadOrganizations();
+    } finally {
+      setSavingOrg(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -74,6 +153,113 @@ export default function PlatformDeveloperToolsPage() {
               This area is visible only to platform developers and platform admins. Tenant admins should use standard
               Settings and Admin Tools unless a utility is promoted out of Platform.
             </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-titan-bg-card-elevated">
+        <CardHeader className="pb-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">Organizations</CardTitle>
+            <Badge variant="secondary">Developer / Platform Admin</Badge>
+          </div>
+          <CardDescription>
+            Edit organization display names, slugs, and archive state. Tenant data remains linked by organization ID.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="rounded-md border">
+            {organizationsLoading ? (
+              <div className="p-3"><Skeleton className="h-24 w-full" /></div>
+            ) : organizations.length === 0 ? (
+              <p className="p-3 text-sm text-muted-foreground">No organizations found.</p>
+            ) : (
+              <div className="divide-y">
+                {organizations.map((org) => (
+                  <div key={org.id} className="grid gap-2 p-3 text-sm md:grid-cols-[minmax(0,1fr)_160px_120px_80px] md:items-center">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{org.name}</div>
+                      <div className="truncate font-mono text-xs text-muted-foreground">{org.slug}</div>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {org.createdAt ? new Date(org.createdAt).toLocaleDateString() : "Created date unavailable"}
+                    </div>
+                    <Badge variant={org.isArchived ? "secondary" : "default"} className="w-fit">
+                      {org.isArchived ? "Archived" : "Active"}
+                    </Badge>
+                    <Button type="button" size="sm" variant="outline" onClick={() => startEdit(org)}>
+                      Edit
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-md border p-3">
+            {editingOrg ? (
+              <div className="space-y-3">
+                <div>
+                  <div className="text-sm font-medium">Edit organization</div>
+                  <div className="font-mono text-xs text-muted-foreground">{editingOrg.id}</div>
+                </div>
+
+                <label className="block space-y-1 text-sm">
+                  <span className="font-medium">Display name</span>
+                  <input
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                    value={editName}
+                    onChange={(event) => setEditName(event.target.value)}
+                    disabled={savingOrg}
+                  />
+                </label>
+
+                <label className="block space-y-1 text-sm">
+                  <span className="font-medium">Slug</span>
+                  <input
+                    className="h-9 w-full rounded-md border bg-background px-3 font-mono text-sm"
+                    value={editSlug}
+                    onChange={(event) => setEditSlug(event.target.value)}
+                    disabled={savingOrg}
+                  />
+                  <span className="block text-xs text-muted-foreground">
+                    Changing the slug may change organization URLs. Organization data remains linked by organization ID.
+                  </span>
+                </label>
+
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
+                  <label className="flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={editArchived}
+                      onChange={(event) => setEditArchived(event.target.checked)}
+                      disabled={savingOrg}
+                    />
+                    <span>
+                      <span className="block font-medium">{editArchived ? "Archived" : "Active"}</span>
+                      <span className="text-xs text-muted-foreground">
+                        Archive/restore is separate from rename. Archived organizations remain in the database and developer tools.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+
+                {editError && <p className="text-sm text-destructive">{editError}</p>}
+
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => setEditingOrg(null)} disabled={savingOrg}>
+                    Cancel
+                  </Button>
+                  <Button type="button" size="sm" onClick={saveOrganization} disabled={savingOrg}>
+                    {savingOrg ? "Saving..." : "Save"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">Select an organization to edit.</p>
+            )}
           </div>
         </CardContent>
       </Card>

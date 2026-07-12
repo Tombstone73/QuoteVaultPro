@@ -243,6 +243,9 @@ export const organizations = pgTable("organizations", {
   deleteReason: text("delete_reason"),
   deletedIp: text("deleted_ip"),
   deletedUserAgent: text("deleted_user_agent"),
+  isArchived: boolean("is_archived").notNull().default(false),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  archivedByUserId: varchar("archived_by_user_id").references((): AnyPgColumn => users.id, { onDelete: 'set null' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -251,6 +254,7 @@ export const organizations = pgTable("organizations", {
   index("organizations_type_idx").on(table.type),
   index("organizations_delete_state_idx").on(table.deleteState),
   index("organizations_delete_requested_at_idx").on(table.deleteRequestedAt),
+  index("organizations_is_archived_idx").on(table.isArchived),
 ]);
 
 export const insertOrganizationSchema = createInsertSchema(organizations).omit({
