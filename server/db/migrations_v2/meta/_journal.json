@@ -722,6 +722,13 @@
       "when": 1783987200000,
       "tag": "0107_organization_configuration_copy_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1784073600000,
+      "tag": "0108_organization_archive_state",
+      "breakpoints": true
     }
   ]
 }

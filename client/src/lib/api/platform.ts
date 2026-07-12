@@ -44,8 +44,13 @@ export interface PlatformSeedOrganization {
   id: string;
   name: string;
   slug: string;
+  status?: string;
   deleteState: string;
-  status: string;
+  isArchived?: boolean;
+  archivedAt?: string | null;
+  archivedByUserId?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface ConfigurationCopyPreview {
@@ -170,6 +175,23 @@ export async function retryConfigurationCopyJob(jobId: string): Promise<{
   body: { success: boolean; data?: ConfigurationCopyJobResult; message?: string; code?: string };
 }> {
   const res = await postJson(`/api/platform/organization-copy-jobs/${encodeURIComponent(jobId)}/retry`, {});
+  const body = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export async function updatePlatformOrganization(
+  organizationId: string,
+  payload: { name?: string; slug?: string; isArchived?: boolean }
+): Promise<{
+  httpStatus: number;
+  body: { success: boolean; data?: PlatformSeedOrganization; message?: string; code?: string; details?: Record<string, unknown> };
+}> {
+  const res = await fetch(getApiUrl(`/api/platform/orgs/${encodeURIComponent(organizationId)}`), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
   const body = await res.json();
   return { httpStatus: res.status, body };
 }

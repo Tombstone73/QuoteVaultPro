@@ -23,6 +23,37 @@ const mockListConfigurationCopyJobs = jest.fn(async (_limit?: number) => ({
     ],
   },
 }));
+const mockListPlatformSeedOrganizations = jest.fn(async () => ({
+  httpStatus: 200,
+  body: {
+    success: true,
+    data: [
+      {
+        id: "org-1",
+        name: "Titan Graphics",
+        slug: "titan-graphics",
+        status: "active",
+        deleteState: "active",
+        isArchived: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+  },
+}));
+const mockUpdatePlatformOrganization = jest.fn(async (_organizationId?: string, _payload?: any) => ({
+  httpStatus: 200,
+  body: {
+    success: true,
+    data: {
+      id: "org-1",
+      name: "Titan Graphics Archive",
+      slug: "titan-graphics-archive",
+      status: "active",
+      deleteState: "active",
+      isArchived: true,
+    },
+  },
+}));
 
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children }: any) => <a href={typeof to === "string" ? to : String(to)}>{children}</a>,
@@ -39,6 +70,8 @@ jest.mock("@/pages/not-found", () => ({
 
 jest.mock("@/lib/api/platform", () => ({
   listConfigurationCopyJobs: (limit?: number) => mockListConfigurationCopyJobs(limit),
+  listPlatformSeedOrganizations: () => mockListPlatformSeedOrganizations(),
+  updatePlatformOrganization: (organizationId: string, payload: any) => mockUpdatePlatformOrganization(organizationId, payload),
 }));
 
 function renderPage() {
@@ -57,6 +90,8 @@ afterEach(() => {
   mockUser = { role: "employee", isPlatformDeveloper: true, isPlatformAdmin: false };
   mockIsLoading = false;
   mockListConfigurationCopyJobs.mockClear();
+  mockListPlatformSeedOrganizations.mockClear();
+  mockUpdatePlatformOrganization.mockClear();
 });
 
 describe("PlatformDeveloperToolsPage visibility", () => {
@@ -82,6 +117,31 @@ describe("PlatformDeveloperToolsPage visibility", () => {
     expect(container.textContent).toContain("Organization Configuration Copy Jobs");
     expect(container.textContent).toContain("job-1");
     expect(container.textContent).toContain("products: 2");
+
+    act(() => root.unmount());
+  });
+
+  test("platform tools show organizations list and edit action", async () => {
+    const { container, root } = renderPage();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockListPlatformSeedOrganizations).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Organizations");
+    expect(container.textContent).toContain("Titan Graphics");
+    expect(container.textContent).toContain("titan-graphics");
+
+    const editButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Edit");
+    expect(editButton).toBeTruthy();
+
+    act(() => {
+      editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Edit organization");
+    expect((container.querySelector("input[value='Titan Graphics']") as HTMLInputElement | null)?.value).toBe("Titan Graphics");
 
     act(() => root.unmount());
   });

@@ -53,6 +53,7 @@ export function registerMeRoutes(app: Express) {
           id: organizations.id,
           name: organizations.name,
           slug: organizations.slug,
+          isArchived: organizations.isArchived,
           role: userOrganizations.role,
         })
         .from(userOrganizations)
@@ -60,7 +61,7 @@ export function registerMeRoutes(app: Express) {
           organizations,
           eq(userOrganizations.organizationId, organizations.id)
         )
-        .where(eq(userOrganizations.userId, userId));
+        .where(and(eq(userOrganizations.userId, userId), eq(organizations.isArchived, false)));
 
       // Fetch current lastActiveOrgId
       const [userRow] = await db
@@ -106,12 +107,14 @@ export function registerMeRoutes(app: Express) {
     try {
       // Verify user has a membership in this org (don't leak org existence)
       const [membership] = await db
-        .select({ role: userOrganizations.role })
+        .select({ role: userOrganizations.role, isArchived: organizations.isArchived })
         .from(userOrganizations)
+        .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))
         .where(
           and(
             eq(userOrganizations.userId, userId),
-            eq(userOrganizations.organizationId, orgId)
+            eq(userOrganizations.organizationId, orgId),
+            eq(organizations.isArchived, false)
           )
         )
         .limit(1);

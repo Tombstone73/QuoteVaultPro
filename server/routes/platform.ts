@@ -33,11 +33,15 @@ import {
   copyOrganizationConfiguration,
   getConfigurationCopyJob,
   getConfigurationCopyPreview,
-  listPlatformOrganizationsForSeeding,
   listRecentConfigurationCopyJobs,
   OrganizationConfigurationCopyError,
   retryConfigurationCopyJob,
 } from "../services/organizationConfigurationCopyService";
+import {
+  getEditableOrganizations,
+  OrganizationEditorError,
+  updateOrganizationForPlatform,
+} from "../services/organizationEditorService";
 
 // ─── Session type augmentation ────────────────────────────────────────────────
 declare module "express-session" {
@@ -106,6 +110,29 @@ const requirePlatformAdminOr404: RequestHandler = async (req, res, next) => {
     .limit(1);
 
   if (!dbUser?.isPlatformAdmin) {
+    return res.status(404).json({ message: "Not Found" });
+  }
+
+  next();
+};
+
+const requirePlatformOperatorOr404: RequestHandler = async (req, res, next) => {
+  if (!req.isAuthenticated()) {
+    return res.status(404).json({ message: "Not Found" });
+  }
+
+  const userId = getUserId(req.user);
+  if (!userId) {
+    return res.status(404).json({ message: "Not Found" });
+  }
+
+  const [dbUser] = await db
+    .select({ isPlatformAdmin: users.isPlatformAdmin, isPlatformDeveloper: users.isPlatformDeveloper })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+
+  if (!dbUser?.isPlatformAdmin && !dbUser?.isPlatformDeveloper) {
     return res.status(404).json({ message: "Not Found" });
   }
 
@@ -182,6 +209,18 @@ const copyPreviewParamsSchema = z.object({
 
 const copyJobParamsSchema = z.object({
   jobId: z.string().min(1),
+});
+
+const updateOrgParamsSchema = z.object({
+  orgId: z.string().min(1),
+});
+
+const updateOrgBodySchema = z.object({
+  name: z.string().min(1).max(255).optional(),
+  slug: z.string().min(1).max(100).optional(),
+  isArchived: z.boolean().optional(),
+}).strict().refine((body) => body.name !== undefined || body.slug !== undefined || body.isArchived !== undefined, {
+  message: "At least one editable field is required.",
 });
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -339,15 +378,83 @@ export function registerPlatformRoutes(app: import("express").Express): void {
    * GET /api/platform/orgs
    * Platform admin organization selector data for configuration seeding.
    */
-  router.get("/orgs", requirePlatformAdminOr404, async (_req: Request, res: Response) => {
+  router.get("/orgs", requirePlatformOperatorOr404, async (_req: Request, res: Response) => {
     try {
-      const orgs = await listPlatformOrganizationsForSeeding();
+      const orgs = await getEditableOrganizations();
       return res.json({ success: true, data: orgs });
     } catch (error) {
       console.error("[platform/orgs] list error:", error);
       return res.status(500).json({ success: false, message: "Failed to list organizations." });
     }
   });
+
+  /**
+   * PATCH /api/platform/orgs/:orgId
+   * Developer/platform-admin safe organization editor.
+   */
+  router.patch(
+    "/orgs/:orgId",
+    requirePlatformOperatorOr404,
+    requireStepUp,
+    async (req: Request, res: Response) => {
+      const params = updateOrgParamsSchema.safeParse(req.params);
+      if (!params.success) {
+        return res.status(400).json({ success: false, message: "Invalid organization ID." });
+      }
+
+      const body = updateOrgBodySchema.safeParse(req.body);
+      if (!body.success) {
+        return res.status(400).json({
+          success: false,
+          message: body.error.issues[0]?.message ?? "Invalid organization update.",
+        });
+      }
+
+      const userId = getUserId(req.user);
+      const actorEmail = (req.user as any)?.email ?? "unknown";
+      if (!userId) {
+        return res.status(401).json({ success: false, message: "Unauthorized" });
+      }
+
+      try {
+        const result = await updateOrganizationForPlatform({
+          organizationId: params.data.orgId,
+          actorUserId: userId,
+          ...body.data,
+        });
+
+        await writePlatformAuditLog({
+          action: "org.update",
+          actorUserId: userId,
+          actorEmail,
+          req,
+          orgId: result.organization.id,
+          metadata: {
+            organizationId: result.organization.id,
+            previousName: result.previous.name,
+            newName: result.organization.name,
+            previousSlug: result.previous.slug,
+            newSlug: result.organization.slug,
+            previousArchiveState: result.previous.isArchived,
+            newArchiveState: result.organization.isArchived,
+          },
+        });
+
+        return res.json({ success: true, data: result.organization });
+      } catch (error: any) {
+        if (error instanceof OrganizationEditorError) {
+          return res.status(error.statusCode).json({
+            success: false,
+            code: error.code,
+            message: error.message,
+            details: error.details,
+          });
+        }
+        console.error("[platform/orgs] update error:", error);
+        return res.status(500).json({ success: false, message: "Failed to update organization." });
+      }
+    }
+  );
 
   /**
    * GET /api/platform/orgs/:organizationId/configuration-copy-preview
