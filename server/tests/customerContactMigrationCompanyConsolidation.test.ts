@@ -1,8 +1,52 @@
 import { describe, expect, test } from "@jest/globals";
 import { buildConsolidatedCompanySourceDrafts } from "../services/customerContactMigration/service";
-import { normalizeCompanyName } from "../services/customerContactMigration/matching";
+import { matchCompany, normalizeCompanyName } from "../services/customerContactMigration/matching";
 
 describe("customer/contact migration company source consolidation", () => {
+  test("classifies a valid InfoFlo-only prospect as createable without QuickBooks", () => {
+    const result = buildConsolidatedCompanySourceDrafts(
+      [],
+      [{ "Entry Id": "IF-PROSPECT", Name: "Prospect Print Buyer", Email: "buyer@example.com" }],
+    );
+
+    expect(result.summary.infoFloOnlyCompanies).toBe(1);
+    expect(result.summary.quickBooksOnlyCompanies).toBe(0);
+    expect(result.summary.rejectedCompanies).toBe(0);
+    expect(result.drafts).toHaveLength(1);
+    expect(result.drafts[0]).toMatchObject({
+      sourceSystem: "infoflo",
+      sourceRecordId: "IF-PROSPECT",
+      quickBooksCustomerId: null,
+    });
+    expect(result.drafts[0].forcedMatch).toBeUndefined();
+    expect(result.drafts[0].normalized.permanentPatch).not.toHaveProperty("externalAccountingId");
+  });
+
+  test("keeps contacts for an InfoFlo-only company eligible for one relationship target", () => {
+    const result = buildConsolidatedCompanySourceDrafts(
+      [],
+      [{ "Entry Id": "IF-PROSPECT", Name: "Prospect Print Buyer" }],
+    );
+    const companyByNormalizedName = new Map<string, number>();
+    for (const draft of result.drafts) {
+      const key = normalizeCompanyName(draft.normalized.name);
+      companyByNormalizedName.set(key, (companyByNormalizedName.get(key) ?? 0) + 1);
+    }
+
+    expect(companyByNormalizedName.get(normalizeCompanyName("Prospect Print Buyer"))).toBe(1);
+  });
+
+  test("lets an InfoFlo-only company later link to QuickBooks by normalized name", () => {
+    const result = buildConsolidatedCompanySourceDrafts(
+      [{ Id: "QB-LATER", DisplayName: "Prospect Print Buyer LLC", CompanyName: "Prospect Print Buyer LLC" }],
+      [{ "Entry Id": "IF-PROSPECT", Name: "Prospect Print Buyer Inc" }],
+    );
+
+    expect(result.summary.quickBooksInfoFloCompanyMatches).toBe(1);
+    expect(result.summary.infoFloOnlyCompanies).toBe(0);
+    expect(result.drafts[0].quickBooksCustomerId).toBe("QB-LATER");
+  });
+
   test("consolidates QuickBooks and InfoFlo companies by exact company name match", () => {
     const result = buildConsolidatedCompanySourceDrafts(
       [{ Id: "QB-1", DisplayName: "Brainstorm Print", CompanyName: "Brainstorm Print" }],
@@ -58,6 +102,35 @@ describe("customer/contact migration company source consolidation", () => {
     expect(result.summary.unmatchedInfoFloCompanies).toBe(0);
     expect(result.drafts).toHaveLength(3);
     expect(result.drafts[0].forcedMatch?.status).toBe("ambiguous");
+  });
+
+  test("rejects blank and system InfoFlo company records instead of treating them as prospects", () => {
+    const blank = buildConsolidatedCompanySourceDrafts([], [{ "Entry Id": "IF-BLANK", Name: "" }]);
+    const system = buildConsolidatedCompanySourceDrafts([], [{ "Entry Id": "IF-SYSTEM", Name: "Test Company" }]);
+
+    expect(blank.summary.rejectedCompanies).toBe(1);
+    expect(blank.drafts[0].forcedMatch?.status).toBe("rejected");
+    expect(blank.drafts[0].warnings).toContain("InfoFlo company name is blank or malformed.");
+    expect(system.summary.rejectedCompanies).toBe(1);
+    expect(system.drafts[0].forcedMatch?.status).toBe("rejected");
+    expect(system.drafts[0].warnings).toContain("InfoFlo company appears to be a system/test record.");
+  });
+
+  test("rerun matches InfoFlo Entry ID without creating a duplicate company", () => {
+    const result = matchCompany(
+      { name: "Prospect Print Buyer", sourceRecordId: "IF-PROSPECT" },
+      [{ id: "cust_existing", companyName: "Prospect Print Buyer" }],
+      [{
+        entityType: "customer",
+        entityId: "cust_existing",
+        sourceSystem: "infoflo",
+        sourceEntityType: "company",
+        sourceRecordId: "IF-PROSPECT",
+      }],
+    );
+
+    expect(result.status).toBe("matched");
+    expect(result.selectedId).toBe("cust_existing");
   });
 
   test("relationship matching sees one company after QuickBooks and InfoFlo consolidation", () => {
