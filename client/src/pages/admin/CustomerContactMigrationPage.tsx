@@ -295,7 +295,7 @@ export default function CustomerContactMigrationPage() {
   const summary = detail?.batch.summaryJson ?? {};
   const unresolved = detail
     ? countRows(detail.companyRows, ["ambiguous", "failed"]) +
-      countRows(detail.contactRows, ["ambiguous_person", "company_ambiguous", "company_missing", "failed"]) +
+      countRows(detail.contactRows, ["ambiguous_person", "company_missing", "failed"]) +
       countRows(detail.relationshipRows, ["ambiguous", "failed"])
     : 0;
   const canFinalize = detail?.batch.status === "ready_to_finalize" ||
@@ -644,7 +644,7 @@ function unresolvedCompanyRows(detail: CustomerContactMigrationBatchDetail) {
 }
 
 function unresolvedContactRows(detail: CustomerContactMigrationBatchDetail) {
-  return detail.contactRows.filter((row) => ["ambiguous_person", "company_ambiguous", "company_missing", "failed"].includes(String(row.status)));
+  return detail.contactRows.filter((row) => ["ambiguous_person", "company_missing", "failed"].includes(String(row.status)));
 }
 
 function sortedCandidates(row: Record<string, any>) {
@@ -678,19 +678,34 @@ function ExceptionReviewPanel({
 }) {
   const companies = unresolvedCompanyRows(detail);
   const contacts = unresolvedContactRows(detail);
+  const contactById = new Map(detail.contactRows.map((row) => [row.id, row]));
+  const relationshipsByCompanyId = new Map<string, Array<Record<string, any>>>();
+  for (const relationship of detail.relationshipRows) {
+    if (!relationship.companyRecordId) continue;
+    const companyRelationships = relationshipsByCompanyId.get(relationship.companyRecordId) ?? [];
+    companyRelationships.push(relationship);
+    relationshipsByCompanyId.set(relationship.companyRecordId, companyRelationships);
+  }
   const rows = [
     ...companies.map((row) => ({ recordType: "company" as const, row })),
     ...contacts.map((row) => ({ recordType: "contact" as const, row })),
   ];
+  const dependentContactCount = companies.reduce((count, company) => {
+    const relationships = relationshipsByCompanyId.get(company.id) ?? [];
+    return count + relationships.filter((relationship) => relationship.contactRecordId && contactById.has(relationship.contactRecordId)).length;
+  }, 0);
 
   return (
     <div className="rounded-md border">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
         <div>
           <div className="text-sm font-medium">Exception Review</div>
-          <div className="text-xs text-muted-foreground">Ambiguous companies and contacts</div>
+          <div className="text-xs text-muted-foreground">Company exceptions with dependent contacts, plus true contact exceptions</div>
         </div>
-        <Badge variant={rows.length > 0 ? "destructive" : "default"}>{rows.length}</Badge>
+        <div className="flex flex-wrap gap-2">
+          <Badge variant={rows.length > 0 ? "destructive" : "default"}>{rows.length} exceptions</Badge>
+          {dependentContactCount > 0 ? <Badge variant="outline">{dependentContactCount} dependent contacts</Badge> : null}
+        </div>
       </div>
       {rows.length === 0 ? (
         <div className="p-4 text-sm text-muted-foreground">No company or contact exceptions need review.</div>
@@ -701,6 +716,11 @@ function ExceptionReviewPanel({
             const proposed = candidates[0] ?? null;
             const manualKey = `${recordType}:${row.id}`;
             const warnings = Array.isArray(row.warningsJson) ? row.warningsJson : [];
+            const dependentContacts = recordType === "company"
+              ? (relationshipsByCompanyId.get(row.id) ?? [])
+                .map((relationship) => relationship.contactRecordId ? contactById.get(relationship.contactRecordId) : null)
+                .filter((contact): contact is Record<string, any> => Boolean(contact))
+              : [];
             return (
               <div key={manualKey} className="space-y-3 p-4 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -749,6 +769,24 @@ function ExceptionReviewPanel({
                     </div>
                   </div>
                 </div>
+
+                {dependentContacts.length > 0 ? (
+                  <div className="rounded-md border p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs font-medium text-muted-foreground">Dependent contacts</div>
+                      <Badge variant="outline">{dependentContacts.length}</Badge>
+                    </div>
+                    <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                      {dependentContacts.map((contact) => (
+                        <div key={contact.id} className="rounded border p-2">
+                          <div className="font-medium">{sourceLabel(contact)}</div>
+                          <div className="mt-1 font-mono text-xs text-muted-foreground">{contact.sourceRecordId || contact.id}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">{contact.status}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="flex flex-wrap items-center gap-2">
                   <Button

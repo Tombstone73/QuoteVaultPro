@@ -2,7 +2,9 @@ import { describe, expect, test } from "@jest/globals";
 import {
   buildCompanyReviewPatch,
   buildContactReviewPatch,
+  buildDependentContactPatchAfterCompanyDecision,
   buildFinalizePreviewCounts,
+  buildRelationshipPatchAfterCompanyDecision,
   countMigrationUnresolvedRows,
 } from "../services/customerContactMigration/service";
 
@@ -71,5 +73,69 @@ describe("customer/contact migration review decisions", () => {
       relationshipsToUpdate: 1,
       remainingUnresolved: 3,
     });
+  });
+
+  test("resolving a company clears dependent company-pending contact exceptions", () => {
+    const companyPatch = buildCompanyReviewPatch({
+      status: "ambiguous",
+      matchCandidatesJson: [{ id: "cust_adapt", score: 92, reason: "normalized name" }],
+    }, { action: "accept_proposed", actorUserId: "user_1" });
+    const dependentContactPatch = buildDependentContactPatchAfterCompanyDecision("company_pending", companyPatch);
+    const relationshipPatch = buildRelationshipPatchAfterCompanyDecision(companyPatch);
+
+    expect(dependentContactPatch).toMatchObject({
+      status: "company_matched",
+      selectedCustomerId: "cust_adapt",
+      errorMessage: null,
+    });
+    expect(relationshipPatch).toMatchObject({
+      status: "ready",
+      selectedCustomerId: "cust_adapt",
+      errorMessage: null,
+    });
+  });
+
+  test("ignoring a company skips dependent relationships instead of leaving child exceptions", () => {
+    const companyPatch = buildCompanyReviewPatch({ status: "ambiguous" }, { action: "ignore", actorUserId: "user_1" });
+    const dependentContactPatch = buildDependentContactPatchAfterCompanyDecision("company_pending", companyPatch);
+    const relationshipPatch = buildRelationshipPatchAfterCompanyDecision(companyPatch);
+
+    expect(dependentContactPatch).toMatchObject({
+      status: "rejected",
+      selectedCustomerId: null,
+      errorMessage: "Parent company source ignored by reviewer.",
+    });
+    expect(relationshipPatch).toMatchObject({
+      status: "skipped",
+      selectedCustomerId: null,
+      errorMessage: "Company source ignored by reviewer.",
+    });
+  });
+
+  test("true contact-level exceptions remain unresolved after company decisions", () => {
+    const companyPatch = buildCompanyReviewPatch({ status: "ambiguous" }, { action: "create_new", actorUserId: "user_1" });
+
+    expect(buildDependentContactPatchAfterCompanyDecision("ambiguous_person", companyPatch)).toBeNull();
+    expect(countMigrationUnresolvedRows({
+      companyRows: [{ status: "new_company" }],
+      contactRows: [{ status: "ambiguous_person" }],
+      relationshipRows: [{ status: "ready" }],
+    })).toBe(1);
+  });
+
+  test("company-pending contacts are dependencies, not independent unresolved records", () => {
+    expect(countMigrationUnresolvedRows({
+      companyRows: [{ status: "ambiguous" }],
+      contactRows: [
+        { status: "company_pending" },
+        { status: "company_pending" },
+        { status: "company_pending" },
+      ],
+      relationshipRows: [
+        { status: "pending_company" },
+        { status: "pending_company" },
+        { status: "pending_company" },
+      ],
+    })).toBe(1);
   });
 });
