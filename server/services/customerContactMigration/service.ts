@@ -82,7 +82,7 @@ type CompanySourceDraft = {
   sourceRecordId: string | null;
   quickBooksCustomerId: string | null;
   rawJson: unknown;
-  normalized: NormalizedCompanySource & { permanentPatch: Record<string, unknown>; proofEmail?: string | null };
+  normalized: NormalizedCompanySource & { permanentPatch: Record<string, unknown>; proofEmail?: string | null; additionalInfoFloSourceRecordIds?: string[] };
   warnings: string[];
   forcedMatch?: MatchResult;
 };
@@ -290,7 +290,7 @@ function compactPatch<T extends Record<string, unknown>>(patch: T): T {
 }
 
 const unresolvedCompanyStatuses = new Set(["ambiguous", "failed"]);
-const unresolvedContactStatuses = new Set(["ambiguous_person", "company_ambiguous", "company_missing", "failed"]);
+const unresolvedContactStatuses = new Set(["ambiguous_person", "company_missing", "failed"]);
 const unresolvedRelationshipStatuses = new Set(["ambiguous", "failed"]);
 
 function firstCandidateId(row: { matchCandidatesJson?: unknown }): string | null {
@@ -371,6 +371,33 @@ export function buildContactReviewPatch(row: Record<string, any>, decision: Pick
   return { status: "rejected", selectedContactId: null, reviewDecisionJson, errorMessage: "Ignored by reviewer." };
 }
 
+export function buildDependentContactPatchAfterCompanyDecision(
+  currentStatus: string,
+  companyPatch: { status: string; selectedCustomerId?: string | null },
+) {
+  if (currentStatus !== "company_pending") return null;
+  if (companyPatch.status === "rejected") {
+    return {
+      status: "rejected",
+      selectedCustomerId: null,
+      errorMessage: "Parent company source ignored by reviewer.",
+    };
+  }
+  return {
+    status: "company_matched",
+    selectedCustomerId: companyPatch.selectedCustomerId ?? null,
+    errorMessage: null,
+  };
+}
+
+export function buildRelationshipPatchAfterCompanyDecision(companyPatch: { status: string; selectedCustomerId?: string | null }) {
+  return {
+    selectedCustomerId: companyPatch.selectedCustomerId ?? null,
+    status: companyPatch.status === "rejected" ? "skipped" : "ready",
+    errorMessage: companyPatch.status === "rejected" ? "Company source ignored by reviewer." : null,
+  };
+}
+
 function companySourceNameKeys(source: NormalizedCompanySource): Set<string> {
   return new Set([
     normalizeCompanyName(source.name),
@@ -409,10 +436,155 @@ function validateInfoFloCompanySource(source: NormalizedCompanySource): string[]
   return warnings;
 }
 
+function nonEmptyString(value: unknown): string | null {
+  const text = String(value ?? "").trim();
+  return text ? text : null;
+}
+
+function conflictingFieldNames(
+  a: NormalizedCompanySource & { permanentPatch: Record<string, unknown> },
+  b: NormalizedCompanySource & { permanentPatch: Record<string, unknown> },
+): string[] {
+  const checks: Array<[string, unknown, unknown]> = [
+    ["email", normalizeEmail(a.email), normalizeEmail(b.email)],
+    ["phone", normalizePhone(a.phone), normalizePhone(b.phone)],
+    ["street1", nonEmptyString(a.street1)?.toLowerCase(), nonEmptyString(b.street1)?.toLowerCase()],
+    ["postalCode", nonEmptyString(a.postalCode), nonEmptyString(b.postalCode)],
+  ];
+  return checks
+    .filter(([, left, right]) => Boolean(left && right && left !== right))
+    .map(([field]) => field);
+}
+
+function mergeInfoFloCompanySources(
+  sources: Array<{ raw: Record<string, string>; normalized: NormalizedCompanySource & { permanentPatch: Record<string, unknown>; proofEmail?: string | null } }>,
+): NormalizedCompanySource & { permanentPatch: Record<string, unknown>; proofEmail?: string | null; additionalInfoFloSourceRecordIds?: string[] } {
+  const primary = sources[0].normalized;
+  const mergedPatch: Record<string, unknown> = { ...primary.permanentPatch };
+  for (const source of sources.slice(1)) {
+    for (const [key, value] of Object.entries(source.normalized.permanentPatch)) {
+      if (mergedPatch[key] === undefined || mergedPatch[key] === null || mergedPatch[key] === "") {
+        mergedPatch[key] = value;
+      }
+    }
+  }
+  const sourceIds = sources.map((source) => source.normalized.sourceRecordId).filter((value): value is string => Boolean(value));
+  return {
+    ...primary,
+    email: primary.email ?? sources.find((source) => source.normalized.email)?.normalized.email ?? null,
+    phone: primary.phone ?? sources.find((source) => source.normalized.phone)?.normalized.phone ?? null,
+    street1: primary.street1 ?? sources.find((source) => source.normalized.street1)?.normalized.street1 ?? null,
+    city: primary.city ?? sources.find((source) => source.normalized.city)?.normalized.city ?? null,
+    state: primary.state ?? sources.find((source) => source.normalized.state)?.normalized.state ?? null,
+    postalCode: primary.postalCode ?? sources.find((source) => source.normalized.postalCode)?.normalized.postalCode ?? null,
+    proofEmail: primary.proofEmail ?? sources.find((source) => source.normalized.proofEmail)?.normalized.proofEmail ?? null,
+    additionalInfoFloSourceRecordIds: sourceIds.slice(1),
+    permanentPatch: compactPatch(mergedPatch),
+  };
+}
+
+type InfoFloCompanyGroupRow = {
+  raw: Record<string, string>;
+  normalized: NormalizedCompanySource & { permanentPatch: Record<string, unknown>; proofEmail?: string | null };
+  warnings: string[];
+};
+
+function consolidateInfoFloCompanyRows(rows: Record<string, string>[]): CompanySourceDraft[] {
+  const groups = new Map<string, InfoFloCompanyGroupRow[]>();
+  for (const raw of rows) {
+    const normalized = normalizeInfoFloCompany(raw);
+    const warnings = validateInfoFloCompanySource(normalized);
+    const key = warnings.length > 0
+      ? `__invalid__:${normalized.sourceRecordId ?? groups.size}`
+      : normalizeCompanyName(normalized.name);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push({ raw, normalized, warnings });
+  }
+
+  const drafts: CompanySourceDraft[] = [];
+  for (const group of Array.from(groups.values())) {
+    const invalid = group.filter((row) => row.warnings.length > 0);
+    if (invalid.length > 0) {
+      for (const row of invalid) {
+        drafts.push({
+          sourceSystem: "infoflo",
+          sourceRecordId: row.normalized.sourceRecordId ?? null,
+          quickBooksCustomerId: row.normalized.quickBooksCustomerId ?? null,
+          rawJson: row.raw,
+          normalized: row.normalized,
+          warnings: row.warnings,
+          forcedMatch: {
+            status: "rejected",
+            candidates: [],
+            warnings: row.warnings,
+          },
+        });
+      }
+      continue;
+    }
+
+    if (group.length === 1) {
+      const row = group[0];
+      drafts.push({
+        sourceSystem: "infoflo",
+        sourceRecordId: row.normalized.sourceRecordId ?? null,
+        quickBooksCustomerId: row.normalized.quickBooksCustomerId ?? null,
+        rawJson: row.raw,
+        normalized: row.normalized,
+        warnings: [],
+      });
+      continue;
+    }
+
+    const conflicts = new Set<string>();
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        conflictingFieldNames(group[i].normalized, group[j].normalized).forEach((field) => conflicts.add(field));
+      }
+    }
+    const merged = mergeInfoFloCompanySources(group);
+    const sourceIds = group
+      .map((row) => row.normalized.sourceRecordId)
+      .filter((sourceRecordId): sourceRecordId is string => Boolean(sourceRecordId));
+    if (conflicts.size > 0) {
+      const warnings = [`Conflicting duplicate InfoFlo company rows: ${Array.from(conflicts).join(", ")}.`];
+      drafts.push({
+        sourceSystem: "infoflo",
+        sourceRecordId: merged.sourceRecordId ?? null,
+        quickBooksCustomerId: merged.quickBooksCustomerId ?? null,
+        rawJson: { infoFloDuplicates: group.map((row) => row.raw) },
+        normalized: merged,
+        warnings,
+        forcedMatch: {
+          status: "ambiguous",
+          candidates: sourceIds.map((id) => ({
+            id: String(id),
+            confidence: "review",
+            reason: "Conflicting duplicate InfoFlo company source row",
+            score: 82,
+          })),
+          warnings,
+        },
+      });
+      continue;
+    }
+
+    drafts.push({
+      sourceSystem: "infoflo",
+      sourceRecordId: merged.sourceRecordId ?? null,
+      quickBooksCustomerId: merged.quickBooksCustomerId ?? null,
+      rawJson: { infoFloDuplicates: group.map((row) => row.raw) },
+      normalized: merged,
+      warnings: ["Duplicate InfoFlo company rows were consolidated before relationship matching."],
+    });
+  }
+  return drafts;
+}
+
 function mergeCompanySources(
   quickBooks: NormalizedCompanySource & { permanentPatch: Record<string, unknown> },
   infoFlo: NormalizedCompanySource & { permanentPatch: Record<string, unknown>; proofEmail?: string | null },
-): NormalizedCompanySource & { permanentPatch: Record<string, unknown>; proofEmail?: string | null } {
+): NormalizedCompanySource & { permanentPatch: Record<string, unknown>; proofEmail?: string | null; additionalInfoFloSourceRecordIds?: string[] } {
   const permanentPatch = compactPatch({
     ...quickBooks.permanentPatch,
     ...infoFlo.permanentPatch,
@@ -434,6 +606,7 @@ function mergeCompanySources(
     state: infoFlo.state || quickBooks.state,
     postalCode: infoFlo.postalCode || quickBooks.postalCode,
     proofEmail: infoFlo.proofEmail,
+    additionalInfoFloSourceRecordIds: (infoFlo as any).additionalInfoFloSourceRecordIds,
     permanentPatch,
   };
 }
@@ -447,36 +620,30 @@ export function buildConsolidatedCompanySourceDrafts(
     normalized: normalizeQbCustomer(raw),
   }));
   const matchedQuickBooksIndexes = new Set<number>();
+  const infoFloDrafts = consolidateInfoFloCompanyRows(infoFloCompanyRows);
   const drafts: CompanySourceDraft[] = [];
   let quickBooksInfoFloCompanyMatches = 0;
   let ambiguousCompanyMatches = 0;
   let unmatchedInfoFloCompanies = 0;
   let rejectedCompanies = 0;
 
-  for (const raw of infoFloCompanyRows) {
-    const normalized = normalizeInfoFloCompany(raw);
-    const validationWarnings = validateInfoFloCompanySource(normalized);
-    if (validationWarnings.length > 0) {
+  for (const infoFloDraft of infoFloDrafts) {
+    const normalized = infoFloDraft.normalized;
+    if (infoFloDraft.forcedMatch?.status === "rejected") {
       rejectedCompanies++;
-      drafts.push({
-        sourceSystem: "infoflo",
-        sourceRecordId: normalized.sourceRecordId ?? null,
-        quickBooksCustomerId: normalized.quickBooksCustomerId ?? null,
-        rawJson: raw,
-        normalized,
-        warnings: validationWarnings,
-        forcedMatch: {
-          status: "rejected",
-          candidates: [],
-          warnings: validationWarnings,
-        },
-      });
+      drafts.push(infoFloDraft);
       continue;
     }
 
     const candidates = quickBooksDrafts
       .map((quickBooks, index) => ({ ...quickBooks, index }))
       .filter((quickBooks) => companySourcesLikelySame(normalized, quickBooks.normalized));
+
+    if (infoFloDraft.forcedMatch?.status === "ambiguous") {
+      ambiguousCompanyMatches++;
+      drafts.push(infoFloDraft);
+      continue;
+    }
 
     if (candidates.length === 1) {
       const quickBooks = candidates[0];
@@ -486,9 +653,9 @@ export function buildConsolidatedCompanySourceDrafts(
         sourceSystem: "infoflo",
         sourceRecordId: normalized.sourceRecordId ?? null,
         quickBooksCustomerId: quickBooks.normalized.quickBooksCustomerId ?? null,
-        rawJson: { quickBooks: quickBooks.raw, infoFlo: raw },
+        rawJson: { quickBooks: quickBooks.raw, infoFlo: infoFloDraft.rawJson },
         normalized: mergeCompanySources(quickBooks.normalized, normalized),
-        warnings: ["QuickBooks and InfoFlo company sources were consolidated before relationship matching."],
+        warnings: [...infoFloDraft.warnings, "QuickBooks and InfoFlo company sources were consolidated before relationship matching."],
       });
       continue;
     }
@@ -499,7 +666,7 @@ export function buildConsolidatedCompanySourceDrafts(
         sourceSystem: "infoflo",
         sourceRecordId: normalized.sourceRecordId ?? null,
         quickBooksCustomerId: normalized.quickBooksCustomerId ?? null,
-        rawJson: raw,
+        rawJson: infoFloDraft.rawJson,
         normalized,
         warnings: ["Multiple staged QuickBooks companies match this InfoFlo company; manual review required."],
         forcedMatch: {
@@ -521,9 +688,9 @@ export function buildConsolidatedCompanySourceDrafts(
       sourceSystem: "infoflo",
       sourceRecordId: normalized.sourceRecordId ?? null,
       quickBooksCustomerId: normalized.quickBooksCustomerId ?? null,
-      rawJson: raw,
+      rawJson: infoFloDraft.rawJson,
       normalized,
-      warnings: [],
+      warnings: infoFloDraft.warnings,
     });
   }
 
@@ -835,10 +1002,14 @@ export class CustomerContactMigrationService {
         const relatedCompanyName = normalizeCompanyName(normalized.companyName);
         const relatedCompanyRows = companyByNormalizedName.get(relatedCompanyName) ?? [];
         const relatedCompany = relatedCompanyRows.length === 1 ? relatedCompanyRows[0] : null;
-        const selectedCustomerId = relatedCompany?.selectedCustomerId ?? null;
+        const companyIsResolved = Boolean(
+          relatedCompany &&
+          !["ambiguous", "rejected", "failed"].includes(String(relatedCompany.status))
+        );
+        const selectedCustomerId = companyIsResolved ? relatedCompany?.selectedCustomerId ?? null : null;
         const contactForMatch = { ...normalized, relatedCustomerId: selectedCustomerId };
         const match = matchContact(contactForMatch, existingContacts, identities);
-        const companyStatus = relatedCompany ? "company_matched" : relatedCompanyRows.length > 1 ? "company_ambiguous" : "company_missing";
+        const companyStatus = companyIsResolved ? "company_matched" : relatedCompany ? "company_pending" : relatedCompanyRows.length > 1 ? "company_pending" : "company_missing";
         const status = match.status === "matched"
           ? "matched_existing_person"
           : match.status === "ambiguous"
@@ -862,7 +1033,8 @@ export class CustomerContactMigrationService {
           proposedChangesJson: compactPatch(normalized.permanentPatch),
           warningsJson: [
             ...match.warnings,
-            ...(relatedCompanyRows.length > 1 ? ["Contact company is ambiguous."] : []),
+            ...(relatedCompanyRows.length > 1 ? ["Contact has multiple plausible staged company parents."] : []),
+            ...(relatedCompany && !companyIsResolved ? ["Contact is waiting on parent company resolution."] : []),
             ...(!relatedCompany ? ["Contact company was not matched in the staged company data."] : []),
           ],
           errorMessage: match.status === "rejected" ? match.warnings.join("; ") : null,
@@ -880,13 +1052,16 @@ export class CustomerContactMigrationService {
         if (!contactRecord.selectedCustomerId && !normalized.companyName) continue;
         const relatedCompanyRows = companyByNormalizedName.get(normalizeCompanyName(normalized.companyName)) ?? [];
         const companyRecord = relatedCompanyRows.length === 1 ? relatedCompanyRows[0] : null;
+        const companyPending = Boolean(companyRecord && ["ambiguous", "rejected", "failed"].includes(String(companyRecord.status)));
+        const contactPending = String(contactRecord.status) === "company_pending";
+        const contactBlocked = ["rejected", "ambiguous_person", "failed"].includes(String(contactRecord.status));
         const flags = relationshipFlagsFromInfoFloType(normalized.type);
         relationshipValues.push({
           organizationId: input.organizationId,
           batchId: batch.id,
           companyRecordId: companyRecord?.id ?? null,
           contactRecordId: contactRecord.id,
-          status: companyRecord && contactRecord.status !== "rejected" ? "ready" : "ambiguous",
+          status: !companyRecord ? "ambiguous" : !companyPending && !contactBlocked && !contactPending ? "ready" : companyPending || contactPending ? "pending_company" : "ambiguous",
           selectedCustomerId: contactRecord.selectedCustomerId ?? companyRecord?.selectedCustomerId ?? null,
           selectedContactId: contactRecord.selectedContactId ?? null,
           isPrimary: flags.isPrimary,
@@ -904,6 +1079,7 @@ export class CustomerContactMigrationService {
           warningsJson: [
             ...(normalizeEmail(normalized.billToEmail) ? ["Bill To Email staged as relationship billing evidence."] : []),
             ...(normalizeEmail(normalized.proofEmail) ? ["Proof Email staged as relationship proof evidence."] : []),
+            ...(companyPending || contactPending ? ["Relationship is waiting on parent company resolution."] : []),
           ],
           updatedAt: new Date(),
         });
@@ -915,16 +1091,18 @@ export class CustomerContactMigrationService {
 
       const unresolved =
         companyValues.filter((row) => ["ambiguous", "rejected"].includes(row.status)).length +
-        contactValues.filter((row) => ["ambiguous_person", "company_ambiguous", "company_missing", "rejected"].includes(row.status)).length +
-        relationshipValues.filter((row) => row.status === "ambiguous").length;
+        contactValues.filter((row) => ["ambiguous_person", "company_missing", "rejected", "failed"].includes(row.status)).length +
+        relationshipValues.filter((row) => ["ambiguous", "failed"].includes(row.status)).length;
 
       const summary = {
         quickBooksCompaniesRead: qbCustomers.length,
         infoFloCompaniesRead: companyCsv.rows.length,
         infoFloContactsRead: contactsCsv.rows.length,
         stagedCompanies: companyValues.length,
+        uniqueStagedCompanies: companyValues.length,
         stagedContacts: contactValues.length,
         stagedRelationships: relationshipValues.length,
+        proposedRelationships: relationshipValues.length,
         unresolved,
         quickBooksInfoFloCompanyMatches: companySourceConsolidation.summary.quickBooksInfoFloCompanyMatches,
         matchedQuickBooksInfoFloCompanies: companySourceConsolidation.summary.quickBooksInfoFloCompanyMatches,
@@ -1012,12 +1190,34 @@ export class CustomerContactMigrationService {
           .update(customerContactImportCompanyRecords)
           .set({ ...patch, updatedAt: now })
           .where(eq(customerContactImportCompanyRecords.id, input.recordId));
+        const dependentRelationships = await tx
+          .select({ contactRecordId: customerContactImportRelationshipRecords.contactRecordId })
+          .from(customerContactImportRelationshipRecords)
+          .where(and(
+            eq(customerContactImportRelationshipRecords.batchId, input.batchId),
+            eq(customerContactImportRelationshipRecords.companyRecordId, input.recordId),
+          ));
+        const dependentContactIds = dependentRelationships
+          .map((relationship: { contactRecordId?: string | null }) => relationship.contactRecordId)
+          .filter((id: string | null | undefined): id is string => Boolean(id));
+        if (dependentContactIds.length > 0) {
+          const dependentPatch = buildDependentContactPatchAfterCompanyDecision("company_pending", patch);
+          if (dependentPatch) {
+            await tx
+              .update(customerContactImportContactRecords)
+              .set({ ...dependentPatch, updatedAt: now })
+              .where(and(
+                eq(customerContactImportContactRecords.batchId, input.batchId),
+                inArray(customerContactImportContactRecords.id, dependentContactIds),
+                eq(customerContactImportContactRecords.status, "company_pending"),
+              ));
+          }
+        }
+        const relationshipPatch = buildRelationshipPatchAfterCompanyDecision(patch);
         await tx
           .update(customerContactImportRelationshipRecords)
           .set({
-            selectedCustomerId: patch.selectedCustomerId ?? null,
-            status: patch.status === "rejected" ? "skipped" : "ready",
-            errorMessage: patch.status === "rejected" ? "Company source ignored by reviewer." : null,
+            ...relationshipPatch,
             updatedAt: now,
           })
           .where(and(
@@ -1175,6 +1375,20 @@ export class CustomerContactMigrationService {
               sourceSystem: "infoflo",
               sourceEntityType: "company",
               sourceRecordId: row.sourceRecordId,
+              sourceDisplayName: String((row.normalizedJson as any)?.name ?? ""),
+            });
+          }
+          const additionalInfoFloSourceRecordIds = Array.isArray((row.normalizedJson as any)?.additionalInfoFloSourceRecordIds)
+            ? (row.normalizedJson as any).additionalInfoFloSourceRecordIds.filter((sourceRecordId: unknown): sourceRecordId is string => typeof sourceRecordId === "string" && sourceRecordId.trim().length > 0)
+            : [];
+          for (const sourceRecordId of additionalInfoFloSourceRecordIds) {
+            await upsertExternalIdentity(tx, {
+              organizationId,
+              entityType: "customer",
+              entityId: customerId,
+              sourceSystem: "infoflo",
+              sourceEntityType: "company",
+              sourceRecordId,
               sourceDisplayName: String((row.normalizedJson as any)?.name ?? ""),
             });
           }
@@ -1362,7 +1576,7 @@ export class CustomerContactMigrationService {
     if (kind === "conflicts") {
       return [
         ...batch.companyRows.filter((row) => row.status === "ambiguous").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, candidates: row.matchCandidatesJson })),
-        ...batch.contactRows.filter((row) => row.status === "ambiguous_person" || row.status === "company_ambiguous").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, candidates: row.matchCandidatesJson })),
+        ...batch.contactRows.filter((row) => row.status === "ambiguous_person").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, candidates: row.matchCandidatesJson })),
       ];
     }
     return [

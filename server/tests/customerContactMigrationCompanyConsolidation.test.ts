@@ -36,6 +36,65 @@ describe("customer/contact migration company source consolidation", () => {
     expect(companyByNormalizedName.get(normalizeCompanyName("Prospect Print Buyer"))).toBe(1);
   });
 
+  test("contacts CSV company names do not create staged companies", () => {
+    const result = buildConsolidatedCompanySourceDrafts(
+      [],
+      [{ "Entry Id": "IF-COMPANY", Name: "Adapt Media" }],
+    );
+    const contactCompanyNames = ["Adapt Media", "Adapt Media", "Unlisted Contact Company"];
+    const stagedCompanyKeys = new Set(result.drafts.map((draft) => normalizeCompanyName(draft.normalized.name)));
+
+    expect(result.drafts).toHaveLength(1);
+    expect(stagedCompanyKeys.has(normalizeCompanyName(contactCompanyNames[0]))).toBe(true);
+    expect(stagedCompanyKeys.has(normalizeCompanyName(contactCompanyNames[2]))).toBe(false);
+  });
+
+  test("stages one Adapt Media company for multiple contacts", () => {
+    const result = buildConsolidatedCompanySourceDrafts(
+      [],
+      [{ "Entry Id": "IF-ADAPT", Name: "Adapt Media" }],
+    );
+    const contacts = ["Landon Wieler", "Jamie Davine", "Bryan Avery"].map((name) => ({
+      name,
+      companyKey: normalizeCompanyName("Adapt Media"),
+    }));
+    const stagedCompanies = result.drafts.filter((draft) => normalizeCompanyName(draft.normalized.name) === normalizeCompanyName("Adapt Media"));
+
+    expect(stagedCompanies).toHaveLength(1);
+    expect(contacts.every((contact) => contact.companyKey === normalizeCompanyName(stagedCompanies[0].normalized.name))).toBe(true);
+  });
+
+  test("consolidates duplicate InfoFlo company source rows when fields do not conflict", () => {
+    const result = buildConsolidatedCompanySourceDrafts(
+      [],
+      [
+        { "Entry Id": "IF-ADAPT-1", Name: "Adapt Media", Phone: "555-0101" },
+        { "Entry Id": "IF-ADAPT-2", Name: "Adapt Media", Email: "hello@adapt.test" },
+      ],
+    );
+
+    expect(result.drafts).toHaveLength(1);
+    expect(result.summary.infoFloOnlyCompanies).toBe(1);
+    expect(result.drafts[0].sourceRecordId).toBe("IF-ADAPT-1");
+    expect(result.drafts[0].normalized.additionalInfoFloSourceRecordIds).toEqual(["IF-ADAPT-2"]);
+    expect(result.drafts[0].forcedMatch).toBeUndefined();
+  });
+
+  test("sends conflicting duplicate InfoFlo company rows to review", () => {
+    const result = buildConsolidatedCompanySourceDrafts(
+      [],
+      [
+        { "Entry Id": "IF-ADAPT-1", Name: "Adapt Media", Email: "billing@adapt.test" },
+        { "Entry Id": "IF-ADAPT-2", Name: "Adapt Media", Email: "orders@adapt.test" },
+      ],
+    );
+
+    expect(result.drafts).toHaveLength(1);
+    expect(result.summary.ambiguousCompanyMatches).toBe(1);
+    expect(result.drafts[0].forcedMatch?.status).toBe("ambiguous");
+    expect(result.drafts[0].warnings[0]).toContain("Conflicting duplicate InfoFlo company rows");
+  });
+
   test("lets an InfoFlo-only company later link to QuickBooks by normalized name", () => {
     const result = buildConsolidatedCompanySourceDrafts(
       [{ Id: "QB-LATER", DisplayName: "Prospect Print Buyer LLC", CompanyName: "Prospect Print Buyer LLC" }],

@@ -2709,6 +2709,7 @@ export type CustomerContactImportContactStatus =
   | "ambiguous_person"
   | "company_matched"
   | "company_ambiguous"
+  | "company_pending"
   | "company_missing"
   | "rejected"
   | "imported"
@@ -2717,6 +2718,7 @@ export type CustomerContactImportContactStatus =
 export type CustomerContactImportRelationshipStatus =
   | "pending"
   | "ready"
+  | "pending_company"
   | "ambiguous"
   | "created"
   | "updated"
