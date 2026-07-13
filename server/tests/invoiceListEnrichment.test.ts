@@ -72,10 +72,11 @@ async function createTestCustomer(orgId: string) {
   return customer;
 }
 
-async function createTestContact(customerId: string, suffix: string) {
+async function createTestContact(orgId: string, customerId: string, suffix: string) {
   const [contact] = await db
     .insert(customerContacts)
     .values({
+      organizationId: orgId,
       customerId,
       firstName: `Billing${suffix}`,
       lastName: 'Contact',
@@ -264,7 +265,7 @@ describe('listInvoicesForOrganization — review queue enrichment/search/sort', 
     cleanupOrgIds.push(org.id);
     const user = await createTestUser(org.id, 'lf');
     const customer = await createTestCustomer(org.id);
-    const contact = await createTestContact(customer.id, 'fields');
+    const contact = await createTestContact(org.id, customer.id, 'fields');
     const order = await createTestOrder({
       orgId: org.id,
       customerId: customer.id,
@@ -303,7 +304,7 @@ describe('listInvoicesForOrganization — review queue enrichment/search/sort', 
     const user = await createTestUser(org.id, 'ls');
     const customer = await createTestCustomer(org.id);
     const otherCustomer = await createTestCustomer(org.id);
-    const contact = await createTestContact(customer.id, 'search');
+    const contact = await createTestContact(org.id, customer.id, 'search');
     const order = await createTestOrder({
       orgId: org.id,
       customerId: customer.id,
@@ -415,7 +416,7 @@ describe('listInvoicesForOrganization — review queue enrichment/search/sort', 
     const user = await createTestUser(org.id, 'sfe');
     const customer = await createTestCustomer(org.id);
     await db.update(customers).set({ companyName: 'Portal Test Customer' }).where(eq(customers.id, customer.id));
-    const contact = await createTestContact(customer.id, 'smoke');
+    const contact = await createTestContact(org.id, customer.id, 'smoke');
     await db.update(customerContacts).set({
       firstName: 'Test Billing',
       lastName: 'Contact',

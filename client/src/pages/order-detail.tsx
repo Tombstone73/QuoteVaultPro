@@ -35,7 +35,7 @@ import { CustomerSelect, type CustomerWithContacts } from "@/components/Customer
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useOrder, useCancelOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, isOrderEditable, useOrderWorkflow } from "@/hooks/useOrders";
-import { useCreateOrderInvoice, useInvoices } from "@/hooks/useInvoices";
+import { useBillInvoice, useCreateOrderInvoice, useInvoices } from "@/hooks/useInvoices";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
 import type { OrderLineItem as HookOrderLineItem, OrderWithRelations as HookOrderWithRelations } from "@/hooks/useOrders";
@@ -86,6 +86,9 @@ import { isCanceledOrder } from "@shared/operationalState";
 import { ROUTES } from "@/config/routes";
 import { downloadAuthenticatedPdf, openAuthenticatedPdfForPrint, openAuthenticatedPdfPreview } from "@/lib/authenticatedPdfPreview";
 import { apiFetch } from "@/lib/queryClient";
+import { useOrderPaymentResolution } from "@/hooks/usePaymentOrchestrator";
+import type { PaymentInvoiceCandidate } from "@shared/paymentOrchestration";
+import { getOrderTakePaymentLabel } from "@/lib/paymentResolutionUi";
 import { OrderRecipientFallbackDialog } from "@/features/orders/components/OrderRecipientFallbackDialog";
 import {
   resolveAttachOrderPdfDefault,
@@ -604,8 +607,13 @@ export default function OrderDetail() {
   // Billing / invoices
   const { data: orderInvoices = [], isLoading: isInvoicesLoading } = useInvoices(orderId ? { orderId } : undefined);
   const createOrderInvoice = useCreateOrderInvoice();
+  const billInvoice = useBillInvoice();
+  const orderPaymentResolution = useOrderPaymentResolution(orderId);
   const [billingOverrideDialogOpen, setBillingOverrideDialogOpen] = useState(false);
   const [billingOverrideNote, setBillingOverrideNote] = useState('');
+  const [invoiceRequiredDialogOpen, setInvoiceRequiredDialogOpen] = useState(false);
+  const [paymentInvoiceSelectorOpen, setPaymentInvoiceSelectorOpen] = useState(false);
+  const [paymentBlockedDialogOpen, setPaymentBlockedDialogOpen] = useState(false);
 
   const setBillingOverrideMutation = useMutation({
     mutationFn: async ({ note }: { note: string }) => {
@@ -1747,6 +1755,14 @@ export default function OrderDetail() {
         ? 'Billed'
         : 'Not Ready';
   const canCreateInvoice = isAdminOrOwner && billingStatus !== 'billed' && (billingStatus === 'ready' || billingOverrideActive);
+  const paymentResolution = orderPaymentResolution.data;
+  const isPreparingInvoicePayment = createOrderInvoice.isPending || billInvoice.isPending;
+  const takePaymentLabel = getOrderTakePaymentLabel({
+    isLoading: orderPaymentResolution.isLoading,
+    isPreparing: isPreparingInvoicePayment,
+    resolutionStatus: paymentResolution?.resolutionStatus,
+  });
+  const payableInvoiceCandidates = paymentResolution?.invoiceCandidates.filter((invoice) => invoice.payable) ?? [];
 
   const handleCreateInvoice = async () => {
     if (!orderId) return;
@@ -1763,6 +1779,77 @@ export default function OrderDetail() {
     } catch (error: any) {
       toast({ title: 'Error', description: error.message || 'Failed to create invoice', variant: 'destructive' });
     }
+  };
+
+  const navigateToInvoicePayment = (invoiceId: string, takePayment = true) => {
+    navigate(`/invoices/${invoiceId}${takePayment ? '?takePayment=1' : ''}`);
+  };
+
+  const handleGenerateInvoiceAndTakePayment = async () => {
+    if (!orderId) return;
+    try {
+      const result = await createOrderInvoice.mutateAsync({ orderId, terms: 'due_on_receipt' });
+      const created = (result as any)?.data;
+      if (!created?.id) {
+        throw new Error('Invoice was created, but the response did not include an invoice id.');
+      }
+
+      await billInvoice.mutateAsync(String(created.id));
+      toast({ title: 'Invoice ready', description: 'Invoice generated and finalized for payment.' });
+      setInvoiceRequiredDialogOpen(false);
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', { orderId }] });
+      queryClient.invalidateQueries({ queryKey: ['orders', orderId, 'payment-resolution'] });
+      navigateToInvoicePayment(String(created.id), true);
+    } catch (error: any) {
+      toast({
+        title: 'Could not prepare payment',
+        description: error?.message || 'Invoice generation or finalization failed.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleTakePaymentFromOrder = async () => {
+    if (!orderId) return;
+
+    let resolution = orderPaymentResolution.data;
+    if (!resolution) {
+      const refreshed = await orderPaymentResolution.refetch();
+      resolution = refreshed.data;
+    }
+
+    if (!resolution) {
+      toast({ title: 'Payment unavailable', description: 'Could not resolve payment state for this order.', variant: 'destructive' });
+      return;
+    }
+
+    if (resolution.resolutionStatus === 'NO_INVOICE') {
+      setInvoiceRequiredDialogOpen(true);
+      return;
+    }
+
+    if (resolution.resolutionStatus === 'MULTIPLE_PAYABLE_INVOICES') {
+      setPaymentInvoiceSelectorOpen(true);
+      return;
+    }
+
+    if (resolution.resolutionStatus === 'ALREADY_PAID' && resolution.selectedInvoice?.id) {
+      navigateToInvoicePayment(resolution.selectedInvoice.id, false);
+      return;
+    }
+
+    if (resolution.resolutionStatus === 'SINGLE_PAYABLE_INVOICE' && resolution.selectedInvoice?.id) {
+      navigateToInvoicePayment(resolution.selectedInvoice.id, true);
+      return;
+    }
+
+    setPaymentBlockedDialogOpen(true);
+  };
+
+  const handleSelectPayableInvoice = (candidate: PaymentInvoiceCandidate) => {
+    setPaymentInvoiceSelectorOpen(false);
+    navigateToInvoicePayment(candidate.id, true);
   };
 
   const handleSetBillingOverride = async () => {
@@ -3265,6 +3352,16 @@ export default function OrderDetail() {
                 )}
 
                 <div className="flex flex-wrap gap-2">
+                  {isAdminOrOwner ? (
+                    <Button
+                      onClick={() => void handleTakePaymentFromOrder()}
+                      disabled={orderPaymentResolution.isFetching || isPreparingInvoicePayment || orderIsCanceled}
+                    >
+                      <DollarSign className="mr-2 h-4 w-4" />
+                      {takePaymentLabel}
+                    </Button>
+                  ) : null}
+
                   {orderInvoices.length === 0 ? (
                     <Button onClick={handleCreateInvoice} disabled={!canCreateInvoice || createOrderInvoice.isPending}>
                       <FileText className="mr-2 h-4 w-4" />
@@ -3402,7 +3499,7 @@ export default function OrderDetail() {
                                 <div className="flex justify-end gap-2">
                                   {balance > 0 && String(inv.status || '').toLowerCase() !== 'void' ? (
                                     <Button variant="outline" size="sm" asChild>
-                                      <Link to={`/invoices/${inv.id}?recordPayment=1`}>Add Payment</Link>
+                                      <Link to={`/invoices/${inv.id}?takePayment=1`}>Take Payment</Link>
                                     </Button>
                                   ) : null}
                                   <Button variant="outline" size="sm" asChild>
@@ -3417,6 +3514,115 @@ export default function OrderDetail() {
                     </Table>
                   )}
                 </div>
+
+                <AlertDialog open={invoiceRequiredDialogOpen} onOpenChange={setInvoiceRequiredDialogOpen}>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Invoice Required</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This order must be invoiced before payment can be collected.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel disabled={isPreparingInvoicePayment}>Cancel</AlertDialogCancel>
+                      <Button onClick={() => void handleGenerateInvoiceAndTakePayment()} disabled={isPreparingInvoicePayment}>
+                        {isPreparingInvoicePayment ? 'Preparing…' : 'Generate Invoice & Take Payment'}
+                      </Button>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+
+                <Dialog open={paymentInvoiceSelectorOpen} onOpenChange={setPaymentInvoiceSelectorOpen}>
+                  <DialogContent className="max-w-3xl">
+                    <DialogHeader>
+                      <DialogTitle>Select invoice to pay</DialogTitle>
+                      <DialogDescription>
+                        This order has multiple payable invoices. Choose the invoice to open before launching payment.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Invoice</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead className="text-right">Total</TableHead>
+                          <TableHead className="text-right">Paid</TableHead>
+                          <TableHead className="text-right">Remaining</TableHead>
+                          <TableHead className="text-right">Action</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {payableInvoiceCandidates.map((candidate) => (
+                          <TableRow key={candidate.id}>
+                            <TableCell className="font-medium">
+                              {candidate.displayNumber || candidate.invoiceNumber || candidate.id}
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant="outline">{candidate.status.toUpperCase()}</Badge>
+                            </TableCell>
+                            <TableCell className="text-right">{formatCurrency(candidate.totalCents / 100)}</TableCell>
+                            <TableCell className="text-right">{formatCurrency(candidate.amountPaidCents / 100)}</TableCell>
+                            <TableCell className="text-right">{formatCurrency(candidate.remainingBalanceCents / 100)}</TableCell>
+                            <TableCell className="text-right">
+                              <Button size="sm" onClick={() => handleSelectPayableInvoice(candidate)}>
+                                Take Payment
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </DialogContent>
+                </Dialog>
+
+                <Dialog open={paymentBlockedDialogOpen} onOpenChange={setPaymentBlockedDialogOpen}>
+                  <DialogContent className="max-w-2xl">
+                    <DialogHeader>
+                      <DialogTitle>Payment cannot be taken</DialogTitle>
+                      <DialogDescription>
+                        {paymentResolution?.blockedReason || 'This order has invoices, but none can currently accept payment.'}
+                      </DialogDescription>
+                    </DialogHeader>
+                    {paymentResolution?.invoiceCandidates.length ? (
+                      <div className="space-y-2">
+                        <div className="text-sm font-medium">Existing invoices</div>
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Invoice</TableHead>
+                              <TableHead>Status</TableHead>
+                              <TableHead className="text-right">Remaining</TableHead>
+                              <TableHead>Reason</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {paymentResolution.invoiceCandidates.map((candidate) => (
+                              <TableRow key={candidate.id}>
+                                <TableCell className="font-medium">
+                                  <Link to={`/invoices/${candidate.id}`} className="hover:underline">
+                                    {candidate.displayNumber || candidate.invoiceNumber || candidate.id}
+                                  </Link>
+                                </TableCell>
+                                <TableCell>
+                                  <Badge variant="outline">{candidate.status.toUpperCase()}</Badge>
+                                </TableCell>
+                                <TableCell className="text-right">{formatCurrency(candidate.remainingBalanceCents / 100)}</TableCell>
+                                <TableCell className="text-sm text-muted-foreground">
+                                  {candidate.blockedReason || 'Not payment-eligible'}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    ) : null}
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setPaymentBlockedDialogOpen(false)}>
+                        Close
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
 
                 <Dialog open={billingOverrideDialogOpen} onOpenChange={setBillingOverrideDialogOpen}>
                   <DialogContent>

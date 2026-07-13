@@ -41,6 +41,7 @@ import { QBTransientDisconnectBanner } from "@/components/integrations/QBTransie
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { getInvoiceEditLockMessage } from "@/lib/invoiceEditLockCopy";
 import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "@shared/paymentProviderResolution";
+import { resolveInvoiceAutoPaymentAction } from "@/lib/paymentResolutionUi";
 
 type StripeIntegrationStatusEnvelope = {
   success: boolean;
@@ -217,6 +218,7 @@ export default function InvoiceDetailPage() {
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState("");
   const [expandedQBLines, setExpandedQBLines] = useState<Set<number>>(new Set());
+  const takePaymentAutoLaunchRef = useRef(false);
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
   const isStaffUser = !!user && user.role !== 'customer';
@@ -227,6 +229,10 @@ export default function InvoiceDetailPage() {
   const paymentsList: any[] = (invoicePayments.data as any[]) ?? payments;
   const importedQuickBooksLineItems = data?.importedQuickBooksLineItems ?? [];
   const importedQuickBooksLineItemsUnavailableMessage = data?.importedQuickBooksLineItemsUnavailableMessage ?? null;
+
+  useEffect(() => {
+    takePaymentAutoLaunchRef.current = false;
+  }, [invoiceId]);
 
   // Orders Detail parity: when invoice is tied to an order, pull customer/contact + metadata from the order.
   const orderId = invoice?.orderId ?? undefined;
@@ -296,7 +302,7 @@ export default function InvoiceDetailPage() {
     ? `invoice-${String((invoice as any).invoiceNumber)}.pdf`
     : 'invoice.pdf';
 
-  const canRecordPayment = !!invoice && isStaffUser && invoiceStatus !== 'void' && remainingCents > 0 && !paymentActionsLocked;
+  const canRecordPayment = !!invoice && isStaffUser && !['draft', 'void', 'paid'].includes(invoiceStatus) && remainingCents > 0 && !paymentActionsLocked;
   const epsHostedAvailable =
     canRecordPayment &&
     paymentSettings.data?.provider === "eps" &&
@@ -695,7 +701,7 @@ export default function InvoiceDetailPage() {
     staleTime: 30000,
   });
 
-  const { data: stripeIntegrationStatus } = useQuery<StripeIntegrationStatusEnvelope>({
+  const { data: stripeIntegrationStatus, isLoading: isStripeIntegrationStatusLoading } = useQuery<StripeIntegrationStatusEnvelope>({
     queryKey: ['/api/integrations/stripe/status'],
     staleTime: 30000,
   });
@@ -875,6 +881,64 @@ export default function InvoiceDetailPage() {
   });
   const canPayInvoice = hostedPaymentResolution.provider === "stripe";
   const epsHostedEnabled = hostedPaymentResolution.provider === "eps";
+
+  useEffect(() => {
+    if (searchParams.get('takePayment') !== '1') return;
+    if (takePaymentAutoLaunchRef.current) return;
+    const decision = resolveInvoiceAutoPaymentAction({
+      invoiceReady: Boolean(invoice),
+      dependenciesLoading: paymentSettings.isLoading || invoicePayments.isLoading || isStripeIntegrationStatusLoading,
+      invoiceStatus,
+      remainingCents,
+      canPayInvoice,
+      epsHostedEnabled,
+      canRecordPayment,
+    });
+    if (decision.action === 'wait') return;
+
+    const next = new URLSearchParams(searchParams);
+    next.delete('takePayment');
+
+    if (decision.action === 'blocked') {
+      setSearchParams(next, { replace: true });
+      toast({
+        title: 'Payment unavailable',
+        description: decision.message || 'Payment cannot be launched for this invoice.',
+        variant: invoiceStatus === 'paid' || remainingCents <= 0 ? 'default' : 'destructive',
+      });
+      return;
+    }
+
+    takePaymentAutoLaunchRef.current = true;
+    setSearchParams(next, { replace: true });
+
+    if (decision.action === 'stripe') {
+      setStripePayOpen(true);
+      return;
+    }
+
+    if (decision.action === 'eps') {
+      void openEpsHostedPayment();
+      return;
+    }
+
+    if (decision.action === 'manual') {
+      openRecordPayment();
+      return;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    searchParams,
+    invoice?.id,
+    invoiceStatus,
+    remainingCents,
+    canPayInvoice,
+    epsHostedEnabled,
+    canRecordPayment,
+    paymentSettings.isLoading,
+    invoicePayments.isLoading,
+    isStripeIntegrationStatusLoading,
+  ]);
 
   const orderCustomerName: string | null = order?.customer?.companyName || order?.customer?.name || order?.billToCompany || null;
   const orderCustomerId: string | null = order?.customer?.id || order?.customerId || null;
