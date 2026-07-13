@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Code2, DatabaseZap, FlaskConical, ShieldCheck } from "lucide-react";
+import { Code2, DatabaseZap, FlaskConical, ShieldCheck, UsersRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import NotFound from "@/pages/not-found";
@@ -372,6 +372,29 @@ export default function PlatformDeveloperToolsPage() {
               <Button className="w-full gap-2" variant="outline">
                 <Code2 className="h-4 w-4" />
                 Open Inspector
+              </Button>
+            </Link>
+          </CardContent>
+        </Card>
+
+        <Card className="border-amber-500/25 bg-titan-bg-card-elevated">
+          <CardHeader className="pb-3">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <UsersRound className="h-4 w-4 text-amber-500" />
+              <CardTitle className="text-base">Customer & Contact Migration</CardTitle>
+              <Badge variant="outline" className="border-amber-500/40 text-amber-600">Developer</Badge>
+              <Badge variant="secondary">Staged</Badge>
+            </div>
+            <CardDescription>
+              Stage QuickBooks and InfoFlo customer/contact sources, review deterministic matches, export exception
+              reports, and finalize only after explicit approval.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Link to={ROUTES.developer.customerContactMigration}>
+              <Button className="w-full gap-2" variant="outline">
+                <UsersRound className="h-4 w-4" />
+                Open Migration
               </Button>
             </Link>
           </CardContent>

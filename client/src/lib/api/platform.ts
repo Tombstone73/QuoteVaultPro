@@ -53,6 +53,28 @@ export interface PlatformSeedOrganization {
   updatedAt?: string;
 }
 
+export interface CustomerContactMigrationBatch {
+  id: string;
+  organizationId: string;
+  status: string;
+  sourceLabel?: string | null;
+  qbSourceLabel?: string | null;
+  infoFloCompanyFilename?: string | null;
+  infoFloContactsFilename?: string | null;
+  summaryJson?: Record<string, unknown> | null;
+  errorMessage?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  finalizedAt?: string | null;
+}
+
+export interface CustomerContactMigrationBatchDetail {
+  batch: CustomerContactMigrationBatch;
+  companyRows: Array<Record<string, any>>;
+  contactRows: Array<Record<string, any>>;
+  relationshipRows: Array<Record<string, any>>;
+}
+
 export interface ConfigurationCopyPreview {
   sourceOrganizationId: string;
   sourceOrganizationName: string;
@@ -202,6 +224,69 @@ export async function updatePlatformOrganization(
  * Preview an invite token — returns status and metadata without consuming it.
  * Returns { status: 'valid'|'invalid'|'expired'|'used' }
  */
+export async function createCustomerContactMigrationBatch(payload: {
+  organizationId: string;
+  sourceLabel?: string;
+  qbSourceLabel?: string;
+  quickBooksCustomers?: Array<Record<string, unknown>>;
+  infoFloCompanyCsv?: string;
+  infoFloCompanyFilename?: string;
+  infoFloContactsCsv?: string;
+  infoFloContactsFilename?: string;
+}): Promise<{
+  httpStatus: number;
+  body: { success: boolean; data?: { batch: CustomerContactMigrationBatch; summary: Record<string, unknown> }; message?: string; details?: unknown };
+}> {
+  const res = await postJson("/api/platform/customer-contact-migrations", payload);
+  const body = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export async function listCustomerContactMigrationBatches(organizationId: string, limit = 25): Promise<{
+  httpStatus: number;
+  body: { success: boolean; data?: CustomerContactMigrationBatch[]; message?: string };
+}> {
+  const res = await fetch(
+    getApiUrl(`/api/platform/customer-contact-migrations?organizationId=${encodeURIComponent(organizationId)}&limit=${encodeURIComponent(String(limit))}`),
+    { credentials: "include" }
+  );
+  const body = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export async function getCustomerContactMigrationBatch(organizationId: string, batchId: string): Promise<{
+  httpStatus: number;
+  body: { success: boolean; data?: CustomerContactMigrationBatchDetail; message?: string };
+}> {
+  const res = await fetch(
+    getApiUrl(`/api/platform/customer-contact-migrations/${encodeURIComponent(batchId)}?organizationId=${encodeURIComponent(organizationId)}`),
+    { credentials: "include" }
+  );
+  const body = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export async function finalizeCustomerContactMigrationBatch(
+  organizationId: string,
+  batchId: string,
+): Promise<{
+  httpStatus: number;
+  body: { success: boolean; data?: { batch: CustomerContactMigrationBatch; counts: Record<string, number> }; message?: string; code?: string };
+}> {
+  const res = await postJson(`/api/platform/customer-contact-migrations/${encodeURIComponent(batchId)}/finalize`, {
+    organizationId,
+    confirmation: "FINALIZE",
+  });
+  const body = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export function customerContactMigrationReportUrl(organizationId: string, batchId: string, kind: string): string {
+  return getApiUrl(
+    `/api/platform/customer-contact-migrations/${encodeURIComponent(batchId)}/report/${encodeURIComponent(kind)}?organizationId=${encodeURIComponent(organizationId)}`
+  );
+}
+
 export async function previewInvite(token: string): Promise<{ httpStatus: number; body: InvitePreviewResult }> {
   const res = await fetch(
     getApiUrl(`/api/invites/preview?token=${encodeURIComponent(token)}`),

@@ -2615,6 +2615,13 @@ export const customerContactLinks = pgTable("customer_contact_links", {
   isPrimary: boolean("is_primary").default(false).notNull(),
   isBilling: boolean("is_billing").default(false).notNull(),
   isPortal: boolean("is_portal").default(false).notNull(),
+  isProof: boolean("is_proof").default(false).notNull(),
+  role: varchar("role", { length: 100 }),
+  sourceSystem: varchar("source_system", { length: 50 }),
+  sourceRecordId: varchar("source_record_id", { length: 255 }),
+  startDate: timestamp("start_date", { withTimezone: false }),
+  endDate: timestamp("end_date", { withTimezone: false }),
+  notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -2668,6 +2675,188 @@ export type CustomerContact = typeof customerContacts.$inferSelect;
 export type InsertCustomerContactLink = z.infer<typeof insertCustomerContactLinkSchema>;
 export type UpdateCustomerContactLink = z.infer<typeof updateCustomerContactLinkSchema>;
 export type CustomerContactLink = typeof customerContactLinks.$inferSelect;
+
+// ==================== Customer + Contact Migration ====================
+// Staging tables for platform-led onboarding imports. Permanent customer,
+// contact, link, and external identity records are only changed at finalize.
+
+export type CustomerContactImportBatchStatus =
+  | "uploaded"
+  | "parsed"
+  | "validated"
+  | "matching"
+  | "needs_review"
+  | "ready_to_finalize"
+  | "finalizing"
+  | "completed"
+  | "completed_with_exceptions"
+  | "failed"
+  | "cancelled";
+
+export type CustomerContactImportCompanyStatus =
+  | "pending"
+  | "matched_existing"
+  | "new_company"
+  | "ambiguous"
+  | "rejected"
+  | "imported"
+  | "failed";
+
+export type CustomerContactImportContactStatus =
+  | "pending"
+  | "matched_existing_person"
+  | "new_person"
+  | "ambiguous_person"
+  | "company_matched"
+  | "company_ambiguous"
+  | "company_missing"
+  | "rejected"
+  | "imported"
+  | "failed";
+
+export type CustomerContactImportRelationshipStatus =
+  | "pending"
+  | "ready"
+  | "ambiguous"
+  | "created"
+  | "updated"
+  | "skipped"
+  | "failed";
+
+export const externalIdentityMappings = pgTable("external_identity_mappings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  entityType: varchar("entity_type", { length: 50 }).notNull(),
+  entityId: varchar("entity_id", { length: 255 }).notNull(),
+  sourceSystem: varchar("source_system", { length: 50 }).notNull(),
+  sourceEntityType: varchar("source_entity_type", { length: 50 }).notNull(),
+  sourceRecordId: varchar("source_record_id", { length: 255 }).notNull(),
+  sourceDisplayName: varchar("source_display_name", { length: 255 }),
+  metadataJson: jsonb("metadata_json"),
+  firstSeenAt: timestamp("first_seen_at").defaultNow().notNull(),
+  lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("external_identity_mappings_org_entity_idx").on(table.organizationId, table.entityType, table.entityId),
+  index("external_identity_mappings_org_source_idx").on(table.organizationId, table.sourceSystem, table.sourceEntityType),
+  uniqueIndex("external_identity_mappings_source_uidx")
+    .on(table.organizationId, table.sourceSystem, table.sourceEntityType, table.sourceRecordId),
+]);
+
+export const customerContactImportBatches = pgTable("customer_contact_import_batches", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  status: varchar("status", { length: 40 }).notNull().default("uploaded").$type<CustomerContactImportBatchStatus>(),
+  sourceLabel: varchar("source_label", { length: 255 }),
+  qbSourceLabel: varchar("qb_source_label", { length: 255 }),
+  infoFloCompanyFilename: varchar("infoflo_company_filename", { length: 255 }),
+  infoFloCompanyChecksum: varchar("infoflo_company_checksum", { length: 128 }),
+  infoFloContactsFilename: varchar("infoflo_contacts_filename", { length: 255 }),
+  infoFloContactsChecksum: varchar("infoflo_contacts_checksum", { length: 128 }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  finalizedByUserId: varchar("finalized_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  finalizedAt: timestamp("finalized_at", { withTimezone: false }),
+  lockedAt: timestamp("locked_at", { withTimezone: false }),
+  lockToken: varchar("lock_token", { length: 100 }),
+  failingStage: varchar("failing_stage", { length: 100 }),
+  failingRecordId: varchar("failing_record_id", { length: 255 }),
+  errorMessage: text("error_message"),
+  summaryJson: jsonb("summary_json"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("customer_contact_import_batches_org_idx").on(table.organizationId),
+  index("customer_contact_import_batches_status_idx").on(table.status),
+  index("customer_contact_import_batches_created_idx").on(table.createdAt),
+]);
+
+export const customerContactImportCompanyRecords = pgTable("customer_contact_import_company_records", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  batchId: varchar("batch_id").notNull().references(() => customerContactImportBatches.id, { onDelete: "cascade" }),
+  rowNumber: integer("row_number").notNull(),
+  status: varchar("status", { length: 40 }).notNull().default("pending").$type<CustomerContactImportCompanyStatus>(),
+  sourceSystem: varchar("source_system", { length: 50 }).notNull().default("infoflo"),
+  sourceRecordId: varchar("source_record_id", { length: 255 }),
+  quickBooksCustomerId: varchar("quickbooks_customer_id", { length: 64 }),
+  selectedCustomerId: varchar("selected_customer_id").references(() => customers.id, { onDelete: "set null" }),
+  rawJson: jsonb("raw_json"),
+  normalizedJson: jsonb("normalized_json"),
+  matchCandidatesJson: jsonb("match_candidates_json"),
+  proposedChangesJson: jsonb("proposed_changes_json"),
+  reviewDecisionJson: jsonb("review_decision_json"),
+  warningsJson: jsonb("warnings_json").$type<string[]>(),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("cc_import_company_batch_idx").on(table.batchId),
+  index("cc_import_company_org_status_idx").on(table.organizationId, table.status),
+  index("cc_import_company_source_idx").on(table.organizationId, table.sourceSystem, table.sourceRecordId),
+]);
+
+export const customerContactImportContactRecords = pgTable("customer_contact_import_contact_records", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  batchId: varchar("batch_id").notNull().references(() => customerContactImportBatches.id, { onDelete: "cascade" }),
+  rowNumber: integer("row_number").notNull(),
+  status: varchar("status", { length: 40 }).notNull().default("pending").$type<CustomerContactImportContactStatus>(),
+  sourceSystem: varchar("source_system", { length: 50 }).notNull().default("infoflo"),
+  sourceRecordId: varchar("source_record_id", { length: 255 }),
+  selectedContactId: varchar("selected_contact_id").references(() => customerContacts.id, { onDelete: "set null" }),
+  selectedCustomerId: varchar("selected_customer_id").references(() => customers.id, { onDelete: "set null" }),
+  rawJson: jsonb("raw_json"),
+  normalizedJson: jsonb("normalized_json"),
+  matchCandidatesJson: jsonb("match_candidates_json"),
+  proposedChangesJson: jsonb("proposed_changes_json"),
+  reviewDecisionJson: jsonb("review_decision_json"),
+  warningsJson: jsonb("warnings_json").$type<string[]>(),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("cc_import_contact_batch_idx").on(table.batchId),
+  index("cc_import_contact_org_status_idx").on(table.organizationId, table.status),
+  index("cc_import_contact_source_idx").on(table.organizationId, table.sourceSystem, table.sourceRecordId),
+]);
+
+export const customerContactImportRelationshipRecords = pgTable("customer_contact_import_relationship_records", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  batchId: varchar("batch_id").notNull().references(() => customerContactImportBatches.id, { onDelete: "cascade" }),
+  companyRecordId: varchar("company_record_id").references(() => customerContactImportCompanyRecords.id, { onDelete: "set null" }),
+  contactRecordId: varchar("contact_record_id").references(() => customerContactImportContactRecords.id, { onDelete: "set null" }),
+  status: varchar("status", { length: 40 }).notNull().default("pending").$type<CustomerContactImportRelationshipStatus>(),
+  selectedCustomerId: varchar("selected_customer_id").references(() => customers.id, { onDelete: "set null" }),
+  selectedContactId: varchar("selected_contact_id").references(() => customerContacts.id, { onDelete: "set null" }),
+  selectedLinkId: varchar("selected_link_id").references(() => customerContactLinks.id, { onDelete: "set null" }),
+  isPrimary: boolean("is_primary").default(false).notNull(),
+  isBilling: boolean("is_billing").default(false).notNull(),
+  isProof: boolean("is_proof").default(false).notNull(),
+  relationshipStatus: varchar("relationship_status", { length: 30 }).default("active"),
+  role: varchar("role", { length: 100 }),
+  sourceSystem: varchar("source_system", { length: 50 }).default("infoflo"),
+  sourceRecordId: varchar("source_record_id", { length: 255 }),
+  proposedChangesJson: jsonb("proposed_changes_json"),
+  reviewDecisionJson: jsonb("review_decision_json"),
+  warningsJson: jsonb("warnings_json").$type<string[]>(),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("cc_import_relationship_batch_idx").on(table.batchId),
+  index("cc_import_relationship_org_status_idx").on(table.organizationId, table.status),
+  index("cc_import_relationship_company_idx").on(table.companyRecordId),
+  index("cc_import_relationship_contact_idx").on(table.contactRecordId),
+]);
+
+export type ExternalIdentityMapping = typeof externalIdentityMappings.$inferSelect;
+export type InsertExternalIdentityMapping = typeof externalIdentityMappings.$inferInsert;
+export type CustomerContactImportBatch = typeof customerContactImportBatches.$inferSelect;
+export type CustomerContactImportCompanyRecord = typeof customerContactImportCompanyRecords.$inferSelect;
+export type CustomerContactImportContactRecord = typeof customerContactImportContactRecords.$inferSelect;
+export type CustomerContactImportRelationshipRecord = typeof customerContactImportRelationshipRecords.$inferSelect;
 
 export const customerPortalAccess = pgTable("customer_portal_access", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

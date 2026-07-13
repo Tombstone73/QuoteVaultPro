@@ -211,6 +211,7 @@ export const ROUTES = {
   developer: {
     qbInvoiceInspector: "/admin/developer/qb-invoice-inspector",
     qbCustomerInspector: "/admin/developer/qb-customer-inspector",
+    customerContactMigration: "/admin/developer/customer-contact-migration",
   },
 
   platform: {
