@@ -21,6 +21,7 @@ import { jobs } from "../../shared/schema";
 import { storage } from "../storage";
 import { isCanceledOrder } from "../../shared/operationalState";
 import { getPaymentSettings } from "../services/payments/paymentProvider.service";
+import { resolveOrderPayment } from "../services/payments/paymentOrchestrator.service";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -1666,6 +1667,27 @@ export async function registerMvpInvoicingRoutes(
     } catch (error: any) {
       console.error("Error fetching invoice:", error);
       res.status(500).json({ error: error.message || "Failed to fetch invoice" });
+    }
+  });
+
+  // ------------------------------------------------------------
+  // Read-only order payment resolution.
+  // ------------------------------------------------------------
+  app.get("/api/orders/:orderId/payment-resolution", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const data = await resolveOrderPayment({
+        organizationId,
+        orderId: String(req.params.orderId || ""),
+      });
+
+      if (!data) return res.status(404).json({ success: false, error: "Order not found" });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      console.error("Error resolving order payment:", error);
+      return res.status(500).json({ success: false, error: error.message || "Failed to resolve order payment" });
     }
   });
 
