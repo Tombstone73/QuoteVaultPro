@@ -1395,6 +1395,8 @@ export type QBCustomerPreviewRow = {
   suspiciousFields: string[];
   matchedExistingCustomerId: string | null;
   matchedExistingContactId: string | null;
+  importStatus: 'create_company' | 'update_company' | 'create_company_only' | 'update_company_only';
+  failureReason: string | null;
 };
 
 /**
@@ -1463,6 +1465,14 @@ export async function fetchQBCustomersForPreview(organizationId: string): Promis
 
     const willCreateContact = !!name && !nameIsSuspicious && !matchedContactId
       && !!(email || phone || String(qbCustomer.Mobile?.FreeFormNumber || '').trim());
+    const importStatus = existing
+      ? (willCreateContact ? 'update_company' : 'update_company_only')
+      : (willCreateContact ? 'create_company' : 'create_company_only');
+    const failureReason = !name
+      ? 'missing_person_name'
+      : nameIsSuspicious
+        ? 'suspicious_contact_name'
+        : null;
 
     rows.push({
       qbCustomerId:             String(qbCustomer.Id),
@@ -1479,10 +1489,97 @@ export async function fetchQBCustomersForPreview(organizationId: string): Promis
       suspiciousFields,
       matchedExistingCustomerId: existing?.id         ?? null,
       matchedExistingContactId:  matchedContactId,
+      importStatus,
+      failureReason,
     });
   }
 
   return rows;
+}
+
+export type QBCustomerSearchMatch = {
+  qbCustomerId: string;
+  qbDisplayName: string;
+  qbCompanyName: string | null;
+  qbFullyQualifiedName: string | null;
+  email: string | null;
+  active: boolean | null;
+};
+
+function toQBCustomerSearchMatch(qbCustomer: any): QBCustomerSearchMatch {
+  return {
+    qbCustomerId: String(qbCustomer?.Id ?? ''),
+    qbDisplayName: String(qbCustomer?.DisplayName ?? ''),
+    qbCompanyName: String(qbCustomer?.CompanyName ?? '').trim() || null,
+    qbFullyQualifiedName: String(qbCustomer?.FullyQualifiedName ?? '').trim() || null,
+    email: String(qbCustomer?.PrimaryEmailAddr?.Address ?? '').trim() || null,
+    active: typeof qbCustomer?.Active === 'boolean' ? qbCustomer.Active : null,
+  };
+}
+
+/**
+ * Read-only developer lookup helper for finding QB Customer IDs without using the QB UI.
+ * Numeric input preserves the exact-ID path; names search DisplayName, CompanyName, and
+ * FullyQualifiedName with bounded QB queries.
+ */
+export async function searchQBCustomersForInspection(
+  organizationId: string,
+  query: string,
+): Promise<QBCustomerSearchMatch[]> {
+  const term = String(query || '').trim();
+  if (!term) throw new Error('query is required');
+
+  const matches = new Map<string, QBCustomerSearchMatch>();
+  const addCustomer = (qbCustomer: any) => {
+    if (!qbCustomer?.Id) return;
+    const match = toQBCustomerSearchMatch(qbCustomer);
+    matches.set(match.qbCustomerId, match);
+  };
+
+  if (/^\d+$/.test(term)) {
+    const exact = await fetchQBCustomerForInspection(organizationId, term);
+    if (exact?.raw) addCustomer(exact.raw);
+  }
+
+  const escaped = escapeQBQueryString(term);
+  const queries = [
+    `SELECT * FROM Customer WHERE DisplayName = '${escaped}' MAXRESULTS 20`,
+    `SELECT * FROM Customer WHERE CompanyName = '${escaped}' MAXRESULTS 20`,
+    `SELECT * FROM Customer WHERE FullyQualifiedName = '${escaped}' MAXRESULTS 20`,
+  ];
+
+  for (const qbQuery of queries) {
+    const resp = await makeQBRequest('GET', `/query?query=${encodeURIComponent(qbQuery)}`, undefined, organizationId);
+    const customersPage = Array.isArray(resp?.QueryResponse?.Customer) ? resp.QueryResponse.Customer : [];
+    for (const qbCustomer of customersPage) addCustomer(qbCustomer);
+  }
+
+  if (matches.size === 0 && term.length >= 2) {
+    const all = await fetchAllQBEntities<any>(
+      'Customer',
+      'SELECT * FROM Customer',
+      (q) => makeQBRequest('GET', `/query?query=${encodeURIComponent(q)}`, undefined, organizationId),
+      { pageSize: 1000, maxCap: 10_000 },
+    );
+    const needle = term.toLowerCase();
+    for (const qbCustomer of all) {
+      const haystack = [
+        qbCustomer.DisplayName,
+        qbCustomer.CompanyName,
+        qbCustomer.FullyQualifiedName,
+      ].map((v) => String(v ?? '').toLowerCase());
+      if (haystack.some((value) => value.includes(needle))) {
+        addCustomer(qbCustomer);
+      }
+      if (matches.size >= 50) break;
+    }
+  }
+
+  return Array.from(matches.values()).sort((a, b) => {
+    const aName = a.qbDisplayName || a.qbCompanyName || a.qbCustomerId;
+    const bName = b.qbDisplayName || b.qbCompanyName || b.qbCustomerId;
+    return aName.localeCompare(bName, undefined, { numeric: true });
+  });
 }
 
 // ==================== QB Suspicious-Contact Repair Report ====================
