@@ -60,80 +60,31 @@ export function registerQuickBooksRoutes(
   app.get('/api/integrations/quickbooks/status', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
-      const connection = await quickbooksService.getActiveConnection(organizationId);
-
-      if (!connection) {
-        return res.json({
-          connected: false,
-          authState: 'not_connected',
-          healthState: 'ok',
-          message: 'QuickBooks not connected'
-        });
-      }
-
-      // Verify connection belongs to this organization
-      if (connection.organizationId !== organizationId) {
-        return res.json({
-          connected: false,
-          authState: 'not_connected',
-          healthState: 'ok',
-          message: 'QuickBooks not connected for this organization'
-        });
-      }
-
-      const qbAuth = (connection as any)?.metadata?.qbAuth;
-      const qbHealth = (connection as any)?.metadata?.qbHealth;
-      const healthState = qbHealth?.state === 'transient_error' ? 'transient_error' : 'ok';
-      const healthMessage = qbHealth?.message ? String(qbHealth.message) : undefined;
-      const lastErrorAt = qbHealth?.lastErrorAt ? String(qbHealth.lastErrorAt) : undefined;
-      if (qbAuth?.state === 'needs_reauth') {
-        return res.json({
-          connected: false,
-          authState: 'needs_reauth',
-          message: qbAuth?.message || 'QuickBooks connection needs reauthorization',
-          healthState,
-          healthMessage,
-          lastErrorAt,
-          companyId: connection.companyId,
-          connectedAt: connection.createdAt,
-          expiresAt: connection.expiresAt,
-        });
-      }
-
-      // Check if token is still valid
-      const validToken = await quickbooksService.getValidAccessTokenForOrganization(organizationId);
-
-      if (!validToken) {
-        const latest = await quickbooksService.getActiveConnection(organizationId);
-        const latestAuth = (latest as any)?.metadata?.qbAuth;
-        if (latestAuth?.state === 'needs_reauth') {
-          const latestHealth = (latest as any)?.metadata?.qbHealth;
-          const latestHealthState = latestHealth?.state === 'transient_error' ? 'transient_error' : healthState;
-          const latestHealthMessage = latestHealth?.message ? String(latestHealth.message) : healthMessage;
-          const latestLastErrorAt = latestHealth?.lastErrorAt ? String(latestHealth.lastErrorAt) : lastErrorAt;
-          return res.json({
-            connected: false,
-            authState: 'needs_reauth',
-            message: latestAuth?.message || 'QuickBooks connection needs reauthorization',
-            healthState: latestHealthState,
-            healthMessage: latestHealthMessage,
-            lastErrorAt: latestLastErrorAt,
-            companyId: latest?.companyId,
-            connectedAt: latest?.createdAt,
-            expiresAt: latest?.expiresAt,
-          });
-        }
-      }
-
+      const status = await quickbooksService.getQuickBooksCustomerMigrationSourceStatus(organizationId);
       res.json({
-        connected: !!validToken,
-        authState: validToken ? 'connected' : 'not_connected',
-        healthState,
-        healthMessage,
-        lastErrorAt,
-        companyId: connection.companyId,
-        connectedAt: connection.createdAt,
-        expiresAt: connection.expiresAt,
+        connected: status.connected,
+        state: status.state,
+        authState: status.authState,
+        healthState: status.healthState,
+        healthMessage: status.healthMessage,
+        lastErrorAt: status.lastErrorAt,
+        lastErrorCode: status.lastErrorCode,
+        lastErrorMessage: status.lastErrorMessage,
+        lastSuccessfulRefreshAt: status.lastSuccessfulRefreshAt,
+        lastSuccessfulRequestAt: status.lastSuccessfulRequestAt,
+        consecutiveTransientFailureCount: status.consecutiveTransientFailureCount,
+        requiresUserAction: status.requiresUserAction,
+        message: status.state === 'degraded'
+          ? 'QuickBooks is temporarily unavailable. Printers Hero will retry automatically.'
+          : status.state === 'needs_reauth'
+            ? status.lastErrorMessage || 'QuickBooks connection needs reauthorization'
+            : status.connected
+              ? 'QuickBooks connected'
+              : 'QuickBooks not connected',
+        companyId: status.quickBooksCompanyId,
+        connectedCompanyName: status.connectedCompanyName,
+        connectedAt: status.connectedAt,
+        expiresAt: status.expiresAt,
       });
     } catch (error: any) {
       console.error('[QB Status] Error:', error);

@@ -43,7 +43,10 @@ async function processSyncJob(job: any): Promise<void> {
         }
         await qbService.processPullCustomers(job.id, job.organizationId);
       } else if (job.direction === 'push') {
-        await qbService.processPushCustomers(job.id);
+        if (!job.organizationId) {
+          throw new Error(`Cannot process push job ${job.id}: missing organizationId`);
+        }
+        await qbService.processPushCustomers(job.id, job.organizationId);
       }
     } else if (job.resourceType === 'invoices') {
       if (job.direction === 'pull') {
@@ -52,13 +55,22 @@ async function processSyncJob(job: any): Promise<void> {
         }
         await qbService.processPullInvoices(job.id, job.organizationId);
       } else if (job.direction === 'push') {
-        await qbService.processPushInvoices(job.id);
+        if (!job.organizationId) {
+          throw new Error(`Cannot process push job ${job.id}: missing organizationId`);
+        }
+        await qbService.processPushInvoices(job.id, job.organizationId);
       }
     } else if (job.resourceType === 'orders') {
       if (job.direction === 'pull') {
-        await qbService.processPullOrders(job.id);
+        if (!job.organizationId) {
+          throw new Error(`Cannot process pull job ${job.id}: missing organizationId`);
+        }
+        await qbService.processPullOrders(job.id, job.organizationId);
       } else if (job.direction === 'push') {
-        await qbService.processPushOrders(job.id);
+        if (!job.organizationId) {
+          throw new Error(`Cannot process push job ${job.id}: missing organizationId`);
+        }
+        await qbService.processPushOrders(job.id, job.organizationId);
       }
     } else {
       throw new Error(`Unknown resource type: ${job.resourceType}`);

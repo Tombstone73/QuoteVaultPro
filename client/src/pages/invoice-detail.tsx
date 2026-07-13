@@ -54,10 +54,17 @@ type StripeIntegrationStatusEnvelope = {
 
 type QuickBooksIntegrationStatus = {
   connected?: boolean;
+  state?: 'connected' | 'refreshing' | 'degraded' | 'needs_reauth' | 'disconnected' | string;
   authState?: 'connected' | 'not_connected' | 'needs_reauth' | string;
   healthState?: 'ok' | 'transient_error' | string;
   healthMessage?: string;
   lastErrorAt?: string;
+  lastErrorCode?: string | null;
+  lastErrorMessage?: string | null;
+  lastSuccessfulRefreshAt?: string | null;
+  lastSuccessfulRequestAt?: string | null;
+  consecutiveTransientFailureCount?: number;
+  requiresUserAction?: boolean;
   message?: string;
   companyId?: string;
   connectedAt?: string;

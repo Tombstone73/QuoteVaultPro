@@ -16,6 +16,7 @@
     "db:migrations:v2:check-journal": "node scripts/check-journal-monotonic.mjs",
     "db:migrations:v2:init-baseline": "tsx scripts/db/initMigrationsV2Baseline.ts",
     "db:status": "tsx scripts/db-status.ts",
+    "qb:oauth:encrypt-backfill": "tsx scripts/backfillQuickBooksOAuthEncryption.ts",
     "db:verify:stripe": "tsx scripts/db-verify-stripe.ts",
     "db:pbv2:check": "tsx scripts/db/pbv2-schema-check.ts",
     "db:bootstrap-admin": "tsx scripts/db/bootstrapAdmin.ts",
