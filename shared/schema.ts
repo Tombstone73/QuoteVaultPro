@@ -2771,6 +2771,27 @@ export const customerContactImportBatches = pgTable("customer_contact_import_bat
   index("customer_contact_import_batches_created_idx").on(table.createdAt),
 ]);
 
+export type CustomerContactQuickBooksSourceMode = "live" | "upload";
+
+export const customerContactQuickBooksSourceSnapshots = pgTable("customer_contact_quickbooks_source_snapshots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  sourceMode: varchar("source_mode", { length: 20 }).notNull().$type<CustomerContactQuickBooksSourceMode>(),
+  status: varchar("status", { length: 30 }).notNull().default("ready"),
+  connectedCompanyName: varchar("connected_company_name", { length: 255 }),
+  quickBooksCompanyId: varchar("quickbooks_company_id", { length: 64 }),
+  lastSuccessfulSyncAt: timestamp("last_successful_sync_at", { withTimezone: false }),
+  retrievedCount: integer("retrieved_count").notNull().default(0),
+  rawCustomersJson: jsonb("raw_customers_json").$type<Record<string, unknown>[]>(),
+  apiError: text("api_error"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("cc_qb_source_snapshots_org_created_idx").on(table.organizationId, table.createdAt),
+  index("cc_qb_source_snapshots_org_status_idx").on(table.organizationId, table.status),
+]);
+
 export const customerContactImportCompanyRecords = pgTable("customer_contact_import_company_records", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -2854,6 +2875,7 @@ export const customerContactImportRelationshipRecords = pgTable("customer_contac
 export type ExternalIdentityMapping = typeof externalIdentityMappings.$inferSelect;
 export type InsertExternalIdentityMapping = typeof externalIdentityMappings.$inferInsert;
 export type CustomerContactImportBatch = typeof customerContactImportBatches.$inferSelect;
+export type CustomerContactQuickBooksSourceSnapshot = typeof customerContactQuickBooksSourceSnapshots.$inferSelect;
 export type CustomerContactImportCompanyRecord = typeof customerContactImportCompanyRecords.$inferSelect;
 export type CustomerContactImportContactRecord = typeof customerContactImportContactRecords.$inferSelect;
 export type CustomerContactImportRelationshipRecord = typeof customerContactImportRelationshipRecords.$inferSelect;

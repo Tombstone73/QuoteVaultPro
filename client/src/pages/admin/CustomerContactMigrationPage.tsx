@@ -8,10 +8,15 @@ import {
   customerContactMigrationReportUrl,
   finalizeCustomerContactMigrationBatch,
   getCustomerContactMigrationBatch,
+  getCustomerContactMigrationQuickBooksSourceStatus,
   listCustomerContactMigrationBatches,
   listPlatformSeedOrganizations,
+  retrieveCustomerContactMigrationQuickBooksSource,
+  uploadCustomerContactMigrationQuickBooksSource,
   type CustomerContactMigrationBatch,
   type CustomerContactMigrationBatchDetail,
+  type CustomerContactQuickBooksSourceSnapshot,
+  type CustomerContactQuickBooksSourceStatus,
   type PlatformSeedOrganization,
 } from "@/lib/api/platform";
 import { Badge } from "@/components/ui/badge";
@@ -39,13 +44,25 @@ function countRows(rows: Array<Record<string, any>>, statuses: string[]) {
   return rows.filter((row) => statuses.includes(String(row.status))).length;
 }
 
+function formatDateTime(value?: string | null) {
+  if (!value) return "Not available";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not available";
+  return date.toLocaleString();
+}
+
 export default function CustomerContactMigrationPage() {
   const { user, isLoading } = useAuth();
   const canAccess = canUsePlatformTools(user);
   const [organizations, setOrganizations] = useState<PlatformSeedOrganization[]>([]);
   const [organizationId, setOrganizationId] = useState("");
   const [sourceLabel, setSourceLabel] = useState("Titan Graphics dry run");
-  const [qbJson, setQbJson] = useState("[]");
+  const [qbJson, setQbJson] = useState("");
+  const [qbStatus, setQbStatus] = useState<CustomerContactQuickBooksSourceStatus | null>(null);
+  const [qbSnapshot, setQbSnapshot] = useState<CustomerContactQuickBooksSourceSnapshot | null>(null);
+  const [qbProgress, setQbProgress] = useState<string | null>(null);
+  const [qbApiError, setQbApiError] = useState<string | null>(null);
+  const [showQbFallback, setShowQbFallback] = useState(false);
   const [companyFile, setCompanyFile] = useState<File | null>(null);
   const [contactsFile, setContactsFile] = useState<File | null>(null);
   const [batches, setBatches] = useState<CustomerContactMigrationBatch[]>([]);
@@ -78,9 +95,79 @@ export default function CustomerContactMigrationPage() {
     if (body.success) setBatches(body.data ?? []);
   };
 
+  const refreshQuickBooksStatus = async () => {
+    if (!organizationId) return;
+    const { body } = await getCustomerContactMigrationQuickBooksSourceStatus(organizationId);
+    if (body.success) setQbStatus(body.data ?? null);
+  };
+
   useEffect(() => {
-    if (canAccess && organizationId) void refreshBatches();
+    if (!canAccess || !organizationId) return;
+    setQbSnapshot(null);
+    setQbProgress(null);
+    setQbApiError(null);
+    setShowQbFallback(false);
+    void refreshBatches();
+    void refreshQuickBooksStatus();
   }, [canAccess, organizationId]);
+
+  const retrieveQuickBooksCustomers = async () => {
+    if (!organizationId) {
+      setMessage("Choose a target organization.");
+      return;
+    }
+    setLoading(true);
+    setMessage(null);
+    setQbApiError(null);
+    setQbProgress("Connecting to QuickBooks...");
+    try {
+      const { body } = await retrieveCustomerContactMigrationQuickBooksSource(organizationId);
+      if (!body.success || !body.data) {
+        setQbProgress(null);
+        setQbApiError(body.message ?? "Failed to retrieve QuickBooks customers.");
+        return;
+      }
+      setQbStatus(body.data.status);
+      setQbSnapshot(body.data.snapshot);
+      setQbProgress(`Retrieved ${body.data.customerCount} QuickBooks customers.`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const uploadQuickBooksFallback = async () => {
+    if (!organizationId) {
+      setMessage("Choose a target organization.");
+      return;
+    }
+    setLoading(true);
+    setMessage(null);
+    setQbApiError(null);
+    setQbProgress("Validating uploaded QuickBooks JSON...");
+    try {
+      let quickBooksCustomers: Array<Record<string, unknown>> = [];
+      try {
+        const parsed = JSON.parse(qbJson || "[]");
+        quickBooksCustomers = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        setQbProgress(null);
+        setQbApiError("QuickBooks source JSON must be an array.");
+        return;
+      }
+
+      const { body } = await uploadCustomerContactMigrationQuickBooksSource({ organizationId, quickBooksCustomers });
+      if (!body.success || !body.data) {
+        setQbProgress(null);
+        setQbApiError(body.message ?? "Failed to stage uploaded QuickBooks customers.");
+        return;
+      }
+      if (body.data.status) setQbStatus(body.data.status);
+      setQbSnapshot(body.data.snapshot);
+      setQbProgress(`Staged ${body.data.customerCount} uploaded QuickBooks customers.`);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const loadDetail = async (batchId: string) => {
     if (!organizationId) return;
@@ -106,12 +193,8 @@ export default function CustomerContactMigrationPage() {
     setLoading(true);
     setMessage(null);
     try {
-      let quickBooksCustomers: Array<Record<string, unknown>> = [];
-      try {
-        const parsed = JSON.parse(qbJson || "[]");
-        quickBooksCustomers = Array.isArray(parsed) ? parsed : [];
-      } catch {
-        setMessage("QuickBooks source JSON must be an array.");
+      if (!qbSnapshot) {
+        setMessage("Retrieve QuickBooks customers or stage the developer JSON fallback first.");
         return;
       }
 
@@ -123,8 +206,10 @@ export default function CustomerContactMigrationPage() {
       const { body } = await createCustomerContactMigrationBatch({
         organizationId,
         sourceLabel,
-        qbSourceLabel: quickBooksCustomers.length > 0 ? "Uploaded QuickBooks customer JSON" : "No QuickBooks JSON supplied",
-        quickBooksCustomers,
+        quickBooksSourceSnapshotId: qbSnapshot.id,
+        qbSourceLabel: qbSnapshot.sourceMode === "live"
+          ? `Connected QuickBooks: ${qbSnapshot.connectedCompanyName ?? qbSnapshot.quickBooksCompanyId ?? "unknown company"}`
+          : "Uploaded QuickBooks customer JSON fallback",
         infoFloCompanyCsv,
         infoFloCompanyFilename: companyFile?.name,
         infoFloContactsCsv,
@@ -211,45 +296,127 @@ export default function CustomerContactMigrationPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Stage Batch</CardTitle>
-          <CardDescription>Select the tenant and upload source files. The result is a dry-run staging batch.</CardDescription>
+          <CardDescription>Select the tenant, retrieve QuickBooks customers, upload InfoFlo files, then stage a dry-run batch.</CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-4 lg:grid-cols-2">
+        <CardContent className="space-y-5">
           <div className="space-y-3">
-            <Label className="block space-y-1">
-              <span>Target organization</span>
-              <select
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                value={organizationId}
-                onChange={(event) => setOrganizationId(event.target.value)}
-              >
-                {organizations.map((org) => (
-                  <option key={org.id} value={org.id}>{org.name} ({org.slug})</option>
-                ))}
-              </select>
-            </Label>
+            <div className="text-sm font-medium">1. Select organization</div>
+            <div className="grid gap-3 lg:grid-cols-2">
+              <Label className="block space-y-1">
+                <span>Target organization</span>
+                <select
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  value={organizationId}
+                  onChange={(event) => setOrganizationId(event.target.value)}
+                >
+                  {organizations.map((org) => (
+                    <option key={org.id} value={org.id}>{org.name} ({org.slug})</option>
+                  ))}
+                </select>
+              </Label>
+              <Label className="block space-y-1">
+                <span>Source label</span>
+                <Input value={sourceLabel} onChange={(event) => setSourceLabel(event.target.value)} />
+              </Label>
+            </div>
             {selectedOrg && <div className="font-mono text-xs text-muted-foreground">{selectedOrg.id}</div>}
-            <Label className="block space-y-1">
-              <span>Source label</span>
-              <Input value={sourceLabel} onChange={(event) => setSourceLabel(event.target.value)} />
-            </Label>
-            <Label className="block space-y-1">
-              <span>QuickBooks customer JSON array</span>
-              <Textarea rows={7} value={qbJson} onChange={(event) => setQbJson(event.target.value)} className="font-mono text-xs" />
-            </Label>
           </div>
 
           <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm font-medium">2. Retrieve QuickBooks customers</div>
+              <Button type="button" variant="outline" size="sm" className="gap-2" onClick={refreshQuickBooksStatus} disabled={!organizationId || loading}>
+                <RefreshCw className="h-4 w-4" />
+                Refresh status
+              </Button>
+            </div>
+            <div className="rounded-md border p-4">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div>
+                  <div className="text-xs text-muted-foreground">Connected QuickBooks company</div>
+                  <div className="mt-1 text-sm font-medium">{qbStatus?.connectedCompanyName ?? "Not connected"}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Last successful sync</div>
+                  <div className="mt-1 text-sm font-medium">{formatDateTime(qbStatus?.lastSuccessfulSyncAt)}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Customers retrieved</div>
+                  <div className="mt-1 text-sm font-medium">{qbSnapshot?.retrievedCount ?? 0}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Retrieve progress</div>
+                  <div className="mt-1 text-sm font-medium">{qbProgress ?? (qbStatus?.connected ? "Ready" : "Waiting for connection")}</div>
+                </div>
+              </div>
+
+              {qbStatus?.healthState === "transient_error" || qbStatus?.healthMessage ? (
+                <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-900">
+                  {qbStatus.healthMessage ?? "QuickBooks reported a transient API error."}
+                </div>
+              ) : null}
+
+              <div className="mt-3">
+                <div className="text-xs text-muted-foreground">API errors</div>
+                <div className="mt-1 text-sm font-medium">{qbApiError ?? "None"}</div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  className="gap-2"
+                  onClick={retrieveQuickBooksCustomers}
+                  disabled={loading || !organizationId || !qbStatus?.connected}
+                >
+                  <DatabaseZap className="h-4 w-4" />
+                  Fetch from connected QuickBooks
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setShowQbFallback((value) => !value)}
+                  disabled={loading || !organizationId}
+                >
+                  Upload QuickBooks customer JSON
+                </Button>
+              </div>
+
+              {!qbStatus?.connected && (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Connect QuickBooks for this organization to fetch automatically, or use the developer fallback for offline staging.
+                </p>
+              )}
+
+              {showQbFallback && (
+                <div className="mt-4 space-y-3 rounded-md border bg-muted/30 p-3">
+                  <Label className="block space-y-1">
+                    <span>Advanced / offline fallback JSON</span>
+                    <Textarea rows={7} value={qbJson} onChange={(event) => setQbJson(event.target.value)} className="font-mono text-xs" />
+                  </Label>
+                  <Button type="button" variant="secondary" className="gap-2" onClick={uploadQuickBooksFallback} disabled={loading || !organizationId}>
+                    <Upload className="h-4 w-4" />
+                    Stage uploaded QuickBooks source
+                  </Button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
             <Label className="block space-y-1">
-              <span>InfoFlo company CSV</span>
+              <span>3. Upload InfoFlo company CSV</span>
               <Input type="file" accept=".csv,text/csv" onChange={(event) => setCompanyFile(event.target.files?.[0] ?? null)} />
             </Label>
             <Label className="block space-y-1">
-              <span>InfoFlo contacts CSV</span>
+              <span>4. Upload InfoFlo contacts CSV</span>
               <Input type="file" accept=".csv,text/csv" onChange={(event) => setContactsFile(event.target.files?.[0] ?? null)} />
             </Label>
-            <Button type="button" className="w-full gap-2" onClick={createBatch} disabled={loading || !organizationId}>
+          </div>
+
+          <div className="flex justify-end">
+            <Button type="button" className="gap-2" onClick={createBatch} disabled={loading || !organizationId || !qbSnapshot}>
               <Upload className="h-4 w-4" />
-              Parse, Validate, and Match
+              5. Parse, Validate, and Match
             </Button>
           </div>
         </CardContent>

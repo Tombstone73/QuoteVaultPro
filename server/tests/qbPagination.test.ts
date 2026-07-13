@@ -242,12 +242,12 @@ describe('quickbooksService.ts — static pagination contract audit', () => {
   });
 
   test('Customer pull sync uses fetchAllQBEntities', () => {
-    // processPullCustomers: same query, also a string arg
-    const customerQueryLines = sourceLinesMatching(/SELECT \* FROM Customer/);
-    // Both preview and pull-sync use the same query text; neither should be a bare makeQBRequest
+    // processPullCustomers, inspection fallback, and migration source retrieval: same query, also string args
+    const customerQueryLines = sourceLinesMatching(/SELECT \* FROM Customer(?!.*WHERE)/);
+    // Preview, migration source retrieval, inspection fallback, and pull-sync use the same query text; none should be a bare makeQBRequest
     expect(customerQueryLines.every(l => !l.includes('makeQBRequest'))).toBe(true);
-    // Exactly 2 occurrences: preview + pull-sync
-    expect(customerQueryLines).toHaveLength(2);
+    // Exactly 4 occurrences: preview + migration source retrieval + inspection fallback + pull-sync
+    expect(customerQueryLines).toHaveLength(4);
   });
 
   // ── Invoice ─────────────────────────────────────────────────────────────────
@@ -301,7 +301,7 @@ describe('quickbooksService.ts — static pagination contract audit', () => {
 
   test('Invoice idempotency lookup uses MAXRESULTS 1 (intentional single-record)', () => {
     const lines = sourceLinesMatching(/SELECT Id.*FROM Invoice.*MAXRESULTS 1/);
-    expect(lines).toHaveLength(1);
+    expect(lines).toHaveLength(2);
   });
 
   test('Payment idempotency lookup uses MAXRESULTS 1 (intentional single-record)', () => {
@@ -321,7 +321,8 @@ describe('quickbooksService.ts — static pagination contract audit', () => {
       const isIdempotency = /MAXRESULTS 1[^0-9]/.test(line) || /MAXRESULTS 1$/.test(line.trim());
       const isHelperVar = /MAXRESULTS \$\{pageSize\}/.test(line);
       const isBatchVar = /MAXRESULTS \$\{QB_BATCH_SIZE\}/.test(line);
-      if (!isIdempotency && !isHelperVar && !isBatchVar) {
+      const isBoundedCustomerSearch = /SELECT \* FROM Customer WHERE (DisplayName|CompanyName|FullyQualifiedName)/.test(line) && /MAXRESULTS 20/.test(line);
+      if (!isIdempotency && !isHelperVar && !isBatchVar && !isBoundedCustomerSearch) {
         throw new Error(
           `quickbooksService.ts contains an unexpected MAXRESULTS pattern that may be a first-page-only fetch:\n  ${line.trim()}`
         );

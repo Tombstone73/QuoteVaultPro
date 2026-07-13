@@ -227,12 +227,22 @@ const updateOrgBodySchema = z.object({
 const migrationBatchCreateSchema = z.object({
   organizationId: z.string().min(1),
   sourceLabel: z.string().max(255).optional(),
+  quickBooksSourceSnapshotId: z.string().min(1).optional(),
   qbSourceLabel: z.string().max(255).optional(),
   quickBooksCustomers: z.array(z.record(z.any())).optional(),
   infoFloCompanyCsv: z.string().optional(),
   infoFloCompanyFilename: z.string().max(255).optional(),
   infoFloContactsCsv: z.string().optional(),
   infoFloContactsFilename: z.string().max(255).optional(),
+});
+
+const migrationQuickBooksSourceBodySchema = z.object({
+  organizationId: z.string().min(1),
+});
+
+const migrationQuickBooksSourceUploadSchema = z.object({
+  organizationId: z.string().min(1),
+  quickBooksCustomers: z.array(z.record(z.any())),
 });
 
 const migrationBatchParamsSchema = z.object({
@@ -576,6 +586,90 @@ export function registerPlatformRoutes(app: import("express").Express): void {
    * Platform operator only. Target tenant is explicit in the request body/query
    * because this workflow is run from the platform Developer Tools area.
    */
+  router.get("/customer-contact-migrations/qb-source/status", requirePlatformOperatorOr404, async (req: Request, res: Response) => {
+    const organizationId = String(req.query.organizationId ?? "").trim();
+    if (!organizationId) {
+      return res.status(400).json({ success: false, message: "organizationId query parameter is required." });
+    }
+    try {
+      const status = await customerContactMigrationService.getQuickBooksSourceStatus(organizationId);
+      return res.json({ success: true, data: status });
+    } catch (error) {
+      console.error("[platform/customer-contact-migrations/qb-source/status] error:", error);
+      return res.status(500).json({ success: false, message: "Failed to check QuickBooks source status." });
+    }
+  });
+
+  router.post("/customer-contact-migrations/qb-source/retrieve", requirePlatformOperatorOr404, async (req: Request, res: Response) => {
+    const parse = migrationQuickBooksSourceBodySchema.safeParse(req.body);
+    if (!parse.success) {
+      return res.status(400).json({ success: false, message: parse.error.issues[0]?.message ?? "Invalid QuickBooks source request." });
+    }
+    const actorUserId = getUserId(req.user);
+    if (!actorUserId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    try {
+      const result = await customerContactMigrationService.retrieveQuickBooksSourceSnapshot({
+        organizationId: parse.data.organizationId,
+        actorUserId,
+      });
+
+      await writePlatformAuditLog({
+        action: "customer_contact_migration.qb_source_retrieved",
+        actorUserId,
+        actorEmail: (req.user as any)?.email ?? "unknown",
+        req,
+        orgId: parse.data.organizationId,
+        metadata: {
+          snapshotId: result.snapshot.id,
+          customerCount: result.customerCount,
+          connectedCompanyName: result.status.connectedCompanyName,
+          quickBooksCompanyId: result.status.quickBooksCompanyId,
+        },
+      });
+
+      return res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      const statusCode = Number(error?.statusCode || 500);
+      if (statusCode >= 400 && statusCode < 500) {
+        return res.status(statusCode).json({ success: false, message: error.message });
+      }
+      console.error("[platform/customer-contact-migrations/qb-source/retrieve] error:", error);
+      return res.status(500).json({ success: false, message: "Failed to retrieve QuickBooks customers." });
+    }
+  });
+
+  router.post("/customer-contact-migrations/qb-source/upload", requirePlatformOperatorOr404, async (req: Request, res: Response) => {
+    const parse = migrationQuickBooksSourceUploadSchema.safeParse(req.body);
+    if (!parse.success) {
+      return res.status(400).json({ success: false, message: parse.error.issues[0]?.message ?? "Invalid QuickBooks JSON fallback." });
+    }
+    const actorUserId = getUserId(req.user);
+    if (!actorUserId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    try {
+      const result = await customerContactMigrationService.uploadQuickBooksSourceSnapshot({
+        organizationId: parse.data.organizationId,
+        actorUserId,
+        quickBooksCustomers: parse.data.quickBooksCustomers,
+      });
+
+      await writePlatformAuditLog({
+        action: "customer_contact_migration.qb_source_uploaded",
+        actorUserId,
+        actorEmail: (req.user as any)?.email ?? "unknown",
+        req,
+        orgId: parse.data.organizationId,
+        metadata: { snapshotId: result.snapshot.id, customerCount: result.customerCount },
+      });
+
+      return res.status(201).json({ success: true, data: result });
+    } catch (error) {
+      console.error("[platform/customer-contact-migrations/qb-source/upload] error:", error);
+      return res.status(500).json({ success: false, message: "Failed to stage uploaded QuickBooks customers." });
+    }
+  });
+
   router.get("/customer-contact-migrations", requirePlatformOperatorOr404, async (req: Request, res: Response) => {
     const organizationId = String(req.query.organizationId ?? "").trim();
     if (!organizationId) {
@@ -604,6 +698,7 @@ export function registerPlatformRoutes(app: import("express").Express): void {
         organizationId: parse.data.organizationId,
         actorUserId,
         sourceLabel: parse.data.sourceLabel,
+        quickBooksSourceSnapshotId: parse.data.quickBooksSourceSnapshotId,
         qbSourceLabel: parse.data.qbSourceLabel,
         quickBooksCustomers: parse.data.quickBooksCustomers,
         infoFloCompanyCsv: parse.data.infoFloCompanyCsv,

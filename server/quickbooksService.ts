@@ -1399,6 +1399,100 @@ export type QBCustomerPreviewRow = {
   failureReason: string | null;
 };
 
+export type QuickBooksCustomerMigrationSourceStatus = {
+  connected: boolean;
+  authState: QuickBooksAuthState;
+  healthState: QuickBooksHealthState;
+  healthMessage?: string;
+  lastErrorAt?: string;
+  connectedCompanyName: string | null;
+  quickBooksCompanyId: string | null;
+  connectedAt: Date | null;
+  expiresAt: Date | null;
+  lastSuccessfulSyncAt: Date | null;
+};
+
+function getQuickBooksConnectedCompanyName(connection: OAuthConnection | null): string | null {
+  if (!connection) return null;
+  const meta = (connection.metadata as any) || {};
+  const companyName = String(meta.companyName || meta.companyInfo?.CompanyName || '').trim();
+  if (companyName) return companyName;
+  return connection.companyId ? `QuickBooks company ${connection.companyId}` : null;
+}
+
+export async function getQuickBooksCustomerMigrationSourceStatus(organizationId: string): Promise<QuickBooksCustomerMigrationSourceStatus> {
+  const connection = await getActiveConnection(organizationId);
+  const lastSuccessfulSync = await db
+    .select({ updatedAt: accountingSyncJobs.updatedAt })
+    .from(accountingSyncJobs)
+    .where(and(
+      eq(accountingSyncJobs.organizationId, organizationId),
+      eq(accountingSyncJobs.provider, 'quickbooks'),
+      eq(accountingSyncJobs.resourceType, 'customers'),
+      eq(accountingSyncJobs.direction, 'pull'),
+      eq(accountingSyncJobs.status, 'synced'),
+    ))
+    .orderBy(desc(accountingSyncJobs.updatedAt))
+    .limit(1);
+
+  if (!connection || connection.organizationId !== organizationId) {
+    return {
+      connected: false,
+      authState: 'not_connected',
+      healthState: 'ok',
+      connectedCompanyName: null,
+      quickBooksCompanyId: null,
+      connectedAt: null,
+      expiresAt: null,
+      lastSuccessfulSyncAt: lastSuccessfulSync[0]?.updatedAt ?? null,
+    };
+  }
+
+  const qbAuth = getQuickBooksAuthMetadata(connection);
+  const qbHealth = getQuickBooksHealthMetadata(connection);
+  const healthState = qbHealth?.state === 'transient_error' ? 'transient_error' : 'ok';
+  const authState: QuickBooksAuthState = qbAuth?.state === 'needs_reauth' ? 'needs_reauth' : 'connected';
+  const validToken = authState === 'connected'
+    ? await getValidAccessTokenForOrganization(organizationId)
+    : null;
+
+  return {
+    connected: Boolean(validToken),
+    authState: validToken ? 'connected' : authState === 'needs_reauth' ? 'needs_reauth' : 'not_connected',
+    healthState,
+    healthMessage: qbHealth?.message ? String(qbHealth.message) : undefined,
+    lastErrorAt: qbHealth?.lastErrorAt ? String(qbHealth.lastErrorAt) : undefined,
+    connectedCompanyName: getQuickBooksConnectedCompanyName(connection),
+    quickBooksCompanyId: connection.companyId ?? null,
+    connectedAt: connection.createdAt ?? null,
+    expiresAt: connection.expiresAt ?? null,
+    lastSuccessfulSyncAt: lastSuccessfulSync[0]?.updatedAt ?? null,
+  };
+}
+
+export async function fetchQBCustomersForMigrationSource(organizationId: string): Promise<{
+  customers: any[];
+  status: QuickBooksCustomerMigrationSourceStatus;
+  retrievedAt: Date;
+}> {
+  const status = await getQuickBooksCustomerMigrationSourceStatus(organizationId);
+  if (!status.connected) {
+    const error: any = new Error(status.authState === 'needs_reauth'
+      ? 'QuickBooks connection needs reauthorization.'
+      : 'No active QuickBooks connection is available for this organization.');
+    error.statusCode = status.authState === 'needs_reauth' ? 409 : 404;
+    throw error;
+  }
+
+  const customers: any[] = await fetchAllQBEntities(
+    'Customer',
+    'SELECT * FROM Customer',
+    (q) => makeQBRequest('GET', `/query?query=${encodeURIComponent(q)}`, undefined, organizationId),
+  );
+
+  return { customers, status, retrievedAt: new Date() };
+}
+
 /**
  * Fetch all QB customers and return mapping decisions WITHOUT writing anything.
  * Used by the UI preview step before committing a pull sync.
