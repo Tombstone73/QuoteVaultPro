@@ -11,7 +11,7 @@
  * STRICTLY READ-ONLY — does not write to DB, import data, or trigger sync jobs.
  */
 
-import { useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -82,6 +82,22 @@ interface CustomerInspectorResponse {
   customerId: string;
   data: QBCustomerInspectionResult;
   raw: unknown;
+}
+
+interface QBCustomerSearchMatch {
+  qbCustomerId: string;
+  qbDisplayName: string;
+  qbCompanyName: string | null;
+  qbFullyQualifiedName: string | null;
+  email: string | null;
+  active: boolean | null;
+}
+
+interface QBCustomerSearchResponse {
+  success: boolean;
+  query: string;
+  count: number;
+  data: QBCustomerSearchMatch[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -173,6 +189,8 @@ function CollapsibleSection({ title, badge, children, defaultOpen = false }: {
 // ─── Results display ──────────────────────────────────────────────────────────
 
 function CustomerResults({ data: inspection, raw }: { data: QBCustomerInspectionResult; raw: unknown }) {
+  const missingPersonName = inspection.warnings.some((warning) => warning.includes("missing_person_name"));
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -199,6 +217,21 @@ function CustomerResults({ data: inspection, raw }: { data: QBCustomerInspection
           </CardContent>
         </Card>
       )}
+
+      {/* Validation results */}
+      <SectionCard title="Validation Results">
+        {inspection.warnings.length === 0 ? (
+          <p className="text-titan-xs text-titan-text-muted">No validation warnings detected.</p>
+        ) : (
+          <div className="space-y-2">
+            {inspection.warnings.map((warning, index) => (
+              <div key={index} className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                <p className="text-titan-xs font-mono text-amber-500">{warning}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </SectionCard>
 
       {/* Mapped fields */}
       <SectionCard title={`Mapped Printers Hero Fields (${inspection.mapped.length})`}>
@@ -233,7 +266,7 @@ function CustomerResults({ data: inspection, raw }: { data: QBCustomerInspection
       </SectionCard>
 
       {/* Contact mapping */}
-      <SectionCard title="Contact Mapping">
+      <SectionCard title="Contact Creation Analysis">
         <div className="divide-y divide-titan-border-subtle mb-3">
           <FieldRow label="First Name" value={nullDisplay(inspection.contactMapped.firstName)} />
           <FieldRow label="Last Name" value={nullDisplay(inspection.contactMapped.lastName)} />
@@ -250,6 +283,9 @@ function CustomerResults({ data: inspection, raw }: { data: QBCustomerInspection
           />
           {inspection.contactMapped.skipReason && (
             <FieldRow label="Skip reason" value={inspection.contactMapped.skipReason} dim />
+          )}
+          {missingPersonName && (
+            <FieldRow label="missing_person_name fields" value="GivenName, FamilyName" dim />
           )}
         </div>
       </SectionCard>
@@ -330,8 +366,20 @@ function InspectorSkeleton() {
 export default function QBCustomerInspectorPage() {
   const { user } = useAuth();
   const { toast } = useToast();
-  const [inputValue, setInputValue] = useState("");
+  const initialSearchParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const initialCustomerId = initialSearchParams.get("customerId") ?? initialSearchParams.get("id") ?? "";
+  const initialQuery = initialSearchParams.get("q") ?? "";
+  const [inputValue, setInputValue] = useState(initialCustomerId || initialQuery);
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const [pendingSearch, setPendingSearch] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (initialCustomerId) {
+      setPendingId(initialCustomerId.trim());
+    } else if (initialQuery) {
+      setPendingSearch(initialQuery.trim());
+    }
+  }, [initialCustomerId, initialQuery]);
 
   const { data, isLoading, error, isError } = useQuery<CustomerInspectorResponse>({
     queryKey: ["/api/integrations/quickbooks/debug/customer", pendingId],
@@ -352,14 +400,57 @@ export default function QBCustomerInspectorPage() {
     retry: false,
   });
 
+  const {
+    data: searchData,
+    isLoading: isSearching,
+    error: searchError,
+    isError: isSearchError,
+  } = useQuery<QBCustomerSearchResponse>({
+    queryKey: ["/api/integrations/quickbooks/debug/customer-search", pendingSearch],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/integrations/quickbooks/debug/customer-search?q=${encodeURIComponent(pendingSearch!)}`);
+      if (!res.ok) {
+        let message = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          message = body.error ?? body.message ?? message;
+        } catch { /* raw status is enough */ }
+        throw new Error(message);
+      }
+      return res.json();
+    },
+    enabled: !!pendingSearch,
+    staleTime: 0,
+    retry: false,
+  });
+
+  useEffect(() => {
+    const matches = searchData?.data ?? [];
+    if (!pendingSearch || isSearching || matches.length !== 1) return;
+    setPendingId(matches[0].qbCustomerId);
+    setPendingSearch(null);
+  }, [isSearching, pendingSearch, searchData]);
+
   const handleFetch = useCallback(() => {
     const trimmed = inputValue.trim();
     if (!trimmed) {
-      toast({ title: "Enter a QB Customer ID first", variant: "destructive" });
+      toast({ title: "Enter a QB Customer ID, company name, or display name first", variant: "destructive" });
       return;
     }
-    setPendingId(trimmed);
+    if (/^\d+$/.test(trimmed)) {
+      setPendingId(trimmed);
+      setPendingSearch(null);
+      return;
+    }
+    setPendingId(null);
+    setPendingSearch(trimmed);
   }, [inputValue, toast]);
+
+  const handlePickMatch = useCallback((match: QBCustomerSearchMatch) => {
+    setInputValue(match.qbCustomerId);
+    setPendingId(match.qbCustomerId);
+    setPendingSearch(null);
+  }, []);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") handleFetch();
@@ -403,28 +494,29 @@ export default function QBCustomerInspectorPage() {
           <div className="flex gap-3 items-end">
             <div className="flex-1 max-w-xs space-y-1.5">
               <Label htmlFor="customer-id-input" className="text-titan-xs font-medium text-titan-text-secondary">
-                QuickBooks Customer ID (numeric QB Id)
+                QuickBooks Customer ID, Company Name, or Display Name
               </Label>
               <Input
                 id="customer-id-input"
-                placeholder="e.g. 59"
+                placeholder="e.g. 59, Acme Signs, or Acme Display Name"
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
-                disabled={isLoading}
+                disabled={isLoading || isSearching}
                 className="font-mono"
               />
             </div>
-            <Button onClick={handleFetch} disabled={isLoading || !inputValue.trim()} className="shrink-0">
-              {isLoading ? (
-                <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Fetching…</>
+            <Button onClick={handleFetch} disabled={isLoading || isSearching || !inputValue.trim()} className="shrink-0">
+              {isLoading || isSearching ? (
+                <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Searching...</>
               ) : (
-                <><Search className="h-4 w-4 mr-2" />Fetch Customer</>
+                <><Search className="h-4 w-4 mr-2" />Inspect Customer</>
               )}
             </Button>
           </div>
           <p className="mt-2 text-[11px] text-titan-text-muted">
-            The QB Customer ID is the numeric <span className="font-mono">Id</span> field in the QB API — visible in the QB import preview or the raw QB invoice payload under <span className="font-mono">CustomerRef.value</span>.
+            Numeric input preserves direct lookup by QB Id. Name searches check QuickBooks DisplayName, CompanyName,
+            and FullyQualifiedName before opening the inspector.
           </p>
           {pendingId && !isLoading && !isError && (
             <p className="mt-1 text-[11px] text-titan-text-muted">
@@ -452,8 +544,78 @@ export default function QBCustomerInspectorPage() {
         </Card>
       )}
 
+      {/* Search error state */}
+      {isSearchError && (
+        <Card className="border-destructive/40 bg-destructive/5">
+          <CardContent className="p-4 flex items-start gap-3">
+            <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
+            <div>
+              <p className="text-titan-sm font-medium text-destructive">Failed to search customers</p>
+              <p className="text-titan-xs text-titan-text-secondary mt-0.5">
+                {searchError instanceof Error ? searchError.message : "Unknown error"}
+              </p>
+              <p className="text-[11px] text-titan-text-muted mt-1">
+                Ensure QuickBooks OAuth is connected and try a QB Id, Company Name, or Display Name.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Search picker */}
+      {!isSearching && pendingSearch && searchData?.success && (searchData.data?.length ?? 0) !== 1 && (
+        <SectionCard title={`Search Results (${searchData.data?.length ?? 0})`}>
+          {(searchData.data?.length ?? 0) === 0 ? (
+            <p className="text-titan-xs text-titan-text-muted">
+              No QuickBooks customers matched <span className="font-mono">{pendingSearch}</span>.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-[10px]">QB ID</TableHead>
+                    <TableHead className="text-[10px]">Display Name</TableHead>
+                    <TableHead className="text-[10px]">Company Name</TableHead>
+                    <TableHead className="text-[10px]">Email</TableHead>
+                    <TableHead className="text-[10px] text-right">Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {searchData.data.map((match) => (
+                    <TableRow
+                      key={match.qbCustomerId}
+                      className="cursor-pointer hover:bg-titan-bg-surface"
+                      onClick={() => handlePickMatch(match)}
+                    >
+                      <TableCell className="text-[11px] font-mono">{match.qbCustomerId}</TableCell>
+                      <TableCell className="text-[11px] font-medium">{match.qbDisplayName || "-"}</TableCell>
+                      <TableCell className="text-[11px]">{match.qbCompanyName || match.qbFullyQualifiedName || "-"}</TableCell>
+                      <TableCell className="text-[11px]">{match.email || "-"}</TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-[11px]"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handlePickMatch(match);
+                          }}
+                        >
+                          Inspect
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </SectionCard>
+      )}
+
       {/* Loading */}
-      {isLoading && <InspectorSkeleton />}
+      {(isLoading || isSearching) && <InspectorSkeleton />}
 
       {/* Results */}
       {!isLoading && data?.success && data.data && (

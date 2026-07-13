@@ -17,6 +17,7 @@
  *   POST /api/integrations/quickbooks/jobs/trigger
  *   GET  /api/integrations/quickbooks/worker/status
  *   GET  /api/integrations/quickbooks/debug/invoice/:invoiceNumber
+ *   GET  /api/integrations/quickbooks/debug/customer-search
  *   GET  /api/integrations/quickbooks/debug/customer/:customerId
  *
  * Placement: server/routes/quickbooks.routes.ts
@@ -768,6 +769,27 @@ export function registerQuickBooksRoutes(
   });
 
   /**
+   * GET /api/integrations/quickbooks/debug/customer-search?q=...
+   * Developer-only read-only lookup by QB Customer Id, DisplayName, CompanyName,
+   * or FullyQualifiedName so inspectors do not need to manually locate QB numeric IDs.
+   */
+  app.get('/api/integrations/quickbooks/debug/customer-search', isAuthenticated, requireDeveloperAccess, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const query = String(req.query.q || '').trim();
+      if (!query) {
+        return res.status(400).json({ success: false, error: 'q query parameter is required' });
+      }
+
+      const matches = await quickbooksService.searchQBCustomersForInspection(organizationId, query);
+      return res.json({ success: true, query, count: matches.length, data: matches });
+    } catch (error: any) {
+      console.error('[QB Debug Customer Search] Error:', { message: error.message, query: req.query.q });
+      return res.status(500).json({ success: false, error: error.message || 'Failed to search QuickBooks customers' });
+    }
+  });
+
+  /**
    * GET /api/integrations/quickbooks/debug/customer/:customerId
    * Fetch a single QuickBooks customer by their QB Id and return both the raw payload
    * and a structured field inspection: mapped TitanOS fields, unmapped QB fields, warnings.
@@ -794,4 +816,5 @@ export function registerQuickBooksRoutes(
       return res.status(500).json({ success: false, error: error.message || 'Failed to fetch customer from QuickBooks' });
     }
   });
+
 }

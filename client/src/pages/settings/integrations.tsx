@@ -20,6 +20,7 @@ import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { usePaymentSettings, useUpdatePaymentSettings, type PaymentProvider } from "@/hooks/usePaymentSettings";
 import { QBTransientDisconnectBanner } from "@/components/integrations/QBTransientDisconnectBanner";
 import { PaymentProcessorSettingsCard } from "@/components/settings/PaymentProcessorSettingsCard";
+import { ROUTES } from "@/config/routes";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -73,11 +74,33 @@ type QBCustomerPreviewRow = {
   willCreateCompany: boolean;
   willUpdateCompany: boolean;
   willCreateContact: boolean;
+  importStatus: 'create_company' | 'update_company' | 'create_company_only' | 'update_company_only';
+  failureReason: string | null;
   contactNeedsReview: boolean;
   suspiciousFields: string[];
   matchedExistingCustomerId: string | null;
   matchedExistingContactId: string | null;
 };
+
+const QB_CUSTOMER_IMPORT_STATUS_LABELS: Record<QBCustomerPreviewRow['importStatus'], string> = {
+  create_company: 'Create company + contact',
+  update_company: 'Update company + contact',
+  create_company_only: 'Create company only',
+  update_company_only: 'Update company only',
+};
+
+const QB_CUSTOMER_FAILURE_REASON_LABELS: Record<string, string> = {
+  missing_person_name: 'Missing person name',
+  suspicious_contact_name: 'Suspicious contact name',
+};
+
+function getCustomerImportStatusLabel(status: QBCustomerPreviewRow['importStatus'] | undefined): string {
+  return status ? QB_CUSTOMER_IMPORT_STATUS_LABELS[status] ?? status : 'Not mapped';
+}
+
+function getCustomerFailureReasonLabel(reason: string | null | undefined): string {
+  return reason ? QB_CUSTOMER_FAILURE_REASON_LABELS[reason] ?? reason : '-';
+}
 
 type QBSyncQueueEnvelope = {
   success: boolean;
@@ -664,6 +687,11 @@ export default function SettingsIntegrations() {
     setShowCustomerPreviewDialog(false);
     setCustomerPreview(null);
     handleSync('pull', ['customers']);
+  };
+
+  const handleInspectQBCustomer = (row: QBCustomerPreviewRow) => {
+    setShowCustomerPreviewDialog(false);
+    setLocation(`${ROUTES.developer.qbCustomerInspector}?customerId=${encodeURIComponent(row.qbCustomerId)}`);
   };
 
   const handleImportInvoices = async (bulkOverride?: 'open_ar' | 'historical') => {
@@ -1975,7 +2003,7 @@ export default function SettingsIntegrations() {
 
       {/* QB Customer Import Preview Dialog */}
       <Dialog open={showCustomerPreviewDialog} onOpenChange={setShowCustomerPreviewDialog}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-w-6xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>QuickBooks Customer Import Preview</DialogTitle>
             <DialogDescription>
@@ -1990,7 +2018,6 @@ export default function SettingsIntegrations() {
             const willUpdate    = customerPreview.filter(r => r.willUpdateCompany).length;
             const withContact   = customerPreview.filter(r => r.willCreateContact).length;
             const needsReview   = customerPreview.filter(r => r.contactNeedsReview).length;
-            const reviewRows    = customerPreview.filter(r => r.contactNeedsReview);
             return (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
@@ -2018,18 +2045,102 @@ export default function SettingsIntegrations() {
                       <AlertCircle className="w-4 h-4" />
                       {needsReview} record{needsReview !== 1 ? 's' : ''} will import company only (no contact created)
                     </p>
-                    <div className="rounded border divide-y max-h-48 overflow-y-auto text-xs">
-                      {reviewRows.map(r => (
-                        <div key={r.qbCustomerId} className="px-3 py-2 flex justify-between gap-2">
-                          <span className="font-medium truncate">{r.mappedCompanyName}</span>
-                          <span className="text-muted-foreground shrink-0">
-                            {r.suspiciousFields.join(', ')}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
                   </div>
                 )}
+
+                <div className="rounded border overflow-hidden">
+                  <div className="max-h-[420px] overflow-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-[90px]">QB ID</TableHead>
+                          <TableHead>QuickBooks customer</TableHead>
+                          <TableHead>Import status</TableHead>
+                          <TableHead>Failure reason</TableHead>
+                          <TableHead>Contact</TableHead>
+                          <TableHead>Local match</TableHead>
+                          <TableHead className="text-right">Action</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {customerPreview.map(row => (
+                          <TableRow
+                            key={row.qbCustomerId}
+                            className="cursor-pointer hover:bg-muted/50"
+                            tabIndex={0}
+                            onClick={() => handleInspectQBCustomer(row)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                handleInspectQBCustomer(row);
+                              }
+                            }}
+                          >
+                            <TableCell className="font-mono text-xs">{row.qbCustomerId}</TableCell>
+                            <TableCell>
+                              <div className="space-y-0.5">
+                                <div className="font-medium">{row.mappedCompanyName || row.qbDisplayName || '-'}</div>
+                                <div className="text-xs text-muted-foreground truncate max-w-[260px]">
+                                  QB display: {row.qbDisplayName || '-'}
+                                </div>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant={row.importStatus?.includes('only') ? 'secondary' : 'default'}>
+                                {getCustomerImportStatusLabel(row.importStatus)}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              <div className="space-y-1">
+                                <span className={row.failureReason ? 'text-amber-700 text-sm font-medium' : 'text-muted-foreground text-sm'}>
+                                  {getCustomerFailureReasonLabel(row.failureReason)}
+                                </span>
+                                {row.suspiciousFields.length > 0 && (
+                                  <div className="flex flex-wrap gap-1">
+                                    {row.suspiciousFields.map(field => (
+                                      <Badge key={field} variant="outline" className="text-[10px]">
+                                        {field}
+                                      </Badge>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-sm">
+                              <div className="space-y-0.5">
+                                <div>
+                                  {[row.mappedContactFirstName, row.mappedContactLastName].filter(Boolean).join(' ') || 'No contact'}
+                                </div>
+                                <div className="text-xs text-muted-foreground truncate max-w-[200px]">
+                                  {row.email || row.phone || '-'}
+                                </div>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="space-y-1 text-xs text-muted-foreground">
+                                <div>{row.matchedExistingCustomerId ? 'Matched customer' : 'No customer match'}</div>
+                                <div>{row.matchedExistingContactId ? 'Matched contact' : 'No contact match'}</div>
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleInspectQBCustomer(row);
+                                }}
+                              >
+                                <ExternalLink className="w-3 h-3 mr-1" />
+                                Inspect
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
 
                 <p className="text-xs text-muted-foreground">
                   {withContact} contact{withContact !== 1 ? 's' : ''} will be created alongside their company.
