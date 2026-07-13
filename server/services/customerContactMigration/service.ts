@@ -40,6 +40,8 @@ import {
 
 type DbClient = typeof db;
 type CsvReportKind = "completed-mappings" | "exceptions" | "rejected-records" | "conflicts" | "failed-records";
+type ReviewRecordType = "company" | "contact";
+type ReviewDecisionAction = "accept_proposed" | "choose_existing" | "create_new" | "ignore";
 
 const csvReportHeaders: Record<CsvReportKind, string[]> = {
   "completed-mappings": ["type", "rowNumber", "sourceRecordId", "entityId", "linkId", "customerId", "contactId"],
@@ -90,6 +92,26 @@ export type CompanySourceConsolidationSummary = {
   ambiguousCompanyMatches: number;
   unmatchedQuickBooksCompanies: number;
   unmatchedInfoFloCompanies: number;
+};
+
+export type MigrationReviewDecisionInput = {
+  organizationId: string;
+  batchId: string;
+  recordType: ReviewRecordType;
+  recordId: string;
+  action: ReviewDecisionAction;
+  selectedEntityId?: string | null;
+  actorUserId: string;
+};
+
+export type MigrationFinalizePreviewCounts = {
+  companiesToCreate: number;
+  companiesToUpdate: number;
+  contactsToCreate: number;
+  contactsToUpdate: number;
+  relationshipsToCreate: number;
+  relationshipsToUpdate: number;
+  remainingUnresolved: number;
 };
 
 function checksum(value: unknown): string | null {
@@ -262,6 +284,88 @@ function compactPatch<T extends Record<string, unknown>>(patch: T): T {
     result[key] = value;
   }
   return result as T;
+}
+
+const unresolvedCompanyStatuses = new Set(["ambiguous", "failed"]);
+const unresolvedContactStatuses = new Set(["ambiguous_person", "company_ambiguous", "company_missing", "failed"]);
+const unresolvedRelationshipStatuses = new Set(["ambiguous", "failed"]);
+
+function firstCandidateId(row: { matchCandidatesJson?: unknown }): string | null {
+  const candidates = Array.isArray(row.matchCandidatesJson) ? row.matchCandidatesJson as Array<Record<string, unknown>> : [];
+  const sorted = [...candidates].sort((a, b) => Number(b.score ?? 0) - Number(a.score ?? 0));
+  const id = sorted[0]?.id;
+  return typeof id === "string" && id.trim() ? id.trim() : null;
+}
+
+export function countMigrationUnresolvedRows(batch: {
+  companyRows: Array<{ status: string }>;
+  contactRows: Array<{ status: string }>;
+  relationshipRows: Array<{ status: string }>;
+}): number {
+  return batch.companyRows.filter((row) => unresolvedCompanyStatuses.has(String(row.status))).length +
+    batch.contactRows.filter((row) => unresolvedContactStatuses.has(String(row.status))).length +
+    batch.relationshipRows.filter((row) => unresolvedRelationshipStatuses.has(String(row.status))).length;
+}
+
+export function buildFinalizePreviewCounts(batch: {
+  companyRows: Array<{ status: string; selectedCustomerId?: string | null }>;
+  contactRows: Array<{ status: string; selectedContactId?: string | null }>;
+  relationshipRows: Array<{ status: string; selectedLinkId?: string | null }>;
+}): MigrationFinalizePreviewCounts {
+  const remainingUnresolved = countMigrationUnresolvedRows(batch);
+  return {
+    companiesToCreate: batch.companyRows.filter((row) => row.status === "new_company").length,
+    companiesToUpdate: batch.companyRows.filter((row) => row.status === "matched_existing" && row.selectedCustomerId).length,
+    contactsToCreate: batch.contactRows.filter((row) => !unresolvedContactStatuses.has(String(row.status)) && row.status !== "rejected" && row.status !== "failed" && !row.selectedContactId).length,
+    contactsToUpdate: batch.contactRows.filter((row) => !unresolvedContactStatuses.has(String(row.status)) && row.selectedContactId).length,
+    relationshipsToCreate: batch.relationshipRows.filter((row) => row.status === "ready" && !row.selectedLinkId).length,
+    relationshipsToUpdate: batch.relationshipRows.filter((row) => row.status === "ready" && row.selectedLinkId).length,
+    remainingUnresolved,
+  };
+}
+
+export function buildCompanyReviewPatch(row: Record<string, any>, decision: Pick<MigrationReviewDecisionInput, "action" | "selectedEntityId" | "actorUserId">) {
+  const reviewDecisionJson = {
+    action: decision.action,
+    selectedEntityId: decision.selectedEntityId ?? null,
+    decidedByUserId: decision.actorUserId,
+    decidedAt: new Date().toISOString(),
+  };
+  if (decision.action === "accept_proposed") {
+    const selectedCustomerId = decision.selectedEntityId || firstCandidateId(row);
+    if (!selectedCustomerId) throw Object.assign(new Error("No proposed company match is available."), { statusCode: 400 });
+    return { status: "matched_existing", selectedCustomerId, reviewDecisionJson, errorMessage: null };
+  }
+  if (decision.action === "choose_existing") {
+    if (!decision.selectedEntityId) throw Object.assign(new Error("selectedEntityId is required."), { statusCode: 400 });
+    return { status: "matched_existing", selectedCustomerId: decision.selectedEntityId, reviewDecisionJson, errorMessage: null };
+  }
+  if (decision.action === "create_new") {
+    return { status: "new_company", selectedCustomerId: null, reviewDecisionJson, errorMessage: null };
+  }
+  return { status: "rejected", selectedCustomerId: null, reviewDecisionJson, errorMessage: "Ignored by reviewer." };
+}
+
+export function buildContactReviewPatch(row: Record<string, any>, decision: Pick<MigrationReviewDecisionInput, "action" | "selectedEntityId" | "actorUserId">) {
+  const reviewDecisionJson = {
+    action: decision.action,
+    selectedEntityId: decision.selectedEntityId ?? null,
+    decidedByUserId: decision.actorUserId,
+    decidedAt: new Date().toISOString(),
+  };
+  if (decision.action === "accept_proposed") {
+    const selectedContactId = decision.selectedEntityId || firstCandidateId(row);
+    if (!selectedContactId) throw Object.assign(new Error("No proposed contact match is available."), { statusCode: 400 });
+    return { status: "matched_existing_person", selectedContactId, reviewDecisionJson, errorMessage: null };
+  }
+  if (decision.action === "choose_existing") {
+    if (!decision.selectedEntityId) throw Object.assign(new Error("selectedEntityId is required."), { statusCode: 400 });
+    return { status: "matched_existing_person", selectedContactId: decision.selectedEntityId, reviewDecisionJson, errorMessage: null };
+  }
+  if (decision.action === "create_new") {
+    return { status: "company_matched", selectedContactId: null, reviewDecisionJson, errorMessage: null };
+  }
+  return { status: "rejected", selectedContactId: null, reviewDecisionJson, errorMessage: "Ignored by reviewer." };
 }
 
 function companySourceNameKeys(source: NormalizedCompanySource): Set<string> {
@@ -808,7 +912,97 @@ export class CustomerContactMigrationService {
       this.dbClient.select().from(customerContactImportContactRecords).where(eq(customerContactImportContactRecords.batchId, batch.id)).orderBy(customerContactImportContactRecords.rowNumber),
       this.dbClient.select().from(customerContactImportRelationshipRecords).where(eq(customerContactImportRelationshipRecords.batchId, batch.id)).orderBy(customerContactImportRelationshipRecords.createdAt),
     ]);
-    return { batch, companyRows, contactRows, relationshipRows };
+    return { batch, companyRows, contactRows, relationshipRows, finalizePreview: buildFinalizePreviewCounts({ companyRows, contactRows, relationshipRows }) };
+  }
+
+  private async refreshBatchReviewState(tx: any, organizationId: string, batchId: string) {
+    const [companyRows, contactRows, relationshipRows] = await Promise.all([
+      tx.select().from(customerContactImportCompanyRecords).where(eq(customerContactImportCompanyRecords.batchId, batchId)),
+      tx.select().from(customerContactImportContactRecords).where(eq(customerContactImportContactRecords.batchId, batchId)),
+      tx.select().from(customerContactImportRelationshipRecords).where(eq(customerContactImportRelationshipRecords.batchId, batchId)),
+    ]);
+    const preview = buildFinalizePreviewCounts({ companyRows, contactRows, relationshipRows });
+    const [batch] = await tx
+      .select()
+      .from(customerContactImportBatches)
+      .where(and(eq(customerContactImportBatches.organizationId, organizationId), eq(customerContactImportBatches.id, batchId)))
+      .limit(1);
+    const summaryJson = { ...((batch?.summaryJson as any) ?? {}), ...preview };
+    await tx
+      .update(customerContactImportBatches)
+      .set({
+        status: preview.remainingUnresolved > 0 ? "needs_review" : "ready_to_finalize",
+        summaryJson,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(customerContactImportBatches.organizationId, organizationId), eq(customerContactImportBatches.id, batchId)));
+    return preview;
+  }
+
+  async applyReviewDecision(input: MigrationReviewDecisionInput) {
+    return this.dbClient.transaction(async (tx: any) => {
+      const now = new Date();
+      if (input.recordType === "company") {
+        const [row] = await tx
+          .select()
+          .from(customerContactImportCompanyRecords)
+          .where(and(
+            eq(customerContactImportCompanyRecords.organizationId, input.organizationId),
+            eq(customerContactImportCompanyRecords.batchId, input.batchId),
+            eq(customerContactImportCompanyRecords.id, input.recordId),
+          ))
+          .limit(1);
+        if (!row) throw Object.assign(new Error("Company review record not found."), { statusCode: 404 });
+        const patch = buildCompanyReviewPatch(row, input);
+        await tx
+          .update(customerContactImportCompanyRecords)
+          .set({ ...patch, updatedAt: now })
+          .where(eq(customerContactImportCompanyRecords.id, input.recordId));
+        await tx
+          .update(customerContactImportRelationshipRecords)
+          .set({
+            selectedCustomerId: patch.selectedCustomerId ?? null,
+            status: patch.status === "rejected" ? "skipped" : "ready",
+            errorMessage: patch.status === "rejected" ? "Company source ignored by reviewer." : null,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(customerContactImportRelationshipRecords.batchId, input.batchId),
+            eq(customerContactImportRelationshipRecords.companyRecordId, input.recordId),
+          ));
+      } else {
+        const [row] = await tx
+          .select()
+          .from(customerContactImportContactRecords)
+          .where(and(
+            eq(customerContactImportContactRecords.organizationId, input.organizationId),
+            eq(customerContactImportContactRecords.batchId, input.batchId),
+            eq(customerContactImportContactRecords.id, input.recordId),
+          ))
+          .limit(1);
+        if (!row) throw Object.assign(new Error("Contact review record not found."), { statusCode: 404 });
+        const patch = buildContactReviewPatch(row, input);
+        await tx
+          .update(customerContactImportContactRecords)
+          .set({ ...patch, updatedAt: now })
+          .where(eq(customerContactImportContactRecords.id, input.recordId));
+        await tx
+          .update(customerContactImportRelationshipRecords)
+          .set({
+            selectedContactId: patch.selectedContactId ?? null,
+            status: patch.status === "rejected" ? "skipped" : "ready",
+            errorMessage: patch.status === "rejected" ? "Contact source ignored by reviewer." : null,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(customerContactImportRelationshipRecords.batchId, input.batchId),
+            eq(customerContactImportRelationshipRecords.contactRecordId, input.recordId),
+          ));
+      }
+
+      const preview = await this.refreshBatchReviewState(tx, input.organizationId, input.batchId);
+      return { preview };
+    });
   }
 
   async listBatches(organizationId: string, limit = 25): Promise<CustomerContactImportBatch[]> {
@@ -820,19 +1014,34 @@ export class CustomerContactMigrationService {
       .limit(Math.min(100, Math.max(1, limit)));
   }
 
-  async finalizeBatch(organizationId: string, batchId: string, actorUserId: string, confirmation: string) {
+  async finalizeBatch(organizationId: string, batchId: string, actorUserId: string, confirmation: string, allowUnresolvedSkips = false) {
     if (confirmation !== "FINALIZE") {
       throw Object.assign(new Error("Explicit FINALIZE confirmation is required."), { statusCode: 400 });
     }
 
     return this.dbClient.transaction(async (tx: any) => {
+      const currentCompanyRows = await tx.select().from(customerContactImportCompanyRecords).where(eq(customerContactImportCompanyRecords.batchId, batchId));
+      const currentContactRows = await tx.select().from(customerContactImportContactRecords).where(eq(customerContactImportContactRecords.batchId, batchId));
+      const currentRelationshipRows = await tx.select().from(customerContactImportRelationshipRecords).where(eq(customerContactImportRelationshipRecords.batchId, batchId));
+      const preview = buildFinalizePreviewCounts({
+        companyRows: currentCompanyRows,
+        contactRows: currentContactRows,
+        relationshipRows: currentRelationshipRows,
+      });
+      if (preview.remainingUnresolved > 0 && !allowUnresolvedSkips) {
+        throw Object.assign(new Error("Resolve remaining exceptions or explicitly approve unresolved skips before finalizing."), { statusCode: 409 });
+      }
+
+      const allowedStatuses = (allowUnresolvedSkips
+        ? ["ready_to_finalize", "completed_with_exceptions", "needs_review"]
+        : ["ready_to_finalize", "completed_with_exceptions"]) as CustomerContactImportBatch["status"][];
       const [lockedBatch] = await tx
         .update(customerContactImportBatches)
         .set({ status: "finalizing", lockedAt: new Date(), lockToken: crypto.randomUUID(), updatedAt: new Date() })
         .where(and(
           eq(customerContactImportBatches.organizationId, organizationId),
           eq(customerContactImportBatches.id, batchId),
-          inArray(customerContactImportBatches.status, ["ready_to_finalize", "completed_with_exceptions"]),
+          inArray(customerContactImportBatches.status, allowedStatuses),
         ))
         .returning();
 
@@ -861,7 +1070,7 @@ export class CustomerContactMigrationService {
       };
 
       for (const row of companyRows) {
-        if (row.status === "rejected") {
+        if (row.status === "rejected" || unresolvedCompanyStatuses.has(String(row.status))) {
           counts.rejectedRecords++;
           continue;
         }
@@ -924,7 +1133,7 @@ export class CustomerContactMigrationService {
       }
 
       for (const row of contactRows) {
-        if (row.status === "rejected") {
+        if (row.status === "rejected" || unresolvedContactStatuses.has(String(row.status))) {
           counts.rejectedRecords++;
           continue;
         }
@@ -978,7 +1187,7 @@ export class CustomerContactMigrationService {
       for (const row of relationshipRows) {
         const customerId = row.selectedCustomerId ?? (row.companyRecordId ? companyIdByRecord.get(row.companyRecordId) : null);
         const contactId = row.selectedContactId ?? (row.contactRecordId ? contactIdByRecord.get(row.contactRecordId) : null);
-        if (!customerId || !contactId || row.status === "ambiguous") {
+        if (!customerId || !contactId || row.status === "ambiguous" || row.status === "failed") {
           await tx.update(customerContactImportRelationshipRecords).set({ status: "skipped", errorMessage: "Relationship was not ready.", updatedAt: new Date() }).where(eq(customerContactImportRelationshipRecords.id, row.id));
           continue;
         }
@@ -1053,7 +1262,7 @@ export class CustomerContactMigrationService {
           status: finalStatus,
           finalizedByUserId: actorUserId,
           finalizedAt: new Date(),
-          summaryJson: { ...(lockedBatch.summaryJson as any), finalization: counts },
+          summaryJson: { ...(lockedBatch.summaryJson as any), finalization: counts, unresolvedSkipsApproved: allowUnresolvedSkips },
           updatedAt: new Date(),
         })
         .where(eq(customerContactImportBatches.id, batchId))

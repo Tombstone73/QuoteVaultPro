@@ -12,6 +12,7 @@ import {
   listCustomerContactMigrationBatches,
   listPlatformSeedOrganizations,
   retrieveCustomerContactMigrationQuickBooksSource,
+  saveCustomerContactMigrationReviewDecision,
   uploadCustomerContactMigrationQuickBooksSource,
   type CustomerContactMigrationBatch,
   type CustomerContactMigrationBatchDetail,
@@ -70,6 +71,8 @@ export default function CustomerContactMigrationPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [finalizeText, setFinalizeText] = useState("");
+  const [allowUnresolvedSkips, setAllowUnresolvedSkips] = useState(false);
+  const [manualEntityIds, setManualEntityIds] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!canAccess) return;
@@ -233,7 +236,7 @@ export default function CustomerContactMigrationPage() {
     setLoading(true);
     setMessage(null);
     try {
-      const { body, httpStatus } = await finalizeCustomerContactMigrationBatch(organizationId, detail.batch.id);
+      const { body, httpStatus } = await finalizeCustomerContactMigrationBatch(organizationId, detail.batch.id, allowUnresolvedSkips);
       if (!body.success) {
         setMessage(httpStatus === 401 ? "Step-up authentication is required before finalizing." : body.message ?? "Finalize failed.");
         return;
@@ -242,6 +245,37 @@ export default function CustomerContactMigrationPage() {
       await refreshBatches();
       await loadDetail(detail.batch.id);
       setFinalizeText("");
+      setAllowUnresolvedSkips(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveReviewDecision = async (
+    recordType: "company" | "contact",
+    recordId: string,
+    action: "accept_proposed" | "choose_existing" | "create_new" | "ignore",
+    selectedEntityId?: string,
+  ) => {
+    if (!detail) return;
+    setLoading(true);
+    setMessage(null);
+    try {
+      const { body } = await saveCustomerContactMigrationReviewDecision({
+        organizationId,
+        batchId: detail.batch.id,
+        recordType,
+        recordId,
+        action,
+        selectedEntityId,
+      });
+      if (!body.success || !body.data) {
+        setMessage(body.message ?? "Failed to save review decision.");
+        return;
+      }
+      setDetail(body.data);
+      await refreshBatches();
+      setMessage("Review decision saved.");
     } finally {
       setLoading(false);
     }
@@ -264,7 +298,18 @@ export default function CustomerContactMigrationPage() {
       countRows(detail.contactRows, ["ambiguous_person", "company_ambiguous", "company_missing", "failed"]) +
       countRows(detail.relationshipRows, ["ambiguous", "failed"])
     : 0;
-  const canFinalize = detail?.batch.status === "ready_to_finalize" || detail?.batch.status === "completed_with_exceptions";
+  const canFinalize = detail?.batch.status === "ready_to_finalize" ||
+    detail?.batch.status === "completed_with_exceptions" ||
+    (allowUnresolvedSkips && detail?.batch.status === "needs_review");
+  const finalizePreview = detail?.finalizePreview ?? {
+    companiesToCreate: 0,
+    companiesToUpdate: 0,
+    contactsToCreate: 0,
+    contactsToUpdate: 0,
+    relationshipsToCreate: 0,
+    relationshipsToUpdate: 0,
+    remainingUnresolved: unresolved,
+  };
 
   return (
     <div className="space-y-6 p-6">
@@ -494,6 +539,14 @@ export default function CustomerContactMigrationPage() {
                   ))}
                 </div>
 
+                <ExceptionReviewPanel
+                  detail={detail}
+                  manualEntityIds={manualEntityIds}
+                  setManualEntityIds={setManualEntityIds}
+                  onDecision={saveReviewDecision}
+                  loading={loading}
+                />
+
                 <div className="grid gap-4 lg:grid-cols-3">
                   <RecordPreview title="Company Records" rows={detail.companyRows} />
                   <RecordPreview title="Contact Records" rows={detail.contactRows} />
@@ -505,6 +558,33 @@ export default function CustomerContactMigrationPage() {
                     <CheckCircle2 className="h-4 w-4 text-primary" />
                     <div className="font-medium">Finalize</div>
                   </div>
+                  <div className="mb-4 grid gap-2 md:grid-cols-3 xl:grid-cols-7">
+                    {[
+                      ["Companies to create", finalizePreview.companiesToCreate],
+                      ["Companies to update", finalizePreview.companiesToUpdate],
+                      ["Contacts to create", finalizePreview.contactsToCreate],
+                      ["Contacts to update", finalizePreview.contactsToUpdate],
+                      ["Relationships to create", finalizePreview.relationshipsToCreate],
+                      ["Relationships to update", finalizePreview.relationshipsToUpdate],
+                      ["Remaining unresolved", finalizePreview.remainingUnresolved],
+                    ].map(([label, value]) => (
+                      <div key={String(label)} className="rounded-md border p-3">
+                        <div className="text-xs text-muted-foreground">{String(label)}</div>
+                        <div className="mt-1 text-lg font-semibold">{String(value ?? 0)}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {finalizePreview.remainingUnresolved > 0 && (
+                    <Label className="mb-3 flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={allowUnresolvedSkips}
+                        onChange={(event) => setAllowUnresolvedSkips(event.target.checked)}
+                        disabled={loading}
+                      />
+                      <span>Approve unresolved skips</span>
+                    </Label>
+                  )}
                   <div className="grid gap-3 md:grid-cols-[1fr_auto]">
                     <Input
                       placeholder="Type FINALIZE"
@@ -555,6 +635,170 @@ function RecordPreview({ title, rows }: { title: string; rows: Array<Record<stri
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function unresolvedCompanyRows(detail: CustomerContactMigrationBatchDetail) {
+  return detail.companyRows.filter((row) => ["ambiguous", "failed"].includes(String(row.status)));
+}
+
+function unresolvedContactRows(detail: CustomerContactMigrationBatchDetail) {
+  return detail.contactRows.filter((row) => ["ambiguous_person", "company_ambiguous", "company_missing", "failed"].includes(String(row.status)));
+}
+
+function sortedCandidates(row: Record<string, any>) {
+  return Array.isArray(row.matchCandidatesJson)
+    ? [...row.matchCandidatesJson].sort((a, b) => Number(b.score ?? 0) - Number(a.score ?? 0))
+    : [];
+}
+
+function sourceLabel(row: Record<string, any>) {
+  const normalized = row.normalizedJson ?? {};
+  return normalized.name || normalized.fullName || [normalized.firstName, normalized.lastName].filter(Boolean).join(" ") || row.sourceRecordId || row.id;
+}
+
+function ExceptionReviewPanel({
+  detail,
+  manualEntityIds,
+  setManualEntityIds,
+  onDecision,
+  loading,
+}: {
+  detail: CustomerContactMigrationBatchDetail;
+  manualEntityIds: Record<string, string>;
+  setManualEntityIds: (value: Record<string, string>) => void;
+  onDecision: (
+    recordType: "company" | "contact",
+    recordId: string,
+    action: "accept_proposed" | "choose_existing" | "create_new" | "ignore",
+    selectedEntityId?: string,
+  ) => Promise<void>;
+  loading: boolean;
+}) {
+  const companies = unresolvedCompanyRows(detail);
+  const contacts = unresolvedContactRows(detail);
+  const rows = [
+    ...companies.map((row) => ({ recordType: "company" as const, row })),
+    ...contacts.map((row) => ({ recordType: "contact" as const, row })),
+  ];
+
+  return (
+    <div className="rounded-md border">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
+        <div>
+          <div className="text-sm font-medium">Exception Review</div>
+          <div className="text-xs text-muted-foreground">Ambiguous companies and contacts</div>
+        </div>
+        <Badge variant={rows.length > 0 ? "destructive" : "default"}>{rows.length}</Badge>
+      </div>
+      {rows.length === 0 ? (
+        <div className="p-4 text-sm text-muted-foreground">No company or contact exceptions need review.</div>
+      ) : (
+        <div className="divide-y">
+          {rows.map(({ recordType, row }) => {
+            const candidates = sortedCandidates(row);
+            const proposed = candidates[0] ?? null;
+            const manualKey = `${recordType}:${row.id}`;
+            const warnings = Array.isArray(row.warningsJson) ? row.warningsJson : [];
+            return (
+              <div key={manualKey} className="space-y-3 p-4 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="font-medium">{recordType === "company" ? "Company" : "Contact"}: {sourceLabel(row)}</div>
+                    <div className="font-mono text-xs text-muted-foreground">{row.sourceRecordId || row.id}</div>
+                  </div>
+                  <Badge variant="destructive">{row.status}</Badge>
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-3">
+                  <div className="rounded-md border p-3">
+                    <div className="text-xs font-medium text-muted-foreground">Source record</div>
+                    <pre className="mt-2 max-h-44 overflow-auto rounded bg-muted p-2 text-[11px]">
+                      {JSON.stringify(row.normalizedJson ?? row.rawJson ?? {}, null, 2)}
+                    </pre>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <div className="text-xs font-medium text-muted-foreground">Proposed match</div>
+                    {proposed ? (
+                      <div className="mt-2 space-y-1">
+                        <div className="font-mono text-xs">{proposed.id}</div>
+                        <div>Score {String(proposed.score ?? "")}</div>
+                        <div>{String(proposed.reason ?? "")}</div>
+                      </div>
+                    ) : (
+                      <div className="mt-2 text-muted-foreground">No proposed match</div>
+                    )}
+                    <div className="mt-3 text-xs font-medium text-muted-foreground">Conflicting fields</div>
+                    <div className="mt-1 text-xs">{warnings.length > 0 ? warnings.join("; ") : "None recorded"}</div>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <div className="text-xs font-medium text-muted-foreground">All candidates</div>
+                    <div className="mt-2 max-h-44 space-y-2 overflow-auto">
+                      {candidates.length === 0 ? (
+                        <div className="text-muted-foreground">No candidates</div>
+                      ) : candidates.map((candidate: any) => (
+                        <div key={`${candidate.id}:${candidate.reason}`} className="rounded border p-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-mono text-xs">{candidate.id}</span>
+                            <Badge variant="outline">{String(candidate.score ?? "")}</Badge>
+                          </div>
+                          <div className="mt-1 text-xs">{String(candidate.reason ?? "")}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={loading || !proposed}
+                    onClick={() => onDecision(recordType, row.id, "accept_proposed")}
+                  >
+                    Accept proposed match
+                  </Button>
+                  <Input
+                    className="h-9 w-72"
+                    placeholder={recordType === "company" ? "Existing company ID" : "Existing contact ID"}
+                    value={manualEntityIds[manualKey] ?? ""}
+                    onChange={(event) => setManualEntityIds({ ...manualEntityIds, [manualKey]: event.target.value })}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={loading || !manualEntityIds[manualKey]?.trim()}
+                    onClick={() => onDecision(recordType, row.id, "choose_existing", manualEntityIds[manualKey]?.trim())}
+                  >
+                    Choose existing
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={loading}
+                    onClick={() => onDecision(recordType, row.id, "create_new")}
+                  >
+                    Create new {recordType}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={loading}
+                    onClick={() => onDecision(recordType, row.id, "ignore")}
+                  >
+                    Ignore source record
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
