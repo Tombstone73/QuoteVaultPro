@@ -4,12 +4,18 @@ import { db } from './db';
 import { oauthConnections, accountingSyncJobs, customers, customerContacts, customerContactLinks, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
 import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
-import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
 import { generateNextInvoiceNumber } from './invoicesService';
 import { buildDocumentNumberParts } from './services/documentNumberingService';
 import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHelpers';
 import { fetchAllQBEntities } from './lib/qbPaginationHelper';
 import { buildQuickBooksInvoiceLinePayloads } from './lib/downstreamEffectivePricing';
+import {
+  classifyQuickBooksCredentialError,
+  encryptQuickBooksTokenIfConfigured,
+  quickBooksCredentialManager,
+  type QuickBooksConnectionState,
+  type QuickBooksCredentialErrorCategory,
+} from './services/quickbooksCredentialManager';
 
 // Initialize QuickBooks OAuth client
 const getOAuthClient = (): any => {
@@ -102,6 +108,15 @@ function isTransientNetworkError(error: unknown): boolean {
   if (code.startsWith('UND_ERR_')) return true;
 
   return false;
+}
+
+function requireQuickBooksOrganizationId(organizationId: string | undefined | null, operation: string): string {
+  const orgId = String(organizationId ?? '').trim();
+  if (!orgId) {
+    console.error('[QuickBooks] Missing organizationId for tenant-scoped operation', { operation, errorCategory: 'tenant_context_missing' });
+    throw new Error(`QuickBooks ${operation} requires organizationId`);
+  }
+  return orgId;
 }
 
 async function setQuickBooksTransientHealthError(params: {
@@ -290,8 +305,8 @@ export function parseOAuthState(state: string | undefined | null): { organizatio
 /**
  * Get the active QuickBooks OAuth connection for the company
  */
-export async function getActiveConnection(organizationId?: string) {
-  const orgId = organizationId || DEFAULT_ORGANIZATION_ID;
+export async function getActiveConnection(organizationId: string) {
+  const orgId = requireQuickBooksOrganizationId(organizationId, 'getActiveConnection');
   const [connection] = await db
     .select()
     .from(oauthConnections)
@@ -306,19 +321,7 @@ export async function getActiveConnection(organizationId?: string) {
  * Generate OAuth authorization URL to redirect user to QuickBooks login
  */
 export async function getAuthorizationUrl(): Promise<string> {
-  const oauthClient = getOAuthClient();
-  if (!oauthClient) {
-    throw new Error('QuickBooks OAuth not configured');
-  }
-
-  const state = buildOAuthState(DEFAULT_ORGANIZATION_ID);
-
-  const authUrl = oauthClient.authorizeUri({
-    scope: [OAuthClient.scopes.Accounting, OAuthClient.scopes.OpenId],
-    state,
-  });
-
-  return authUrl;
+  throw new Error('QuickBooks authorization URL requires organizationId. Use getAuthorizationUrlForOrganization.');
 }
 
 export async function getAuthorizationUrlForOrganization(organizationId: string): Promise<string> {
@@ -327,7 +330,8 @@ export async function getAuthorizationUrlForOrganization(organizationId: string)
     throw new Error('QuickBooks OAuth not configured');
   }
 
-  const state = buildOAuthState(organizationId);
+  const orgId = requireQuickBooksOrganizationId(organizationId, 'getAuthorizationUrlForOrganization');
+  const state = buildOAuthState(orgId);
 
   const authUrl = oauthClient.authorizeUri({
     scope: [OAuthClient.scopes.Accounting, OAuthClient.scopes.OpenId],
@@ -336,7 +340,7 @@ export async function getAuthorizationUrlForOrganization(organizationId: string)
 
   if (qbLogsEnabled()) {
     console.log('[QB OAuth] Authorization URL generated', {
-      organizationId,
+      organizationId: orgId,
       state: state.slice(0, 20) + '...',
       environment: process.env.QUICKBOOKS_ENVIRONMENT || 'sandbox',
     });
@@ -358,7 +362,7 @@ export async function exchangeCodeForTokens(
     throw new Error('QuickBooks OAuth not configured');
   }
 
-  const orgId = organizationId || DEFAULT_ORGANIZATION_ID;
+  const orgId = requireQuickBooksOrganizationId(organizationId, 'exchangeCodeForTokens');
 
   // Debug logging for token exchange configuration (gated by DEBUG_QB_OAUTH)
   if (process.env.DEBUG_QB_OAUTH === 'true') {
@@ -425,8 +429,8 @@ export async function exchangeCodeForTokens(
   // Store new connection
   await db.insert(oauthConnections).values({
     provider: 'quickbooks',
-    accessToken: token.access_token,
-    refreshToken: token.refresh_token,
+    accessToken: encryptQuickBooksTokenIfConfigured(token.access_token),
+    refreshToken: encryptQuickBooksTokenIfConfigured(token.refresh_token),
     expiresAt: new Date(Date.now() + (token.expires_in || 3600) * 1000),
     companyId: realmId,
     organizationId: orgId,
@@ -446,187 +450,70 @@ export async function exchangeCodeForTokens(
  * Refresh access token using refresh token
  */
 export async function refreshAccessToken(): Promise<boolean> {
-  const connection = await getActiveConnection(DEFAULT_ORGANIZATION_ID);
-  if (!connection || !connection.refreshToken) {
-    return false;
-  }
-
-  const oauthClient = getOAuthClient();
-  if (!oauthClient) {
-    throw new Error('QuickBooks OAuth not configured');
-  }
-
-  try {
-    // Set the refresh token
-    oauthClient.setToken({
-      refresh_token: connection.refreshToken,
-    } as any);
-
-    // Refresh the token
-    const authResponse = await oauthClient.refresh();
-    const token = authResponse.token;
-
-    // Update stored connection
-    await db
-      .update(oauthConnections)
-      .set({
-        accessToken: token.access_token,
-        refreshToken: token.refresh_token,
-        expiresAt: new Date(Date.now() + (token.expires_in || 3600) * 1000),
-        updatedAt: new Date(),
-      })
-      .where(eq(oauthConnections.id, connection.id));
-
-    return true;
-  } catch (error) {
-    console.error('[QuickBooks] Token refresh failed:', error);
-    return false;
-  }
+  throw new Error('QuickBooks token refresh requires organizationId. Use refreshAccessTokenForOrganization.');
 }
 
 export async function refreshAccessTokenForOrganization(organizationId: string): Promise<boolean> {
-  const connection = await getActiveConnection(organizationId);
-  if (!connection || !connection.refreshToken) {
-    return false;
-  }
-
-  const qbAuth = getQuickBooksAuthMetadata(connection);
-  if (qbAuth?.state === 'needs_reauth') {
-    // Latch is set: do not attempt refresh and do not spam logs.
-    return false;
-  }
-
   const oauthClient = getOAuthClient();
   if (!oauthClient) {
     throw new Error('QuickBooks OAuth not configured');
   }
 
-  try {
-    oauthClient.setToken({
-      refresh_token: connection.refreshToken,
-    } as any);
+  const orgId = requireQuickBooksOrganizationId(organizationId, 'refreshAccessTokenForOrganization');
+  const refreshed = await quickBooksCredentialManager.getValidAccessToken(
+    orgId,
+    async (refreshToken) => {
+      oauthClient.setToken({
+        refresh_token: refreshToken,
+      } as any);
+      const authResponse = await oauthClient.refresh();
+      return authResponse.token;
+    },
+    { forceRefresh: true },
+  );
+  return Boolean(refreshed);
+}
 
-    const authResponse = await oauthClient.refresh();
-    const token = authResponse.token;
-
-    await db
-      .update(oauthConnections)
-      .set({
-        accessToken: token.access_token,
-        refreshToken: token.refresh_token,
-        expiresAt: new Date(Date.now() + (token.expires_in || 3600) * 1000),
-        updatedAt: new Date(),
-      })
-      .where(eq(oauthConnections.id, connection.id));
-
-    return true;
-  } catch (error) {
-    if (shouldLatchQuickBooksReauth(error)) {
-      try {
-        await latchQuickBooksNeedsReauth({ organizationId, connection, error });
-      } catch (latchError) {
-        console.error('[QuickBooks] Failed to latch needs_reauth:', {
-          organizationId,
-          message: (latchError as any)?.message || String(latchError),
-        });
-      }
-      return false;
-    }
-
-    console.error('[QuickBooks] Token refresh failed:', { organizationId, message: (error as any)?.message || String(error) });
-    return false;
+async function refreshQuickBooksCredentialsForRequest(organizationId: string, forceRefresh = false): Promise<string | null> {
+  const oauthClient = getOAuthClient();
+  if (!oauthClient) {
+    throw new Error('QuickBooks OAuth not configured');
   }
+  const orgId = requireQuickBooksOrganizationId(organizationId, 'refreshQuickBooksCredentialsForRequest');
+  return quickBooksCredentialManager.getValidAccessToken(
+    orgId,
+    async (refreshToken) => {
+      oauthClient.setToken({
+        refresh_token: refreshToken,
+      } as any);
+      const authResponse = await oauthClient.refresh();
+      return authResponse.token;
+    },
+    { forceRefresh },
+  );
 }
 
 /**
  * Get valid access token (refresh if needed)
  */
 export async function getValidAccessToken(): Promise<string | null> {
-  const connection = await getActiveConnection(DEFAULT_ORGANIZATION_ID);
-  if (!connection) {
-    return null;
-  }
-
-  // Check if token is expired or about to expire (within 5 minutes)
-  const now = new Date();
-  const expiresAt = connection.expiresAt ? new Date(connection.expiresAt) : null;
-  const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
-
-  if (!expiresAt || expiresAt <= fiveMinutesFromNow) {
-    console.log('[QuickBooks] Token expired or expiring soon, refreshing...');
-    const refreshed = await refreshAccessTokenForOrganization(connection.organizationId || DEFAULT_ORGANIZATION_ID);
-    if (!refreshed) {
-      return null;
-    }
-    // Re-fetch connection after refresh
-    const updatedConnection = await getActiveConnection(connection.organizationId || DEFAULT_ORGANIZATION_ID);
-    return updatedConnection?.accessToken || null;
-  }
-
-  return connection.accessToken;
+  throw new Error('QuickBooks access token lookup requires organizationId. Use getValidAccessTokenForOrganization.');
 }
 
 export async function getValidAccessTokenForOrganization(organizationId: string): Promise<string | null> {
-  const connection = await getActiveConnection(organizationId);
-  if (!connection) {
-    return null;
-  }
-
-  const qbAuth = getQuickBooksAuthMetadata(connection);
-  if (qbAuth?.state === 'needs_reauth') {
-    return null;
-  }
-
-  const now = new Date();
-  const expiresAt = connection.expiresAt ? new Date(connection.expiresAt) : null;
-  const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
-
-  if (!expiresAt || expiresAt <= fiveMinutesFromNow) {
-    if (qbLogsEnabled()) {
-      console.log('[QuickBooks] Token expired or expiring soon, refreshing...', { organizationId });
-    }
-    const refreshed = await refreshAccessTokenForOrganization(organizationId);
-    if (!refreshed) {
-      return null;
-    }
-    const updatedConnection = await getActiveConnection(organizationId);
-    return updatedConnection?.accessToken || null;
-  }
-
-  return connection.accessToken;
+  return refreshQuickBooksCredentialsForRequest(organizationId, false);
 }
 
 /**
  * Disconnect QuickBooks integration
  */
 export async function disconnectConnection(): Promise<void> {
-  const connection = await getActiveConnection(DEFAULT_ORGANIZATION_ID);
-  if (!connection) {
-    return;
-  }
-
-  const oauthClient = getOAuthClient();
-  if (oauthClient && connection.accessToken) {
-    try {
-      // Revoke tokens with QuickBooks
-      oauthClient.setToken({
-        access_token: connection.accessToken,
-        refresh_token: connection.refreshToken,
-      } as any);
-      await oauthClient.revoke();
-    } catch (error) {
-      console.error('[QuickBooks] Token revocation failed:', error);
-    }
-  }
-
-  // Delete from database
-  await db
-    .delete(oauthConnections)
-    .where(eq(oauthConnections.id, connection.id));
+  throw new Error('QuickBooks disconnect requires organizationId. Use disconnectConnectionForOrganization.');
 }
 
 export async function disconnectConnectionForOrganization(organizationId: string): Promise<void> {
-  const connection = await getActiveConnection(organizationId);
+  const orgId = requireQuickBooksOrganizationId(organizationId, 'disconnectConnectionForOrganization');
+  const connection = await quickBooksCredentialManager.loadCredentials(orgId);
   if (!connection) return;
 
   const oauthClient = getOAuthClient();
@@ -644,7 +531,7 @@ export async function disconnectConnectionForOrganization(organizationId: string
 
   await db
     .delete(oauthConnections)
-    .where(and(eq(oauthConnections.id, connection.id), eq(oauthConnections.organizationId, organizationId)));
+    .where(and(eq(oauthConnections.id, connection.id), eq(oauthConnections.organizationId, orgId)));
 }
 
 /**
@@ -654,20 +541,9 @@ export async function queueSyncJobs(
   direction: 'push' | 'pull',
   resources: Array<'customers' | 'invoices' | 'orders'>
 ): Promise<void> {
-  const connection = await getActiveConnection(DEFAULT_ORGANIZATION_ID);
-  if (!connection) {
-    throw new Error('QuickBooks not connected');
-  }
-
-  const jobs = resources.map((resource) => ({
-    provider: 'quickbooks' as const,
-    direction: direction as 'push' | 'pull',
-    resourceType: resource as 'customers' | 'invoices' | 'orders',
-    status: 'pending' as const,
-    organizationId: connection.organizationId || DEFAULT_ORGANIZATION_ID,
-  }));
-
-  await db.insert(accountingSyncJobs).values(jobs);
+  void direction;
+  void resources;
+  throw new Error('QuickBooks sync queueing requires organizationId. Use queueSyncJobsForOrganization.');
 }
 
 export async function queueSyncJobsForOrganization(
@@ -1007,7 +883,7 @@ async function makeQBRequest(
   body?: any,
   organizationId?: string
 ): Promise<any> {
-  const orgId = organizationId || DEFAULT_ORGANIZATION_ID;
+  const orgId = requireQuickBooksOrganizationId(organizationId, `makeQBRequest:${method}:${endpoint}`);
   const connection = await getActiveConnection(orgId);
   if (!connection) {
     throw new Error('QuickBooks not connected');
@@ -1037,12 +913,21 @@ async function makeQBRequest(
     options.body = JSON.stringify(body);
   }
 
+  const sendRequest = async (token: string) => fetch(url, {
+    ...options,
+    headers: {
+      ...options.headers,
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
   let response: Response;
   try {
-    response = await fetch(url, options);
+    response = await sendRequest(accessToken);
   } catch (error: any) {
     if (isTransientNetworkError(error)) {
       try {
+        await quickBooksCredentialManager.recordTransientFailure(orgId, 'transient_api_failure', error);
         await setQuickBooksTransientHealthError({ organizationId: orgId, connection, message: String(error?.message || error) });
       } catch (healthError) {
         console.error('[QuickBooks] Failed to record transient health error:', {
@@ -1052,6 +937,19 @@ async function makeQBRequest(
       }
     }
     throw error;
+  }
+
+  if (response.status === 401) {
+    console.warn('[QuickBooks] API returned 401; forcing one credential refresh and replay', {
+      organizationId: orgId,
+      endpoint,
+      method,
+      retryAttempt: 1,
+    });
+    const replayToken = await refreshQuickBooksCredentialsForRequest(orgId, true);
+    if (replayToken) {
+      response = await sendRequest(replayToken);
+    }
   }
 
   if (!response.ok) {
@@ -1099,8 +997,19 @@ async function makeQBRequest(
     const err: any = new Error(msg);
     err.statusCode = response.status;
 
+    if (response.status === 401) {
+      const category = classifyQuickBooksCredentialError(err);
+      if (category === 'invalid_grant') {
+        const latest = await quickBooksCredentialManager.loadCredentials(orgId);
+        if (latest) await quickBooksCredentialManager.markNeedsReauth(orgId, latest, err);
+      } else {
+        await quickBooksCredentialManager.recordTransientFailure(orgId, 'transient_api_failure', err);
+      }
+    }
+
     if (isTransientQuickBooksHttpStatus(response.status)) {
       try {
+        await quickBooksCredentialManager.recordTransientFailure(orgId, 'transient_api_failure', err);
         await setQuickBooksTransientHealthError({ organizationId: orgId, connection, message: msg });
       } catch (healthError) {
         console.error('[QuickBooks] Failed to record transient health error:', {
@@ -1117,6 +1026,7 @@ async function makeQBRequest(
 
   // Successful QB call: clear transient health banner state if present.
   try {
+    await quickBooksCredentialManager.recordSuccessfulRequest(orgId);
     await clearQuickBooksTransientHealth({ organizationId: orgId, connection });
   } catch (healthError) {
     console.error('[QuickBooks] Failed to clear transient health state:', {
@@ -1182,7 +1092,8 @@ async function ensureQBCustomerIdForLocalCustomer(organizationId: string, custom
  * Callers should catch errors and persist qb_last_error/qb_sync_status without blocking local transitions.
  */
 export async function syncSingleInvoiceToQuickBooks(invoiceId: string): Promise<{ qbInvoiceId: string }>{
-  return syncSingleInvoiceToQuickBooksForOrganization(DEFAULT_ORGANIZATION_ID, invoiceId);
+  void invoiceId;
+  throw new Error('QuickBooks invoice sync requires organizationId. Use syncSingleInvoiceToQuickBooksForOrganization.');
 }
 
 export async function syncSingleInvoiceToQuickBooksForOrganization(organizationId: string, invoiceId: string): Promise<{ qbInvoiceId: string }>{
@@ -1401,10 +1312,17 @@ export type QBCustomerPreviewRow = {
 
 export type QuickBooksCustomerMigrationSourceStatus = {
   connected: boolean;
+  state: QuickBooksConnectionState;
   authState: QuickBooksAuthState;
   healthState: QuickBooksHealthState;
   healthMessage?: string;
   lastErrorAt?: string;
+  lastErrorCode?: QuickBooksCredentialErrorCategory | null;
+  lastErrorMessage?: string | null;
+  lastSuccessfulRefreshAt?: string | null;
+  lastSuccessfulRequestAt?: string | null;
+  consecutiveTransientFailureCount?: number;
+  requiresUserAction?: boolean;
   connectedCompanyName: string | null;
   quickBooksCompanyId: string | null;
   connectedAt: Date | null;
@@ -1421,12 +1339,13 @@ function getQuickBooksConnectedCompanyName(connection: OAuthConnection | null): 
 }
 
 export async function getQuickBooksCustomerMigrationSourceStatus(organizationId: string): Promise<QuickBooksCustomerMigrationSourceStatus> {
-  const connection = await getActiveConnection(organizationId);
+  const orgId = requireQuickBooksOrganizationId(organizationId, 'getQuickBooksCustomerMigrationSourceStatus');
+  const connection = await getActiveConnection(orgId);
   const lastSuccessfulSync = await db
     .select({ updatedAt: accountingSyncJobs.updatedAt })
     .from(accountingSyncJobs)
     .where(and(
-      eq(accountingSyncJobs.organizationId, organizationId),
+      eq(accountingSyncJobs.organizationId, orgId),
       eq(accountingSyncJobs.provider, 'quickbooks'),
       eq(accountingSyncJobs.resourceType, 'customers'),
       eq(accountingSyncJobs.direction, 'pull'),
@@ -1435,11 +1354,13 @@ export async function getQuickBooksCustomerMigrationSourceStatus(organizationId:
     .orderBy(desc(accountingSyncJobs.updatedAt))
     .limit(1);
 
-  if (!connection || connection.organizationId !== organizationId) {
+  if (!connection || connection.organizationId !== orgId) {
     return {
       connected: false,
+      state: 'disconnected',
       authState: 'not_connected',
       healthState: 'ok',
+      requiresUserAction: false,
       connectedCompanyName: null,
       quickBooksCompanyId: null,
       connectedAt: null,
@@ -1450,18 +1371,24 @@ export async function getQuickBooksCustomerMigrationSourceStatus(organizationId:
 
   const qbAuth = getQuickBooksAuthMetadata(connection);
   const qbHealth = getQuickBooksHealthMetadata(connection);
+  const credentialStatus = await quickBooksCredentialManager.getStatus(orgId);
   const healthState = qbHealth?.state === 'transient_error' ? 'transient_error' : 'ok';
-  const authState: QuickBooksAuthState = qbAuth?.state === 'needs_reauth' ? 'needs_reauth' : 'connected';
-  const validToken = authState === 'connected'
-    ? await getValidAccessTokenForOrganization(organizationId)
-    : null;
+  const state = credentialStatus.state;
+  const authState: QuickBooksAuthState = state === 'needs_reauth' ? 'needs_reauth' : state === 'disconnected' ? 'not_connected' : 'connected';
 
   return {
-    connected: Boolean(validToken),
-    authState: validToken ? 'connected' : authState === 'needs_reauth' ? 'needs_reauth' : 'not_connected',
-    healthState,
-    healthMessage: qbHealth?.message ? String(qbHealth.message) : undefined,
-    lastErrorAt: qbHealth?.lastErrorAt ? String(qbHealth.lastErrorAt) : undefined,
+    connected: credentialStatus.connected,
+    state,
+    authState,
+    healthState: state === 'degraded' ? 'transient_error' : healthState,
+    healthMessage: credentialStatus.lastErrorMessage ?? (qbHealth?.message ? String(qbHealth.message) : undefined),
+    lastErrorAt: credentialStatus.lastErrorAt ?? (qbHealth?.lastErrorAt ? String(qbHealth.lastErrorAt) : undefined),
+    lastErrorCode: credentialStatus.lastErrorCode,
+    lastErrorMessage: credentialStatus.lastErrorMessage,
+    lastSuccessfulRefreshAt: credentialStatus.lastSuccessfulRefreshAt,
+    lastSuccessfulRequestAt: credentialStatus.lastSuccessfulRequestAt,
+    consecutiveTransientFailureCount: credentialStatus.consecutiveTransientFailureCount,
+    requiresUserAction: credentialStatus.requiresUserAction,
     connectedCompanyName: getQuickBooksConnectedCompanyName(connection),
     quickBooksCompanyId: connection.companyId ?? null,
     connectedAt: connection.createdAt ?? null,
@@ -1882,9 +1809,10 @@ export async function processPullCustomers(jobId: string, organizationId: string
 /**
  * Process push sync: Push local customers to QuickBooks
  */
-export async function processPushCustomers(jobId: string): Promise<void> {
+export async function processPushCustomers(jobId: string, organizationId: string): Promise<void> {
+  const orgId = requireQuickBooksOrganizationId(organizationId, 'processPushCustomers');
   try {
-    console.log(`[QB Push Customers] Starting job ${jobId}`);
+    console.log(`[QB Push Customers] Starting job ${jobId}`, { organizationId: orgId });
 
     // Update job status to processing
     await db
@@ -1897,9 +1825,12 @@ export async function processPushCustomers(jobId: string): Promise<void> {
       .select()
       .from(customers)
       .where(
-        or(
-          isNull(customers.externalAccountingId),
-          eq(customers.syncStatus, 'pending')
+        and(
+          eq(customers.organizationId, orgId),
+          or(
+            isNull(customers.externalAccountingId),
+            eq(customers.syncStatus, 'pending')
+          )
         )
       );
 
@@ -1918,17 +1849,19 @@ export async function processPushCustomers(jobId: string): Promise<void> {
           // First fetch to get SyncToken
           const existing = await makeQBRequest(
             'GET',
-            `/customer/${customer.externalAccountingId}`
+            `/customer/${customer.externalAccountingId}`,
+            undefined,
+            orgId,
           );
           qbCustomerData.Id = customer.externalAccountingId;
           qbCustomerData.SyncToken = existing.Customer.SyncToken;
 
-          const response = await makeQBRequest('POST', '/customer', qbCustomerData);
+          const response = await makeQBRequest('POST', '/customer', qbCustomerData, orgId);
           qbCustomer = response.Customer;
           console.log(`[QB Push Customers] Updated QB customer: ${customer.companyName}`);
         } else {
           // Create new QB customer
-          const response = await makeQBRequest('POST', '/customer', qbCustomerData);
+          const response = await makeQBRequest('POST', '/customer', qbCustomerData, orgId);
           qbCustomer = response.Customer;
           console.log(`[QB Push Customers] Created QB customer: ${customer.companyName}`);
         }
@@ -2131,9 +2064,10 @@ export async function processPullInvoices(jobId: string, organizationId: string)
 /**
  * Process push sync: Push local invoices to QuickBooks
  */
-export async function processPushInvoices(jobId: string): Promise<void> {
+export async function processPushInvoices(jobId: string, organizationId: string): Promise<void> {
+  const orgId = requireQuickBooksOrganizationId(organizationId, 'processPushInvoices');
   try {
-    console.log(`[QB Push Invoices] Starting job ${jobId}`);
+    console.log(`[QB Push Invoices] Starting job ${jobId}`, { organizationId: orgId });
 
     await db
       .update(accountingSyncJobs)
@@ -2145,6 +2079,7 @@ export async function processPushInvoices(jobId: string): Promise<void> {
       .from(invoices)
       .where(
         and(
+          eq(invoices.organizationId, orgId),
           sql`lower(${invoices.status}) <> 'draft'`,
           or(
             isNull(invoices.externalAccountingId),
@@ -2164,7 +2099,7 @@ export async function processPushInvoices(jobId: string): Promise<void> {
         const [customer] = await db
           .select()
           .from(customers)
-          .where(eq(customers.id, invoice.customerId))
+          .where(and(eq(customers.id, invoice.customerId), eq(customers.organizationId, orgId)))
           .limit(1);
 
         if (!customer?.externalAccountingId) {
@@ -2182,14 +2117,14 @@ export async function processPushInvoices(jobId: string): Promise<void> {
         let qbInvoice;
         if (invoice.externalAccountingId) {
           // Update existing
-          const existing = await makeQBRequest('GET', `/invoice/${invoice.externalAccountingId}`);
+          const existing = await makeQBRequest('GET', `/invoice/${invoice.externalAccountingId}`, undefined, orgId);
           qbInvoiceData.Id = invoice.externalAccountingId;
           qbInvoiceData.SyncToken = existing.Invoice.SyncToken;
-          const response = await makeQBRequest('POST', '/invoice', qbInvoiceData);
+          const response = await makeQBRequest('POST', '/invoice', qbInvoiceData, orgId);
           qbInvoice = response.Invoice;
         } else {
           // Create new
-          const response = await makeQBRequest('POST', '/invoice', qbInvoiceData);
+          const response = await makeQBRequest('POST', '/invoice', qbInvoiceData, orgId);
           qbInvoice = response.Invoice;
         }
 
@@ -2250,9 +2185,10 @@ function mapQBInvoiceStatus(qbStatus: string): string {
 /**
  * Process pull sync: Fetch orders/sales receipts from QuickBooks
  */
-export async function processPullOrders(jobId: string): Promise<void> {
+export async function processPullOrders(jobId: string, organizationId: string): Promise<void> {
+  const orgId = requireQuickBooksOrganizationId(organizationId, 'processPullOrders');
   try {
-    console.log(`[QB Pull Orders] Starting job ${jobId}`);
+    console.log(`[QB Pull Orders] Starting job ${jobId}`, { organizationId: orgId });
 
     await db
       .update(accountingSyncJobs)
@@ -2263,7 +2199,7 @@ export async function processPullOrders(jobId: string): Promise<void> {
     const qbSalesReceipts = await fetchAllQBEntities(
       'SalesReceipt',
       'SELECT * FROM SalesReceipt',
-      (q) => makeQBRequest('GET', `/query?query=${encodeURIComponent(q)}`),
+      (q) => makeQBRequest('GET', `/query?query=${encodeURIComponent(q)}`, undefined, orgId),
     );
     console.log(`[QB Pull Orders] Fetched ${qbSalesReceipts.length} QuickBooks sales receipts`);
 
@@ -2300,7 +2236,7 @@ export async function processPullOrders(jobId: string): Promise<void> {
           const [matchedCustomer] = await db
             .select()
             .from(customers)
-            .where(eq(customers.externalAccountingId, qbReceipt.CustomerRef.value))
+            .where(and(eq(customers.organizationId, orgId), eq(customers.externalAccountingId, qbReceipt.CustomerRef.value)))
             .limit(1);
 
           if (matchedCustomer) {
@@ -2317,7 +2253,7 @@ export async function processPullOrders(jobId: string): Promise<void> {
         const [existing] = await db
           .select()
           .from(orders)
-          .where(eq(orders.externalAccountingId, qbReceipt.Id))
+          .where(and(eq(orders.organizationId, orgId), eq(orders.externalAccountingId, qbReceipt.Id)))
           .limit(1);
 
         if (existing) {
@@ -2376,9 +2312,10 @@ export async function processPullOrders(jobId: string): Promise<void> {
 /**
  * Process push sync: Push local orders to QuickBooks as SalesReceipts
  */
-export async function processPushOrders(jobId: string): Promise<void> {
+export async function processPushOrders(jobId: string, organizationId: string): Promise<void> {
+  const orgId = requireQuickBooksOrganizationId(organizationId, 'processPushOrders');
   try {
-    console.log(`[QB Push Orders] Starting job ${jobId}`);
+    console.log(`[QB Push Orders] Starting job ${jobId}`, { organizationId: orgId });
 
     await db
       .update(accountingSyncJobs)
@@ -2391,6 +2328,7 @@ export async function processPushOrders(jobId: string): Promise<void> {
       .from(orders)
       .where(
         and(
+          eq(orders.organizationId, orgId),
           or(
             isNull(orders.externalAccountingId),
             eq(orders.syncStatus, 'pending')
@@ -2409,7 +2347,7 @@ export async function processPushOrders(jobId: string): Promise<void> {
         const [customer] = await db
           .select()
           .from(customers)
-          .where(eq(customers.id, order.customerId))
+          .where(and(eq(customers.id, order.customerId), eq(customers.organizationId, orgId)))
           .limit(1);
 
         if (!customer?.externalAccountingId) {
@@ -2423,7 +2361,7 @@ export async function processPushOrders(jobId: string): Promise<void> {
           Line: [], // Would need line items
         };
 
-        const response = await makeQBRequest('POST', '/salesreceipt', qbReceiptData);
+        const response = await makeQBRequest('POST', '/salesreceipt', qbReceiptData, orgId);
         const qbReceipt = response.SalesReceipt;
 
         await db

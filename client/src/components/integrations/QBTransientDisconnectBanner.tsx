@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
 
 type QBStatusLike = {
+  state?: string;
   authState?: string;
   healthState?: string;
   healthMessage?: string;
@@ -70,10 +71,11 @@ export function QBTransientDisconnectBanner(props: {
   }, [storageKey, snoozeUntilMs]);
 
   const authState = qbStatus?.authState || "";
+  const state = qbStatus?.state || "";
   const healthState = qbStatus?.healthState || "";
   const snoozed = !!snoozeUntilMs && snoozeUntilMs > Date.now();
 
-  const shouldShow = authState === "connected" && healthState === "transient_error" && !snoozed;
+  const shouldShow = (state === "degraded" || (authState === "connected" && healthState === "transient_error")) && !snoozed;
   if (!shouldShow) return null;
 
   const onDismiss = (hours: number) => {

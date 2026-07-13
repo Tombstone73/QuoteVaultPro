@@ -90,10 +90,17 @@ export interface CustomerContactMigrationBatchDetail {
 
 export interface CustomerContactQuickBooksSourceStatus {
   connected: boolean;
+  state: "connected" | "refreshing" | "degraded" | "needs_reauth" | "disconnected";
   authState: "connected" | "not_connected" | "needs_reauth";
   healthState: "ok" | "transient_error";
   healthMessage?: string;
   lastErrorAt?: string;
+  lastErrorCode?: string | null;
+  lastErrorMessage?: string | null;
+  lastSuccessfulRefreshAt?: string | null;
+  lastSuccessfulRequestAt?: string | null;
+  consecutiveTransientFailureCount?: number;
+  requiresUserAction?: boolean;
   connectedCompanyName?: string | null;
   quickBooksCompanyId?: string | null;
   connectedAt?: string | null;

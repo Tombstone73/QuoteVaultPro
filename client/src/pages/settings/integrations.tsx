@@ -53,10 +53,17 @@ import { format } from "date-fns";
 
 type QBConnectionStatus = {
   connected: boolean;
+  state?: 'connected' | 'refreshing' | 'degraded' | 'needs_reauth' | 'disconnected' | string;
   authState?: 'connected' | 'not_connected' | 'needs_reauth' | string;
   healthState?: 'ok' | 'transient_error' | string;
   healthMessage?: string;
   lastErrorAt?: string;
+  lastErrorCode?: string | null;
+  lastErrorMessage?: string | null;
+  lastSuccessfulRefreshAt?: string | null;
+  lastSuccessfulRequestAt?: string | null;
+  consecutiveTransientFailureCount?: number;
+  requiresUserAction?: boolean;
   companyId?: string;
   connectedAt?: string;
   expiresAt?: string;
@@ -353,7 +360,9 @@ export default function SettingsIntegrations() {
   });
 
   const qbAuthState = qbStatus?.authState ?? (qbStatus?.connected ? 'connected' : 'not_connected');
-  const qbNeedsReauth = qbAuthState === 'needs_reauth';
+  const qbNeedsReauth = qbStatus?.requiresUserAction === true || qbAuthState === 'needs_reauth' || qbStatus?.state === 'needs_reauth';
+  const qbConnectionState = qbStatus?.state ?? (qbNeedsReauth ? 'needs_reauth' : qbStatus?.connected ? 'connected' : 'disconnected');
+  const qbDegraded = qbConnectionState === 'degraded' || qbStatus?.healthState === 'transient_error';
 
   const { data: qbQueue } = useQuery<QBSyncQueueEnvelope>({
     queryKey: ["/api/integrations/quickbooks/queue"],
@@ -979,6 +988,11 @@ export default function SettingsIntegrations() {
                 <Badge variant="destructive">
                   <AlertCircle className="w-3 h-3 mr-1" />
                   Reauth Required
+                </Badge>
+              ) : qbDegraded ? (
+                <Badge variant="outline" className="border-amber-500 text-amber-700">
+                  <AlertCircle className="w-3 h-3 mr-1" />
+                  Temporarily Unavailable
                 </Badge>
               ) : qbStatus?.connected ? (
                 <Badge className="bg-green-500">
