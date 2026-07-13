@@ -89,7 +89,10 @@ type CompanySourceDraft = {
 
 export type CompanySourceConsolidationSummary = {
   quickBooksInfoFloCompanyMatches: number;
+  quickBooksOnlyCompanies: number;
+  infoFloOnlyCompanies: number;
   ambiguousCompanyMatches: number;
+  rejectedCompanies: number;
   unmatchedQuickBooksCompanies: number;
   unmatchedInfoFloCompanies: number;
 };
@@ -384,6 +387,28 @@ function companySourcesLikelySame(infoFlo: NormalizedCompanySource, quickBooks: 
   return false;
 }
 
+const SYSTEM_COMPANY_NAME_PATTERNS = [
+  /\btest\b/i,
+  /\bfake\b/i,
+  /\bsample\b/i,
+  /\bdummy\b/i,
+  /\bsystem\b/i,
+  /\binfoflo\s+support\b/i,
+];
+
+function validateInfoFloCompanySource(source: NormalizedCompanySource): string[] {
+  const warnings: string[] = [];
+  const name = String(source.name ?? "").trim();
+  const normalizedName = normalizeCompanyName(name);
+  if (!name || !normalizedName) {
+    warnings.push("InfoFlo company name is blank or malformed.");
+  }
+  if (SYSTEM_COMPANY_NAME_PATTERNS.some((pattern) => pattern.test(name))) {
+    warnings.push("InfoFlo company appears to be a system/test record.");
+  }
+  return warnings;
+}
+
 function mergeCompanySources(
   quickBooks: NormalizedCompanySource & { permanentPatch: Record<string, unknown> },
   infoFlo: NormalizedCompanySource & { permanentPatch: Record<string, unknown>; proofEmail?: string | null },
@@ -426,9 +451,29 @@ export function buildConsolidatedCompanySourceDrafts(
   let quickBooksInfoFloCompanyMatches = 0;
   let ambiguousCompanyMatches = 0;
   let unmatchedInfoFloCompanies = 0;
+  let rejectedCompanies = 0;
 
   for (const raw of infoFloCompanyRows) {
     const normalized = normalizeInfoFloCompany(raw);
+    const validationWarnings = validateInfoFloCompanySource(normalized);
+    if (validationWarnings.length > 0) {
+      rejectedCompanies++;
+      drafts.push({
+        sourceSystem: "infoflo",
+        sourceRecordId: normalized.sourceRecordId ?? null,
+        quickBooksCustomerId: normalized.quickBooksCustomerId ?? null,
+        rawJson: raw,
+        normalized,
+        warnings: validationWarnings,
+        forcedMatch: {
+          status: "rejected",
+          candidates: [],
+          warnings: validationWarnings,
+        },
+      });
+      continue;
+    }
+
     const candidates = quickBooksDrafts
       .map((quickBooks, index) => ({ ...quickBooks, index }))
       .filter((quickBooks) => companySourcesLikelySame(normalized, quickBooks.normalized));
@@ -499,7 +544,10 @@ export function buildConsolidatedCompanySourceDrafts(
     drafts,
     summary: {
       quickBooksInfoFloCompanyMatches,
+      quickBooksOnlyCompanies: quickBooksCustomers.length - matchedQuickBooksIndexes.size,
+      infoFloOnlyCompanies: unmatchedInfoFloCompanies,
       ambiguousCompanyMatches,
+      rejectedCompanies,
       unmatchedQuickBooksCompanies: quickBooksCustomers.length - matchedQuickBooksIndexes.size,
       unmatchedInfoFloCompanies,
     },
@@ -742,6 +790,7 @@ export class CustomerContactMigrationService {
         const draft = companySourceConsolidation.drafts[index];
         const normalized = draft.normalized;
         const match = draft.forcedMatch ?? matchCompany(normalized, existingCompanies, identities);
+        const warnings = [...draft.warnings, ...match.warnings];
         companyValues.push({
           organizationId: input.organizationId,
           batchId: batch.id,
@@ -755,8 +804,8 @@ export class CustomerContactMigrationService {
           normalizedJson: normalized,
           matchCandidatesJson: match.candidates,
           proposedChangesJson: compactPatch(normalized.permanentPatch),
-          warningsJson: [...draft.warnings, ...match.warnings],
-          errorMessage: match.status === "rejected" ? match.warnings.join("; ") : null,
+          warningsJson: warnings,
+          errorMessage: match.status === "rejected" ? warnings.join("; ") : null,
           updatedAt: new Date(),
         });
       }
@@ -878,8 +927,13 @@ export class CustomerContactMigrationService {
         stagedRelationships: relationshipValues.length,
         unresolved,
         quickBooksInfoFloCompanyMatches: companySourceConsolidation.summary.quickBooksInfoFloCompanyMatches,
+        matchedQuickBooksInfoFloCompanies: companySourceConsolidation.summary.quickBooksInfoFloCompanyMatches,
+        quickBooksOnlyCompanies: companySourceConsolidation.summary.quickBooksOnlyCompanies,
+        infoFloOnlyCompanies: companySourceConsolidation.summary.infoFloOnlyCompanies,
         trueNewCompanies: companyValues.filter((row) => row.status === "new_company").length,
         ambiguousCompanyMatches: companyValues.filter((row) => row.status === "ambiguous").length,
+        ambiguousCompanies: companyValues.filter((row) => row.status === "ambiguous").length,
+        rejectedCompanies: companyValues.filter((row) => row.status === "rejected").length,
         unmatchedQuickBooksCompanies: companySourceConsolidation.summary.unmatchedQuickBooksCompanies,
         unmatchedInfoFloCompanies: companySourceConsolidation.summary.unmatchedInfoFloCompanies,
         quickBooksSource: qbSourceSummary,
