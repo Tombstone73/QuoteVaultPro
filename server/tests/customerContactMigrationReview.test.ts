@@ -44,6 +44,27 @@ describe("customer/contact migration review decisions", () => {
     expect(contactPatch.reviewDecisionJson).toMatchObject({ action: "ignore" });
   });
 
+  test("merge duplicate company decision resolves to the selected survivor company", () => {
+    const patch = buildCompanyReviewPatch({
+      status: "ambiguous",
+      matchCandidatesJson: [
+        { id: "cust_duplicate_a", score: 82, reason: "Ambiguous normalized company name" },
+        { id: "cust_duplicate_b", score: 82, reason: "Ambiguous normalized company name" },
+      ],
+    }, { action: "merge_duplicate", selectedEntityId: "cust_duplicate_a", actorUserId: "platform_dev" });
+
+    expect(patch).toMatchObject({
+      status: "matched_existing",
+      selectedCustomerId: "cust_duplicate_a",
+      errorMessage: null,
+    });
+    expect(patch.reviewDecisionJson).toMatchObject({
+      action: "merge_duplicate",
+      selectedEntityId: "cust_duplicate_a",
+      decidedByUserId: "platform_dev",
+    });
+  });
+
   test("finalize preview counts remaining unresolved separately from planned writes", () => {
     const batch = {
       companyRows: [

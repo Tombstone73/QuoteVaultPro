@@ -73,6 +73,10 @@ export interface CustomerContactMigrationBatchDetail {
   companyRows: Array<Record<string, any>>;
   contactRows: Array<Record<string, any>>;
   relationshipRows: Array<Record<string, any>>;
+  reviewContext?: {
+    companyCandidates?: Record<string, any>;
+    contactCandidates?: Record<string, any>;
+  };
   finalizePreview?: {
     companiesToCreate: number;
     companiesToUpdate: number;
@@ -376,7 +380,7 @@ export async function saveCustomerContactMigrationReviewDecision(payload: {
   batchId: string;
   recordType: "company" | "contact";
   recordId: string;
-  action: "accept_proposed" | "choose_existing" | "create_new" | "ignore";
+  action: "accept_proposed" | "choose_existing" | "create_new" | "merge_duplicate" | "ignore";
   selectedEntityId?: string;
 }): Promise<{
   httpStatus: number;

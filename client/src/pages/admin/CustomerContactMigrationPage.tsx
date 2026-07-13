@@ -254,7 +254,7 @@ export default function CustomerContactMigrationPage() {
   const saveReviewDecision = async (
     recordType: "company" | "contact",
     recordId: string,
-    action: "accept_proposed" | "choose_existing" | "create_new" | "ignore",
+    action: "accept_proposed" | "choose_existing" | "create_new" | "merge_duplicate" | "ignore",
     selectedEntityId?: string,
   ) => {
     if (!detail) return;
@@ -275,7 +275,7 @@ export default function CustomerContactMigrationPage() {
       }
       setDetail(body.data);
       await refreshBatches();
-      setMessage("Review decision saved.");
+      setMessage("Review decision saved; resolved rows leave the active queue after refresh.");
     } finally {
       setLoading(false);
     }
@@ -647,6 +647,14 @@ function unresolvedContactRows(detail: CustomerContactMigrationBatchDetail) {
   return detail.contactRows.filter((row) => ["ambiguous_person", "company_missing", "failed"].includes(String(row.status)));
 }
 
+function unresolvedRelationshipRows(detail: CustomerContactMigrationBatchDetail) {
+  return detail.relationshipRows.filter((row) => ["ambiguous", "failed"].includes(String(row.status)));
+}
+
+function resolvedReviewRows(rows: Array<Record<string, any>>, unresolvedStatuses: string[]) {
+  return rows.filter((row) => Boolean(row.reviewDecisionJson) || (!unresolvedStatuses.includes(String(row.status)) && String(row.status) !== "pending"));
+}
+
 function sortedCandidates(row: Record<string, any>) {
   return Array.isArray(row.matchCandidatesJson)
     ? [...row.matchCandidatesJson].sort((a, b) => Number(b.score ?? 0) - Number(a.score ?? 0))
@@ -656,6 +664,132 @@ function sortedCandidates(row: Record<string, any>) {
 function sourceLabel(row: Record<string, any>) {
   const normalized = row.normalizedJson ?? {};
   return normalized.name || normalized.fullName || [normalized.firstName, normalized.lastName].filter(Boolean).join(" ") || row.sourceRecordId || row.id;
+}
+
+function valueOrDash(value: unknown) {
+  const text = String(value ?? "").trim();
+  return text || "-";
+}
+
+function addressLine(record: Record<string, any>, prefix = "") {
+  return [record[`${prefix}Street1`] ?? record.street1, record[`${prefix}Street2`] ?? record.street2].filter(Boolean).join(", ");
+}
+
+function cityStateLine(record: Record<string, any>, prefix = "") {
+  return [record[`${prefix}City`] ?? record.city, record[`${prefix}State`] ?? record.state, record[`${prefix}PostalCode`] ?? record.postalCode].filter(Boolean).join(" ");
+}
+
+function candidateReasonParts(reason: unknown) {
+  const text = String(reason ?? "").trim();
+  if (!text) return ["No reason recorded"];
+  const lower = text.toLowerCase();
+  const factors = ["normalized name", "email domain", "phone", "address", "quickbooks", "infoflo", "relationship", "email", "mobile"]
+    .filter((factor) => lower.includes(factor));
+  return factors.length > 0 ? factors : [text];
+}
+
+function FieldRows({ rows }: { rows: Array<[string, unknown]> }) {
+  return (
+    <div className="divide-y rounded-md border">
+      {rows.map(([label, value]) => (
+        <div key={label} className="grid gap-1 p-2 text-xs md:grid-cols-[150px_minmax(0,1fr)]">
+          <div className="font-medium text-muted-foreground">{label}</div>
+          <div className="break-words">{valueOrDash(value)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CandidateComparison({
+  recordType,
+  row,
+  candidate,
+  detail,
+}: {
+  recordType: "company" | "contact";
+  row: Record<string, any>;
+  candidate: Record<string, any> | null;
+  detail: CustomerContactMigrationBatchDetail;
+}) {
+  if (!candidate) return null;
+  const source = row.normalizedJson ?? {};
+  const companyCandidate = recordType === "company" ? detail.reviewContext?.companyCandidates?.[candidate.id] : null;
+  const contactCandidate = recordType === "contact" ? detail.reviewContext?.contactCandidates?.[candidate.id] : null;
+  const existing = companyCandidate ?? contactCandidate;
+
+  const sourceRows: Array<[string, unknown]> = recordType === "company"
+    ? [
+      ["Company name", source.name],
+      ["QuickBooks ID", source.quickBooksCustomerId],
+      ["Existing customer ID", row.selectedCustomerId],
+      ["Address", source.street1],
+      ["City/State", [source.city, source.state, source.postalCode].filter(Boolean).join(" ")],
+      ["Phone", source.phone],
+      ["Email", source.email],
+      ["Payment terms", (row.rawJson?.quickBooks?.TermRef as any)?.name ?? source.paymentTerms],
+      ["Source system(s)", row.sourceSystem],
+      ["External identity mappings", [source.sourceRecordId, source.quickBooksCustomerId].filter(Boolean).join(", ")],
+    ]
+    : [
+      ["Name", source.fullName || [source.firstName, source.lastName].filter(Boolean).join(" ")],
+      ["Email", source.email],
+      ["Phone", source.phone || source.mobile],
+      ["Current linked companies", source.companyName],
+      ["Source system(s)", row.sourceSystem],
+      ["External identity mappings", source.sourceRecordId],
+    ];
+
+  const existingRows: Array<[string, unknown]> = recordType === "company"
+    ? [
+      ["Company name", existing?.companyName],
+      ["QuickBooks ID", existing?.externalAccountingId],
+      ["Existing customer ID", existing?.id ?? candidate.id],
+      ["Address", addressLine(existing ?? {}, "billing") || addressLine(existing ?? {}, "shipping")],
+      ["City/State", cityStateLine(existing ?? {}, "billing") || cityStateLine(existing ?? {}, "shipping")],
+      ["Phone", existing?.phone],
+      ["Email", existing?.email],
+      ["Payment terms", existing?.paymentTerms],
+      ["Existing contacts", (existing?.existingContacts ?? []).map((contact: any) => [contact.firstName, contact.lastName].filter(Boolean).join(" ")).filter(Boolean).join(", ")],
+      ["Source system(s)", (existing?.sourceSystems ?? []).join(", ")],
+      ["External identity mappings", (existing?.externalIdentityMappings ?? []).map((identity: any) => `${identity.sourceSystem}:${identity.sourceRecordId}`).join(", ")],
+    ]
+    : [
+      ["Name", existing ? [existing.firstName, existing.lastName].filter(Boolean).join(" ") : candidate.id],
+      ["Email", existing?.email],
+      ["Phone", existing?.phone || existing?.mobile],
+      ["Current linked companies", (existing?.linkedCompanies ?? []).map((company: any) => company.companyName).filter(Boolean).join(", ")],
+      ["Source system(s)", (existing?.sourceSystems ?? []).join(", ")],
+      ["External identity mappings", (existing?.externalIdentityMappings ?? []).map((identity: any) => `${identity.sourceSystem}:${identity.sourceRecordId}`).join(", ")],
+    ];
+
+  return (
+    <div className="rounded-md border bg-muted/20 p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs font-medium text-muted-foreground">Side-by-side candidate comparison</div>
+        <Badge variant="outline">Score {String(candidate.score ?? "")}</Badge>
+      </div>
+      <div className="grid gap-3 xl:grid-cols-2">
+        <div>
+          <div className="mb-1 text-xs font-medium">Source record</div>
+          <FieldRows rows={sourceRows} />
+        </div>
+        <div>
+          <div className="mb-1 text-xs font-medium">Candidate</div>
+          <FieldRows rows={existingRows} />
+        </div>
+      </div>
+      <div className="mt-3">
+        <div className="text-xs font-medium text-muted-foreground">Why this candidate matched</div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {candidateReasonParts(candidate.reason).map((part) => (
+            <Badge key={part} variant="secondary">{part}</Badge>
+          ))}
+        </div>
+        <div className="mt-2 text-xs text-muted-foreground">{String(candidate.reason ?? "")}</div>
+      </div>
+    </div>
+  );
 }
 
 function ExceptionReviewPanel({
@@ -671,13 +805,21 @@ function ExceptionReviewPanel({
   onDecision: (
     recordType: "company" | "contact",
     recordId: string,
-    action: "accept_proposed" | "choose_existing" | "create_new" | "ignore",
+    action: "accept_proposed" | "choose_existing" | "create_new" | "merge_duplicate" | "ignore",
     selectedEntityId?: string,
   ) => Promise<void>;
   loading: boolean;
 }) {
+  const [filter, setFilter] = useState<"unresolved" | "company" | "contact" | "relationship" | "resolved">("unresolved");
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState<Record<string, string>>({});
   const companies = unresolvedCompanyRows(detail);
   const contacts = unresolvedContactRows(detail);
+  const relationships = unresolvedRelationshipRows(detail);
+  const resolvedRows = [
+    ...resolvedReviewRows(detail.companyRows, ["ambiguous", "failed"]).map((row) => ({ recordType: "company" as const, row, isResolved: true })),
+    ...resolvedReviewRows(detail.contactRows, ["ambiguous_person", "company_missing", "failed"]).map((row) => ({ recordType: "contact" as const, row, isResolved: true })),
+    ...resolvedReviewRows(detail.relationshipRows, ["ambiguous", "failed"]).map((row) => ({ recordType: "relationship" as const, row, isResolved: true })),
+  ];
   const contactById = new Map(detail.contactRows.map((row) => [row.id, row]));
   const relationshipsByCompanyId = new Map<string, Array<Record<string, any>>>();
   for (const relationship of detail.relationshipRows) {
@@ -687,13 +829,29 @@ function ExceptionReviewPanel({
     relationshipsByCompanyId.set(relationship.companyRecordId, companyRelationships);
   }
   const rows = [
-    ...companies.map((row) => ({ recordType: "company" as const, row })),
-    ...contacts.map((row) => ({ recordType: "contact" as const, row })),
+    ...companies.map((row) => ({ recordType: "company" as const, row, isResolved: false })),
+    ...contacts.map((row) => ({ recordType: "contact" as const, row, isResolved: false })),
+    ...relationships.map((row) => ({ recordType: "relationship" as const, row, isResolved: false })),
   ];
+  const visibleRows = filter === "resolved"
+    ? resolvedRows
+    : rows.filter((entry) =>
+      filter === "unresolved" ||
+      (filter === "company" && entry.recordType === "company") ||
+      (filter === "contact" && entry.recordType === "contact") ||
+      (filter === "relationship" && entry.recordType === "relationship")
+    );
   const dependentContactCount = companies.reduce((count, company) => {
     const relationships = relationshipsByCompanyId.get(company.id) ?? [];
     return count + relationships.filter((relationship) => relationship.contactRecordId && contactById.has(relationship.contactRecordId)).length;
   }, 0);
+  const filters = [
+    ["unresolved", `Unresolved (${rows.length})`],
+    ["company", `Company exceptions (${companies.length})`],
+    ["contact", `Contact exceptions (${contacts.length})`],
+    ["relationship", `Relationship exceptions (${relationships.length})`],
+    ["resolved", `Resolved (${resolvedRows.length})`],
+  ] as const;
 
   return (
     <div className="rounded-md border">
@@ -707,14 +865,29 @@ function ExceptionReviewPanel({
           {dependentContactCount > 0 ? <Badge variant="outline">{dependentContactCount} dependent contacts</Badge> : null}
         </div>
       </div>
-      {rows.length === 0 ? (
-        <div className="p-4 text-sm text-muted-foreground">No company or contact exceptions need review.</div>
+      <div className="flex flex-wrap gap-2 border-b p-3">
+        {filters.map(([value, label]) => (
+          <Button
+            key={value}
+            type="button"
+            size="sm"
+            variant={filter === value ? "secondary" : "outline"}
+            onClick={() => setFilter(value)}
+          >
+            {label}
+          </Button>
+        ))}
+      </div>
+      {visibleRows.length === 0 ? (
+        <div className="p-4 text-sm text-muted-foreground">No records match this review filter.</div>
       ) : (
         <div className="divide-y">
-          {rows.map(({ recordType, row }) => {
+          {visibleRows.map(({ recordType, row, isResolved }) => {
             const candidates = sortedCandidates(row);
             const proposed = candidates[0] ?? null;
             const manualKey = `${recordType}:${row.id}`;
+            const selectedCandidateId = selectedCandidateIds[manualKey] ?? proposed?.id ?? "";
+            const selectedCandidate = candidates.find((candidate: any) => candidate.id === selectedCandidateId) ?? proposed;
             const warnings = Array.isArray(row.warningsJson) ? row.warningsJson : [];
             const dependentContacts = recordType === "company"
               ? (relationshipsByCompanyId.get(row.id) ?? [])
@@ -722,13 +895,13 @@ function ExceptionReviewPanel({
                 .filter((contact): contact is Record<string, any> => Boolean(contact))
               : [];
             return (
-              <div key={manualKey} className="space-y-3 p-4 text-sm">
+              <div key={manualKey} className="space-y-3 p-4 text-sm transition-all duration-300 ease-in-out">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <div className="font-medium">{recordType === "company" ? "Company" : "Contact"}: {sourceLabel(row)}</div>
+                    <div className="font-medium">{recordType === "company" ? "Company" : recordType === "contact" ? "Contact" : "Relationship"}: {sourceLabel(row)}</div>
                     <div className="font-mono text-xs text-muted-foreground">{row.sourceRecordId || row.id}</div>
                   </div>
-                  <Badge variant="destructive">{row.status}</Badge>
+                  <Badge variant={isResolved ? "default" : "destructive"}>{row.status}</Badge>
                 </div>
 
                 <div className="grid gap-3 lg:grid-cols-3">
@@ -758,17 +931,26 @@ function ExceptionReviewPanel({
                       {candidates.length === 0 ? (
                         <div className="text-muted-foreground">No candidates</div>
                       ) : candidates.map((candidate: any) => (
-                        <div key={`${candidate.id}:${candidate.reason}`} className="rounded border p-2">
+                        <button
+                          key={`${candidate.id}:${candidate.reason}`}
+                          type="button"
+                          className={`w-full rounded border p-2 text-left transition-colors hover:bg-muted ${selectedCandidateId === candidate.id ? "border-primary bg-primary/5" : ""}`}
+                          onClick={() => setSelectedCandidateIds({ ...selectedCandidateIds, [manualKey]: candidate.id })}
+                        >
                           <div className="flex items-center justify-between gap-2">
                             <span className="font-mono text-xs">{candidate.id}</span>
                             <Badge variant="outline">{String(candidate.score ?? "")}</Badge>
                           </div>
                           <div className="mt-1 text-xs">{String(candidate.reason ?? "")}</div>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   </div>
                 </div>
+
+                {(recordType === "company" || recordType === "contact") && selectedCandidate ? (
+                  <CandidateComparison recordType={recordType} row={row} candidate={selectedCandidate} detail={detail} />
+                ) : null}
 
                 {dependentContacts.length > 0 ? (
                   <div className="rounded-md border p-3">
@@ -788,16 +970,34 @@ function ExceptionReviewPanel({
                   </div>
                 ) : null}
 
+                {recordType === "relationship" ? (
+                  <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+                    Resolve the related company or contact exception to refresh this relationship.
+                  </div>
+                ) : null}
+
+                {recordType !== "relationship" && !isResolved ? (
                 <div className="flex flex-wrap items-center gap-2">
                   <Button
                     type="button"
                     size="sm"
                     variant="secondary"
-                    disabled={loading || !proposed}
-                    onClick={() => onDecision(recordType, row.id, "accept_proposed")}
+                    disabled={loading || !selectedCandidate}
+                    onClick={() => selectedCandidate && onDecision(recordType, row.id, "choose_existing", selectedCandidate.id)}
                   >
-                    Accept proposed match
+                    {recordType === "company" ? "Accept candidate" : "Link existing contact"}
                   </Button>
+                  {recordType === "company" ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={loading || !selectedCandidate}
+                      onClick={() => selectedCandidate && onDecision("company", row.id, "merge_duplicate", selectedCandidate.id)}
+                    >
+                      Merge duplicate companies
+                    </Button>
+                  ) : null}
                   <Input
                     className="h-9 w-72"
                     placeholder={recordType === "company" ? "Existing company ID" : "Existing contact ID"}
@@ -811,7 +1011,7 @@ function ExceptionReviewPanel({
                     disabled={loading || !manualEntityIds[manualKey]?.trim()}
                     onClick={() => onDecision(recordType, row.id, "choose_existing", manualEntityIds[manualKey]?.trim())}
                   >
-                    Choose existing
+                    Override by ID
                   </Button>
                   <Button
                     type="button"
@@ -832,6 +1032,7 @@ function ExceptionReviewPanel({
                     Ignore source record
                   </Button>
                 </div>
+                ) : null}
               </div>
             );
           })}
