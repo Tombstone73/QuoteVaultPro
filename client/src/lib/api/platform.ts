@@ -73,6 +73,15 @@ export interface CustomerContactMigrationBatchDetail {
   companyRows: Array<Record<string, any>>;
   contactRows: Array<Record<string, any>>;
   relationshipRows: Array<Record<string, any>>;
+  finalizePreview?: {
+    companiesToCreate: number;
+    companiesToUpdate: number;
+    contactsToCreate: number;
+    contactsToUpdate: number;
+    relationshipsToCreate: number;
+    relationshipsToUpdate: number;
+    remainingUnresolved: number;
+  };
 }
 
 export interface CustomerContactQuickBooksSourceStatus {
@@ -348,6 +357,7 @@ export async function getCustomerContactMigrationBatch(organizationId: string, b
 export async function finalizeCustomerContactMigrationBatch(
   organizationId: string,
   batchId: string,
+  allowUnresolvedSkips = false,
 ): Promise<{
   httpStatus: number;
   body: { success: boolean; data?: { batch: CustomerContactMigrationBatch; counts: Record<string, number> }; message?: string; code?: string };
@@ -355,6 +365,29 @@ export async function finalizeCustomerContactMigrationBatch(
   const res = await postJson(`/api/platform/customer-contact-migrations/${encodeURIComponent(batchId)}/finalize`, {
     organizationId,
     confirmation: "FINALIZE",
+    allowUnresolvedSkips,
+  });
+  const body = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export async function saveCustomerContactMigrationReviewDecision(payload: {
+  organizationId: string;
+  batchId: string;
+  recordType: "company" | "contact";
+  recordId: string;
+  action: "accept_proposed" | "choose_existing" | "create_new" | "ignore";
+  selectedEntityId?: string;
+}): Promise<{
+  httpStatus: number;
+  body: { success: boolean; data?: CustomerContactMigrationBatchDetail; message?: string };
+}> {
+  const res = await postJson(`/api/platform/customer-contact-migrations/${encodeURIComponent(payload.batchId)}/review-decision`, {
+    organizationId: payload.organizationId,
+    recordType: payload.recordType,
+    recordId: payload.recordId,
+    action: payload.action,
+    selectedEntityId: payload.selectedEntityId,
   });
   const body = await res.json();
   return { httpStatus: res.status, body };

@@ -252,6 +252,15 @@ const migrationBatchParamsSchema = z.object({
 const migrationBatchFinalizeSchema = z.object({
   organizationId: z.string().min(1),
   confirmation: z.literal("FINALIZE"),
+  allowUnresolvedSkips: z.boolean().optional(),
+});
+
+const migrationReviewDecisionSchema = z.object({
+  organizationId: z.string().min(1),
+  recordType: z.enum(["company", "contact"]),
+  recordId: z.string().min(1),
+  action: z.enum(["accept_proposed", "choose_existing", "create_new", "ignore"]),
+  selectedEntityId: z.string().min(1).optional(),
 });
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -742,6 +751,48 @@ export function registerPlatformRoutes(app: import("express").Express): void {
     }
   });
 
+  router.post("/customer-contact-migrations/:batchId/review-decision", requirePlatformOperatorOr404, async (req: Request, res: Response) => {
+    const params = migrationBatchParamsSchema.safeParse(req.params);
+    const body = migrationReviewDecisionSchema.safeParse(req.body);
+    if (!params.success) return res.status(400).json({ success: false, message: "Invalid batch ID." });
+    if (!body.success) return res.status(400).json({ success: false, message: body.error.issues[0]?.message ?? "Invalid review decision." });
+    const actorUserId = getUserId(req.user);
+    if (!actorUserId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    try {
+      await customerContactMigrationService.applyReviewDecision({
+        organizationId: body.data.organizationId,
+        batchId: params.data.batchId,
+        recordType: body.data.recordType,
+        recordId: body.data.recordId,
+        action: body.data.action,
+        selectedEntityId: body.data.selectedEntityId,
+        actorUserId,
+      });
+
+      const batch = await customerContactMigrationService.getBatch(body.data.organizationId, params.data.batchId);
+      await writePlatformAuditLog({
+        action: "customer_contact_migration.review_decision",
+        actorUserId,
+        actorEmail: (req.user as any)?.email ?? "unknown",
+        req,
+        orgId: body.data.organizationId,
+        metadata: {
+          batchId: params.data.batchId,
+          recordType: body.data.recordType,
+          recordId: body.data.recordId,
+          decision: body.data.action,
+          selectedEntityId: body.data.selectedEntityId,
+        },
+      });
+      return res.json({ success: true, data: batch });
+    } catch (error: any) {
+      const status = error?.statusCode ?? 500;
+      console.error("[platform/customer-contact-migrations] review decision error:", error);
+      return res.status(status).json({ success: false, message: error?.message ?? "Failed to save review decision." });
+    }
+  });
+
   router.post(
     "/customer-contact-migrations/:batchId/finalize",
     requirePlatformOperatorOr404,
@@ -760,6 +811,7 @@ export function registerPlatformRoutes(app: import("express").Express): void {
           params.data.batchId,
           actorUserId,
           body.data.confirmation,
+          body.data.allowUnresolvedSkips === true,
         );
 
         await writePlatformAuditLog({
