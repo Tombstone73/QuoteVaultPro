@@ -790,41 +790,11 @@ export function registerPlatformRoutes(app: import("express").Express): void {
     const batch = await customerContactMigrationService.getBatch(organizationId, params.data.batchId);
     if (!batch) return res.status(404).json({ success: false, message: "Migration batch not found." });
 
-    const rows =
-      kind === "completed-mappings"
-        ? [
-            ...batch.companyRows.filter((row) => row.status === "imported").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, entityId: row.selectedCustomerId })),
-            ...batch.contactRows.filter((row) => row.status === "imported").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, entityId: row.selectedContactId })),
-            ...batch.relationshipRows.filter((row) => row.status === "created" || row.status === "updated").map((row) => ({ type: "relationship", sourceRecordId: row.sourceRecordId, linkId: row.selectedLinkId, customerId: row.selectedCustomerId, contactId: row.selectedContactId })),
-          ]
-        : kind === "exceptions"
-          ? [
-              ...batch.companyRows.filter((row) => row.status === "ambiguous" || row.status === "failed").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, status: row.status, error: row.errorMessage, warnings: row.warningsJson })),
-              ...batch.contactRows.filter((row) => row.status.includes("ambiguous") || row.status === "failed" || row.status === "company_missing").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, status: row.status, error: row.errorMessage, warnings: row.warningsJson })),
-              ...batch.relationshipRows.filter((row) => row.status === "ambiguous" || row.status === "failed" || row.status === "skipped").map((row) => ({ type: "relationship", sourceRecordId: row.sourceRecordId, status: row.status, error: row.errorMessage, warnings: row.warningsJson })),
-            ]
-          : kind === "rejected-records"
-            ? [
-                ...batch.companyRows.filter((row) => row.status === "rejected").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
-                ...batch.contactRows.filter((row) => row.status === "rejected").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
-              ]
-            : kind === "conflicts"
-              ? [
-                  ...batch.companyRows.filter((row) => row.status === "ambiguous").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, candidates: row.matchCandidatesJson })),
-                  ...batch.contactRows.filter((row) => row.status === "ambiguous_person" || row.status === "company_ambiguous").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, candidates: row.matchCandidatesJson })),
-                ]
-              : kind === "failed-records"
-                ? [
-                    ...batch.companyRows.filter((row) => row.status === "failed").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
-                    ...batch.contactRows.filter((row) => row.status === "failed").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
-                    ...batch.relationshipRows.filter((row) => row.status === "failed").map((row) => ({ type: "relationship", sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
-                  ]
-                : null;
-
-    if (!rows) return res.status(400).json({ success: false, message: "Unknown report kind." });
-    res.setHeader("content-type", "text/csv; charset=utf-8");
-    res.setHeader("content-disposition", `attachment; filename="${kind}-${params.data.batchId}.csv"`);
-    return res.send(customerContactMigrationService.buildCsvReport(rows));
+    const report = customerContactMigrationService.buildReportCsv(kind, params.data.batchId, batch);
+    if (!report) return res.status(400).json({ success: false, message: "Unknown report kind." });
+    res.setHeader("Content-Type", report.contentType);
+    res.setHeader("Content-Disposition", report.contentDisposition);
+    return res.send(report.body);
   });
 
   /**
