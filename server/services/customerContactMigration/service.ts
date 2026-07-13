@@ -41,7 +41,7 @@ import {
 type DbClient = typeof db;
 type CsvReportKind = "completed-mappings" | "exceptions" | "rejected-records" | "conflicts" | "failed-records";
 type ReviewRecordType = "company" | "contact";
-type ReviewDecisionAction = "accept_proposed" | "choose_existing" | "create_new" | "ignore";
+type ReviewDecisionAction = "accept_proposed" | "choose_existing" | "create_new" | "merge_duplicate" | "ignore";
 
 const csvReportHeaders: Record<CsvReportKind, string[]> = {
   "completed-mappings": ["type", "rowNumber", "sourceRecordId", "entityId", "linkId", "customerId", "contactId"],
@@ -341,6 +341,10 @@ export function buildCompanyReviewPatch(row: Record<string, any>, decision: Pick
   }
   if (decision.action === "choose_existing") {
     if (!decision.selectedEntityId) throw Object.assign(new Error("selectedEntityId is required."), { statusCode: 400 });
+    return { status: "matched_existing", selectedCustomerId: decision.selectedEntityId, reviewDecisionJson, errorMessage: null };
+  }
+  if (decision.action === "merge_duplicate") {
+    if (!decision.selectedEntityId) throw Object.assign(new Error("selectedEntityId is required for duplicate company merge decisions."), { statusCode: 400 });
     return { status: "matched_existing", selectedCustomerId: decision.selectedEntityId, reviewDecisionJson, errorMessage: null };
   }
   if (decision.action === "create_new") {
@@ -764,6 +768,122 @@ async function loadContactLikes(dbClient: DbClient, organizationId: string): Pro
   }));
 }
 
+function candidateIdsFromRows(rows: Array<{ matchCandidatesJson?: unknown; selectedCustomerId?: string | null; selectedContactId?: string | null }>, selectedKey: "selectedCustomerId" | "selectedContactId") {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (row[selectedKey]) ids.add(String(row[selectedKey]));
+    const candidates = Array.isArray(row.matchCandidatesJson) ? row.matchCandidatesJson as Array<Record<string, unknown>> : [];
+    for (const candidate of candidates) {
+      if (typeof candidate.id === "string" && candidate.id.trim()) ids.add(candidate.id.trim());
+    }
+  }
+  return Array.from(ids);
+}
+
+async function buildBatchReviewContext(
+  dbClient: DbClient,
+  organizationId: string,
+  batch: {
+    companyRows: Array<{ matchCandidatesJson?: unknown; selectedCustomerId?: string | null }>;
+    contactRows: Array<{ matchCandidatesJson?: unknown; selectedContactId?: string | null }>;
+  },
+) {
+  const companyCandidateIds = candidateIdsFromRows(batch.companyRows, "selectedCustomerId");
+  const contactCandidateIds = candidateIdsFromRows(batch.contactRows, "selectedContactId");
+  const allCandidateIds = Array.from(new Set([...companyCandidateIds, ...contactCandidateIds]));
+
+  const [companyCandidates, contactCandidates, companyContactLinks, contactCompanyLinks, identityRows] = await Promise.all([
+    companyCandidateIds.length > 0
+      ? dbClient.select().from(customers).where(and(eq(customers.organizationId, organizationId), inArray(customers.id, companyCandidateIds)))
+      : Promise.resolve([]),
+    contactCandidateIds.length > 0
+      ? dbClient.select().from(customerContacts).where(and(eq(customerContacts.organizationId, organizationId), inArray(customerContacts.id, contactCandidateIds)))
+      : Promise.resolve([]),
+    companyCandidateIds.length > 0
+      ? dbClient
+        .select({
+          customerId: customerContactLinks.customerId,
+          contactId: customerContacts.id,
+          firstName: customerContacts.firstName,
+          lastName: customerContacts.lastName,
+          email: customerContacts.email,
+          phone: customerContacts.phone,
+          mobile: customerContacts.mobile,
+          role: customerContactLinks.role,
+          status: customerContactLinks.status,
+          isPrimary: customerContactLinks.isPrimary,
+          isBilling: customerContactLinks.isBilling,
+          isProof: customerContactLinks.isProof,
+        })
+        .from(customerContactLinks)
+        .innerJoin(customerContacts, eq(customerContacts.id, customerContactLinks.contactId))
+        .where(and(eq(customerContactLinks.organizationId, organizationId), inArray(customerContactLinks.customerId, companyCandidateIds), sql`${customerContactLinks.status} <> 'removed'`))
+      : Promise.resolve([]),
+    contactCandidateIds.length > 0
+      ? dbClient
+        .select({
+          contactId: customerContactLinks.contactId,
+          customerId: customers.id,
+          companyName: customers.companyName,
+          role: customerContactLinks.role,
+          status: customerContactLinks.status,
+          isPrimary: customerContactLinks.isPrimary,
+          isBilling: customerContactLinks.isBilling,
+          isProof: customerContactLinks.isProof,
+        })
+        .from(customerContactLinks)
+        .innerJoin(customers, eq(customers.id, customerContactLinks.customerId))
+        .where(and(eq(customerContactLinks.organizationId, organizationId), inArray(customerContactLinks.contactId, contactCandidateIds), sql`${customerContactLinks.status} <> 'removed'`))
+      : Promise.resolve([]),
+    allCandidateIds.length > 0
+      ? dbClient.select().from(externalIdentityMappings).where(and(eq(externalIdentityMappings.organizationId, organizationId), inArray(externalIdentityMappings.entityId, allCandidateIds)))
+      : Promise.resolve([]),
+  ]);
+
+  const contactsByCustomerId = new Map<string, any[]>();
+  for (const link of companyContactLinks as any[]) {
+    const rows = contactsByCustomerId.get(link.customerId) ?? [];
+    rows.push(link);
+    contactsByCustomerId.set(link.customerId, rows);
+  }
+
+  const companiesByContactId = new Map<string, any[]>();
+  for (const link of contactCompanyLinks as any[]) {
+    const rows = companiesByContactId.get(link.contactId) ?? [];
+    rows.push(link);
+    companiesByContactId.set(link.contactId, rows);
+  }
+
+  const identitiesByEntityId = new Map<string, any[]>();
+  for (const identity of identityRows as any[]) {
+    const rows = identitiesByEntityId.get(identity.entityId) ?? [];
+    rows.push(identity);
+    identitiesByEntityId.set(identity.entityId, rows);
+  }
+
+  return {
+    companyCandidates: Object.fromEntries((companyCandidates as any[]).map((company) => [
+      company.id,
+      {
+        ...company,
+        paymentTerms: (company as any).paymentTerms ?? null,
+        existingContacts: contactsByCustomerId.get(company.id) ?? [],
+        externalIdentityMappings: identitiesByEntityId.get(company.id) ?? [],
+        sourceSystems: Array.from(new Set((identitiesByEntityId.get(company.id) ?? []).map((identity) => identity.sourceSystem))),
+      },
+    ])),
+    contactCandidates: Object.fromEntries((contactCandidates as any[]).map((contact) => [
+      contact.id,
+      {
+        ...contact,
+        linkedCompanies: companiesByContactId.get(contact.id) ?? [],
+        externalIdentityMappings: identitiesByEntityId.get(contact.id) ?? [],
+        sourceSystems: Array.from(new Set((identitiesByEntityId.get(contact.id) ?? []).map((identity) => identity.sourceSystem))),
+      },
+    ])),
+  };
+}
+
 async function upsertExternalIdentity(
   tx: any,
   args: {
@@ -1144,7 +1264,8 @@ export class CustomerContactMigrationService {
       this.dbClient.select().from(customerContactImportContactRecords).where(eq(customerContactImportContactRecords.batchId, batch.id)).orderBy(customerContactImportContactRecords.rowNumber),
       this.dbClient.select().from(customerContactImportRelationshipRecords).where(eq(customerContactImportRelationshipRecords.batchId, batch.id)).orderBy(customerContactImportRelationshipRecords.createdAt),
     ]);
-    return { batch, companyRows, contactRows, relationshipRows, finalizePreview: buildFinalizePreviewCounts({ companyRows, contactRows, relationshipRows }) };
+    const reviewContext = await buildBatchReviewContext(this.dbClient, organizationId, { companyRows, contactRows });
+    return { batch, companyRows, contactRows, relationshipRows, finalizePreview: buildFinalizePreviewCounts({ companyRows, contactRows, relationshipRows }), reviewContext };
   }
 
   private async refreshBatchReviewState(tx: any, organizationId: string, batchId: string) {

@@ -259,7 +259,7 @@ const migrationReviewDecisionSchema = z.object({
   organizationId: z.string().min(1),
   recordType: z.enum(["company", "contact"]),
   recordId: z.string().min(1),
-  action: z.enum(["accept_proposed", "choose_existing", "create_new", "ignore"]),
+  action: z.enum(["accept_proposed", "choose_existing", "create_new", "merge_duplicate", "ignore"]),
   selectedEntityId: z.string().min(1).optional(),
 });
 
