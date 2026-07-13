@@ -38,6 +38,15 @@ import {
 } from "./matching";
 
 type DbClient = typeof db;
+type CsvReportKind = "completed-mappings" | "exceptions" | "rejected-records" | "conflicts" | "failed-records";
+
+const csvReportHeaders: Record<CsvReportKind, string[]> = {
+  "completed-mappings": ["type", "rowNumber", "sourceRecordId", "entityId", "linkId", "customerId", "contactId"],
+  exceptions: ["type", "rowNumber", "sourceRecordId", "status", "error", "warnings"],
+  "rejected-records": ["type", "rowNumber", "sourceRecordId", "error"],
+  conflicts: ["type", "rowNumber", "sourceRecordId", "candidates"],
+  "failed-records": ["type", "rowNumber", "sourceRecordId", "error"],
+};
 
 export interface QuickBooksCustomerSource {
   Id?: string;
@@ -925,17 +934,65 @@ export class CustomerContactMigrationService {
     });
   }
 
-  buildCsvReport(rows: Array<Record<string, unknown>>): string {
-    const headers = Array.from(rows.reduce((set, row) => {
-      Object.keys(row).forEach((key) => set.add(key));
-      return set;
-    }, new Set<string>()));
-    if (headers.length === 0) return "";
+  buildReportRows(kind: CsvReportKind, batch: Awaited<ReturnType<CustomerContactMigrationService["getBatch"]>>): Array<Record<string, unknown>> {
+    if (!batch) return [];
+    if (kind === "completed-mappings") {
+      return [
+        ...batch.companyRows.filter((row) => row.status === "imported").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, entityId: row.selectedCustomerId })),
+        ...batch.contactRows.filter((row) => row.status === "imported").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, entityId: row.selectedContactId })),
+        ...batch.relationshipRows.filter((row) => row.status === "created" || row.status === "updated").map((row) => ({ type: "relationship", sourceRecordId: row.sourceRecordId, linkId: row.selectedLinkId, customerId: row.selectedCustomerId, contactId: row.selectedContactId })),
+      ];
+    }
+    if (kind === "exceptions") {
+      return [
+        ...batch.companyRows.filter((row) => row.status === "ambiguous" || row.status === "failed").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, status: row.status, error: row.errorMessage, warnings: row.warningsJson })),
+        ...batch.contactRows.filter((row) => row.status.includes("ambiguous") || row.status === "failed" || row.status === "company_missing").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, status: row.status, error: row.errorMessage, warnings: row.warningsJson })),
+        ...batch.relationshipRows.filter((row) => row.status === "ambiguous" || row.status === "failed" || row.status === "skipped").map((row) => ({ type: "relationship", sourceRecordId: row.sourceRecordId, status: row.status, error: row.errorMessage, warnings: row.warningsJson })),
+      ];
+    }
+    if (kind === "rejected-records") {
+      return [
+        ...batch.companyRows.filter((row) => row.status === "rejected").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
+        ...batch.contactRows.filter((row) => row.status === "rejected").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
+      ];
+    }
+    if (kind === "conflicts") {
+      return [
+        ...batch.companyRows.filter((row) => row.status === "ambiguous").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, candidates: row.matchCandidatesJson })),
+        ...batch.contactRows.filter((row) => row.status === "ambiguous_person" || row.status === "company_ambiguous").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, candidates: row.matchCandidatesJson })),
+      ];
+    }
+    return [
+      ...batch.companyRows.filter((row) => row.status === "failed").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
+      ...batch.contactRows.filter((row) => row.status === "failed").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
+      ...batch.relationshipRows.filter((row) => row.status === "failed").map((row) => ({ type: "relationship", sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
+    ];
+  }
+
+  buildCsvReport(rows: Array<Record<string, unknown>>, headers: string[]): string {
+    const orderedHeaders = headers.length > 0
+      ? headers
+      : Array.from(rows.reduce((set, row) => {
+          Object.keys(row).forEach((key) => set.add(key));
+          return set;
+        }, new Set<string>()));
     const escape = (value: unknown) => {
       const text = typeof value === "object" && value !== null ? JSON.stringify(value) : String(value ?? "");
       return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
     };
-    return [headers.join(","), ...rows.map((row) => headers.map((header) => escape(row[header])).join(","))].join("\n");
+    return [orderedHeaders.join(","), ...rows.map((row) => orderedHeaders.map((header) => escape(row[header])).join(","))].join("\r\n") + "\r\n";
+  }
+
+  buildReportCsv(kind: string, batchId: string, batch: Awaited<ReturnType<CustomerContactMigrationService["getBatch"]>>) {
+    if (!(kind in csvReportHeaders)) return null;
+    const reportKind = kind as CsvReportKind;
+    const rows = this.buildReportRows(reportKind, batch);
+    return {
+      body: this.buildCsvReport(rows, csvReportHeaders[reportKind]),
+      contentType: "text/csv; charset=utf-8",
+      contentDisposition: `attachment; filename="${reportKind}-${batchId}.csv"`,
+      rowCount: rows.length,
+    };
   }
 }
 
