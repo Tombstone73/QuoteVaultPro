@@ -736,6 +736,13 @@
       "when": 1784160000000,
       "tag": "0109_customer_contact_migration_workflow",
       "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1784246400000,
+      "tag": "0110_customer_contact_migration_qb_source_snapshots",
+      "breakpoints": true
     }
   ]
 }

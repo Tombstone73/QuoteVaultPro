@@ -7,12 +7,19 @@ import {
   customerContactImportCompanyRecords,
   customerContactImportContactRecords,
   customerContactImportRelationshipRecords,
+  customerContactQuickBooksSourceSnapshots,
   customerContactLinks,
   customerContacts,
   customers,
   externalIdentityMappings,
   type CustomerContactImportBatch,
+  type CustomerContactQuickBooksSourceSnapshot,
 } from "@shared/schema";
+import {
+  fetchQBCustomersForMigrationSource,
+  getQuickBooksCustomerMigrationSourceStatus,
+  type QuickBooksCustomerMigrationSourceStatus,
+} from "../../quickbooksService";
 import { parseBool, parseCsvOrThrow, parseNum } from "../../utils/csvImportUtils";
 import {
   emailDomain,
@@ -49,6 +56,7 @@ export interface CreateMigrationBatchInput {
   organizationId: string;
   actorUserId: string;
   sourceLabel?: string | null;
+  quickBooksSourceSnapshotId?: string | null;
   quickBooksCustomers?: QuickBooksCustomerSource[];
   qbSourceLabel?: string | null;
   infoFloCompanyCsv?: string | null;
@@ -321,10 +329,113 @@ async function upsertExternalIdentity(
 export class CustomerContactMigrationService {
   constructor(private readonly dbClient: DbClient = db) {}
 
+  async getQuickBooksSourceStatus(organizationId: string): Promise<QuickBooksCustomerMigrationSourceStatus> {
+    return getQuickBooksCustomerMigrationSourceStatus(organizationId);
+  }
+
+  async retrieveQuickBooksSourceSnapshot(input: { organizationId: string; actorUserId: string }) {
+    const result = await fetchQBCustomersForMigrationSource(input.organizationId);
+    const [snapshot] = await this.dbClient
+      .insert(customerContactQuickBooksSourceSnapshots)
+      .values({
+        organizationId: input.organizationId,
+        sourceMode: "live",
+        status: "ready",
+        connectedCompanyName: result.status.connectedCompanyName,
+        quickBooksCompanyId: result.status.quickBooksCompanyId,
+        lastSuccessfulSyncAt: result.status.lastSuccessfulSyncAt,
+        retrievedCount: result.customers.length,
+        rawCustomersJson: result.customers,
+        createdByUserId: input.actorUserId,
+        updatedAt: new Date(),
+      })
+      .returning();
+
+    return {
+      snapshot,
+      status: result.status,
+      retrievedAt: result.retrievedAt,
+      customerCount: result.customers.length,
+    };
+  }
+
+  async uploadQuickBooksSourceSnapshot(input: {
+    organizationId: string;
+    actorUserId: string;
+    quickBooksCustomers: QuickBooksCustomerSource[];
+  }) {
+    const customers = Array.isArray(input.quickBooksCustomers) ? input.quickBooksCustomers : [];
+    const status = await getQuickBooksCustomerMigrationSourceStatus(input.organizationId).catch(() => null);
+    const [snapshot] = await this.dbClient
+      .insert(customerContactQuickBooksSourceSnapshots)
+      .values({
+        organizationId: input.organizationId,
+        sourceMode: "upload",
+        status: "ready",
+        connectedCompanyName: status?.connectedCompanyName ?? null,
+        quickBooksCompanyId: status?.quickBooksCompanyId ?? null,
+        lastSuccessfulSyncAt: status?.lastSuccessfulSyncAt ?? null,
+        retrievedCount: customers.length,
+        rawCustomersJson: customers as Record<string, unknown>[],
+        createdByUserId: input.actorUserId,
+        updatedAt: new Date(),
+      })
+      .returning();
+
+    return {
+      snapshot,
+      status,
+      retrievedAt: snapshot.createdAt,
+      customerCount: customers.length,
+    };
+  }
+
+  private async loadQuickBooksSourceSnapshot(organizationId: string, snapshotId: string): Promise<CustomerContactQuickBooksSourceSnapshot> {
+    const [snapshot] = await this.dbClient
+      .select()
+      .from(customerContactQuickBooksSourceSnapshots)
+      .where(and(
+        eq(customerContactQuickBooksSourceSnapshots.organizationId, organizationId),
+        eq(customerContactQuickBooksSourceSnapshots.id, snapshotId),
+        eq(customerContactQuickBooksSourceSnapshots.status, "ready"),
+      ))
+      .limit(1);
+
+    if (!snapshot) {
+      throw Object.assign(new Error("QuickBooks source snapshot was not found or is not ready."), { statusCode: 400 });
+    }
+
+    return snapshot;
+  }
+
   async createBatch(input: CreateMigrationBatchInput) {
     const companyCsv = parseCsvAllowEmpty(input.infoFloCompanyCsv);
     const contactsCsv = parseCsvAllowEmpty(input.infoFloContactsCsv);
-    const qbCustomers = input.quickBooksCustomers ?? [];
+    const qbSnapshot = input.quickBooksSourceSnapshotId
+      ? await this.loadQuickBooksSourceSnapshot(input.organizationId, input.quickBooksSourceSnapshotId)
+      : null;
+    const qbCustomers = qbSnapshot
+      ? ((qbSnapshot.rawCustomersJson ?? []) as QuickBooksCustomerSource[])
+      : input.quickBooksCustomers ?? [];
+    const qbSourceLabel = input.qbSourceLabel
+      ?? (qbSnapshot?.sourceMode === "live"
+        ? `Connected QuickBooks: ${qbSnapshot.connectedCompanyName ?? qbSnapshot.quickBooksCompanyId ?? "unknown company"}`
+        : qbSnapshot?.sourceMode === "upload"
+          ? "Uploaded QuickBooks customer JSON fallback"
+          : null);
+    const qbSourceSummary = qbSnapshot
+      ? {
+          snapshotId: qbSnapshot.id,
+          mode: qbSnapshot.sourceMode,
+          connectedCompanyName: qbSnapshot.connectedCompanyName,
+          quickBooksCompanyId: qbSnapshot.quickBooksCompanyId,
+          lastSuccessfulSyncAt: qbSnapshot.lastSuccessfulSyncAt,
+          retrievedCount: qbSnapshot.retrievedCount,
+          apiError: qbSnapshot.apiError,
+        }
+      : input.quickBooksCustomers
+        ? { mode: "legacy_upload", retrievedCount: qbCustomers.length }
+        : null;
 
     const existingCompanies = await this.dbClient.select().from(customers).where(eq(customers.organizationId, input.organizationId));
     const existingContacts = await loadContactLikes(this.dbClient, input.organizationId);
@@ -337,7 +448,7 @@ export class CustomerContactMigrationService {
           organizationId: input.organizationId,
           status: "matching",
           sourceLabel: input.sourceLabel ?? null,
-          qbSourceLabel: input.qbSourceLabel ?? null,
+          qbSourceLabel,
           infoFloCompanyFilename: input.infoFloCompanyFilename ?? null,
           infoFloCompanyChecksum: checksum(input.infoFloCompanyCsv),
           infoFloContactsFilename: input.infoFloContactsFilename ?? null,
@@ -347,6 +458,7 @@ export class CustomerContactMigrationService {
             quickBooksCompaniesRead: qbCustomers.length,
             infoFloCompaniesRead: companyCsv.rows.length,
             infoFloContactsRead: contactsCsv.rows.length,
+            quickBooksSource: qbSourceSummary,
             warnings: [...companyCsv.warnings, ...contactsCsv.warnings],
           },
           updatedAt: new Date(),
@@ -517,6 +629,7 @@ export class CustomerContactMigrationService {
         stagedContacts: contactValues.length,
         stagedRelationships: relationshipValues.length,
         unresolved,
+        quickBooksSource: qbSourceSummary,
         warnings: [...companyCsv.warnings, ...contactsCsv.warnings],
       };
 

@@ -75,6 +75,33 @@ export interface CustomerContactMigrationBatchDetail {
   relationshipRows: Array<Record<string, any>>;
 }
 
+export interface CustomerContactQuickBooksSourceStatus {
+  connected: boolean;
+  authState: "connected" | "not_connected" | "needs_reauth";
+  healthState: "ok" | "transient_error";
+  healthMessage?: string;
+  lastErrorAt?: string;
+  connectedCompanyName?: string | null;
+  quickBooksCompanyId?: string | null;
+  connectedAt?: string | null;
+  expiresAt?: string | null;
+  lastSuccessfulSyncAt?: string | null;
+}
+
+export interface CustomerContactQuickBooksSourceSnapshot {
+  id: string;
+  organizationId: string;
+  sourceMode: "live" | "upload";
+  status: string;
+  connectedCompanyName?: string | null;
+  quickBooksCompanyId?: string | null;
+  lastSuccessfulSyncAt?: string | null;
+  retrievedCount: number;
+  apiError?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface ConfigurationCopyPreview {
   sourceOrganizationId: string;
   sourceOrganizationName: string;
@@ -227,6 +254,7 @@ export async function updatePlatformOrganization(
 export async function createCustomerContactMigrationBatch(payload: {
   organizationId: string;
   sourceLabel?: string;
+  quickBooksSourceSnapshotId?: string;
   qbSourceLabel?: string;
   quickBooksCustomers?: Array<Record<string, unknown>>;
   infoFloCompanyCsv?: string;
@@ -238,6 +266,57 @@ export async function createCustomerContactMigrationBatch(payload: {
   body: { success: boolean; data?: { batch: CustomerContactMigrationBatch; summary: Record<string, unknown> }; message?: string; details?: unknown };
 }> {
   const res = await postJson("/api/platform/customer-contact-migrations", payload);
+  const body = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export async function getCustomerContactMigrationQuickBooksSourceStatus(organizationId: string): Promise<{
+  httpStatus: number;
+  body: { success: boolean; data?: CustomerContactQuickBooksSourceStatus; message?: string };
+}> {
+  const res = await fetch(
+    getApiUrl(`/api/platform/customer-contact-migrations/qb-source/status?organizationId=${encodeURIComponent(organizationId)}`),
+    { credentials: "include" }
+  );
+  const body = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export async function retrieveCustomerContactMigrationQuickBooksSource(organizationId: string): Promise<{
+  httpStatus: number;
+  body: {
+    success: boolean;
+    data?: {
+      snapshot: CustomerContactQuickBooksSourceSnapshot;
+      status: CustomerContactQuickBooksSourceStatus;
+      retrievedAt: string;
+      customerCount: number;
+    };
+    message?: string;
+  };
+}> {
+  const res = await postJson("/api/platform/customer-contact-migrations/qb-source/retrieve", { organizationId });
+  const body = await res.json();
+  return { httpStatus: res.status, body };
+}
+
+export async function uploadCustomerContactMigrationQuickBooksSource(payload: {
+  organizationId: string;
+  quickBooksCustomers: Array<Record<string, unknown>>;
+}): Promise<{
+  httpStatus: number;
+  body: {
+    success: boolean;
+    data?: {
+      snapshot: CustomerContactQuickBooksSourceSnapshot;
+      status?: CustomerContactQuickBooksSourceStatus | null;
+      retrievedAt: string;
+      customerCount: number;
+    };
+    message?: string;
+  };
+}> {
+  const res = await postJson("/api/platform/customer-contact-migrations/qb-source/upload", payload);
   const body = await res.json();
   return { httpStatus: res.status, body };
 }
