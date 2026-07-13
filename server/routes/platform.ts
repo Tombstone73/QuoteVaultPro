@@ -42,6 +42,7 @@ import {
   OrganizationEditorError,
   updateOrganizationForPlatform,
 } from "../services/organizationEditorService";
+import { customerContactMigrationService } from "../services/customerContactMigration/service";
 
 // ─── Session type augmentation ────────────────────────────────────────────────
 declare module "express-session" {
@@ -221,6 +222,26 @@ const updateOrgBodySchema = z.object({
   isArchived: z.boolean().optional(),
 }).strict().refine((body) => body.name !== undefined || body.slug !== undefined || body.isArchived !== undefined, {
   message: "At least one editable field is required.",
+});
+
+const migrationBatchCreateSchema = z.object({
+  organizationId: z.string().min(1),
+  sourceLabel: z.string().max(255).optional(),
+  qbSourceLabel: z.string().max(255).optional(),
+  quickBooksCustomers: z.array(z.record(z.any())).optional(),
+  infoFloCompanyCsv: z.string().optional(),
+  infoFloCompanyFilename: z.string().max(255).optional(),
+  infoFloContactsCsv: z.string().optional(),
+  infoFloContactsFilename: z.string().max(255).optional(),
+});
+
+const migrationBatchParamsSchema = z.object({
+  batchId: z.string().min(1),
+});
+
+const migrationBatchFinalizeSchema = z.object({
+  organizationId: z.string().min(1),
+  confirmation: z.literal("FINALIZE"),
 });
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -549,6 +570,167 @@ export function registerPlatformRoutes(app: import("express").Express): void {
       }
     }
   );
+
+  /**
+   * Customer/contact migration batches.
+   * Platform operator only. Target tenant is explicit in the request body/query
+   * because this workflow is run from the platform Developer Tools area.
+   */
+  router.get("/customer-contact-migrations", requirePlatformOperatorOr404, async (req: Request, res: Response) => {
+    const organizationId = String(req.query.organizationId ?? "").trim();
+    if (!organizationId) {
+      return res.status(400).json({ success: false, message: "organizationId query parameter is required." });
+    }
+    const limit = Number.parseInt(String(req.query.limit ?? "25"), 10);
+    try {
+      const batches = await customerContactMigrationService.listBatches(organizationId, Number.isFinite(limit) ? limit : 25);
+      return res.json({ success: true, data: batches });
+    } catch (error) {
+      console.error("[platform/customer-contact-migrations] list error:", error);
+      return res.status(500).json({ success: false, message: "Failed to list migration batches." });
+    }
+  });
+
+  router.post("/customer-contact-migrations", requirePlatformOperatorOr404, async (req: Request, res: Response) => {
+    const parse = migrationBatchCreateSchema.safeParse(req.body);
+    if (!parse.success) {
+      return res.status(400).json({ success: false, message: parse.error.issues[0]?.message ?? "Invalid migration batch." });
+    }
+    const actorUserId = getUserId(req.user);
+    if (!actorUserId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    try {
+      const result = await customerContactMigrationService.createBatch({
+        organizationId: parse.data.organizationId,
+        actorUserId,
+        sourceLabel: parse.data.sourceLabel,
+        qbSourceLabel: parse.data.qbSourceLabel,
+        quickBooksCustomers: parse.data.quickBooksCustomers,
+        infoFloCompanyCsv: parse.data.infoFloCompanyCsv,
+        infoFloCompanyFilename: parse.data.infoFloCompanyFilename,
+        infoFloContactsCsv: parse.data.infoFloContactsCsv,
+        infoFloContactsFilename: parse.data.infoFloContactsFilename,
+      });
+
+      await writePlatformAuditLog({
+        action: "customer_contact_migration.batch_created",
+        actorUserId,
+        actorEmail: (req.user as any)?.email ?? "unknown",
+        req,
+        orgId: parse.data.organizationId,
+        metadata: { batchId: result.batch.id, summary: result.summary },
+      });
+
+      return res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      if (error?.statusCode === 400) {
+        return res.status(400).json({ success: false, message: error.message, details: error.errors });
+      }
+      console.error("[platform/customer-contact-migrations] create error:", error);
+      return res.status(500).json({ success: false, message: "Failed to create migration batch." });
+    }
+  });
+
+  router.get("/customer-contact-migrations/:batchId", requirePlatformOperatorOr404, async (req: Request, res: Response) => {
+    const params = migrationBatchParamsSchema.safeParse(req.params);
+    const organizationId = String(req.query.organizationId ?? "").trim();
+    if (!params.success) return res.status(400).json({ success: false, message: "Invalid batch ID." });
+    if (!organizationId) return res.status(400).json({ success: false, message: "organizationId query parameter is required." });
+
+    try {
+      const batch = await customerContactMigrationService.getBatch(organizationId, params.data.batchId);
+      if (!batch) return res.status(404).json({ success: false, message: "Migration batch not found." });
+      return res.json({ success: true, data: batch });
+    } catch (error) {
+      console.error("[platform/customer-contact-migrations] get error:", error);
+      return res.status(500).json({ success: false, message: "Failed to load migration batch." });
+    }
+  });
+
+  router.post(
+    "/customer-contact-migrations/:batchId/finalize",
+    requirePlatformOperatorOr404,
+    requireStepUp,
+    async (req: Request, res: Response) => {
+      const params = migrationBatchParamsSchema.safeParse(req.params);
+      const body = migrationBatchFinalizeSchema.safeParse(req.body);
+      if (!params.success) return res.status(400).json({ success: false, message: "Invalid batch ID." });
+      if (!body.success) return res.status(400).json({ success: false, message: body.error.issues[0]?.message ?? "Invalid finalization request." });
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+      try {
+        const result = await customerContactMigrationService.finalizeBatch(
+          body.data.organizationId,
+          params.data.batchId,
+          actorUserId,
+          body.data.confirmation,
+        );
+
+        await writePlatformAuditLog({
+          action: "customer_contact_migration.batch_finalized",
+          actorUserId,
+          actorEmail: (req.user as any)?.email ?? "unknown",
+          req,
+          orgId: body.data.organizationId,
+          metadata: { batchId: params.data.batchId, counts: result.counts },
+        });
+
+        return res.json({ success: true, data: result });
+      } catch (error: any) {
+        const status = error?.statusCode ?? 500;
+        console.error("[platform/customer-contact-migrations] finalize error:", error);
+        return res.status(status).json({ success: false, message: error?.message ?? "Failed to finalize migration batch." });
+      }
+    },
+  );
+
+  router.get("/customer-contact-migrations/:batchId/report/:kind", requirePlatformOperatorOr404, async (req: Request, res: Response) => {
+    const params = migrationBatchParamsSchema.safeParse(req.params);
+    const organizationId = String(req.query.organizationId ?? "").trim();
+    const kind = String(req.params.kind ?? "").trim();
+    if (!params.success) return res.status(400).json({ success: false, message: "Invalid batch ID." });
+    if (!organizationId) return res.status(400).json({ success: false, message: "organizationId query parameter is required." });
+
+    const batch = await customerContactMigrationService.getBatch(organizationId, params.data.batchId);
+    if (!batch) return res.status(404).json({ success: false, message: "Migration batch not found." });
+
+    const rows =
+      kind === "completed-mappings"
+        ? [
+            ...batch.companyRows.filter((row) => row.status === "imported").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, entityId: row.selectedCustomerId })),
+            ...batch.contactRows.filter((row) => row.status === "imported").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, entityId: row.selectedContactId })),
+            ...batch.relationshipRows.filter((row) => row.status === "created" || row.status === "updated").map((row) => ({ type: "relationship", sourceRecordId: row.sourceRecordId, linkId: row.selectedLinkId, customerId: row.selectedCustomerId, contactId: row.selectedContactId })),
+          ]
+        : kind === "exceptions"
+          ? [
+              ...batch.companyRows.filter((row) => row.status === "ambiguous" || row.status === "failed").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, status: row.status, error: row.errorMessage, warnings: row.warningsJson })),
+              ...batch.contactRows.filter((row) => row.status.includes("ambiguous") || row.status === "failed" || row.status === "company_missing").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, status: row.status, error: row.errorMessage, warnings: row.warningsJson })),
+              ...batch.relationshipRows.filter((row) => row.status === "ambiguous" || row.status === "failed" || row.status === "skipped").map((row) => ({ type: "relationship", sourceRecordId: row.sourceRecordId, status: row.status, error: row.errorMessage, warnings: row.warningsJson })),
+            ]
+          : kind === "rejected-records"
+            ? [
+                ...batch.companyRows.filter((row) => row.status === "rejected").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
+                ...batch.contactRows.filter((row) => row.status === "rejected").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
+              ]
+            : kind === "conflicts"
+              ? [
+                  ...batch.companyRows.filter((row) => row.status === "ambiguous").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, candidates: row.matchCandidatesJson })),
+                  ...batch.contactRows.filter((row) => row.status === "ambiguous_person" || row.status === "company_ambiguous").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, candidates: row.matchCandidatesJson })),
+                ]
+              : kind === "failed-records"
+                ? [
+                    ...batch.companyRows.filter((row) => row.status === "failed").map((row) => ({ type: "company", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
+                    ...batch.contactRows.filter((row) => row.status === "failed").map((row) => ({ type: "contact", rowNumber: row.rowNumber, sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
+                    ...batch.relationshipRows.filter((row) => row.status === "failed").map((row) => ({ type: "relationship", sourceRecordId: row.sourceRecordId, error: row.errorMessage })),
+                  ]
+                : null;
+
+    if (!rows) return res.status(400).json({ success: false, message: "Unknown report kind." });
+    res.setHeader("content-type", "text/csv; charset=utf-8");
+    res.setHeader("content-disposition", `attachment; filename="${kind}-${params.data.batchId}.csv"`);
+    return res.send(customerContactMigrationService.buildCsvReport(rows));
+  });
 
   /**
    * POST /api/platform/orgs

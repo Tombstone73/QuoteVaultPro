@@ -729,6 +729,13 @@
       "when": 1784073600000,
       "tag": "0108_organization_archive_state",
       "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1784160000000,
+      "tag": "0109_customer_contact_migration_workflow",
+      "breakpoints": true
     }
   ]
 }

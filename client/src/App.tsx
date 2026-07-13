@@ -86,6 +86,7 @@ import PricingAuditPage from "@/pages/admin/PricingAuditPage";
 import MaterialsImportExport from "@/pages/admin/MaterialsImportExport";
 import QBInvoiceInspectorPage from "@/pages/admin/QBInvoiceInspectorPage";
 import QBCustomerInspectorPage from "@/pages/admin/QBCustomerInspectorPage";
+import CustomerContactMigrationPage from "@/pages/admin/CustomerContactMigrationPage";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 import { useToast } from "@/hooks/use-toast";
 import { SESSION_EXPIRED_EVENT, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
@@ -239,6 +240,7 @@ function Router() {
         <Route path="/admin/materials/import-export" element={<MaterialsImportExport />} />
         <Route path="/admin/developer/qb-invoice-inspector" element={<QBInvoiceInspectorPage />} />
         <Route path="/admin/developer/qb-customer-inspector" element={<QBCustomerInspectorPage />} />
+        <Route path={ROUTES.developer.customerContactMigration} element={<CustomerContactMigrationPage />} />
         <Route path="/users" element={<Navigate to="/settings/users" replace />} />
         <Route path="/admin/settings" element={<Navigate to="/settings" replace />} />
         <Route path="/system/admin/settings" element={<Navigate to="/settings" replace />} />
