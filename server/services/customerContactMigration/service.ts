@@ -41,7 +41,7 @@ import {
 type DbClient = typeof db;
 type CsvReportKind = "completed-mappings" | "exceptions" | "rejected-records" | "conflicts" | "failed-records";
 type ReviewRecordType = "company" | "contact";
-type ReviewDecisionAction = "accept_proposed" | "choose_existing" | "create_new" | "merge_duplicate" | "ignore";
+type ReviewDecisionAction = "accept_proposed" | "choose_existing" | "create_new" | "select_staged" | "consolidate_staged" | "link_company" | "ignore";
 
 const csvReportHeaders: Record<CsvReportKind, string[]> = {
   "completed-mappings": ["type", "rowNumber", "sourceRecordId", "entityId", "linkId", "customerId", "contactId"],
@@ -104,6 +104,7 @@ export type MigrationReviewDecisionInput = {
   recordId: string;
   action: ReviewDecisionAction;
   selectedEntityId?: string | null;
+  selectedEntityIds?: string[] | null;
   actorUserId: string;
 };
 
@@ -160,6 +161,155 @@ function qbAddress(addr: Record<string, unknown> | undefined) {
     state: qbText(addr?.CountrySubDivisionCode),
     postalCode: qbText(addr?.PostalCode),
     country: qbText(addr?.Country),
+  };
+}
+
+function qbTermName(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === "string") return value.trim() || null;
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return qbText(record.name) || qbText(record.value);
+  }
+  return null;
+}
+
+function qbBalance(value: unknown): number | null {
+  const parsed = parseNum(value);
+  return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
+}
+
+function rawQuickBooksPayload(rawJson: unknown): Record<string, unknown> {
+  if (!rawJson || typeof rawJson !== "object") return {};
+  const raw = rawJson as Record<string, unknown>;
+  if (raw.quickBooks && typeof raw.quickBooks === "object") return raw.quickBooks as Record<string, unknown>;
+  return raw;
+}
+
+export function buildHydratedStagedCompanyCandidate(
+  row: Record<string, any>,
+  dependentContacts: Array<Record<string, any>> = [],
+  existingExternalIdentityMappings: Array<Record<string, any>> = [],
+) {
+  const normalized = (row.normalizedJson ?? {}) as Record<string, any>;
+  const raw = rawQuickBooksPayload(row.rawJson);
+  const billAddr = qbAddress(raw.BillAddr as Record<string, unknown> | undefined);
+  const shipAddr = qbAddress(raw.ShipAddr as Record<string, unknown> | undefined);
+  const quickBooksCustomerId = String(row.quickBooksCustomerId ?? normalized.quickBooksCustomerId ?? raw.Id ?? "").trim() || null;
+  const sourceRecordId = String(row.sourceRecordId ?? normalized.sourceRecordId ?? quickBooksCustomerId ?? "").trim() || null;
+  const parentRef = raw.ParentRef && typeof raw.ParentRef === "object" ? raw.ParentRef as Record<string, unknown> : null;
+  const companyName = qbText(raw.CompanyName) || normalized.name || qbText(raw.DisplayName) || null;
+  const displayName = qbText(raw.DisplayName) || normalized.quickBooksCustomerName || companyName;
+  const address = billAddr.street1 || shipAddr.street1 || normalized.street1 || null;
+  const city = billAddr.city || shipAddr.city || normalized.city || null;
+  const state = billAddr.state || shipAddr.state || normalized.state || null;
+  const postalCode = billAddr.postalCode || shipAddr.postalCode || normalized.postalCode || null;
+  const email = qbText(raw.PrimaryEmailAddr, "Address") || normalized.email || null;
+  const phone = qbText(raw.PrimaryPhone, "FreeFormNumber") || normalized.phone || null;
+
+  return {
+    id: String(row.id),
+    candidateType: "staged_company",
+    selectable: true,
+    stagedRecordId: row.id,
+    sourceSystem: row.sourceSystem,
+    sourceRecordId,
+    quickBooksCustomerId,
+    companyName,
+    displayName,
+    fullyQualifiedName: qbText(raw.FullyQualifiedName) || displayName,
+    parentCustomerId: parentRef ? qbText(parentRef.value) : null,
+    parentCustomerName: parentRef ? qbText(parentRef.name) : null,
+    isSubCustomer: Boolean(raw.Job === true || parentRef),
+    active: raw.Active == null ? null : Boolean(raw.Active),
+    address,
+    street1: address,
+    street2: billAddr.street2 || shipAddr.street2 || null,
+    city,
+    state,
+    postalCode,
+    phone,
+    email,
+    paymentTerms: qbTermName(raw.TermRef),
+    balance: qbBalance(raw.Balance),
+    existingPrintersHeroCustomerId: row.selectedCustomerId ?? null,
+    existingExternalIdentityMappings,
+    dependentContacts,
+    sourceSystems: [row.sourceSystem],
+    externalIdentityMappings: [
+      ...(quickBooksCustomerId ? [{ sourceSystem: "quickbooks", sourceEntityType: "customer", sourceRecordId: quickBooksCustomerId }] : []),
+      ...(row.sourceSystem === "infoflo" && sourceRecordId ? [{ sourceSystem: "infoflo", sourceEntityType: "company", sourceRecordId }] : []),
+    ],
+  };
+}
+
+function uniqueStrings(values: unknown[]): string[] {
+  return Array.from(new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean)));
+}
+
+export function buildStagedConsolidationCompanyPatch(
+  row: Record<string, any>,
+  selectedStagedRows: Array<Record<string, any>>,
+  actorUserId: string,
+  action: "select_staged" | "consolidate_staged" = "consolidate_staged",
+) {
+  const selectedIds = uniqueStrings(selectedStagedRows.map((candidate) => candidate.id));
+  if (selectedIds.length < 1) {
+    throw Object.assign(new Error("Select at least one staged company candidate."), { statusCode: 400 });
+  }
+  const hydrated = selectedStagedRows.map((candidate) => buildHydratedStagedCompanyCandidate(candidate));
+  const primary = hydrated.find((candidate) => candidate.companyName || candidate.displayName) ?? hydrated[0];
+  const quickBooksCustomerIds = uniqueStrings(hydrated.map((candidate) => candidate.quickBooksCustomerId));
+  const infoFloSourceRecordIds = uniqueStrings([
+    row.sourceSystem === "infoflo" ? row.sourceRecordId : null,
+    ...(Array.isArray((row.normalizedJson as any)?.additionalInfoFloSourceRecordIds) ? (row.normalizedJson as any).additionalInfoFloSourceRecordIds : []),
+    ...hydrated.filter((candidate) => candidate.sourceSystem === "infoflo").map((candidate) => candidate.sourceRecordId),
+  ]);
+  const conflicts = ["companyName", "email", "phone", "address"].filter((field) => {
+    const values = uniqueStrings(hydrated.map((candidate) => (candidate as any)[field]));
+    return values.length > 1;
+  });
+  const normalizedJson = {
+    ...((row.normalizedJson as any) ?? {}),
+    name: (row.normalizedJson as any)?.name || primary.companyName || primary.displayName,
+    quickBooksCustomerId: quickBooksCustomerIds[0] ?? (row.normalizedJson as any)?.quickBooksCustomerId ?? null,
+    additionalQuickBooksCustomerIds: quickBooksCustomerIds.slice(1),
+    additionalInfoFloSourceRecordIds: infoFloSourceRecordIds.filter((id) => id !== row.sourceRecordId),
+    stagedConsolidation: {
+      selectedStagedRecordIds: selectedIds,
+      quickBooksCustomerIds,
+      infoFloSourceRecordIds,
+      conflicts,
+    },
+  };
+  const proposedChangesJson = compactPatch({
+    ...((row.proposedChangesJson as any) ?? {}),
+    companyName: (row.proposedChangesJson as any)?.companyName || normalizedJson.name || primary.companyName || primary.displayName,
+    email: (row.proposedChangesJson as any)?.email || primary.email || undefined,
+    phone: (row.proposedChangesJson as any)?.phone || primary.phone || undefined,
+    billingStreet1: (row.proposedChangesJson as any)?.billingStreet1 || primary.street1 || undefined,
+    billingCity: (row.proposedChangesJson as any)?.billingCity || primary.city || undefined,
+    billingState: (row.proposedChangesJson as any)?.billingState || primary.state || undefined,
+    billingPostalCode: (row.proposedChangesJson as any)?.billingPostalCode || primary.postalCode || undefined,
+    externalAccountingId: quickBooksCustomerIds[0] ?? undefined,
+    syncStatus: quickBooksCustomerIds.length > 0 ? "synced" : undefined,
+  });
+  return {
+    status: "new_company",
+    selectedCustomerId: null,
+    normalizedJson,
+    proposedChangesJson,
+    warningsJson: conflicts.length > 0 ? [`Staged source conflicts require canonical field review: ${conflicts.join(", ")}.`] : row.warningsJson ?? [],
+    errorMessage: null,
+    reviewDecisionJson: {
+      action,
+      selectedEntityIds: selectedIds,
+      decidedByUserId: actorUserId,
+      decidedAt: new Date().toISOString(),
+      conflicts,
+      quickBooksCustomerIds,
+      infoFloSourceRecordIds,
+    },
   };
 }
 
@@ -343,9 +493,11 @@ export function buildCompanyReviewPatch(row: Record<string, any>, decision: Pick
     if (!decision.selectedEntityId) throw Object.assign(new Error("selectedEntityId is required."), { statusCode: 400 });
     return { status: "matched_existing", selectedCustomerId: decision.selectedEntityId, reviewDecisionJson, errorMessage: null };
   }
-  if (decision.action === "merge_duplicate") {
-    if (!decision.selectedEntityId) throw Object.assign(new Error("selectedEntityId is required for duplicate company merge decisions."), { statusCode: 400 });
-    return { status: "matched_existing", selectedCustomerId: decision.selectedEntityId, reviewDecisionJson, errorMessage: null };
+  if ((decision.action as string) === "merge_duplicate") {
+    throw Object.assign(new Error("Permanent company merge is not available from staged migration review. Use the dedicated permanent-company merge workflow."), { statusCode: 400 });
+  }
+  if (decision.action === "consolidate_staged" || decision.action === "select_staged") {
+    throw Object.assign(new Error("Staged consolidation requires selected staged candidate records."), { statusCode: 400 });
   }
   if (decision.action === "create_new") {
     return { status: "new_company", selectedCustomerId: null, reviewDecisionJson, errorMessage: null };
@@ -368,6 +520,10 @@ export function buildContactReviewPatch(row: Record<string, any>, decision: Pick
   if (decision.action === "choose_existing") {
     if (!decision.selectedEntityId) throw Object.assign(new Error("selectedEntityId is required."), { statusCode: 400 });
     return { status: "matched_existing_person", selectedContactId: decision.selectedEntityId, reviewDecisionJson, errorMessage: null };
+  }
+  if (decision.action === "link_company") {
+    if (!decision.selectedEntityId) throw Object.assign(new Error("selectedEntityId is required for contact-to-company linking."), { statusCode: 400 });
+    return { status: "company_matched", selectedContactId: row.selectedContactId ?? null, selectedCustomerId: decision.selectedEntityId, reviewDecisionJson, errorMessage: null };
   }
   if (decision.action === "create_new") {
     return { status: "company_matched", selectedContactId: null, reviewDecisionJson, errorMessage: null };
@@ -784,8 +940,9 @@ async function buildBatchReviewContext(
   dbClient: DbClient,
   organizationId: string,
   batch: {
-    companyRows: Array<{ matchCandidatesJson?: unknown; selectedCustomerId?: string | null }>;
-    contactRows: Array<{ matchCandidatesJson?: unknown; selectedContactId?: string | null }>;
+    companyRows: Array<Record<string, any> & { matchCandidatesJson?: unknown; selectedCustomerId?: string | null }>;
+    contactRows: Array<Record<string, any> & { matchCandidatesJson?: unknown; selectedContactId?: string | null }>;
+    relationshipRows?: Array<Record<string, any>>;
   },
 ) {
   const companyCandidateIds = candidateIdsFromRows(batch.companyRows, "selectedCustomerId");
@@ -861,26 +1018,94 @@ async function buildBatchReviewContext(
     identitiesByEntityId.set(identity.entityId, rows);
   }
 
+  const contactsByRecordId = new Map(batch.contactRows.map((row) => [row.id, row]));
+  const dependentContactsByCompanyRecordId = new Map<string, Array<Record<string, any>>>();
+  for (const relationship of batch.relationshipRows ?? []) {
+    if (!relationship.companyRecordId || !relationship.contactRecordId) continue;
+    const contact = contactsByRecordId.get(relationship.contactRecordId);
+    if (!contact) continue;
+    const rows = dependentContactsByCompanyRecordId.get(relationship.companyRecordId) ?? [];
+    rows.push(contact);
+    dependentContactsByCompanyRecordId.set(relationship.companyRecordId, rows);
+  }
+
+  const stagedCompanyCandidates = new Map<string, any>();
+  const indexStagedCandidate = (key: unknown, value: any) => {
+    const id = String(key ?? "").trim();
+    if (id) stagedCompanyCandidates.set(id, value);
+  };
+  for (const row of batch.companyRows) {
+    const hydrated = buildHydratedStagedCompanyCandidate(
+      row,
+      dependentContactsByCompanyRecordId.get(row.id) ?? [],
+      row.selectedCustomerId ? identitiesByEntityId.get(row.selectedCustomerId) ?? [] : [],
+    );
+    indexStagedCandidate(row.id, hydrated);
+    indexStagedCandidate(row.sourceRecordId, hydrated);
+    indexStagedCandidate(row.quickBooksCustomerId, hydrated);
+    indexStagedCandidate((row.normalizedJson as any)?.quickBooksCustomerId, hydrated);
+    indexStagedCandidate((row.rawJson as any)?.Id, hydrated);
+  }
+
+  const existingCompanyCandidates = Object.fromEntries((companyCandidates as any[]).map((company) => [
+    company.id,
+    {
+      ...company,
+      candidateType: "existing_company",
+      selectable: true,
+      stagedRecordId: null,
+      paymentTerms: (company as any).paymentTerms ?? null,
+      existingContacts: contactsByCustomerId.get(company.id) ?? [],
+      externalIdentityMappings: identitiesByEntityId.get(company.id) ?? [],
+      sourceSystems: Array.from(new Set((identitiesByEntityId.get(company.id) ?? []).map((identity) => identity.sourceSystem))),
+    },
+  ]));
+  const companyCandidateContext: Record<string, any> = {
+    ...existingCompanyCandidates,
+  };
+  for (const id of companyCandidateIds) {
+    if (companyCandidateContext[id]) continue;
+    const staged = stagedCompanyCandidates.get(id);
+    companyCandidateContext[id] = staged ?? {
+      id,
+      candidateType: "missing",
+      selectable: false,
+      missing: true,
+      errorMessage: "Candidate record could not be loaded.",
+    };
+  }
+
+  const searchableCompanyCandidates = [
+    ...Object.values(companyCandidateContext),
+    ...Array.from(stagedCompanyCandidates.values()).filter((candidate) => !companyCandidateContext[candidate.quickBooksCustomerId ?? candidate.sourceRecordId ?? candidate.id]),
+  ].filter((candidate, index, array) => candidate?.id && candidate.selectable !== false && array.findIndex((other) => other.id === candidate.id) === index);
+
+  const contactCandidateContext: Record<string, any> = Object.fromEntries((contactCandidates as any[]).map((contact) => [
+    contact.id,
+    {
+      ...contact,
+      candidateType: "existing_contact",
+      selectable: true,
+      linkedCompanies: companiesByContactId.get(contact.id) ?? [],
+      externalIdentityMappings: identitiesByEntityId.get(contact.id) ?? [],
+      sourceSystems: Array.from(new Set((identitiesByEntityId.get(contact.id) ?? []).map((identity) => identity.sourceSystem))),
+    },
+  ]));
+  for (const id of contactCandidateIds) {
+    if (contactCandidateContext[id]) continue;
+    contactCandidateContext[id] = {
+      id,
+      candidateType: "missing",
+      selectable: false,
+      missing: true,
+      errorMessage: "Candidate record could not be loaded.",
+    };
+  }
+
   return {
-    companyCandidates: Object.fromEntries((companyCandidates as any[]).map((company) => [
-      company.id,
-      {
-        ...company,
-        paymentTerms: (company as any).paymentTerms ?? null,
-        existingContacts: contactsByCustomerId.get(company.id) ?? [],
-        externalIdentityMappings: identitiesByEntityId.get(company.id) ?? [],
-        sourceSystems: Array.from(new Set((identitiesByEntityId.get(company.id) ?? []).map((identity) => identity.sourceSystem))),
-      },
-    ])),
-    contactCandidates: Object.fromEntries((contactCandidates as any[]).map((contact) => [
-      contact.id,
-      {
-        ...contact,
-        linkedCompanies: companiesByContactId.get(contact.id) ?? [],
-        externalIdentityMappings: identitiesByEntityId.get(contact.id) ?? [],
-        sourceSystems: Array.from(new Set((identitiesByEntityId.get(contact.id) ?? []).map((identity) => identity.sourceSystem))),
-      },
-    ])),
+    companyCandidates: companyCandidateContext,
+    searchableCompanyCandidates,
+    contactCandidates: contactCandidateContext,
   };
 }
 
@@ -1264,7 +1489,7 @@ export class CustomerContactMigrationService {
       this.dbClient.select().from(customerContactImportContactRecords).where(eq(customerContactImportContactRecords.batchId, batch.id)).orderBy(customerContactImportContactRecords.rowNumber),
       this.dbClient.select().from(customerContactImportRelationshipRecords).where(eq(customerContactImportRelationshipRecords.batchId, batch.id)).orderBy(customerContactImportRelationshipRecords.createdAt),
     ]);
-    const reviewContext = await buildBatchReviewContext(this.dbClient, organizationId, { companyRows, contactRows });
+    const reviewContext = await buildBatchReviewContext(this.dbClient, organizationId, { companyRows, contactRows, relationshipRows });
     return { batch, companyRows, contactRows, relationshipRows, finalizePreview: buildFinalizePreviewCounts({ companyRows, contactRows, relationshipRows }), reviewContext };
   }
 
@@ -1306,7 +1531,67 @@ export class CustomerContactMigrationService {
           ))
           .limit(1);
         if (!row) throw Object.assign(new Error("Company review record not found."), { statusCode: 404 });
-        const patch = buildCompanyReviewPatch(row, input);
+        let patch: Record<string, any> & { status: string; selectedCustomerId?: string | null };
+        if (input.action === "consolidate_staged" || input.action === "select_staged") {
+          const selectedKeys = uniqueStrings([
+            ...(input.selectedEntityIds ?? []),
+            ...String(input.selectedEntityId ?? "").split(","),
+          ]);
+          if (input.action === "consolidate_staged" && selectedKeys.length < 2) {
+            throw Object.assign(new Error("Select at least two staged company candidates to consolidate."), { statusCode: 400 });
+          }
+          const allCompanyRows = await tx
+            .select()
+            .from(customerContactImportCompanyRecords)
+            .where(and(
+              eq(customerContactImportCompanyRecords.organizationId, input.organizationId),
+              eq(customerContactImportCompanyRecords.batchId, input.batchId),
+            ));
+          const selectedStagedRows = allCompanyRows.filter((candidate: any) =>
+            selectedKeys.includes(candidate.id) ||
+            selectedKeys.includes(String(candidate.sourceRecordId ?? "")) ||
+            selectedKeys.includes(String(candidate.quickBooksCustomerId ?? "")) ||
+            selectedKeys.includes(String((candidate.normalizedJson as any)?.quickBooksCustomerId ?? "")) ||
+            selectedKeys.includes(String((candidate.rawJson as any)?.Id ?? "")),
+          );
+          if (selectedStagedRows.length !== selectedKeys.length) {
+            const loadedKeys = new Set<string>();
+            for (const candidate of selectedStagedRows) {
+              [candidate.id, candidate.sourceRecordId, candidate.quickBooksCustomerId, (candidate.normalizedJson as any)?.quickBooksCustomerId, (candidate.rawJson as any)?.Id]
+                .map((value) => String(value ?? "").trim())
+                .filter(Boolean)
+                .forEach((value) => loadedKeys.add(value));
+            }
+            const missing = selectedKeys.filter((key) => !loadedKeys.has(key));
+            throw Object.assign(new Error(`Cannot consolidate staged source records because candidate record(s) could not be loaded: ${missing.join(", ")}`), { statusCode: 400 });
+          }
+          patch = buildStagedConsolidationCompanyPatch(row, selectedStagedRows, input.actorUserId, input.action);
+          const consolidatedAwayIds = selectedStagedRows
+            .map((candidate: any) => candidate.id)
+            .filter((id: string) => id !== input.recordId);
+          if (consolidatedAwayIds.length > 0) {
+            await tx
+              .update(customerContactImportCompanyRecords)
+              .set({
+                status: "rejected",
+                selectedCustomerId: null,
+                reviewDecisionJson: {
+                  action: "consolidated_into_staged_company",
+                  targetCompanyRecordId: input.recordId,
+                  decidedByUserId: input.actorUserId,
+                  decidedAt: now.toISOString(),
+                },
+                errorMessage: "Consolidated into another staged company review decision; no separate permanent company will be created.",
+                updatedAt: now,
+              })
+              .where(and(
+                eq(customerContactImportCompanyRecords.batchId, input.batchId),
+                inArray(customerContactImportCompanyRecords.id, consolidatedAwayIds),
+              ));
+          }
+        } else {
+          patch = buildCompanyReviewPatch(row, input);
+        }
         await tx
           .update(customerContactImportCompanyRecords)
           .set({ ...patch, updatedAt: now })
@@ -1365,6 +1650,7 @@ export class CustomerContactMigrationService {
           .update(customerContactImportRelationshipRecords)
           .set({
             selectedContactId: patch.selectedContactId ?? null,
+            selectedCustomerId: patch.selectedCustomerId ?? row.selectedCustomerId ?? null,
             status: patch.status === "rejected" ? "skipped" : "ready",
             errorMessage: patch.status === "rejected" ? "Contact source ignored by reviewer." : null,
             updatedAt: now,
@@ -1485,6 +1771,20 @@ export class CustomerContactMigrationService {
               sourceSystem: "quickbooks",
               sourceEntityType: "customer",
               sourceRecordId: row.quickBooksCustomerId,
+              sourceDisplayName: String((row.normalizedJson as any)?.name ?? ""),
+            });
+          }
+          const additionalQuickBooksCustomerIds = Array.isArray((row.normalizedJson as any)?.additionalQuickBooksCustomerIds)
+            ? (row.normalizedJson as any).additionalQuickBooksCustomerIds.filter((sourceRecordId: unknown): sourceRecordId is string => typeof sourceRecordId === "string" && sourceRecordId.trim().length > 0)
+            : [];
+          for (const sourceRecordId of additionalQuickBooksCustomerIds) {
+            await upsertExternalIdentity(tx, {
+              organizationId,
+              entityType: "customer",
+              entityId: customerId,
+              sourceSystem: "quickbooks",
+              sourceEntityType: "customer",
+              sourceRecordId,
               sourceDisplayName: String((row.normalizedJson as any)?.name ?? ""),
             });
           }

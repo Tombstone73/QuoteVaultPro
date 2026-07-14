@@ -76,6 +76,7 @@ export interface CustomerContactMigrationBatchDetail {
   reviewContext?: {
     companyCandidates?: Record<string, any>;
     contactCandidates?: Record<string, any>;
+    searchableCompanyCandidates?: Array<Record<string, any>>;
   };
   finalizePreview?: {
     companiesToCreate: number;
@@ -391,8 +392,9 @@ export async function saveCustomerContactMigrationReviewDecision(payload: {
   batchId: string;
   recordType: "company" | "contact";
   recordId: string;
-  action: "accept_proposed" | "choose_existing" | "create_new" | "merge_duplicate" | "ignore";
+  action: "accept_proposed" | "choose_existing" | "create_new" | "select_staged" | "consolidate_staged" | "link_company" | "ignore";
   selectedEntityId?: string;
+  selectedEntityIds?: string[];
 }): Promise<{
   httpStatus: number;
   body: { success: boolean; data?: CustomerContactMigrationBatchDetail; message?: string };
@@ -403,6 +405,7 @@ export async function saveCustomerContactMigrationReviewDecision(payload: {
     recordId: payload.recordId,
     action: payload.action,
     selectedEntityId: payload.selectedEntityId,
+    selectedEntityIds: payload.selectedEntityIds,
   });
   const body = await res.json();
   return { httpStatus: res.status, body };
