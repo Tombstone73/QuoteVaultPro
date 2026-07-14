@@ -101,6 +101,28 @@ describe("customer/contact migration matching", () => {
     expect(result.candidates[0]?.reason).toBe("Existing QuickBooks Customer ID");
   });
 
+  test("does not let normalized name override a different QuickBooks company ID", () => {
+    const result = matchCompany({ name: "Titan Graphics LLC", quickBooksCustomerId: "QB-999" }, companies, identities);
+    expect(result.status).toBe("ambiguous");
+    expect(result.selectedId).toBeUndefined();
+    expect(result.warnings.join(" ")).toContain("QuickBooks Customer ID is authoritative");
+  });
+
+  test("no-QB source matching a QB-backed company requires reviewed merge", () => {
+    const result = matchCompany({ name: "ACME Signs" }, [
+      {
+        id: "qb_backed_acme",
+        companyName: "ACME Signs",
+        email: "ap@acmesigns.com",
+        phone: "212-555-1000",
+        externalAccountingId: "QB-ACME",
+      },
+    ], []);
+
+    expect(result.status).toBe("ambiguous");
+    expect(result.candidates[0]?.reason).toBe("Normalized name requires reviewed QuickBooks identity merge");
+  });
+
   test("matches a rerun company by exact InfoFlo Entry ID", () => {
     const result = matchCompany({ name: "ACME Signs", sourceRecordId: "IF-C-10" }, companies, identities);
     expect(result.status).toBe("matched");
