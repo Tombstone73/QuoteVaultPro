@@ -97,6 +97,10 @@ export interface CustomerContactQuickBooksSourceStatus {
   lastErrorAt?: string;
   lastErrorCode?: string | null;
   lastErrorMessage?: string | null;
+  lastErrorStage?: string | null;
+  lastErrorHttpStatus?: number | null;
+  lastOAuthError?: string | null;
+  lastOAuthErrorDescription?: string | null;
   lastSuccessfulRefreshAt?: string | null;
   lastSuccessfulRequestAt?: string | null;
   consecutiveTransientFailureCount?: number;
