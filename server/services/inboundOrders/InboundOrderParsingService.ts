@@ -45,7 +45,7 @@ export type InboundOrderParseResult = {
 type ParsedDimension = {
   width: number;
   height: number;
-  unit: "in";
+  unit: "in" | "ft";
   sourceText: string;
   index: number;
 };
@@ -97,6 +97,33 @@ const PRINT_ITEM_WORDS = [
   "wrap",
   "wraps",
 ];
+
+const STRUCTURED_PRODUCT_ALIASES: Array<{ productName: string; materialText?: string; pattern: RegExp; confidence: number }> = [
+  { productName: "Coroplast", materialText: "Coroplast", pattern: /\b(?:coroplast|corrugated\s+plastic|yard\s+signs?|lawn\s+signs?)\b/i, confidence: 88 },
+  { productName: "Banner", pattern: /\b(?:vinyl\s+)?banners?\b/i, confidence: 86 },
+  { productName: "Foam Board", materialText: "Foam Core", pattern: /\b(?:foam\s*core|foam\s*board)\b/i, confidence: 84 },
+  { productName: "Magnet", pattern: /\bmagnet(?:s|ic)?\b/i, confidence: 82 },
+  { productName: "Decal", pattern: /\bdecals?\b/i, confidence: 82 },
+  { productName: "Sticker", pattern: /\bstickers?\b/i, confidence: 82 },
+  { productName: "Poster", pattern: /\bposters?\b/i, confidence: 80 },
+];
+
+const STRUCTURED_OPTION_PATTERNS: Array<{ text: string; pattern: RegExp; finishing?: boolean }> = [
+  { text: "pole pocket", pattern: /\bpole\s+pockets?\b/i, finishing: true },
+  { text: "3 inch pole pocket", pattern: /\b3\s*(?:"|in|inch|inches)?\s*pole\s+pockets?\b/i, finishing: true },
+  { text: "top and bottom pole pockets", pattern: /\bpole\s+pockets?\b[\s\S]{0,60}\btop\s+(?:and|&)\s+bottom\b|\btop\s+(?:and|&)\s+bottom\b[\s\S]{0,60}\bpole\s+pockets?\b/i, finishing: true },
+  { text: "grommets", pattern: /\bgrommet(?:s|ed)?\b/i, finishing: true },
+  { text: "hems", pattern: /\bhem(?:s|med)?\b/i, finishing: true },
+  { text: "rounded corners", pattern: /\brounded\s+corners?\b/i, finishing: true },
+  { text: "contour cut", pattern: /\b(?:contour|die)\s+cut\b/i, finishing: true },
+  { text: "lamination", pattern: /\blaminat(?:e|ed|ion)\b/i, finishing: true },
+  { text: "h-stakes", pattern: /\bh[-\s]?stakes?\b/i, finishing: true },
+  { text: "drill holes", pattern: /\bdrill(?:ed)?\s+holes?\b/i, finishing: true },
+  { text: "mounting hardware", pattern: /\bmounting\s+hardware\b/i, finishing: true },
+  { text: "white ink", pattern: /\bwhite\s+ink\b/i },
+];
+
+const ARTWORK_FILENAME_PATTERN = /\b[\w .#()'-]{1,120}\.(?:ai|eps|pdf|psd|indd|jpg|jpeg|png|tif|tiff|svg)\b/gi;
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -627,7 +654,8 @@ export class InboundOrderParsingService {
     );
     const dateRefined = hasPurchaseOrderDueDate ? evidenceRefined : this.applyDateInference(record, evidenceRefined);
     const quantityRefined = this.applyQuantityWordInference(record, dateRefined);
-    const segmentedRefined = this.applyLineItemSegmentation(record, quantityRefined, evidenceBundle);
+    const structuredRefined = this.applyStructuredLineItemInference(record, quantityRefined, evidenceBundle);
+    const segmentedRefined = this.applyLineItemSegmentation(record, structuredRefined, evidenceBundle);
     const decisionsRefined = this.applyMissingDecisionDetection(segmentedRefined);
     return evidenceBundle
       ? {
@@ -722,6 +750,270 @@ export class InboundOrderParsingService {
     };
   }
 
+  applyStructuredLineItemInference(
+    record: InboundOrderRecord,
+    draft: InboundOrderParsedDraft,
+    evidenceBundle?: InboundOrderEvidenceBundle,
+  ): InboundOrderParsedDraft {
+    const evidenceText = this.structuredEvidenceText(record, draft, evidenceBundle);
+    if (!evidenceText.trim()) return draft;
+
+    const baseLineItems = draft.lineItems.length > 0 ? draft.lineItems : [lineItemTemplate()];
+    let changed = draft.lineItems.length === 0;
+    const lineItems = baseLineItems.map((lineItem, index) => {
+      const text = [lineItem.sourceText, evidenceText].filter(Boolean).join("\n");
+      const inferredProduct = this.inferStructuredProduct(text);
+      const dimensions = this.extractDistinctDimensions(text);
+      const inferredQuantity = lineItem.quantity ? null : this.inferStructuredQuantity(lineItem, text);
+      const printSpecs = this.extractPrintSideSpecs(text);
+      const options = this.extractStructuredOptions(text);
+      const artworkRefs = this.extractArtworkReferences(text);
+      const dimension = !lineItem.width || !lineItem.height ? dimensions[0] ?? null : null;
+      const sourceParts = [
+        lineItem.sourceText,
+        lineItem.productName ? null : inferredProduct?.sourceText,
+        dimension?.sourceText,
+        lineItem.quantity ? null : inferredQuantity?.sourceText,
+        ...printSpecs,
+        ...options.optionTexts,
+        ...artworkRefs,
+      ].filter(Boolean) as string[];
+      const nextSourceText = this.mergeSourceText(sourceParts);
+      const warnings = [...lineItem.warnings];
+
+      if (inferredQuantity && !lineItem.quantity) {
+        warnings.push(warning(
+          "quantity_inferred_from_structured_phrase",
+          `Quantity ${inferredQuantity.quantity} inferred from source phrase "${inferredQuantity.sourceText}".`,
+          "info",
+          `lineItems.${index}.quantity`,
+        ));
+      }
+      if (dimension && (!lineItem.width || !lineItem.height)) {
+        warnings.push(warning(
+          dimension.unit === "ft" ? "dimensions_inferred_as_feet" : "dimensions_inferred_from_source",
+          dimension.unit === "ft"
+            ? `Size ${dimension.sourceText} was inferred as feet from banner context.`
+            : `Size inferred from source phrase "${dimension.sourceText}".`,
+          "info",
+          `lineItems.${index}.dimensions`,
+        ));
+      }
+      if (printSpecs.length > 0) {
+        warnings.push(warning(
+          "print_sides_inferred_from_source",
+          `Print side specification inferred: ${printSpecs.join(", ")}.`,
+          "info",
+          `lineItems.${index}.optionTexts`,
+        ));
+      }
+
+      const nextLineItem = {
+        ...lineItem,
+        sourceText: nextSourceText || lineItem.sourceText,
+        productName: lineItem.productName ?? inferredProduct?.productName ?? null,
+        materialText: lineItem.materialText ?? inferredProduct?.materialText ?? null,
+        quantity: lineItem.quantity ?? inferredQuantity?.quantity ?? null,
+        width: lineItem.width ?? dimension?.width ?? null,
+        height: lineItem.height ?? dimension?.height ?? null,
+        dimensionsUnit: lineItem.dimensionsUnit ?? dimension?.unit ?? null,
+        optionTexts: this.uniqueTextValues([
+          ...lineItem.optionTexts,
+          ...printSpecs,
+          ...options.optionTexts,
+        ]),
+        finishingTexts: this.uniqueTextValues([
+          ...lineItem.finishingTexts,
+          ...options.finishingTexts,
+        ]),
+        artworkRefs: this.uniqueTextValues([
+          ...lineItem.artworkRefs,
+          ...artworkRefs,
+        ]),
+        confidence: Math.max(
+          lineItem.confidence,
+          inferredProduct?.confidence ?? 0,
+          dimension ? 84 : 0,
+          inferredQuantity ? 84 : 0,
+          printSpecs.length || options.optionTexts.length || artworkRefs.length ? 80 : 0,
+        ),
+        warnings,
+      };
+
+      if (JSON.stringify(nextLineItem) !== JSON.stringify(lineItem)) changed = true;
+      return nextLineItem;
+    });
+
+    const withLineItems = changed ? { ...draft, lineItems } : draft;
+    return this.addStructuredOptionMissingDecisions(withLineItems);
+  }
+
+  private structuredEvidenceText(
+    record: InboundOrderRecord,
+    draft: InboundOrderParsedDraft,
+    evidenceBundle?: InboundOrderEvidenceBundle,
+  ): string {
+    const manual = getManualInboundEvidence(record);
+    const rawPayload = record.rawPayloadJson && typeof record.rawPayloadJson === "object" && !Array.isArray(record.rawPayloadJson)
+      ? record.rawPayloadJson as Record<string, unknown>
+      : {};
+    const rawAttachments = Array.isArray(rawPayload.attachments) ? rawPayload.attachments : [];
+    const rawAttachmentText = rawAttachments.map((attachment) => {
+      if (typeof attachment === "string") return attachment;
+      if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) return null;
+      const row = attachment as Record<string, unknown>;
+      return [row.fileName, row.filename, row.name, row.sourceFilename].filter((value): value is string => typeof value === "string").join(" ");
+    }).filter(Boolean);
+
+    return [
+      manual.subject,
+      manual.bodyText,
+      manual.notes,
+      manual.reference,
+      draft.order.notes,
+      ...draft.lineItems.map(combinedLineItemText),
+      ...draft.artwork.map((item) => [item.filename, item.sourceReference].filter(Boolean).join(" ")),
+      ...(evidenceBundle?.items.flatMap((item) => [
+        item.label,
+        item.fileName,
+        item.rawText,
+        item.documentType,
+      ]).filter(Boolean) ?? []),
+      ...rawAttachmentText,
+    ].filter(Boolean).join("\n");
+  }
+
+  private inferStructuredProduct(text: string): { productName: string; materialText: string | null; sourceText: string; confidence: number } | null {
+    for (const alias of STRUCTURED_PRODUCT_ALIASES) {
+      const match = text.match(alias.pattern);
+      if (!match) continue;
+      return {
+        productName: alias.productName,
+        materialText: alias.materialText ?? null,
+        sourceText: match[0].replace(/\s+/g, " ").trim(),
+        confidence: alias.confidence,
+      };
+    }
+    return null;
+  }
+
+  private inferStructuredQuantity(
+    lineItem: InboundOrderParsedDraft["lineItems"][number],
+    text: string,
+  ): { quantity: number; sourceText: string } | null {
+    const numericPatterns = [
+      /\b(?:qty|quantity|count)\s*[:#-]?\s*(\d{1,5})\b/i,
+      /\b(\d{1,5})\s+(?:prints?|copies|pcs|pieces|signs?|banners?|decals?|stickers?|posters?)\s+(?:total|needed|required|please)?\b/i,
+      /\b(?:need|needs|make|print|produce|order)\s+(\d{1,5})\s+(?:prints?|copies|pcs|pieces|signs?|banners?|decals?|stickers?|posters?)\b/i,
+    ];
+    for (const pattern of numericPatterns) {
+      const match = text.match(pattern);
+      if (!match?.[1]) continue;
+      const quantity = Number(match[1]);
+      if (quantity && Number.isInteger(quantity) && quantity > 0) {
+        const matchText = match[0] ?? "";
+        const quantityOffset = matchText.indexOf(match[1]);
+        const quantityIndex = (match.index ?? 0) + (quantityOffset >= 0 ? quantityOffset : 0);
+        const previousChar = text[quantityIndex - 1] ?? "";
+        if (/x|X|\u00d7|Ã—/.test(previousChar)) continue;
+        return { quantity, sourceText: matchText.replace(/\s+/g, " ").trim() };
+      }
+    }
+
+    const wordInference = this.inferQuantityWordForLineItem(lineItem, text);
+    if (wordInference) return wordInference;
+
+    const quantityWords = Object.keys(QUANTITY_WORD_VALUES).join("|");
+    const wordPattern = new RegExp(`\\b(?:need|needs|make|print|produce|order)\\s+(${quantityWords})\\s+(?:prints?|copies|pcs|pieces|signs?|banners?|decals?|stickers?|posters?)\\b`, "i");
+    const wordMatch = text.match(wordPattern);
+    if (!wordMatch?.[1]) return null;
+    const quantity = QUANTITY_WORD_VALUES[wordMatch[1].toLowerCase()];
+    return quantity ? { quantity, sourceText: wordMatch[0].replace(/\s+/g, " ").trim() } : null;
+  }
+
+  private extractPrintSideSpecs(text: string): string[] {
+    const specs: string[] = [];
+    if (/\b(?:double[-\s]?sided|two[-\s]?sided|2[-\s]?sided|front\s+(?:and|&)\s+back)\b/i.test(text)) specs.push("double-sided");
+    if (/\b(?:single[-\s]?sided|one[-\s]?sided|1[-\s]?sided|front\s+only)\b/i.test(text)) specs.push("single-sided");
+    return specs;
+  }
+
+  private extractStructuredOptions(text: string): { optionTexts: string[]; finishingTexts: string[] } {
+    const optionTexts: string[] = [];
+    const finishingTexts: string[] = [];
+    for (const option of STRUCTURED_OPTION_PATTERNS) {
+      if (!option.pattern.test(text)) continue;
+      optionTexts.push(option.text);
+      if (option.finishing) finishingTexts.push(option.text);
+    }
+    return {
+      optionTexts: this.uniqueTextValues(optionTexts),
+      finishingTexts: this.uniqueTextValues(finishingTexts),
+    };
+  }
+
+  private extractArtworkReferences(text: string): string[] {
+    const refs = new Set<string>();
+    let match: RegExpExecArray | null;
+    ARTWORK_FILENAME_PATTERN.lastIndex = 0;
+    while ((match = ARTWORK_FILENAME_PATTERN.exec(text)) !== null) {
+      const filename = match[0]
+        .replace(/\s+/g, " ")
+        .replace(/^.*?\b(?:use|see|attached|file|artwork|reference)\s+/i, "")
+        .trim();
+      if (
+        filename
+        && !/^\d+(?:\.\d+)?\s*x\s*\d+(?:\.\d+)?$/i.test(filename)
+        && !/\b(?:po|p\.o\.|purchase\s+order|invoice|quote)\b/i.test(filename)
+      ) {
+        refs.add(filename);
+      }
+    }
+    return Array.from(refs);
+  }
+
+  private addStructuredOptionMissingDecisions(draft: InboundOrderParsedDraft): InboundOrderParsedDraft {
+    const existingFields = new Set(draft.missingDecisions.map((decision) => decision.field));
+    const generated: InboundOrderParsedDraft["missingDecisions"] = [];
+    draft.lineItems.forEach((lineItem, index) => {
+      const optionText = [...lineItem.optionTexts, ...lineItem.finishingTexts, lineItem.sourceText ?? ""].join(" ");
+      if (!/\bpole\s+pockets?\b/i.test(optionText)) return;
+      const hasSize = /\b\d+(?:\.\d+)?\s*(?:"|in|inch|inches)\b[\s\S]{0,40}\bpole\s+pockets?\b|\bpole\s+pockets?\b[\s\S]{0,40}\b\d+(?:\.\d+)?\s*(?:"|in|inch|inches)\b/i.test(optionText);
+      const hasLocation = /\b(?:top|bottom|left|right|side|sides)\b/i.test(optionText);
+      if (hasSize && hasLocation) return;
+      const field = `lineItems.${index}.polePocketDetails`;
+      if (existingFields.has(field)) return;
+      generated.push(missingDecision(
+        field,
+        "What pole pocket size and location are needed?",
+        "A pole pocket was requested, but size or placement was not clear in the source evidence.",
+        "warning",
+      ));
+      existingFields.add(field);
+    });
+    return generated.length ? { ...draft, missingDecisions: [...draft.missingDecisions, ...generated] } : draft;
+  }
+
+  private mergeSourceText(parts: string[]): string | null {
+    const unique = this.uniqueTextValues(parts).filter(Boolean);
+    const merged = unique.join(" ").replace(/\s+/g, " ").trim();
+    return merged || null;
+  }
+
+  private uniqueTextValues(values: Array<string | null | undefined>): string[] {
+    const seen = new Set<string>();
+    const unique: string[] = [];
+    for (const value of values) {
+      const normalized = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+      if (!normalized) continue;
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(normalized);
+    }
+    return unique;
+  }
+
   applyLineItemSegmentation(
     record: InboundOrderRecord,
     draft: InboundOrderParsedDraft,
@@ -799,12 +1091,13 @@ export class InboundOrderParsingService {
   }
 
   private extractDistinctDimensions(text: string): ParsedDimension[] {
+    const normalizedText = text.replace(/\u00d7/g, "x");
     const pattern = /(\d+(?:\.\d+)?)\s*("|'|in|inch|inches|ft|feet|foot)?\s*(?:x|X|by|×)\s*(\d+(?:\.\d+)?)\s*("|'|in|inch|inches|ft|feet|foot)?/gi;
     const dimensions: ParsedDimension[] = [];
     const seen = new Set<string>();
     let match: RegExpExecArray | null;
-    while ((match = pattern.exec(text)) !== null) {
-      const parsed = this.normalizeDimensionMatch(match);
+    while ((match = pattern.exec(normalizedText)) !== null) {
+      const parsed = this.normalizeDimensionMatch(match, normalizedText);
       if (!parsed) continue;
       const key = `${parsed.width}x${parsed.height}:${parsed.unit}`;
       if (seen.has(key)) continue;
@@ -814,12 +1107,22 @@ export class InboundOrderParsingService {
     return dimensions;
   }
 
-  private normalizeDimensionMatch(match: RegExpExecArray): ParsedDimension | null {
+  private normalizeDimensionMatch(match: RegExpExecArray, fullText: string): ParsedDimension | null {
     const width = Number(match[1]);
     const height = Number(match[3]);
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+    const sourceText = match[0].replace(/\s+/g, " ").trim();
     const unit1 = this.normalizeDimensionUnit(match[2] ?? null);
     const unit2 = this.normalizeDimensionUnit(match[4] ?? null);
+    if (!unit1 && !unit2 && this.shouldInferDimensionAsFeet(width, height, fullText, sourceText)) {
+      return {
+        width,
+        height,
+        unit: "ft",
+        sourceText,
+        index: match.index,
+      };
+    }
     const unit = unit2 ?? unit1 ?? "in";
     const widthUnit = unit1 ?? unit;
     const heightUnit = unit2 ?? unit;
@@ -827,9 +1130,18 @@ export class InboundOrderParsingService {
       width: this.convertDimensionToInches(width, widthUnit),
       height: this.convertDimensionToInches(height, heightUnit),
       unit: "in",
-      sourceText: match[0].replace(/\s+/g, " ").trim(),
+      sourceText,
       index: match.index,
     };
+  }
+
+  private shouldInferDimensionAsFeet(width: number, height: number, fullText: string, sourceText: string): boolean {
+    if (width > 12 || height > 12) return false;
+    const sourceIndex = Math.max(0, fullText.toLowerCase().indexOf(sourceText.toLowerCase()));
+    const start = Math.max(0, sourceIndex - 120);
+    const end = Math.min(fullText.length, sourceIndex + sourceText.length + 120);
+    const context = fullText.slice(start, end);
+    return /\bbanners?\b/i.test(context) && !/\b(?:coroplast|yard\s+sign|lawn\s+sign|poster|decal|sticker)\b/i.test(context);
   }
 
   private normalizeDimensionUnit(value: string | null): "in" | "ft" | null {

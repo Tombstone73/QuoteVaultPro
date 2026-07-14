@@ -539,6 +539,137 @@ describe("InboundOrderParsingService", () => {
     expect(result.draft?.evidence.reconciliation?.quantity.sources[0].sourceText).toBe("QTY: 1");
   });
 
+  test("deterministically extracts Coroplast quantity, size, print sides, and artwork references from body evidence", async () => {
+    const bodyText = [
+      "We need these printed on Coroplast.",
+      "Please use double-sided copy, 2 prints total.",
+      "Final size is 24\" x 36\".",
+      "Artwork file: yard-sign-art.pdf",
+    ].join("\n");
+    const { repo } = makeRepository(inboundRecord({
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        reference: "CORO-1",
+        sender: { name: "Ada Lovelace", email: "ada@example.com" },
+        subject: "Coroplast signs",
+        bodyText,
+      },
+    }));
+    const provider = makeProvider(JSON.stringify(parsedDraft({
+      order: {
+        ...parsedDraft().order,
+        poNumber: "CORO-1",
+        notes: bodyText,
+      },
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: null,
+        productName: null,
+        quantity: null,
+        width: null,
+        height: null,
+        dimensionsUnit: null,
+        materialText: null,
+        optionTexts: [],
+        finishingTexts: [],
+        artworkRefs: [],
+      }],
+      missingDecisions: [],
+    })));
+    const evidenceService = {
+      buildEvidenceBundle: jest.fn(async () => ({ items: [], conflicts: [] })),
+    };
+    const service = new InboundOrderParsingService(repo as any, () => provider, evidenceService as any);
+
+    const result = await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(result.draft?.lineItems[0]).toMatchObject({
+      productName: "Coroplast",
+      materialText: "Coroplast",
+      quantity: 2,
+      width: 24,
+      height: 36,
+      dimensionsUnit: "in",
+      optionTexts: expect.arrayContaining(["double-sided"]),
+      artworkRefs: expect.arrayContaining(["yard-sign-art.pdf"]),
+    });
+    expect(result.draft?.missingDecisions.some((decision) => decision.field.includes("quantity"))).toBe(false);
+    expect(result.draft?.missingDecisions.some((decision) => decision.field.includes("dimensions"))).toBe(false);
+    expect(result.draft?.missingDecisions.some((decision) => decision.field.includes("artwork"))).toBe(false);
+    expect(repo.searchProductCandidates).toHaveBeenCalledWith(expect.objectContaining({
+      productName: "Coroplast",
+      materialText: "Coroplast",
+      optionTexts: expect.arrayContaining(["double-sided"]),
+    }));
+  });
+
+  test("infers bare banner dimensions as feet while keeping unresolved quantity and body-only filenames as references", async () => {
+    const bodyText = "Please quote the 5x8 banner. Use 5x8 kasey.jpg for reference and add a pole pocket.";
+    const { repo } = makeRepository(inboundRecord({
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        reference: "BANNER-5X8",
+        sender: { name: "Ada Lovelace", email: "ada@example.com" },
+        subject: "5×8 banner with pole pocket",
+        bodyText,
+      },
+    }));
+    const provider = makeProvider(JSON.stringify(parsedDraft({
+      order: {
+        ...parsedDraft().order,
+        poNumber: "BANNER-5X8",
+        notes: bodyText,
+      },
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: null,
+        productName: null,
+        quantity: null,
+        width: null,
+        height: null,
+        dimensionsUnit: null,
+        materialText: null,
+        optionTexts: [],
+        finishingTexts: [],
+        artworkRefs: [],
+      }],
+      artwork: [],
+      missingDecisions: [],
+    })));
+    const evidenceService = {
+      buildEvidenceBundle: jest.fn(async () => ({ items: [], conflicts: [] })),
+    };
+    const service = new InboundOrderParsingService(repo as any, () => provider, evidenceService as any);
+
+    const result = await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(result.draft?.lineItems[0]).toMatchObject({
+      productName: "Banner",
+      quantity: null,
+      width: 5,
+      height: 8,
+      dimensionsUnit: "ft",
+      optionTexts: expect.arrayContaining(["pole pocket"]),
+      finishingTexts: expect.arrayContaining(["pole pocket"]),
+      artworkRefs: expect.arrayContaining(["5x8 kasey.jpg"]),
+    });
+    expect(result.draft?.artwork).toHaveLength(0);
+    expect(result.draft?.missingDecisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "lineItems.0.quantity", severity: "blocking" }),
+      expect.objectContaining({ field: "lineItems.0.polePocketDetails", severity: "warning" }),
+    ]));
+    expect(result.draft?.missingDecisions.some((decision) => decision.field === "lineItems.0.dimensions")).toBe(false);
+    expect(result.draft?.missingDecisions.some((decision) => decision.field === "lineItems.0.artwork")).toBe(false);
+  });
+
   test("adds compact customer intelligence to parse prompts and stored parsed drafts when customer resolution is confident", async () => {
     const { repo, attempts } = makeRepository();
     const provider = makeProvider(JSON.stringify(parsedDraft()));
