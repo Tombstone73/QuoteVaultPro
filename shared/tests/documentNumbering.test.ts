@@ -9,10 +9,11 @@ import {
 } from "../documentNumbering";
 
 describe("document numbering helpers", () => {
-  test("formats quote, order, and invoice numbers with configurable prefixes", () => {
+  test("formats quote, order, invoice, and purchase order numbers with configurable prefixes", () => {
     expect(formatDocumentNumber("QT-", 1006)).toBe("QT-1006");
     expect(formatDocumentNumber("ORD-", 1006)).toBe("ORD-1006");
     expect(formatDocumentNumber("INV-", 1006)).toBe("INV-1006");
+    expect(formatDocumentNumber("PO-", 20000)).toBe("PO-20000");
   });
 
   test("allows blank prefixes and safe prefix characters", () => {
@@ -27,21 +28,22 @@ describe("document numbering helpers", () => {
   });
 
   test("search by numeric core matches prefixed document numbers", () => {
-    for (const displayNumber of ["QT-1006", "ORD-1006", "INV-1006"]) {
+    for (const displayNumber of ["QT-1006", "ORD-1006", "INV-1006", "PO-1006"]) {
       expect(documentNumberMatchesSearch({ query: "1006", displayNumber, numberCore: 1006 })).toBe(true);
     }
   });
 
-  test("same core can match separate quote, order, and invoice document types", () => {
+  test("same core can match separate quote, order, invoice, and purchase order document types", () => {
     const docs = [
       { type: "quote", displayNumber: "QT-1006", numberCore: 1006 },
       { type: "order", displayNumber: "ORD-1006", numberCore: 1006 },
       { type: "invoice", displayNumber: "INV-1006", numberCore: 1006 },
+      { type: "purchase_order", displayNumber: "PO-1006", numberCore: 1006 },
     ];
 
     const matches = docs.filter((doc) => documentNumberMatchesSearch({ query: "1006", ...doc }));
 
-    expect(matches.map((doc) => doc.type)).toEqual(["quote", "order", "invoice"]);
+    expect(matches.map((doc) => doc.type)).toEqual(["quote", "order", "invoice", "purchase_order"]);
   });
 
   test("search by full display number matches while ignoring punctuation and case", () => {

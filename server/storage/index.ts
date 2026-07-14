@@ -47,6 +47,7 @@ export const deleteVendor = accountingRepo.deleteVendor.bind(accountingRepo);
 
 export const getPurchaseOrders = accountingRepo.getPurchaseOrders.bind(accountingRepo);
 export const getPurchaseOrderWithLines = accountingRepo.getPurchaseOrderWithLines.bind(accountingRepo);
+export const getMaxPurchaseOrderNumber = accountingRepo.getMaxPurchaseOrderNumber.bind(accountingRepo);
 export const createPurchaseOrder = accountingRepo.createPurchaseOrder.bind(accountingRepo);
 export const updatePurchaseOrder = accountingRepo.updatePurchaseOrder.bind(accountingRepo);
 export const deletePurchaseOrder = accountingRepo.deletePurchaseOrder.bind(accountingRepo);
@@ -326,6 +327,7 @@ export const storage = {
     deleteVendor,
     getPurchaseOrders,
     getPurchaseOrderWithLines,
+    getMaxPurchaseOrderNumber,
     createPurchaseOrder,
     updatePurchaseOrder,
     deletePurchaseOrder,

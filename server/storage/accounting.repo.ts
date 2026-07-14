@@ -3,7 +3,6 @@ import {
     vendors,
     purchaseOrders,
     purchaseOrderLineItems,
-    globalVariables,
     materials,
     type Vendor,
     type InsertVendor,
@@ -13,6 +12,11 @@ import {
     type UpdatePurchaseOrder,
 } from "@shared/schema";
 import { eq, and, or, gte, lte, ilike, desc, sql } from "drizzle-orm";
+import {
+    allocateDocumentNumber,
+    isDocumentNumberUniqueViolation,
+    toDocumentNumberConflictError,
+} from "../services/documentNumberingService";
 
 export class AccountingRepository {
     constructor(private readonly dbInstance = db) { }
@@ -70,18 +74,16 @@ export class AccountingRepository {
     // Purchase Order Operations
     private async generateNextPoNumber(organizationId: string, tx?: any): Promise<string> {
         const executor = tx || this.dbInstance;
-        try {
-            const result = await executor.execute(sql`SELECT * FROM ${globalVariables} WHERE ${globalVariables.name} = 'next_po_number' AND ${globalVariables.organizationId} = ${organizationId} FOR UPDATE`);
-            const row = (result as any).rows?.[0];
-            if (row) {
-                const current = Math.floor(Number(row.value));
-                await executor.update(globalVariables).set({ value: (current + 1).toString(), updatedAt: new Date() }).where(and(eq(globalVariables.id, row.id), eq(globalVariables.organizationId, organizationId)));
-                return `PO-${current}`;
-            }
-        } catch { }
-        const maxRes = await this.dbInstance.execute(sql`SELECT MAX(CAST(SUBSTRING(po_number FROM 4) AS INTEGER)) AS max_num FROM purchase_orders WHERE po_number ~ '^PO-[0-9]+$' AND organization_id = ${organizationId}`);
-        const maxNum = (maxRes as any).rows?.[0]?.max_num ? Number((maxRes as any).rows[0].max_num) : 1000;
-        return `PO-${maxNum + 1}`;
+        const { displayNumber } = await allocateDocumentNumber(organizationId, "purchase_order", executor);
+        return displayNumber;
+    }
+
+    async getMaxPurchaseOrderNumber(organizationId: string): Promise<number | null> {
+        const result = await this.dbInstance.execute(
+            sql`SELECT MAX(NULLIF(regexp_replace(po_number, '\\D', '', 'g'), '')::integer) AS max_num FROM purchase_orders WHERE organization_id = ${organizationId}`
+        );
+        const val = (result as any).rows?.[0]?.max_num;
+        return val != null ? Number(val) : null;
     }
 
     async getPurchaseOrders(organizationId: string, filters?: { vendorId?: string; status?: string; search?: string; startDate?: string; endDate?: string }): Promise<PurchaseOrder[]> {
@@ -106,37 +108,42 @@ export class AccountingRepository {
     }
 
     async createPurchaseOrder(organizationId: string, data: Omit<InsertPurchaseOrder, 'organizationId'> & { createdByUserId: string }): Promise<PurchaseOrder & { lineItems: PurchaseOrderLineItem[] }> {
-        return await this.dbInstance.transaction(async (tx) => {
-            const poNumber = await this.generateNextPoNumber(organizationId, tx);
-            const lineValues = data.lineItems.map(li => {
-                const lineTotal = Number(li.quantityOrdered) * Number(li.unitCost);
-                return { ...li, lineTotal: lineTotal.toFixed(4) } as any;
+        try {
+            return await this.dbInstance.transaction(async (tx) => {
+                const poNumber = await this.generateNextPoNumber(organizationId, tx);
+                const lineValues = data.lineItems.map(li => {
+                    const lineTotal = Number(li.quantityOrdered) * Number(li.unitCost);
+                    return { ...li, lineTotal: lineTotal.toFixed(4) } as any;
+                });
+                const subtotal = lineValues.reduce((sum, li) => sum + Number(li.lineTotal), 0);
+                const taxTotal = 0;
+                const shippingTotal = 0;
+                const grandTotal = subtotal + taxTotal + shippingTotal;
+                const insertPO: any = {
+                    organizationId,
+                    poNumber,
+                    vendorId: data.vendorId,
+                    status: 'draft',
+                    issueDate: typeof data.issueDate === 'string' ? new Date(data.issueDate) : data.issueDate,
+                    expectedDate: data.expectedDate ? (typeof data.expectedDate === 'string' ? new Date(data.expectedDate) : data.expectedDate) : null,
+                    notes: (data as any).notes || null,
+                    subtotal: subtotal.toFixed(2),
+                    taxTotal: taxTotal.toFixed(2),
+                    shippingTotal: shippingTotal.toFixed(2),
+                    grandTotal: grandTotal.toFixed(2),
+                    createdByUserId: data.createdByUserId,
+                };
+                const [created] = await tx.insert(purchaseOrders).values(insertPO).returning();
+                for (const lv of lineValues) {
+                    await tx.insert(purchaseOrderLineItems).values({ ...lv, purchaseOrderId: created.id } as any);
+                }
+                const lines = await tx.select().from(purchaseOrderLineItems).where(eq(purchaseOrderLineItems.purchaseOrderId, created.id));
+                return { ...created, lineItems: lines } as any;
             });
-            const subtotal = lineValues.reduce((sum, li) => sum + Number(li.lineTotal), 0);
-            const taxTotal = 0;
-            const shippingTotal = 0;
-            const grandTotal = subtotal + taxTotal + shippingTotal;
-            const insertPO: any = {
-                organizationId,
-                poNumber,
-                vendorId: data.vendorId,
-                status: 'draft',
-                issueDate: typeof data.issueDate === 'string' ? new Date(data.issueDate) : data.issueDate,
-                expectedDate: data.expectedDate ? (typeof data.expectedDate === 'string' ? new Date(data.expectedDate) : data.expectedDate) : null,
-                notes: (data as any).notes || null,
-                subtotal: subtotal.toFixed(2),
-                taxTotal: taxTotal.toFixed(2),
-                shippingTotal: shippingTotal.toFixed(2),
-                grandTotal: grandTotal.toFixed(2),
-                createdByUserId: data.createdByUserId,
-            };
-            const [created] = await tx.insert(purchaseOrders).values(insertPO).returning();
-            for (const lv of lineValues) {
-                await tx.insert(purchaseOrderLineItems).values({ ...lv, purchaseOrderId: created.id } as any);
-            }
-            const lines = await tx.select().from(purchaseOrderLineItems).where(eq(purchaseOrderLineItems.purchaseOrderId, created.id));
-            return { ...created, lineItems: lines } as any;
-        });
+        } catch (error) {
+            if (isDocumentNumberUniqueViolation(error)) throw toDocumentNumberConflictError(error);
+            throw error;
+        }
     }
 
     async updatePurchaseOrder(organizationId: string, id: string, data: UpdatePurchaseOrder): Promise<PurchaseOrder & { lineItems: PurchaseOrderLineItem[] }> {
