@@ -1701,6 +1701,99 @@ export class InboundOrdersRepository {
     });
   }
 
+  async createCustomerWithPrimaryContactAndMatchInbound(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    actorUserId: string;
+    companyName: string;
+    customerEmail?: string | null;
+    customerPhone?: string | null;
+    contactFirstName?: string | null;
+    contactLastName?: string | null;
+    contactEmail?: string | null;
+    contactPhone?: string | null;
+    staffNote?: string | null;
+  }): Promise<{ record: InboundOrderRecord; customer: Customer; contact: CustomerContact | null } | null> {
+    return this.dbInstance.transaction(async (tx) => {
+      const [customer] = await tx
+        .insert(customers)
+        .values({
+          organizationId: args.organizationId,
+          companyName: args.companyName,
+          customerType: "business",
+          email: args.customerEmail ?? args.contactEmail ?? null,
+          phone: args.customerPhone ?? args.contactPhone ?? null,
+          status: "active",
+          isActive: true,
+          notes: args.staffNote ?? "Created from inbound order customer resolution.",
+        })
+        .returning();
+
+      if (!customer) throw new Error("Failed to create inbound customer");
+
+      let contact: CustomerContact | null = null;
+      if (args.contactEmail || args.contactFirstName || args.contactLastName || args.contactPhone) {
+        const [createdContact] = await tx
+          .insert(customerContacts)
+          .values({
+            organizationId: args.organizationId,
+            customerId: customer.id,
+            firstName: args.contactFirstName || "Unknown",
+            lastName: args.contactLastName || "Contact",
+            email: args.contactEmail ?? null,
+            phone: args.contactPhone ?? null,
+            isPrimary: true,
+            status: "active",
+          })
+          .returning();
+        if (!createdContact) throw new Error("Failed to create inbound customer contact");
+        contact = createdContact;
+        await tx.insert(customerContactLinks).values({
+          organizationId: args.organizationId,
+          customerId: customer.id,
+          contactId: createdContact.id,
+          status: "active",
+          isPrimary: true,
+        });
+      }
+
+      const [record] = await tx
+        .update(inboundOrderRecords)
+        .set({
+          matchedCustomerId: customer.id,
+          matchedContactId: contact?.id ?? null,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(inboundOrderRecords.organizationId, args.organizationId),
+          eq(inboundOrderRecords.id, args.inboundRecordId),
+        ))
+        .returning();
+
+      if (!record) return null;
+
+      await tx.insert(inboundOrderEvents).values({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+        actorUserId: args.actorUserId,
+        actorType: "user",
+        eventType: "review.customer_created",
+        fromStatus: record.status,
+        toStatus: record.status,
+        message: args.staffNote ?? null,
+        metadataJson: {
+          customerId: customer.id,
+          customerName: customer.companyName,
+          contactId: contact?.id ?? null,
+          contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : null,
+          contactEmail: contact?.email ?? null,
+        },
+      });
+
+      return { record, customer, contact };
+    });
+  }
+
   async resolveWarningWithEvent(args: ResolveInboundWarningInput): Promise<InboundOrderWarning | null> {
     return this.dbInstance.transaction(async (tx) => {
       const [warning] = await tx

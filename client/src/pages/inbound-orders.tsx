@@ -7,6 +7,7 @@ import { formatDistanceToNow } from "date-fns";
 import {
   AlertTriangle,
   Calendar,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
@@ -508,7 +509,8 @@ async function readJson<T>(url: string): Promise<T> {
         ? json.error
         : "Request failed";
     const error = new Error(message) as Error & { errors?: string[] };
-    if (Array.isArray(json?.errors)) error.errors = json.errors.filter((item: unknown): item is string => typeof item === "string");
+    const structuredErrors = Array.isArray(json?.errors) ? json.errors : Array.isArray(json?.blockers) ? json.blockers : [];
+    if (Array.isArray(structuredErrors)) error.errors = structuredErrors.filter((item: unknown): item is string => typeof item === "string");
     throw error;
   }
 
@@ -5493,6 +5495,7 @@ function CleanOrderWorkstation({
   isConverting,
   markReadyError,
   convertError,
+  quoteError,
   isRejecting,
   isCleaningUp,
   rejectDisabled,
@@ -5500,6 +5503,7 @@ function CleanOrderWorkstation({
   onMarkReady,
   onReopen,
   onConvert,
+  onConvertQuote,
   onReject,
   onQueueAction,
   onDirtyChange,
@@ -5520,6 +5524,7 @@ function CleanOrderWorkstation({
   isConverting: boolean;
   markReadyError: (Error & { errors?: string[] }) | null;
   convertError: (Error & { errors?: string[] }) | null;
+  quoteError: (Error & { errors?: string[] }) | null;
   isRejecting: boolean;
   isCleaningUp: boolean;
   rejectDisabled: boolean;
@@ -5527,6 +5532,7 @@ function CleanOrderWorkstation({
   onMarkReady: (draft: ReviewDraftFormState, dirty: boolean) => Promise<void>;
   onReopen: () => Promise<void>;
   onConvert: () => Promise<void>;
+  onConvertQuote: () => Promise<void>;
   onReject: () => void;
   onQueueAction: (action: InboundQueueCleanupAction) => void;
   onDirtyChange: (recordId: string | null, dirty: boolean) => void;
@@ -5536,15 +5542,32 @@ function CleanOrderWorkstation({
   onFocusTarget: CleanFocusTargetHandler;
   onOpenAttachment: (recordId: string, file: ClientInboundOrderFile) => void;
 }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
   const [productSearch, setProductSearch] = useState("");
+  const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [contactSearch, setContactSearch] = useState("");
+  const [newCompanyName, setNewCompanyName] = useState("");
+  const [newContactName, setNewContactName] = useState("");
+  const [newContactEmail, setNewContactEmail] = useState("");
   const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
   useEffect(() => {
     if (reviewDraft) setBaseForm(cloneReviewDraft(reviewDraft));
   }, [reviewDraft?.snapshotId, reviewDraft?.updatedAt, reviewDraft?.status]);
   useEffect(() => {
     setProductSearch("");
+    setCustomerSearch("");
+    setContactSearch("");
+    setCustomerDialogOpen(false);
   }, [selectedRecord?.id]);
+  useEffect(() => {
+    if (!form) return;
+    setNewCompanyName(form.reviewedCustomerJson.companyName ?? "");
+    setNewContactName(form.reviewedCustomerJson.sourceName ?? "");
+    setNewContactEmail(form.reviewedCustomerJson.sourceEmail ?? "");
+  }, [selectedRecord?.id, form?.reviewedCustomerJson.companyName, form?.reviewedCustomerJson.sourceName, form?.reviewedCustomerJson.sourceEmail]);
   const productSearchQuery = useQuery({
     queryKey: ["/api/inbound-orders/product-search", "clean", productSearch],
     queryFn: () => {
@@ -5553,6 +5576,53 @@ function CleanOrderWorkstation({
       return readJson<InboundProductSearchResponse>(`/api/inbound-orders/product-search?${params.toString()}`);
     },
     enabled: Boolean(selectedRecord && draftPreview?.draft && reviewDraft),
+  });
+  const selectedCustomerId = form?.reviewedCustomerJson.selectedCustomerId ?? null;
+  const customerSearchQuery = useQuery({
+    queryKey: ["/api/inbound-orders/customer-search", "clean", customerSearch],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: "20" });
+      if (customerSearch.trim()) params.set("search", customerSearch.trim());
+      return readJson<InboundCustomerSearchResponse>(`/api/inbound-orders/customer-search?${params.toString()}`);
+    },
+    enabled: Boolean(selectedRecord && draftPreview?.draft && reviewDraft && customerDialogOpen),
+  });
+  const contactSearchQuery = useQuery({
+    queryKey: ["/api/inbound-orders/contact-search", "clean", selectedCustomerId, contactSearch],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: "20" });
+      if (selectedCustomerId) params.set("customerId", selectedCustomerId);
+      if (contactSearch.trim()) params.set("search", contactSearch.trim());
+      return readJson<InboundContactSearchResponse>(`/api/inbound-orders/contact-search?${params.toString()}`);
+    },
+    enabled: Boolean(selectedRecord && draftPreview?.draft && reviewDraft && customerDialogOpen),
+  });
+  const createInboundCustomerMutation = useMutation({
+    mutationFn: async ({ recordId, payload }: { recordId: string; payload: Record<string, unknown> }) => (
+      postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/create-customer`, payload)
+    ),
+    onSuccess: async (response, variables) => {
+      const record = response.data.record;
+      updateCustomer({
+        selectedCustomerId: record.matchedCustomerId,
+        selectedCustomerSource: "staff_selected",
+        selectedCustomerReason: "Staff created customer from reviewed inbound candidate.",
+        selectedCustomerConfidence: null,
+        selectedContactId: record.matchedContactId,
+        selectedContactSource: record.matchedContactId ? "staff_selected" : null,
+        selectedContactReason: record.matchedContactId ? "Staff created primary contact from reviewed inbound sender." : null,
+        selectedContactConfidence: null,
+        unresolvedCustomer: false,
+        unresolvedContact: false,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId] });
+      setCustomerDialogOpen(false);
+      toast({ title: "Customer assigned", description: "New customer was created and assigned to this inbound record." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Customer creation failed", description: error.message, variant: "destructive" });
+    },
   });
   const dirty = Boolean(form && baseForm && !formStatesEqual(form, baseForm));
   useEffect(() => {
@@ -5570,6 +5640,9 @@ function CleanOrderWorkstation({
 
   const updateOrder = (patch: Partial<ReviewDraftFormState["reviewedOrderJson"]>) => {
     updateForm({ reviewedOrderJson: { ...form.reviewedOrderJson, ...patch } });
+  };
+  const updateCustomer = (patch: Partial<ReviewDraftFormState["reviewedCustomerJson"]>) => {
+    updateForm({ reviewedCustomerJson: { ...form.reviewedCustomerJson, ...patch } });
   };
   const updateLineItem = (index: number, patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => {
     updateForm({
@@ -5623,6 +5696,14 @@ function CleanOrderWorkstation({
     });
   };
   const productCatalogOptions = (productSearchQuery.data?.data ?? []).map(productToReviewOption);
+  const customerOptions = mergeReviewOptions(
+    (draftPreview.draft.customer.customerCandidates ?? []).map(candidateToReviewOption),
+    (customerSearchQuery.data?.data ?? []).map(customerToReviewOption),
+  );
+  const contactOptions = mergeReviewOptions(
+    (draftPreview.draft.customer.contactCandidates ?? []).map(candidateToReviewOption),
+    (contactSearchQuery.data?.data ?? []).map(contactToReviewOption),
+  );
   const inboundFiles = dedupeAttachmentFiles(detail?.files ?? []);
   const storedAttachmentLinks = dedupeAttachmentFiles(detail?.files ?? [])
     .map((file) => artworkLinkFromInboundFile(file, "staff_selected"))
@@ -5634,6 +5715,7 @@ function CleanOrderWorkstation({
   ]).filter((link) => link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK");
   const validationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
   const conversionErrors = convertError?.errors ?? [];
+  const quoteErrors = quoteError?.errors ?? [];
   const unresolvedPricingIssues = form.reviewedLineItemsJson.flatMap((lineItem, index) => (
     lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)
       ? [`Line ${index + 1}: PO price differs from system price.`]
@@ -5650,6 +5732,20 @@ function CleanOrderWorkstation({
     ...validationErrors,
   ].filter(Boolean) as string[];
   const canCreateDraftOrder = selectedRecord.status === "ready" && reviewDraft.status === "ready_to_convert" && validationErrors.length === 0;
+  const quoteBlockers = [
+    !form.reviewedCustomerJson.selectedCustomerId ? "Assign a permanent customer before creating a draft quote." : null,
+    form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
+    ...form.reviewedLineItemsJson.flatMap((lineItem, index) => [
+      !lineItem.quantity ? `Line ${index + 1}: enter quantity.` : null,
+      !lineItem.selectedProductId ? `Line ${index + 1}: select a product.` : null,
+      !lineItem.width || !lineItem.height ? `Line ${index + 1}: enter size.` : null,
+    ]),
+  ].filter(Boolean) as string[];
+  const quoteWarnings = [
+    form.reviewedArtworkJson.status === "missing" ? "Artwork missing: this will be carried as a quote warning." : null,
+    form.reviewedArtworkJson.status === "to_follow" ? "Artwork to follow: this will be carried as a quote warning." : null,
+  ].filter(Boolean) as string[];
+  const canCreateDraftQuote = quoteBlockers.length === 0 && !isConverting;
   const actionPending = isSaving || isMarkingReady || isReopening || isConverting;
   const cleanDraft = draftPreview.draft;
   const evidenceConflictItems = cleanUniqueItems([
@@ -5682,6 +5778,12 @@ function CleanOrderWorkstation({
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
   const firstLineSize = firstLine?.width && firstLine?.height ? `${firstLine.width} x ${firstLine.height}${firstLine.dimensionsUnit ? ` ${firstLine.dimensionsUnit}` : ""}` : null;
   const firstLineArtworkLinked = firstLine?.artworkLinks.some((link) => link.source !== "staff_removed") || form.reviewedArtworkJson.status === "supplied";
+  const assignedCustomer = Boolean(form.reviewedCustomerJson.selectedCustomerId);
+  const suggestedCustomer = form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || null;
+  const assignedCustomerLabel = assignedCustomer
+    ? (form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.selectedCustomerId)
+    : "Customer not assigned";
+  const splitContactName = (newContactName || "").trim().split(/\s+/).filter(Boolean);
   const completionChecklist = cleanCompletionChecklist(form, reviewDraft);
   const remainingChecklistItems = completionChecklist.filter((item) => !item.complete).length;
   const blockingDecisionCount = remainingChecklistItems + blockingDecisionItems.length;
@@ -5719,12 +5821,118 @@ function CleanOrderWorkstation({
         >
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="truncate text-sm font-bold">{form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || "Customer unresolved"}</div>
-              <div className="truncate text-xs text-slate-500">{form.reviewedCustomerJson.sourceEmail || "No contact selected"}</div>
+              <div className="flex items-center gap-2">
+                {assignedCustomer ? <CheckCircle2 className="h-4 w-4 text-emerald-200" aria-hidden="true" /> : <AlertTriangle className="h-4 w-4 text-amber-200" aria-hidden="true" />}
+                <div className="truncate text-sm font-bold">{assignedCustomerLabel}</div>
+              </div>
+              <div className="truncate text-xs text-slate-400">
+                {assignedCustomer ? "Assigned customer" : suggestedCustomer ? `Suggested: ${suggestedCustomer}` : "No parsed customer candidate"}
+              </div>
+              <div className="truncate text-xs text-slate-500">{form.reviewedCustomerJson.sourceEmail || "No sender email"}</div>
             </div>
-            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200">Change</Button>
+            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={() => setCustomerDialogOpen(true)}>
+              {assignedCustomer ? "Reassign customer" : "Assign customer"}
+            </Button>
           </div>
         </div>
+        <Dialog open={customerDialogOpen} onOpenChange={setCustomerDialogOpen}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>{assignedCustomer ? "Reassign customer" : "Assign customer"}</DialogTitle>
+              <DialogDescription>
+                Parsed customer text is only a suggestion. Select an existing customer or explicitly create a new one.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4">
+              <div className="rounded-md border border-border bg-muted/20 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Parsed customer candidate</div>
+                <div className="mt-1 text-sm font-medium text-foreground">{suggestedCustomer || "No company parsed"}</div>
+                <div className="text-xs text-muted-foreground">{form.reviewedCustomerJson.sourceName || "No parsed contact"} / {form.reviewedCustomerJson.sourceEmail || "No sender email"}</div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <SearchableReviewSelector
+                  label="Assigned customer"
+                  searchLabel="Search existing customers"
+                  searchPlaceholder="Search companies, emails, contacts"
+                  value={form.reviewedCustomerJson.selectedCustomerId}
+                  searchValue={customerSearch}
+                  options={customerOptions}
+                  isLoading={customerSearchQuery.isFetching}
+                  onSearchChange={setCustomerSearch}
+                  onChange={(customerId) => updateCustomer({
+                    selectedCustomerId: customerId,
+                    selectedCustomerSource: customerId ? "staff_selected" : null,
+                    selectedCustomerReason: customerId ? "Staff selected customer in Clean View." : null,
+                    selectedCustomerConfidence: null,
+                    selectedContactId: null,
+                    selectedContactSource: null,
+                    selectedContactReason: null,
+                    selectedContactConfidence: null,
+                    unresolvedCustomer: false,
+                    unresolvedContact: false,
+                  })}
+                />
+                <SearchableReviewSelector
+                  label="Assigned contact"
+                  searchLabel="Search contacts"
+                  searchPlaceholder={form.reviewedCustomerJson.selectedCustomerId ? "Search selected customer contacts" : "Search contacts"}
+                  value={form.reviewedCustomerJson.selectedContactId}
+                  searchValue={contactSearch}
+                  options={contactOptions}
+                  isLoading={contactSearchQuery.isFetching}
+                  onSearchChange={setContactSearch}
+                  onChange={(contactId) => updateCustomer({
+                    selectedContactId: contactId,
+                    selectedContactSource: contactId ? "staff_selected" : null,
+                    selectedContactReason: contactId ? "Staff selected contact in Clean View." : null,
+                    selectedContactConfidence: null,
+                    unresolvedContact: false,
+                  })}
+                />
+              </div>
+              <div className="rounded-md border border-border p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Create new company</div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <OrderEntryField label="Company name">
+                    <Input value={newCompanyName} onChange={(event) => setNewCompanyName(event.target.value)} />
+                  </OrderEntryField>
+                  <OrderEntryField label="Contact name">
+                    <Input value={newContactName} onChange={(event) => setNewContactName(event.target.value)} />
+                  </OrderEntryField>
+                  <OrderEntryField label="Contact email">
+                    <Input value={newContactEmail} onChange={(event) => setNewContactEmail(event.target.value)} />
+                  </OrderEntryField>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="mt-3"
+                  disabled={!newCompanyName.trim() || createInboundCustomerMutation.isPending}
+                  onClick={() => {
+                    if (!selectedRecord) return;
+                    createInboundCustomerMutation.mutate({
+                      recordId: selectedRecord.id,
+                      payload: {
+                        companyName: newCompanyName.trim(),
+                        contactFirstName: splitContactName.slice(0, -1).join(" ") || splitContactName[0] || null,
+                        contactLastName: splitContactName.length > 1 ? splitContactName[splitContactName.length - 1] : null,
+                        contactEmail: trimToNull(newContactEmail),
+                        customerEmail: trimToNull(newContactEmail),
+                        staffNote: "Created from Inbound Orders Clean View customer resolution.",
+                      },
+                    });
+                  }}
+                >
+                  {createInboundCustomerMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Create and assign
+                </Button>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setCustomerDialogOpen(false)}>Done</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
         <div className="mb-3 rounded border border-blue-400/30 bg-blue-400/10 p-3" data-testid="clean-ai-summary">
           <div className="mb-2 text-xs font-bold uppercase tracking-wide text-blue-100">Order Summary</div>
           <div className="grid gap-1">
@@ -5857,10 +6065,10 @@ function CleanOrderWorkstation({
                     data-complete={item.complete ? "true" : "false"}
                     onClick={() => focusResolutionTarget(item.target)}
                   >
-                    <span className={cn("flex h-4 w-4 items-center justify-center rounded border text-[10px]", item.complete ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-600 text-slate-500")}>
-                      {item.complete ? "x" : ""}
+                    <span className={cn("flex h-4 w-4 items-center justify-center rounded border text-[10px]", item.complete ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-amber-400/70 bg-amber-400/10 text-amber-100")}>
+                      {item.complete ? <CheckCircle2 className="h-3 w-3" aria-label="Complete" /> : <AlertTriangle className="h-3 w-3" aria-label="Warning" />}
                     </span>
-                    <span>{item.label}</span>
+                    <span>{item.label}: {item.complete ? "Complete" : "Needs review"}</span>
                   </button>
                 ))}
               </div>
@@ -5924,6 +6132,8 @@ function CleanOrderWorkstation({
         </CleanSupportDetails>
       </div>
       <div className="shrink-0 border-t border-slate-700 bg-slate-900 px-3 py-2">
+        {quoteWarnings.length > 0 && <div className="mb-2 text-xs text-amber-200">{quoteWarnings.join(" ")}</div>}
+        {quoteErrors.length > 0 && <div className="mb-2 text-xs text-red-300">{quoteErrors.join(" ")}</div>}
         {conversionErrors.length > 0 && <div className="mb-2 text-xs text-red-300">{conversionErrors.join(" ")}</div>}
         <div className="flex flex-wrap justify-end gap-2">
           <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={onReject} disabled={rejectDisabled || isCleaningUp}>{isRejecting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}Reject</Button>
@@ -5933,13 +6143,17 @@ function CleanOrderWorkstation({
           ) : (
             <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs" onClick={() => { void onMarkReady(form, dirty).catch(() => undefined); }} disabled={isMarkingReady}>{isMarkingReady && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}Mark Ready</Button>
           )}
-          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs" disabled>Convert to Draft Quote</Button>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs" onClick={() => { void onConvertQuote().catch(() => undefined); }} disabled={!canCreateDraftQuote || isConverting} title={quoteBlockers[0] ?? quoteWarnings[0] ?? "Create draft quote"}>
+            {isConverting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+            Convert to Draft Quote
+          </Button>
           <Button type="button" size="sm" className="h-8 px-2 text-xs" onClick={() => { void onConvert().catch(() => undefined); }} disabled={!canCreateDraftOrder || isConverting}>
             {isConverting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
             Convert to Draft Order
           </Button>
         </div>
-        {minimumConversionIssues.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{minimumConversionIssues[0]}</div>}
+        {quoteBlockers.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{quoteBlockers[0]}</div>}
+        {quoteBlockers.length === 0 && minimumConversionIssues.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{minimumConversionIssues[0]}</div>}
       </div>
     </section>
   );
@@ -8907,6 +9121,34 @@ export default function InboundOrdersPage() {
     },
   });
 
+  const convertToQuoteMutation = useMutation({
+    mutationFn: (recordId: string) => (
+      postJson<{ success: true; data: { quote: { id: string; quoteNumber: number | null; reference: string }; inbound: ClientInboundOrderDetailResponse["data"] } }>(
+        `/api/inbound-orders/${recordId}/create-quote-draft`,
+        {},
+      )
+    ),
+    onSuccess: async (response, recordId) => {
+      if (response.data.inbound) {
+        queryClient.setQueryData(["/api/inbound-orders", recordId], {
+          success: true,
+          data: response.data.inbound as any,
+        } satisfies ClientInboundOrderDetailResponse);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] });
+      toast({
+        title: "Draft quote created",
+        description: `Quote ${response.data.quote.reference} was created from the inbound review.`,
+      });
+      if (queueFilters.statusGroup === "converted") {
+        setSelectedId(recordId);
+      } else {
+        setSelectedId(null);
+      }
+    },
+  });
+
   const isParseInFlight = Boolean(parsingRecordId) || parseMutation.isPending;
   const isSelectedRecordParsing = Boolean(selectedId && parsingRecordId === selectedId);
   const isSelectedRecordRescanning = Boolean(
@@ -9217,6 +9459,10 @@ export default function InboundOrdersPage() {
     const confirmed = window.confirm("Create a draft order from this reviewed inbound record? This will create a real order but will not release production, create proofs, invoices, fulfillment, or payments.");
     if (!confirmed) return;
     await convertToOrderMutation.mutateAsync(selectedId);
+  };
+  const convertSelectedRecordToQuote = async () => {
+    if (!selectedId || convertToQuoteMutation.isPending) return;
+    await convertToQuoteMutation.mutateAsync(selectedId);
   };
 
   const startResize = (
@@ -9568,9 +9814,10 @@ export default function InboundOrdersPage() {
               isSaving={saveReviewDraftMutation.isPending}
               isMarkingReady={markReviewDraftReadyMutation.isPending}
               isReopening={reopenReviewDraftMutation.isPending}
-              isConverting={convertToOrderMutation.isPending}
+              isConverting={convertToOrderMutation.isPending || convertToQuoteMutation.isPending}
               markReadyError={markReviewDraftReadyMutation.error as (Error & { errors?: string[] }) | null}
               convertError={convertToOrderMutation.error as (Error & { errors?: string[] }) | null}
+              quoteError={convertToQuoteMutation.error as (Error & { errors?: string[] }) | null}
               isRejecting={rejectInboundOrderMutation.isPending}
               isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
               rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
@@ -9588,6 +9835,13 @@ export default function InboundOrdersPage() {
                 await reopenReviewDraftMutation.mutateAsync(selectedId);
               }}
               onConvert={convertSelectedRecordToOrder}
+              onConvertQuote={async () => {
+                if (!selectedId) return;
+                if (cleanForm && selectedReviewDraftHasUnsavedEdits) {
+                  await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft: cleanForm });
+                }
+                await convertSelectedRecordToQuote();
+              }}
               onReject={rejectSelectedRecord}
               onQueueAction={runQueueCleanupAction}
               onDirtyChange={handleReviewDraftDirtyChange}

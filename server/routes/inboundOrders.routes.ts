@@ -163,6 +163,17 @@ const customerMatchSchema = z.object({
   staffNote: z.string().trim().max(2000).optional().nullable(),
 });
 
+const inboundCustomerCreateSchema = z.object({
+  companyName: z.string().trim().min(1).max(255),
+  customerEmail: z.string().trim().email().optional().nullable(),
+  customerPhone: z.string().trim().max(80).optional().nullable(),
+  contactFirstName: z.string().trim().max(120).optional().nullable(),
+  contactLastName: z.string().trim().max(120).optional().nullable(),
+  contactEmail: z.string().trim().email().optional().nullable(),
+  contactPhone: z.string().trim().max(80).optional().nullable(),
+  staffNote: z.string().trim().max(2000).optional().nullable(),
+});
+
 const inboundEmailPullLatestSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
@@ -1844,6 +1855,40 @@ export function registerInboundOrderRoutes(
     }
   });
 
+  app.post("/api/inbound-orders/:id/create-customer", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const input = inboundCustomerCreateSchema.parse(req.body ?? {});
+      const detail = await service.createCustomerForInbound({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
+        ...input,
+      });
+
+      res.status(201).json({ success: true, data: detail });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        const message = fromZodError(error).message;
+        return res.status(400).json({ success: false, message, blockers: [message], warnings: [] });
+      }
+
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ success: false, message: error.message, blockers: [error.message], warnings: [] });
+      }
+
+      console.error("Error creating inbound customer:", error);
+      res.status(500).json({ success: false, message: "Failed to create inbound customer", blockers: [], warnings: [] });
+    }
+  });
+
   app.post("/api/inbound-orders/:id/line-items/:lineItemId/match-product", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -1962,17 +2007,25 @@ export function registerInboundOrderRoutes(
       const actorUserId = getUserId(req.user);
       if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
 
-      res.status(409).json({
-        success: false,
-        message: "Inbound Orders Phase 1 is review-only. Draft conversion is not enabled yet.",
+      const result = await service.createQuoteDraftFromInbound({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
       });
+
+      res.json({ success: true, data: result });
     } catch (error) {
       if (error instanceof InboundOrderTransitionError) {
-        return res.status(error.statusCode).json({ message: error.message });
+        return res.status(error.statusCode).json({
+          success: false,
+          message: error.message,
+          blockers: [error.message],
+          warnings: [],
+        });
       }
 
       console.error("Error creating quote draft from inbound order:", error);
-      res.status(500).json({ message: "Failed to create quote draft from inbound order" });
+      res.status(500).json({ success: false, message: "Failed to create quote draft from inbound order", blockers: [], warnings: [] });
     }
   });
 
