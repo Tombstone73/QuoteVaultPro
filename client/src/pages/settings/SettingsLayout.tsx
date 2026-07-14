@@ -35,7 +35,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { AlertTriangle, ChevronDown, CircleHelp, Loader2, Ticket } from "lucide-react";
+import { AlertTriangle, ChevronDown, CircleHelp, Loader2, Printer, Ticket } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   useProductionLineItemStatusRules,
@@ -192,6 +192,12 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     path: "/settings/production", 
     icon: Factory,
     description: "Production workflow settings"
+  },
+  {
+    label: "Printers",
+    path: "/settings/printers",
+    icon: Printer,
+    description: "Production ticket and document printer profiles"
   },
   { 
     label: "Inventory & Procurement", 

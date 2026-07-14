@@ -18,6 +18,7 @@ import { CustomersRepository } from "./customers.repo";
 import { QuotesRepository } from "./quotes.repo";
 import { OrdersRepository } from "./orders.repo";
 import { ImportRepository } from "./import.repo";
+import { PrinterProfilesRepository } from "./printerProfiles.repo";
 
 // Instantiate all repositories
 const auditRepo = new AuditRepository(db);
@@ -29,12 +30,25 @@ const customersRepo = new CustomersRepository(db);
 const quotesRepo = new QuotesRepository(db);
 const ordersRepo = new OrdersRepository(db);
 const importRepo = new ImportRepository(db);
+const printerProfilesRepo = new PrinterProfilesRepository(db);
 
 // =============================
 // Audit Repository Exports
 // =============================
 export const createAuditLog = auditRepo.createAuditLog.bind(auditRepo);
 export const getAuditLogs = auditRepo.getAuditLogs.bind(auditRepo);
+
+// =============================
+// Printer Profile Repository Exports
+// =============================
+export const listPrinterProfiles = printerProfilesRepo.listPrinterProfiles.bind(printerProfilesRepo);
+export const getPrinterProfile = printerProfilesRepo.getPrinterProfile.bind(printerProfilesRepo);
+export const createPrinterProfile = printerProfilesRepo.createPrinterProfile.bind(printerProfilesRepo);
+export const updatePrinterProfile = printerProfilesRepo.updatePrinterProfile.bind(printerProfilesRepo);
+export const setDefaultPrinterProfile = printerProfilesRepo.setDefaultPrinterProfile.bind(printerProfilesRepo);
+export const deactivatePrinterProfile = printerProfilesRepo.deactivatePrinterProfile.bind(printerProfilesRepo);
+export const deletePrinterProfile = printerProfilesRepo.deletePrinterProfile.bind(printerProfilesRepo);
+export const markPrinterProfileUsed = printerProfilesRepo.markPrinterProfileUsed.bind(printerProfilesRepo);
 
 // =============================
 // Accounting Repository Exports (Vendors & Purchase Orders)
@@ -320,6 +334,16 @@ export const storage = {
     // Audit
     createAuditLog,
     getAuditLogs,
+
+    // Printer Profiles
+    listPrinterProfiles,
+    getPrinterProfile,
+    createPrinterProfile,
+    updatePrinterProfile,
+    setDefaultPrinterProfile,
+    deactivatePrinterProfile,
+    deletePrinterProfile,
+    markPrinterProfileUsed,
 
     // Accounting
     getVendors,

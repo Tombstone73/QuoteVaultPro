@@ -248,6 +248,7 @@ import { registerPbv2OptionGroupTemplateRoutes } from './routes/pbv2OptionGroupT
 import { registerPortalRoutes } from './routes/portal.routes';
 import { registerPortalFollowUpRoutes } from './routes/portalFollowUps.routes';
 import { registerStaffPortalPreviewRoutes } from './routes/staffPortalPreview.routes';
+import { registerPrinterProfileRoutes } from './routes/printerProfiles.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -429,6 +430,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerPortalProofRoutes(app);
   // Production config routes extracted to ./routes/productionConfig.routes.ts (do NOT re-add here)
   registerProductionConfigRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner, assertInternalUser });
+  registerPrinterProfileRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner });
   // Production jobs routes extracted to ./routes/productionJobs.routes.ts (do NOT re-add here)
   registerProductionJobsRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner, assertInternalUser });
   registerProductionAlertRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });

@@ -33,6 +33,7 @@ import {
   ticketReasonBanner,
 } from "@/lib/ticketPrintOverrides";
 import { useStationPrinter } from "@/hooks/useStationPrinter";
+import { markPrinterProfileUsed } from "@/hooks/usePrinterProfiles";
 import { PrinterPicker } from "@/components/production/PrinterPicker";
 import {
   CenteredMessage,
@@ -177,6 +178,11 @@ export default function ProductionTicketPage() {
   }
 
   function handlePrint() {
+    if (printer.profiles.length > 0 && !printer.selectedProfile) {
+      window.alert("Select a printer profile before printing.");
+      return;
+    }
+    if (printer.selectedProfile) void markPrinterProfileUsed(printer.selectedProfile.id);
     window.print();
     // Best-effort print-history logging (skipped for the sample ticket).
     if (!isSample && jobId) {
@@ -188,9 +194,14 @@ export default function ProductionTicketPage() {
 
   function handleReprint() {
     if (reprint.isPending) return;
+    if (printer.profiles.length > 0 && !printer.selectedProfile) {
+      window.alert("Select a printer profile before reprinting.");
+      return;
+    }
     reprint.mutate(undefined, {
       // Give the toast/query a tick to settle, then open the print dialog.
       onSuccess: () => {
+        if (printer.selectedProfile) void markPrinterProfileUsed(printer.selectedProfile.id);
         if (jobId) void logTicketPrint(jobId, buildLogMeta("reprint"));
         window.setTimeout(() => window.print(), 150);
       },
@@ -234,7 +245,7 @@ export default function ProductionTicketPage() {
           )}
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            <Button onClick={handlePrint} size="sm" className="gap-1.5">
+            <Button onClick={handlePrint} size="sm" className="gap-1.5" disabled={printer.profiles.length > 0 && !printer.selectedProfile}>
               <Printer className="h-4 w-4" /> Print Ticket
             </Button>
             {!isSample && (
@@ -242,7 +253,7 @@ export default function ProductionTicketPage() {
                 onClick={handleReprint}
                 size="sm"
                 variant="secondary"
-                disabled={reprint.isPending}
+                disabled={reprint.isPending || (printer.profiles.length > 0 && !printer.selectedProfile)}
                 className="gap-1.5"
               >
                 <RotateCcw className="h-4 w-4" /> Reprint

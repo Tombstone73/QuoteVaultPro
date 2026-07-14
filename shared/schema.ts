@@ -2134,6 +2134,57 @@ export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
 
+export const printerProfileTypeValues = ["production_ticket", "shipping_label", "office_document", "other"] as const;
+export const printerProfileScopeValues = ["organization"] as const;
+
+export const printerProfiles = pgTable("printer_profiles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  displayName: varchar("display_name", { length: 160 }).notNull(),
+  printerType: varchar("printer_type", { length: 40 }).notNull().$type<typeof printerProfileTypeValues[number]>(),
+  intendedUse: varchar("intended_use", { length: 80 }).notNull().default("production_ticket"),
+  stationRoute: varchar("station_route", { length: 120 }),
+  scope: varchar("scope", { length: 40 }).notNull().default("organization").$type<typeof printerProfileScopeValues[number]>(),
+  isActive: boolean("is_active").notNull().default(true),
+  isDefault: boolean("is_default").notNull().default(false),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("printer_profiles_org_idx").on(table.organizationId),
+  index("printer_profiles_org_active_idx").on(table.organizationId, table.isActive),
+  index("printer_profiles_org_type_idx").on(table.organizationId, table.printerType),
+  uniqueIndex("printer_profiles_org_default_use_uidx")
+    .on(table.organizationId, table.intendedUse)
+    .where(sql`${table.isDefault} = true AND ${table.isActive} = true`),
+]);
+
+export const insertPrinterProfileSchema = createInsertSchema(printerProfiles).omit({
+  id: true,
+  organizationId: true,
+  createdByUserId: true,
+  updatedByUserId: true,
+  createdAt: true,
+  updatedAt: true,
+  lastUsedAt: true,
+}).extend({
+  displayName: z.string().trim().min(1).max(160),
+  printerType: z.enum(printerProfileTypeValues),
+  intendedUse: z.string().trim().min(1).max(80).default("production_ticket"),
+  stationRoute: z.string().trim().max(120).optional().nullable(),
+  scope: z.enum(printerProfileScopeValues).default("organization"),
+  isActive: z.boolean().default(true),
+  isDefault: z.boolean().default(false),
+});
+
+export const updatePrinterProfileSchema = insertPrinterProfileSchema.partial();
+
+export type PrinterProfile = typeof printerProfiles.$inferSelect;
+export type InsertPrinterProfile = z.infer<typeof insertPrinterProfileSchema>;
+export type UpdatePrinterProfile = z.infer<typeof updatePrinterProfileSchema>;
+
 export type PortalFollowUpEventType =
   | "QUOTE_APPROVED"
   | "QUOTE_DECLINED"
