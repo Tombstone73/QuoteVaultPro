@@ -12,12 +12,33 @@ import {
   resetCustomerPortalPassword,
   suspendCustomerPortalAccess,
 } from "../services/customerPortalAccessService";
+import {
+  listPortalOnboardingBatches,
+  listPortalOnboardingCompanies,
+  portalOnboardingRowsToCsv,
+  runPortalOnboardingAction,
+} from "../services/customerPortalOnboardingService";
 
 type AdminRouteDeps = {
   isAuthenticated: RequestHandler;
   tenantContext: RequestHandler;
   requireOrgOwnerAdmin: RequestHandler;
 };
+
+const portalOnboardingActionSchema = z.object({
+  action: z.enum([
+    "enable_companies",
+    "invite_selected_contacts",
+    "invite_all_eligible_contacts",
+    "resend_expired_invitations",
+    "suspend_portal_users",
+  ]),
+  customerIds: z.array(z.string()).optional(),
+  contactIds: z.array(z.string()).optional(),
+  accessIds: z.array(z.string()).optional(),
+  accessRoles: z.record(z.enum(["COMPANY_ADMIN", "BUYER", "BILLING", "VIEWER"])).optional(),
+  confirmation: z.string().optional(),
+});
 
 function getActorUserId(req: any): string {
   const userId = req.user?.claims?.sub || req.user?.id;
@@ -91,6 +112,63 @@ export function registerCustomerPortalInvitePublicRoutes(app: Express): void {
 
 export function registerCustomerPortalAccessAdminRoutes(app: Express, deps: AdminRouteDeps): void {
   const adminGuards = [deps.isAuthenticated, deps.tenantContext, deps.requireOrgOwnerAdmin];
+
+  app.get("/api/customer-portal-onboarding/companies", ...adminGuards, async (req, res) => {
+    try {
+      const result = await listPortalOnboardingCompanies(req.organizationId!, {
+        filter: String(req.query.filter ?? "all"),
+        search: String(req.query.search ?? ""),
+      });
+      return res.json({ success: true, data: result });
+    } catch (err) {
+      return sendRouteError(res, err);
+    }
+  });
+
+  app.get("/api/customer-portal-onboarding/export.csv", ...adminGuards, async (req, res) => {
+    try {
+      const result = await listPortalOnboardingCompanies(req.organizationId!, {
+        filter: String(req.query.filter ?? "all"),
+        search: String(req.query.search ?? ""),
+      });
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", "attachment; filename=\"customer-portal-onboarding-review.csv\"");
+      return res.send(portalOnboardingRowsToCsv(result.rows));
+    } catch (err) {
+      return sendRouteError(res, err);
+    }
+  });
+
+  app.get("/api/customer-portal-onboarding/batches", ...adminGuards, async (req, res) => {
+    try {
+      const rows = await listPortalOnboardingBatches(req.organizationId!, Number(req.query.limit ?? 10));
+      return res.json({ success: true, data: rows });
+    } catch (err) {
+      return sendRouteError(res, err);
+    }
+  });
+
+  app.post("/api/customer-portal-onboarding/actions", ...adminGuards, async (req, res) => {
+    const parsed = portalOnboardingActionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_PORTAL_ONBOARDING_ACTION",
+        message: parsed.error.issues[0]?.message ?? "Invalid portal onboarding action.",
+      });
+    }
+    try {
+      const result = await runPortalOnboardingAction({
+        organizationId: req.organizationId!,
+        actorUserId: getActorUserId(req),
+        actionInput: parsed.data,
+        req,
+      });
+      return res.json({ success: true, data: result });
+    } catch (err) {
+      return sendRouteError(res, err);
+    }
+  });
 
   app.get("/api/customers/:customerId/portal-access", ...adminGuards, async (req, res) => {
     try {
