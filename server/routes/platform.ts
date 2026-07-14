@@ -150,6 +150,9 @@ const requireStepUp: RequestHandler = async (req, res, next) => {
   // (a) Recent explicit re-auth via /api/platform/reauth
   const reauthAt = req.session.platformReauthAt;
   if (reauthAt && now - reauthAt < REAUTH_WINDOW_MS) {
+    if (req.path.includes("/customer-contact-migrations/") && req.path.endsWith("/finalize")) {
+      console.info("[platform/step-up] accepted", { path: req.path, source: "reauth" });
+    }
     return next();
   }
 
@@ -165,11 +168,17 @@ const requireStepUp: RequestHandler = async (req, res, next) => {
     if (dbUser?.lastLoginAt) {
       const loginAge = now - new Date(dbUser.lastLoginAt).getTime();
       if (loginAge < LOGIN_WINDOW_MS) {
+        if (req.path.includes("/customer-contact-migrations/") && req.path.endsWith("/finalize")) {
+          console.info("[platform/step-up] accepted", { path: req.path, source: "recent_login" });
+        }
         return next();
       }
     }
   }
 
+  if (req.path.includes("/customer-contact-migrations/") && req.path.endsWith("/finalize")) {
+    console.warn("[platform/step-up] required", { path: req.path, reason: "expired_or_missing" });
+  }
   return res.status(401).json({ success: false, code: "STEP_UP_REQUIRED" });
 };
 
@@ -803,12 +812,18 @@ export function registerPlatformRoutes(app: import("express").Express): void {
     async (req: Request, res: Response) => {
       const params = migrationBatchParamsSchema.safeParse(req.params);
       const body = migrationBatchFinalizeSchema.safeParse(req.body);
-      if (!params.success) return res.status(400).json({ success: false, message: "Invalid batch ID." });
-      if (!body.success) return res.status(400).json({ success: false, message: body.error.issues[0]?.message ?? "Invalid finalization request." });
+      if (!params.success) return res.status(400).json({ success: false, code: "INVALID_BATCH_ID", message: "Invalid batch ID." });
+      if (!body.success) return res.status(400).json({ success: false, code: "INVALID_FINALIZATION_REQUEST", message: body.error.issues[0]?.message ?? "Invalid finalization request." });
       const actorUserId = getUserId(req.user);
-      if (!actorUserId) return res.status(401).json({ success: false, message: "Unauthorized" });
+      if (!actorUserId) return res.status(401).json({ success: false, code: "UNAUTHORIZED", message: "Unauthorized" });
 
       try {
+        console.info("[platform/customer-contact-migrations] finalize request started", {
+          organizationId: body.data.organizationId,
+          batchId: params.data.batchId,
+          allowUnresolvedSkips: body.data.allowUnresolvedSkips === true,
+          stepUpAuthenticated: true,
+        });
         const result = await customerContactMigrationService.finalizeBatch(
           body.data.organizationId,
           params.data.batchId,
@@ -829,8 +844,24 @@ export function registerPlatformRoutes(app: import("express").Express): void {
         return res.json({ success: true, data: result });
       } catch (error: any) {
         const status = error?.statusCode ?? 500;
-        console.error("[platform/customer-contact-migrations] finalize error:", error);
-        return res.status(status).json({ success: false, message: error?.message ?? "Failed to finalize migration batch." });
+        const code = status === 404
+          ? "BATCH_NOT_FOUND"
+          : status === 409 && String(error?.message || "").includes("unresolved")
+            ? "UNRESOLVED_RECORDS_NOT_APPROVED"
+            : status === 409
+              ? "BATCH_NOT_READY"
+              : status === 400
+                ? "INVALID_FINALIZATION_REQUEST"
+                : "FINALIZATION_FAILED";
+        console.error("[platform/customer-contact-migrations] finalize error:", {
+          organizationId: body.data.organizationId,
+          batchId: params.data.batchId,
+          allowUnresolvedSkips: body.data.allowUnresolvedSkips === true,
+          status,
+          code,
+          message: error?.message ?? "Failed to finalize migration batch.",
+        });
+        return res.status(status).json({ success: false, code, message: error?.message ?? "Failed to finalize migration batch." });
       }
     },
   );

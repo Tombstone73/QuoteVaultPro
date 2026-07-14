@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, DatabaseZap, Download, PlayCircle, RefreshCw, Upload } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { AlertTriangle, CheckCircle2, DatabaseZap, Download, Loader2, PlayCircle, RefreshCw, Upload } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { useToast } from "@/hooks/use-toast";
 import NotFound from "@/pages/not-found";
 import { canUsePlatformTools } from "@/lib/platformAccess";
 import {
@@ -11,6 +12,7 @@ import {
   getCustomerContactMigrationQuickBooksSourceStatus,
   listCustomerContactMigrationBatches,
   listPlatformSeedOrganizations,
+  platformReauth,
   retrieveCustomerContactMigrationQuickBooksSource,
   saveCustomerContactMigrationReviewDecision,
   uploadCustomerContactMigrationQuickBooksSource,
@@ -27,6 +29,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 const reportKinds = [
   "completed-mappings",
@@ -52,8 +55,132 @@ function formatDateTime(value?: string | null) {
   return date.toLocaleString();
 }
 
+const finalizableBatchStatuses = new Set(["ready_to_finalize", "completed_with_exceptions", "needs_review"]);
+
+export type CustomerContactFinalizeState = {
+  canSubmit: boolean;
+  visibleReason: string;
+  batchStatusLabel: string;
+};
+
+export function getCustomerContactFinalizeState(args: {
+  hasDetail: boolean;
+  batchStatus?: string | null;
+  confirmationText: string;
+  remainingUnresolved: number;
+  allowUnresolvedSkips: boolean;
+  finalizing: boolean;
+  hasOrganizationId: boolean;
+}): CustomerContactFinalizeState {
+  const status = String(args.batchStatus || "none");
+  if (!args.hasDetail) {
+    return { canSubmit: false, batchStatusLabel: "No batch selected", visibleReason: "Select a migration batch before finalizing." };
+  }
+  if (!args.hasOrganizationId) {
+    return { canSubmit: false, batchStatusLabel: status, visibleReason: "Choose a target organization before finalizing." };
+  }
+  if (args.finalizing) {
+    return { canSubmit: false, batchStatusLabel: status, visibleReason: "Finalization is already running." };
+  }
+  if (!finalizableBatchStatuses.has(status)) {
+    const action = status === "completed"
+      ? "This batch is already finalized."
+      : status === "finalizing"
+        ? "Wait for the current finalization attempt to finish."
+        : status === "failed"
+          ? "Review the failure, fix the staged batch, or create a new batch."
+          : "Resolve review exceptions until the batch is ready to finalize.";
+    return { canSubmit: false, batchStatusLabel: status, visibleReason: `Batch is in ${status}; ${action}` };
+  }
+  if (args.remainingUnresolved > 0 && !args.allowUnresolvedSkips) {
+    return {
+      canSubmit: false,
+      batchStatusLabel: status,
+      visibleReason: `Approve unresolved skips or resolve the ${args.remainingUnresolved} remaining unresolved record(s).`,
+    };
+  }
+  if (args.confirmationText !== "FINALIZE") {
+    return { canSubmit: false, batchStatusLabel: status, visibleReason: "Type FINALIZE exactly to enable finalization." };
+  }
+  return { canSubmit: true, batchStatusLabel: status, visibleReason: "Ready to finalize. Step-up authentication will open if required." };
+}
+
+function CustomerContactStepUpModal({
+  open,
+  onClose,
+  onSuccess,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError(null);
+    setVerifying(true);
+    try {
+      const result = await platformReauth(password);
+      if (!result.success) {
+        setError(result.message || "Step-up authentication failed. Check your password and try again.");
+        return;
+      }
+      setPassword("");
+      onSuccess();
+    } catch {
+      setError("Step-up authentication failed because the server could not be reached.");
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  const close = () => {
+    if (verifying) return;
+    setPassword("");
+    setError(null);
+    onClose();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen) close(); }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Confirm your identity</DialogTitle>
+          <DialogDescription>
+            Finalizing this migration requires recent platform authentication.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="space-y-4">
+          <Label className="block space-y-1">
+            <span>Password</span>
+            <Input
+              type="password"
+              autoFocus
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              disabled={verifying}
+              placeholder="Enter your password"
+            />
+          </Label>
+          {error ? <div className="text-sm text-destructive">{error}</div> : null}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={close} disabled={verifying}>Cancel</Button>
+            <Button type="submit" disabled={verifying || !password}>
+              {verifying ? "Verifying..." : "Confirm"}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function CustomerContactMigrationPage() {
   const { user, isLoading } = useAuth();
+  const { toast } = useToast();
   const canAccess = canUsePlatformTools(user);
   const [organizations, setOrganizations] = useState<PlatformSeedOrganization[]>([]);
   const [organizationId, setOrganizationId] = useState("");
@@ -69,6 +196,9 @@ export default function CustomerContactMigrationPage() {
   const [batches, setBatches] = useState<CustomerContactMigrationBatch[]>([]);
   const [detail, setDetail] = useState<CustomerContactMigrationBatchDetail | null>(null);
   const [loading, setLoading] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
+  const [stepUpOpen, setStepUpOpen] = useState(false);
+  const finalizationInFlightRef = useRef(false);
   const [message, setMessage] = useState<string | null>(null);
   const [finalizeText, setFinalizeText] = useState("");
   const [allowUnresolvedSkips, setAllowUnresolvedSkips] = useState(false);
@@ -231,24 +361,89 @@ export default function CustomerContactMigrationPage() {
     }
   };
 
-  const finalizeBatch = async () => {
-    if (!detail || finalizeText !== "FINALIZE") return;
-    setLoading(true);
+  const finalizeBatch = async (source: "click" | "step_up_success" = "click") => {
+    if (finalizationInFlightRef.current) {
+      const reason = "Finalization is already running.";
+      setMessage(reason);
+      toast({ title: "Finalize already running", description: reason });
+      return;
+    }
+    const state = getCustomerContactFinalizeState({
+      hasDetail: Boolean(detail),
+      batchStatus: detail?.batch.status,
+      confirmationText: finalizeText,
+      remainingUnresolved: finalizePreview.remainingUnresolved,
+      allowUnresolvedSkips,
+      finalizing,
+      hasOrganizationId: Boolean(organizationId),
+    });
+    if (!state.canSubmit) {
+      setMessage(state.visibleReason);
+      toast({ title: "Finalize blocked", description: state.visibleReason, variant: "destructive" });
+      return;
+    }
+    if (!detail) {
+      const reason = "Select a migration batch before finalizing.";
+      setMessage(reason);
+      toast({ title: "Finalize blocked", description: reason, variant: "destructive" });
+      return;
+    }
+    finalizationInFlightRef.current = true;
+    setFinalizing(true);
     setMessage(null);
+    toast({ title: "Finalizing import", description: "Submitting finalization request..." });
     try {
       const { body, httpStatus } = await finalizeCustomerContactMigrationBatch(organizationId, detail.batch.id, allowUnresolvedSkips);
       if (!body.success) {
-        setMessage(httpStatus === 401 ? "Step-up authentication is required before finalizing." : body.message ?? "Finalize failed.");
+        if (httpStatus === 401 && body.code === "STEP_UP_REQUIRED") {
+          const promptMessage = source === "step_up_success"
+            ? "Step-up authentication expired before finalization could complete. Please confirm again."
+            : "Confirm your identity to finalize this migration.";
+          setMessage(promptMessage);
+          setStepUpOpen(true);
+          toast({ title: "Step-up required", description: promptMessage });
+          return;
+        }
+        const errorMessage = body.message ?? "Finalize failed.";
+        setMessage(errorMessage);
+        toast({ title: "Finalize failed", description: errorMessage, variant: "destructive" });
         return;
       }
-      setMessage(`Finalized ${detail.batch.id}.`);
+      const counts = body.data?.counts ?? {};
+      const summary = [
+        `Companies created ${Number(counts.newCompaniesCreated ?? 0)}`,
+        `contacts created ${Number(counts.newContactsCreated ?? 0)}`,
+        `relationships created ${Number(counts.relationshipsCreated ?? 0)}`,
+        `skipped ${Number(counts.rejectedRecords ?? 0)}`,
+        `failed ${Number(counts.failedRecords ?? 0)}`,
+      ].join(", ");
+      toast({ title: "Import finalized", description: summary });
       await refreshBatches();
       await loadDetail(detail.batch.id);
+      setMessage(`Finalized ${detail.batch.id}. ${summary}.`);
       setFinalizeText("");
       setAllowUnresolvedSkips(false);
+    } catch (error: any) {
+      const errorMessage = error?.message || "Finalize failed because the server could not be reached.";
+      setMessage(errorMessage);
+      toast({ title: "Finalize failed", description: errorMessage, variant: "destructive" });
     } finally {
-      setLoading(false);
+      finalizationInFlightRef.current = false;
+      setFinalizing(false);
     }
+  };
+
+  const handleStepUpClose = () => {
+    setStepUpOpen(false);
+    const cancelled = "Step-up authentication was cancelled. Finalization has not started.";
+    setMessage(cancelled);
+    toast({ title: "Step-up cancelled", description: cancelled, variant: "destructive" });
+  };
+
+  const handleStepUpSuccess = () => {
+    setStepUpOpen(false);
+    toast({ title: "Step-up confirmed", description: "Continuing finalization..." });
+    void finalizeBatch("step_up_success");
   };
 
   const saveReviewDecision = async (
@@ -300,9 +495,6 @@ export default function CustomerContactMigrationPage() {
       countRows(detail.contactRows, ["ambiguous_person", "company_missing", "failed"]) +
       countRows(detail.relationshipRows, ["ambiguous", "failed"])
     : 0;
-  const canFinalize = detail?.batch.status === "ready_to_finalize" ||
-    detail?.batch.status === "completed_with_exceptions" ||
-    (allowUnresolvedSkips && detail?.batch.status === "needs_review");
   const finalizePreview = detail?.finalizePreview ?? {
     companiesToCreate: 0,
     companiesToUpdate: 0,
@@ -312,6 +504,15 @@ export default function CustomerContactMigrationPage() {
     relationshipsToUpdate: 0,
     remainingUnresolved: unresolved,
   };
+  const finalizeState = getCustomerContactFinalizeState({
+    hasDetail: Boolean(detail),
+    batchStatus: detail?.batch.status,
+    confirmationText: finalizeText,
+    remainingUnresolved: finalizePreview.remainingUnresolved,
+    allowUnresolvedSkips,
+    finalizing,
+    hasOrganizationId: Boolean(organizationId),
+  });
 
   return (
     <div className="space-y-6 p-6">
@@ -592,15 +793,15 @@ export default function CustomerContactMigrationPage() {
                       placeholder="Type FINALIZE"
                       value={finalizeText}
                       onChange={(event) => setFinalizeText(event.target.value)}
-                      disabled={!canFinalize || loading}
+                      disabled={!finalizableBatchStatuses.has(String(detail.batch.status)) || loading || finalizing}
                     />
-                    <Button type="button" className="gap-2" onClick={finalizeBatch} disabled={!canFinalize || finalizeText !== "FINALIZE" || loading}>
-                      <PlayCircle className="h-4 w-4" />
-                      Finalize Import
+                    <Button type="button" className="gap-2" onClick={() => void finalizeBatch("click")} disabled={!finalizeState.canSubmit}>
+                      {finalizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
+                      {finalizing ? "Finalizing..." : "Finalize Import"}
                     </Button>
                   </div>
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Finalization is blocked unless the batch is ready and platform step-up authentication has succeeded.
+                  <p className="mt-2 text-xs text-muted-foreground" aria-live="polite">
+                    Current batch status: <span className="font-mono">{finalizeState.batchStatusLabel}</span>. {finalizeState.visibleReason}
                   </p>
                 </div>
               </>
@@ -608,6 +809,11 @@ export default function CustomerContactMigrationPage() {
           </CardContent>
         </Card>
       </div>
+      <CustomerContactStepUpModal
+        open={stepUpOpen}
+        onClose={handleStepUpClose}
+        onSuccess={handleStepUpSuccess}
+      />
     </div>
   );
 }

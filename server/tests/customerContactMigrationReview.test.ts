@@ -1,4 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
+import fs from "node:fs";
+import path from "node:path";
 import {
   buildCompanyReviewPatch,
   buildContactReviewPatch,
@@ -8,6 +10,9 @@ import {
   buildRelationshipPatchAfterCompanyDecision,
   buildStagedConsolidationCompanyPatch,
   countMigrationUnresolvedRows,
+  emptyCustomerContactFinalizeCounts,
+  finalizationCountsFromBatch,
+  isFinalizedCustomerContactBatch,
 } from "../services/customerContactMigration/service";
 
 describe("customer/contact migration review decisions", () => {
@@ -305,5 +310,41 @@ describe("customer/contact migration review decisions", () => {
         { status: "pending_company" },
       ],
     })).toBe(1);
+  });
+
+  test("already-finalized batches return idempotent finalization counts", () => {
+    const batch = {
+      status: "completed",
+      finalizedAt: new Date("2026-07-14T12:00:00.000Z"),
+      summaryJson: {
+        finalization: {
+          newCompaniesCreated: 292,
+          newContactsCreated: 296,
+          relationshipsCreated: 288,
+          rejectedRecords: 37,
+        },
+      },
+    } as any;
+
+    expect(isFinalizedCustomerContactBatch(batch)).toBe(true);
+    expect(finalizationCountsFromBatch(batch)).toMatchObject({
+      ...emptyCustomerContactFinalizeCounts(),
+      newCompaniesCreated: 292,
+      newContactsCreated: 296,
+      relationshipsCreated: 288,
+      rejectedRecords: 37,
+    });
+  });
+
+  test("finalization rollback remains transactional and does not mark the batch failed outside the transaction", () => {
+    const source = fs.readFileSync(path.join(process.cwd(), "server/services/customerContactMigration/service.ts"), "utf8");
+    const finalizeBody = source.slice(source.indexOf("async finalizeBatch"), source.indexOf("buildReportRows"));
+
+    expect(finalizeBody).toContain("isFinalizedCustomerContactBatch");
+    expect(finalizeBody).toContain("idempotent: true");
+    expect(finalizeBody).toContain("transaction_rolled_back");
+    expect(finalizeBody).not.toContain('status: "failed",\n          failingStage: "finalization"');
+    expect(finalizeBody).toContain('row.status !== "ready"');
+    expect(finalizeBody).toContain("approve_unresolved_skip");
   });
 });
