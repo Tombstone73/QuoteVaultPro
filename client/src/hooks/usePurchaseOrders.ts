@@ -19,6 +19,7 @@ export interface PurchaseOrderLineItem {
 export interface PurchaseOrder {
   id: string;
   poNumber: string;
+  relatedOrderId?: string | null;
   vendorId: string;
   status: string;
   issueDate: string;
@@ -33,7 +34,23 @@ export interface PurchaseOrder {
   createdAt: string;
   updatedAt: string;
   vendor?: any;
+  relatedOrder?: PurchaseOrderRelatedOrder | null;
   lineItems: PurchaseOrderLineItem[];
+}
+
+export interface PurchaseOrderRelatedOrder {
+  id: string;
+  orderNumber?: string | null;
+  displayNumber?: string | null;
+  jobNumber?: string | null;
+  customerName?: string | null;
+  status?: string | null;
+  state?: string | null;
+  primaryDescription?: string | null;
+  dueDate?: string | null;
+  createdAt?: string | null;
+  poNumber?: string | null;
+  label?: string | null;
 }
 
 interface POFilters {
@@ -81,10 +98,30 @@ export function usePurchaseOrder(id: string | undefined) {
 
 export interface CreatePurchaseOrderInput {
   vendorId: string;
+  relatedOrderId?: string | null;
   issueDate: string; // ISO
   expectedDate?: string | null;
   notes?: string | null;
   lineItems: Array<{ materialId?: string | null; description: string; vendorSku?: string | null; quantityOrdered: number; unitCost: number; notes?: string | null; }>; 
+}
+
+export function usePurchaseOrderRelatedOrderSearch(query: string, options?: { enabled?: boolean; recent?: boolean; limit?: number }) {
+  const trimmed = query.trim();
+  const recent = Boolean(options?.recent);
+  return useQuery<PurchaseOrderRelatedOrder[]>({
+    queryKey: ["/api/purchase-orders/related-orders/search", { q: trimmed, recent, limit: options?.limit ?? 10 }],
+    enabled: options?.enabled !== false && (recent || trimmed.length >= 2),
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (trimmed) params.set("q", trimmed);
+      if (recent) params.set("recent", "true");
+      params.set("limit", String(options?.limit ?? 10));
+      const res = await fetch(`/api/purchase-orders/related-orders/search?${params.toString()}`, { credentials: "include" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Failed to search jobs/orders");
+      return json.success ? json.data : json;
+    },
+  });
 }
 
 export function useCreatePurchaseOrder() {
@@ -99,7 +136,7 @@ export function useCreatePurchaseOrder() {
         body: JSON.stringify({ ...data, issueDate: data.issueDate, expectedDate: data.expectedDate || undefined })
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Failed to create PO");
+      if (!res.ok) throw new Error(json.error || json.message || "Failed to create PO");
       return json.success ? json.data : json;
     },
     onSuccess: () => {
@@ -122,7 +159,7 @@ export function useUpdatePurchaseOrder(id: string) {
         body: JSON.stringify(data)
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Failed to update PO");
+      if (!res.ok) throw new Error(json.error || json.message || "Failed to update PO");
       return json.success ? json.data : json;
     },
     onSuccess: () => {
@@ -159,13 +196,13 @@ export function useSendPurchaseOrder(id: string) {
     mutationFn: async () => {
       const res = await fetch(`/api/purchase-orders/${id}/send`, { method: "POST", credentials: "include" });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Failed to send purchase order");
+      if (!res.ok) throw new Error(json.error || "Failed to issue purchase order");
       return json.success ? json.data : json;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
       qc.invalidateQueries({ queryKey: ["/api/purchase-orders", id] });
-      toast({ title: "PO sent" });
+      toast({ title: "PO issued" });
     },
     onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" })
   });

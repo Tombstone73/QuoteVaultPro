@@ -1,90 +1,85 @@
 import { useState } from "react";
-import { useRoute } from "wouter";
-import { usePurchaseOrder, useSendPurchaseOrder, useDeletePurchaseOrder } from "@/hooks/usePurchaseOrders";
+import { useNavigate, useParams } from "react-router-dom";
+import { useDeletePurchaseOrder, usePurchaseOrder, useSendPurchaseOrder } from "@/hooks/usePurchaseOrders";
 import { PurchaseOrderForm } from "@/components/PurchaseOrderForm";
 import { ReceivePurchaseOrderItemsForm } from "@/components/ReceivePurchaseOrderItemsForm";
 import { Button } from "@/components/ui/button";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
-import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Page, PageHeader, ContentLayout, DataCard } from "@/components/titan";
+import { ArrowLeft, PackageCheck, Send, Trash2 } from "lucide-react";
 
 export default function PurchaseOrderDetailPage() {
-  const [match, params] = useRoute("/purchase-orders/:id");
-  const id = params?.id;
-  const { data: po } = usePurchaseOrder(id);
-  const sendMutation = useSendPurchaseOrder(id || "");
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const { data: po, isLoading } = usePurchaseOrder(id);
+  const issueMutation = useSendPurchaseOrder(id || "");
   const deleteMutation = useDeletePurchaseOrder();
-  const [showEdit, setShowEdit] = useState(false);
   const [showReceive, setShowReceive] = useState(false);
 
-  if (!po) return <div>Loading purchase order...</div>;
+  if (isLoading || !po) {
+    return (
+      <Page>
+        <ContentLayout>
+          <DataCard title="Purchase Order" description="Loading purchase order...">
+            <div className="text-sm text-titan-text-secondary">Loading...</div>
+          </DataCard>
+        </ContentLayout>
+      </Page>
+    );
+  }
 
-  const canSend = po.status === 'draft';
-  const canReceive = ['sent','partially_received'].includes(po.status);
-  const canDelete = po.status === 'draft';
+  const purchaseOrder = po;
+  const canIssue = purchaseOrder.status === "draft";
+  const canReceive = ["sent", "issued", "partially_received"].includes(purchaseOrder.status);
+  const canDelete = purchaseOrder.status === "draft";
+
+  async function handleDelete() {
+    if (!window.confirm(`Delete draft purchase order ${purchaseOrder.poNumber}? This cannot be undone.`)) return;
+    await deleteMutation.mutateAsync(purchaseOrder.id);
+    navigate("/purchase-orders");
+  }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Purchase Order {po.poNumber}</h1>
-        <div className="flex gap-2">
-          {canSend && <Button disabled={sendMutation.isPending} onClick={()=> sendMutation.mutate()}>Send</Button>}
-          {canReceive && <Button variant="secondary" onClick={()=> setShowReceive(true)}>Receive Items</Button>}
-          {canDelete && <Button variant="destructive" disabled={deleteMutation.isPending} onClick={()=> deleteMutation.mutate(po.id)}>Delete</Button>}
-          <Button variant="outline" onClick={()=> setShowEdit(true)}>Edit</Button>
-        </div>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Header</CardTitle>
-          <CardDescription>Vendor & scheduling info.</CardDescription>
-        </CardHeader>
-        <CardContent className="grid grid-cols-2 gap-4 text-sm">
-          <div><span className="font-medium">Vendor:</span> {po.vendor?.name}</div>
-          <div><span className="font-medium">Status:</span> {po.status}</div>
-          <div><span className="font-medium">Issue Date:</span> {po.issueDate.substring(0,10)}</div>
-          <div><span className="font-medium">Expected Date:</span> {po.expectedDate?.substring(0,10) || '-'}</div>
-          <div><span className="font-medium">Subtotal:</span> ${parseFloat(po.subtotal).toFixed(2)}</div>
-          <div><span className="font-medium">Grand Total:</span> ${parseFloat(po.grandTotal).toFixed(2)}</div>
-          <div className="col-span-2"><span className="font-medium">Notes:</span> {po.notes || '-'}</div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Line Items</CardTitle>
-          <CardDescription>Ordered vs received quantities.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Description</TableHead>
-                <TableHead>Material</TableHead>
-                <TableHead>Ordered</TableHead>
-                <TableHead>Received</TableHead>
-                <TableHead>Unit Cost</TableHead>
-                <TableHead>Total</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {po.lineItems.map(li => (
-                <TableRow key={li.id}>
-                  <TableCell>{li.description}</TableCell>
-                  <TableCell>{li.materialId ? li.materialId.substring(0,8) : '-'}</TableCell>
-                  <TableCell>{parseFloat(li.quantityOrdered).toFixed(2)}</TableCell>
-                  <TableCell>{parseFloat(li.quantityReceived).toFixed(2)}</TableCell>
-                  <TableCell>${parseFloat(li.unitCost).toFixed(4)}</TableCell>
-                  <TableCell>${parseFloat(li.lineTotal).toFixed(4)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      <PurchaseOrderForm open={showEdit} onOpenChange={setShowEdit} purchaseOrder={po} />
-      {canReceive && <ReceivePurchaseOrderItemsForm open={showReceive} onOpenChange={setShowReceive} purchaseOrder={po} />}
-    </div>
+    <Page>
+      <PageHeader
+        title={`Purchase Order ${purchaseOrder.poNumber}`}
+        subtitle="Edit the draft, issue it to the vendor, and receive ordered items"
+        actions={
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => navigate("/purchase-orders")}>
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Back
+            </Button>
+            <Badge variant="outline" className="flex items-center px-3 capitalize">{purchaseOrder.status}</Badge>
+            {canIssue && (
+              <Button disabled={issueMutation.isPending} onClick={() => issueMutation.mutate()}>
+                <Send className="mr-2 h-4 w-4" />
+                {issueMutation.isPending ? "Issuing..." : "Issue PO"}
+              </Button>
+            )}
+            {canReceive && (
+              <Button variant="secondary" onClick={() => setShowReceive(true)}>
+                <PackageCheck className="mr-2 h-4 w-4" />
+                Receive Items
+              </Button>
+            )}
+            {canDelete && (
+              <Button variant="destructive" disabled={deleteMutation.isPending} onClick={handleDelete}>
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete Draft
+              </Button>
+            )}
+          </div>
+        }
+      />
+      <ContentLayout>
+        <PurchaseOrderForm
+          purchaseOrder={purchaseOrder}
+          onCancel={() => navigate("/purchase-orders")}
+          onSaved={() => undefined}
+        />
+      </ContentLayout>
+      {canReceive && <ReceivePurchaseOrderItemsForm open={showReceive} onOpenChange={setShowReceive} purchaseOrder={purchaseOrder} />}
+    </Page>
   );
 }

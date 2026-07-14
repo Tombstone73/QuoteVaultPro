@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { usePurchaseOrders } from "@/hooks/usePurchaseOrders";
 import { useVendors } from "@/hooks/useVendors";
-import { PurchaseOrderForm } from "@/components/PurchaseOrderForm";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
@@ -31,7 +30,6 @@ export default function PurchaseOrdersPage() {
   const [search, setSearch] = useState("");
   const [vendorId, setVendorId] = useState<string | undefined>(undefined);
   const [status, setStatus] = useState<string>("all");
-  const [showCreate, setShowCreate] = useState(false);
   const { data: vendors = [] } = useVendors({ isActive: true });
   const { data: pos = [], isLoading } = usePurchaseOrders({
     search: search || undefined,
@@ -52,7 +50,7 @@ export default function PurchaseOrdersPage() {
         title="Purchase Orders"
         subtitle="Manage vendor orders and track deliveries"
         actions={
-          <Button onClick={() => setShowCreate(true)}>
+          <Button onClick={() => navigate("/purchase-orders/new")}>
             <Plus className="w-4 h-4 mr-2" />
             New PO
           </Button>
@@ -92,10 +90,12 @@ export default function PurchaseOrdersPage() {
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
                   <SelectItem value="draft">Draft</SelectItem>
-                  <SelectItem value="sent">Sent</SelectItem>
+                  <SelectItem value="issued">Issued</SelectItem>
+                  <SelectItem value="sent">Sent (legacy)</SelectItem>
                   <SelectItem value="partially_received">Partial</SelectItem>
                   <SelectItem value="received">Received</SelectItem>
                   <SelectItem value="cancelled">Cancelled</SelectItem>
+                  <SelectItem value="closed">Closed</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -123,7 +123,7 @@ export default function PurchaseOrdersPage() {
                   icon={<ClipboardList className="w-12 h-12" />}
                   message="No purchase orders found"
                   action={
-                    <Button variant="outline" size="sm" onClick={() => setShowCreate(true)}>
+                    <Button variant="outline" size="sm" onClick={() => navigate("/purchase-orders/new")}>
                       <Plus className="w-4 h-4 mr-2" />
                       Create first PO
                     </Button>
@@ -157,8 +157,6 @@ export default function PurchaseOrdersPage() {
           </TitanTable>
         </TitanTableContainer>
       </ContentLayout>
-
-      <PurchaseOrderForm open={showCreate} onOpenChange={setShowCreate} />
     </Page>
   );
 }

@@ -18,6 +18,21 @@ import {
     toDocumentNumberConflictError,
 } from "../services/documentNumberingService";
 
+type PurchaseOrderRelatedOrderSummary = {
+    id: string;
+    orderNumber: string | null;
+    displayNumber: string | null;
+    jobNumber: string | null;
+    customerName: string | null;
+    status: string | null;
+    state: string | null;
+    primaryDescription: string | null;
+    dueDate: string | Date | null;
+    createdAt: string | Date | null;
+    poNumber: string | null;
+    label: string | null;
+};
+
 export class AccountingRepository {
     constructor(private readonly dbInstance = db) { }
 
@@ -86,6 +101,117 @@ export class AccountingRepository {
         return val != null ? Number(val) : null;
     }
 
+    private async getRelatedOrderSummary(organizationId: string, orderId: string, executor: any = this.dbInstance): Promise<PurchaseOrderRelatedOrderSummary | null> {
+        const result = await executor.execute(sql`
+            SELECT
+                o.id,
+                o.order_number AS "orderNumber",
+                o.display_number AS "displayNumber",
+                o.order_number AS "jobNumber",
+                c.company_name AS "customerName",
+                o.status,
+                o.state,
+                o.due_date AS "dueDate",
+                o.created_at AS "createdAt",
+                o.po_number AS "poNumber",
+                o.label,
+                (
+                    SELECT oli.description
+                    FROM order_line_items oli
+                    WHERE oli.order_id = o.id
+                    ORDER BY oli.sort_order ASC, oli.created_at ASC
+                    LIMIT 1
+                ) AS "primaryDescription"
+            FROM orders o
+            LEFT JOIN customers c
+              ON c.id = o.customer_id
+             AND c.organization_id = ${organizationId}
+            WHERE o.organization_id = ${organizationId}
+              AND o.id = ${orderId}
+            LIMIT 1
+        `);
+        const rows = Array.isArray(result) ? result : ((result as any)?.rows ?? []);
+        return rows[0] ?? null;
+    }
+
+    async getPurchaseOrderRelatedOrder(organizationId: string, orderId: string): Promise<PurchaseOrderRelatedOrderSummary | null> {
+        return this.getRelatedOrderSummary(organizationId, orderId);
+    }
+
+    private async assertRelatedOrderIsLinkable(organizationId: string, orderId: string | null | undefined, executor: any = this.dbInstance): Promise<string | null> {
+        if (!orderId) return null;
+        const relatedOrder = await this.getRelatedOrderSummary(organizationId, orderId, executor);
+        if (!relatedOrder) {
+            const error = new Error("Related Job / Order was not found for this organization.");
+            (error as any).statusCode = 400;
+            (error as any).code = "RELATED_ORDER_NOT_FOUND";
+            throw error;
+        }
+        if (/^TEMP[-_]/i.test(String(relatedOrder.orderNumber ?? relatedOrder.displayNumber ?? ""))) {
+            const error = new Error("Related Job / Order must be a permanent order.");
+            (error as any).statusCode = 400;
+            (error as any).code = "RELATED_ORDER_TEMP";
+            throw error;
+        }
+        return relatedOrder.id;
+    }
+
+    async searchPurchaseOrderRelatedOrders(organizationId: string, options: { query?: string; limit?: number; recent?: boolean } = {}): Promise<PurchaseOrderRelatedOrderSummary[]> {
+        const query = String(options.query ?? "").trim();
+        const limit = Math.min(25, Math.max(1, Number(options.limit) || 10));
+        const recent = Boolean(options.recent);
+
+        if (!recent && query.length < 2) return [];
+
+        const pattern = `%${query}%`;
+        const searchFilter = recent && query.length < 2
+            ? sql`o.state <> 'canceled' AND o.status <> 'canceled'`
+            : sql`(
+                o.order_number ILIKE ${pattern}
+                OR o.display_number ILIKE ${pattern}
+                OR o.po_number ILIKE ${pattern}
+                OR o.label ILIKE ${pattern}
+                OR c.company_name ILIKE ${pattern}
+                OR EXISTS (
+                    SELECT 1
+                    FROM order_line_items oli_search
+                    WHERE oli_search.order_id = o.id
+                      AND oli_search.description ILIKE ${pattern}
+                )
+            )`;
+
+        const result = await this.dbInstance.execute(sql`
+            SELECT
+                o.id,
+                o.order_number AS "orderNumber",
+                o.display_number AS "displayNumber",
+                o.order_number AS "jobNumber",
+                c.company_name AS "customerName",
+                o.status,
+                o.state,
+                o.due_date AS "dueDate",
+                o.created_at AS "createdAt",
+                o.po_number AS "poNumber",
+                o.label,
+                (
+                    SELECT oli.description
+                    FROM order_line_items oli
+                    WHERE oli.order_id = o.id
+                    ORDER BY oli.sort_order ASC, oli.created_at ASC
+                    LIMIT 1
+                ) AS "primaryDescription"
+            FROM orders o
+            LEFT JOIN customers c
+              ON c.id = o.customer_id
+             AND c.organization_id = ${organizationId}
+            WHERE o.organization_id = ${organizationId}
+              AND ${searchFilter}
+            ORDER BY o.created_at DESC
+            LIMIT ${limit}
+        `);
+        return Array.isArray(result) ? result as PurchaseOrderRelatedOrderSummary[] : (((result as any)?.rows ?? []) as PurchaseOrderRelatedOrderSummary[]);
+    }
+
     async getPurchaseOrders(organizationId: string, filters?: { vendorId?: string; status?: string; search?: string; startDate?: string; endDate?: string }): Promise<PurchaseOrder[]> {
         const conditions: any[] = [eq(purchaseOrders.organizationId, organizationId)];
         if (filters?.vendorId) conditions.push(eq(purchaseOrders.vendorId, filters.vendorId));
@@ -99,18 +225,20 @@ export class AccountingRepository {
         return await this.dbInstance.select().from(purchaseOrders).where(and(...conditions)).orderBy(desc(purchaseOrders.createdAt));
     }
 
-    async getPurchaseOrderWithLines(organizationId: string, id: string): Promise<(PurchaseOrder & { vendor?: Vendor | null; lineItems: PurchaseOrderLineItem[] }) | undefined> {
+    async getPurchaseOrderWithLines(organizationId: string, id: string): Promise<(PurchaseOrder & { vendor?: Vendor | null; relatedOrder?: PurchaseOrderRelatedOrderSummary | null; lineItems: PurchaseOrderLineItem[] }) | undefined> {
         const [po] = await this.dbInstance.select().from(purchaseOrders).where(and(eq(purchaseOrders.id, id), eq(purchaseOrders.organizationId, organizationId)));
         if (!po) return undefined;
         const vendorRecord = await this.getVendorById(organizationId, po.vendorId);
         const lines = await this.dbInstance.select().from(purchaseOrderLineItems).where(eq(purchaseOrderLineItems.purchaseOrderId, id)).orderBy(purchaseOrderLineItems.createdAt as any);
-        return { ...po, vendor: vendorRecord || null, lineItems: lines } as any;
+        const relatedOrder = po.relatedOrderId ? await this.getRelatedOrderSummary(organizationId, po.relatedOrderId) : null;
+        return { ...po, vendor: vendorRecord || null, relatedOrder, lineItems: lines } as any;
     }
 
     async createPurchaseOrder(organizationId: string, data: Omit<InsertPurchaseOrder, 'organizationId'> & { createdByUserId: string }): Promise<PurchaseOrder & { lineItems: PurchaseOrderLineItem[] }> {
         try {
             return await this.dbInstance.transaction(async (tx) => {
                 const poNumber = await this.generateNextPoNumber(organizationId, tx);
+                const relatedOrderId = await this.assertRelatedOrderIsLinkable(organizationId, (data as any).relatedOrderId, tx);
                 const lineValues = data.lineItems.map(li => {
                     const lineTotal = Number(li.quantityOrdered) * Number(li.unitCost);
                     return { ...li, lineTotal: lineTotal.toFixed(4) } as any;
@@ -122,6 +250,7 @@ export class AccountingRepository {
                 const insertPO: any = {
                     organizationId,
                     poNumber,
+                    relatedOrderId,
                     vendorId: data.vendorId,
                     status: 'draft',
                     issueDate: typeof data.issueDate === 'string' ? new Date(data.issueDate) : data.issueDate,
@@ -152,9 +281,14 @@ export class AccountingRepository {
             if (!existing) throw new Error('Purchase order not found');
             if (['received', 'cancelled'].includes(existing.status)) throw new Error('Cannot modify a finalized purchase order');
             const headerUpdates: any = {};
+            if ((data as any).vendorId !== undefined) headerUpdates.vendorId = (data as any).vendorId;
+            if ((data as any).issueDate !== undefined) headerUpdates.issueDate = typeof (data as any).issueDate === 'string' ? new Date((data as any).issueDate) : (data as any).issueDate;
             if (data.expectedDate !== undefined) headerUpdates.expectedDate = data.expectedDate || null;
             if (data.notes !== undefined) headerUpdates.notes = (data as any).notes || null;
             if (data.status) headerUpdates.status = data.status;
+            if (Object.prototype.hasOwnProperty.call(data as any, 'relatedOrderId')) {
+                headerUpdates.relatedOrderId = await this.assertRelatedOrderIsLinkable(organizationId, (data as any).relatedOrderId, tx);
+            }
             if (Object.keys(headerUpdates).length) headerUpdates.updatedAt = new Date();
             if (Object.keys(headerUpdates).length) await tx.update(purchaseOrders).set(headerUpdates).where(and(eq(purchaseOrders.id, id), eq(purchaseOrders.organizationId, organizationId)));
             if (Array.isArray((data as any).lineItems)) {
@@ -182,7 +316,7 @@ export class AccountingRepository {
     }
 
     async sendPurchaseOrder(organizationId: string, id: string): Promise<PurchaseOrder> {
-        const [updated] = await this.dbInstance.update(purchaseOrders).set({ status: 'sent', updatedAt: new Date() } as any).where(and(eq(purchaseOrders.id, id), eq(purchaseOrders.organizationId, organizationId))).returning();
+        const [updated] = await this.dbInstance.update(purchaseOrders).set({ status: 'issued', updatedAt: new Date() } as any).where(and(eq(purchaseOrders.id, id), eq(purchaseOrders.organizationId, organizationId))).returning();
         if (!updated) throw new Error('Purchase order not found');
         return updated;
     }
@@ -211,7 +345,7 @@ export class AccountingRepository {
             const allReceived = updated.lineItems.every(li => Number(li.quantityReceived) >= Number(li.quantityOrdered));
             const anyReceived = updated.lineItems.some(li => Number(li.quantityReceived) > 0);
             let newStatus = updated.status;
-            if (allReceived) newStatus = 'received'; else if (anyReceived && updated.status !== 'sent') newStatus = 'partially_received';
+            if (allReceived) newStatus = 'received'; else if (anyReceived) newStatus = 'partially_received';
             const headerUpdate: any = { status: newStatus, updatedAt: new Date() };
             if (newStatus === 'received') headerUpdate.receivedDate = receivedDate;
             await tx.update(purchaseOrders).set(headerUpdate).where(and(eq(purchaseOrders.id, purchaseOrderId), eq(purchaseOrders.organizationId, organizationId)));

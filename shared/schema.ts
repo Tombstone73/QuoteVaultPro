@@ -6016,6 +6016,7 @@ export const purchaseOrders = pgTable('purchase_orders', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   poNumber: varchar('po_number', { length: 50 }).notNull(),
+  relatedOrderId: varchar('related_order_id').references(() => orders.id, { onDelete: 'set null' }),
   vendorId: varchar('vendor_id').notNull().references(() => vendors.id, { onDelete: 'restrict' }),
   status: varchar('status', { length: 30 }).notNull().default('draft'),
   issueDate: timestamp('issue_date').notNull(),
@@ -6032,6 +6033,7 @@ export const purchaseOrders = pgTable('purchase_orders', {
 }, (table) => [
   index('purchase_orders_organization_id_idx').on(table.organizationId),
   index('purchase_orders_vendor_id_idx').on(table.vendorId),
+  index('purchase_orders_related_order_id_idx').on(table.relatedOrderId),
   index('purchase_orders_status_idx').on(table.status),
   index('purchase_orders_issue_date_idx').on(table.issueDate),
   uniqueIndex('purchase_orders_org_po_number_unique').on(table.organizationId, table.poNumber),
@@ -6085,7 +6087,7 @@ export const insertPurchaseOrderSchema = createInsertSchema(purchaseOrders).omit
   lineItems: z.array(insertPurchaseOrderLineItemSchema).min(1),
 });
 export const updatePurchaseOrderSchema = insertPurchaseOrderSchema.partial().extend({
-  status: z.enum(['draft','sent','partially_received','received','cancelled']).optional(),
+  status: z.enum(['draft','sent','issued','partially_received','received','cancelled','closed']).optional(),
 });
 export type InsertPurchaseOrder = z.infer<typeof insertPurchaseOrderSchema>;
 export type UpdatePurchaseOrder = z.infer<typeof updatePurchaseOrderSchema>;
