@@ -297,6 +297,7 @@ export function decryptQuickBooksToken(envelopeOrPlaintext: string): { value: st
 
 export function encryptQuickBooksTokenIfConfigured(plaintext: string | null | undefined): string {
   const value = String(plaintext ?? "");
+  if (isEncryptedQuickBooksToken(value)) return value;
   return encryptionSecret() && value ? encryptQuickBooksToken(value) : value;
 }
 
@@ -312,9 +313,6 @@ export function classifyQuickBooksCredentialError(error: unknown): QuickBooksCre
     serialized = JSON.stringify(error).toLowerCase();
   } catch {}
   const haystack = `${message} ${serialized}`;
-  if (haystack.includes("invalid_grant") || haystack.includes("invalid grant") || haystack.includes("revoked")) {
-    return "invalid_grant";
-  }
   if (haystack.includes("invalid_client") || haystack.includes("invalid client") || haystack.includes("client_secret")) {
     return "invalid_client";
   }
@@ -346,6 +344,41 @@ function qbCredentialMetadata(connection: OAuthConnection | null): Record<string
 function qbAuthMetadata(connection: OAuthConnection | null): Record<string, any> {
   const meta = metadataOf(connection);
   return meta.qbAuth && typeof meta.qbAuth === "object" ? { ...meta.qbAuth } : {};
+}
+
+function qbConnectionMetadata(connection: OAuthConnection | null): Record<string, any> {
+  const meta = metadataOf(connection);
+  return meta.qbConnection && typeof meta.qbConnection === "object" ? { ...meta.qbConnection } : {};
+}
+
+function isSupersededOrDisconnected(connection: OAuthConnection): boolean {
+  const connectionMeta = qbConnectionMetadata(connection);
+  const credential = qbCredentialMetadata(connection);
+  const state = String(connectionMeta.state ?? credential.state ?? "").trim().toLowerCase();
+  return state === "superseded" || state === "disconnected";
+}
+
+function connectionTimeMs(value: Date | string | null | undefined): number {
+  if (!value) return 0;
+  const time = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  return Number.isFinite(time) ? time : 0;
+}
+
+function compareConnectionRecency(a: OAuthConnection, b: OAuthConnection): number {
+  const updatedDelta = connectionTimeMs(b.updatedAt) - connectionTimeMs(a.updatedAt);
+  if (updatedDelta !== 0) return updatedDelta;
+  const createdDelta = connectionTimeMs(b.createdAt) - connectionTimeMs(a.createdAt);
+  if (createdDelta !== 0) return createdDelta;
+  return String(b.id).localeCompare(String(a.id));
+}
+
+export function selectAuthoritativeQuickBooksConnection(connections: OAuthConnection[]): OAuthConnection | null {
+  const usable = connections.filter((connection) => !isSupersededOrDisconnected(connection));
+  if (usable.length === 0) return null;
+
+  const explicitlyAuthoritative = usable.filter((connection) => qbConnectionMetadata(connection).authoritative === true);
+  const candidates = explicitlyAuthoritative.length > 0 ? explicitlyAuthoritative : usable;
+  return [...candidates].sort(compareConnectionRecency)[0] ?? null;
 }
 
 function buildMetadata(connection: OAuthConnection, patch: Record<string, unknown>): Record<string, unknown> {
@@ -411,12 +444,12 @@ export class QuickBooksCredentialManager {
   async loadCredentials(organizationId: string): Promise<QuickBooksDecryptedConnection | null> {
     const orgId = requireOrganizationId(organizationId, "loadCredentials");
     credentialLog("info", "loadCredentials.start", { organizationId: orgId, stage: "load_credentials" });
-    const [connection] = await db
+    const connections = await db
       .select()
       .from(oauthConnections)
       .where(and(eq(oauthConnections.provider, "quickbooks"), eq(oauthConnections.organizationId, orgId)))
-      .orderBy(desc(oauthConnections.createdAt))
-      .limit(1);
+      .orderBy(desc(oauthConnections.updatedAt), desc(oauthConnections.createdAt));
+    const connection = selectAuthoritativeQuickBooksConnection(connections);
     if (!connection) {
       credentialLog("warn", "loadCredentials.not_found", {
         organizationId: orgId,
@@ -425,6 +458,16 @@ export class QuickBooksCredentialManager {
         finalCredentialState: "disconnected",
       });
       return null;
+    }
+    if (connections.length > 1) {
+      credentialLog("warn", "loadCredentials.multiple_rows_resolved", {
+        organizationId: orgId,
+        connectionId: connection.id,
+        stage: "load_credentials",
+        connectionRowCount: connections.length,
+        authoritativeConnectionId: connection.id,
+        authoritativeMarked: qbConnectionMetadata(connection).authoritative === true,
+      });
     }
 
     let access: { value: string; wasEncrypted: boolean };
@@ -889,10 +932,16 @@ export class QuickBooksCredentialManager {
     metadataPatch: Record<string, unknown>;
     clearQbAuth?: boolean;
   }): Promise<void> {
+    if (!String(args.accessToken || "").trim()) {
+      throw new Error("Refusing to persist empty QuickBooks access token.");
+    }
+    if (!String(args.refreshToken || "").trim()) {
+      throw new Error("Refusing to persist empty QuickBooks refresh token.");
+    }
     const meta = metadataOf(args.connection);
     const { qbAuth: _qbAuth, ...withoutAuth } = meta;
     const nextMeta = args.clearQbAuth ? withoutAuth : meta;
-    await db.update(oauthConnections)
+    const updated = await db.update(oauthConnections)
       .set({
         accessToken: encryptQuickBooksTokenIfConfigured(args.accessToken),
         refreshToken: encryptQuickBooksTokenIfConfigured(args.refreshToken),
@@ -908,14 +957,36 @@ export class QuickBooksCredentialManager {
         } as any,
         updatedAt: new Date(),
       })
-      .where(and(eq(oauthConnections.id, args.connection.id), eq(oauthConnections.organizationId, args.organizationId)));
+      .where(and(eq(oauthConnections.id, args.connection.id), eq(oauthConnections.organizationId, args.organizationId)))
+      .returning();
+
+    if (updated.length !== 1) {
+      throw new Error(`QuickBooks credential persistence matched ${updated.length} rows; expected exactly 1.`);
+    }
+
+    const persisted = updated[0];
+    const access = decryptQuickBooksToken(persisted.accessToken);
+    const refresh = decryptQuickBooksToken(persisted.refreshToken);
+    const persistedMeta = metadataOf(persisted);
+    const persistedCredential = qbCredentialMetadata(persisted);
+    if (!access.value || !refresh.value) {
+      throw new Error("QuickBooks credential persistence verification failed: stored token is empty.");
+    }
+    if (args.clearQbAuth && persistedMeta.qbAuth) {
+      throw new Error("QuickBooks credential persistence verification failed: stale qbAuth metadata remains.");
+    }
+    if (args.metadataPatch.state === "connected" && persistedCredential.state !== "connected") {
+      throw new Error("QuickBooks credential persistence verification failed: connected state was not persisted.");
+    }
+    if (args.expiresAt && (!persisted.expiresAt || new Date(persisted.expiresAt).getTime() < args.expiresAt.getTime())) {
+      throw new Error("QuickBooks credential persistence verification failed: expiration was not advanced.");
+    }
   }
 
   async withRefreshLock<T>(organizationId: string, work: () => Promise<T>, timeoutMs = DEFAULT_LOCK_TIMEOUT_MS): Promise<T> {
     const orgId = requireOrganizationId(organizationId, "withRefreshLock");
     const lockKey = `quickbooks_oauth_refresh:${orgId}`;
     const deadline = Date.now() + timeoutMs;
-    let acquired = false;
 
     credentialLog("info", "refreshLock.wait_started", {
       organizationId: orgId,
@@ -925,17 +996,31 @@ export class QuickBooksCredentialManager {
     });
 
     while (Date.now() <= deadline) {
-      const result: any = await db.execute(sql`select pg_try_advisory_lock(hashtext(${lockKey})) as locked`);
-      const rows = Array.isArray(result) ? result : result?.rows;
-      acquired = Boolean(rows?.[0]?.locked);
-      if (acquired) {
+      const attempt = await db.transaction(async (tx) => {
+        const result: any = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtext(${lockKey})) as locked`);
+        const rows = Array.isArray(result) ? result : result?.rows;
+        const acquired = Boolean(rows?.[0]?.locked);
+        if (!acquired) return { acquired: false as const };
+
         credentialLog("info", "refreshLock.acquired", {
           organizationId: orgId,
           stage: "refresh_lock",
           refreshLockAcquired: true,
         });
-        break;
+        const value = await work();
+        return { acquired: true as const, value };
+      });
+
+      if (attempt.acquired) {
+        credentialLog("info", "refreshLock.released", {
+          organizationId: orgId,
+          stage: "refresh_lock",
+          refreshLockAcquired: false,
+          lockScope: "transaction",
+        });
+        return attempt.value;
       }
+
       await new Promise((resolve) => setTimeout(resolve, DEFAULT_LOCK_POLL_MS));
       const latest = await this.loadCredentials(orgId);
       if (latest && !this.isExpiredOrExpiring(latest) && qbCredentialMetadata(latest).state !== "refreshing") {
@@ -951,45 +1036,23 @@ export class QuickBooksCredentialManager {
       }
     }
 
-    if (!acquired) {
-      const latest = await this.loadCredentials(orgId);
-      if (latest && !this.isExpiredOrExpiring(latest)) return latest as T;
-      credentialLog("error", "refreshLock.timeout", {
-        organizationId: orgId,
-        connectionId: latest?.id,
-        stage: "refresh_lock",
-        refreshLockAcquired: false,
-        errorCategory: "lock_timeout",
-        finalCredentialState: "degraded",
-      });
-      await this.recordTransientFailure(orgId, "lock_timeout", new Error("Timed out waiting for QuickBooks credential refresh lock."));
-      throw new QuickBooksCredentialManagerError("Timed out waiting for QuickBooks credential refresh lock.", {
-        category: "lock_timeout",
-        stage: "refresh_lock",
-        organizationId: orgId,
-        connectionId: latest?.id,
-      });
-    }
-
-    try {
-      return await work();
-    } finally {
-      try {
-        await db.execute(sql`select pg_advisory_unlock(hashtext(${lockKey}))`);
-        credentialLog("info", "refreshLock.released", {
-          organizationId: orgId,
-          stage: "refresh_lock",
-          refreshLockAcquired: false,
-        });
-      } catch (error) {
-        console.error("[QB Credentials] Failed to release refresh lock", {
-          organizationId: orgId,
-          operation: "releaseRefreshLock",
-          errorCategory: "lock_timeout",
-          message: (error as any)?.message || String(error),
-        });
-      }
-    }
+    const latest = await this.loadCredentials(orgId);
+    if (latest && !this.isExpiredOrExpiring(latest)) return latest as T;
+    credentialLog("error", "refreshLock.timeout", {
+      organizationId: orgId,
+      connectionId: latest?.id,
+      stage: "refresh_lock",
+      refreshLockAcquired: false,
+      errorCategory: "lock_timeout",
+      finalCredentialState: "degraded",
+    });
+    await this.recordTransientFailure(orgId, "lock_timeout", new Error("Timed out waiting for QuickBooks credential refresh lock."));
+    throw new QuickBooksCredentialManagerError("Timed out waiting for QuickBooks credential refresh lock.", {
+      category: "lock_timeout",
+      stage: "refresh_lock",
+      organizationId: orgId,
+      connectionId: latest?.id,
+    });
   }
 }
 

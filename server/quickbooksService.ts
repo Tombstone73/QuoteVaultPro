@@ -15,6 +15,7 @@ import {
   extractQuickBooksOAuthDiagnostic,
   getQuickBooksCredentialCauseText,
   quickBooksCredentialManager,
+  selectAuthoritativeQuickBooksConnection,
   type QuickBooksConnectionState,
   type QuickBooksCredentialErrorCategory,
 } from './services/quickbooksCredentialManager';
@@ -344,14 +345,13 @@ export function parseOAuthState(state: string | undefined | null): { organizatio
  */
 export async function getActiveConnection(organizationId: string) {
   const orgId = requireQuickBooksOrganizationId(organizationId, 'getActiveConnection');
-  const [connection] = await db
+  const connections = await db
     .select()
     .from(oauthConnections)
     .where(and(eq(oauthConnections.provider, 'quickbooks'), eq(oauthConnections.organizationId, orgId)))
-    .orderBy(desc(oauthConnections.createdAt))
-    .limit(1);
+    .orderBy(desc(oauthConnections.updatedAt), desc(oauthConnections.createdAt));
 
-  return connection || null;
+  return selectAuthoritativeQuickBooksConnection(connections);
 }
 
 /**
@@ -447,6 +447,16 @@ export async function exchangeCodeForTokens(
   // Exchange code for tokens - pass full callback URL with query params
   const authResponse = await oauthClient.createToken(parseRedirectUrl);
   const token = authResponse.token;
+  const accessToken = String(token.access_token ?? '').trim();
+  const refreshToken = String(token.refresh_token ?? '').trim();
+  const expiresAt = new Date(Date.now() + (Number(token.expires_in || 3600) * 1000));
+
+  if (!accessToken) {
+    throw new Error('QuickBooks token exchange did not return an access token');
+  }
+  if (!refreshToken) {
+    throw new Error('QuickBooks token exchange did not return a refresh token');
+  }
 
   if (qbLogsEnabled()) {
     console.log('[QB OAuth] Tokens received', {
@@ -458,28 +468,115 @@ export async function exchangeCodeForTokens(
     });
   }
 
-  // Delete existing connection for this organization/provider.
-  await db
-    .delete(oauthConnections)
-    .where(and(eq(oauthConnections.provider, 'quickbooks'), eq(oauthConnections.organizationId, orgId)));
+  const now = new Date();
+  const nowIso = now.toISOString();
+  let storedConnectionId: string | null = null;
 
-  // Store new connection
-  await db.insert(oauthConnections).values({
-    provider: 'quickbooks',
-    accessToken: encryptQuickBooksTokenIfConfigured(token.access_token),
-    refreshToken: encryptQuickBooksTokenIfConfigured(token.refresh_token),
-    expiresAt: new Date(Date.now() + (token.expires_in || 3600) * 1000),
-    companyId: realmId,
-    organizationId: orgId,
-    metadata: {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`quickbooks_oauth_connection:${orgId}`}))`);
+
+    const existingConnections = await tx
+      .select()
+      .from(oauthConnections)
+      .where(and(eq(oauthConnections.provider, 'quickbooks'), eq(oauthConnections.organizationId, orgId)))
+      .orderBy(desc(oauthConnections.updatedAt), desc(oauthConnections.createdAt));
+    const existingAuthoritative = selectAuthoritativeQuickBooksConnection(existingConnections);
+    const baseMetadata = existingAuthoritative?.metadata && typeof existingAuthoritative.metadata === 'object'
+      ? { ...(existingAuthoritative.metadata as any) }
+      : {};
+    const { qbAuth: _qbAuth, qbHealth: _qbHealth, qbCredential: _qbCredential, qbConnection: existingQbConnection, ...restMetadata } = baseMetadata;
+    const connectedAt = typeof existingQbConnection?.connectedAt === 'string' && existingQbConnection.connectedAt
+      ? existingQbConnection.connectedAt
+      : nowIso;
+    const metadata = {
+      ...restMetadata,
       realmId,
       tokenType: token.token_type,
-      createdAt: new Date().toISOString(),
-    },
+      qbConnection: {
+        ...(existingQbConnection && typeof existingQbConnection === 'object' ? existingQbConnection : {}),
+        authoritative: true,
+        state: 'connected',
+        connectedAt,
+        reauthorizedAt: nowIso,
+      },
+      qbCredential: {
+        state: 'connected',
+        lastSuccessfulRefreshAt: null,
+        lastSuccessfulRequestAt: null,
+        lastErrorAt: null,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        lastErrorStage: null,
+        lastErrorHttpStatus: null,
+        lastOAuthError: null,
+        lastOAuthErrorDescription: null,
+        consecutiveTransientFailureCount: 0,
+      },
+    };
+
+    const values = {
+      provider: 'quickbooks' as const,
+      accessToken: encryptQuickBooksTokenIfConfigured(accessToken),
+      refreshToken: encryptQuickBooksTokenIfConfigured(refreshToken),
+      expiresAt,
+      companyId: realmId,
+      organizationId: orgId,
+      metadata: metadata as any,
+      updatedAt: now,
+    };
+
+    const [stored] = existingAuthoritative
+      ? await tx
+        .update(oauthConnections)
+        .set(values)
+        .where(and(eq(oauthConnections.id, existingAuthoritative.id), eq(oauthConnections.organizationId, orgId)))
+        .returning()
+      : await tx
+        .insert(oauthConnections)
+        .values({
+          ...values,
+          createdAt: now,
+        })
+        .returning();
+
+    if (!stored) {
+      throw new Error('QuickBooks OAuth connection persistence matched zero rows');
+    }
+    storedConnectionId = stored.id;
+
+    for (const staleConnection of existingConnections) {
+      if (staleConnection.id === stored.id) continue;
+      const staleMeta = staleConnection.metadata && typeof staleConnection.metadata === 'object'
+        ? { ...(staleConnection.metadata as any) }
+        : {};
+      const staleQbConnection = staleMeta.qbConnection && typeof staleMeta.qbConnection === 'object'
+        ? staleMeta.qbConnection
+        : {};
+      await tx
+        .update(oauthConnections)
+        .set({
+          metadata: {
+            ...staleMeta,
+            qbConnection: {
+              ...staleQbConnection,
+              authoritative: false,
+              state: 'superseded',
+              supersededAt: nowIso,
+              supersededByConnectionId: stored.id,
+            },
+          } as any,
+          updatedAt: now,
+        })
+        .where(and(eq(oauthConnections.id, staleConnection.id), eq(oauthConnections.organizationId, orgId)));
+    }
   });
 
+  if (!storedConnectionId) {
+    throw new Error('QuickBooks OAuth connection was not persisted');
+  }
+
   if (qbLogsEnabled()) {
-    console.log('[QB OAuth] Connection stored successfully', { organizationId: orgId, realmId });
+    console.log('[QB OAuth] Connection stored successfully', { organizationId: orgId, realmId, connectionId: storedConnectionId });
   }
 }
 
