@@ -11,6 +11,7 @@ import {
   isEncryptedQuickBooksToken,
   mergeQuickBooksRefreshToken,
   redactQuickBooksOAuthDiagnostic,
+  selectAuthoritativeQuickBooksConnection,
 } from "../services/quickbooksCredentialManager";
 
 const root = process.cwd();
@@ -59,7 +60,8 @@ describe("QuickBooks OAuth credential reliability", () => {
   });
 
   test("classifies invalid grants separately from transient refresh failures", () => {
-    expect(classifyQuickBooksCredentialError(new Error("invalid_grant"))).toBe("invalid_grant");
+    expect(classifyQuickBooksCredentialError({ response: { data: { error: "invalid_grant" } } })).toBe("invalid_grant");
+    expect(classifyQuickBooksCredentialError(new Error("invalid_grant"))).toBe("unknown");
     expect(classifyQuickBooksCredentialError({ response: { data: { error: "invalid_client" } } })).toBe("invalid_client");
     expect(classifyQuickBooksCredentialError({ status: 503, message: "Service unavailable" })).toBe("transient_api_failure");
     expect(classifyQuickBooksCredentialError(new Error("request timeout"))).toBe("network_failure");
@@ -134,9 +136,10 @@ describe("QuickBooks OAuth credential reliability", () => {
   test("credential refresh uses a database-backed per-organization lock", () => {
     const credentialSource = readRepoFile("server/services/quickbooksCredentialManager.ts");
 
-    expect(credentialSource).toContain("pg_try_advisory_lock");
+    expect(credentialSource).toContain("db.transaction");
+    expect(credentialSource).toContain("pg_try_advisory_xact_lock");
     expect(credentialSource).toContain("quickbooks_oauth_refresh:${orgId}");
-    expect(credentialSource).toContain("pg_advisory_unlock");
+    expect(credentialSource).not.toContain("pg_advisory_unlock");
     expect(credentialSource).toContain("refreshLock.acquired");
     expect(credentialSource).toContain("refreshLock.timeout");
   });
@@ -181,5 +184,85 @@ describe("QuickBooks OAuth credential reliability", () => {
     expect(scriptSource).not.toContain("console.log(access");
     expect(scriptSource).not.toContain("console.log(refresh");
     expect(packageSource).toContain("qb:oauth:encrypt-backfill");
+  });
+
+  test("selects the authoritative active QuickBooks connection instead of stale rows", () => {
+    const base = {
+      provider: "quickbooks",
+      organizationId: "org_1",
+      companyId: "realm",
+      accessToken: "access",
+      refreshToken: "refresh",
+      expiresAt: new Date(Date.now() + 3600_000),
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    } as any;
+    const staleNewest = {
+      ...base,
+      id: "stale",
+      createdAt: new Date("2026-01-03T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-03T00:00:00.000Z"),
+      metadata: { qbConnection: { authoritative: false, state: "superseded" } },
+    };
+    const authoritative = {
+      ...base,
+      id: "authoritative",
+      createdAt: new Date("2026-01-02T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-02T00:00:00.000Z"),
+      metadata: { qbConnection: { authoritative: true, state: "connected" } },
+    };
+
+    expect(selectAuthoritativeQuickBooksConnection([staleNewest, authoritative])?.id).toBe("authoritative");
+  });
+
+  test("OAuth callback updates one authoritative connection and supersedes duplicate rows", () => {
+    const serviceSource = readRepoFile("server/quickbooksService.ts");
+    const exchangeBody = serviceSource.slice(serviceSource.indexOf("export async function exchangeCodeForTokens"), serviceSource.indexOf("export async function refreshAccessToken"));
+
+    expect(exchangeBody).toContain("pg_advisory_xact_lock");
+    expect(exchangeBody).toContain("selectAuthoritativeQuickBooksConnection(existingConnections)");
+    expect(exchangeBody).toContain(".update(oauthConnections)");
+    expect(exchangeBody).toContain(".insert(oauthConnections)");
+    expect(exchangeBody).not.toContain(".delete(oauthConnections)");
+    expect(exchangeBody).toContain("state: 'superseded'");
+    expect(exchangeBody).toContain("qbAuth: _qbAuth");
+    expect(exchangeBody).toContain("lastOAuthError: null");
+  });
+
+  test("refreshed credential persistence is one-row verified and preserves non-OAuth failures", () => {
+    const credentialSource = readRepoFile("server/services/quickbooksCredentialManager.ts");
+    const persistBody = credentialSource.slice(credentialSource.indexOf("private async persistCredentials"), credentialSource.indexOf("async withRefreshLock"));
+    const refreshBody = credentialSource.slice(credentialSource.indexOf("async refreshCredentials"), credentialSource.indexOf("async recordSuccessfulRequest"));
+
+    expect(persistBody).toContain(".returning()");
+    expect(persistBody).toContain("updated.length !== 1");
+    expect(persistBody).toContain("Refusing to persist empty QuickBooks refresh token");
+    expect(persistBody).toContain("stale qbAuth metadata remains");
+    expect(refreshBody).toContain("category: \"persistence_failure\"");
+    expect(refreshBody).not.toContain("markNeedsReauth(orgId, latest, error); } catch");
+  });
+
+  test("successful reauthorization clears stale needs_reauth and transient metadata", () => {
+    const serviceSource = readRepoFile("server/quickbooksService.ts");
+    const exchangeBody = serviceSource.slice(serviceSource.indexOf("export async function exchangeCodeForTokens"), serviceSource.indexOf("export async function refreshAccessToken"));
+
+    expect(exchangeBody).toContain("qbAuth: _qbAuth");
+    expect(exchangeBody).toContain("qbHealth: _qbHealth");
+    expect(exchangeBody).toContain("qbCredential: _qbCredential");
+    expect(exchangeBody).toContain("state: 'connected'");
+    expect(exchangeBody).toContain("lastErrorCode: null");
+    expect(exchangeBody).toContain("consecutiveTransientFailureCount: 0");
+  });
+
+  test("logout and backend restart do not depend on browser session credentials", () => {
+    const serviceSource = readRepoFile("server/quickbooksService.ts");
+    const credentialSource = readRepoFile("server/services/quickbooksCredentialManager.ts");
+    const routeSource = readRepoFile("server/routes/quickbooks.routes.ts");
+
+    expect(serviceSource).toContain("requireQuickBooksOrganizationId");
+    expect(credentialSource).toContain("decryptQuickBooksToken(persisted.accessToken)");
+    expect(credentialSource).toContain("decryptQuickBooksToken(persisted.refreshToken)");
+    expect(routeSource).not.toContain("logout");
+    expect(routeSource).toContain("tenantContext");
   });
 });
