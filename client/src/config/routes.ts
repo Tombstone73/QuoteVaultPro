@@ -48,7 +48,7 @@
  * PURCHASE ORDERS:
  * - /purchase-orders → PurchaseOrdersPage (list)
  * - /purchase-orders/:id → PurchaseOrderDetailPage (view)
- * - /purchase-orders/new → [TODO: NOT IMPLEMENTED - referenced in vendor-detail but missing]
+ * - /purchase-orders/new → PurchaseOrderNewPage (create)
  * 
  * INVOICES:
  * - /invoices → InvoicesListPage (list)
@@ -165,9 +165,8 @@ export const ROUTES = {
   // Purchase Orders
   purchaseOrders: {
     list: "/purchase-orders",
+    new: "/purchase-orders/new",
     detail: (id: string) => `/purchase-orders/${id}`,
-    // TODO: /purchase-orders/new not implemented but referenced in vendor-detail
-    // new: "/purchase-orders/new",
   },
 
   // Invoices

@@ -197,6 +197,21 @@ export function registerProcurementRoutes(
     }
   });
 
+  app.get('/api/purchase-orders/related-orders/search', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
+      const query = typeof req.query.q === 'string' ? req.query.q : "";
+      const limit = req.query.limit ? Number(req.query.limit) : 10;
+      const recent = req.query.recent === 'true';
+      const results = await storage.searchPurchaseOrderRelatedOrders(organizationId, { query, limit, recent });
+      res.json({ success: true, data: results });
+    } catch (error) {
+      console.error('[PO RELATED ORDER SEARCH] Error:', error);
+      res.status(500).json({ success: false, error: 'Failed to search related jobs/orders' });
+    }
+  });
+
   app.get('/api/purchase-orders/:id', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -237,10 +252,13 @@ export function registerProcurementRoutes(
       if (error.name === 'ZodError') {
         console.error('[PO CREATE] Zod validation error:', JSON.stringify(error.errors, null, 2));
         console.error('[PO CREATE] Request body:', JSON.stringify(req.body, null, 2));
-        return res.status(400).json({ error: 'Invalid purchase order data', details: error.errors });
+        return res.status(400).json({ success: false, error: 'Invalid purchase order data', details: error.errors });
+      }
+      if (error.statusCode || error.code) {
+        return res.status(error.statusCode || 400).json({ success: false, code: error.code || 'PURCHASE_ORDER_CREATE_INVALID', error: error.message });
       }
       console.error('[PO CREATE] Error:', error);
-      res.status(500).json({ error: 'Failed to create purchase order' });
+      res.status(500).json({ success: false, error: 'Failed to create purchase order' });
     }
   });
 
@@ -270,10 +288,13 @@ export function registerProcurementRoutes(
       res.json({ success: true, data: updated });
     } catch (error: any) {
       if (error.name === 'ZodError') {
-        return res.status(400).json({ error: 'Invalid purchase order update data', details: error.errors });
+        return res.status(400).json({ success: false, error: 'Invalid purchase order update data', details: error.errors });
+      }
+      if (error.statusCode || error.code) {
+        return res.status(error.statusCode || 400).json({ success: false, code: error.code || 'PURCHASE_ORDER_UPDATE_INVALID', error: error.message });
       }
       console.error('[PO UPDATE] Error:', error);
-      res.status(500).json({ error: 'Failed to update purchase order' });
+      res.status(500).json({ success: false, error: 'Failed to update purchase order' });
     }
   });
 
@@ -312,18 +333,18 @@ export function registerProcurementRoutes(
       if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const existing = await storage.getPurchaseOrderWithLines(organizationId, req.params.id);
       if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
-      if (existing.status !== 'draft') return res.status(400).json({ error: 'Only draft POs can be sent' });
+      if (existing.status !== 'draft') return res.status(400).json({ success: false, error: 'Only draft POs can be issued' });
       const updated = await storage.sendPurchaseOrder(organizationId, req.params.id);
       const userId = getUserId(req.user);
       const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
       await storage.createAuditLog(organizationId, {
         userId,
         userName,
-        actionType: 'SEND',
+        actionType: 'ISSUE',
         entityType: 'purchase_order',
         entityId: updated.id,
         entityName: updated.poNumber,
-        description: `Sent PO ${updated.poNumber}`,
+        description: `Issued PO ${updated.poNumber}`,
         oldValues: existing,
         newValues: updated,
         ipAddress: req.ip,
@@ -350,6 +371,7 @@ export function registerProcurementRoutes(
       const parsed = itemsSchema.parse(req.body);
       const existing = await storage.getPurchaseOrderWithLines(organizationId, req.params.id);
       if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
+      if (!['sent', 'issued', 'partially_received'].includes(existing.status)) return res.status(400).json({ error: 'Only issued POs can receive items' });
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: 'User not authenticated' });
       const receiveItems = parsed.items.map(i => ({

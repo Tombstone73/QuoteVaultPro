@@ -69,6 +69,7 @@ import VendorsPage from "@/pages/vendors";
 import VendorDetailPage from "@/pages/vendor-detail";
 import PurchaseOrdersPage from "@/pages/purchase-orders";
 import PurchaseOrderDetailPage from "@/pages/purchase-order-detail";
+import PurchaseOrderNewPage from "@/pages/purchase-order-new";
 import ProductsPage from "@/pages/products";
 import ProductEditorPage from "@/pages/ProductEditorPage";
 import PrepressPage from "@/pages/prepress";
@@ -280,6 +281,7 @@ function Router() {
         {/* Procurement routes */}
         <Route path="/vendors/:id" element={<VendorDetailPage />} />
         <Route path="/vendors" element={<VendorsPage />} />
+        <Route path="/purchase-orders/new" element={<PurchaseOrderNewPage />} />
         <Route
           path="/purchase-orders/:id"
           element={<PurchaseOrderDetailPage />}
