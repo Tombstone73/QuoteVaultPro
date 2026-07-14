@@ -25,6 +25,7 @@ import ApprovalsPage from "@/pages/ApprovalsPage";
 import StaffProofingPage from "@/pages/StaffProofingPage";
 import Admin from "@/pages/admin";
 import Customers from "@/pages/customers";
+import CustomerPortalAccessPage from "@/pages/CustomerPortalAccessPage";
 import CustomerDetail from "@/pages/customer-detail-enhanced";
 import Orders from "@/pages/orders";
 import OrderDetail from "@/pages/order-detail";
@@ -250,6 +251,7 @@ function Router() {
         <Route path="/prepress" element={<PrepressPage />} />
 
         {/* Customer routes */}
+        <Route path={ROUTES.customers.portalAccess} element={<CustomerPortalAccessPage />} />
         <Route path="/customers/:id" element={<CustomerDetail />} />
         <Route path="/customers" element={<Customers />} />
 

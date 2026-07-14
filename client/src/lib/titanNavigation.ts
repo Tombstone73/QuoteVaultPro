@@ -18,6 +18,7 @@ import {
   UserCog,
   LayoutGrid,
   ShieldCheck,
+  KeyRound,
   Bug,
   type LucideIcon,
 } from "lucide-react";
@@ -56,6 +57,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     items: [
       { id: "dashboard", name: "Dashboard", icon: Home, path: ROUTES.dashboard },
       { id: "customers", name: "Customers", icon: Users, path: ROUTES.customers.list },
+      { id: "customer-portal-access", name: "Portal Access", icon: KeyRound, path: ROUTES.customers.portalAccess, roles: ["admin", "owner"] },
       { id: "contacts", name: "Contacts", icon: Contact2, path: ROUTES.contacts.list },
       { id: "quotes", name: "Quotes", icon: FileText, path: ROUTES.quotes.list },
       {

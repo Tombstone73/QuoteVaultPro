@@ -140,6 +140,7 @@ export const ROUTES = {
   // Customers
   customers: {
     list: "/customers",
+    portalAccess: "/customers/portal-access",
     detail: (id: string) => `/customers/${id}`,
   },
 

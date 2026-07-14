@@ -11,6 +11,7 @@ import {
   authIdentities,
   customerContacts,
   customerPortalAccess,
+  customerPortalCompanySettings,
   customerPortalInviteTokens,
   customers,
   passwordResetTokens,
@@ -222,6 +223,7 @@ export async function createCustomerPortalAccess(input: {
   customerId: string;
   contactId: string;
   actorUserId: string;
+  accessRole?: "COMPANY_ADMIN" | "BUYER" | "BILLING" | "VIEWER";
   req?: Request;
 }) {
   const [contact] = await db
@@ -277,6 +279,7 @@ export async function createCustomerPortalAccess(input: {
         status: "PENDING_INVITE",
         email: contact.email,
         displayName,
+        accessRole: input.accessRole ?? "VIEWER",
         inviteSentAt: now,
         disabledAt: null,
         updatedAt: now,
@@ -294,6 +297,7 @@ export async function createCustomerPortalAccess(input: {
         status: "PENDING_INVITE",
         email: contact.email,
         displayName,
+        accessRole: input.accessRole ?? "VIEWER",
         inviteSentAt: now,
         createdByUserId: input.actorUserId,
         updatedByUserId: input.actorUserId,
@@ -807,7 +811,17 @@ export async function getPortalAccessForLogin(userId: string) {
     .from(customerPortalAccess)
     .where(eq(customerPortalAccess.userId, userId))
     .limit(1);
-  return access ?? null;
+  if (!access) return null;
+  const [companySetting] = await db
+    .select({ state: customerPortalCompanySettings.state })
+    .from(customerPortalCompanySettings)
+    .where(and(
+      eq(customerPortalCompanySettings.organizationId, access.organizationId),
+      eq(customerPortalCompanySettings.customerId, access.customerId),
+    ))
+    .limit(1);
+  if (companySetting?.state === "suspended") return null;
+  return access;
 }
 
 export async function recordPortalLogin(input: { userId: string; req?: Request }) {
@@ -840,6 +854,18 @@ export async function getActivePortalContext(userId: string) {
     .innerJoin(customers, eq(customerPortalAccess.customerId, customers.id))
     .where(and(eq(customerPortalAccess.userId, userId), eq(customerPortalAccess.status, "ACTIVE")))
     .limit(1);
+
+  if (record) {
+    const [companySetting] = await db
+      .select({ state: customerPortalCompanySettings.state })
+      .from(customerPortalCompanySettings)
+      .where(and(
+        eq(customerPortalCompanySettings.organizationId, record.access.organizationId),
+        eq(customerPortalCompanySettings.customerId, record.access.customerId),
+      ))
+      .limit(1);
+    if (companySetting?.state === "suspended") return null;
+  }
 
   return record ?? null;
 }

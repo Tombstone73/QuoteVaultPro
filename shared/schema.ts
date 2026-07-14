@@ -2891,6 +2891,7 @@ export const customerPortalAccess = pgTable("customer_portal_access", {
   status: customerPortalAccessStatusEnum("status").notNull().default("DISABLED"),
   email: varchar("email", { length: 255 }).notNull(),
   displayName: varchar("display_name", { length: 255 }),
+  accessRole: varchar("access_role", { length: 40 }).notNull().default("VIEWER").$type<"COMPANY_ADMIN" | "BUYER" | "BILLING" | "VIEWER">(),
   inviteSentAt: timestamp("invite_sent_at", { withTimezone: true }),
   inviteAcceptedAt: timestamp("invite_accepted_at", { withTimezone: true }),
   passwordSetAt: timestamp("password_set_at", { withTimezone: true }),
@@ -2935,6 +2936,67 @@ export const customerPortalInviteTokens = pgTable("customer_portal_invite_tokens
     .where(sql`used_at IS NULL AND revoked_at IS NULL`),
 ]);
 
+export const customerPortalCompanySettings = pgTable("customer_portal_company_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: "cascade" }),
+  state: varchar("state", { length: 30 }).notNull().default("disabled").$type<"disabled" | "enabled" | "suspended">(),
+  enabledAt: timestamp("enabled_at", { withTimezone: true }),
+  suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+  updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("customer_portal_company_settings_org_customer_uidx").on(table.organizationId, table.customerId),
+  index("customer_portal_company_settings_org_idx").on(table.organizationId),
+  index("customer_portal_company_settings_state_idx").on(table.state),
+]);
+
+export const customerPortalOnboardingBatches = pgTable("customer_portal_onboarding_batches", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  status: varchar("status", { length: 30 }).notNull().default("pending").$type<"pending" | "running" | "completed" | "completed_with_failures" | "failed">(),
+  action: varchar("action", { length: 60 }).notNull(),
+  total: integer("total").notNull().default(0),
+  pending: integer("pending").notNull().default(0),
+  sent: integer("sent").notNull().default(0),
+  failed: integer("failed").notNull().default(0),
+  skipped: integer("skipped").notNull().default(0),
+  accepted: integer("accepted").notNull().default(0),
+  initiatedByUserId: varchar("initiated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  errorMessage: text("error_message"),
+  summaryJson: jsonb("summary_json"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("customer_portal_onboarding_batches_org_idx").on(table.organizationId),
+  index("customer_portal_onboarding_batches_status_idx").on(table.status),
+  index("customer_portal_onboarding_batches_created_idx").on(table.createdAt),
+]);
+
+export const customerPortalOnboardingBatchItems = pgTable("customer_portal_onboarding_batch_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  batchId: varchar("batch_id").notNull().references(() => customerPortalOnboardingBatches.id, { onDelete: "cascade" }),
+  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: "cascade" }),
+  contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: "set null" }),
+  accessId: varchar("access_id").references(() => customerPortalAccess.id, { onDelete: "set null" }),
+  email: varchar("email", { length: 255 }),
+  accessRole: varchar("access_role", { length: 40 }),
+  status: varchar("status", { length: 30 }).notNull().default("pending").$type<"pending" | "sent" | "failed" | "skipped" | "accepted">(),
+  failureCode: varchar("failure_code", { length: 80 }),
+  failureMessage: text("failure_message"),
+  metadataJson: jsonb("metadata_json"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("customer_portal_onboarding_batch_items_batch_idx").on(table.batchId),
+  index("customer_portal_onboarding_batch_items_org_idx").on(table.organizationId),
+  index("customer_portal_onboarding_batch_items_status_idx").on(table.status),
+]);
+
 export const insertCustomerPortalAccessSchema = createInsertSchema(customerPortalAccess).omit({
   id: true,
   createdAt: true,
@@ -2951,6 +3013,9 @@ export type InsertCustomerPortalAccess = z.infer<typeof insertCustomerPortalAcce
 export type CustomerPortalAccess = typeof customerPortalAccess.$inferSelect;
 export type InsertCustomerPortalInviteToken = z.infer<typeof insertCustomerPortalInviteTokenSchema>;
 export type CustomerPortalInviteToken = typeof customerPortalInviteTokens.$inferSelect;
+export type CustomerPortalCompanySetting = typeof customerPortalCompanySettings.$inferSelect;
+export type CustomerPortalOnboardingBatch = typeof customerPortalOnboardingBatches.$inferSelect;
+export type CustomerPortalOnboardingBatchItem = typeof customerPortalOnboardingBatchItems.$inferSelect;
 
 // Customer Notes table
 export const customerNotes = pgTable("customer_notes", {
