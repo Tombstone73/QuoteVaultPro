@@ -16,12 +16,14 @@ const DOCUMENT_NUMBER_SEQUENCE_VARIABLES: Record<DocumentNumberType, string> = {
   quote: "next_quote_number",
   order: "next_order_number",
   invoice: "next_invoice_number",
+  purchase_order: "next_purchase_order_number",
 };
 
 const DOCUMENT_NUMBER_SEQUENCE_DESCRIPTIONS: Record<DocumentNumberType, string> = {
   quote: "Next quote number sequence (auto-initialized)",
   order: "Next order number sequence (auto-initialized)",
   invoice: "Next invoice number sequence (auto-initialized)",
+  purchase_order: "Next purchase order number sequence (auto-initialized)",
 };
 
 export async function getDocumentNumberPrefix(
@@ -63,7 +65,7 @@ export function isDocumentNumberUniqueViolation(error: unknown): boolean {
   const err = error as any;
   if (err?.code !== "23505") return false;
   const constraint = String(err?.constraint || err?.message || "");
-  return /(?:display_number|number_core).*unique|(?:quotes|orders|invoices)_org_.*unique/i.test(constraint);
+  return /(?:display_number|number_core).*unique|(?:quotes|orders|invoices|purchase_orders)_org_.*unique/i.test(constraint);
 }
 
 export function toDocumentNumberConflictError(error: unknown): Error {

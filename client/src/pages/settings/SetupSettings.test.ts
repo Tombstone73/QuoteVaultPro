@@ -22,4 +22,18 @@ describe("System Setup sequence normalization", () => {
     const source = fs.readFileSync(path.join(process.cwd(), "client/src/pages/settings/SetupSettings.tsx"), "utf8");
     expect(source).toContain('queryClient.invalidateQueries({ queryKey: ["/api/global-variables"] })');
   });
+
+  test("System Setup includes purchase order numbering controls", () => {
+    const source = fs.readFileSync(path.join(process.cwd(), "client/src/pages/settings/SetupSettings.tsx"), "utf8");
+    expect(source).toContain("next_purchase_order_number");
+    expect(source).toContain("Purchase Order Number");
+    expect(source).toContain("purchase_order_number_prefix");
+    expect(source).toContain("Purchase Order Prefix");
+  });
+
+  test("missing sequence settings are created through the global variables API", () => {
+    const source = fs.readFileSync(path.join(process.cwd(), "client/src/pages/settings/SetupSettings.tsx"), "utf8");
+    expect(source).toContain('apiRequest("POST", "/api/global-variables"');
+    expect(source).toContain('category: "numbering"');
+  });
 });

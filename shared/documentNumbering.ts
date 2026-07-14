@@ -1,4 +1,4 @@
-export type DocumentNumberType = "quote" | "order" | "invoice";
+export type DocumentNumberType = "quote" | "order" | "invoice" | "purchase_order";
 
 export type ProductionDocumentNumberDisplayMode = "full" | "number_only";
 
@@ -6,12 +6,14 @@ export const DEFAULT_DOCUMENT_NUMBER_PREFIXES: Record<DocumentNumberType, string
   quote: "QT-",
   order: "ORD-",
   invoice: "INV-",
+  purchase_order: "PO-",
 };
 
 export const DOCUMENT_NUMBER_PREFIX_VARIABLES: Record<DocumentNumberType, string> = {
   quote: "quote_number_prefix",
   order: "order_number_prefix",
   invoice: "invoice_number_prefix",
+  purchase_order: "purchase_order_number_prefix",
 };
 
 const PREFIX_PATTERN = /^[A-Za-z0-9_-]*$/;

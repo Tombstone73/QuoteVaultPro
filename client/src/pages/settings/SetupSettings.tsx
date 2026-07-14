@@ -11,18 +11,20 @@ import { DEFAULT_DOCUMENT_NUMBER_PREFIXES, sanitizeDocumentNumberPrefix } from "
 import { normalizeSystemSetupSequenceValue } from "@/lib/systemSetupSettings";
 
 const SEQUENCES = [
-  { varName: "next_quote_number",   label: "Quote Number"   },
-  { varName: "next_order_number",   label: "Order Number"   },
-  { varName: "next_invoice_number", label: "Invoice Number" },
+  { varName: "next_quote_number", label: "Quote Number", description: "Next quote number sequence (auto-initialized)" },
+  { varName: "next_order_number", label: "Order Number", description: "Next order number sequence (auto-initialized)" },
+  { varName: "next_invoice_number", label: "Invoice Number", description: "Next invoice number sequence (auto-initialized)" },
+  { varName: "next_purchase_order_number", label: "Purchase Order Number", description: "Next purchase order number sequence (auto-initialized)" },
 ] as const;
 
 const PREFIXES = [
   { varName: "quote_number_prefix", label: "Quote Prefix", defaultValue: DEFAULT_DOCUMENT_NUMBER_PREFIXES.quote },
   { varName: "order_number_prefix", label: "Order Prefix", defaultValue: DEFAULT_DOCUMENT_NUMBER_PREFIXES.order },
   { varName: "invoice_number_prefix", label: "Invoice Prefix", defaultValue: DEFAULT_DOCUMENT_NUMBER_PREFIXES.invoice },
+  { varName: "purchase_order_number_prefix", label: "Purchase Order Prefix", defaultValue: DEFAULT_DOCUMENT_NUMBER_PREFIXES.purchase_order },
 ] as const;
 
-function NumberSequenceCard({ varName, label }: { varName: string; label: string }) {
+function NumberSequenceCard({ varName, label, description }: { varName: string; label: string; description: string }) {
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [newValue, setNewValue] = useState("");
@@ -32,12 +34,18 @@ function NumberSequenceCard({ varName, label }: { varName: string; label: string
   });
 
   const varEntry = globalVariables?.find((v) => v.name === varName);
-  const currentNumber = varEntry ? Math.floor(Number(varEntry.value)) : null;
+  const currentNumber = varEntry ? String(varEntry.value ?? "") : null;
 
   const updateMutation = useMutation({
     mutationFn: async (value: string) => {
-      if (!varEntry) throw new Error(`${label} not initialized`);
-      return apiRequest("PATCH", `/api/global-variables/${varEntry.id}`, { value });
+      if (varEntry) return apiRequest("PATCH", `/api/global-variables/${varEntry.id}`, { value });
+      return apiRequest("POST", "/api/global-variables", {
+        name: varName,
+        value,
+        description,
+        category: "numbering",
+        isActive: true,
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/global-variables"] });
@@ -104,7 +112,7 @@ function NumberSequenceCard({ varName, label }: { varName: string; label: string
             value={newValue}
             onChange={(e) => setNewValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={currentNumber?.toString() ?? "1001"}
+            placeholder={currentNumber ?? "1000"}
             className="h-7 text-xs px-1 shrink-0"
             style={{ width: "104px", textAlign: "right" }}
             autoFocus
@@ -155,7 +163,7 @@ function NumberSequenceCard({ varName, label }: { varName: string; label: string
               variant="outline"
               className="h-7 text-xs"
               style={{ width: "80px" }}
-              onClick={() => { setIsEditing(true); setNewValue(currentNumber?.toString() ?? "1001"); }}
+              onClick={() => { setIsEditing(true); setNewValue(currentNumber ?? "1000"); }}
             >
               Change
             </Button>
@@ -275,7 +283,7 @@ export default function SetupSettings() {
         </p>
       </TitanCard>
 
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-5">
         {/* Label card */}
         <TitanCard noPadding>
           <div
@@ -287,21 +295,21 @@ export default function SetupSettings() {
             }}
           >
             <span style={{ fontSize: "12px", color: "var(--muted-foreground, #888)", lineHeight: "1.4" }}>
-              Quote/Order/Invoice starting numbers
+              Quote/Order/Invoice/Purchase Order starting numbers
             </span>
           </div>
         </TitanCard>
 
-        {SEQUENCES.map(({ varName, label }) => (
-          <NumberSequenceCard key={varName} varName={varName} label={label} />
+        {SEQUENCES.map(({ varName, label, description }) => (
+          <NumberSequenceCard key={varName} varName={varName} label={label} description={description} />
         ))}
       </div>
 
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-5">
         <TitanCard noPadding>
           <div style={{ display: "flex", alignItems: "center", height: "56px", padding: "0 12px" }}>
             <span style={{ fontSize: "12px", color: "var(--muted-foreground, #888)", lineHeight: "1.4" }}>
-              Quote/Order/Invoice prefixes
+              Quote/Order/Invoice/Purchase Order prefixes
             </span>
           </div>
         </TitanCard>

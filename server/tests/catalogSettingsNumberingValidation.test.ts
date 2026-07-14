@@ -15,10 +15,11 @@ describe("catalog settings numbering validation", () => {
     expect(normalizeStartingNumberValue("020000")).toBe("020000");
   });
 
-  test("all three number types use the same string contract", () => {
+  test("all four internal number types use the same string contract", () => {
     expect(normalizeGlobalVariableValueForRequest("next_quote_number", 20000)).toBe("20000");
     expect(normalizeGlobalVariableValueForRequest("next_order_number", "20001")).toBe("20001");
     expect(normalizeGlobalVariableValueForRequest("next_invoice_number", "20002")).toBe("20002");
+    expect(normalizeGlobalVariableValueForRequest("next_purchase_order_number", 20003)).toBe("20003");
   });
 
   test("decimal, negative, and blank starting numbers are rejected", () => {
@@ -44,6 +45,7 @@ describe("catalog settings numbering validation", () => {
       getMaxQuoteNumber: async () => null,
       getMaxOrderNumber: async () => 20050,
       getMaxInvoiceNumber: async () => null,
+      getMaxPurchaseOrderNumber: async () => null,
     })).rejects.toMatchObject({
       code: "STARTING_NUMBER_BELOW_EXISTING_DOCUMENTS",
       field: "value",
@@ -58,6 +60,22 @@ describe("catalog settings numbering validation", () => {
       getMaxQuoteNumber: async () => null,
       getMaxOrderNumber: async () => null,
       getMaxInvoiceNumber: async () => 20050,
+      getMaxPurchaseOrderNumber: async () => null,
     })).resolves.toBeUndefined();
+  });
+
+  test("backend rejects moving the purchase order sequence below existing issued POs", async () => {
+    await expect(assertStartingNumberDoesNotMoveBackward({
+      organizationId: "org_1",
+      variableName: "next_purchase_order_number",
+      value: "20000",
+      getMaxQuoteNumber: async () => null,
+      getMaxOrderNumber: async () => null,
+      getMaxInvoiceNumber: async () => null,
+      getMaxPurchaseOrderNumber: async () => 20050,
+    })).rejects.toMatchObject({
+      code: "STARTING_NUMBER_BELOW_EXISTING_DOCUMENTS",
+      field: "value",
+    });
   });
 });

@@ -28,7 +28,12 @@ import { getMaxInvoiceNumber } from "../invoicesService";
 import { DOCUMENT_NUMBER_PREFIX_VARIABLES, sanitizeDocumentNumberPrefix } from "@shared/documentNumbering";
 
 const DOCUMENT_NUMBER_PREFIX_NAMES = new Set(Object.values(DOCUMENT_NUMBER_PREFIX_VARIABLES));
-const DOCUMENT_NUMBER_SEQUENCE_NAMES = new Set(["next_quote_number", "next_order_number", "next_invoice_number"]);
+const DOCUMENT_NUMBER_SEQUENCE_NAMES = new Set([
+  "next_quote_number",
+  "next_order_number",
+  "next_invoice_number",
+  "next_purchase_order_number",
+]);
 
 type JsonErrorResponse = {
   success: false;
@@ -112,6 +117,7 @@ export async function assertStartingNumberDoesNotMoveBackward(input: {
   getMaxQuoteNumber: (organizationId: string) => Promise<number | null>;
   getMaxOrderNumber: (organizationId: string) => Promise<number | null>;
   getMaxInvoiceNumber: (organizationId: string) => Promise<number | null>;
+  getMaxPurchaseOrderNumber: (organizationId: string) => Promise<number | null>;
 }) {
   if (!DOCUMENT_NUMBER_SEQUENCE_NAMES.has(input.variableName)) return;
   const newValue = Number(input.value);
@@ -119,12 +125,16 @@ export async function assertStartingNumberDoesNotMoveBackward(input: {
     ? "quote"
     : input.variableName === "next_order_number"
       ? "order"
-      : "invoice";
+      : input.variableName === "next_invoice_number"
+        ? "invoice"
+        : "purchase order";
   const maxNumber = input.variableName === "next_quote_number"
     ? await input.getMaxQuoteNumber(input.organizationId)
     : input.variableName === "next_order_number"
       ? await input.getMaxOrderNumber(input.organizationId)
-      : await input.getMaxInvoiceNumber(input.organizationId);
+      : input.variableName === "next_invoice_number"
+        ? await input.getMaxInvoiceNumber(input.organizationId)
+        : await input.getMaxPurchaseOrderNumber(input.organizationId);
   if (maxNumber !== null && newValue <= maxNumber) {
     throw new GlobalVariableValidationError(
       "STARTING_NUMBER_BELOW_EXISTING_DOCUMENTS",
@@ -234,6 +244,7 @@ export function registerCatalogSettingsRoutes(
         getMaxQuoteNumber: storage.getMaxQuoteNumber,
         getMaxOrderNumber: storage.getMaxOrderNumber,
         getMaxInvoiceNumber,
+        getMaxPurchaseOrderNumber: storage.getMaxPurchaseOrderNumber,
       });
       const variable = await storage.createGlobalVariable(organizationId, variableData);
       res.json(variable);
@@ -309,6 +320,17 @@ export function registerCatalogSettingsRoutes(
               code: "STARTING_NUMBER_BELOW_EXISTING_DOCUMENTS",
               field: "value",
               message: `Cannot set next invoice number to ${newValue}. The highest existing invoice number is ${maxInvoiceNumber}. Please set a value greater than ${maxInvoiceNumber}.`
+            });
+          }
+        } else if (currentVariable.name === 'next_purchase_order_number') {
+          const newValue = Math.floor(Number(variableData.value));
+          const maxPurchaseOrderNumber = await storage.getMaxPurchaseOrderNumber(organizationId);
+          if (maxPurchaseOrderNumber !== null && newValue <= maxPurchaseOrderNumber) {
+            return res.status(400).json({
+              success: false,
+              code: "STARTING_NUMBER_BELOW_EXISTING_DOCUMENTS",
+              field: "value",
+              message: `Cannot set next purchase order number to ${newValue}. The highest existing purchase order number is ${maxPurchaseOrderNumber}. Please set a value greater than ${maxPurchaseOrderNumber}.`
             });
           }
         }

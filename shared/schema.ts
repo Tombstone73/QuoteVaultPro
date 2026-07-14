@@ -6034,6 +6034,7 @@ export const purchaseOrders = pgTable('purchase_orders', {
   index('purchase_orders_vendor_id_idx').on(table.vendorId),
   index('purchase_orders_status_idx').on(table.status),
   index('purchase_orders_issue_date_idx').on(table.issueDate),
+  uniqueIndex('purchase_orders_org_po_number_unique').on(table.organizationId, table.poNumber),
 ]);
 
 export const purchaseOrderLineItems = pgTable('purchase_order_line_items', {
