@@ -219,6 +219,22 @@ export type InboundOrderBulkActionInput = {
   resolveConflict?: "disable_conflicting_rule";
 };
 
+export type InboundOrderIgnoreActionResult = {
+  detail: InboundOrderDetail;
+  rulesCreated: number;
+  rulesAlreadyExisted: number;
+};
+
+export type InboundOrderBulkActionResult = {
+  updatedIds: string[];
+  errors: Array<{ id: string; message: string }>;
+  rulesCreated: number;
+  rulesAlreadyExisted: number;
+  emailsProcessed: number;
+  emailsSkipped: number;
+  actualErrors: Array<{ id: string; message: string }>;
+};
+
 export type InboundOrderStatusUpdateInput = {
   organizationId: string;
   inboundRecordId: string;
@@ -2259,7 +2275,54 @@ export class InboundOrderService {
     return detail;
   }
 
+  private async getOrCreateEmailIgnoreRuleForQueueAction(args: {
+    organizationId: string;
+    actorUserId: string;
+    ruleType: InboundEmailIgnoreRuleType;
+    ruleValue: string;
+    notes?: string | null;
+    resolveConflict?: "disable_conflicting_rule";
+  }): Promise<{ rule: InboundEmailIgnoreRule; created: boolean }> {
+    const ruleValue = normalizeInboundEmailIgnoreRuleValue(args.ruleType, args.ruleValue);
+    if (!ruleValue) throw new InboundOrderTransitionError("Rule value is required.", 400);
+
+    const existing = await this.repository.getEmailIgnoreRuleByTypeValue?.({
+      organizationId: args.organizationId,
+      ruleType: args.ruleType,
+      ruleValue,
+    });
+    if (existing?.enabled) {
+      return { rule: existing, created: false };
+    }
+
+    try {
+      const rule = await this.createEmailIgnoreRule({
+        organizationId: args.organizationId,
+        ruleType: args.ruleType,
+        ruleValue,
+        notes: args.notes,
+        actorUserId: args.actorUserId,
+        resolveConflict: args.resolveConflict,
+      });
+      return { rule, created: true };
+    } catch (error) {
+      const duplicate = await this.repository.getEmailIgnoreRuleByTypeValue?.({
+        organizationId: args.organizationId,
+        ruleType: args.ruleType,
+        ruleValue,
+      });
+      if (duplicate?.enabled && error instanceof InboundOrderTransitionError && error.statusCode === 409) {
+        return { rule: duplicate, created: false };
+      }
+      throw error;
+    }
+  }
+
   async applyIgnoreAction(args: InboundOrderIgnoreActionInput): Promise<InboundOrderDetail> {
+    return (await this.applyIgnoreActionWithSummary(args)).detail;
+  }
+
+  async applyIgnoreActionWithSummary(args: InboundOrderIgnoreActionInput): Promise<InboundOrderIgnoreActionResult> {
     const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
     if (!record) throw new InboundOrderTransitionError("Inbound order record not found", 404);
     if (record.createdQuoteId || record.createdOrderId || record.status === "submitted") {
@@ -2272,9 +2335,9 @@ export class InboundOrderService {
       throw new InboundOrderTransitionError("No sender, domain, or subject value was available for this ignore rule.", 400);
     }
 
-    const createdRules: InboundEmailIgnoreRule[] = [];
+    const appliedRules: Array<{ rule: InboundEmailIgnoreRule; created: boolean }> = [];
     for (const request of ruleRequests) {
-      createdRules.push(await this.createEmailIgnoreRule({
+      appliedRules.push(await this.getOrCreateEmailIgnoreRuleForQueueAction({
         organizationId: args.organizationId,
         ruleType: request.ruleType,
         ruleValue: request.ruleValue,
@@ -2302,11 +2365,12 @@ export class InboundOrderService {
         message: note,
         metadataJson: {
           action: args.action,
-          ruleIds: createdRules.map((rule) => rule.id),
-          rules: createdRules.map((rule) => ({
+          ruleIds: appliedRules.map(({ rule }) => rule.id),
+          rules: appliedRules.map(({ rule, created }) => ({
             id: rule.id,
             ruleType: rule.ruleType,
             ruleValue: rule.ruleValue,
+            created,
           })),
         },
       },
@@ -2315,7 +2379,11 @@ export class InboundOrderService {
     if (!updated) throw new InboundOrderTransitionError("Inbound order record not found", 404);
     const detail = await this.getDetail({ organizationId: args.organizationId, inboundRecordId: args.inboundRecordId });
     if (!detail) throw new InboundOrderTransitionError("Inbound order record not found after ignore action", 404);
-    return detail;
+    return {
+      detail,
+      rulesCreated: appliedRules.filter(({ created }) => created).length,
+      rulesAlreadyExisted: appliedRules.filter(({ created }) => !created).length,
+    };
   }
 
   async deleteQueueRecord(args: {
@@ -2365,9 +2433,11 @@ export class InboundOrderService {
     return detail;
   }
 
-  async applyBulkQueueAction(args: InboundOrderBulkActionInput): Promise<{ updatedIds: string[]; errors: Array<{ id: string; message: string }> }> {
+  async applyBulkQueueAction(args: InboundOrderBulkActionInput): Promise<InboundOrderBulkActionResult> {
     const updatedIds: string[] = [];
-    const errors: Array<{ id: string; message: string }> = [];
+    const actualErrors: Array<{ id: string; message: string }> = [];
+    let rulesCreated = 0;
+    let rulesAlreadyExisted = 0;
     const uniqueIds = Array.from(new Set(args.recordIds));
 
     for (const inboundRecordId of uniqueIds) {
@@ -2411,24 +2481,35 @@ export class InboundOrderService {
             note: args.note,
           });
         } else {
-          await this.applyIgnoreAction({
+          const result = await this.applyIgnoreActionWithSummary({
             organizationId: args.organizationId,
             inboundRecordId,
             actorUserId: args.actorUserId,
             action: args.action,
             note: args.note,
+            resolveConflict: args.resolveConflict,
           });
+          rulesCreated += result.rulesCreated;
+          rulesAlreadyExisted += result.rulesAlreadyExisted;
         }
         updatedIds.push(inboundRecordId);
       } catch (error) {
-        errors.push({
+        actualErrors.push({
           id: inboundRecordId,
           message: error instanceof Error ? error.message : "Failed to update inbound record",
         });
       }
     }
 
-    return { updatedIds, errors };
+    return {
+      updatedIds,
+      errors: actualErrors,
+      rulesCreated,
+      rulesAlreadyExisted,
+      emailsProcessed: updatedIds.length,
+      emailsSkipped: actualErrors.length,
+      actualErrors,
+    };
   }
 
   async saveReviewSnapshot(args: SaveInboundOrderReviewSnapshotInput): Promise<InboundOrderDetail> {
