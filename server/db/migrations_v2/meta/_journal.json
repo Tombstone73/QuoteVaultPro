@@ -743,6 +743,34 @@
       "when": 1784246400000,
       "tag": "0110_customer_contact_migration_qb_source_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 111,
+      "version": "7",
+      "when": 1784332800000,
+      "tag": "0111_customer_portal_bulk_onboarding",
+      "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1784419200000,
+      "tag": "0112_purchase_order_numbering",
+      "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1784505600000,
+      "tag": "0113_purchase_order_related_order",
+      "breakpoints": true
+    },
+    {
+      "idx": 114,
+      "version": "7",
+      "when": 1784592000000,
+      "tag": "0114_printer_profiles",
+      "breakpoints": true
     }
   ]
 }

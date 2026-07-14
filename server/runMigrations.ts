@@ -175,6 +175,7 @@ async function acquireMigrationAdvisoryLock(client: any): Promise<boolean> {
 type ReleaseCheck =
   | { type: "column_exists"; table: string; column: string; label: string }
   | { type: "table_exists"; table: string; label: string }
+  | { type: "index_exists"; index: string; label: string }
   | { type: "row_exists"; table: string; where: string; label: string };
 
 const RELEASE_CHECKS: ReleaseCheck[] = [
@@ -209,6 +210,26 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   // OR clause handles zero-org DBs (migration inserts nothing from a cross join on zero rows).
   { type: "row_exists", table: "__drizzle_migrations_v2", where: "id >= 34", label: "migration 0034_fulfillment_station recorded in ledger (id >= 34)" },
   { type: "row_exists", table: "stations", where: "key = 'fulfillment' OR NOT EXISTS (SELECT 1 FROM organizations)", label: "stations.key='fulfillment' exists (migration 0034 data)" },
+
+  // migrations 0109-0114 — customer/contact migration, portal onboarding,
+  // purchase-order numbering, PO related order linkage, and printer profiles.
+  { type: "column_exists", table: "customer_contact_links", column: "is_proof", label: "customer_contact_links.is_proof" },
+  { type: "column_exists", table: "customer_contact_links", column: "source_record_id", label: "customer_contact_links.source_record_id" },
+  { type: "table_exists", table: "external_identity_mappings", label: "external_identity_mappings table" },
+  { type: "table_exists", table: "customer_contact_import_batches", label: "customer_contact_import_batches table" },
+  { type: "table_exists", table: "customer_contact_import_company_records", label: "customer_contact_import_company_records table" },
+  { type: "table_exists", table: "customer_contact_import_contact_records", label: "customer_contact_import_contact_records table" },
+  { type: "table_exists", table: "customer_contact_import_relationship_records", label: "customer_contact_import_relationship_records table" },
+  { type: "table_exists", table: "customer_contact_quickbooks_source_snapshots", label: "customer_contact_quickbooks_source_snapshots table" },
+  { type: "table_exists", table: "customer_portal_company_settings", label: "customer_portal_company_settings table" },
+  { type: "table_exists", table: "customer_portal_onboarding_batches", label: "customer_portal_onboarding_batches table" },
+  { type: "table_exists", table: "customer_portal_onboarding_batch_items", label: "customer_portal_onboarding_batch_items table" },
+  { type: "column_exists", table: "customer_portal_access", column: "access_role", label: "customer_portal_access.access_role" },
+  { type: "index_exists", index: "purchase_orders_org_po_number_unique", label: "purchase_orders_org_po_number_unique index" },
+  { type: "column_exists", table: "purchase_orders", column: "related_order_id", label: "purchase_orders.related_order_id" },
+  { type: "index_exists", index: "purchase_orders_related_order_id_idx", label: "purchase_orders_related_order_id_idx index" },
+  { type: "table_exists", table: "printer_profiles", label: "printer_profiles table" },
+  { type: "index_exists", index: "printer_profiles_org_default_use_uidx", label: "printer_profiles_org_default_use_uidx index" },
 ];
 
 async function runReleaseChecks(client: any): Promise<void> {
@@ -236,6 +257,15 @@ async function runReleaseChecks(client: any): Promise<void> {
              WHERE table_schema = 'public' AND table_name = $1
            ) AS ok`,
           [check.table],
+        );
+        exists = res.rows[0].ok;
+      } else if (check.type === "index_exists") {
+        const res = await client.query(
+          `SELECT EXISTS (
+             SELECT 1 FROM pg_indexes
+             WHERE schemaname = 'public' AND indexname = $1
+           ) AS ok`,
+          [check.index],
         );
         exists = res.rows[0].ok;
       } else if (check.type === "row_exists") {
