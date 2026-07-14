@@ -254,8 +254,9 @@ export default function CustomerContactMigrationPage() {
   const saveReviewDecision = async (
     recordType: "company" | "contact",
     recordId: string,
-    action: "accept_proposed" | "choose_existing" | "create_new" | "merge_duplicate" | "ignore",
+    action: "accept_proposed" | "choose_existing" | "create_new" | "select_staged" | "consolidate_staged" | "link_company" | "ignore",
     selectedEntityId?: string,
+    selectedEntityIds?: string[],
   ) => {
     if (!detail) return;
     setLoading(true);
@@ -268,6 +269,7 @@ export default function CustomerContactMigrationPage() {
         recordId,
         action,
         selectedEntityId,
+        selectedEntityIds,
       });
       if (!body.success || !body.data) {
         setMessage(body.message ?? "Failed to save review decision.");
@@ -688,6 +690,30 @@ function candidateReasonParts(reason: unknown) {
   return factors.length > 0 ? factors : [text];
 }
 
+function companyCandidateLabel(candidate: Record<string, any>) {
+  const name = candidate.companyName || candidate.displayName || candidate.fullyQualifiedName || candidate.id;
+  const identifiers = [candidate.quickBooksCustomerId, candidate.sourceRecordId, candidate.phone, candidate.email].filter(Boolean).join(" | ");
+  return identifiers ? `${name} (${identifiers})` : String(name);
+}
+
+function suggestedCompanyReason(contact: Record<string, any>, candidate: Record<string, any>) {
+  const normalized = contact.normalizedJson ?? {};
+  const reasons: string[] = [];
+  const companyName = String(normalized.companyName ?? "").trim().toLowerCase();
+  const candidateName = String(candidate.companyName ?? candidate.displayName ?? "").trim().toLowerCase();
+  if (companyName && candidateName && companyName === candidateName) reasons.push("exact company name");
+  if (companyName && candidateName && normalizeLoose(companyName) === normalizeLoose(candidateName)) reasons.push("normalized company name");
+  const contactDomain = String(normalized.email ?? "").split("@")[1]?.toLowerCase();
+  const candidateDomain = String(candidate.email ?? "").split("@")[1]?.toLowerCase();
+  if (contactDomain && candidateDomain && contactDomain === candidateDomain) reasons.push("contact email domain");
+  if (normalized.phone && candidate.phone && normalizeLoose(normalized.phone) === normalizeLoose(candidate.phone)) reasons.push("matching phone");
+  return reasons.length > 0 ? reasons.join(", ") : "manual search candidate";
+}
+
+function normalizeLoose(value: unknown) {
+  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
 function FieldRows({ rows }: { rows: Array<[string, unknown]> }) {
   return (
     <div className="divide-y rounded-md border">
@@ -742,17 +768,25 @@ function CandidateComparison({
 
   const existingRows: Array<[string, unknown]> = recordType === "company"
     ? [
+      ["Staged record ID", existing?.stagedRecordId],
       ["Company name", existing?.companyName],
-      ["QuickBooks ID", existing?.externalAccountingId],
-      ["Existing customer ID", existing?.id ?? candidate.id],
-      ["Address", addressLine(existing ?? {}, "billing") || addressLine(existing ?? {}, "shipping")],
-      ["City/State", cityStateLine(existing ?? {}, "billing") || cityStateLine(existing ?? {}, "shipping")],
+      ["Display name", existing?.displayName],
+      ["Fully qualified name", existing?.fullyQualifiedName],
+      ["QuickBooks ID", existing?.quickBooksCustomerId ?? existing?.externalAccountingId],
+      ["Source record ID", existing?.sourceRecordId],
+      ["Existing customer ID", existing?.existingPrintersHeroCustomerId ?? existing?.id ?? candidate.id],
+      ["Parent/sub-customer", existing?.isSubCustomer ? `Sub-customer of ${existing?.parentCustomerName ?? existing?.parentCustomerId ?? "parent"}` : "Parent/standalone"],
+      ["Active", existing?.active == null ? null : existing.active ? "Active" : "Inactive"],
+      ["Address", existing?.address || addressLine(existing ?? {}, "billing") || addressLine(existing ?? {}, "shipping")],
+      ["City/State", [existing?.city, existing?.state, existing?.postalCode].filter(Boolean).join(" ") || cityStateLine(existing ?? {}, "billing") || cityStateLine(existing ?? {}, "shipping")],
       ["Phone", existing?.phone],
       ["Email", existing?.email],
       ["Payment terms", existing?.paymentTerms],
+      ["Balance", existing?.balance],
       ["Existing contacts", (existing?.existingContacts ?? []).map((contact: any) => [contact.firstName, contact.lastName].filter(Boolean).join(" ")).filter(Boolean).join(", ")],
       ["Source system(s)", (existing?.sourceSystems ?? []).join(", ")],
-      ["External identity mappings", (existing?.externalIdentityMappings ?? []).map((identity: any) => `${identity.sourceSystem}:${identity.sourceRecordId}`).join(", ")],
+      ["External identity mappings", (existing?.externalIdentityMappings ?? existing?.existingExternalIdentityMappings ?? []).map((identity: any) => `${identity.sourceSystem}:${identity.sourceRecordId}`).join(", ")],
+      ["Dependent contacts", (existing?.dependentContacts ?? []).map((contact: any) => sourceLabel(contact)).join(", ")],
     ]
     : [
       ["Name", existing ? [existing.firstName, existing.lastName].filter(Boolean).join(" ") : candidate.id],
@@ -805,8 +839,9 @@ function ExceptionReviewPanel({
   onDecision: (
     recordType: "company" | "contact",
     recordId: string,
-    action: "accept_proposed" | "choose_existing" | "create_new" | "merge_duplicate" | "ignore",
+    action: "accept_proposed" | "choose_existing" | "create_new" | "select_staged" | "consolidate_staged" | "link_company" | "ignore",
     selectedEntityId?: string,
+    selectedEntityIds?: string[],
   ) => Promise<void>;
   loading: boolean;
 }) {
@@ -888,6 +923,20 @@ function ExceptionReviewPanel({
             const manualKey = `${recordType}:${row.id}`;
             const selectedCandidateId = selectedCandidateIds[manualKey] ?? proposed?.id ?? "";
             const selectedCandidate = candidates.find((candidate: any) => candidate.id === selectedCandidateId) ?? proposed;
+            const selectedCandidateContext = recordType === "company" && selectedCandidate
+              ? detail.reviewContext?.companyCandidates?.[selectedCandidate.id]
+              : recordType === "contact" && selectedCandidate
+                ? detail.reviewContext?.contactCandidates?.[selectedCandidate.id]
+                : null;
+            const selectedCandidateSelectable = selectedCandidate ? Boolean(selectedCandidateContext && selectedCandidateContext.selectable !== false && selectedCandidateContext.missing !== true) : false;
+            const stagedCandidateIds = recordType === "company"
+              ? candidates
+                .filter((candidate: any) => detail.reviewContext?.companyCandidates?.[candidate.id]?.candidateType === "staged_company")
+                .map((candidate: any) => String(candidate.id))
+              : [];
+            const companyLinkKey = `${manualKey}:company`;
+            const searchableCompanies = detail.reviewContext?.searchableCompanyCandidates ?? [];
+            const searchableExistingCompanies = searchableCompanies.filter((company: any) => company.candidateType === "existing_company");
             const warnings = Array.isArray(row.warningsJson) ? row.warningsJson : [];
             const dependentContacts = recordType === "company"
               ? (relationshipsByCompanyId.get(row.id) ?? [])
@@ -931,18 +980,31 @@ function ExceptionReviewPanel({
                       {candidates.length === 0 ? (
                         <div className="text-muted-foreground">No candidates</div>
                       ) : candidates.map((candidate: any) => (
+                        (() => {
+                          const context = recordType === "company"
+                            ? detail.reviewContext?.companyCandidates?.[candidate.id]
+                            : recordType === "contact"
+                              ? detail.reviewContext?.contactCandidates?.[candidate.id]
+                              : null;
+                          const disabled = !context || context.selectable === false || context.missing === true;
+                          return (
                         <button
                           key={`${candidate.id}:${candidate.reason}`}
                           type="button"
-                          className={`w-full rounded border p-2 text-left transition-colors hover:bg-muted ${selectedCandidateId === candidate.id ? "border-primary bg-primary/5" : ""}`}
-                          onClick={() => setSelectedCandidateIds({ ...selectedCandidateIds, [manualKey]: candidate.id })}
+                          disabled={disabled}
+                          className={`w-full rounded border p-2 text-left transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${selectedCandidateId === candidate.id ? "border-primary bg-primary/5" : ""}`}
+                          onClick={() => !disabled && setSelectedCandidateIds({ ...selectedCandidateIds, [manualKey]: candidate.id })}
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="font-mono text-xs">{candidate.id}</span>
                             <Badge variant="outline">{String(candidate.score ?? "")}</Badge>
                           </div>
+                          {context?.candidateType === "staged_company" ? <div className="mt-1 text-xs font-medium">{companyCandidateLabel(context)}</div> : null}
+                          {disabled ? <div className="mt-1 text-xs text-destructive">Underlying candidate record could not be loaded.</div> : null}
                           <div className="mt-1 text-xs">{String(candidate.reason ?? "")}</div>
                         </button>
+                          );
+                        })()
                       ))}
                     </div>
                   </div>
@@ -982,8 +1044,15 @@ function ExceptionReviewPanel({
                     type="button"
                     size="sm"
                     variant="secondary"
-                    disabled={loading || !selectedCandidate}
-                    onClick={() => selectedCandidate && onDecision(recordType, row.id, "choose_existing", selectedCandidate.id)}
+                    disabled={loading || !selectedCandidate || !selectedCandidateSelectable}
+                    onClick={() => {
+                      if (!selectedCandidate || !selectedCandidateSelectable) return;
+                      if (recordType === "company" && selectedCandidateContext?.candidateType === "staged_company") {
+                        void onDecision("company", row.id, "select_staged", undefined, [selectedCandidate.id]);
+                        return;
+                      }
+                      void onDecision(recordType, row.id, "choose_existing", selectedCandidate.id);
+                    }}
                   >
                     {recordType === "company" ? "Accept candidate" : "Link existing contact"}
                   </Button>
@@ -992,11 +1061,61 @@ function ExceptionReviewPanel({
                       type="button"
                       size="sm"
                       variant="outline"
-                      disabled={loading || !selectedCandidate}
-                      onClick={() => selectedCandidate && onDecision("company", row.id, "merge_duplicate", selectedCandidate.id)}
+                      disabled={loading || stagedCandidateIds.length < 2}
+                      onClick={() => onDecision("company", row.id, "consolidate_staged", undefined, stagedCandidateIds)}
                     >
-                      Merge duplicate companies
+                      Consolidate staged source records
                     </Button>
+                  ) : null}
+                  {recordType === "company" ? (
+                    <>
+                      <Input
+                        className="h-9 w-80"
+                        list={`existing-company-candidates-${row.id}`}
+                        placeholder="Search existing companies"
+                        value={manualEntityIds[companyLinkKey] ?? ""}
+                        onChange={(event) => setManualEntityIds({ ...manualEntityIds, [companyLinkKey]: event.target.value })}
+                      />
+                      <datalist id={`existing-company-candidates-${row.id}`}>
+                        {searchableExistingCompanies.map((company: any) => (
+                          <option key={company.id} value={company.id} label={companyCandidateLabel(company)} />
+                        ))}
+                      </datalist>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={loading || !manualEntityIds[companyLinkKey]?.trim()}
+                        onClick={() => onDecision("company", row.id, "choose_existing", manualEntityIds[companyLinkKey]?.trim())}
+                      >
+                        Link existing company
+                      </Button>
+                    </>
+                  ) : null}
+                  {recordType === "contact" ? (
+                    <>
+                      <Input
+                        className="h-9 w-80"
+                        list={`company-candidates-${row.id}`}
+                        placeholder="Search companies by name, domain, or phone"
+                        value={manualEntityIds[companyLinkKey] ?? ""}
+                        onChange={(event) => setManualEntityIds({ ...manualEntityIds, [companyLinkKey]: event.target.value })}
+                      />
+                      <datalist id={`company-candidates-${row.id}`}>
+                        {searchableCompanies.map((company: any) => (
+                          <option key={company.id} value={company.id} label={`${companyCandidateLabel(company)} - ${suggestedCompanyReason(row, company)}`} />
+                        ))}
+                      </datalist>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={loading || !manualEntityIds[companyLinkKey]?.trim()}
+                        onClick={() => onDecision("contact", row.id, "link_company", manualEntityIds[companyLinkKey]?.trim())}
+                      >
+                        Link contact to company
+                      </Button>
+                    </>
                   ) : null}
                   <Input
                     className="h-9 w-72"

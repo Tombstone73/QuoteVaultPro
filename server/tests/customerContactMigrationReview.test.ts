@@ -4,7 +4,9 @@ import {
   buildContactReviewPatch,
   buildDependentContactPatchAfterCompanyDecision,
   buildFinalizePreviewCounts,
+  buildHydratedStagedCompanyCandidate,
   buildRelationshipPatchAfterCompanyDecision,
+  buildStagedConsolidationCompanyPatch,
   countMigrationUnresolvedRows,
 } from "../services/customerContactMigration/service";
 
@@ -44,24 +46,169 @@ describe("customer/contact migration review decisions", () => {
     expect(contactPatch.reviewDecisionJson).toMatchObject({ action: "ignore" });
   });
 
-  test("merge duplicate company decision resolves to the selected survivor company", () => {
-    const patch = buildCompanyReviewPatch({
+  test("permanent company merge cannot be triggered from staged migration review", () => {
+    expect(() => buildCompanyReviewPatch({
       status: "ambiguous",
       matchCandidatesJson: [
         { id: "cust_duplicate_a", score: 82, reason: "Ambiguous normalized company name" },
         { id: "cust_duplicate_b", score: 82, reason: "Ambiguous normalized company name" },
       ],
-    }, { action: "merge_duplicate", selectedEntityId: "cust_duplicate_a", actorUserId: "platform_dev" });
+    }, { action: "merge_duplicate", selectedEntityId: "cust_duplicate_a", actorUserId: "platform_dev" } as any))
+      .toThrow("Permanent company merge is not available");
+  });
+
+  test("staged selection without loaded candidate records fails safely", () => {
+    expect(() => buildCompanyReviewPatch({
+      status: "ambiguous",
+      matchCandidatesJson: [{ id: "299", score: 88, reason: "QuickBooks duplicate candidate" }],
+    }, { action: "select_staged", selectedEntityId: "299", actorUserId: "platform_dev" } as any))
+      .toThrow("Staged consolidation requires selected staged candidate records");
+  });
+
+  test("hydrates staged QuickBooks company candidate details", () => {
+    const candidate = buildHydratedStagedCompanyCandidate({
+      id: "299",
+      sourceSystem: "quickbooks",
+      sourceRecordId: "299",
+      quickBooksCustomerId: "299",
+      selectedCustomerId: "cust_existing",
+      rawJson: {
+        Id: "299",
+        CompanyName: "Adapt Media Inc",
+        DisplayName: "Adapt Media",
+        FullyQualifiedName: "Adapt Media Parent:Adapt Media",
+        Job: true,
+        ParentRef: { value: "300", name: "Adapt Media Parent" },
+        Active: true,
+        BillAddr: {
+          Line1: "123 Print Way",
+          City: "Toronto",
+          CountrySubDivisionCode: "ON",
+          PostalCode: "M5V 1A1",
+        },
+        PrimaryPhone: { FreeFormNumber: "555-0101" },
+        PrimaryEmailAddr: { Address: "billing@adapt.example" },
+        TermRef: { name: "Net 30" },
+        Balance: "123.45",
+      },
+      normalizedJson: {},
+    }, [
+      { id: "contact-landon", normalizedJson: { firstName: "Landon", lastName: "Wieler" } },
+      { id: "contact-jamie", normalizedJson: { firstName: "Jamie", lastName: "Davine" } },
+    ]);
+
+    expect(candidate).toMatchObject({
+      id: "299",
+      candidateType: "staged_company",
+      selectable: true,
+      stagedRecordId: "299",
+      sourceSystem: "quickbooks",
+      sourceRecordId: "299",
+      quickBooksCustomerId: "299",
+      companyName: "Adapt Media Inc",
+      displayName: "Adapt Media",
+      fullyQualifiedName: "Adapt Media Parent:Adapt Media",
+      parentCustomerId: "300",
+      parentCustomerName: "Adapt Media Parent",
+      isSubCustomer: true,
+      active: true,
+      address: "123 Print Way",
+      city: "Toronto",
+      state: "ON",
+      postalCode: "M5V 1A1",
+      phone: "555-0101",
+      email: "billing@adapt.example",
+      paymentTerms: "Net 30",
+      balance: 123.45,
+      existingPrintersHeroCustomerId: "cust_existing",
+    });
+    expect(candidate.dependentContacts).toHaveLength(2);
+    expect(candidate.externalIdentityMappings).toContainEqual({
+      sourceSystem: "quickbooks",
+      sourceEntityType: "customer",
+      sourceRecordId: "299",
+    });
+  });
+
+  test("selecting one staged candidate records a dry-run company decision", () => {
+    const patch = buildStagedConsolidationCompanyPatch({
+      id: "company-review",
+      sourceSystem: "infoflo",
+      sourceRecordId: "IF-ADAPT",
+      normalizedJson: { name: "Adapt Media" },
+    }, [{
+      id: "299",
+      sourceSystem: "quickbooks",
+      sourceRecordId: "299",
+      rawJson: { Id: "299", CompanyName: "Adapt Media Inc", DisplayName: "Adapt Media" },
+      normalizedJson: {},
+    }], "platform_dev", "select_staged");
 
     expect(patch).toMatchObject({
-      status: "matched_existing",
-      selectedCustomerId: "cust_duplicate_a",
+      status: "new_company",
+      selectedCustomerId: null,
+      errorMessage: null,
+    });
+    expect(patch.normalizedJson.quickBooksCustomerId).toBe("299");
+    expect(patch.reviewDecisionJson).toMatchObject({
+      action: "select_staged",
+      selectedEntityIds: ["299"],
+      decidedByUserId: "platform_dev",
+    });
+  });
+
+  test("consolidating staged candidates preserves source IDs and reports conflicts", () => {
+    const patch = buildStagedConsolidationCompanyPatch({
+      id: "company-review",
+      sourceSystem: "infoflo",
+      sourceRecordId: "IF-ADAPT",
+      normalizedJson: { name: "Adapt Media", additionalInfoFloSourceRecordIds: ["IF-ADAPT-2"] },
+    }, [
+      {
+        id: "299",
+        sourceSystem: "quickbooks",
+        sourceRecordId: "299",
+        rawJson: { Id: "299", CompanyName: "Adapt Media Inc", DisplayName: "Adapt Media", PrimaryEmailAddr: { Address: "billing@adapt.example" } },
+        normalizedJson: {},
+      },
+      {
+        id: "300",
+        sourceSystem: "quickbooks",
+        sourceRecordId: "300",
+        rawJson: { Id: "300", CompanyName: "Adapt Media", DisplayName: "Adapt Media Parent", PrimaryEmailAddr: { Address: "orders@adapt.example" } },
+        normalizedJson: {},
+      },
+    ], "platform_dev", "consolidate_staged");
+
+    expect(patch.status).toBe("new_company");
+    expect(patch.normalizedJson.quickBooksCustomerId).toBe("299");
+    expect(patch.normalizedJson.additionalQuickBooksCustomerIds).toEqual(["300"]);
+    expect(patch.normalizedJson.additionalInfoFloSourceRecordIds).toEqual(["IF-ADAPT-2"]);
+    expect(patch.normalizedJson.stagedConsolidation.quickBooksCustomerIds).toEqual(["299", "300"]);
+    expect(patch.normalizedJson.stagedConsolidation.conflicts).toContain("companyName");
+    expect(patch.normalizedJson.stagedConsolidation.conflicts).toContain("email");
+    expect(patch.reviewDecisionJson).toMatchObject({
+      action: "consolidate_staged",
+      selectedEntityIds: ["299", "300"],
+      quickBooksCustomerIds: ["299", "300"],
+    });
+  });
+
+  test("links a contact to a searched company independently of person matching", () => {
+    const patch = buildContactReviewPatch({
+      status: "company_ambiguous",
+      selectedContactId: "contact_existing",
+    }, { action: "link_company", selectedEntityId: "company_299", actorUserId: "platform_dev" });
+
+    expect(patch).toMatchObject({
+      status: "company_matched",
+      selectedContactId: "contact_existing",
+      selectedCustomerId: "company_299",
       errorMessage: null,
     });
     expect(patch.reviewDecisionJson).toMatchObject({
-      action: "merge_duplicate",
-      selectedEntityId: "cust_duplicate_a",
-      decidedByUserId: "platform_dev",
+      action: "link_company",
+      selectedEntityId: "company_299",
     });
   });
 

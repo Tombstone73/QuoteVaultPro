@@ -259,8 +259,9 @@ const migrationReviewDecisionSchema = z.object({
   organizationId: z.string().min(1),
   recordType: z.enum(["company", "contact"]),
   recordId: z.string().min(1),
-  action: z.enum(["accept_proposed", "choose_existing", "create_new", "merge_duplicate", "ignore"]),
+  action: z.enum(["accept_proposed", "choose_existing", "create_new", "select_staged", "consolidate_staged", "link_company", "ignore"]),
   selectedEntityId: z.string().min(1).optional(),
+  selectedEntityIds: z.array(z.string().min(1)).optional(),
 });
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -767,6 +768,7 @@ export function registerPlatformRoutes(app: import("express").Express): void {
         recordId: body.data.recordId,
         action: body.data.action,
         selectedEntityId: body.data.selectedEntityId,
+        selectedEntityIds: body.data.selectedEntityIds,
         actorUserId,
       });
 
@@ -783,6 +785,7 @@ export function registerPlatformRoutes(app: import("express").Express): void {
           recordId: body.data.recordId,
           decision: body.data.action,
           selectedEntityId: body.data.selectedEntityId,
+          selectedEntityIds: body.data.selectedEntityIds,
         },
       });
       return res.json({ success: true, data: batch });
