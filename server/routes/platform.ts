@@ -832,19 +832,27 @@ export function registerPlatformRoutes(app: import("express").Express): void {
           body.data.allowUnresolvedSkips === true,
         );
 
-        await writePlatformAuditLog({
-          action: "customer_contact_migration.batch_finalized",
-          actorUserId,
-          actorEmail: (req.user as any)?.email ?? "unknown",
-          req,
-          orgId: body.data.organizationId,
-          metadata: { batchId: params.data.batchId, counts: result.counts },
-        });
+        try {
+          await writePlatformAuditLog({
+            action: "customer_contact_migration.batch_finalized",
+            actorUserId,
+            actorEmail: (req.user as any)?.email ?? "unknown",
+            req,
+            orgId: body.data.organizationId,
+            metadata: { batchId: params.data.batchId, counts: result.counts },
+          });
+        } catch (auditError: any) {
+          console.error("[platform/customer-contact-migrations] post-finalize audit failed", {
+            organizationId: body.data.organizationId,
+            batchId: params.data.batchId,
+            message: auditError?.message ?? "Failed to write platform audit log.",
+          });
+        }
 
         return res.json({ success: true, data: result });
       } catch (error: any) {
         const status = error?.statusCode ?? 500;
-        const code = status === 404
+        const code = error?.code ?? (status === 404
           ? "BATCH_NOT_FOUND"
           : status === 409 && String(error?.message || "").includes("unresolved")
             ? "UNRESOLVED_RECORDS_NOT_APPROVED"
@@ -852,16 +860,22 @@ export function registerPlatformRoutes(app: import("express").Express): void {
               ? "BATCH_NOT_READY"
               : status === 400
                 ? "INVALID_FINALIZATION_REQUEST"
-                : "FINALIZATION_FAILED";
+                : "FINALIZATION_FAILED");
+        const stage = error?.stage ?? "finalization";
+        const message = error?.message ?? "Failed to finalize migration batch.";
         console.error("[platform/customer-contact-migrations] finalize error:", {
           organizationId: body.data.organizationId,
           batchId: params.data.batchId,
           allowUnresolvedSkips: body.data.allowUnresolvedSkips === true,
           status,
           code,
-          message: error?.message ?? "Failed to finalize migration batch.",
+          stage,
+          field: error?.field,
+          sourceRecordId: error?.sourceRecordId,
+          entityType: error?.entityType,
+          message,
         });
-        return res.status(status).json({ success: false, code, message: error?.message ?? "Failed to finalize migration batch." });
+        return res.status(status).json({ success: false, code, stage, batchId: params.data.batchId, message });
       }
     },
   );

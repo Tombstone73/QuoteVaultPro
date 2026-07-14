@@ -95,6 +95,117 @@ export function isFinalizedCustomerContactBatch(batch: Pick<CustomerContactImpor
   return Boolean(batch.finalizedAt) && (batch.status === "completed" || batch.status === "completed_with_exceptions");
 }
 
+type CustomerContactFinalizationEntityType = "company" | "contact" | "relationship" | "skip" | "batch";
+
+type CustomerContactDateContext = {
+  field: string;
+  stage: string;
+  batchId?: string | null;
+  organizationId?: string | null;
+  sourceRecordId?: string | null;
+  entityType: CustomerContactFinalizationEntityType;
+};
+
+export class CustomerContactMigrationDateError extends Error {
+  code = "INVALID_FINALIZATION_DATE";
+  statusCode = 422;
+  stage: string;
+  field: string;
+  batchId?: string | null;
+  organizationId?: string | null;
+  sourceRecordId?: string | null;
+  entityType: CustomerContactFinalizationEntityType;
+
+  constructor(context: CustomerContactDateContext, detail = "invalid date value") {
+    const recordLabel = context.sourceRecordId ? ` ${context.sourceRecordId}` : "";
+    super(`Finalization failed while processing ${context.entityType}${recordLabel}: ${detail} for ${context.field}.`);
+    this.name = "CustomerContactMigrationDateError";
+    this.stage = context.stage;
+    this.field = context.field;
+    this.batchId = context.batchId;
+    this.organizationId = context.organizationId;
+    this.sourceRecordId = context.sourceRecordId;
+    this.entityType = context.entityType;
+  }
+}
+
+function logMigrationDateDiagnostic(context: CustomerContactDateContext, value: unknown, reason: string) {
+  console.warn("[customer-contact-migration] invalid date value", {
+    field: context.field,
+    type: typeof value,
+    isNull: value === null,
+    constructorName: value === null || value === undefined ? null : value.constructor?.name ?? null,
+    batchId: context.batchId,
+    organizationId: context.organizationId,
+    sourceRecordId: context.sourceRecordId,
+    entityType: context.entityType,
+    stage: context.stage,
+    reason,
+  });
+}
+
+export function normalizeNullableMigrationDateForDb(value: unknown, context: CustomerContactDateContext): Date | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) {
+    if (!Number.isNaN(value.getTime())) return value;
+    logMigrationDateDiagnostic(context, value, "invalid Date instance");
+    throw new CustomerContactMigrationDateError(context);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    const parsed = trimmed ? new Date(trimmed) : new Date(Number.NaN);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+    logMigrationDateDiagnostic(context, value, "invalid date string");
+    throw new CustomerContactMigrationDateError(context);
+  }
+  logMigrationDateDiagnostic(context, value, "unsupported date value type");
+  throw new CustomerContactMigrationDateError(context);
+}
+
+export function serializeNullableMigrationDate(value: unknown, context: CustomerContactDateContext): string | null {
+  const date = normalizeNullableMigrationDateForDb(value, context);
+  return date ? date.toISOString() : null;
+}
+
+function stripSystemDateFields(patch: Record<string, unknown>) {
+  delete patch.createdAt;
+  delete patch.updatedAt;
+}
+
+export function normalizePermanentCustomerPatchDates(patch: Record<string, unknown>, context: Omit<CustomerContactDateContext, "field" | "entityType">): Record<string, unknown> {
+  const normalized = { ...patch };
+  stripSystemDateFields(normalized);
+  if (Object.prototype.hasOwnProperty.call(normalized, "syncedAt")) {
+    normalized.syncedAt = normalizeNullableMigrationDateForDb(normalized.syncedAt, {
+      ...context,
+      field: "syncedAt",
+      entityType: "company",
+    });
+  }
+  return normalized;
+}
+
+export function normalizePermanentContactPatchDates(patch: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...patch };
+  stripSystemDateFields(normalized);
+  return normalized;
+}
+
+export function normalizePermanentRelationshipPatchDates(patch: Record<string, unknown>, context: Omit<CustomerContactDateContext, "field" | "entityType">): Record<string, unknown> {
+  const normalized = { ...patch };
+  stripSystemDateFields(normalized);
+  for (const field of ["startDate", "endDate"]) {
+    if (Object.prototype.hasOwnProperty.call(normalized, field)) {
+      normalized[field] = normalizeNullableMigrationDateForDb(normalized[field], {
+        ...context,
+        field,
+        entityType: "relationship",
+      });
+    }
+  }
+  return normalized;
+}
+
 export interface QuickBooksCustomerSource {
   Id?: string;
   DisplayName?: string;
@@ -1815,7 +1926,15 @@ export class CustomerContactMigrationService {
           }).where(eq(customerContactImportCompanyRecords.id, row.id));
           continue;
         }
-        const patch = compactPatch((row.proposedChangesJson ?? {}) as Record<string, unknown>);
+        const patch = normalizePermanentCustomerPatchDates(
+          compactPatch((row.proposedChangesJson ?? {}) as Record<string, unknown>),
+          {
+            organizationId,
+            batchId,
+            sourceRecordId: row.sourceRecordId ?? row.id,
+            stage: "company_finalization",
+          },
+        );
         let customerId = row.selectedCustomerId ?? null;
 
         try {
@@ -1921,7 +2040,7 @@ export class CustomerContactMigrationService {
           }).where(eq(customerContactImportContactRecords.id, row.id));
           continue;
         }
-        const patch = compactPatch((row.proposedChangesJson ?? {}) as Record<string, unknown>);
+        const patch = normalizePermanentContactPatchDates(compactPatch((row.proposedChangesJson ?? {}) as Record<string, unknown>));
         let contactId = row.selectedContactId ?? null;
         try {
           if (contactId) {
@@ -1992,7 +2111,17 @@ export class CustomerContactMigrationService {
           ))
           .limit(1);
 
-        const linkPatch = {
+        const relationshipDatePatch = normalizePermanentRelationshipPatchDates(
+          compactPatch((row.proposedChangesJson ?? {}) as Record<string, unknown>),
+          {
+            organizationId,
+            batchId,
+            sourceRecordId: row.sourceRecordId ?? row.id,
+            stage: "relationship_finalization",
+          },
+        );
+
+        const linkPatch: any = {
           organizationId,
           customerId,
           contactId,
@@ -2005,6 +2134,12 @@ export class CustomerContactMigrationService {
           sourceRecordId: row.sourceRecordId,
           updatedAt: new Date(),
         };
+        if (Object.prototype.hasOwnProperty.call(relationshipDatePatch, "startDate")) {
+          linkPatch.startDate = relationshipDatePatch.startDate;
+        }
+        if (Object.prototype.hasOwnProperty.call(relationshipDatePatch, "endDate")) {
+          linkPatch.endDate = relationshipDatePatch.endDate;
+        }
 
         const [link] = existing
           ? await tx.update(customerContactLinks).set(linkPatch).where(eq(customerContactLinks.id, existing.id)).returning()
