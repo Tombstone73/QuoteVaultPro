@@ -187,6 +187,17 @@ async function postJson(path: string, body: unknown): Promise<Response> {
   });
 }
 
+async function readJsonEnvelope<T extends { success: boolean; message?: string; code?: string }>(res: Response, fallbackMessage: string): Promise<T> {
+  try {
+    return await res.json();
+  } catch {
+    return {
+      success: false,
+      message: fallbackMessage,
+    } as T;
+  }
+}
+
 // ─── Platform-admin API calls ─────────────────────────────────────────────────
 
 /**
@@ -383,7 +394,10 @@ export async function finalizeCustomerContactMigrationBatch(
     confirmation: "FINALIZE",
     allowUnresolvedSkips,
   });
-  const body = await res.json();
+  const body = await readJsonEnvelope<{ success: boolean; data?: { batch: CustomerContactMigrationBatch; counts: Record<string, number> }; message?: string; code?: string }>(
+    res,
+    "Finalize failed because the server returned an empty or invalid response.",
+  );
   return { httpStatus: res.status, body };
 }
 

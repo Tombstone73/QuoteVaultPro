@@ -43,6 +43,20 @@ type CsvReportKind = "completed-mappings" | "exceptions" | "rejected-records" | 
 type ReviewRecordType = "company" | "contact";
 type ReviewDecisionAction = "accept_proposed" | "choose_existing" | "create_new" | "select_staged" | "consolidate_staged" | "link_company" | "ignore";
 
+export type CustomerContactFinalizeCounts = {
+  existingCompaniesMatched: number;
+  newCompaniesCreated: number;
+  existingContactsMatched: number;
+  newContactsCreated: number;
+  relationshipsCreated: number;
+  relationshipsUpdated: number;
+  primaryContactsAssigned: number;
+  billingContactsAssigned: number;
+  proofContactsAssigned: number;
+  rejectedRecords: number;
+  failedRecords: number;
+};
+
 const csvReportHeaders: Record<CsvReportKind, string[]> = {
   "completed-mappings": ["type", "rowNumber", "sourceRecordId", "entityId", "linkId", "customerId", "contactId"],
   exceptions: ["type", "rowNumber", "sourceRecordId", "status", "error", "warnings"],
@@ -50,6 +64,36 @@ const csvReportHeaders: Record<CsvReportKind, string[]> = {
   conflicts: ["type", "rowNumber", "sourceRecordId", "candidates"],
   "failed-records": ["type", "rowNumber", "sourceRecordId", "error"],
 };
+
+export function emptyCustomerContactFinalizeCounts(): CustomerContactFinalizeCounts {
+  return {
+    existingCompaniesMatched: 0,
+    newCompaniesCreated: 0,
+    existingContactsMatched: 0,
+    newContactsCreated: 0,
+    relationshipsCreated: 0,
+    relationshipsUpdated: 0,
+    primaryContactsAssigned: 0,
+    billingContactsAssigned: 0,
+    proofContactsAssigned: 0,
+    rejectedRecords: 0,
+    failedRecords: 0,
+  };
+}
+
+export function finalizationCountsFromBatch(batch: Pick<CustomerContactImportBatch, "summaryJson">): CustomerContactFinalizeCounts {
+  const finalization = batch.summaryJson && typeof batch.summaryJson === "object" ? (batch.summaryJson as any).finalization : null;
+  const counts = emptyCustomerContactFinalizeCounts();
+  if (!finalization || typeof finalization !== "object") return counts;
+  for (const key of Object.keys(counts) as Array<keyof CustomerContactFinalizeCounts>) {
+    counts[key] = Number.isFinite(Number(finalization[key])) ? Number(finalization[key]) : 0;
+  }
+  return counts;
+}
+
+export function isFinalizedCustomerContactBatch(batch: Pick<CustomerContactImportBatch, "status" | "finalizedAt">): boolean {
+  return Boolean(batch.finalizedAt) && (batch.status === "completed" || batch.status === "completed_with_exceptions");
+}
 
 export interface QuickBooksCustomerSource {
   Id?: string;
@@ -1680,7 +1724,33 @@ export class CustomerContactMigrationService {
       throw Object.assign(new Error("Explicit FINALIZE confirmation is required."), { statusCode: 400 });
     }
 
-    return this.dbClient.transaction(async (tx: any) => {
+    console.info("[customer-contact-migration.finalize] request_started", {
+      organizationId,
+      batchId,
+      allowUnresolvedSkips,
+    });
+
+    try {
+      return await this.dbClient.transaction(async (tx: any) => {
+      const [batchBeforeFinalize] = await tx
+        .select()
+        .from(customerContactImportBatches)
+        .where(and(eq(customerContactImportBatches.organizationId, organizationId), eq(customerContactImportBatches.id, batchId)))
+        .limit(1);
+      if (!batchBeforeFinalize) {
+        throw Object.assign(new Error("Migration batch not found."), { statusCode: 404 });
+      }
+      if (isFinalizedCustomerContactBatch(batchBeforeFinalize)) {
+        const counts = finalizationCountsFromBatch(batchBeforeFinalize);
+        console.info("[customer-contact-migration.finalize] idempotent_already_finalized", {
+          organizationId,
+          batchId,
+          currentBatchStatus: batchBeforeFinalize.status,
+          counts,
+        });
+        return { batch: batchBeforeFinalize, counts, idempotent: true };
+      }
+
       const currentCompanyRows = await tx.select().from(customerContactImportCompanyRecords).where(eq(customerContactImportCompanyRecords.batchId, batchId));
       const currentContactRows = await tx.select().from(customerContactImportContactRecords).where(eq(customerContactImportContactRecords.batchId, batchId));
       const currentRelationshipRows = await tx.select().from(customerContactImportRelationshipRecords).where(eq(customerContactImportRelationshipRecords.batchId, batchId));
@@ -1688,6 +1758,13 @@ export class CustomerContactMigrationService {
         companyRows: currentCompanyRows,
         contactRows: currentContactRows,
         relationshipRows: currentRelationshipRows,
+      });
+      console.info("[customer-contact-migration.finalize] validation", {
+        organizationId,
+        batchId,
+        currentBatchStatus: batchBeforeFinalize.status,
+        unresolvedCount: preview.remainingUnresolved,
+        allowUnresolvedSkips,
       });
       if (preview.remainingUnresolved > 0 && !allowUnresolvedSkips) {
         throw Object.assign(new Error("Resolve remaining exceptions or explicitly approve unresolved skips before finalizing."), { statusCode: 409 });
@@ -1716,23 +1793,26 @@ export class CustomerContactMigrationService {
 
       const companyIdByRecord = new Map<string, string>();
       const contactIdByRecord = new Map<string, string>();
-      const counts = {
-        existingCompaniesMatched: 0,
-        newCompaniesCreated: 0,
-        existingContactsMatched: 0,
-        newContactsCreated: 0,
-        relationshipsCreated: 0,
-        relationshipsUpdated: 0,
-        primaryContactsAssigned: 0,
-        billingContactsAssigned: 0,
-        proofContactsAssigned: 0,
-        rejectedRecords: 0,
-        failedRecords: 0,
-      };
+      const counts = emptyCustomerContactFinalizeCounts();
 
       for (const row of companyRows) {
-        if (row.status === "rejected" || unresolvedCompanyStatuses.has(String(row.status))) {
+        if (row.status === "rejected") {
           counts.rejectedRecords++;
+          continue;
+        }
+        if (unresolvedCompanyStatuses.has(String(row.status))) {
+          counts.rejectedRecords++;
+          await tx.update(customerContactImportCompanyRecords).set({
+            status: "rejected",
+            errorMessage: "Skipped during finalization after unresolved skips were explicitly approved.",
+            reviewDecisionJson: {
+              ...(row.reviewDecisionJson as any),
+              action: "approve_unresolved_skip",
+              decidedByUserId: actorUserId,
+              decidedAt: new Date().toISOString(),
+            },
+            updatedAt: new Date(),
+          }).where(eq(customerContactImportCompanyRecords.id, row.id));
           continue;
         }
         const patch = compactPatch((row.proposedChangesJson ?? {}) as Record<string, unknown>);
@@ -1822,8 +1902,23 @@ export class CustomerContactMigrationService {
       }
 
       for (const row of contactRows) {
-        if (row.status === "rejected" || unresolvedContactStatuses.has(String(row.status))) {
+        if (row.status === "rejected") {
           counts.rejectedRecords++;
+          continue;
+        }
+        if (unresolvedContactStatuses.has(String(row.status))) {
+          counts.rejectedRecords++;
+          await tx.update(customerContactImportContactRecords).set({
+            status: "rejected",
+            errorMessage: "Skipped during finalization after unresolved skips were explicitly approved.",
+            reviewDecisionJson: {
+              ...(row.reviewDecisionJson as any),
+              action: "approve_unresolved_skip",
+              decidedByUserId: actorUserId,
+              decidedAt: new Date().toISOString(),
+            },
+            updatedAt: new Date(),
+          }).where(eq(customerContactImportContactRecords.id, row.id));
           continue;
         }
         const patch = compactPatch((row.proposedChangesJson ?? {}) as Record<string, unknown>);
@@ -1876,8 +1971,9 @@ export class CustomerContactMigrationService {
       for (const row of relationshipRows) {
         const customerId = row.selectedCustomerId ?? (row.companyRecordId ? companyIdByRecord.get(row.companyRecordId) : null);
         const contactId = row.selectedContactId ?? (row.contactRecordId ? contactIdByRecord.get(row.contactRecordId) : null);
-        if (!customerId || !contactId || row.status === "ambiguous" || row.status === "failed") {
+        if (row.status !== "ready" || !customerId || !contactId) {
           await tx.update(customerContactImportRelationshipRecords).set({ status: "skipped", errorMessage: "Relationship was not ready.", updatedAt: new Date() }).where(eq(customerContactImportRelationshipRecords.id, row.id));
+          counts.rejectedRecords++;
           continue;
         }
 
@@ -1957,19 +2053,25 @@ export class CustomerContactMigrationService {
         .where(eq(customerContactImportBatches.id, batchId))
         .returning();
 
+      console.info("[customer-contact-migration.finalize] transaction_committed", {
+        organizationId,
+        batchId,
+        finalStatus,
+        counts,
+      });
+
       return { batch: updatedBatch, counts };
-    }).catch(async (error: any) => {
-      await this.dbClient
-        .update(customerContactImportBatches)
-        .set({
-          status: "failed",
-          failingStage: "finalization",
-          errorMessage: error?.message ?? "Finalization failed",
-          updatedAt: new Date(),
-        })
-        .where(and(eq(customerContactImportBatches.organizationId, organizationId), eq(customerContactImportBatches.id, batchId)));
-      throw error;
     });
+    } catch (error: any) {
+      console.error("[customer-contact-migration.finalize] transaction_rolled_back", {
+        organizationId,
+        batchId,
+        allowUnresolvedSkips,
+        message: error?.message ?? "Finalization failed",
+        statusCode: error?.statusCode,
+      });
+      throw error;
+    }
   }
 
   buildReportRows(kind: CsvReportKind, batch: Awaited<ReturnType<CustomerContactMigrationService["getBatch"]>>): Array<Record<string, unknown>> {
