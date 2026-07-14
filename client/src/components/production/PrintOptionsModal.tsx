@@ -8,7 +8,7 @@
  * overrides as query params. Nothing here mutates the job/order.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -29,21 +29,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ROUTES } from "@/config/routes";
-import { loadPrinterPrefs } from "@/lib/ticketSettings";
+import { usePrinterProfiles } from "@/hooks/usePrinterProfiles";
 import {
   serializeTicketOverrides,
   type TicketPrintOverrides,
   type TicketReason,
 } from "@/lib/ticketPrintOverrides";
 import { Printer } from "lucide-react";
-
-/** Built-in printer destination presets (operator picks the match in the OS dialog). */
-const PRINTER_PRESETS = [
-  "Default station printer",
-  "Flatbed printer",
-  "Roll printer",
-  "Office printer",
-];
 
 const STATION_ROUTES = ["Prepress", "Flatbed", "Roll", "Finishing", "Shipping"];
 const FULFILLMENT_OPTIONS = ["Pickup", "Delivery", "Shipping"];
@@ -71,7 +63,9 @@ export function PrintOptionsModal({
   jobId,
   jobQuantity,
 }: PrintOptionsModalProps) {
-  const [destination, setDestination] = useState<string>(PRINTER_PRESETS[0]);
+  const { data: printerProfiles = [] } = usePrinterProfiles({ active: true, intendedUse: "production_ticket" });
+  const defaultPrinter = printerProfiles.find((profile) => profile.isDefault) ?? (printerProfiles.length === 1 ? printerProfiles[0] : null);
+  const [destination, setDestination] = useState<string>("");
   const [reason, setReason] = useState<TicketReason>("standard");
   const [partial, setPartial] = useState(false);
   const [quantityDone, setQuantityDone] = useState("");
@@ -82,9 +76,11 @@ export function PrintOptionsModal({
   const [stationRoute, setStationRoute] = useState<string>(NONE);
   const [fulfillment, setFulfillment] = useState<string>(NONE);
 
-  // Saved printer profiles from local ticket settings, merged with presets.
-  const savedPrinters = loadPrinterPrefs().printers.filter((p) => !PRINTER_PRESETS.includes(p));
-  const destinationOptions = [...PRINTER_PRESETS, ...savedPrinters];
+  const destinationOptions = printerProfiles.map((profile) => profile.displayName);
+
+  useEffect(() => {
+    if (!destination && defaultPrinter) setDestination(defaultPrinter.displayName);
+  }, [defaultPrinter, destination]);
 
   const handlePrint = () => {
     const overrides: TicketPrintOverrides = {
@@ -120,16 +116,21 @@ export function PrintOptionsModal({
             <Label className="text-xs font-medium">Print destination</Label>
             <Select value={destination} onValueChange={setDestination}>
               <SelectTrigger className="h-9">
-                <SelectValue />
+                <SelectValue placeholder={destinationOptions.length ? "Select printer profile" : "No printer profiles configured"} />
               </SelectTrigger>
               <SelectContent>
-                {destinationOptions.map((p) => (
-                  <SelectItem key={p} value={p}>
-                    {p}
-                  </SelectItem>
-                ))}
+                {destinationOptions.length === 0 ? (
+                  <div className="px-2 py-1.5 text-xs text-muted-foreground">No printer profiles are configured.</div>
+                ) : (
+                  destinationOptions.map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {p}
+                    </SelectItem>
+                  ))
+                )}
               </SelectContent>
             </Select>
+            <p className="text-xs text-muted-foreground">The browser print dialog will still open.</p>
           </div>
 
           {/* Ticket reason / type */}

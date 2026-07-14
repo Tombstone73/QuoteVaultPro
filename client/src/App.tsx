@@ -61,6 +61,7 @@ import AdminTools from "@/pages/settings/admin-tools";
 import SetupSettings from "@/pages/settings/SetupSettings";
 import StorageSettingsPage from "@/pages/settings/storage";
 import AiSettingsPage from "@/pages/settings/ai";
+import PrinterSettingsPage from "@/pages/settings/printers";
 import InvoicesListPage from "@/pages/invoices";
 import InvoiceDetailPage from "@/pages/invoice-detail";
 import MaterialsListPage from "@/pages/materials";
@@ -333,6 +334,7 @@ function Router() {
           <Route path="ai" element={<AiSettingsPage />} />
           <Route path="storage" element={<StorageSettingsPage />} />
           <Route path="production" element={<ProductionSettings />} />
+          <Route path="printers" element={<PrinterSettingsPage />} />
           <Route path="inventory" element={<InventorySettings />} />
           <Route path="notifications" element={<NotificationsSettings />} />
           <Route path="appearance" element={<AppearanceSettings />} />

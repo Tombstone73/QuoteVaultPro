@@ -1,67 +1,51 @@
 /**
- * useStationPrinter — shared station printer-preference state for ticket and
+ * useStationPrinter — organization printer-profile state for ticket and
  * traveler print pages.
  *
- * The MVP browser/Windows print flow cannot select a printer silently, so this
- * just remembers which printer name the station should pick in the print
- * dialog (persisted per browser via localStorage — see lib/ticketSettings).
+ * Browser printing cannot silently choose a physical printer. The selected
+ * profile is a routing label that tells the operator which destination to pick
+ * in the browser/OS print dialog.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  loadPrinterPrefs,
-  savePrinterPrefs,
-  type TicketPrinterPrefs,
-} from "@/lib/ticketSettings";
+  markPrinterProfileUsed,
+  PrinterProfile,
+  usePrinterProfiles,
+} from "@/hooks/usePrinterProfiles";
 
 export interface StationPrinterController {
-  prefs: TicketPrinterPrefs;
-  selectedPrinter: string;
-  newPrinter: string;
-  setNewPrinter: (value: string) => void;
-  selectPrinter: (name: string) => void;
-  savePrinter: () => void;
+  profiles: PrinterProfile[];
+  isLoading: boolean;
+  selectedProfileId: string;
+  selectedProfile: PrinterProfile | null;
+  selectPrinterProfile: (id: string) => void;
 }
 
 export function useStationPrinter(): StationPrinterController {
-  const [prefs, setPrefs] = useState<TicketPrinterPrefs>(() => loadPrinterPrefs());
-  const [selectedPrinter, setSelectedPrinter] = useState<string>("");
-  const [newPrinter, setNewPrinter] = useState("");
+  const { data: profiles = [], isLoading } = usePrinterProfiles({
+    active: true,
+    intendedUse: "production_ticket",
+  });
+  const [selectedProfileId, setSelectedProfileId] = useState("");
 
-  // Default the selector to the station's saved default printer.
-  useEffect(() => {
-    if (!selectedPrinter && prefs.defaultPrinter) {
-      setSelectedPrinter(prefs.defaultPrinter);
-    }
-  }, [prefs.defaultPrinter, selectedPrinter]);
-
-  const selectPrinter = useCallback(
-    (name: string) => {
-      setSelectedPrinter(name);
-      // Selecting a printer also makes it this station's default.
-      setPrefs((current) => {
-        const next: TicketPrinterPrefs = { ...current, defaultPrinter: name };
-        savePrinterPrefs(next);
-        return next;
-      });
-    },
-    [],
+  const defaultProfile = useMemo(
+    () => profiles.find((profile) => profile.isDefault) ?? (profiles.length === 1 ? profiles[0] : null),
+    [profiles],
   );
 
-  const savePrinter = useCallback(() => {
-    const name = newPrinter.trim();
-    if (!name) return;
-    setPrefs((current) => {
-      const printers = current.printers.includes(name)
-        ? current.printers
-        : [...current.printers, name];
-      const next: TicketPrinterPrefs = { printers, defaultPrinter: name };
-      savePrinterPrefs(next);
-      return next;
-    });
-    setSelectedPrinter(name);
-    setNewPrinter("");
-  }, [newPrinter]);
+  useEffect(() => {
+    if (!selectedProfileId && defaultProfile) {
+      setSelectedProfileId(defaultProfile.id);
+    }
+  }, [defaultProfile, selectedProfileId]);
 
-  return { prefs, selectedPrinter, newPrinter, setNewPrinter, selectPrinter, savePrinter };
+  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
+
+  const selectPrinterProfile = useCallback((id: string) => {
+    setSelectedProfileId(id);
+    if (id) void markPrinterProfileUsed(id);
+  }, []);
+
+  return { profiles, isLoading, selectedProfileId, selectedProfile, selectPrinterProfile };
 }

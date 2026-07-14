@@ -16,6 +16,7 @@ import {
 import { loadTicketTemplate } from "@/lib/ticketSettings";
 import { ticketRowStyle, THERMAL_PRINT_STYLES } from "@/lib/ticketRender";
 import { useStationPrinter } from "@/hooks/useStationPrinter";
+import { markPrinterProfileUsed } from "@/hooks/usePrinterProfiles";
 import { PrinterPicker } from "@/components/production/PrinterPicker";
 import {
   CenteredMessage,
@@ -74,6 +75,11 @@ export default function OrderTravelerPage() {
   }, [data, template]);
 
   function handlePrint() {
+    if (printer.profiles.length > 0 && !printer.selectedProfile) {
+      window.alert("Select a printer profile before printing.");
+      return;
+    }
+    if (printer.selectedProfile) void markPrinterProfileUsed(printer.selectedProfile.id);
     window.print();
     if (orderId) void logTravelerPrint(orderId);
   }
@@ -96,7 +102,7 @@ export default function OrderTravelerPage() {
             Order Traveler
           </span>
           <div className="ml-auto">
-            <Button onClick={handlePrint} size="sm" className="gap-1.5">
+            <Button onClick={handlePrint} size="sm" className="gap-1.5" disabled={printer.profiles.length > 0 && !printer.selectedProfile}>
               <Printer className="h-4 w-4" /> Print Traveler
             </Button>
           </div>
