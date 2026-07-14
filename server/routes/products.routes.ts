@@ -57,6 +57,10 @@ import {
 import { applyProductTypeIdUpdateGuard } from "../lib/productUpdateGuards";
 import { getDefaultFormula } from "@shared/pricingProfiles";
 import { filterProductsForCatalog } from "@shared/productCatalogVisibility";
+import {
+  ProductParsingDescriptionGeneratorError,
+  productParsingDescriptionGeneratorService,
+} from "../services/products/ProductParsingDescriptionGeneratorService";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -2068,6 +2072,48 @@ export function registerProductRoutes(
     } catch (error) {
       console.error("Error exporting products:", error);
       res.status(500).json({ message: "Failed to export products" });
+    }
+  });
+
+  app.post("/api/products/ai-parsing-description/generate", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, message: "Missing organization context" });
+      }
+
+      const result = await productParsingDescriptionGeneratorService.generate({
+        organizationId,
+        actorUserId: getUserId(req.user) ?? null,
+        input: req.body,
+      });
+
+      return res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      if (error instanceof ProductParsingDescriptionGeneratorError) {
+        return res.status(error.statusCode).json({
+          success: false,
+          code: error.code,
+          message: error.message,
+        });
+      }
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          success: false,
+          code: "invalid_request",
+          message: fromZodError(error).message,
+          errors: error.errors,
+        });
+      }
+      console.error("[POST /api/products/ai-parsing-description/generate] Failed:", error);
+      return res.status(500).json({
+        success: false,
+        code: "generation_failed",
+        message: "Failed to generate AI parsing description.",
+      });
     }
   });
 

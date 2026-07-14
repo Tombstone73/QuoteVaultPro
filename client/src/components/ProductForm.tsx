@@ -83,6 +83,8 @@ export const ProductForm = ({
   pbv2PricingMode,
   onPbv2PricingModeChange,
   intakeDraftActivationLocked = false,
+  onGenerateAiParsingDescription,
+  isGeneratingAiParsingDescription = false,
 }: {
   form: any;
   materials: any;
@@ -113,6 +115,8 @@ export const ProductForm = ({
   pbv2PricingMode?: "basic" | "advanced";
   onPbv2PricingModeChange?: (mode: "basic" | "advanced") => void;
   intakeDraftActivationLocked?: boolean;
+  onGenerateAiParsingDescription?: () => void;
+  isGeneratingAiParsingDescription?: boolean;
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
@@ -288,10 +292,28 @@ export const ProductForm = ({
 
       <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4 space-y-4 mt-4">
         <div>
-          <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">AI Parsing Description</h3>
-          <p className="mt-1 text-xs text-slate-500">
-            Internal matching guidance for inbound parsing. This does not change customer-facing product copy.
-          </p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">AI Parsing Description</h3>
+              <p className="mt-1 text-xs text-slate-500">
+                Internal matching guidance for inbound parsing. This does not change customer-facing product copy.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onGenerateAiParsingDescription}
+              disabled={!onGenerateAiParsingDescription || aiParsingLinkedToDescription || isGeneratingAiParsingDescription}
+              aria-label="Generate AI parsing description with AI"
+              aria-busy={isGeneratingAiParsingDescription ? "true" : "false"}
+            >
+              {isGeneratingAiParsingDescription ? "Generating..." : "Generate with AI"}
+            </Button>
+          </div>
+          {isGeneratingAiParsingDescription ? (
+            <p className="mt-2 text-xs text-slate-400" role="status" aria-live="polite">Generating AI parsing description...</p>
+          ) : null}
         </div>
         <FormField
           control={form.control}

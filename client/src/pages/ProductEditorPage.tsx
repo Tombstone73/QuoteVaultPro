@@ -38,6 +38,12 @@ import { ensureRootNodeIds, normalizeTreeJson } from "@/lib/pbv2/pbv2ViewModel";
 import { PricingValidationPanel } from "@/components/pbv2/builder-v2/PricingValidationPanel";
 import { ProductIntakeDraftBanner } from "@/components/ProductIntakeDraftBanner";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
+import {
+  buildProductAiParsingDescriptionContext,
+  hasExistingAiParsingDescription,
+  normalizeGeneratedAiParsingDescriptionResponse,
+  type ProductAiParsingDescriptionMode,
+} from "@/lib/productAiParsingDescription";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   pricingProfileKey: string;
@@ -142,6 +148,7 @@ const ProductEditorPage = () => {
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const lastLoadedRef = useRef<ProductFormData | null>(null);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
+  const [aiParsingDescriptionConfirmOpen, setAiParsingDescriptionConfirmOpen] = useState(false);
   
   // Single-flight guard: Prevent duplicate product creation from rapid clicks
   const saveInFlightRef = useRef<boolean>(false);
@@ -237,6 +244,50 @@ const ProductEditorPage = () => {
   const { data: productTypes, isError: productTypesError } = useProductTypes();
   const draft = useProductBuilderDraft({ form, materials, pricingFormulas });
   const initializedProductFormRef = useRef<string | null>(null);
+
+  const buildAiParsingDescriptionContext = (mode: ProductAiParsingDescriptionMode) => {
+    const values = form.getValues();
+    return buildProductAiParsingDescriptionContext({
+      mode,
+      productId,
+      values,
+      productTypes,
+      currentTree: pbv2TreeProviderRef.current?.getCurrentTree() ?? null,
+      fallbackTree: pbv2State?.treeJson ?? null,
+    });
+  };
+
+  const aiParsingDescriptionMutation = useMutation({
+    mutationFn: async (mode: ProductAiParsingDescriptionMode) => {
+      const response = await apiRequest("POST", "/api/products/ai-parsing-description/generate", buildAiParsingDescriptionContext(mode));
+      const json = await response.json();
+      return normalizeGeneratedAiParsingDescriptionResponse(json);
+    },
+    onSuccess: (data) => {
+      form.setValue("aiParsingDescriptionLinkedToDescription", false, { shouldDirty: true });
+      form.setValue("aiParsingDescription", data.generatedDescription, { shouldDirty: true, shouldTouch: true });
+      toast({
+        title: "AI parsing description generated",
+        description: "Review and edit the generated guidance before saving the product.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Generation failed",
+        description: error.message || "Try again after adding more product context.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const requestAiParsingDescription = () => {
+    if (aiParsingDescriptionMutation.isPending) return;
+    if (hasExistingAiParsingDescription(form.getValues("aiParsingDescription"))) {
+      setAiParsingDescriptionConfirmOpen(true);
+      return;
+    }
+    aiParsingDescriptionMutation.mutate("new");
+  };
 
   useEffect(() => {
     initializedProductFormRef.current = null;
@@ -1008,6 +1059,8 @@ const ProductEditorPage = () => {
               pbv2PricingMode={pbv2PricingMode}
               onPbv2PricingModeChange={setPbv2PricingMode}
               intakeDraftActivationLocked={Boolean(productIntakeDraftLink && !productIntakeDraftLink.productIsActive)}
+              onGenerateAiParsingDescription={requestAiParsingDescription}
+              isGeneratingAiParsingDescription={aiParsingDescriptionMutation.isPending}
               onAddPricingV2Tier={(kind) => {
                 const current = treeMeta.pricingV2 || {};
                 const tiers = kind === 'qty' ? (current.qtyTiers || []) : (current.sqftTiers || []);
@@ -1043,6 +1096,37 @@ const ProductEditorPage = () => {
                 });
               }}
             />
+            <AlertDialog open={aiParsingDescriptionConfirmOpen} onOpenChange={setAiParsingDescriptionConfirmOpen}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Generate AI parsing description?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This field already has internal parsing guidance. Choose whether AI should improve the existing text, replace it with a fresh proposal, or cancel without changing anything.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={aiParsingDescriptionMutation.isPending}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    disabled={aiParsingDescriptionMutation.isPending}
+                    onClick={() => {
+                      setAiParsingDescriptionConfirmOpen(false);
+                      aiParsingDescriptionMutation.mutate("improve");
+                    }}
+                  >
+                    Improve existing
+                  </AlertDialogAction>
+                  <AlertDialogAction
+                    disabled={aiParsingDescriptionMutation.isPending}
+                    onClick={() => {
+                      setAiParsingDescriptionConfirmOpen(false);
+                      aiParsingDescriptionMutation.mutate("replace");
+                    }}
+                  >
+                    Replace
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
             {/* Options Builder section with 2-column layout (pricing panel moved to page level) */}
             <PBV2ProductBuilderSectionV2
               productId={productId || null}

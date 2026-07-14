@@ -15,11 +15,17 @@ describe("AI parsing description editor fields", () => {
 
     expect(productForm).toContain("Use product description for AI parsing");
     expect(productForm).toContain("AI Parsing Description");
+    expect(productForm).toContain("Generate with AI");
+    expect(productForm).toContain("isGeneratingAiParsingDescription");
     expect(productForm).toContain("disabled={aiParsingLinkedToDescription}");
     expect(productEditor).toContain("aiParsingDescription: null");
     expect(productEditor).toContain("aiParsingDescriptionLinkedToDescription: false");
     expect(productEditor).toContain("product.aiParsingDescription");
     expect(productEditor).toContain("product.aiParsingDescriptionLinkedToDescription");
+    expect(productEditor).toContain("if (aiParsingDescriptionMutation.isPending) return");
+    expect(productEditor).toContain("Improve existing");
+    expect(productEditor).toContain("Replace");
+    expect(productEditor).toContain("normalizeGeneratedAiParsingDescriptionResponse");
   });
 
   test("material editor exposes linked checkbox, textarea, disabled state, and save payload", () => {
