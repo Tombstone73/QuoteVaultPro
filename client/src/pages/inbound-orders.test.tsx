@@ -1867,6 +1867,51 @@ describe("InboundOrdersPage", () => {
     await waitForText("Draft Builder");
   });
 
+  test("does not prevent Space in Clean View PO Ref and preserves spaces in text inputs", async () => {
+    const { getSavedBody } = setupParsedInboundReview();
+    renderPage();
+    await waitForText("Clean View");
+    const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(cleanButton);
+    });
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-order-workstation']")), "Clean View workstation renders");
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-po-field']")), "Clean View PO Ref input renders");
+
+    const poInput = container.querySelector("[data-testid='clean-po-field']") as HTMLInputElement;
+    expect(poInput).toBeTruthy();
+    act(() => {
+      poInput.focus();
+    });
+    expect(document.activeElement).toBe(poInput);
+    const spaceEvent = new KeyboardEvent("keydown", { key: " ", code: "Space", bubbles: true, cancelable: true });
+    const dispatched = poInput.dispatchEvent(spaceEvent);
+    expect(dispatched).toBe(true);
+    expect(spaceEvent.defaultPrevented).toBe(false);
+
+    act(() => {
+      Simulate.change(poInput, { target: { value: "PO 123 " } } as any);
+    });
+    await waitForCondition(() => poInput.value === "PO 123 ", "PO Ref preserves typed spaces");
+
+    const carrierInput = labeledControl("Carrier", "input") as HTMLInputElement;
+    act(() => {
+      Simulate.change(carrierInput, { target: { value: "Fed Ex Freight " } } as any);
+    });
+    await waitForCondition(() => carrierInput.value === "Fed Ex Freight ", "Carrier preserves typed spaces");
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
+    expect(saveButton).toBeTruthy();
+    await waitForCondition(() => !saveButton.disabled, "Save Draft enabled after Clean View text changes");
+    await act(async () => {
+      Simulate.click(saveButton);
+      await Promise.resolve();
+    });
+    await waitForCondition(() => Boolean(getSavedBody()), "Clean View draft saved after space regression edit");
+    expect(getSavedBody().reviewedOrderJson.poNumber).toBe("PO 123 ");
+    expect(getSavedBody().reviewedOrderJson.shipMethod).toBe("Fed Ex Freight ");
+  });
+
   test("shows a Clean View attachment error when authenticated file access fails", async () => {
     const row = record({
       sourceType: "email",

@@ -1,4 +1,4 @@
-import { type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import pdfCMapProbeUrl from "pdfjs-dist/cmaps/78-EUC-H.bcmap?url";
 import pdfStandardFontProbeUrl from "pdfjs-dist/standard_fonts/FoxitFixed.pfb?url";
@@ -590,6 +590,31 @@ function parseAttemptNoDraftMessage(attempt: ClientInboundOrderParseAttempt | nu
 function trimToNull(value: string) {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
+}
+
+function textInputValueToNull(value: string) {
+  return value.length ? value : null;
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tagName = target.tagName.toLowerCase();
+  if (tagName === "input" || tagName === "textarea" || tagName === "select") return true;
+  if (target.isContentEditable) return true;
+  return Boolean(target.closest([
+    "[contenteditable='']",
+    "[contenteditable='true']",
+    "[role='textbox']",
+    "[role='searchbox']",
+    "[role='combobox']",
+    "[role='spinbutton']",
+    "[data-editable='true']",
+    "[data-editor]",
+  ].join(",")));
+}
+
+function shouldIgnoreShortcutKeydown(event: ReactKeyboardEvent<HTMLElement>): boolean {
+  return isEditableKeyboardTarget(event.target);
 }
 
 function readStoredBoolean(key: string, fallback: boolean): boolean {
@@ -3527,6 +3552,7 @@ function InboundQueuePanel({
               key={record.id}
               onClick={() => onSelect(record.id)}
               onKeyDown={(event) => {
+                if (shouldIgnoreShortcutKeydown(event)) return;
                 if (event.key === "Enter" || event.key === " ") onSelect(record.id);
               }}
               role="button"
@@ -4732,6 +4758,7 @@ function CleanSourceDocuments({
                       onClick={() => onFocusTarget(file.role === "po" ? "po" : file.role === "artwork" ? "artwork" : "artwork")}
                       onMouseEnter={() => onFocusTarget(file.role === "po" ? "po" : file.role === "artwork" ? "artwork" : "artwork")}
                       onKeyDown={(event) => {
+                        if (shouldIgnoreShortcutKeydown(event)) return;
                         if (event.key === "Enter" || event.key === " ") {
                           event.preventDefault();
                           onFocusTarget(file.role === "po" ? "po" : file.role === "artwork" ? "artwork" : "artwork");
@@ -4767,6 +4794,7 @@ function CleanSourceDocuments({
                 onClick={() => onFocusTarget("po")}
                 onMouseEnter={() => onFocusTarget("po")}
                 onKeyDown={(event) => {
+                  if (shouldIgnoreShortcutKeydown(event)) return;
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
                     onFocusTarget("po");
@@ -5265,6 +5293,7 @@ function CleanAiSummaryRow({
       onMouseEnter={() => onFocusTarget(target)}
       onFocus={() => onFocusTarget(target)}
       onKeyDown={(event) => {
+        if (shouldIgnoreShortcutKeydown(event)) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           onFocusTarget(target, { inspectSource: true });
@@ -5964,7 +5993,7 @@ function CleanOrderWorkstation({
           data-highlighted={activeTarget === "po" ? "true" : "false"}
           >
             <OrderEntryField label="PO Ref">
-              <Input data-testid="clean-po-field" data-highlighted={activeTarget === "po" ? "true" : "false"} value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} />
+              <Input data-testid="clean-po-field" data-highlighted={activeTarget === "po" ? "true" : "false"} value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: textInputValueToNull(event.target.value) })} />
             </OrderEntryField>
             <div className="mt-1">
               <CleanSourceChip target="po" source="po_pdf" confidence={cleanDraft.order.confidence} onFocusTarget={onFocusTarget} />
@@ -5992,7 +6021,7 @@ function CleanOrderWorkstation({
               <option value="low">Low</option>
             </select>
           </OrderEntryField>
-          <OrderEntryField label="Carrier"><Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: trimToNull(event.target.value) })} /></OrderEntryField>
+          <OrderEntryField label="Carrier"><Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: textInputValueToNull(event.target.value) })} /></OrderEntryField>
         </div>
         <div className="mb-4">
           <div className="mb-2 flex items-center justify-between gap-2">
@@ -6039,8 +6068,8 @@ function CleanOrderWorkstation({
           testId="clean-notes-section"
         >
           <div className="grid gap-2">
-            <OrderEntryField label="Production Notes"><Textarea value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: trimToNull(event.target.value) })} /></OrderEntryField>
-            <OrderEntryField label="Internal Notes"><Textarea value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: trimToNull(event.target.value) })} /></OrderEntryField>
+            <OrderEntryField label="Production Notes"><Textarea value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: textInputValueToNull(event.target.value) })} /></OrderEntryField>
+            <OrderEntryField label="Internal Notes"><Textarea value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: textInputValueToNull(event.target.value) })} /></OrderEntryField>
           </div>
         </CleanSupportDetails>
         <CleanCompactAttachments selectedRecord={selectedRecord} files={inboundFiles} onOpenAttachment={onOpenAttachment} />
@@ -7329,7 +7358,7 @@ function DraftBuilderPanel({
                   <OrderEntrySectionTitle title="Order Details" />
                   <div className="grid grid-cols-2 gap-2 xl:grid-cols-6">
                     <OrderEntryField label="PO Ref">
-                      <Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} />
+                      <Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: textInputValueToNull(event.target.value) })} />
                     </OrderEntryField>
                     <OrderEntryField label="Due date">
                       <div className="relative">
@@ -7372,7 +7401,7 @@ function DraftBuilderPanel({
                       </select>
                     </OrderEntryField>
                     <OrderEntryField label="Carrier">
-                      <Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: trimToNull(event.target.value) })} />
+                      <Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: textInputValueToNull(event.target.value) })} />
                     </OrderEntryField>
                   </div>
                 </div>
@@ -7591,7 +7620,7 @@ function DraftBuilderPanel({
                             </div>
                           </div>
                           <OrderEntryField label="Line item notes">
-                            <Textarea className="min-h-[60px]" value={lineItem.notes ?? ""} onChange={(event) => updateLineItem(index, { notes: trimToNull(event.target.value) })} />
+                            <Textarea className="min-h-[60px]" value={lineItem.notes ?? ""} onChange={(event) => updateLineItem(index, { notes: textInputValueToNull(event.target.value) })} />
                           </OrderEntryField>
                             </div>
                           </details>
@@ -7621,10 +7650,10 @@ function DraftBuilderPanel({
                 </summary>
                 <div className="grid gap-2 border-t border-border/60 p-3 sm:grid-cols-2">
                   <OrderEntryField label="Production Notes">
-                    <Textarea className="min-h-[76px]" value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: trimToNull(event.target.value) })} />
+                    <Textarea className="min-h-[76px]" value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: textInputValueToNull(event.target.value) })} />
                   </OrderEntryField>
                   <OrderEntryField label="Internal Notes">
-                    <Textarea className="min-h-[76px]" value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: trimToNull(event.target.value) })} />
+                    <Textarea className="min-h-[76px]" value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: textInputValueToNull(event.target.value) })} />
                   </OrderEntryField>
                 </div>
               </details>
@@ -7943,9 +7972,9 @@ function DraftBuilderPanel({
                 <option value="unknown">Unknown</option>
               </select>
             </label>
-            <label className="space-y-1 text-xs text-muted-foreground">PO number<Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: trimToNull(event.target.value) })} /></label>
+            <label className="space-y-1 text-xs text-muted-foreground">PO number<Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: textInputValueToNull(event.target.value) })} /></label>
             <label className="space-y-1 text-xs text-muted-foreground">Due date<Input type="date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} /></label>
-            <label className="space-y-1 text-xs text-muted-foreground">Ship method<Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: trimToNull(event.target.value) })} /></label>
+            <label className="space-y-1 text-xs text-muted-foreground">Ship method<Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: textInputValueToNull(event.target.value) })} /></label>
             <label className="space-y-1 text-xs text-muted-foreground">
               Pickup / shipping
               <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedOrderJson.fulfillmentType} onChange={(event) => updateOrder({ fulfillmentType: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["fulfillmentType"] })}>
@@ -7954,8 +7983,8 @@ function DraftBuilderPanel({
                 <option value="shipping">Shipping</option>
               </select>
             </label>
-            <label className="space-y-1 text-xs text-muted-foreground">Internal notes<Textarea value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: trimToNull(event.target.value) })} /></label>
-            <label className="space-y-1 text-xs text-muted-foreground">Customer notes<Textarea value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: trimToNull(event.target.value) })} /></label>
+            <label className="space-y-1 text-xs text-muted-foreground">Internal notes<Textarea value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: textInputValueToNull(event.target.value) })} /></label>
+            <label className="space-y-1 text-xs text-muted-foreground">Customer notes<Textarea value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: textInputValueToNull(event.target.value) })} /></label>
           </div>
         </section>
 
@@ -8172,7 +8201,7 @@ function DraftBuilderPanel({
                         )}
                       </div>
                     </div>
-                    <label className="space-y-1 text-xs text-muted-foreground">Line item notes<Textarea value={lineItem.notes ?? ""} onChange={(event) => updateLineItem(index, { notes: trimToNull(event.target.value) })} /></label>
+                    <label className="space-y-1 text-xs text-muted-foreground">Line item notes<Textarea value={lineItem.notes ?? ""} onChange={(event) => updateLineItem(index, { notes: textInputValueToNull(event.target.value) })} /></label>
                   </div>
                   {!isOperationalMode && parsedLine && <div className="mt-3"><ProductMatchReasoning candidates={parsedLine.productCandidates} /></div>}
                 </div>
