@@ -6,8 +6,11 @@ import {
   decryptQuickBooksToken,
   encryptQuickBooksToken,
   encryptQuickBooksTokenIfConfigured,
+  extractQuickBooksOAuthDiagnostic,
+  getQuickBooksCredentialCauseText,
   isEncryptedQuickBooksToken,
   mergeQuickBooksRefreshToken,
+  redactQuickBooksOAuthDiagnostic,
 } from "../services/quickbooksCredentialManager";
 
 const root = process.cwd();
@@ -57,8 +60,43 @@ describe("QuickBooks OAuth credential reliability", () => {
 
   test("classifies invalid grants separately from transient refresh failures", () => {
     expect(classifyQuickBooksCredentialError(new Error("invalid_grant"))).toBe("invalid_grant");
+    expect(classifyQuickBooksCredentialError({ response: { data: { error: "invalid_client" } } })).toBe("invalid_client");
     expect(classifyQuickBooksCredentialError({ status: 503, message: "Service unavailable" })).toBe("transient_api_failure");
-    expect(classifyQuickBooksCredentialError(new Error("request timeout"))).toBe("transient_refresh_failure");
+    expect(classifyQuickBooksCredentialError(new Error("request timeout"))).toBe("network_failure");
+  });
+
+  test("extracts OAuth refresh failure details and keeps the cause text", () => {
+    const error = {
+      response: {
+        status: 400,
+        data: {
+          error: "invalid_grant",
+          error_description: "Token has been revoked",
+        },
+      },
+      message: "Request failed with status code 400",
+    };
+    const diagnostic = extractQuickBooksOAuthDiagnostic(error);
+
+    expect(diagnostic.httpStatus).toBe(400);
+    expect(diagnostic.oauthError).toBe("invalid_grant");
+    expect(diagnostic.oauthErrorDescription).toBe("Token has been revoked");
+    expect(getQuickBooksCredentialCauseText({ diagnostic, category: "invalid_grant" })).toBe("invalid_grant");
+  });
+
+  test("redacts tokens, secrets, and authorization headers from OAuth diagnostics", () => {
+    const redacted = redactQuickBooksOAuthDiagnostic({
+      access_token: "access-secret",
+      refreshToken: "refresh-secret",
+      Authorization: "Bearer secret",
+      nested: { client_secret: "client-secret", safe: "kept" },
+    }) as any;
+
+    expect(JSON.stringify(redacted)).not.toContain("access-secret");
+    expect(JSON.stringify(redacted)).not.toContain("refresh-secret");
+    expect(JSON.stringify(redacted)).not.toContain("Bearer secret");
+    expect(JSON.stringify(redacted)).not.toContain("client-secret");
+    expect(redacted.nested.safe).toBe("kept");
   });
 
   test("tenant-scoped request execution does not default missing organization context to the production org", () => {
@@ -77,6 +115,20 @@ describe("QuickBooks OAuth credential reliability", () => {
     expect(makeRequestBody).toContain("response.status === 401");
     expect(makeRequestBody).toContain("refreshQuickBooksCredentialsForRequest(orgId, true)");
     expect((makeRequestBody.match(/sendRequest\(/g) ?? []).length).toBe(2);
+    expect(makeRequestBody).toContain("replayAttempted: true");
+  });
+
+  test("failed access token errors preserve credential manager cause and OAuth fields", () => {
+    const serviceSource = readRepoFile("server/quickbooksService.ts");
+    const makeRequestBody = serviceSource.slice(serviceSource.indexOf("async function makeQBRequest"), serviceSource.indexOf("async function fetchAllQuickBooksQueryPages"));
+    const failedTokenLog = makeRequestBody.slice(makeRequestBody.indexOf("console.error('[QuickBooks] Failed to get valid access token'"), makeRequestBody.indexOf("const wrapped: any = new Error(`Failed to get valid access token"));
+
+    expect(makeRequestBody).toContain("Failed to get valid access token.\\nCause:\\n${cause}");
+    expect(makeRequestBody).toContain("oauthError");
+    expect(makeRequestBody).toContain("oauthErrorDescription");
+    expect(makeRequestBody).toContain("refreshHttpStatus");
+    expect(failedTokenLog).not.toContain("refreshToken:");
+    expect(failedTokenLog).not.toContain("accessToken:");
   });
 
   test("credential refresh uses a database-backed per-organization lock", () => {
@@ -85,6 +137,20 @@ describe("QuickBooks OAuth credential reliability", () => {
     expect(credentialSource).toContain("pg_try_advisory_lock");
     expect(credentialSource).toContain("quickbooks_oauth_refresh:${orgId}");
     expect(credentialSource).toContain("pg_advisory_unlock");
+    expect(credentialSource).toContain("refreshLock.acquired");
+    expect(credentialSource).toContain("refreshLock.timeout");
+  });
+
+  test("credential manager logs refresh stages and persistence results without secret fields", () => {
+    const credentialSource = readRepoFile("server/services/quickbooksCredentialManager.ts");
+
+    expect(credentialSource).toContain("getValidAccessToken.start");
+    expect(credentialSource).toContain("refreshCredentials.intuit_refresh_failed");
+    expect(credentialSource).toContain("refreshCredentials.persist_succeeded");
+    expect(credentialSource).toContain("accessTokenPersisted");
+    expect(credentialSource).toContain("refreshTokenRotated");
+    expect(credentialSource).toContain("refreshTokenPreserved");
+    expect(credentialSource).toContain("redactQuickBooksOAuthDiagnostic");
   });
 
   test("sync workers require the job organization for push and pull processors", () => {

@@ -12,6 +12,8 @@ import { buildQuickBooksInvoiceLinePayloads } from './lib/downstreamEffectivePri
 import {
   classifyQuickBooksCredentialError,
   encryptQuickBooksTokenIfConfigured,
+  extractQuickBooksOAuthDiagnostic,
+  getQuickBooksCredentialCauseText,
   quickBooksCredentialManager,
   type QuickBooksConnectionState,
   type QuickBooksCredentialErrorCategory,
@@ -117,6 +119,41 @@ function requireQuickBooksOrganizationId(organizationId: string | undefined | nu
     throw new Error(`QuickBooks ${operation} requires organizationId`);
   }
   return orgId;
+}
+
+async function refreshQuickBooksTokenWithDiagnostics(oauthClient: any, refreshToken: string, organizationId: string, stage: string) {
+  try {
+    oauthClient.setToken({
+      refresh_token: refreshToken,
+    } as any);
+    const authResponse = await oauthClient.refresh();
+    const diagnostic = extractQuickBooksOAuthDiagnostic(authResponse);
+    console.log('[QuickBooks] OAuth refresh succeeded', {
+      organizationId,
+      stage,
+      refreshHttpStatus: diagnostic.httpStatus,
+      oauthError: diagnostic.oauthError,
+      oauthErrorDescription: diagnostic.oauthErrorDescription,
+      hasAccessToken: Boolean(authResponse?.token?.access_token),
+      refreshTokenRotated: Boolean(authResponse?.token?.refresh_token),
+    });
+    return {
+      ...authResponse.token,
+      __quickBooksOAuthDiagnostic: diagnostic,
+    };
+  } catch (error) {
+    const diagnostic = extractQuickBooksOAuthDiagnostic(error);
+    console.error('[QuickBooks] OAuth refresh failed', {
+      organizationId,
+      stage,
+      refreshHttpStatus: diagnostic.httpStatus,
+      oauthError: diagnostic.oauthError,
+      oauthErrorDescription: diagnostic.oauthErrorDescription,
+      responseBody: diagnostic.responseBody,
+      message: diagnostic.message,
+    });
+    throw error;
+  }
 }
 
 async function setQuickBooksTransientHealthError(params: {
@@ -463,11 +500,7 @@ export async function refreshAccessTokenForOrganization(organizationId: string):
   const refreshed = await quickBooksCredentialManager.getValidAccessToken(
     orgId,
     async (refreshToken) => {
-      oauthClient.setToken({
-        refresh_token: refreshToken,
-      } as any);
-      const authResponse = await oauthClient.refresh();
-      return authResponse.token;
+      return refreshQuickBooksTokenWithDiagnostics(oauthClient, refreshToken, orgId, 'refreshAccessTokenForOrganization');
     },
     { forceRefresh: true },
   );
@@ -483,11 +516,7 @@ async function refreshQuickBooksCredentialsForRequest(organizationId: string, fo
   return quickBooksCredentialManager.getValidAccessToken(
     orgId,
     async (refreshToken) => {
-      oauthClient.setToken({
-        refresh_token: refreshToken,
-      } as any);
-      const authResponse = await oauthClient.refresh();
-      return authResponse.token;
+      return refreshQuickBooksTokenWithDiagnostics(oauthClient, refreshToken, orgId, 'refreshQuickBooksCredentialsForRequest');
     },
     { forceRefresh },
   );
@@ -889,9 +918,34 @@ async function makeQBRequest(
     throw new Error('QuickBooks not connected');
   }
 
-  const accessToken = await getValidAccessTokenForOrganization(orgId);
+  let accessToken: string | null;
+  try {
+    accessToken = await getValidAccessTokenForOrganization(orgId);
+  } catch (error) {
+    const cause = getQuickBooksCredentialCauseText(error);
+    console.error('[QuickBooks] Failed to get valid access token', {
+      organizationId: orgId,
+      connectionId: connection.id,
+      endpoint,
+      method,
+      cause,
+      stage: (error as any)?.stage,
+      errorCategory: (error as any)?.category ?? classifyQuickBooksCredentialError(error),
+      refreshHttpStatus: (error as any)?.diagnostic?.httpStatus,
+      oauthError: (error as any)?.diagnostic?.oauthError,
+      oauthErrorDescription: (error as any)?.diagnostic?.oauthErrorDescription,
+      finalCredentialState: (error as any)?.category === 'invalid_grant' ? 'needs_reauth' : 'degraded',
+    });
+    const wrapped: any = new Error(`Failed to get valid access token.\nCause:\n${cause}`);
+    wrapped.cause = error;
+    wrapped.statusCode = (error as any)?.category === 'invalid_grant' ? 409 : 503;
+    wrapped.errorCategory = (error as any)?.category ?? classifyQuickBooksCredentialError(error);
+    throw wrapped;
+  }
   if (!accessToken) {
-    throw new Error('Failed to get valid access token');
+    const wrapped: any = new Error('Failed to get valid access token.\nCause:\nmissing_credentials');
+    wrapped.errorCategory = 'missing_credentials';
+    throw wrapped;
   }
 
   const baseUrl = process.env.QUICKBOOKS_ENVIRONMENT === 'production'
@@ -942,9 +996,11 @@ async function makeQBRequest(
   if (response.status === 401) {
     console.warn('[QuickBooks] API returned 401; forcing one credential refresh and replay', {
       organizationId: orgId,
+      connectionId: connection.id,
       endpoint,
       method,
       retryAttempt: 1,
+      replayAttempted: true,
     });
     const replayToken = await refreshQuickBooksCredentialsForRequest(orgId, true);
     if (replayToken) {
@@ -1319,6 +1375,10 @@ export type QuickBooksCustomerMigrationSourceStatus = {
   lastErrorAt?: string;
   lastErrorCode?: QuickBooksCredentialErrorCategory | null;
   lastErrorMessage?: string | null;
+  lastErrorStage?: string | null;
+  lastErrorHttpStatus?: number | null;
+  lastOAuthError?: string | null;
+  lastOAuthErrorDescription?: string | null;
   lastSuccessfulRefreshAt?: string | null;
   lastSuccessfulRequestAt?: string | null;
   consecutiveTransientFailureCount?: number;
@@ -1360,6 +1420,12 @@ export async function getQuickBooksCustomerMigrationSourceStatus(organizationId:
       state: 'disconnected',
       authState: 'not_connected',
       healthState: 'ok',
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      lastErrorStage: null,
+      lastErrorHttpStatus: null,
+      lastOAuthError: null,
+      lastOAuthErrorDescription: null,
       requiresUserAction: false,
       connectedCompanyName: null,
       quickBooksCompanyId: null,
@@ -1385,6 +1451,10 @@ export async function getQuickBooksCustomerMigrationSourceStatus(organizationId:
     lastErrorAt: credentialStatus.lastErrorAt ?? (qbHealth?.lastErrorAt ? String(qbHealth.lastErrorAt) : undefined),
     lastErrorCode: credentialStatus.lastErrorCode,
     lastErrorMessage: credentialStatus.lastErrorMessage,
+    lastErrorStage: credentialStatus.lastErrorStage,
+    lastErrorHttpStatus: credentialStatus.lastErrorHttpStatus,
+    lastOAuthError: credentialStatus.lastOAuthError,
+    lastOAuthErrorDescription: credentialStatus.lastOAuthErrorDescription,
     lastSuccessfulRefreshAt: credentialStatus.lastSuccessfulRefreshAt,
     lastSuccessfulRequestAt: credentialStatus.lastSuccessfulRequestAt,
     consecutiveTransientFailureCount: credentialStatus.consecutiveTransientFailureCount,
