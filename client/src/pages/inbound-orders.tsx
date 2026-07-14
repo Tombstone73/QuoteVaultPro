@@ -252,6 +252,19 @@ type InboundQueueCleanupAction =
   | "delete"
   | "reject";
 
+type InboundOrderBulkActionResponse = {
+  success: true;
+  data: {
+    updatedIds: string[];
+    errors: Array<{ id: string; message: string }>;
+    rulesCreated?: number;
+    rulesAlreadyExisted?: number;
+    emailsProcessed?: number;
+    emailsSkipped?: number;
+    actualErrors?: Array<{ id: string; message: string }>;
+  };
+};
+
 type InboundRuleConflictError = Error & {
   code?: string;
   conflict?: {
@@ -685,6 +698,18 @@ function cloneReviewDraft(draft: InboundOrderReviewDraftDto): ReviewDraftFormSta
 
 function isInboundRuleConflictError(error: Error): error is InboundRuleConflictError {
   return (error as InboundRuleConflictError).code === "INBOUND_RULE_CONFLICT" || Boolean((error as InboundRuleConflictError).conflict);
+}
+
+function formatInboundIgnoreBulkDescription(data: InboundOrderBulkActionResponse["data"]): string {
+  const emailsProcessed = data.emailsProcessed ?? data.updatedIds.length;
+  const rulesCreated = data.rulesCreated ?? 0;
+  const rulesAlreadyExisted = data.rulesAlreadyExisted ?? 0;
+  const lines = [`Processed ${emailsProcessed} email${emailsProcessed === 1 ? "" : "s"}.`];
+  lines.push(`Created ${rulesCreated} new ignore rule${rulesCreated === 1 ? "" : "s"}.`);
+  if (rulesAlreadyExisted > 0) {
+    lines.push(`${rulesAlreadyExisted} email${rulesAlreadyExisted === 1 ? "" : "s"} matched an existing rule.`);
+  }
+  return lines.join("\n");
 }
 
 function formStatesEqual(left: ReviewDraftFormState | null, right: ReviewDraftFormState | null): boolean {
@@ -8676,7 +8701,7 @@ export default function InboundOrdersPage() {
 
   const bulkQueueActionMutation = useMutation({
     mutationFn: ({ recordIds, action, note, resolveConflict }: { recordIds: string[]; action: InboundQueueCleanupAction; note: string | null; resolveConflict?: "disable_conflicting_rule" }) => (
-      postJson<{ success: true; data: { updatedIds: string[]; errors: Array<{ id: string; message: string }> } }>(
+      postJson<InboundOrderBulkActionResponse>(
         "/api/inbound-orders/bulk-action",
         { recordIds, action, note, resolveConflict },
       )
@@ -8685,7 +8710,8 @@ export default function InboundOrdersPage() {
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] });
-      const conflictErrors = response.data.errors.filter((error) => (
+      const actualErrors = response.data.actualErrors ?? response.data.errors;
+      const conflictErrors = actualErrors.filter((error) => (
         error.message.includes("currently ignored") || error.message.includes("currently trusted")
       ));
       if (conflictErrors.length > 0 && !variables.resolveConflict) {
@@ -8699,11 +8725,23 @@ export default function InboundOrdersPage() {
         }
       }
       setSelectedQueueRecordIds(new Set());
-      if (response.data.errors.length > 0) {
+      if (actualErrors.length > 0) {
         toast({
           title: "Some records were not updated",
-          description: response.data.errors.map((error) => error.message).slice(0, 2).join(" "),
+          description: actualErrors.map((error) => error.message).slice(0, 2).join(" "),
           variant: "destructive",
+        });
+        return;
+      }
+      const isIgnoreAction = variables.action === "ignore_once"
+        || variables.action === "ignore_sender"
+        || variables.action === "ignore_domain"
+        || variables.action === "ignore_subject"
+        || variables.action === "ignore_sender_subject";
+      if (isIgnoreAction && ((response.data.rulesCreated ?? 0) > 0 || (response.data.rulesAlreadyExisted ?? 0) > 0)) {
+        toast({
+          title: "Ignore action complete",
+          description: formatInboundIgnoreBulkDescription(response.data),
         });
       }
     },

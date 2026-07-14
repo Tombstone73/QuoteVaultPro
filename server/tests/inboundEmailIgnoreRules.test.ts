@@ -191,6 +191,146 @@ describe("inbound email ignore rule management", () => {
     expect(repo.createEmailIgnoreRule).not.toHaveBeenCalled();
   });
 
+  test("bulk ignore domain reuses an enabled rule and still processes every matching record", async () => {
+    const rules: any[] = [];
+    const records = new Map([
+      ["inbound_1", inboundEmailRecord({
+        id: "inbound_1",
+        rawPayloadJson: { sender: { email: "first@asiemailexpress.com" }, subject: "Promo 1" },
+      })],
+      ["inbound_2", inboundEmailRecord({
+        id: "inbound_2",
+        rawPayloadJson: { sender: { email: "second@asiemailexpress.com" }, subject: "Promo 2" },
+      })],
+    ]);
+    const repo = makeIgnoreRuleRepo({
+      getRecord: jest.fn(async (_organizationId: string, id: string) => records.get(id) ?? null),
+      getEmailIgnoreRuleByTypeValue: jest.fn(async (_args: Record<string, any>) => (
+        rules.find((rule) => rule.ruleType === _args.ruleType && rule.ruleValue === _args.ruleValue) ?? null
+      )),
+      createEmailIgnoreRule: jest.fn(async (values: Record<string, any>) => {
+        const created = ignoreRule({ ...values, id: "rule_domain_1" });
+        rules.push(created);
+        return created;
+      }),
+      updateRecordWithEvent: jest.fn(async ({ inboundRecordId, patch }: Record<string, any>) => ({
+        ...records.get(inboundRecordId),
+        ...patch,
+      })),
+    });
+    const service = new InboundOrderService(repo as any);
+    jest.spyOn(service, "getDetail").mockImplementation(async (args: any) => ({
+      record: {
+        ...records.get(args.inboundRecordId),
+        status: "ignored",
+        reviewOutcome: "ignored",
+      },
+      source: null,
+      lineItems: [],
+      files: [],
+      warnings: [],
+      decisionFlags: [],
+      events: [],
+      reviewSnapshots: [],
+      latestReviewSnapshot: null,
+      linkedQuote: null,
+      quoteActivity: {
+        syncStatus: "quote_missing",
+        lastQuoteUpdatedAt: null,
+        currentQuoteStatus: null,
+        originalQuoteStatus: null,
+        divergedFromReviewSnapshot: false,
+        divergenceReasons: [],
+        lastSyncEventAt: null,
+      },
+      matchedCustomer: null,
+      matchedContact: null,
+    }) as any);
+
+    const result = await service.applyBulkQueueAction({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      recordIds: ["inbound_1", "inbound_2"],
+      action: "ignore_domain",
+    });
+
+    expect(result).toMatchObject({
+      updatedIds: ["inbound_1", "inbound_2"],
+      rulesCreated: 1,
+      rulesAlreadyExisted: 1,
+      emailsProcessed: 2,
+      emailsSkipped: 0,
+      actualErrors: [],
+      errors: [],
+    });
+    expect(repo.createEmailIgnoreRule).toHaveBeenCalledTimes(1);
+    expect((repo as any).updateRecordWithEvent).toHaveBeenCalledTimes(2);
+  });
+
+  test("bulk ignore continues after a true per-record failure", async () => {
+    const records = new Map([
+      ["inbound_1", inboundEmailRecord({
+        id: "inbound_1",
+        rawPayloadJson: { sender: { email: "first@example.com" }, subject: "Promo 1" },
+      })],
+      ["inbound_3", inboundEmailRecord({
+        id: "inbound_3",
+        rawPayloadJson: { sender: { email: "third@example.com" }, subject: "Promo 3" },
+      })],
+    ]);
+    const repo = makeIgnoreRuleRepo({
+      getRecord: jest.fn(async (_organizationId: string, id: string) => records.get(id) ?? null),
+      updateRecordWithEvent: jest.fn(async ({ inboundRecordId, patch }: Record<string, any>) => ({
+        ...records.get(inboundRecordId),
+        ...patch,
+      })),
+    });
+    const service = new InboundOrderService(repo as any);
+    jest.spyOn(service, "getDetail").mockImplementation(async (args: any) => ({
+      record: {
+        ...records.get(args.inboundRecordId),
+        status: "ignored",
+        reviewOutcome: "ignored",
+      },
+      source: null,
+      lineItems: [],
+      files: [],
+      warnings: [],
+      decisionFlags: [],
+      events: [],
+      reviewSnapshots: [],
+      latestReviewSnapshot: null,
+      linkedQuote: null,
+      quoteActivity: {
+        syncStatus: "quote_missing",
+        lastQuoteUpdatedAt: null,
+        currentQuoteStatus: null,
+        originalQuoteStatus: null,
+        divergedFromReviewSnapshot: false,
+        divergenceReasons: [],
+        lastSyncEventAt: null,
+      },
+      matchedCustomer: null,
+      matchedContact: null,
+    }) as any);
+
+    const result = await service.applyBulkQueueAction({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      recordIds: ["inbound_1", "missing_record", "inbound_3"],
+      action: "ignore_sender",
+    });
+
+    expect(result.updatedIds).toEqual(["inbound_1", "inbound_3"]);
+    expect(result.emailsProcessed).toBe(2);
+    expect(result.emailsSkipped).toBe(1);
+    expect(result.actualErrors).toEqual([{
+      id: "missing_record",
+      message: "Inbound order record not found",
+    }]);
+    expect((repo as any).updateRecordWithEvent).toHaveBeenCalledTimes(2);
+  });
+
   test("updates rule type, normalized value, notes, and enabled state", async () => {
     const current = ignoreRule({
       id: "rule_1",
