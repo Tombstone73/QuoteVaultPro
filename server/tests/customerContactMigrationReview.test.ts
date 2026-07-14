@@ -10,9 +10,15 @@ import {
   buildRelationshipPatchAfterCompanyDecision,
   buildStagedConsolidationCompanyPatch,
   countMigrationUnresolvedRows,
+  CustomerContactMigrationDateError,
   emptyCustomerContactFinalizeCounts,
   finalizationCountsFromBatch,
   isFinalizedCustomerContactBatch,
+  normalizeNullableMigrationDateForDb,
+  normalizePermanentContactPatchDates,
+  normalizePermanentCustomerPatchDates,
+  normalizePermanentRelationshipPatchDates,
+  serializeNullableMigrationDate,
 } from "../services/customerContactMigration/service";
 
 describe("customer/contact migration review decisions", () => {
@@ -336,6 +342,110 @@ describe("customer/contact migration review decisions", () => {
     });
   });
 
+  test("date finalization accepts a real Date and serializes it safely", () => {
+    const value = new Date("2026-07-14T12:00:00.000Z");
+    const context = { field: "syncedAt", stage: "company_finalization", entityType: "company" as const, batchId: "batch_1", sourceRecordId: "299" };
+
+    expect(normalizeNullableMigrationDateForDb(value, context)).toBe(value);
+    expect(serializeNullableMigrationDate(value, context)).toBe("2026-07-14T12:00:00.000Z");
+  });
+
+  test("date finalization accepts a valid ISO string and normalizes it for timestamp columns", () => {
+    const context = { field: "syncedAt", stage: "company_finalization", entityType: "company" as const, batchId: "batch_1", sourceRecordId: "299" };
+
+    const normalized = normalizeNullableMigrationDateForDb("2026-07-14T12:00:00.000Z", context);
+
+    expect(normalized).toBeInstanceOf(Date);
+    expect(normalized?.toISOString()).toBe("2026-07-14T12:00:00.000Z");
+  });
+
+  test("date finalization preserves null where the database field is nullable", () => {
+    const context = { field: "syncedAt", stage: "company_finalization", entityType: "company" as const, batchId: "batch_1", sourceRecordId: "299" };
+
+    expect(normalizeNullableMigrationDateForDb(null, context)).toBeNull();
+    expect(serializeNullableMigrationDate(undefined, context)).toBeNull();
+  });
+
+  test("invalid date strings produce a controlled finalization error", () => {
+    const context = { field: "syncedAt", stage: "company_finalization", entityType: "company" as const, batchId: "batch_1", sourceRecordId: "299" };
+
+    expect(() => normalizeNullableMigrationDateForDb("not-a-date", context)).toThrow(CustomerContactMigrationDateError);
+    expect(() => normalizeNullableMigrationDateForDb("not-a-date", context)).toThrow("Finalization failed while processing company 299: invalid date value for syncedAt.");
+  });
+
+  test("plain object or number date values cannot reach a raw toISOString call", () => {
+    const context = { field: "syncedAt", stage: "company_finalization", entityType: "company" as const, batchId: "batch_1", sourceRecordId: "299" };
+
+    for (const value of [{ iso: "2026-07-14T12:00:00.000Z" }, 12345]) {
+      try {
+        normalizeNullableMigrationDateForDb(value, context);
+        throw new Error("Expected controlled date error");
+      } catch (error: any) {
+        expect(error).toBeInstanceOf(CustomerContactMigrationDateError);
+        expect(error.message).not.toMatch(/toISOString/);
+      }
+    }
+  });
+
+  test("company finalization normalizes staged string timestamps before permanent writes", () => {
+    const patch = normalizePermanentCustomerPatchDates({
+      companyName: "Adapt Media",
+      syncedAt: "2026-07-14T12:00:00.000Z",
+      createdAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: "2020-01-02T00:00:00.000Z",
+    }, {
+      organizationId: "org_1",
+      batchId: "batch_1",
+      sourceRecordId: "299",
+      stage: "company_finalization",
+    });
+
+    expect(patch.syncedAt).toBeInstanceOf(Date);
+    expect((patch.syncedAt as Date).toISOString()).toBe("2026-07-14T12:00:00.000Z");
+    expect(patch).not.toHaveProperty("createdAt");
+    expect(patch).not.toHaveProperty("updatedAt");
+  });
+
+  test("contact finalization strips staged system timestamps before permanent writes", () => {
+    const patch = normalizePermanentContactPatchDates({
+      firstName: "Jamie",
+      createdAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: "2020-01-02T00:00:00.000Z",
+    });
+
+    expect(patch).toEqual({ firstName: "Jamie" });
+  });
+
+  test("relationship finalization normalizes staged string timestamps for known link date fields", () => {
+    const patch = normalizePermanentRelationshipPatchDates({
+      startDate: "2026-07-14T12:00:00.000Z",
+      endDate: null,
+      updatedAt: "2020-01-02T00:00:00.000Z",
+    }, {
+      organizationId: "org_1",
+      batchId: "batch_1",
+      sourceRecordId: "124495",
+      stage: "relationship_finalization",
+    });
+
+    expect(patch.startDate).toBeInstanceOf(Date);
+    expect((patch.startDate as Date).toISOString()).toBe("2026-07-14T12:00:00.000Z");
+    expect(patch.endDate).toBeNull();
+    expect(patch).not.toHaveProperty("updatedAt");
+  });
+
+  test("approved unresolved skip timestamps stay JSON-safe strings", () => {
+    const decidedAt = serializeNullableMigrationDate("2026-07-14T12:00:00.000Z", {
+      field: "decidedAt",
+      stage: "skip_recording",
+      entityType: "skip",
+      batchId: "batch_1",
+      sourceRecordId: "124495",
+    });
+
+    expect(decidedAt).toBe("2026-07-14T12:00:00.000Z");
+  });
+
   test("finalization rollback remains transactional and does not mark the batch failed outside the transaction", () => {
     const source = fs.readFileSync(path.join(process.cwd(), "server/services/customerContactMigration/service.ts"), "utf8");
     const finalizeBody = source.slice(source.indexOf("async finalizeBatch"), source.indexOf("buildReportRows"));
@@ -346,5 +456,17 @@ describe("customer/contact migration review decisions", () => {
     expect(finalizeBody).not.toContain('status: "failed",\n          failingStage: "finalization"');
     expect(finalizeBody).toContain('row.status !== "ready"');
     expect(finalizeBody).toContain("approve_unresolved_skip");
+    expect(finalizeBody).toContain("normalizePermanentCustomerPatchDates");
+    expect(finalizeBody).toContain("normalizePermanentRelationshipPatchDates");
+  });
+
+  test("finalization route returns a consistent controlled error envelope", () => {
+    const source = fs.readFileSync(path.join(process.cwd(), "server/routes/platform.ts"), "utf8");
+    const finalizeRoute = source.slice(source.indexOf('"/customer-contact-migrations/:batchId/finalize"'), source.indexOf('router.get("/customer-contact-migrations/:batchId/report/:kind"'));
+
+    expect(finalizeRoute).toContain("code = error?.code");
+    expect(finalizeRoute).toContain('const stage = error?.stage ?? "finalization"');
+    expect(finalizeRoute).toContain("batchId: params.data.batchId");
+    expect(finalizeRoute).toContain("post-finalize audit failed");
   });
 });
