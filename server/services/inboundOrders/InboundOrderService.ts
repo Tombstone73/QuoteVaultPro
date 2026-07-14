@@ -345,6 +345,7 @@ export type InboundQuoteDraftPreviewLineItem = InboundQuoteDraftLineInput & {
 export type InboundQuoteDraftPreview = {
   eligible: boolean;
   blockingReasons: string[];
+  warnings: string[];
   alreadyConverted: boolean;
   latestSnapshot: {
     id: string | null;
@@ -356,14 +357,14 @@ export type InboundQuoteDraftPreview = {
   customer: {
     matchedCustomerId: string | null;
     customerName: string | null;
-    source: "matched_customer" | "manual_text" | "missing";
+    source: "matched_customer" | "reviewed_customer" | "manual_text" | "missing";
   };
   contact: {
     matchedContactId: string | null;
     contactName: string | null;
     email: string | null;
     phone: string | null;
-    source: "matched_contact" | "snapshot_text" | "missing";
+    source: "matched_contact" | "reviewed_contact" | "snapshot_text" | "missing";
   };
   desiredOutputType: string | null;
   orderNotes: string | null;
@@ -2969,6 +2970,54 @@ export class InboundOrderService {
     return detail;
   }
 
+  async createCustomerForInbound(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    actorUserId: string;
+    companyName: string;
+    customerEmail?: string | null;
+    customerPhone?: string | null;
+    contactFirstName?: string | null;
+    contactLastName?: string | null;
+    contactEmail?: string | null;
+    contactPhone?: string | null;
+    staffNote?: string | null;
+  }): Promise<InboundOrderDetail> {
+    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) throw new InboundOrderTransitionError("Inbound order record not found", 404);
+    if (record.createdQuoteId || record.createdOrderId) {
+      throw new InboundOrderTransitionError("Converted inbound records cannot have customer/contact matches changed.");
+    }
+    const companyName = args.companyName.trim();
+    if (!companyName) throw new InboundOrderTransitionError("Company name is required.", 400);
+    const existingCustomers = await this.repository.searchCustomers(args.organizationId, companyName, 10);
+    const duplicate = existingCustomers.find((customer) => customer.companyName.trim().toLowerCase() === companyName.toLowerCase());
+    if (duplicate) {
+      throw new InboundOrderTransitionError("A customer with this company name already exists. Select the existing customer instead.", 409);
+    }
+    const createAndMatch = (this.repository as any).createCustomerWithPrimaryContactAndMatchInbound;
+    if (typeof createAndMatch !== "function") {
+      throw new InboundOrderTransitionError("Inbound customer creation is not available.", 500);
+    }
+
+    const created = await createAndMatch.call(this.repository, {
+      ...args,
+      companyName,
+      customerEmail: args.customerEmail?.trim() || null,
+      customerPhone: args.customerPhone?.trim() || null,
+      contactFirstName: args.contactFirstName?.trim() || null,
+      contactLastName: args.contactLastName?.trim() || null,
+      contactEmail: args.contactEmail?.trim() || null,
+      contactPhone: args.contactPhone?.trim() || null,
+      staffNote: args.staffNote?.trim() || null,
+    });
+    if (!created) throw new InboundOrderTransitionError("Failed to create and assign inbound customer.", 500);
+
+    const detail = await this.getDetail({ organizationId: args.organizationId, inboundRecordId: args.inboundRecordId });
+    if (!detail) throw new InboundOrderTransitionError("Inbound order record not found after customer creation", 404);
+    return detail;
+  }
+
   async matchLineItemProduct(args: MatchInboundLineItemProductInput): Promise<InboundOrderDetail> {
     const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
     if (!record) {
@@ -3311,8 +3360,8 @@ export class InboundOrderService {
       convertedLineItemCount: preview.lineItemsToConvert.length,
       skippedLineItemCount: preview.skippedLineItems.length,
       skippedLineItems: preview.skippedLineItems,
-      matchedCustomerId: record.matchedCustomerId ?? null,
-      matchedContactId: record.matchedContactId ?? null,
+      matchedCustomerId: preview.customer.matchedCustomerId ?? null,
+      matchedContactId: preview.contact.matchedContactId ?? null,
       customerName: preview.customer.customerName ?? null,
       contactName: preview.contact.contactName ?? null,
       customerMappingSource: preview.customer.source,
@@ -3341,8 +3390,8 @@ export class InboundOrderService {
     const result = await this.repository.createQuoteDraftFromInboundReview(args.organizationId, {
       inboundRecordId: args.inboundRecordId,
       actorUserId: args.actorUserId,
-      customerId: record.matchedCustomerId ?? null,
-      contactId: record.matchedContactId ?? null,
+      customerId: preview.customer.matchedCustomerId ?? null,
+      contactId: preview.contact.matchedContactId ?? null,
       customerName: preview.customer.customerName ?? "Inbound customer",
       contactName: preview.contact.contactName,
       contactEmail: preview.contact.email,
@@ -4909,6 +4958,7 @@ export class InboundOrderService {
   private buildQuoteDraftPreview(detail: InboundOrderDetail): InboundQuoteDraftPreview {
     const { record, latestReviewSnapshot } = detail;
     const blockingReasons: string[] = [];
+    const warnings: string[] = [];
     const snapshotKind = stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "metadata.snapshotKind"));
 
     if (record.status === rejectedStatus || record.reviewOutcome === "rejected") {
@@ -4919,18 +4969,17 @@ export class InboundOrderService {
       blockingReasons.push("Inbound record already has a converted quote.");
     }
 
-    if (record.status !== reviewedStatus) {
-      blockingReasons.push("Inbound record must be marked reviewed before creating a quote draft.");
-    }
-
     if (!latestReviewSnapshot) {
       blockingReasons.push("A staff review snapshot is required before quote conversion.");
-    } else if (snapshotKind !== "staff_review_draft") {
+    } else if (snapshotKind !== "staff_review_draft" && snapshotKind !== editableReviewDraftKind) {
       blockingReasons.push("Latest review snapshot is not a staff-reviewed draft.");
     }
 
     const sourceLineItemsById = new Map(detail.lineItems.map((lineItem) => [lineItem.id, lineItem]));
-    const lineItemDraftsValue = getPathValue(latestReviewSnapshot?.payloadJson, "lineItemDrafts");
+    const reviewedPayload = latestReviewSnapshot && snapshotKind === editableReviewDraftKind
+      ? this.reviewDraftPayloadFromSnapshot(latestReviewSnapshot)
+      : null;
+    const lineItemDraftsValue = reviewedPayload?.reviewedLineItemsJson ?? getPathValue(latestReviewSnapshot?.payloadJson, "lineItemDrafts");
     const lineItemDrafts = Array.isArray(lineItemDraftsValue) ? lineItemDraftsValue : [];
     const lineItemsToConvert: InboundQuoteDraftPreviewLineItem[] = [];
     const skippedLineItems: InboundQuoteDraftSkippedLineItem[] = [];
@@ -4944,24 +4993,10 @@ export class InboundOrderService {
         ?? sourceLineItem?.productNameRaw
         ?? sourceLineItem?.description
         ?? null;
-
-      if (!sourceLineItemId || !sourceLineItem) {
-        skippedLineItems.push({
-          index,
-          sourceLineItemId,
-          productName,
-          reason: "missing_snapshot_row_linkage",
-          detail: sourceLineItemId
-            ? "Snapshot row references an inbound line item that was not found."
-            : "Snapshot row is not linked to an inbound line item.",
-        });
-        continue;
-      }
-
-      const productId = sourceLineItem.productId ?? null;
-      const width = positiveNumberFromUnknown(draft.width) ?? positiveNumberFromUnknown(sourceLineItem.width);
-      const height = positiveNumberFromUnknown(draft.height) ?? positiveNumberFromUnknown(sourceLineItem.height);
-      const quantity = positiveIntegerFromUnknown(draft.quantity) ?? positiveIntegerFromUnknown(sourceLineItem.quantity);
+      const productId = stringFromUnknown(draft.selectedProductId) ?? sourceLineItem?.productId ?? null;
+      const width = positiveNumberFromUnknown(draft.width) ?? positiveNumberFromUnknown(sourceLineItem?.width);
+      const height = positiveNumberFromUnknown(draft.height) ?? positiveNumberFromUnknown(sourceLineItem?.height);
+      const quantity = positiveIntegerFromUnknown(draft.quantity) ?? positiveIntegerFromUnknown(sourceLineItem?.quantity);
 
       if (!productId) {
         skippedLineItems.push({
@@ -4998,11 +5033,11 @@ export class InboundOrderService {
 
       lineItemsToConvert.push({
         index,
-        sourceLineItemId,
+        sourceLineItemId: sourceLineItem?.id ?? sourceLineItemId ?? null,
         productId,
-        variantId: sourceLineItem.variantId ?? stringFromUnknown(draft.variantId),
+        variantId: sourceLineItem?.variantId ?? stringFromUnknown(draft.variantId),
         productName: productName ?? "Inbound review item",
-        description: stringFromUnknown(draft.description) ?? sourceLineItem.description ?? null,
+        description: stringFromUnknown(draft.description) ?? stringFromUnknown(draft.sourceText) ?? sourceLineItem?.description ?? null,
         productType: stringFromUnknown(draft.productType),
         width,
         height,
@@ -5012,25 +5047,44 @@ export class InboundOrderService {
       });
     }
 
+    const reviewedCustomer = reviewedPayload?.reviewedCustomerJson ?? null;
+    const reviewedSelectedCustomerId = reviewedCustomer?.selectedCustomerId ?? null;
+    const reviewedSelectedContactId = reviewedCustomer?.selectedContactId ?? null;
     const customerName = detail.matchedCustomer?.companyName
+      ?? reviewedCustomer?.companyName
       ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "customerDraft.name"))
       ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "customerDraft.text"))
       ?? record.sourceLabel
       ?? null;
     const contactName = detail.matchedContact?.name
+      ?? reviewedCustomer?.sourceName
       ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "contactDraft.name"));
     const contactEmail = detail.matchedContact?.email
+      ?? reviewedCustomer?.sourceEmail
       ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "contactDraft.email"));
     const contactPhone = detail.matchedContact?.phone
       ?? detail.matchedContact?.mobile
+      ?? reviewedCustomer?.sourcePhone
       ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "contactDraft.phone"));
-    const desiredOutputType = stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "desiredOutputType"));
-    const orderNotes = stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "orderNotes"));
+    const desiredOutputType = reviewedPayload?.reviewedOrderJson.intent ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "desiredOutputType"));
+    const orderNotes = reviewedPayload?.reviewedOrderJson.internalNotes ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "orderNotes"));
     const externalReference = record.externalReference ?? record.sourceRecordId ?? record.id.slice(0, 8);
+    if (!reviewedSelectedCustomerId && !record.matchedCustomerId) {
+      blockingReasons.push("Assign an existing or newly created customer before creating a quote draft.");
+    }
+    if (lineItemsToConvert.length === 0) {
+      blockingReasons.push("At least one valid line item is required before creating a quote draft.");
+    }
+    if (reviewedPayload?.reviewedArtworkJson.status === "missing") {
+      warnings.push("Artwork is missing. The quote draft will carry an artwork-missing warning.");
+    } else if (reviewedPayload?.reviewedArtworkJson.status === "to_follow") {
+      warnings.push("Artwork is marked to follow and will not block quote draft creation.");
+    }
 
     return {
       eligible: blockingReasons.length === 0,
       blockingReasons,
+      warnings,
       alreadyConverted: Boolean(record.createdQuoteId),
       latestSnapshot: {
         id: latestReviewSnapshot?.id ?? null,
@@ -5040,17 +5094,19 @@ export class InboundOrderService {
         createdAt: latestReviewSnapshot?.createdAt ?? null,
       },
       customer: {
-        matchedCustomerId: record.matchedCustomerId ?? null,
+        matchedCustomerId: record.matchedCustomerId ?? reviewedSelectedCustomerId ?? null,
         customerName,
-        source: record.matchedCustomerId ? "matched_customer" : customerName ? "manual_text" : "missing",
+        source: record.matchedCustomerId ? "matched_customer" : reviewedSelectedCustomerId ? "reviewed_customer" : customerName ? "manual_text" : "missing",
       },
       contact: {
-        matchedContactId: record.matchedContactId ?? null,
+        matchedContactId: record.matchedContactId ?? reviewedSelectedContactId ?? null,
         contactName,
         email: contactEmail,
         phone: contactPhone,
         source: record.matchedContactId
           ? "matched_contact"
+          : reviewedSelectedContactId
+            ? "reviewed_contact"
           : contactName || contactEmail || contactPhone
             ? "snapshot_text"
             : "missing",

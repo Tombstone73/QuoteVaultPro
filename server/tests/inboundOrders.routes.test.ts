@@ -458,6 +458,7 @@ describe("inbound order routes", () => {
     saveReviewSnapshot: jest.fn(),
     getQuoteDraftPreview: jest.fn(),
     matchCustomer: jest.fn(),
+    createCustomerForInbound: jest.fn(),
     matchLineItemProduct: jest.fn(),
     resolveWarning: jest.fn(),
     resolveDecisionFlag: jest.fn(),
@@ -1516,6 +1517,34 @@ describe("inbound order routes", () => {
     });
   });
 
+  test("creates and assigns a new inbound customer with reviewed sender contact", async () => {
+    (service.createCustomerForInbound as any).mockResolvedValue(inboundDetail(inboundRecord({
+      matchedCustomerId: "customer_new",
+      matchedContactId: "contact_new",
+    })));
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/inbound_1/create-customer")
+      .send({
+        companyName: "Shook Construction",
+        contactFirstName: "Monica",
+        contactLastName: "Larsen",
+        contactEmail: "monica@shook.example",
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.record.matchedCustomerId).toBe("customer_new");
+    expect(service.createCustomerForInbound).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      companyName: "Shook Construction",
+      contactFirstName: "Monica",
+      contactLastName: "Larsen",
+      contactEmail: "monica@shook.example",
+    });
+  });
+
   test("loads product PBV2 options for inbound review", async () => {
     service.getProductOptionsForReview.mockResolvedValue({
       productId: "product_pvc",
@@ -1601,14 +1630,38 @@ describe("inbound order routes", () => {
     });
   });
 
-  test("blocks draft conversion during phase 1", async () => {
+  test("creates a draft quote from an inbound review", async () => {
+    (service.createQuoteDraftFromInbound as any).mockResolvedValue({
+      quote: {
+        id: "quote_1",
+        quoteNumber: 101,
+        reference: "Quote #101",
+        status: "draft",
+        customerId: "customer_1",
+        contactId: "contact_1",
+        customerName: "Ada Signs",
+        contactName: "Ada Lovelace",
+        totalPrice: "0",
+        createdAt: new Date("2026-06-09T12:10:00.000Z"),
+        lineItemsCreated: 1,
+        convertedLineItemCount: 1,
+        skippedLineItemCount: 0,
+        skippedLineItems: [],
+      },
+      inbound: inboundDetail(inboundRecord({ createdQuoteId: "quote_1", status: "submitted" })),
+    });
+
     const response = await request(buildApp(service))
       .post("/api/inbound-orders/inbound_1/create-quote-draft")
       .send({});
 
-    expect(response.status).toBe(409);
-    expect(response.body.message).toContain("Phase 1 is review-only");
-    expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(response.body.data.quote.id).toBe("quote_1");
+    expect(service.createQuoteDraftFromInbound).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
   });
 
   test("parses an inbound record through the review-only parse route", async () => {
