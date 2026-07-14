@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TitanCard } from "@/components/titan";
 import type { GlobalVariable } from "@shared/schema";
 import { DEFAULT_DOCUMENT_NUMBER_PREFIXES, sanitizeDocumentNumberPrefix } from "@shared/documentNumbering";
+import { normalizeSystemSetupSequenceValue } from "@/lib/systemSetupSettings";
 
 const SEQUENCES = [
   { varName: "next_quote_number",   label: "Quote Number"   },
@@ -34,9 +35,9 @@ function NumberSequenceCard({ varName, label }: { varName: string; label: string
   const currentNumber = varEntry ? Math.floor(Number(varEntry.value)) : null;
 
   const updateMutation = useMutation({
-    mutationFn: async (num: number) => {
+    mutationFn: async (value: string) => {
       if (!varEntry) throw new Error(`${label} not initialized`);
-      return apiRequest("PATCH", `/api/global-variables/${varEntry.id}`, { value: num });
+      return apiRequest("PATCH", `/api/global-variables/${varEntry.id}`, { value });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/global-variables"] });
@@ -50,12 +51,14 @@ function NumberSequenceCard({ varName, label }: { varName: string; label: string
   });
 
   const handleSave = () => {
-    const num = parseInt(newValue);
-    if (isNaN(num) || num < 1) {
-      toast({ title: "Invalid number", description: "Please enter a valid positive number.", variant: "destructive" });
+    let normalizedValue = "";
+    try {
+      normalizedValue = normalizeSystemSetupSequenceValue(newValue);
+    } catch (error: any) {
+      toast({ title: "Invalid number", description: error?.message || "Please enter a valid positive number.", variant: "destructive" });
       return;
     }
-    updateMutation.mutate(num);
+    updateMutation.mutate(normalizedValue);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -95,8 +98,9 @@ function NumberSequenceCard({ varName, label }: { varName: string; label: string
           <Skeleton className="h-4 w-10 shrink-0" />
         ) : isEditing ? (
           <Input
-            type="number"
-            min="1"
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
             value={newValue}
             onChange={(e) => setNewValue(e.target.value)}
             onKeyDown={handleKeyDown}

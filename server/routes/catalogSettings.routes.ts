@@ -28,6 +28,111 @@ import { getMaxInvoiceNumber } from "../invoicesService";
 import { DOCUMENT_NUMBER_PREFIX_VARIABLES, sanitizeDocumentNumberPrefix } from "@shared/documentNumbering";
 
 const DOCUMENT_NUMBER_PREFIX_NAMES = new Set(Object.values(DOCUMENT_NUMBER_PREFIX_VARIABLES));
+const DOCUMENT_NUMBER_SEQUENCE_NAMES = new Set(["next_quote_number", "next_order_number", "next_invoice_number"]);
+
+type JsonErrorResponse = {
+  success: false;
+  code: string;
+  message: string;
+  field?: string;
+};
+
+export class GlobalVariableValidationError extends Error {
+  status = 400;
+  code: string;
+  field?: string;
+
+  constructor(code: string, message: string, field?: string) {
+    super(message);
+    this.name = "GlobalVariableValidationError";
+    this.code = code;
+    this.field = field;
+  }
+}
+
+function sendGlobalVariableError(res: any, error: unknown, fallback = "Global variable request failed.") {
+  if (error instanceof z.ZodError) {
+    return res.status(400).json({
+      success: false,
+      code: "GLOBAL_VARIABLE_VALIDATION_ERROR",
+      message: fromZodError(error).message,
+    } satisfies JsonErrorResponse);
+  }
+  const status = (error as any)?.status ?? (error as any)?.statusCode ?? 500;
+  const payload: JsonErrorResponse = {
+    success: false,
+    code: (error as any)?.code ?? (status >= 500 ? "GLOBAL_VARIABLE_UPDATE_FAILED" : "GLOBAL_VARIABLE_VALIDATION_ERROR"),
+    message: (error as any)?.message ?? fallback,
+  };
+  if ((error as any)?.field) payload.field = (error as any).field;
+  if (status >= 500) console.error("Global variable route error:", error);
+  return res.status(status).json(payload);
+}
+
+export function normalizeStartingNumberValue(value: unknown): string {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new GlobalVariableValidationError("INVALID_STARTING_NUMBER", "Starting number must be a finite positive whole number.", "value");
+    }
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new GlobalVariableValidationError("INVALID_STARTING_NUMBER", "Starting number must be a positive whole number.", "value");
+    }
+    return String(value);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      throw new GlobalVariableValidationError("INVALID_STARTING_NUMBER", "Starting number is required.", "value");
+    }
+    if (!/^\d+$/.test(trimmed)) {
+      throw new GlobalVariableValidationError("INVALID_STARTING_NUMBER", "Starting number must contain only digits.", "value");
+    }
+    const numericValue = Number(trimmed);
+    if (!Number.isSafeInteger(numericValue) || numericValue < 1) {
+      throw new GlobalVariableValidationError("INVALID_STARTING_NUMBER", "Starting number must be a positive whole number.", "value");
+    }
+    return trimmed;
+  }
+  throw new GlobalVariableValidationError("INVALID_STARTING_NUMBER", "Starting number must be sent as a string or finite number.", "value");
+}
+
+export function normalizeGlobalVariableValueForRequest(name: string, value: unknown): string {
+  if (DOCUMENT_NUMBER_SEQUENCE_NAMES.has(name)) return normalizeStartingNumberValue(value);
+  if (DOCUMENT_NUMBER_PREFIX_NAMES.has(name)) return sanitizeDocumentNumberPrefix(value);
+  if (typeof value !== "string") {
+    throw new GlobalVariableValidationError("INVALID_GLOBAL_VARIABLE_VALUE", "Global variable value must be a string.", "value");
+  }
+  return value;
+}
+
+export async function assertStartingNumberDoesNotMoveBackward(input: {
+  organizationId: string;
+  variableName: string;
+  value: string;
+  getMaxQuoteNumber: (organizationId: string) => Promise<number | null>;
+  getMaxOrderNumber: (organizationId: string) => Promise<number | null>;
+  getMaxInvoiceNumber: (organizationId: string) => Promise<number | null>;
+}) {
+  if (!DOCUMENT_NUMBER_SEQUENCE_NAMES.has(input.variableName)) return;
+  const newValue = Number(input.value);
+  const type = input.variableName === "next_quote_number"
+    ? "quote"
+    : input.variableName === "next_order_number"
+      ? "order"
+      : "invoice";
+  const maxNumber = input.variableName === "next_quote_number"
+    ? await input.getMaxQuoteNumber(input.organizationId)
+    : input.variableName === "next_order_number"
+      ? await input.getMaxOrderNumber(input.organizationId)
+      : await input.getMaxInvoiceNumber(input.organizationId);
+  if (maxNumber !== null && newValue <= maxNumber) {
+    throw new GlobalVariableValidationError(
+      "STARTING_NUMBER_BELOW_EXISTING_DOCUMENTS",
+      `Cannot set next ${type} number to ${input.value}. The highest existing ${type} number is ${maxNumber}. Please set a value greater than ${maxNumber}.`,
+      "value",
+    );
+  }
+}
 
 export function registerCatalogSettingsRoutes(
   app: Express,
@@ -113,23 +218,27 @@ export function registerCatalogSettingsRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const variableData = insertGlobalVariableSchema.parse(req.body);
-      if (DOCUMENT_NUMBER_PREFIX_NAMES.has(variableData.name)) {
-        try {
-          variableData.value = sanitizeDocumentNumberPrefix(variableData.value);
-          variableData.category = variableData.category || "numbering";
-        } catch (prefixError: any) {
-          return res.status(400).json({ message: prefixError?.message || "Invalid document number prefix" });
-        }
+      const rawName = typeof req.body?.name === "string" ? req.body.name : "";
+      const normalizedValue = normalizeGlobalVariableValueForRequest(rawName, req.body?.value);
+      const variableData = insertGlobalVariableSchema.parse({
+        ...req.body,
+        value: normalizedValue,
+      });
+      if (DOCUMENT_NUMBER_PREFIX_NAMES.has(variableData.name) || DOCUMENT_NUMBER_SEQUENCE_NAMES.has(variableData.name)) {
+        variableData.category = variableData.category || "numbering";
       }
+      await assertStartingNumberDoesNotMoveBackward({
+        organizationId,
+        variableName: variableData.name,
+        value: variableData.value,
+        getMaxQuoteNumber: storage.getMaxQuoteNumber,
+        getMaxOrderNumber: storage.getMaxOrderNumber,
+        getMaxInvoiceNumber,
+      });
       const variable = await storage.createGlobalVariable(organizationId, variableData);
       res.json(variable);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: fromZodError(error).message });
-      }
-      console.error("Error creating global variable:", error);
-      res.status(500).json({ message: "Failed to create global variable" });
+      return sendGlobalVariableError(res, error, "Failed to create global variable");
     }
   });
 
@@ -137,25 +246,46 @@ export function registerCatalogSettingsRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const idParse = z.string().min(1).safeParse(req.params.id);
+      if (!idParse.success) {
+        return res.status(400).json({ success: false, code: "INVALID_GLOBAL_VARIABLE_ID", message: "Invalid global variable ID." });
+      }
+
+      const currentVariable = await storage.getGlobalVariableById(organizationId, req.params.id);
+      if (!currentVariable) {
+        return res.status(404).json({ success: false, code: "GLOBAL_VARIABLE_NOT_FOUND", message: "Global variable not found." });
+      }
+
+      const normalizedValue = req.body && Object.prototype.hasOwnProperty.call(req.body, "value")
+        ? normalizeGlobalVariableValueForRequest(currentVariable.name, req.body.value)
+        : undefined;
       const variableData = updateGlobalVariableSchema.parse({
         ...req.body,
         id: req.params.id,
+        ...(normalizedValue !== undefined ? { value: normalizedValue } : {}),
       });
 
       // Validate numbering sequence updates — prevent setting below the existing maximum
-      const currentVariable = await storage.getGlobalVariableById(organizationId, req.params.id);
       if (variableData.value !== undefined && currentVariable?.name) {
         if (DOCUMENT_NUMBER_PREFIX_NAMES.has(currentVariable.name)) {
           try {
             variableData.value = sanitizeDocumentNumberPrefix(variableData.value);
           } catch (prefixError: any) {
-            return res.status(400).json({ message: prefixError?.message || "Invalid document number prefix" });
+            return res.status(400).json({
+              success: false,
+              code: "INVALID_DOCUMENT_NUMBER_PREFIX",
+              field: "value",
+              message: prefixError?.message || "Invalid document number prefix",
+            });
           }
         } else if (currentVariable.name === 'next_quote_number') {
           const newValue = Math.floor(Number(variableData.value));
           const maxQuoteNumber = await storage.getMaxQuoteNumber(organizationId);
           if (maxQuoteNumber !== null && newValue <= maxQuoteNumber) {
             return res.status(400).json({
+              success: false,
+              code: "STARTING_NUMBER_BELOW_EXISTING_DOCUMENTS",
+              field: "value",
               message: `Cannot set next quote number to ${newValue}. The highest existing quote number is ${maxQuoteNumber}. Please set a value greater than ${maxQuoteNumber}.`
             });
           }
@@ -164,6 +294,9 @@ export function registerCatalogSettingsRoutes(
           const maxOrderNumber = await storage.getMaxOrderNumber(organizationId);
           if (maxOrderNumber !== null && newValue <= maxOrderNumber) {
             return res.status(400).json({
+              success: false,
+              code: "STARTING_NUMBER_BELOW_EXISTING_DOCUMENTS",
+              field: "value",
               message: `Cannot set next order number to ${newValue}. The highest existing order number is ${maxOrderNumber}. Please set a value greater than ${maxOrderNumber}.`
             });
           }
@@ -172,6 +305,9 @@ export function registerCatalogSettingsRoutes(
           const maxInvoiceNumber = await getMaxInvoiceNumber(organizationId);
           if (maxInvoiceNumber !== null && newValue <= maxInvoiceNumber) {
             return res.status(400).json({
+              success: false,
+              code: "STARTING_NUMBER_BELOW_EXISTING_DOCUMENTS",
+              field: "value",
               message: `Cannot set next invoice number to ${newValue}. The highest existing invoice number is ${maxInvoiceNumber}. Please set a value greater than ${maxInvoiceNumber}.`
             });
           }
@@ -181,11 +317,7 @@ export function registerCatalogSettingsRoutes(
       const variable = await storage.updateGlobalVariable(organizationId, req.params.id, variableData);
       res.json(variable);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: fromZodError(error).message });
-      }
-      console.error("Error updating global variable:", error);
-      res.status(500).json({ message: "Failed to update global variable" });
+      return sendGlobalVariableError(res, error, "Failed to update global variable");
     }
   });
 
