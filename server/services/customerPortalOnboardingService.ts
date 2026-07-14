@@ -1,5 +1,5 @@
 import type { Request } from "express";
-import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   auditLogs,
@@ -367,7 +367,10 @@ export async function listPortalOnboardingCompanies(organizationId: string, args
   const [customerRows, contactRows, relationshipRows, accessRows, tokenRows, settingRows] = await Promise.all([
     db.select({ id: customers.id, companyName: customers.companyName, status: customers.status })
       .from(customers)
-      .where(eq(customers.organizationId, organizationId)),
+      .where(and(
+        eq(customers.organizationId, organizationId),
+        sql`coalesce(${customers.status}, 'active') not in ('archived', 'superseded')`,
+      )),
     db.select({
       id: customerContacts.id,
       customerId: customerContacts.customerId,

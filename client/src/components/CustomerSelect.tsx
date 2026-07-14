@@ -61,14 +61,16 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
   const { data: customers = [], isLoading } = useQuery<CustomerWithContacts[]>({
     queryKey: ["/api/customers", { search: debouncedSearch }],
     queryFn: async () => {
-      const params = new URLSearchParams();
+      const params = new URLSearchParams({ page: "1", pageSize: "50" });
       if (debouncedSearch) {
         params.set("search", debouncedSearch);
       }
       const url = `/api/customers${params.toString() ? `?${params.toString()}` : ""}`;
       const response = await fetch(url, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch customers");
-      return response.json();
+      const payload = await response.json();
+      const rows = payload?.data?.customers;
+      return Array.isArray(rows) ? rows : [];
     },
     staleTime: 30000,
   });
@@ -144,7 +146,7 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
 
   // Filter and sort customers based on search
   const filteredCustomers = useMemo(() => {
-    let result = customers;
+    let result = Array.from(new Map(customers.map((customer) => [customer.id, customer])).values());
     
     // Apply search filter if query exists
     if (debouncedSearch.trim()) {

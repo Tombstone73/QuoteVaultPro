@@ -215,6 +215,11 @@ export function matchCompany(
     if (exactQb.length > 1) {
       return { status: "ambiguous", candidates: exactQb.map((company) => candidate(company.id, "exact", "Duplicate QuickBooks Customer ID", 100)), warnings };
     }
+
+    const differentQbCandidates = existingCompanies.filter((company) => company.externalAccountingId && String(company.externalAccountingId) !== String(source.quickBooksCustomerId));
+    if (differentQbCandidates.length > 0) {
+      warnings.push("QuickBooks Customer ID is authoritative; name, email, phone, and address matches against different QuickBooks IDs require manual conflict review.");
+    }
   }
 
   if (source.sourceRecordId) {
@@ -233,9 +238,20 @@ export function matchCompany(
   }
 
   if (source.quickBooksCustomerName) {
-    const qbNameMatches = existingCompanies.filter((company) => company.companyName === source.quickBooksCustomerName);
+    const qbNameMatches = existingCompanies.filter((company) =>
+      company.companyName === source.quickBooksCustomerName &&
+      (!source.quickBooksCustomerId || !company.externalAccountingId)
+    );
     if (qbNameMatches.length === 1) {
-      return { status: "matched", selectedId: qbNameMatches[0].id, candidates: [candidate(qbNameMatches[0].id, "exact", "Exact QuickBooks Customer Name", 95)], warnings };
+      const match = qbNameMatches[0];
+      if (source.quickBooksCustomerId || match.externalAccountingId) {
+        return {
+          status: "ambiguous",
+          candidates: [candidate(match.id, "review", "QuickBooks-backed identity requires reviewed merge", 95)],
+          warnings: [...warnings, "A company name match cannot attach or merge a different QuickBooks identity without explicit review."],
+        };
+      }
+      return { status: "matched", selectedId: match.id, candidates: [candidate(match.id, "exact", "Exact QuickBooks Customer Name", 95)], warnings };
     }
     if (qbNameMatches.length > 1) {
       return { status: "ambiguous", candidates: qbNameMatches.map((company) => candidate(company.id, "exact", "Ambiguous QuickBooks Customer Name", 95)), warnings };
@@ -245,6 +261,13 @@ export function matchCompany(
   const normalizedNameMatches = existingCompanies.filter((company) => normalizeCompanyName(company.companyName) === normalizedName && normalizedName);
   if (normalizedNameMatches.length === 1) {
     const match = normalizedNameMatches[0];
+    if (source.quickBooksCustomerId || match.externalAccountingId) {
+      return {
+        status: "ambiguous",
+        candidates: [candidate(match.id, "review", "Normalized name requires reviewed QuickBooks identity merge", 82)],
+        warnings: [...warnings, "Normalized company name cannot automatically merge or attach records when a QuickBooks company identity is present."],
+      };
+    }
     const hasSupport = Boolean(
       (emailDomain(source.email) && emailDomain(match.email) === emailDomain(source.email)) ||
       (normalizePhone(source.phone) && normalizePhone(match.phone) === normalizePhone(source.phone)) ||
@@ -266,6 +289,7 @@ export function matchCompany(
   const sourcePhone = normalizePhone(source.phone);
   const strongCandidates = existingCompanies
     .map((company) => {
+      if (source.quickBooksCustomerId || company.externalAccountingId) return null;
       let score = 0;
       const reasons: string[] = [];
       if (normalizedName && normalizeCompanyName(company.companyName) === normalizedName) {

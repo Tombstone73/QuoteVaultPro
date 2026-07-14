@@ -59,8 +59,11 @@ const customerSortExpressions: Record<CustomerSortBy, any> = {
     primaryContact: sql`lower(coalesce((
         select concat_ws(' ', cc.first_name, cc.last_name)
         from customer_contacts cc
-        where cc.customer_id = ${customers.id}
-        order by cc.is_primary desc, cc.created_at asc, cc.id asc
+        join customer_contact_links ccl on ccl.contact_id = cc.id
+        where ccl.customer_id = ${customers.id}
+          and ccl.status = 'active'
+          and cc.status = 'active'
+        order by ccl.is_primary desc, cc.created_at asc, cc.id asc
         limit 1
     ), ''))`,
     email: sql`lower(coalesce(${customers.email}, ''))`,
@@ -161,25 +164,26 @@ export class CustomersRepository {
         customerType?: string;
         assignedTo?: string;
     }): Promise<(Customer & { contacts?: CustomerContact[] })[]> {
-        console.log("[CUSTOMERS REPO] getAllCustomers called with:", { organizationId, filters });
+        const activeCustomerStatusCondition = filters?.status
+            ? eq(customers.status, filters.status)
+            : sql`coalesce(${customers.status}, 'active') not in ('archived', 'superseded')`;
         
         // If search is provided, we need to search across customers AND contacts
         if (filters?.search) {
             const searchPattern = `%${filters.search}%`;
-            console.log("[CUSTOMERS REPO] Search pattern:", searchPattern);
 
             // Get all customers that match the search
             const customerConditions = [
                 eq(customers.organizationId, organizationId),
+                activeCustomerStatusCondition,
                 or(
                     ilike(customers.companyName, searchPattern),
-                    ilike(customers.email, searchPattern)
+                    ilike(customers.email, searchPattern),
+                    ilike(customers.phone, searchPattern),
+                    ilike(customers.externalAccountingId, searchPattern)
                 )
             ];
 
-            if (filters.status) {
-                customerConditions.push(eq(customers.status, filters.status));
-            }
             if (filters.customerType) {
                 customerConditions.push(eq(customers.customerType, filters.customerType as any));
             }
@@ -192,23 +196,25 @@ export class CustomersRepository {
                 .from(customers)
                 .where(and(...customerConditions))
                 .orderBy(customers.companyName);
-                
-            console.log("[CUSTOMERS REPO] Matched customers count:", matchedCustomers?.length || 0);
-            if (matchedCustomers && matchedCustomers.length > 0) {
-                console.log("[CUSTOMERS REPO] First matched customer:", matchedCustomers[0]);
-            }
 
             // Also search for customers by contact name/email
             const matchedContacts = await this.dbInstance
-                .select()
-                .from(customerContacts)
-                .where(
+                .select({ customerId: customerContactLinks.customerId })
+                .from(customerContactLinks)
+                .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
+                .where(and(
+                    eq(customerContactLinks.organizationId, organizationId),
+                    eq(customerContacts.organizationId, organizationId),
+                    eq(customerContactLinks.status, "active"),
+                    eq(customerContacts.status, "active"),
                     or(
                         ilike(customerContacts.firstName, searchPattern),
                         ilike(customerContacts.lastName, searchPattern),
-                        ilike(customerContacts.email, searchPattern)
+                        ilike(customerContacts.email, searchPattern),
+                        ilike(customerContacts.phone, searchPattern),
+                        ilike(customerContacts.mobile, searchPattern)
                     )
-                );
+                ));
 
             // Get unique customer IDs from contact matches
             const contactCustomerIds = Array.from(new Set(matchedContacts.map(c => c.customerId).filter((id): id is string => Boolean(id))));
@@ -220,12 +226,11 @@ export class CustomersRepository {
             let additionalCustomers: Customer[] = [];
             if (additionalCustomerIds.length > 0) {
                 const additionalConditions = [
-                    sql`${customers.id} IN (${sql.raw(additionalCustomerIds.map(id => `'${id}'`).join(','))})`
+                    eq(customers.organizationId, organizationId),
+                    activeCustomerStatusCondition,
+                    inArray(customers.id, additionalCustomerIds),
                 ];
 
-                if (filters.status) {
-                    additionalConditions.push(eq(customers.status, filters.status));
-                }
                 if (filters.customerType) {
                     additionalConditions.push(eq(customers.customerType, filters.customerType as any));
                 }
@@ -241,30 +246,49 @@ export class CustomersRepository {
             }
 
             // Combine and deduplicate
-            const allCustomers = [...matchedCustomers, ...additionalCustomers];
+            const customerById = new Map<string, Customer>();
+            for (const customer of [...matchedCustomers, ...additionalCustomers]) {
+                customerById.set(customer.id, customer);
+            }
+            const allCustomers = Array.from(customerById.values()).sort((a, b) =>
+                String(a.companyName ?? "").localeCompare(String(b.companyName ?? ""), undefined, { sensitivity: "base" }) ||
+                a.id.localeCompare(b.id)
+            );
 
             // Fetch contacts for all matched customers
             const allCustomerIds = allCustomers.map(c => c.id);
             const allContacts = allCustomerIds.length > 0
                 ? await this.dbInstance
-                    .select()
-                    .from(customerContacts)
-                    .where(sql`${customerContacts.customerId} IN (${sql.raw(allCustomerIds.map(id => `'${id}'`).join(','))})`)
+                    .select({ contact: customerContacts, link: customerContactLinks })
+                    .from(customerContactLinks)
+                    .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
+                    .where(and(
+                        eq(customerContactLinks.organizationId, organizationId),
+                        inArray(customerContactLinks.customerId, allCustomerIds),
+                        eq(customerContactLinks.status, "active"),
+                        eq(customerContacts.status, "active"),
+                    ))
                 : [];
+
+            console.info("[CUSTOMERS REPO] canonical customer search", {
+                organizationId,
+                hasSearch: true,
+                companyMatches: matchedCustomers.length,
+                contactMatches: matchedContacts.length,
+                uniqueCustomers: allCustomers.length,
+            });
 
             // Attach contacts to customers
             return allCustomers.map(customer => ({
                 ...customer,
-                contacts: allContacts.filter(c => c.customerId === customer.id),
+                contacts: allContacts
+                    .filter(({ link }) => link.customerId === customer.id)
+                    .map(({ contact, link }) => ({ ...contact, customerId: link.customerId, isPrimary: link.isPrimary })),
             }));
         }
 
         // No search - simple query
-        const conditions = [eq(customers.organizationId, organizationId)];
-
-        if (filters?.status) {
-            conditions.push(eq(customers.status, filters.status));
-        }
+        const conditions = [eq(customers.organizationId, organizationId), activeCustomerStatusCondition];
         if (filters?.customerType) {
             conditions.push(eq(customers.customerType, filters.customerType as any));
         }
@@ -281,15 +305,23 @@ export class CustomersRepository {
         const allCustomerIds = allCustomers.map(c => c.id);
         const allContacts = allCustomerIds.length > 0
             ? await this.dbInstance
-                .select()
-                .from(customerContacts)
-                .where(sql`${customerContacts.customerId} IN (${sql.raw(allCustomerIds.map(id => `'${id}'`).join(','))})`)
+                .select({ contact: customerContacts, link: customerContactLinks })
+                .from(customerContactLinks)
+                .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
+                .where(and(
+                    eq(customerContactLinks.organizationId, organizationId),
+                    inArray(customerContactLinks.customerId, allCustomerIds),
+                    eq(customerContactLinks.status, "active"),
+                    eq(customerContacts.status, "active"),
+                ))
             : [];
 
         // Attach contacts to customers
         return allCustomers.map(customer => ({
             ...customer,
-            contacts: allContacts.filter(c => c.customerId === customer.id),
+            contacts: allContacts
+                .filter(({ link }) => link.customerId === customer.id)
+                .map(({ contact, link }) => ({ ...contact, customerId: link.customerId, isPrimary: link.isPrimary })),
         }));
     }
 
@@ -301,7 +333,26 @@ export class CustomersRepository {
         }
 
         // Fetch related data with user relations
-        const contacts = await this.dbInstance.select().from(customerContacts).where(eq(customerContacts.customerId, id)).catch(() => []);
+        const contactRows = await this.dbInstance
+            .select({ contact: customerContacts, link: customerContactLinks })
+            .from(customerContactLinks)
+            .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
+            .where(and(
+                eq(customerContactLinks.organizationId, organizationId),
+                eq(customerContactLinks.customerId, id),
+                sql`${customerContactLinks.status} <> 'removed'`,
+            ))
+            .orderBy(desc(customerContactLinks.isPrimary), asc(customerContacts.firstName))
+            .catch(() => []);
+        const contacts = contactRows.map(({ contact, link }) => ({
+            ...contact,
+            customerId: link.customerId,
+            isPrimary: link.isPrimary,
+            linkId: link.id,
+            linkStatus: link.status,
+            isBilling: link.isBilling,
+            isPortal: link.isPortal,
+        }));
 
         const notesWithUsers = await this.dbInstance
             .select()
@@ -1130,7 +1181,11 @@ export class CustomersRepository {
         // Helper: collect IDs matching non-search filters
         const buildFilterConditions = () => {
             const conds: any[] = [eq(customers.organizationId, organizationId)];
-            if (opts.status) conds.push(eq(customers.status, opts.status));
+            if (opts.status) {
+                conds.push(eq(customers.status, opts.status));
+            } else {
+                conds.push(sql`coalesce(${customers.status}, 'active') not in ('archived', 'superseded')`);
+            }
             if (opts.customerType) conds.push(eq(customers.customerType, opts.customerType as any));
             if (opts.assignedTo) conds.push(eq(customers.assignedTo, opts.assignedTo));
             return conds;
@@ -1154,11 +1209,16 @@ export class CustomersRepository {
                 .from(customerContactLinks)
                 .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
                 .where(and(
+                    eq(customerContactLinks.organizationId, organizationId),
+                    eq(customerContacts.organizationId, organizationId),
                     eq(customerContactLinks.status, "active"),
+                    eq(customerContacts.status, "active"),
                     or(
                         ilike(customerContacts.firstName, pattern),
                         ilike(customerContacts.lastName, pattern),
                         ilike(customerContacts.email, pattern),
+                        ilike(customerContacts.phone, pattern),
+                        ilike(customerContacts.mobile, pattern),
                     ),
                 ));
 

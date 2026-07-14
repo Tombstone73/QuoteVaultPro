@@ -244,6 +244,9 @@ export function registerCustomerRelationsRoutes(
 
       const targetCustomer = await storage.getCustomerById(organizationId, customerId);
       if (!targetCustomer) return jsonError(res, 404, "Customer not found");
+      if (["archived", "superseded"].includes(String(targetCustomer.status || "").toLowerCase())) {
+        return jsonError(res, 409, `Cannot link contacts to ${targetCustomer.status} customer ${targetCustomer.companyName}. Use the canonical active company record.`);
+      }
 
       const existingContact = await storage.getContactWithRelations(contactId, organizationId);
       if (!existingContact) return jsonError(res, 404, "Contact not found");

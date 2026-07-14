@@ -33,6 +33,10 @@ import {
   updateCustomerProductionFolderReferenceSchema,
 } from "@shared/schema";
 import { customerProductionFolderReferenceRepository } from "../storage/customerProductionFolderReference.repo";
+import {
+  CustomerIdentityConflictError,
+  mergeDuplicateCustomers,
+} from "../services/customerCanonicalIdentityService";
 
 // =============================
 // Customer Production Folder Helpers
@@ -249,6 +253,59 @@ export function registerCustomerRoutes(
     } catch (error) {
       console.error("Error deleting customer:", error);
       res.status(500).json({ message: "Failed to delete customer" });
+    }
+  });
+
+  app.post("/api/customers/:survivorId/merge-duplicate", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    const mergeSchema = z.object({
+      duplicateCustomerId: z.string().trim().min(1),
+      reviewed: z.boolean().optional().default(false),
+      reason: z.string().trim().max(500).optional().nullable(),
+    });
+
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({
+          success: false,
+          error: { code: "MISSING_ORGANIZATION_CONTEXT", message: "Missing organization context" },
+        });
+      }
+
+      const input = mergeSchema.parse(req.body || {});
+      const result = await mergeDuplicateCustomers({
+        organizationId,
+        survivorCustomerId: String(req.params.survivorId),
+        duplicateCustomerId: input.duplicateCustomerId,
+        reviewed: input.reviewed,
+        reason: input.reason,
+        actorUserId: req.user?.id ?? null,
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          success: false,
+          error: { code: "VALIDATION_ERROR", message: fromZodError(error).message },
+        });
+      }
+      if (error instanceof CustomerIdentityConflictError) {
+        const status = error.code === "CUSTOMER_NOT_FOUND" ? 404 : 409;
+        return res.status(status).json({
+          success: false,
+          error: {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+          },
+        });
+      }
+      console.error("Error merging duplicate customers:", error);
+      return res.status(500).json({
+        success: false,
+        error: { code: "CUSTOMER_MERGE_FAILED", message: "Failed to merge duplicate customers" },
+      });
     }
   });
 

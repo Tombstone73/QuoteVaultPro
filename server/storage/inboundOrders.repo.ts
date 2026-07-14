@@ -1391,7 +1391,10 @@ export class InboundOrdersRepository {
   }
 
   async searchCustomers(organizationId: string, search: string | null, limit: number): Promise<InboundCustomerSearchResult[]> {
-    const predicates = [eq(customers.organizationId, organizationId)];
+    const predicates = [
+      eq(customers.organizationId, organizationId),
+      sql`coalesce(${customers.status}, 'active') not in ('archived', 'superseded')`,
+    ];
     const trimmed = search?.trim();
 
     if (trimmed) {
@@ -1402,8 +1405,12 @@ export class InboundOrdersRepository {
         or ${customers.phone} ilike ${pattern}
         or ${customers.notes} ilike ${pattern}
         or exists (
-          select 1 from ${customerContacts}
-          where ${customerContacts.customerId} = ${customers.id}
+          select 1
+          from ${customerContactLinks}
+          join ${customerContacts} on ${customerContacts.id} = ${customerContactLinks.contactId}
+          where ${customerContactLinks.customerId} = ${customers.id}
+            and ${customerContactLinks.status} = 'active'
+            and ${customerContacts.status} = 'active'
             and (
               ${customerContacts.firstName} ilike ${pattern}
               or ${customerContacts.lastName} ilike ${pattern}
