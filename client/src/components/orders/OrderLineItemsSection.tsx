@@ -67,6 +67,7 @@ import {
 } from "@shared/pbv2OrderEntryRuntime";
 import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
+import { formatLineItemMeasurementLabel } from "@shared/lineItemPresentation";
 import {
   buildInitialOrderLineItemDraftFromProduct,
   type InitialOrderLineItemDraftDebug,
@@ -1460,8 +1461,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setDraftProductId(String(expandedItem.productId || ""));
     setDraftProductVariantId(normalizeVariantId(expandedItem.productVariantId));
     const fixed = getPbv2FixedDimensions(effectivePbv2Tree);
-    setWidthText(String(fixed?.widthIn ?? expandedItem.width ?? 1));
-    setHeightText(String(fixed?.heightIn ?? expandedItem.height ?? 1));
+    const quantityOnly = (expandedProduct as any)?.measurementMode === "quantity_only";
+    setWidthText(String(fixed?.widthIn ?? (quantityOnly ? 0 : expandedItem.width ?? 1)));
+    setHeightText(String(fixed?.heightIn ?? (quantityOnly ? 0 : expandedItem.height ?? 1)));
     setQty(expandedItem.quantity || 1);
 
     const nextNotes =
@@ -1549,8 +1551,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           getPbv2SnapshotFromLineItem(expandedItem)?.treeVersionId ??
           ""
       ),
-      width: fixed?.widthIn ?? (Number.parseFloat(expandedItem.width || "1") || 1),
-      height: fixed?.heightIn ?? (Number.parseFloat(expandedItem.height || "1") || 1),
+      width: fixed?.widthIn ?? (quantityOnly ? 0 : (Number.parseFloat(expandedItem.width || "1") || 1)),
+      height: fixed?.heightIn ?? (quantityOnly ? 0 : (Number.parseFloat(expandedItem.height || "1") || 1)),
       quantity: expandedItem.quantity || 1,
       notes: nextNotes,
       productionNotes: nextProductionNotes,
@@ -2634,6 +2636,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const productForPolicy =
                     products.find((p) => p.id === item.productId) ?? ((item as any).product as Product | undefined) ?? null;
                   const productArtworkPolicy = (productForPolicy as any)?.artworkPolicy ?? null;
+                  const quantityOnly = (productForPolicy as any)?.measurementMode === "quantity_only";
+                  const fulfillmentOnly = (productForPolicy as any)?.workflowIntent === "fulfillment_only";
 
                   const previewThumbUrls = Array.isArray(previewForLineItem?.thumbUrls) ? previewForLineItem!.thumbUrls! : [];
                   const heroThumbUrls = Array.from(
@@ -2726,9 +2730,17 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const isMissingArtworkSuppressed = Boolean(suppressedReason && suppressedAt);
                   const canDeriveArtwork = lineItemAttachmentsAssociationKnown && lineItemAssetsKnownForItem;
                   const hasAnyArtwork = attachmentsForThumb.length > 0 || assetCountForItem > 0;
-                  const missingArtworkActive = policy === "required" && canDeriveArtwork && !hasAnyArtwork && !isMissingArtworkSuppressed;
-                  const operationalStatusLabel = WORKFLOW_LABELS[workflowState] || workflowState;
-                  const operationalNextStep = getOperationalNextStep(workflowState, hasActiveOwner);
+                  const missingArtworkActive = !fulfillmentOnly && policy === "required" && canDeriveArtwork && !hasAnyArtwork && !isMissingArtworkSuppressed;
+                  const operationalStatusLabel = fulfillmentOnly && workflowState === "ready_for_production"
+                    ? "Ready for fulfillment"
+                    : fulfillmentOnly && workflowState === "in_production"
+                      ? "Pick / pack"
+                      : WORKFLOW_LABELS[workflowState] || workflowState;
+                  const operationalNextStep = fulfillmentOnly && workflowState === "ready_for_production"
+                    ? "Pick / pack"
+                    : fulfillmentOnly && workflowState === "in_production"
+                      ? "Complete fulfillment"
+                      : getOperationalNextStep(workflowState, hasActiveOwner);
                   const initialDraftDebug = initialDraftDebugByLineItemId[String(item.id)];
                   const initialDraftSnapshot = (itemSpecsJson?.initialDraft && typeof itemSpecsJson.initialDraft === "object")
                     ? itemSpecsJson.initialDraft as any
@@ -2764,6 +2776,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     operationalWarningTone = "danger";
                   } else if (showDesignBriefEditor && expandedBriefDetail?.status === "required_missing") {
                     operationalWarning = "Design brief incomplete";
+                    operationalWarningTone = "warning";
+                  } else if (quantityOnly && !((productForPolicy as any)?.allowZeroPrice === true) && displayTotal === 0) {
+                    operationalWarning = "Price not configured";
                     operationalWarningTone = "warning";
                   } else if (calcError && isExpanded && expandedItem && expandedItem.id === item.id) {
                     operationalWarning = calcError === "PBV2_SCHEMA_MISMATCH"
@@ -2808,7 +2823,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                   setPendingJumpToLineItemId(itemKey);
                                 }}
                                 title={productName}
-                                sizeLabel={`${item.width || "0"}" × ${item.height || "0"}"`}
+                                sizeLabel={formatLineItemMeasurementLabel(productForPolicy, item.width, item.height)}
                                 qtyLabel={`Qty ${item.quantity || 0}`}
                                 unitPriceLabel={`${formatMoney(displayPerEa)}/ea`}
                                 totalLabel={formatMoney(displayTotal)}
@@ -3463,7 +3478,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                   </>
                                 }
                                 artworkSlot={
-                                  <>
+                                  !fulfillmentOnly || Boolean((item as any).requiresDesign || (item as any).requiresPrepress || (item as any).requiresProofApproval) ? <>
                                     <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
                                       <div className="flex items-center justify-between mb-2">
                                         <div className="text-sm font-medium">Artwork</div>
@@ -3633,7 +3648,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         </div>
                                       );
                                     })()}
-                                  </>
+                                  </> : null
                                 }
                                 requiresDesign={isExpanded && expandedItem?.id === item.id ? requiresDesignInput : Boolean((item as any).requiresDesign)}
                                 requiresPrepress={isExpanded && expandedItem?.id === item.id ? requiresPrepressInput : ((item as any).requiresPrepress ?? null)}
@@ -3716,7 +3731,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                           action: (action as any).action,
                                         })}
                                       >
-                                        {action.label}
+                                        {fulfillmentOnly && action.label === "Start Production" ? "Start Fulfillment" : action.label}
                                       </Button>
                                     ))}
                                     </div>

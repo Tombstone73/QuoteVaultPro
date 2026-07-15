@@ -22,6 +22,7 @@ import {
 } from "@/components/orders/orderLineItemEditState";
 import { buildQuoteLineItemSavePayload, hasExplicitLineItemPriceOverride } from "./quoteLineItemSavePayload";
 import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
+import { getProductWorkflowDefaults } from "@shared/productWorkflowIntent";
 
 type QuoteEditorRouteParams = {
     id?: string;
@@ -2205,6 +2206,7 @@ export function useQuoteEditorState() {
             if (!products || !productId) return null;
             const product = products.find((p) => p.id === productId);
             if (!product) return null;
+            const workflowDefaults = getProductWorkflowDefaults(product);
 
             // Default shape
             const base: QuoteLineItemDraft = {
@@ -2215,8 +2217,8 @@ export function useQuoteEditorState() {
                 variantId: null,
                 variantName: null,
                 productType: "wide_roll",
-                width: 1,
-                height: 1,
+                width: (product as any).measurementMode === "quantity_only" ? 0 : 1,
+                height: (product as any).measurementMode === "quantity_only" ? 0 : 1,
                 quantity: 1,
                 specsJson: {},
                 optionSelectionsJson: null,
@@ -2229,7 +2231,9 @@ export function useQuoteEditorState() {
                 displayOrder: lineItems.length,
                 status: "draft",
                 productOptions: (product.optionsJson as any[]) || [],
-                requiresProofApproval: (product as any).requiresProofApproval === true,
+                requiresDesign: workflowDefaults.requiresDesign ?? (product as any).requiresDesign === true,
+                requiresPrepress: workflowDefaults.requiresPrepress ?? (typeof (product as any).requiresPrepress === "boolean" ? (product as any).requiresPrepress : null),
+                requiresProofApproval: workflowDefaults.requiresProofApproval ?? (product as any).requiresProofApproval === true,
             };
             // If we have a saved quote, create server-side draft so artwork can be attached immediately.
             if (quoteId) {
@@ -2251,6 +2255,8 @@ export function useQuoteEditorState() {
                         linePrice: base.linePrice,
                         priceBreakdown: base.priceBreakdown,
                         displayOrder: base.displayOrder,
+                        requiresDesign: base.requiresDesign,
+                        requiresPrepress: base.requiresPrepress,
                         requiresProofApproval: base.requiresProofApproval,
                     });
                     const json = await resp.json().catch(() => ({}));

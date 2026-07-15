@@ -274,6 +274,8 @@ export class SharedRepository {
             pricingFormula: originalProduct.pricingFormula,
             pricingMode: originalProduct.pricingMode,
             measurementMode: originalProduct.measurementMode ?? "dimensions_required",
+            workflowIntent: originalProduct.workflowIntent ?? "standard_production",
+            allowZeroPrice: originalProduct.allowZeroPrice ?? false,
             isService: originalProduct.isService,
             artworkPolicy: originalProduct.artworkPolicy,
             primaryMaterialId: originalProduct.primaryMaterialId,

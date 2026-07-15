@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, test } from "@jest/globals";
+import { evaluatePricingPreviewFromTree } from "../PricingService";
 
 // Mock the calculateBasePrice function's logic
 function calculateBasePrice(
@@ -164,5 +165,38 @@ describe("PBV2 Base Pricing - Minimum Charge Semantics", () => {
 
     // 48x96 = 32 sqft; 137.5 cents * 32 = 4400 cents
     expect(result).toBe(4400);
+  });
+
+  test("quantity-only per-item pricing uses quantity times the configured unit price", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: {
+        schemaVersion: 2,
+        rootNodeIds: ["root"],
+        nodes: {
+          root: { id: "root", kind: "group", label: "Product options" },
+          unit: {
+            id: "unit",
+            kind: "question",
+            key: "unit",
+            label: "Unit",
+            input: { type: "select", selectionKey: "unit", defaultValue: "each" },
+            choices: [{ value: "each", label: "Each" }],
+          },
+        },
+        edges: [{ fromNodeId: "root", toNodeId: "unit" }],
+        meta: {
+          pricingV2: {
+            base: { perPieceCents: 275, perSqftCents: 0, minimumChargeCents: 0 },
+          },
+        },
+      },
+      // Quantity-only callers use neutral geometry solely at the pricing boundary.
+      widthIn: 1,
+      heightIn: 1,
+      quantity: 3,
+      pricingProfileKey: "qty_only",
+    });
+
+    expect(result.totalPrice).toBe(8.25);
   });
 });

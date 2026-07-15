@@ -747,6 +747,10 @@ export const products = pgTable("products", {
   pricingMode: varchar("pricing_mode", { length: 32 }).$type<"area" | "quantity" | "flat">().default("area").notNull(),
   // Controls customer-entered order measurements independently from PBV2 pricing configuration.
   measurementMode: varchar("measurement_mode", { length: 32 }).$type<"dimensions_required" | "quantity_only">().default("dimensions_required").notNull(),
+  // Product-level operational intent; independent from measurement and pricing.
+  workflowIntent: varchar("workflow_intent", { length: 32 }).$type<"standard_production" | "fulfillment_only" | "service_fee">().default("standard_production").notNull(),
+  // An explicit opt-in is required to sell a zero-priced item without a warning.
+  allowZeroPrice: boolean("allow_zero_price").default(false).notNull(),
   // NEW: Service/fee flag - marks product as a service (design fee, rush fee, etc.)
   isService: boolean("is_service").default(false).notNull(),
   // NEW: Primary material linkage for cost calculations
@@ -1227,6 +1231,8 @@ export const insertProductSchema = createInsertSchema(products).omit({
   pricingFormula: z.string().optional().nullable(),
   pricingMode: z.enum(["area", "quantity", "flat"]).default("area"),
   measurementMode: z.enum(["dimensions_required", "quantity_only"]).default("dimensions_required"),
+  workflowIntent: z.enum(["standard_production", "fulfillment_only", "service_fee"]).default("standard_production"),
+  allowZeroPrice: z.boolean().default(false),
   isService: z.boolean().default(false),
   primaryMaterialId: z.string().optional().nullable(),
   optionsJson: z.array(productOptionItemSchema).optional().nullable(),
@@ -1252,6 +1258,8 @@ export const updateProductSchema = createInsertSchema(products).omit({
   pricingFormula: z.string().optional().nullable(),
   pricingMode: z.enum(["area", "quantity", "flat"]).optional(),
   measurementMode: z.enum(["dimensions_required", "quantity_only"]).optional(),
+  workflowIntent: z.enum(["standard_production", "fulfillment_only", "service_fee"]).optional(),
+  allowZeroPrice: z.boolean().optional(),
   isService: z.boolean().optional(),
   primaryMaterialId: z.string().optional().nullable(),
   optionsJson: z.array(productOptionItemSchema).optional().nullable(),

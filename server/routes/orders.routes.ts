@@ -306,6 +306,7 @@ async function resolveEffectiveLineItemRouting(args: {
     requestedRequiresDesign?: boolean | null;
     requestedRequiresPrepress?: boolean | null;
     requestedRequiresProofApproval?: boolean | null;
+    designDefaultRequiresDesign?: boolean | null;
 }) {
     const [org] = await db
         .select({
@@ -320,22 +321,28 @@ async function resolveEffectiveLineItemRouting(args: {
         .select({
             requiresPrepressOverride: productTypes.requiresPrepressOverride,
             requiresProofApproval: products.requiresProofApproval,
+            workflowIntent: products.workflowIntent,
         })
         .from(products)
         .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
         .where(eq(products.id, args.productId))
         .limit(1);
 
-    const requiresDesign = args.requestedRequiresDesign === true;
+    const fulfillmentOrService = productRow?.workflowIntent === "fulfillment_only" || productRow?.workflowIntent === "service_fee";
+    const requiresDesign = typeof args.requestedRequiresDesign === "boolean"
+        ? args.requestedRequiresDesign
+        : fulfillmentOrService ? false : args.designDefaultRequiresDesign === true;
     const requiresPrepress = typeof args.requestedRequiresPrepress === "boolean"
         ? args.requestedRequiresPrepress
-        : productRow?.requiresPrepressOverride ?? org?.prepressDefaultEnabled ?? true;
+        : fulfillmentOrService ? false : productRow?.requiresPrepressOverride ?? org?.prepressDefaultEnabled ?? true;
     const proofApproval = resolveLineItemProofApprovalRequirement({
         productRequiresProofApproval: Boolean(productRow?.requiresProofApproval),
         requestedRequiresProofApproval: args.requestedRequiresProofApproval,
         proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((org?.settings as any)?.preferences),
     });
-    const requiresProofApproval = proofApproval.requiresProofApproval;
+    const requiresProofApproval = fulfillmentOrService && typeof args.requestedRequiresProofApproval !== "boolean"
+        ? false
+        : proofApproval.requiresProofApproval;
 
     return {
         requiresDesign,
@@ -5903,8 +5910,10 @@ export async function registerOrderRoutes(
             if (!Number.isFinite(pricingDimensions.widthIn) || pricingDimensions.widthIn <= 0 || !Number.isFinite(pricingDimensions.heightIn) || pricingDimensions.heightIn <= 0) {
                 return res.status(400).json({ message: "width and height must be positive for this product" });
             }
-            lineItemData.width = pricingDimensions.widthIn;
-            lineItemData.height = pricingDimensions.heightIn;
+            // Quantity-only pricing uses neutral geometry internally, but a line item
+            // must not persist that implementation detail as a fictional 1 x 1 size.
+            lineItemData.width = productForMeasurement.measurementMode === "quantity_only" ? 0 : pricingDimensions.widthIn;
+            lineItemData.height = productForMeasurement.measurementMode === "quantity_only" ? 0 : pricingDimensions.heightIn;
             
             const pricingResult = await priceLineItem({
                 organizationId,
@@ -5949,7 +5958,8 @@ export async function registerOrderRoutes(
             const routing = await resolveEffectiveLineItemRouting({
                 organizationId,
                 productId: String(lineItemData.productId),
-                requestedRequiresDesign: designSnapshot.effectiveRequiresDesign,
+                requestedRequiresDesign: requestedRequiresDesignOverride,
+                designDefaultRequiresDesign: designSnapshot.effectiveRequiresDesign,
                 requestedRequiresPrepress: requestedRequiresPrepressOverride,
                 requestedRequiresProofApproval: requestedRequiresProofApprovalOverride,
             });
@@ -6048,6 +6058,9 @@ export async function registerOrderRoutes(
                     details: (error as any).details ?? [],
                     debug: (error as any).debug,
                 });
+            }
+            if ((error as any)?.code === 'PRODUCT_PRICE_NOT_CONFIGURED') {
+                return res.status(422).json({ message: (error as any).message, code: 'PRODUCT_PRICE_NOT_CONFIGURED' });
             }
             if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message });
             console.error('[ORDER_LINE_ITEM_CREATE] Error:', error);
@@ -6239,8 +6252,8 @@ export async function registerOrderRoutes(
                     return res.status(400).json({ message: "width and height must be positive for this product" });
                 }
                 if (productForMeasurement.measurementMode === "quantity_only") {
-                    updateData.width = pricingDimensions.widthIn;
-                    updateData.height = pricingDimensions.heightIn;
+                    updateData.width = 0;
+                    updateData.height = 0;
                 }
                 
                 const pricingResult = await priceLineItem({

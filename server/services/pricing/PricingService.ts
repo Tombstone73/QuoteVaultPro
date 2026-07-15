@@ -682,6 +682,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     allowRotation: allowRotationResolution.value,
     allowRotationSource: allowRotationResolution.source,
     pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
+    ignoreGeometry: product.measurementMode === "quantity_only",
     productLegacy: {
       sheetWidth: product.sheetWidth,
       sheetHeight: product.sheetHeight,
@@ -761,6 +762,13 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
   // NOTE: optionsCents already includes quantity (evaluator multiplies internally)
   const optionsCents = Math.round(evalResult.optionsPrice * 100);
   const lineTotalCents = basePriceCents + optionsCents;
+
+  if (product.measurementMode === "quantity_only" && lineTotalCents === 0 && product.allowZeroPrice !== true) {
+    throw Object.assign(
+      new Error("Price not configured: set a per-item PBV2 base price or explicitly allow a $0.00 price for this product."),
+      { code: "PRODUCT_PRICE_NOT_CONFIGURED" },
+    );
+  }
 
   // Debug log to verify quantity applied once
   console.log('[PBV2_PRICING_DEBUG]', {
@@ -2432,6 +2440,7 @@ function calculateBasePriceDetails(
     allowRotation?: boolean;
     allowRotationSource?: string;
     pricingFormulaExpression?: string | null;
+    ignoreGeometry?: boolean;
     productLegacy?: {
       sheetWidth?: string | null;
       sheetHeight?: string | null;
@@ -3113,6 +3122,7 @@ function resolveFormulaVariablesForPricing(input: {
   pricingProfileConfig?: unknown;
   pricingFormulaLibrary?: PricingFormulaLibraryResolution | null;
   pricingFormulaExpression?: string | null;
+  ignoreGeometry?: boolean;
   explicitFormulaVariables?: Record<string, number>;
   selectionFormulaVariables?: Record<string, number>;
 }): FormulaVariableResolution {
@@ -3475,15 +3485,27 @@ function calculateFormulaAwareBasePrice(input: {
     baseDetails.perPieceCents > 0 &&
     baseDetails.perSqftCents === 0 &&
     (tierResolution.tierSource === "matrix_row" || baseDetails.basePriceSource === "pricing_matrix.row_qty_tier");
+  // The quantity-only profile's default formula is q * unitPrice. PBV2 stores
+  // that configured unit price as perPieceCents, so the already-calculated PBV2
+  // base is authoritative and avoids evaluating an unbound formula alias as $0.
+  const usePbv2BaseForQuantityOnlyProfile =
+    sourceResolution.source === "profile" &&
+    activeProfile.kind === "qty_only" &&
+    baseDetails.perPieceCents > 0 &&
+    baseDetails.perSqftCents === 0;
 
-  if (!shouldEvaluateFormula || usePbv2BaseForPerPieceMatrix) {
+  if (!shouldEvaluateFormula || usePbv2BaseForPerPieceMatrix || usePbv2BaseForQuantityOnlyProfile) {
     if (profileUsesFormula) {
-      if (usePbv2BaseForPerPieceMatrix) {
+      if (usePbv2BaseForPerPieceMatrix || usePbv2BaseForQuantityOnlyProfile) {
         formulaDebug.errors = [
           ...(formulaDebug.errors ?? []),
           {
-            code: "PBV2_PROFILE_FORMULA_SKIPPED_FOR_PER_PIECE_MATRIX",
-            message: "Default profile formula was skipped because a per-piece pricing matrix row supplied the PBV2 base price.",
+            code: usePbv2BaseForQuantityOnlyProfile
+              ? "PBV2_PROFILE_FORMULA_SKIPPED_FOR_PER_PIECE_BASE"
+              : "PBV2_PROFILE_FORMULA_SKIPPED_FOR_PER_PIECE_MATRIX",
+            message: usePbv2BaseForQuantityOnlyProfile
+              ? "Quantity-only profile formula was skipped because PBV2 per-piece base pricing is authoritative."
+              : "Default profile formula was skipped because a per-piece pricing matrix row supplied the PBV2 base price.",
           },
         ];
       } else {

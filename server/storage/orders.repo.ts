@@ -1622,6 +1622,7 @@ export class OrdersRepository {
                     productTypeId: products.productTypeId,
                     requiresPrepressOverride: productTypes.requiresPrepressOverride,
                     requiresProofApproval: products.requiresProofApproval,
+                    workflowIntent: products.workflowIntent,
                 })
                 .from(products)
                 .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
@@ -1630,6 +1631,7 @@ export class OrdersRepository {
         
         const productPrepressMap = new Map<string, boolean>();
         const productProofApprovalMap = new Map<string, boolean>();
+        const productWorkflowIntentMap = new Map<string, string>();
         for (const p of productsWithTypes) {
             // requiresPrepress = productType.requiresPrepressOverride ?? org.prepressDefaultEnabled
             const requiresPrepress = p.requiresPrepressOverride !== null 
@@ -1637,6 +1639,7 @@ export class OrdersRepository {
                 : orgPrepressDefault;
             productPrepressMap.set(p.productId, requiresPrepress);
             productProofApprovalMap.set(p.productId, Boolean(p.requiresProofApproval));
+            productWorkflowIntentMap.set(p.productId, p.workflowIntent ?? "standard_production");
         }
 
         // Convert quote line items to order line items
@@ -1645,14 +1648,27 @@ export class OrdersRepository {
             // If the quote line item carries explicit routing intent (migration 0015), use it.
             // Otherwise fall back to productType / org-level default (pre-existing behavior).
             const qlAny = ql as any;
-            const requiresDesign: boolean = qlAny.requiresDesign === true;
+            const fulfillmentOrService =
+                productWorkflowIntentMap.get(ql.productId) === "fulfillment_only" ||
+                productWorkflowIntentMap.get(ql.productId) === "service_fee";
+            const requiresDesign: boolean = typeof qlAny.requiresDesign === "boolean"
+                ? qlAny.requiresDesign
+                : fulfillmentOrService ? false : false;
             const requiresPrepress: boolean = typeof qlAny.requiresPrepress === 'boolean'
                 ? qlAny.requiresPrepress
-                : (productPrepressMap.get(ql.productId) ?? orgPrepressDefault);
+                : fulfillmentOrService ? false : (productPrepressMap.get(ql.productId) ?? orgPrepressDefault);
             const requiresProofApproval: boolean = typeof qlAny.requiresProofApproval === 'boolean'
                 ? qlAny.requiresProofApproval
-                : (productProofApprovalMap.get(ql.productId) ?? false);
-            const designSnapshot = copyLineItemDesignSnapshotFields(qlAny);
+                : fulfillmentOrService ? false : (productProofApprovalMap.get(ql.productId) ?? false);
+            const copiedDesignSnapshot = copyLineItemDesignSnapshotFields(qlAny);
+            const designSnapshot = {
+                ...copiedDesignSnapshot,
+                effectiveRequiresDesign: requiresDesign,
+                needsDesignOverride:
+                    requiresDesign === copiedDesignSnapshot.requiresDesignSnapshot
+                        ? null
+                        : requiresDesign,
+            };
             // Line item lifecycle: new → in_production → complete | canceled
             const initialStatus = 'new' as unknown as InsertOrderLineItem['status'];
             const workflowState = getInitialWorkflowState({

@@ -121,6 +121,7 @@ export const ProductForm = ({
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
   const measurementMode = form.watch("measurementMode") ?? "dimensions_required";
+  const workflowIntent = form.watch("workflowIntent") ?? "standard_production";
   const aiParsingLinkedToDescription = Boolean(form.watch("aiParsingDescriptionLinkedToDescription"));
 
   // Shipping config local state — synced from treeMeta
@@ -306,6 +307,27 @@ export const ProductForm = ({
                   </Select>
                   <FormDescription className="text-[11px] text-slate-500">
                     Quantity-only products do not collect width or height during quote and order entry.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="workflowIntent"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel className="text-xs text-slate-400">Workflow intent</FormLabel>
+                  <Select value={field.value ?? "standard_production"} onValueChange={field.onChange}>
+                    <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                    <SelectContent>
+                      <SelectItem value="standard_production">Standard production</SelectItem>
+                      <SelectItem value="fulfillment_only">Fulfillment only</SelectItem>
+                      <SelectItem value="service_fee">Service / fee</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormDescription className="text-[11px] text-slate-500">
+                    Fulfillment-only items skip artwork, proof, and prepress by default. Staff can still override a line item.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -617,6 +639,19 @@ export const ProductForm = ({
               />
               <FormField
                 control={form.control}
+                name="allowZeroPrice"
+                render={({ field }) => (
+                  <FormItem className="min-h-9">
+                    <div className="flex items-center gap-2">
+                      <FormControl><Switch checked={field.value ?? false} onCheckedChange={field.onChange} /></FormControl>
+                      <FormLabel className="text-sm text-slate-300 !mt-0">Allow $0.00 price</FormLabel>
+                    </div>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
                 name="isTaxable"
                 render={({ field }) => (
                   <FormItem className="min-h-9">
@@ -647,6 +682,11 @@ export const ProductForm = ({
               />
             </div>
 
+            {workflowIntent === "fulfillment_only" ? (
+              <div className="rounded-md border border-sky-700/60 bg-sky-950/20 p-3 text-xs text-sky-200">
+                Fulfillment-only defaults do not require artwork, design, proof approval, or prepress. Individual order lines can be overridden by staff.
+              </div>
+            ) : null}
             {measurementMode === "dimensions_required" ? <div className="rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
               <h4 className="text-xs font-medium text-slate-300 uppercase tracking-wider">Finished Size Rules</h4>
               <div className="grid grid-cols-2 gap-2">

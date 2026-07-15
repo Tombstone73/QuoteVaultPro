@@ -6,6 +6,7 @@ import {
 } from "./pbv2OrderEntryRuntime";
 import { getPbv2FixedDimensions } from "./pbv2/fixedDimensions";
 import { productRequiresEnteredDimensions } from "./productMeasurementMode";
+import { getProductWorkflowDefaults, type ProductWorkflowIntent } from "./productWorkflowIntent";
 
 type OrderEntryProductLike = {
   id: string;
@@ -20,6 +21,7 @@ type OrderEntryProductLike = {
   optionTreeJson?: unknown;
   requiresDimensions?: boolean | null;
   measurementMode?: "dimensions_required" | "quantity_only" | null;
+  workflowIntent?: ProductWorkflowIntent | null;
   pricingMode?: string | null;
 };
 
@@ -94,20 +96,23 @@ export function buildInitialOrderLineItemDraftFromProduct(
   const optionSelectionsJson = activeTree ? buildPbv2DefaultSelections(activeTree) : null;
   const fixedDimensions = getPbv2FixedDimensions(activeTree);
   const dimensionsRequired = isDimensionRequired(product, activeTree);
-  const requiresDesign =
+  const workflowDefaults = getProductWorkflowDefaults(product);
+  const requiresDesign = workflowDefaults.requiresDesign ?? (
     typeof product.requiresDesign === "boolean"
       ? product.requiresDesign
       : typeof product.productDesignRequiresDesign === "boolean"
         ? product.productDesignRequiresDesign
-        : undefined;
-  const requiresPrepress =
+        : undefined
+  );
+  const requiresPrepress = workflowDefaults.requiresPrepress ?? (
     typeof product.requiresPrepress === "boolean"
       ? product.requiresPrepress
       : typeof product.productTypeRequiresPrepressOverride === "boolean"
         ? product.productTypeRequiresPrepressOverride
-        : undefined;
-  const requiresProofApproval = product.requiresProofApproval === true;
-  const requiresProductionJob = product.requiresProductionJob !== false;
+        : undefined
+  );
+  const requiresProofApproval = workflowDefaults.requiresProofApproval ?? product.requiresProofApproval === true;
+  const requiresProductionJob = workflowDefaults.requiresProductionJob;
   const productRoutingDefaultsUsed: ProductRoutingDefaultsUsed = {
     requiresDesignSource: typeof requiresDesign === "boolean" ? "productDesignConfig" : "unknown",
     requiresPrepressSource:
@@ -151,8 +156,10 @@ export function buildInitialOrderLineItemDraftFromProduct(
     productId: product.id,
     productVariantId: null,
     description: "",
-    width: fixedDimensions ? fixedDimensions.widthIn : product.measurementMode === "quantity_only" ? 1 : dimensionsRequired ? 1 : 0,
-    height: fixedDimensions ? fixedDimensions.heightIn : product.measurementMode === "quantity_only" ? 1 : dimensionsRequired ? 1 : 0,
+    // Quantity-only records keep neutral runtime dimensions only at pricing boundaries.
+    // Persist zero here so UI/API payloads never present a fake 1 × 1 item.
+    width: fixedDimensions ? fixedDimensions.widthIn : product.measurementMode === "quantity_only" ? 0 : dimensionsRequired ? 1 : 0,
+    height: fixedDimensions ? fixedDimensions.heightIn : product.measurementMode === "quantity_only" ? 0 : dimensionsRequired ? 1 : 0,
     quantity: 1,
     unitPrice: "0.00",
     totalPrice: "0.00",
