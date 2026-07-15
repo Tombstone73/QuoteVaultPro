@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { db } from "../db";
+import { DEFAULT_PRODUCTION_ROUTING_RULES } from "../services/productionMapService";
 import {
     auditLogs,
     orders,
@@ -397,35 +398,7 @@ const workflowDraftPayloadSchema = z
     })
     .strict();
 
-const SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES = [
-    {
-        id: 'prepress',
-        label: 'Sent to Prepress',
-        color: 'blue',
-        sendToProduction: true,
-        stationKey: 'flatbed',
-        stepKey: 'prepress',
-        sortOrder: 10,
-    },
-    {
-        id: 'print',
-        label: 'Sent to Print',
-        color: 'purple',
-        sendToProduction: true,
-        stationKey: 'flatbed',
-        stepKey: 'print',
-        sortOrder: 20,
-    },
-    {
-        id: 'done',
-        label: 'Done',
-        color: 'green',
-        sendToProduction: false,
-        stationKey: null,
-        stepKey: null,
-        sortOrder: 90,
-    },
-];
+const SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES = () => DEFAULT_PRODUCTION_ROUTING_RULES.map((rule) => ({ ...rule }));
 
 async function loadProductionLineItemStatusRulesForOrganization(organizationId: string) {
     const [org] = await db
@@ -438,16 +411,16 @@ async function loadProductionLineItemStatusRulesForOrganization(organizationId: 
     const raw = settings?.preferences?.production?.lineItemStatuses;
 
     if (raw == null) {
-        return { source: 'missing' as const, rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES };
+        return { source: 'missing' as const, rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES() };
     }
 
     const parsed = productionLineItemStatusRulesSchema.safeParse(raw);
     if (!parsed.success) {
-        return { source: 'invalid' as const, rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES };
+        return { source: 'invalid' as const, rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES() };
     }
 
     if (parsed.data.length === 0) {
-        return { source: 'empty' as const, rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES };
+        return { source: 'empty' as const, rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES() };
     }
 
     const rules = parsed.data

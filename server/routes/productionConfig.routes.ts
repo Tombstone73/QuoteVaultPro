@@ -7,6 +7,7 @@ import { orderLineItems, orders, products, productionJobs } from "@shared/schema
 
 import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
+import { ensureProductionMapForOrg } from "../services/productionMapService";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 import { resolveInitialProductionRoute } from "../services/productionRoutingResolver";
 import {
@@ -69,6 +70,23 @@ export function registerProductionConfigRoutes(
     } catch (error) {
       console.error("Error fetching production stations:", error);
       res.status(500).json({ error: "Failed to fetch production stations" });
+    }
+  });
+
+  app.post("/api/production/repair", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const report = await ensureProductionMapForOrg(organizationId);
+      if (report.failed.length > 0) {
+        return res.status(500).json({ error: "Production map repair failed", data: report });
+      }
+      return res.json({ success: true, data: report });
+    } catch (error) {
+      console.error("Error repairing production map:", error);
+      return res.status(500).json({ error: "Failed to repair production map" });
     }
   });
 

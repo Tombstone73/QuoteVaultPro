@@ -19,6 +19,7 @@ import { appendEvent } from "../productionHelpers";
 import { TERMINAL_JOB_STATUSES } from "./productionOwnership";
 import { isCanceledOrder } from "@shared/operationalState";
 import { normalizeProductionStationKey } from "@shared/productionStations";
+import { DEFAULT_PRODUCTION_STATIONS } from "./productionMapService";
 
 const PRODUCTION_JOB_STATION_UNIQUE_CONSTRAINT = "production_jobs_org_line_item_station_unique";
 const FULFILLMENT_STATION_KEY = "fulfillment";
@@ -65,36 +66,27 @@ function isProductionJobStationUniqueConflict(error: any): boolean {
   );
 }
 
+// Fulfillment can be reached by completion jobs created before an operator has
+// opened Production & Operations. Keep this narrow safety repair, but derive
+// every value from the canonical production map rather than maintaining a
+// second station definition here. All other routing still fails closed.
 async function ensureSystemFulfillmentStation(runner: any, organizationId: string, stationKey: string): Promise<void> {
   if (stationKey !== FULFILLMENT_STATION_KEY) return;
+  const fulfillment = DEFAULT_PRODUCTION_STATIONS.find((station) => station.key === FULFILLMENT_STATION_KEY);
+  const step = fulfillment?.steps.find((candidate) => candidate.key === FULFILLMENT_STATION_KEY);
+  if (!fulfillment || !step) {
+    throw new Error("Canonical production map is missing fulfillment.");
+  }
 
   await runner.execute(sql`
     insert into stations (organization_id, key, name, sort, active)
-    values (${organizationId}, ${FULFILLMENT_STATION_KEY}, 'Fulfillment', 90, true)
-    on conflict (organization_id, key)
-    do update set active = true
+    values (${organizationId}, ${fulfillment.key}, ${fulfillment.name}, ${fulfillment.sort}, true)
+    on conflict (organization_id, key) do update set active = true
   `);
-
   await runner.execute(sql`
-    insert into production_station_steps (
-      organization_id,
-      station_key,
-      key,
-      label,
-      sort_order,
-      active,
-      triggers
-    )
-    values (
-      ${organizationId},
-      ${FULFILLMENT_STATION_KEY},
-      ${FULFILLMENT_STATION_KEY},
-      'Fulfillment',
-      10,
-      true,
-      '[]'::jsonb
-    )
-    on conflict (organization_id, station_key, key) do nothing
+    insert into production_station_steps (organization_id, station_key, key, label, sort_order, active, triggers)
+    values (${organizationId}, ${fulfillment.key}, ${step.key}, ${step.label}, ${step.sortOrder}, true, '[]'::jsonb)
+    on conflict (organization_id, station_key, key) do update set active = true, updated_at = now()
   `);
 }
 
