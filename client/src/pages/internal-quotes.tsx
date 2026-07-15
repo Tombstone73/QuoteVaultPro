@@ -1484,7 +1484,7 @@ export default function InternalQuotes() {
                   {filteredAndSortedQuotes.map((quote) => (
                     <TableRow
                       key={quote.id}
-                      className={`cursor-pointer hover:bg-muted/50 ${quote.visibleInCustomerPortal ? "" : "bg-amber-50/35 dark:bg-amber-950/20"}`}
+                      className="cursor-pointer"
                       onClick={() => navigate(ROUTES.quotes.detail(quote.id))}
                     >
                       {orderedColumns.map((col) => {
