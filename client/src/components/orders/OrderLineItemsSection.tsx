@@ -66,6 +66,7 @@ import {
   shouldHydratePbv2Defaults,
 } from "@shared/pbv2OrderEntryRuntime";
 import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
+import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
 import {
   buildInitialOrderLineItemDraftFromProduct,
   type InitialOrderLineItemDraftDebug,
@@ -127,14 +128,7 @@ function SortableOrderLineItemWrapper({
 }
 
 function requiresDimensions(product: Product | null, treeJson?: OptionTreeV2 | null): boolean {
-  if (!product) return true;
-  if (getPbv2FixedDimensions(treeJson)) return false;
-  if (treeJson?.meta?.requiresDimensions !== undefined) return treeJson.meta.requiresDimensions;
-  const anyProduct = product as any;
-  if (typeof anyProduct.requiresDimensions === "boolean") return anyProduct.requiresDimensions;
-  if (anyProduct.pricingMode === "fee" || anyProduct.pricingMode === "addon") return false;
-  if (anyProduct.pricingMode === "area") return true;
-  return false;
+  return productRequiresEnteredDimensions(product, treeJson);
 }
 
 /**

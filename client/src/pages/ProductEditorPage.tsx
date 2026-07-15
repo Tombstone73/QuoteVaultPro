@@ -215,6 +215,7 @@ const ProductEditorPage = () => {
       category: "",
       pricingFormula: "",
       pricingMode: "area",
+      measurementMode: "dimensions_required",
       pricingProfileKey: "default",
       pricingProfileConfig: null,
       pricingFormulaId: null,
@@ -334,6 +335,7 @@ const ProductEditorPage = () => {
         category: product.category || "",
         pricingFormula: product.pricingFormula || "",
         pricingMode: product.pricingMode || "area",
+        measurementMode: product.measurementMode || "dimensions_required",
         pricingProfileKey: product.pricingProfileKey || "default",
         pricingProfileConfig: product.pricingProfileConfig as FlatGoodsConfig | null,
         pricingFormulaId: product.pricingFormulaId || null,
@@ -1154,6 +1156,7 @@ const ProductEditorPage = () => {
             pricingProfileKey={form.watch("pricingProfileKey") || null}
             pricingProfileConfig={form.watch("pricingProfileConfig") || null}
             pricingMode={pbv2PricingMode}
+            measurementMode={form.watch("measurementMode") || "dimensions_required"}
             productPrimaryMaterialId={form.watch("primaryMaterialId") || null}
             findings={pbv2PricingData.findings}
           />

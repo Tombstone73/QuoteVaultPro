@@ -21,6 +21,7 @@ import {
     resolveLineItemDisplayPriceCents,
 } from "@/components/orders/orderLineItemEditState";
 import { buildQuoteLineItemSavePayload, hasExplicitLineItemPriceOverride } from "./quoteLineItemSavePayload";
+import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
 
 type QuoteEditorRouteParams = {
     id?: string;
@@ -447,26 +448,7 @@ export function useQuoteEditorState() {
 
     const requiresDimensions = useMemo(() => {
         if (!selectedProduct) return false;
-
-        const anyProduct = selectedProduct as any;
-
-        // If the backend ever adds a real boolean, honor it.
-        if (typeof anyProduct.requiresDimensions === "boolean") {
-            return anyProduct.requiresDimensions;
-        }
-
-        // Fee/addon products don't need dimensions
-        if (anyProduct.pricingMode === "fee" || anyProduct.pricingMode === "addon") {
-            return false;
-        }
-
-        // Area-based pricing requires dimensions
-        if (anyProduct.pricingMode === "area") {
-            return true;
-        }
-
-        // For other modes (unit, perQty, etc.), dimensions not required
-        return false;
+        return productRequiresEnteredDimensions(selectedProduct);
     }, [selectedProduct]);
 
     const productOptions = useMemo(() => {

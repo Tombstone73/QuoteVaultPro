@@ -285,4 +285,33 @@ describe("PBV2 order-entry runtime", () => {
     expect(draft.quantity).toBe(1);
     expect(draft.requiresProductionJob).toBe(true);
   });
+
+  test("quantity-only products initialize without width or height even when stale PBV2 metadata requires them", () => {
+    const tree = { ...makeTree(), meta: { requiresDimensions: true } };
+    const draft = buildInitialOrderLineItemDraftFromProduct(
+      {
+        id: "prod_stakes",
+        name: "Economy Yard Sign Stakes",
+        measurementMode: "quantity_only",
+        requiresProductionJob: false,
+      },
+      tree,
+      "order_1",
+    );
+
+    expect(draft.width).toBe(1);
+    expect(draft.height).toBe(1);
+    expect(draft.quantity).toBe(1);
+  });
+
+  test("dimension-required products still initialize with dimensions required", () => {
+    const draft = buildInitialOrderLineItemDraftFromProduct(
+      { id: "prod_banner", name: "Banner", measurementMode: "dimensions_required" },
+      { ...makeTree(), meta: { requiresDimensions: true } },
+      "order_1",
+    );
+
+    expect(draft.width).toBe(1);
+    expect(draft.height).toBe(1);
+  });
 });

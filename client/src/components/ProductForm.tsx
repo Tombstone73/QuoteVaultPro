@@ -120,6 +120,7 @@ export const ProductForm = ({
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
+  const measurementMode = form.watch("measurementMode") ?? "dimensions_required";
   const aiParsingLinkedToDescription = Boolean(form.watch("aiParsingDescriptionLinkedToDescription"));
 
   // Shipping config local state — synced from treeMeta
@@ -282,6 +283,30 @@ export const ProductForm = ({
                     </FormControl>
                     <FormLabel className="text-sm text-slate-300 !mt-0">Service / Fee</FormLabel>
                   </div>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="measurementMode"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel className="text-xs text-slate-400">Order measurements</FormLabel>
+                  <Select value={field.value ?? "dimensions_required"} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="dimensions_required">Dimensions required</SelectItem>
+                      <SelectItem value="quantity_only">Quantity only</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormDescription className="text-[11px] text-slate-500">
+                    Quantity-only products do not collect width or height during quote and order entry.
+                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -622,7 +647,7 @@ export const ProductForm = ({
               />
             </div>
 
-            <div className="rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
+            {measurementMode === "dimensions_required" ? <div className="rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
               <h4 className="text-xs font-medium text-slate-300 uppercase tracking-wider">Finished Size Rules</h4>
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
@@ -667,7 +692,7 @@ export const ProductForm = ({
                 </div>
               </div>
               <p className="text-[11px] text-slate-400">Adds to finished width/height to represent trimmed delivered size.</p>
-            </div>
+            </div> : null}
           </div>
         </div>
       </div>

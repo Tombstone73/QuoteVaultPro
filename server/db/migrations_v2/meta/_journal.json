@@ -778,6 +778,13 @@
       "when": 1784678400000,
       "tag": "0115_material_explicit_operational_units",
       "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "7",
+      "when": 1784764800000,
+      "tag": "0116_product_measurement_mode",
+      "breakpoints": true
     }
   ]
 }

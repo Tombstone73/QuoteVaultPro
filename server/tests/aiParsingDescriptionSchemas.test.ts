@@ -28,6 +28,18 @@ describe("AI parsing description schemas", () => {
     expect(updated.aiParsingDescriptionLinkedToDescription).toBe(true);
   });
 
+  test("product measurement mode saves and reloads through create and update contracts", () => {
+    const created = insertProductSchema.parse({
+      name: "Economy Yard Sign Stakes",
+      description: "Quantity-only fulfillment hardware",
+      measurementMode: "quantity_only",
+    });
+    const updated = updateProductSchema.parse({ measurementMode: "dimensions_required" });
+
+    expect(created.measurementMode).toBe("quantity_only");
+    expect(updated.measurementMode).toBe("dimensions_required");
+  });
+
   test("material create/update contracts preserve AI parsing description fields", () => {
     const created = insertMaterialSchema.parse({
       name: "3mm White PVC",

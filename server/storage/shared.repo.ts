@@ -273,6 +273,7 @@ export class SharedRepository {
             productTypeId: originalProduct.productTypeId,
             pricingFormula: originalProduct.pricingFormula,
             pricingMode: originalProduct.pricingMode,
+            measurementMode: originalProduct.measurementMode ?? "dimensions_required",
             isService: originalProduct.isService,
             artworkPolicy: originalProduct.artworkPolicy,
             primaryMaterialId: originalProduct.primaryMaterialId,
