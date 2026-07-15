@@ -11,6 +11,13 @@ function itemIds(sectionKey: string, role: string, isPlatformAdmin = false, isPl
 }
 
 describe("Titan navigation platform placement", () => {
+  test("places Customer Portal in System settings rather than Sales and preserves its admin/owner restriction", () => {
+    expect(itemIds("sales", "admin")).not.toContain("customer-portal");
+    expect(itemIds("system", "admin")).toContain("customer-portal");
+    expect(itemIds("system", "owner")).toContain("customer-portal");
+    expect(itemIds("system", "employee")).not.toContain("customer-portal");
+  });
+
   test("shows Product Planning under Platform for existing allowed product-planning users", () => {
     expect(itemIds("platform", "admin")).toContain("product-planning");
     expect(itemIds("system", "admin")).not.toContain("product-planning");

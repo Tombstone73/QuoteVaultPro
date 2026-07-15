@@ -41,6 +41,7 @@ const ROUTE_TITLES: Record<string, string> = {
   "/purchase-orders": "Purchase Orders",
   "/invoices": "Invoices",
   "/settings": "Settings",
+  "/settings/customer-portal": "Customer Portal",
   "/contacts": "Contacts",
   "/products": "Products",
   "/admin": "Admin",

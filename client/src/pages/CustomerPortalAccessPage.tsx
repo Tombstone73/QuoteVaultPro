@@ -247,7 +247,7 @@ export default function CustomerPortalAccessPage() {
   return (
     <Page>
       <PageHeader
-        title="Customer Portal Access"
+        title="Customer Portal"
         subtitle="Bulk-enable company portal access and invite eligible contacts with a controlled review step."
       />
       <ContentLayout>

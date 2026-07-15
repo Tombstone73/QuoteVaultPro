@@ -57,7 +57,6 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     items: [
       { id: "dashboard", name: "Dashboard", icon: Home, path: ROUTES.dashboard },
       { id: "customers", name: "Customers", icon: Users, path: ROUTES.customers.list },
-      { id: "customer-portal-access", name: "Portal Access", icon: KeyRound, path: ROUTES.customers.portalAccess, roles: ["admin", "owner"] },
       { id: "contacts", name: "Contacts", icon: Contact2, path: ROUTES.contacts.list },
       { id: "quotes", name: "Quotes", icon: FileText, path: ROUTES.quotes.list },
       {
@@ -129,6 +128,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     items: [
       { id: "admin-dashboard", name: "Admin Dashboard", icon: Home, path: ROUTES.system.adminDashboard, roles: ["admin", "owner"] },
       { id: "settings", name: "Settings", icon: Settings, path: ROUTES.settings.root, roles: ["admin", "owner"] },
+      { id: "customer-portal", name: "Customer Portal", icon: KeyRound, path: ROUTES.settings.customerPortal, roles: ["admin", "owner"] },
       { id: "users", name: "Users", icon: UserCog, path: ROUTES.users.list, roles: ["admin", "owner"] },
     ],
   },
