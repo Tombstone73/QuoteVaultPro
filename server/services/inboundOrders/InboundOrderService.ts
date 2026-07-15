@@ -980,12 +980,6 @@ function formatInboundDate(value: Date | string | null | undefined): string | nu
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function formatSkippedLineItemForNote(item: InboundQuoteDraftSkippedLineItem): string {
-  const name = item.productName || `Draft row ${item.index + 1}`;
-  const source = item.sourceLineItemId ? ` sourceLine=${item.sourceLineItemId}` : "";
-  return `- ${name}: ${item.reason} (${item.detail})${source}`;
-}
-
 function formatRequiredOptionList(labels: string[]): string {
   const unique = Array.from(new Set(labels.map((label) => label.trim()).filter(Boolean)));
   if (unique.length <= 1) return unique[0] ?? "required options";
@@ -3367,25 +3361,10 @@ export class InboundOrderService {
       customerMappingSource: preview.customer.source,
       contactMappingSource: preview.contact.source,
     };
-    const skippedLines = preview.skippedLineItems.map(formatSkippedLineItemForNote);
-    const listLabel = [
-      "Created from inbound review",
-      `Inbound record: ${record.id}`,
-      `Source: ${record.sourceLabel ?? record.sourceType} (${record.sourceType})`,
-      record.externalReference ? `External reference: ${record.externalReference}` : null,
-      `Received: ${formatInboundDate(record.receivedAt) ?? "unknown"}`,
-      `Snapshot: ${latestReviewSnapshot.id} v${latestReviewSnapshot.snapshotVersion}`,
-      `Customer: ${preview.customer.customerName ?? "manual inbound text"} (${preview.customer.source})`,
-      preview.contact.contactName || preview.contact.email
-        ? `Contact: ${preview.contact.contactName ?? preview.contact.email} (${preview.contact.source})`
-        : null,
-      preview.desiredOutputType ? `Output: ${preview.desiredOutputType}` : null,
-      `Converted line items: ${preview.lineItemsToConvert.length}`,
-      `Skipped line items: ${preview.skippedLineItems.length}`,
-      skippedLines.length ? "Skipped item reasons:" : null,
-      ...skippedLines,
-      preview.orderNotes ? `Reviewed notes: ${preview.orderNotes.slice(0, 1000)}` : null,
-    ].filter(Boolean).join("\n");
+    // quote_list_notes is a compact, staff-editable list annotation. The
+    // inbound record and review.quote_created event own source evidence and
+    // structured conversion metadata respectively.
+    const listLabel = "Created from inbound review";
 
     const result = await this.repository.createQuoteDraftFromInboundReview(args.organizationId, {
       inboundRecordId: args.inboundRecordId,

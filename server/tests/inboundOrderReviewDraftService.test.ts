@@ -1837,6 +1837,47 @@ describe("InboundOrderService editable review draft", () => {
     });
   }
 
+  test("maps inbound quote provenance without copying source email into the list note", async () => {
+    const sourceBody = "Please quote these signs. This full customer email must remain inbound-only.";
+    const { repo } = makeRepository(inboundRecord({
+      rawPayloadJson: {
+        subject: "Sign quote",
+        bodyText: sourceBody,
+        sender: { name: "Shawn Fears", email: "shawn@example.com" },
+      },
+    }));
+    const service = new InboundOrderService(repo as any);
+    await prepareReadyDraft(service);
+    (repo.createQuoteDraftFromInboundReview as any).mockResolvedValue({
+      quote: {
+        id: "quote_1",
+        quoteNumber: 1001,
+        status: "draft",
+        customerId: "customer_1",
+        contactId: "contact_1",
+        customerName: "Brainstorm Print",
+        totalPrice: "0",
+        createdAt: new Date("2026-06-09T12:30:00.000Z"),
+      },
+      lineItems: [{ id: "quote_line_1" }],
+      skippedLineItems: [],
+    });
+
+    await service.createQuoteDraftFromInbound({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(repo.createQuoteDraftFromInboundReview).toHaveBeenCalledWith("org_1", expect.objectContaining({
+      inboundRecordId: "inbound_1",
+      listLabel: "Created from inbound review",
+      conversionMetadata: expect.objectContaining({ inboundRecordId: "inbound_1" }),
+    }));
+    const conversionInput = (repo.createQuoteDraftFromInboundReview as any).mock.calls[0][1];
+    expect(JSON.stringify(conversionInput)).not.toContain(sourceBody);
+  });
+
   test("blocks order conversion when inbound is not ready or draft is missing", async () => {
     const notReadyRepo = makeRepository().repo;
     const notReadyService = new InboundOrderService(notReadyRepo as any, makeOrderRepository() as any, mockPriceLineItem);

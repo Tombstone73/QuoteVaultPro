@@ -423,7 +423,8 @@ export class InboundOrdersRepository {
     if (filters.search) {
       const pattern = `%${filters.search}%`;
       predicates.push(sql`(
-        ${inboundOrderRecords.externalReference} ilike ${pattern}
+        ${inboundOrderRecords.id} ilike ${pattern}
+        or ${inboundOrderRecords.externalReference} ilike ${pattern}
         or ${inboundOrderRecords.sourceLabel} ilike ${pattern}
         or ${inboundOrderRecords.reviewRequiredReason} ilike ${pattern}
         or ${inboundOrderRecords.rawPayloadJson}::text ilike ${pattern}
@@ -2521,7 +2522,8 @@ export class InboundOrdersRepository {
       const now = new Date();
 
       // Keep quote.source aligned with normal staff-created quotes so internal quote lists and permissions include it.
-      // Inbound provenance stays in quote list notes, line item specs, and the inbound review event metadata.
+      // Inbound provenance stays on the tenant-scoped inbound relationship,
+      // line item specs, and the inbound review event metadata.
       const [quote] = await tx
         .insert(quotes)
         .values({

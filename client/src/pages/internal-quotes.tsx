@@ -37,6 +37,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
+import { QuoteListNote } from "@/components/quote-list-note";
 import { objectsUrlFromKey } from "@/lib/getThumbSrc";
 import {
   FileText,
@@ -742,19 +743,10 @@ export default function InternalQuotes() {
                 </Button>
               </div>
             ) : (
-              <div 
-                className="cursor-pointer px-2 py-1 rounded hover:bg-muted/30"
-                onClick={() => handleStartLabelEdit(quote.id, quote.listLabel || "", 'listLabel')}
-                title="Edit list note (always editable)"
-              >
-                {quote.listLabel ? (
-                  <span className="text-sm">{quote.listLabel}</span>
-                ) : (
-                  <span className="text-muted-foreground text-sm italic">
-                    Click to add...
-                  </span>
-                )}
-              </div>
+              <QuoteListNote
+                note={quote.listLabel}
+                onEdit={() => handleStartLabelEdit(quote.id, quote.listLabel || "", 'listLabel')}
+              />
             )}
           </TableCell>
         );

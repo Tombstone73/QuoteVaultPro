@@ -36,6 +36,12 @@ type InboundReviewLink = {
   isActive: boolean;
   convertedLineItemCount: number | null;
   skippedLineItemCount: number | null;
+  sourceType: string;
+  sourceLabel: string | null;
+  subject: string | null;
+  senderName: string | null;
+  senderEmail: string | null;
+  receivedAt: string;
 };
 
 function InboundReviewBadge({ inboundReview }: { inboundReview?: InboundReviewLink | null }) {
@@ -298,6 +304,28 @@ export default function QuoteDetail() {
                   queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
                 }}
               />
+            </div>
+          </DataCard>
+        )}
+
+        {isInternalUser && quote.inboundReview && (
+          <DataCard title="Internal Source" className="bg-titan-bg-card border-titan-border-subtle">
+            <div className="grid gap-3 text-titan-sm md:grid-cols-2">
+              <div><span className="text-titan-text-muted">Source type: </span><span className="text-titan-text-primary">Inbound Order</span></div>
+              <div><span className="text-titan-text-muted">Inbound record: </span><span className="break-all font-mono text-titan-text-primary">{quote.inboundReview.inboundRecordId}</span></div>
+              <div><span className="text-titan-text-muted">Subject: </span><span className="text-titan-text-primary">{quote.inboundReview.subject || "—"}</span></div>
+              <div><span className="text-titan-text-muted">Sender: </span><span className="text-titan-text-primary">{[quote.inboundReview.senderName, quote.inboundReview.senderEmail].filter(Boolean).join(" · ") || "—"}</span></div>
+              <div><span className="text-titan-text-muted">Received: </span><span className="text-titan-text-primary">{quote.inboundReview.receivedAt ? format(new Date(quote.inboundReview.receivedAt), "MMMM d, yyyy h:mm a") : "—"}</span></div>
+              <div className="md:text-right">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate(`${ROUTES.inboundOrders.list}?recordId=${encodeURIComponent(quote.inboundReview!.inboundRecordId)}`)}
+                >
+                  View original email and attachments
+                </Button>
+              </div>
             </div>
           </DataCard>
         )}
