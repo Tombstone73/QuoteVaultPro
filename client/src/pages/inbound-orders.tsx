@@ -4919,6 +4919,7 @@ function CleanLineItemCard({
   onDuplicate,
   onRemove,
   onSplit,
+  segmentationReason,
   activeTarget,
   onFocusTarget,
 }: {
@@ -4933,6 +4934,7 @@ function CleanLineItemCard({
   onDuplicate: () => void;
   onRemove: () => void;
   onSplit: () => void;
+  segmentationReason?: string | null;
   activeTarget: CleanHighlightTarget | null;
   onFocusTarget: CleanFocusTargetHandler;
 }) {
@@ -5052,6 +5054,16 @@ function CleanLineItemCard({
           {!workflowComplete && parsedProductContext && (
             <div className="mt-2 text-[11px] text-slate-400">
               AI detected: <span className="font-semibold text-blue-100">{parsedProductContext}</span>
+            </div>
+          )}
+          {lineItem.sourceText && (
+            <div className="mt-2 line-clamp-2 text-[11px] text-slate-400" data-testid="clean-line-item-source-excerpt">
+              Source: {lineItem.sourceText}
+            </div>
+          )}
+          {segmentationReason && (
+            <div className="mt-1 text-[11px] text-blue-200" data-testid="clean-line-item-segmentation-reason">
+              Parser split: {segmentationReason}
             </div>
           )}
         </div>
@@ -6056,6 +6068,7 @@ function CleanOrderWorkstation({
                 onDuplicate={() => duplicateLineItem(index)}
                 onRemove={() => removeLineItem(index)}
                 onSplit={() => splitLineItem(index)}
+                segmentationReason={cleanDraft.lineItems[index]?.warnings.find((item) => item.code === "line_item_segmented_from_source")?.message ?? null}
                 activeTarget={activeTarget}
                 onFocusTarget={onFocusTarget}
               />
