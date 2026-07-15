@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ROUTES } from "@/config/routes";
+import { resolveProductionPreviewUrl } from "@shared/productionHydration";
 import {
   ProductionJobListItem,
   ProductionOrderArtworkSummary,
@@ -127,12 +128,12 @@ function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): str
 
   const normalizeArtworkImageUrl = (value: string): string | null => resolveObjectsPublicUrl(value);
   
-  // 1. Prefer thumbnailUrl (always an image if present).
-  if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
+  const previewUrl = resolveProductionPreviewUrl(artwork);
+  if (previewUrl) {
     if (process.env.NODE_ENV === 'development') {
-      console.log(`[DEV:getBestArtworkImage] Using thumbnailUrl: ${artwork.thumbnailUrl}`);
+      console.log(`[DEV:getBestArtworkImage] Using artwork preview: ${previewUrl}`);
     }
-    return normalizeArtworkImageUrl(artwork.thumbnailUrl);
+    return normalizeArtworkImageUrl(previewUrl);
   }
   
   
@@ -406,11 +407,16 @@ function normalizeArtworkForSides(
 ): {
   front: ProductionOrderArtworkSummary | null;
   back: ProductionOrderArtworkSummary | null;
+  unassigned: ProductionOrderArtworkSummary[];
   showBackSlot: boolean;
   backMissingReason: "not_uploaded" | null;
 } {
   const list = [...(artwork || [])];
-  const isDouble = sides === "Double" || sides === "2" || sides === "double";
+  const isDouble = String(sides).toLowerCase().includes("double") || sides === "2" || String(sides).toLowerCase() === "ds";
+  const byFront = list.filter((item) => normalizeSide(item.side) === "front");
+  const byBack = list.filter((item) => normalizeSide(item.side) === "back");
+  const unassigned = list.filter((item) => normalizeSide(item.side) === "na");
+  const pickBest = (items: ProductionOrderArtworkSummary[]) => items.find((item) => item.isPrimary) ?? items[0] ?? null;
 
   // DEV logging for debugging artwork mapping
   if (process.env.NODE_ENV === "development" && list.length > 0) {
@@ -424,41 +430,17 @@ function normalizeArtworkForSides(
   }
 
   if (!isDouble) {
-    // Single-sided: only front, no back slot
-    return { 
-      front: list[0] ?? null, 
-      back: null, 
-      showBackSlot: false, 
-      backMissingReason: null 
-    };
+    return { front: pickBest(byFront) ?? pickBest(unassigned), back: null, unassigned: [], showBackSlot: false, backMissingReason: null };
   }
 
-  // Double-sided: deterministic mapping
-  if (list.length === 0) {
-    // No artwork at all
-    return { 
-      front: null, 
-      back: null, 
-      showBackSlot: true, 
-      backMissingReason: "not_uploaded" 
-    };
-  } else if (list.length === 1) {
-    // Only 1 asset: front gets it, back is missing
-    return { 
-      front: list[0], 
-      back: null, 
-      showBackSlot: true, 
-      backMissingReason: "not_uploaded" 
-    };
-  } else {
-    // 2+ assets: front = first, back = second
-    return { 
-      front: list[0], 
-      back: list[1], 
-      showBackSlot: true, 
-      backMissingReason: null 
-    };
-  }
+  // For double-sided work, position is not side metadata. Keep unknown files explicit.
+  return {
+    front: pickBest(byFront),
+    back: pickBest(byBack),
+    unassigned,
+    showBackSlot: true,
+    backMissingReason: byBack.length === 0 ? "not_uploaded" : null,
+  };
 }
 
 function deriveRuntimeFromEvents(
@@ -713,15 +695,15 @@ function ActionRail({
           <Button className="w-full justify-start bg-red-600 hover:bg-red-600/90 text-white" onClick={() => setWasteOpen(true)} disabled={isBusy}>
             <Undo2 className="w-4 h-4 mr-2" /> LOG WASTE
           </Button>
-          <Button className="w-full justify-start whitespace-nowrap bg-orange-600 hover:bg-orange-600/90 text-white" onClick={() => setSendToPrepressOpen(true)} disabled={isBusy || !job.lineItemId}>
-            <Square className="w-4 h-4 mr-2 shrink-0" /> Send to Prepress
+          <Button className="w-full justify-start whitespace-normal h-auto min-h-10 bg-orange-600 hover:bg-orange-600/90 text-white" onClick={() => setSendToPrepressOpen(true)} disabled={isBusy || !job.lineItemId}>
+            <Square className="w-4 h-4 mr-2 shrink-0" /> Send to prepress
           </Button>
         </div>
 
         <div className="h-px bg-titan-border-subtle" />
 
-        <Button className="w-full justify-start bg-sky-700 hover:bg-sky-700/90 text-white" onClick={() => setNoteOpen(true)} disabled={isBusy}>
-          <MessageSquarePlus className="w-4 h-4 mr-2" /> ADD PRODUCTION NOTE
+        <Button className="w-full justify-start whitespace-normal h-auto min-h-10 bg-sky-700 hover:bg-sky-700/90 text-white" onClick={() => setNoteOpen(true)} disabled={isBusy}>
+          <MessageSquarePlus className="w-4 h-4 mr-2 shrink-0" /> Add Production Note
         </Button>
 
         <AlertDialog open={noteOpen} onOpenChange={setNoteOpen}>
@@ -905,7 +887,7 @@ function ActionRail({
                 }}
                 disabled={sendToPrepress.isPending || !sendToPrepressNote.trim()}
               >
-                {sendToPrepress.isPending ? "Sending..." : "Send to Prepress"}
+                {sendToPrepress.isPending ? "Sending..." : "Send to prepress"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -1149,7 +1131,7 @@ function PreviewPanel({
   
   // Use backend-derived sides and normalize artwork accordingly
   const sidesValue = (job as any).sides ?? "—";
-  const { front, back, showBackSlot, backMissingReason } = useMemo(
+  const { front, back, unassigned, showBackSlot, backMissingReason } = useMemo(
     () => normalizeArtworkForSides(sidesValue, thumbs),
     [sidesValue, thumbs]
   );
@@ -1232,6 +1214,16 @@ function PreviewPanel({
               <div className="text-xs text-titan-text-muted text-center">
                 BACK (click to enlarge)
                 {backMissingReason === "not_uploaded" && <span className="ml-1 text-[10px] text-amber-500">(Not uploaded)</span>}
+              </div>
+            </div>
+          )}
+          {showBackSlot && unassigned.length > 0 && (
+            <div className="space-y-1">
+              <div className="relative aspect-square w-[180px] h-[180px] overflow-hidden rounded-lg border-2 border-dashed border-amber-500/60 bg-titan-bg-card flex items-center justify-center">
+                <ProductionThumbnail artwork={unassigned[0]} alt="Unassigned artwork" className="h-full w-full object-contain" />
+              </div>
+              <div className="max-w-[180px] text-center text-xs text-amber-600">
+                Unassigned artwork — assign Front or Back in the order line Artwork panel.
               </div>
             </div>
           )}
@@ -1344,6 +1336,16 @@ function PreviewPanel({
           <div className="space-y-3">
             <Fact label="Size" value={size} />
             <Fact label="Quantity" value={formatQtyPieces(qty)} />
+            {(job as any).productionLayout ? (
+              <>
+                <Fact label="Sheet size" value={`${(job as any).productionLayout.sheetWidthIn} × ${(job as any).productionLayout.sheetHeightIn}`} />
+                <Fact label="Layout" value={`${(job as any).productionLayout.piecesPerSheet} up`} />
+                <Fact label="Sheets to print" value={`${(job as any).productionLayout.sheetsToPrint}`} />
+                <Fact label="Print passes" value={`${(job as any).productionLayout.printPasses}`} />
+              </>
+            ) : job.stationKey === "flatbed" ? (
+              <Fact label="Sheet layout" value="Not configured" />
+            ) : null}
             <Fact label="Packaging" value={packaging} />
             <Fact
               label="Run time"
@@ -1352,6 +1354,15 @@ function PreviewPanel({
             />
             {timerIsRunning ? <div className="text-[11px] text-titan-text-muted text-right">RUNNING</div> : null}
           </div>
+          {(job as any).productionLayout ? (
+            <div className="col-span-2 rounded-md border border-dashed border-titan-border-subtle bg-titan-bg-subtle px-3 py-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-titan-text-muted">Sheet layout preview</div>
+              <div className="mt-1 text-xs text-titan-text-primary">
+                {(job as any).productionLayout.piecesPerSheet} up on {(job as any).productionLayout.sheetWidthIn} × {(job as any).productionLayout.sheetHeightIn}; {(job as any).productionLayout.sheetsToPrint} sheets / {(job as any).productionLayout.printPasses} print passes.
+              </div>
+              <div className="mt-1 text-[11px] text-titan-text-muted">Imposed sheet preview will appear when prepress output is available.</div>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
@@ -1629,7 +1640,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
 
                   // Normalize artwork based on sides for UI display
                   const thumbs = artworkThumbs(job);
-                  const { front, back, showBackSlot, backMissingReason } = normalizeArtworkForSides(sidesDisplay, thumbs);
+                  const { front, back, unassigned, showBackSlot, backMissingReason } = normalizeArtworkForSides(sidesDisplay, thumbs);
                   const hasFront = !!front;
                   const hasBack = !!back;
 
@@ -1680,7 +1691,12 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       </TableCell>
                       <TableCell className="py-5">
                         <div className="flex items-center gap-1.5">
-                          {!showBackSlot ? (
+                          {showBackSlot && !hasFront && !hasBack && unassigned.length > 0 ? (
+                            <div className="relative cursor-pointer" title="Unassigned artwork — assign Front or Back in the order line Artwork panel">
+                              <ProductionThumbnail artwork={unassigned[0]} alt="Unassigned artwork" className="w-12 h-12 rounded object-cover border-2 border-dashed border-amber-500" />
+                              <div className="absolute top-0.5 left-0.5 bg-amber-600 text-white text-[9px] font-bold px-1 py-0.5 rounded">U</div>
+                            </div>
+                          ) : !showBackSlot ? (
                             // Single-sided: show only Front thumbnail
                             <div
                               className="relative cursor-pointer"
