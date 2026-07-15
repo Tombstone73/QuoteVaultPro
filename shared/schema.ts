@@ -26,6 +26,7 @@ import {
 } from "./materialInventory";
 import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "./materialWeight";
 import { normalizeMaterialVendorProductUrl } from "./materialVendorPurchasing";
+import { calculateUsableRollCapacity, MATERIAL_FORMS, MATERIAL_INVENTORY_UNITS } from "./materialUnits";
 import {
   type AiReviewKind,
   aiReviewKindValues,
@@ -5572,8 +5573,12 @@ export const materials = pgTable("materials", {
   sku: varchar("sku", { length: 100 }).notNull(),
   type: varchar("type", { length: 50 }).notNull(), // sheet, roll, ink, consumable
   category: varchar("category", { length: 100 }), // optional category for grouping
-  unitOfMeasure: varchar("unit_of_measure", { length: 50 }).notNull(), // sheet, sqft, linear_ft, ml, ea
+  // Retained temporarily as migration evidence only. New operational paths use the explicit fields below.
+  unitOfMeasure: varchar("unit_of_measure", { length: 50 }),
+  materialForm: varchar("material_form", { length: 50 }).$type<(typeof MATERIAL_FORMS)[number]>(),
   inventoryUnit: varchar("inventory_unit", { length: 50 }),
+  // Compatibility-only persistence. Material APIs, forms, imports, and organization copy do not expose or write sell pricing.
+  // PBV2 remains the owner of customer sell units and pricing until these columns can be retired in a future migration.
   sellPriceUnit: varchar("sell_price_unit", { length: 50 }),
   wholesalePriceUnit: varchar("wholesale_price_unit", { length: 50 }),
   vendorCostUnit: varchar("vendor_cost_unit", { length: 50 }),
@@ -5638,7 +5643,8 @@ export const materialProductLinks = pgTable("material_product_links", {
   uniqueIndex("material_product_links_org_material_product_uidx").on(table.organizationId, table.materialId, table.productId),
 ]);
 
-const materialUnitSchema = z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]);
+const materialUnitSchema = z.enum(MATERIAL_INVENTORY_UNITS);
+const materialFormSchema = z.enum(MATERIAL_FORMS);
 const materialWeightUnitSchema = z.enum(MATERIAL_WEIGHT_UNITS);
 const materialWeightBasisSchema = z.enum(MATERIAL_WEIGHT_BASES);
 const optionalMaterialUnitSchema = z.preprocess(
@@ -5694,13 +5700,15 @@ const materialBaseSchema = createInsertSchema(materials).omit({
   updatedAt: true,
   organizationId: true,
 }).extend({
-  type: z.enum(["sheet", "roll", "ink", "consumable"]),
-  unitOfMeasure: materialUnitSchema,
-  inventoryUnit: optionalMaterialUnitSchema,
-  sellPriceUnit: optionalMaterialUnitSchema,
-  wholesalePriceUnit: optionalMaterialUnitSchema,
+  // `type` is retained for older records and integrations. `materialForm` is the explicit physical form.
+  type: z.enum(["sheet", "roll", "ink", "consumable", "liquid", "each", "bulk_weight"]).optional(),
+  unitOfMeasure: z.never().optional(),
+  materialForm: materialFormSchema,
+  inventoryUnit: materialUnitSchema,
+  sellPriceUnit: z.never().optional(),
+  wholesalePriceUnit: z.never().optional(),
   vendorCostUnit: optionalMaterialUnitSchema,
-  consumptionUnit: optionalMaterialUnitSchema,
+  consumptionUnit: materialUnitSchema,
   weightValue: z.preprocess(
     (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
     z.coerce.number().positive().optional().nullable()
@@ -5739,23 +5747,10 @@ const materialBaseSchema = createInsertSchema(materials).omit({
     (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
     z.coerce.number().nonnegative().optional().nullable()
   ),
-  // Tiered pricing fields
-  wholesaleBaseRate: z.preprocess(
-    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
-    z.coerce.number().nonnegative().optional().nullable()
-  ),
-  wholesaleMinCharge: z.preprocess(
-    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
-    z.coerce.number().nonnegative().optional().nullable()
-  ),
-  retailBaseRate: z.preprocess(
-    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
-    z.coerce.number().nonnegative().optional().nullable()
-  ),
-  retailMinCharge: z.preprocess(
-    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
-    z.coerce.number().nonnegative().optional().nullable()
-  ),
+  wholesaleBaseRate: z.never().optional(),
+  wholesaleMinCharge: z.never().optional(),
+  retailBaseRate: z.never().optional(),
+  retailMinCharge: z.never().optional(),
   stockQuantity: z.coerce.number().nonnegative().default(0),
   minStockAlert: z.coerce.number().nonnegative().default(0),
   // Roll-specific fields
@@ -5785,7 +5780,26 @@ const materialBaseSchema = createInsertSchema(materials).omit({
 });
 
 export const insertMaterialSchema = materialBaseSchema.superRefine((data, ctx) => {
-  if (data.type !== "roll") return;
+  if (data.materialForm === "liquid" && (data.inventoryUnit !== "milliliter" || data.consumptionUnit !== "milliliter")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["inventoryUnit"], message: "Liquid materials must use milliliters for inventory and consumption in this phase." });
+  }
+  if (data.materialForm === "each" && (data.inventoryUnit !== "each" || data.consumptionUnit !== "each")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["inventoryUnit"], message: "Each materials must use each for inventory and consumption." });
+  }
+  if (data.materialForm === "bulk_weight" && (data.inventoryUnit !== "pound" || data.consumptionUnit !== "pound")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["inventoryUnit"], message: "Bulk weight materials must use pounds for inventory and consumption in this phase." });
+  }
+  if (data.materialForm === "sheet" && !((data.inventoryUnit === "sheet" || data.inventoryUnit === "square_foot") && (data.consumptionUnit === "sheet" || data.consumptionUnit === "square_foot"))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["inventoryUnit"], message: "Sheet materials must use sheet or square feet with configured dimensions." });
+  }
+  if (data.materialForm !== "roll") return;
+
+  if (data.inventoryUnit !== "square_foot") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["inventoryUnit"], message: "Roll inventory must use square feet." });
+  }
+  if (data.consumptionUnit !== "square_foot" && data.consumptionUnit !== "linear_foot") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["consumptionUnit"], message: "Roll consumption must use square feet or linear feet." });
+  }
 
   const width = (data as any).width;
   const rollLengthFt = (data as any).rollLengthFt;
@@ -5814,28 +5828,19 @@ export const insertMaterialSchema = materialBaseSchema.superRefine((data, ctx) =
       message: "Vendor roll cost is required",
     });
   }
-});
-
-export const updateMaterialSchema = materialBaseSchema.partial().superRefine((data, ctx) => {
-  // For PATCH: only enforce roll requiredness when the payload explicitly sets type to roll.
-  if ((data as any).type !== "roll") return;
-
-  const width = (data as any).width;
-  const rollLengthFt = (data as any).rollLengthFt;
-  const costPerRoll = (data as any).costPerRoll;
-
-  const isPos = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0;
-
-  if (!isPos(width)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["width"], message: "Roll width is required" });
-  }
-  if (!isPos(rollLengthFt)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["rollLengthFt"], message: "Roll length is required" });
-  }
-  if (!isPos(costPerRoll)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["costPerRoll"], message: "Vendor roll cost is required" });
+  const capacity = calculateUsableRollCapacity({
+    width,
+    rollLengthFt,
+    edgeWasteInPerSide: (data as any).edgeWasteInPerSide,
+    leadWasteFt: (data as any).leadWasteFt,
+    tailWasteFt: (data as any).tailWasteFt,
+  });
+  if (!capacity.ok) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["width"], message: capacity.message });
   }
 });
+
+export const updateMaterialSchema = materialBaseSchema.partial();
 
 export type InsertMaterial = z.infer<typeof insertMaterialSchema>;
 export type UpdateMaterial = z.infer<typeof updateMaterialSchema>;

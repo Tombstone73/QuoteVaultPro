@@ -49,13 +49,10 @@ const TEMPLATE_COLUMNS = [
   "material_id",        // optional — present in export, used to identify updates
   "material_name",      // required → materials.name
   "sku",                // required → materials.sku
-  "material_type",      // required → materials.type (sheet|roll|ink|consumable)
-  "unit_of_measure",    // required → materials.unitOfMeasure (sheet|sqft|linear_ft|ml|ea)
-  "inventory_unit",     // optional → materials.inventoryUnit (falls back to unit_of_measure)
-  "sell_price_unit",    // optional → materials.sellPriceUnit (falls back to unit_of_measure)
-  "wholesale_price_unit",// optional → materials.wholesalePriceUnit (falls back to sell_price_unit, then unit_of_measure)
-  "vendor_cost_unit",   // optional → materials.vendorCostUnit (falls back to unit_of_measure)
-  "consumption_unit",   // optional → materials.consumptionUnit (falls back to sell_price_unit, then unit_of_measure)
+  "material_form",      // required → materials.materialForm
+  "inventory_unit",     // required → canonical physical inventory unit
+  "consumption_unit",   // required → production consumption unit
+  "vendor_cost_unit",   // optional → current vendor-cost detail
   "category",           // → materials.category
   "color",              // → materials.color
   "width",              // → materials.width (sheet width or roll width)
@@ -63,10 +60,6 @@ const TEMPLATE_COLUMNS = [
   "thickness",          // → materials.thickness
   "thickness_unit",     // → materials.thicknessUnit (in|mm|mil|gauge)
   "cost_per_unit",      // → materials.costPerUnit
-  "wholesale_base_rate",// → materials.wholesaleBaseRate
-  "wholesale_min_charge",// → materials.wholesaleMinCharge
-  "retail_base_rate",   // → materials.retailBaseRate
-  "retail_min_charge",  // → materials.retailMinCharge
   "stock_quantity",     // → materials.stockQuantity
   "reorder_point",      // → materials.minStockAlert
   "vendor_name",        // → lookup vendors by name → materials.preferredVendorId
@@ -90,13 +83,10 @@ const TEMPLATE_EXAMPLE_ROW: Record<string, string> = {
   material_id:            "",
   material_name:          "3M Premium Gloss White Vinyl",
   sku:                    "VNL-3M-PGW-54",
-  material_type:          "roll",
-  unit_of_measure:        "sqft",
-  inventory_unit:         "sqft",
-  sell_price_unit:        "sqft",
-  wholesale_price_unit:   "sqft",
-  vendor_cost_unit:       "sqft",
-  consumption_unit:       "sqft",
+  material_form:          "roll",
+  inventory_unit:         "square_foot",
+  consumption_unit:       "square_foot",
+  vendor_cost_unit:       "square_foot",
   category:               "Vinyl",
   color:                  "White",
   width:                  "54",
@@ -104,10 +94,6 @@ const TEMPLATE_EXAMPLE_ROW: Record<string, string> = {
   thickness:              "3",
   thickness_unit:         "mil",
   cost_per_unit:          "0.45",
-  wholesale_base_rate:    "",
-  wholesale_min_charge:   "",
-  retail_base_rate:       "",
-  retail_min_charge:      "",
   stock_quantity:         "0",
   reorder_point:          "0",
   vendor_name:            "3M",
@@ -173,13 +159,10 @@ export function registerMaterialsImportExportRoutes(
           material_id: '',
           material_name: '4mm White Coroplast 48x96',
           sku: 'CORO-4MM-WHT-48X96',
-          material_type: 'sheet',
-          unit_of_measure: 'sqft',
-          inventory_unit: 'sqft',
-          sell_price_unit: 'sqft',
-          wholesale_price_unit: 'sqft',
+          material_form: 'sheet',
+          inventory_unit: 'sheet',
           vendor_cost_unit: 'sqft',
-          consumption_unit: 'sqft',
+          consumption_unit: 'sheet',
           category: 'Substrate',
           color: 'White',
           width: '48',
@@ -187,10 +170,6 @@ export function registerMaterialsImportExportRoutes(
           thickness: '4',
           thickness_unit: 'mm',
           cost_per_unit: '0.15',
-          wholesale_base_rate: '1.80',
-          wholesale_min_charge: '15.00',
-          retail_base_rate: '2.50',
-          retail_min_charge: '25.00',
           stock_quantity: '50',
           reorder_point: '10',
           vendor_name: 'Grimco',
@@ -212,13 +191,10 @@ export function registerMaterialsImportExportRoutes(
           material_id: '',
           material_name: '54in Economy Print Vinyl',
           sku: 'VINYL-IJ35C-54',
-          material_type: 'roll',
-          unit_of_measure: 'sqft',
-          inventory_unit: 'sqft',
-          sell_price_unit: 'sqft',
-          wholesale_price_unit: 'sqft',
+          material_form: 'roll',
+          inventory_unit: 'square_foot',
           vendor_cost_unit: 'sqft',
-          consumption_unit: 'sqft',
+          consumption_unit: 'square_foot',
           category: 'Roll Media',
           color: 'White',
           width: '54',
@@ -226,10 +202,6 @@ export function registerMaterialsImportExportRoutes(
           thickness: '3',
           thickness_unit: 'mil',
           cost_per_unit: '0.42',
-          wholesale_base_rate: '2.80',
-          wholesale_min_charge: '20.00',
-          retail_base_rate: '4.00',
-          retail_min_charge: '25.00',
           stock_quantity: '5',
           reorder_point: '1',
           vendor_name: 'Fellers',
@@ -251,13 +223,10 @@ export function registerMaterialsImportExportRoutes(
           material_id: '',
           material_name: '54in Gloss Laminate',
           sku: 'LAM-GLOSS-54',
-          material_type: 'roll',
-          unit_of_measure: 'sqft',
-          inventory_unit: 'sqft',
-          sell_price_unit: 'sqft',
-          wholesale_price_unit: 'sqft',
+          material_form: 'roll',
+          inventory_unit: 'square_foot',
           vendor_cost_unit: 'sqft',
-          consumption_unit: 'sqft',
+          consumption_unit: 'square_foot',
           category: 'Laminate',
           color: 'Clear',
           width: '54',
@@ -265,10 +234,6 @@ export function registerMaterialsImportExportRoutes(
           thickness: '',
           thickness_unit: '',
           cost_per_unit: '0.28',
-          wholesale_base_rate: '0.85',
-          wholesale_min_charge: '',
-          retail_base_rate: '1.25',
-          retail_min_charge: '',
           stock_quantity: '3',
           reorder_point: '1',
           vendor_name: 'Fellers',
@@ -290,13 +255,10 @@ export function registerMaterialsImportExportRoutes(
           material_id: '',
           material_name: '30in Wire H-Stake',
           sku: 'STAKE-WIRE-30',
-          material_type: 'consumable',
-          unit_of_measure: 'ea',
-          inventory_unit: 'ea',
-          sell_price_unit: 'ea',
-          wholesale_price_unit: 'ea',
+          material_form: 'each',
+          inventory_unit: 'each',
           vendor_cost_unit: 'ea',
-          consumption_unit: 'ea',
+          consumption_unit: 'each',
           category: 'Accessory',
           color: 'Silver',
           width: '',
@@ -304,10 +266,6 @@ export function registerMaterialsImportExportRoutes(
           thickness: '',
           thickness_unit: '',
           cost_per_unit: '0.42',
-          wholesale_base_rate: '0.85',
-          wholesale_min_charge: '',
-          retail_base_rate: '1.50',
-          retail_min_charge: '',
           stock_quantity: '200',
           reorder_point: '50',
           vendor_name: 'Grimco',
@@ -329,13 +287,10 @@ export function registerMaterialsImportExportRoutes(
           material_id: '',
           material_name: 'HP 792 Latex Black 775ml',
           sku: 'INK-HP792-BLK-775',
-          material_type: 'ink',
-          unit_of_measure: 'ml',
-          inventory_unit: 'ml',
-          sell_price_unit: 'ml',
-          wholesale_price_unit: 'ml',
+          material_form: 'liquid',
+          inventory_unit: 'milliliter',
           vendor_cost_unit: 'ml',
-          consumption_unit: 'ml',
+          consumption_unit: 'milliliter',
           category: 'Ink',
           color: 'Black',
           width: '',
@@ -343,10 +298,6 @@ export function registerMaterialsImportExportRoutes(
           thickness: '',
           thickness_unit: '',
           cost_per_unit: '0.065',
-          wholesale_base_rate: '',
-          wholesale_min_charge: '',
-          retail_base_rate: '0.12',
-          retail_min_charge: '',
           stock_quantity: '4',
           reorder_point: '1',
           vendor_name: 'HP',
@@ -432,57 +383,33 @@ sku
              Used as identity match signal — must be unique across your catalog for
              reliable matching.
 
-material_type
+material_form
   Required : YES
-  Allowed  : sheet | roll | ink | consumable
+  Allowed  : sheet | roll | liquid | each | bulk_weight
   Example  : sheet
   Notes    : sheet     — rigid cut sheets (coroplast, ACM, foam board, etc.)
              roll      — roll media (vinyl, laminate, banner, canvas)
-             ink       — liquid inks, toners
-             consumable — everything else (stakes, grommets, hardware, supplies)
-
-unit_of_measure
-  Required : YES
-  Allowed  : sheet | sqft | linear_ft | ml | ea
-  Example  : sqft
-  Notes    : Legacy/default catalog unit. Existing pricing, inventory, CSV, and
-             some usage behavior may still fall back to this.
+             liquid    — inks, toners, and other liquids
+             each      — hardware and countable items
+             bulk_weight — bulk weight-based materials
 
 inventory_unit
-  Required : No
-  Allowed  : sheet | sqft | linear_ft | ml | ea
-  Example  : sqft
-  Notes    : Controls stock quantity and reorder points. If blank, defaults to
-             unit_of_measure. Conversion is not automatic yet.
-
-sell_price_unit
-  Required : No
-  Allowed  : sheet | sqft | linear_ft | ml | ea
-  Example  : sqft
-  Notes    : Controls the base sell price unit. If blank, defaults to
-             unit_of_measure.
-
-wholesale_price_unit
-  Required : No
-  Allowed  : sheet | sqft | linear_ft | ml | ea
-  Example  : sqft
-  Notes    : Controls the wholesale sell price unit. If blank, defaults to
-             sell_price_unit, then unit_of_measure.
+  Required : YES
+  Allowed  : square_foot | linear_foot | sheet | each | milliliter | pound
+  Example  : square_foot
+  Notes    : Canonical physical quantity for stock and reorder points.
 
 vendor_cost_unit
   Required : No
-  Allowed  : sheet | sqft | linear_ft | ml | ea
-  Example  : sqft
-  Notes    : Controls the supplier cost basis for this material. If blank,
-             defaults to unit_of_measure.
+  Allowed  : square_foot | linear_foot | sheet | each | milliliter | pound
+  Example  : square_foot
+  Notes    : Current supplier cost basis when recorded.
 
 consumption_unit
-  Required : No
-  Allowed  : sheet | sqft | linear_ft | ml | ea
-  Example  : sqft
-  Notes    : Informational production consumption unit until conversion
-             profiles exist. This does not enable automatic conversion yet.
-             If blank, defaults to sell_price_unit, then unit_of_measure.
+  Required : YES
+  Allowed  : square_foot | linear_foot | sheet | each | milliliter | pound
+  Example  : square_foot
+  Notes    : Production requirement unit. Roll linear feet convert to inventory square feet using usable roll width.
 
 category
   Required : No
@@ -525,32 +452,7 @@ cost_per_unit
   Required : YES
   Type     : Decimal (USD — no $ symbol)
   Example  : 0.15
-  Notes    : Your base sell price per sell_price_unit. For sqft materials this is $/sqft.
-             For ea materials this is cost per each item.
-
-wholesale_base_rate
-  Required : No
-  Type     : Decimal (USD)
-  Example  : 1.80
-  Notes    : Rate charged to wholesale customers per wholesale_price_unit.
-
-wholesale_min_charge
-  Required : No
-  Type     : Decimal (USD)
-  Example  : 15.00
-  Notes    : Minimum order charge applied to wholesale pricing.
-
-retail_base_rate
-  Required : No
-  Type     : Decimal (USD)
-  Example  : 2.50
-  Notes    : Rate charged to retail customers per sell_price_unit.
-
-retail_min_charge
-  Required : No
-  Type     : Decimal (USD)
-  Example  : 25.00
-  Notes    : Minimum order charge applied to retail pricing.
+  Notes    : Internal material cost per inventory unit. Product sell pricing belongs in PBV2.
 
 stock_quantity
   Required : No  (defaults to 0)
@@ -729,13 +631,10 @@ TIPS
           material_id:            m.id,
           material_name:          m.name,
           sku:                    m.sku,
-          material_type:          m.type,
-          unit_of_measure:        m.unitOfMeasure,
-          inventory_unit:         m.inventoryUnit ?? m.unitOfMeasure,
-          sell_price_unit:        m.sellPriceUnit ?? m.unitOfMeasure,
-          wholesale_price_unit:   m.wholesalePriceUnit ?? m.sellPriceUnit ?? m.unitOfMeasure,
-          vendor_cost_unit:       m.vendorCostUnit ?? m.unitOfMeasure,
-          consumption_unit:       m.consumptionUnit ?? m.sellPriceUnit ?? m.unitOfMeasure,
+          material_form:          m.materialForm ?? '',
+          inventory_unit:         m.inventoryUnit ?? '',
+          consumption_unit:       m.consumptionUnit ?? '',
+          vendor_cost_unit:       m.vendorCostUnit ?? '',
           category:               m.category ?? '',
           color:                  m.color ?? '',
           width:                  m.width ?? '',
@@ -743,10 +642,6 @@ TIPS
           thickness:              m.thickness ?? '',
           thickness_unit:         m.thicknessUnit ?? '',
           cost_per_unit:          m.costPerUnit,
-          wholesale_base_rate:    m.wholesaleBaseRate ?? '',
-          wholesale_min_charge:   m.wholesaleMinCharge ?? '',
-          retail_base_rate:       m.retailBaseRate ?? '',
-          retail_min_charge:      m.retailMinCharge ?? '',
           stock_quantity:         m.stockQuantity,
           reorder_point:          m.minStockAlert,
           vendor_name:            m.preferredVendorId ? (vendorById.get(m.preferredVendorId) ?? '') : '',

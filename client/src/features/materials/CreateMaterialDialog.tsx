@@ -18,23 +18,35 @@ const optionalNumber = (schema: z.ZodNumber) =>
     schema.optional()
   );
 
-const LEGACY_UNIT_HELPER_TEXT =
-  "Legacy/default unit for this material. Existing pricing, inventory, CSV, and some usage behavior may still fall back to this.";
+const FORM_UNIT_OPTIONS = {
+  roll: { inventory: ["square_foot"], consumption: ["square_foot", "linear_foot"] },
+  sheet: { inventory: ["sheet", "square_foot"], consumption: ["sheet", "square_foot"] },
+  liquid: { inventory: ["milliliter"], consumption: ["milliliter"] },
+  each: { inventory: ["each"], consumption: ["each"] },
+  bulk_weight: { inventory: ["pound"], consumption: ["pound"] },
+} as const;
 
 const createMaterialSchema = z
   .object({
   name: z.string().trim().min(1, "Material name is required"),
   sku: z.string().trim().min(1, "SKU is required"),
-  type: z.enum(["sheet", "roll", "ink", "consumable"]),
-  unitOfMeasure: z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]),
-  costPerUnit: z.coerce.number().nonnegative(),
-  // Roll-only fields (required only when type === "roll")
+  materialForm: z.enum(["sheet", "roll", "liquid", "each", "bulk_weight"]),
+  inventoryUnit: z.enum(["square_foot", "linear_foot", "sheet", "each", "milliliter", "pound"]),
+  consumptionUnit: z.enum(["square_foot", "linear_foot", "sheet", "each", "milliliter", "pound"]),
+  // Roll-only fields
   width: optionalNumber(z.coerce.number().nonnegative()),
   rollLengthFt: optionalNumber(z.coerce.number().positive()),
   costPerRoll: optionalNumber(z.coerce.number().positive()),
 })
   .superRefine((data, ctx) => {
-    if (data.type !== "roll") return;
+    const allowed = FORM_UNIT_OPTIONS[data.materialForm];
+    if (!(allowed.inventory as readonly string[]).includes(data.inventoryUnit)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["inventoryUnit"], message: "Inventory unit is not valid for this material form" });
+    }
+    if (!(allowed.consumption as readonly string[]).includes(data.consumptionUnit)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["consumptionUnit"], message: "Consumption unit is not valid for this material form" });
+    }
+    if (data.materialForm !== "roll") return;
 
     const isPos = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0;
     if (!isPos(data.width)) {
@@ -53,7 +65,7 @@ type CreateMaterialValues = z.infer<typeof createMaterialSchema>;
 type CreatedMaterial = {
   id: string;
   name: string;
-  unitOfMeasure?: string;
+  inventoryUnit?: string;
 };
 
 type CreateMaterialResult = {
@@ -94,25 +106,31 @@ export function CreateMaterialDialog({
     defaultValues: {
       name: "",
       sku: "",
-      type: "sheet",
-      unitOfMeasure: "sheet",
-      costPerUnit: 0,
+      materialForm: "sheet",
+      inventoryUnit: "sheet",
+      consumptionUnit: "sheet",
       width: undefined,
       rollLengthFt: undefined,
       costPerRoll: undefined,
     },
   });
 
-  const materialType = form.watch("type");
-  const isRoll = materialType === "roll";
+  const materialForm = form.watch("materialForm");
+  const isRoll = materialForm === "roll";
+  const inventoryUnit = form.watch("inventoryUnit");
+  const consumptionUnit = form.watch("consumptionUnit");
+  const allowedUnits = FORM_UNIT_OPTIONS[materialForm];
 
   React.useEffect(() => {
-    if (isRoll) return;
-    form.setValue("width", undefined, { shouldDirty: true });
-    form.setValue("rollLengthFt", undefined, { shouldDirty: true });
-    form.setValue("costPerRoll", undefined, { shouldDirty: true });
-    form.clearErrors(["width", "rollLengthFt", "costPerRoll"]);
-  }, [isRoll, form]);
+    if (!(allowedUnits.inventory as readonly string[]).includes(inventoryUnit)) form.setValue("inventoryUnit", allowedUnits.inventory[0] as any);
+    if (!(allowedUnits.consumption as readonly string[]).includes(consumptionUnit)) form.setValue("consumptionUnit", allowedUnits.consumption[0] as any);
+    if (!isRoll) {
+      form.setValue("width", undefined, { shouldDirty: true });
+      form.setValue("rollLengthFt", undefined, { shouldDirty: true });
+      form.setValue("costPerRoll", undefined, { shouldDirty: true });
+      form.clearErrors(["width", "rollLengthFt", "costPerRoll"]);
+    }
+  }, [allowedUnits, consumptionUnit, form, inventoryUnit, isRoll]);
 
   const createMutation = useMutation({
     mutationFn: async (values: CreateMaterialValues) => {
@@ -120,7 +138,7 @@ export function CreateMaterialDialog({
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values),
+        body: JSON.stringify({ ...values, costPerUnit: 0 }),
       });
 
       const json = await res.json().catch(() => null);
@@ -133,7 +151,7 @@ export function CreateMaterialDialog({
             material: {
               id: existing.id,
               name: existing.name,
-              unitOfMeasure: existing.unitOfMeasure,
+              inventoryUnit: existing.inventoryUnit,
             },
             duplicate: true,
           } as CreateMaterialResult;
@@ -153,14 +171,14 @@ export function CreateMaterialDialog({
         material: {
           id: material.id,
           name: material.name,
-          unitOfMeasure: material.unitOfMeasure,
+          inventoryUnit: material.inventoryUnit,
         },
         duplicate,
       } as CreateMaterialResult;
     },
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
-      onCreated({ id: result.material.id, name: result.material.name, unitOfMeasure: result.material.unitOfMeasure });
+      onCreated({ id: result.material.id, name: result.material.name, inventoryUnit: result.material.inventoryUnit });
       toast({
         title: result.duplicate ? "Material already exists" : "Material created",
         description: result.duplicate
@@ -171,9 +189,9 @@ export function CreateMaterialDialog({
       form.reset({
         name: "",
         sku: "",
-        type: "sheet",
-        unitOfMeasure: "sheet",
-        costPerUnit: 0,
+        materialForm: "sheet",
+        inventoryUnit: "sheet",
+        consumptionUnit: "sheet",
         width: undefined,
         rollLengthFt: undefined,
         costPerRoll: undefined,
@@ -206,7 +224,7 @@ export function CreateMaterialDialog({
         </DialogHeader>
 
         <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-          This shortcut creates a permanent catalog material with only the basics needed for product setup. It does not configure supplier assignments, reorder thresholds, or operational inventory behavior.
+          This shortcut creates a permanent material with the physical inventory configuration required for product setup. Supplier and reorder details can be completed in Inventory &amp; Procurement.
           <div className="mt-2">
             <Button asChild type="button" variant="link" size="sm" className="h-auto px-0 text-amber-900">
               <Link to="/settings/inventory">Manage full material inventory settings in Settings &gt; Inventory &amp; Procurement.</Link>
@@ -250,21 +268,22 @@ export function CreateMaterialDialog({
             <div className="grid grid-cols-2 gap-4">
               <FormField
                 control={form.control}
-                name="type"
+                name="materialForm"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Type</FormLabel>
+                  <FormLabel>Material Form</FormLabel>
                     <Select value={field.value} onValueChange={field.onChange}>
                       <FormControl>
                         <SelectTrigger>
-                          <SelectValue placeholder="Select type" />
+                          <SelectValue placeholder="Select form" />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
                         <SelectItem value="sheet">Sheet</SelectItem>
                         <SelectItem value="roll">Roll</SelectItem>
-                        <SelectItem value="ink">Ink</SelectItem>
-                        <SelectItem value="consumable">Consumable</SelectItem>
+                        <SelectItem value="liquid">Liquid</SelectItem>
+                        <SelectItem value="each">Each item</SelectItem>
+                        <SelectItem value="bulk_weight">Bulk weight</SelectItem>
                       </SelectContent>
                     </Select>
                     <FormMessage />
@@ -274,10 +293,10 @@ export function CreateMaterialDialog({
 
               <FormField
                 control={form.control}
-                name="unitOfMeasure"
+                name="inventoryUnit"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Catalog Unit</FormLabel>
+                    <FormLabel>Inventory Unit</FormLabel>
                     <Select value={field.value} onValueChange={field.onChange}>
                       <FormControl>
                         <SelectTrigger>
@@ -285,16 +304,14 @@ export function CreateMaterialDialog({
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="sheet">Sheet</SelectItem>
-                        <SelectItem value="sqft">Sqft</SelectItem>
-                        <SelectItem value="linear_ft">Linear ft</SelectItem>
-                        <SelectItem value="ml">mL</SelectItem>
-                        <SelectItem value="ea">Each</SelectItem>
+                        {allowedUnits.inventory.includes("sheet" as never) ? <SelectItem value="sheet">Sheet</SelectItem> : null}
+                        {allowedUnits.inventory.includes("square_foot" as never) ? <SelectItem value="square_foot">Square foot</SelectItem> : null}
+                        {allowedUnits.inventory.includes("linear_foot" as never) ? <SelectItem value="linear_foot">Linear foot</SelectItem> : null}
+                        {allowedUnits.inventory.includes("milliliter" as never) ? <SelectItem value="milliliter">Milliliter</SelectItem> : null}
+                        {allowedUnits.inventory.includes("each" as never) ? <SelectItem value="each">Each</SelectItem> : null}
+                        {allowedUnits.inventory.includes("pound" as never) ? <SelectItem value="pound">Pound</SelectItem> : null}
                       </SelectContent>
                     </Select>
-                    <p className="text-xs text-muted-foreground">
-                      {LEGACY_UNIT_HELPER_TEXT}
-                    </p>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -303,26 +320,22 @@ export function CreateMaterialDialog({
 
             <FormField
               control={form.control}
-              name="costPerUnit"
+              name="consumptionUnit"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Base Sell Price</FormLabel>
-                  <FormControl>
-                    <Input
-                      inputMode="decimal"
-                      type="number"
-                      step="0.0001"
-                      placeholder="0"
-                      value={field.value ?? ""}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        field.onChange(v === "" ? undefined : Number(v));
-                      }}
-                    />
-                  </FormControl>
-                  <p className="text-xs text-muted-foreground">
-                    Recorded per Sell Price Unit, which falls back to the Catalog Unit when not set. Existing quote pricing math is unchanged in this phase.
-                  </p>
+                  <FormLabel>Consumption Unit</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl><SelectTrigger><SelectValue placeholder="Select unit" /></SelectTrigger></FormControl>
+                    <SelectContent>
+                      {allowedUnits.consumption.includes("square_foot" as never) ? <SelectItem value="square_foot">Square foot</SelectItem> : null}
+                      {allowedUnits.consumption.includes("linear_foot" as never) ? <SelectItem value="linear_foot">Linear foot</SelectItem> : null}
+                      {allowedUnits.consumption.includes("sheet" as never) ? <SelectItem value="sheet">Sheet</SelectItem> : null}
+                      {allowedUnits.consumption.includes("each" as never) ? <SelectItem value="each">Each</SelectItem> : null}
+                      {allowedUnits.consumption.includes("milliliter" as never) ? <SelectItem value="milliliter">Milliliter</SelectItem> : null}
+                      {allowedUnits.consumption.includes("pound" as never) ? <SelectItem value="pound">Pound</SelectItem> : null}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">The unit used by production requirements. Product sell units and pricing are configured on the product.</p>
                   <FormMessage />
                 </FormItem>
               )}

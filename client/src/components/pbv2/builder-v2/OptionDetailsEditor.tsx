@@ -156,17 +156,17 @@ type PricingOverrideMode = 'none' | 'set_base_rate' | 'add_base_rate' | 'multipl
 type PricingOverrideUnit = 'perSqft' | 'perPiece' | 'minimumCharge';
 type EditingChoiceValue = { optionId: string; value: string; originalValue?: string };
 
-function impliedUomForBasis(basis: QuantityBasis): 'sqft' | 'ft' | 'each' {
-  if (basis === 'area_sqft') return 'sqft';
-  if (basis === 'perimeter_ft' || basis === 'linear_ft') return 'ft';
+function impliedUomForBasis(basis: QuantityBasis): 'square_foot' | 'linear_foot' | 'each' {
+  if (basis === 'area_sqft') return 'square_foot';
+  if (basis === 'perimeter_ft' || basis === 'linear_ft') return 'linear_foot';
   return 'each';
 }
 
-function normalizeMaterialUom(value: string | null | undefined): 'sqft' | 'ft' | 'each' | null {
+function normalizeMaterialUom(value: string | null | undefined): 'square_foot' | 'linear_foot' | 'each' | null {
   const raw = String(value || '').trim().toLowerCase();
   if (!raw) return null;
-  if (raw === 'sqft' || raw === 'sf' || raw === 'square_foot' || raw === 'square_feet') return 'sqft';
-  if (raw === 'ft' || raw === 'foot' || raw === 'feet' || raw === 'linear_ft') return 'ft';
+  if (raw === 'sqft' || raw === 'sf' || raw === 'square_foot' || raw === 'square_feet') return 'square_foot';
+  if (raw === 'ft' || raw === 'foot' || raw === 'feet' || raw === 'linear_ft') return 'linear_foot';
   if (raw === 'each' || raw === 'ea' || raw === 'sheet' || raw === 'roll') return 'each';
   return null;
 }
@@ -1330,7 +1330,8 @@ export function OptionDetailsEditor({
               [rowKey]: {
                 id: material.id,
                 name: material.name,
-                unitOfMeasure: material.unitOfMeasure || '',
+                inventoryUnit: material.inventoryUnit || '',
+                consumptionUnit: material.inventoryUnit || '',
                 isActive: true,
               },
             }));
@@ -1388,7 +1389,9 @@ function MaterialIdSearchField({
     ? {
         id: resolvedById.id,
         name: resolvedById.name,
-        unitOfMeasure: resolvedById.unitOfMeasure,
+        inventoryUnit: resolvedById.inventoryUnit,
+        consumptionUnit: resolvedById.consumptionUnit,
+        materialForm: resolvedById.materialForm,
         weightValue: resolvedById.weightValue ?? null,
         weightUnit: resolvedById.weightUnit ?? null,
         weightBasis: resolvedById.weightBasis ?? null,
@@ -1400,13 +1403,16 @@ function MaterialIdSearchField({
   const isMissingMaterial = !!value && !selectedMaterial && !materialByIdQuery.isLoading;
 
   const impliedUom = quantityBasis ? impliedUomForBasis(quantityBasis) : null;
-  const selectedMaterialUom = normalizeMaterialUom(selectedMaterial?.unitOfMeasure);
+  const selectedMaterialUom = normalizeMaterialUom(selectedMaterial?.consumptionUnit);
   const hasUomMismatch =
     showUsageValidation &&
     !!selectedMaterial &&
     !!selectedMaterialUom &&
     !!impliedUom &&
-    selectedMaterialUom !== impliedUom;
+    selectedMaterialUom !== impliedUom &&
+    !(selectedMaterial.materialForm === 'roll' &&
+      ((selectedMaterialUom === 'square_foot' && impliedUom === 'linear_foot') ||
+        (selectedMaterialUom === 'linear_foot' && impliedUom === 'square_foot')));
 
   return (
     <div className="space-y-1">
@@ -1443,7 +1449,7 @@ function MaterialIdSearchField({
               {searchResults.map((material) => (
                 <CommandItem
                   key={material.id}
-                  value={`${material.name} ${material.id} ${material.unitOfMeasure}`}
+                  value={`${material.name} ${material.id} ${material.consumptionUnit || material.inventoryUnit}`}
                   onSelect={() => {
                     onChange(material.id);
                     setOpen(false);
@@ -1455,7 +1461,7 @@ function MaterialIdSearchField({
                   />
                   <div className="flex items-center justify-between w-full gap-2">
                     <span className="truncate">{material.name}</span>
-                    <span className="text-[10px] text-slate-500 whitespace-nowrap">{material.unitOfMeasure}</span>
+                    <span className="text-[10px] text-slate-500 whitespace-nowrap">{material.consumptionUnit || material.inventoryUnit}</span>
                   </div>
                 </CommandItem>
               ))}
@@ -1485,7 +1491,7 @@ function MaterialIdSearchField({
 
       <div className="text-[10px] text-slate-500 flex items-center gap-2">
         <span>ID: {selectedMaterial?.id ?? '—'}</span>
-        <span>UOM: {selectedMaterial?.unitOfMeasure ?? '—'}</span>
+        <span>Consumption unit: {selectedMaterial?.consumptionUnit ?? '—'}</span>
         {selectedMaterial && !selectedMaterial.isActive ? (
           <span className="text-amber-300">Inactive material</span>
         ) : null}

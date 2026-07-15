@@ -171,37 +171,30 @@ export function registerImportJobRoutes(
           const rowNumber = i + 2;
           const name = getTrimmedRowValue(row, ['Name', 'material_name']);
           const sku = getTrimmedRowValue(row, ['SKU', 'sku']);
-          const type = getTrimmedRowValue(row, ['Type', 'material_type']);
-          const unitOfMeasure = getTrimmedRowValue(row, ['Unit Of Measure', 'unit_of_measure']);
-          const sellPriceUnit = getTrimmedRowValue(row, ['Sell Price Unit', 'sell_price_unit']) || unitOfMeasure;
+          const materialForm = getTrimmedRowValue(row, ['Material Form', 'material_form']);
+          const inventoryUnit = getTrimmedRowValue(row, ['Inventory Unit', 'inventory_unit']);
+          const consumptionUnit = getTrimmedRowValue(row, ['Consumption Unit', 'consumption_unit']);
 
-          if (!name || !sku || !type || !unitOfMeasure) {
+          if (!name || !sku || !materialForm || !inventoryUnit || !consumptionUnit) {
             skippedCount++;
-            jobRows.push({ rowNumber, status: 'skipped', rawJson: row, error: 'Missing required fields (Name, SKU, Type, Unit Of Measure)' });
+            jobRows.push({ rowNumber, status: 'skipped', rawJson: row, error: 'Missing required fields (Name, SKU, Material Form, Inventory Unit, Consumption Unit)' });
             continue;
           }
 
           const normalized: any = {
             name,
             sku,
-            type,
+            materialForm,
             category: getTrimmedRowValue(row, ['Category', 'category']) || undefined,
-            unitOfMeasure,
-            inventoryUnit: getTrimmedRowValue(row, ['Inventory Unit', 'inventory_unit']) || unitOfMeasure,
-            sellPriceUnit,
-            wholesalePriceUnit: getTrimmedRowValue(row, ['Wholesale Price Unit', 'wholesale_price_unit']) || sellPriceUnit || unitOfMeasure,
-            vendorCostUnit: getTrimmedRowValue(row, ['Vendor Cost Unit', 'vendor_cost_unit']) || unitOfMeasure,
-            consumptionUnit: getTrimmedRowValue(row, ['Consumption Unit', 'consumption_unit']) || sellPriceUnit || unitOfMeasure,
+            inventoryUnit,
+            vendorCostUnit: getTrimmedRowValue(row, ['Vendor Cost Unit', 'vendor_cost_unit']) || undefined,
+            consumptionUnit,
             width: parseNum(getFirstRowValue(row, ['Width', 'width'])),
             height: parseNum(getFirstRowValue(row, ['Height', 'height'])),
             thickness: parseNum(getFirstRowValue(row, ['Thickness', 'thickness'])),
             thicknessUnit: getTrimmedRowValue(row, ['Thickness Unit', 'thickness_unit']) || undefined,
             color: getTrimmedRowValue(row, ['Color', 'color']) || undefined,
             costPerUnit: parseNum(getFirstRowValue(row, ['Cost Per Unit', 'cost_per_unit'])),
-            wholesaleBaseRate: parseNum(getFirstRowValue(row, ['Wholesale Base Rate', 'wholesale_base_rate'])),
-            wholesaleMinCharge: parseNum(getFirstRowValue(row, ['Wholesale Min Charge', 'wholesale_min_charge'])),
-            retailBaseRate: parseNum(getFirstRowValue(row, ['Retail Base Rate', 'retail_base_rate'])),
-            retailMinCharge: parseNum(getFirstRowValue(row, ['Retail Min Charge', 'retail_min_charge'])),
             stockQuantity: parseNum(getFirstRowValue(row, ['Stock Quantity', 'stock_quantity'])),
             minStockAlert: parseNum(getFirstRowValue(row, ['Min Stock Alert', 'reorder_point'])),
             isActive: parseBool(getFirstRowValue(row, ['Is Active', 'active'])),

@@ -123,7 +123,6 @@ export async function getLowInventoryDashboardItems(
       name: materials.name,
       stockQuantity: materials.stockQuantity,
       minStockAlert: materials.minStockAlert,
-      unitOfMeasure: materials.unitOfMeasure,
       inventoryUnit: materials.inventoryUnit,
       vendorName: vendors.name,
     })
@@ -144,7 +143,7 @@ export async function getLowInventoryDashboardItems(
     name: row.name,
     currentQty: Number(row.stockQuantity ?? 0),
     reorderThreshold: Number(row.minStockAlert ?? 0),
-    unit: row.inventoryUnit || row.unitOfMeasure || null,
+    unit: row.inventoryUnit || null,
     supplier: row.vendorName || null,
   }));
 }

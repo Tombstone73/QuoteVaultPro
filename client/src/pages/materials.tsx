@@ -38,8 +38,8 @@ const defaultColumns = [
   { id: "type", label: "Type", visible: true },
   { id: "stock", label: "Stock Quantity", visible: true },
   { id: "reorder", label: "Reorder Point", visible: true },
-  { id: "unit", label: "Catalog Unit", visible: true },
-  { id: "cost", label: "Sell / Cost", visible: true },
+  { id: "unit", label: "Inventory Unit", visible: true },
+  { id: "cost", label: "Material Cost", visible: true },
   { id: "vendor", label: "Vendor", visible: true },
   { id: "alerts", label: "Alerts", visible: true },
   { id: "actions", label: "Actions", visible: true },
@@ -192,16 +192,12 @@ function formatMoney(value?: string | number | null, decimals = 2) {
   return `$${safeValue.toFixed(decimals)}`;
 }
 
-function getCatalogUnit(material: Material) {
-  return material.unitOfMeasure || "unit";
-}
-
-function getSellPriceUnit(material: Material) {
-  return material.sellPriceUnit || getCatalogUnit(material);
+function getInventoryUnit(material: Material) {
+  return material.inventoryUnit || "unit";
 }
 
 function getVendorCostUnit(material: Material) {
-  return material.vendorCostUnit || getCatalogUnit(material);
+  return material.vendorCostUnit || getInventoryUnit(material);
 }
 
 function compareText(a: string, b: string) {
@@ -277,7 +273,7 @@ export default function MaterialsListPage() {
         case "reorder":
           return (getNumberValue(left.minStockAlert) - getNumberValue(right.minStockAlert)) * directionMultiplier;
         case "unit":
-          return compareText(left.unitOfMeasure ?? "", right.unitOfMeasure ?? "") * directionMultiplier;
+          return compareText(left.inventoryUnit ?? "", right.inventoryUnit ?? "") * directionMultiplier;
         case "cost":
           return (getMaterialUnitCost(left) - getMaterialUnitCost(right)) * directionMultiplier;
         case "vendor":
@@ -557,7 +553,7 @@ export default function MaterialsListPage() {
           return (
             <div className="space-y-1" onClick={(event) => event.stopPropagation()}>
               {compactNumberInput("stockQuantity", "Quantity on hand")}
-              <div className="text-[11px] text-titan-text-muted">{m.inventoryUnit || m.unitOfMeasure || "unit"}</div>
+              <div className="text-[11px] text-titan-text-muted">{m.inventoryUnit || "unit"}</div>
             </div>
           );
         }
@@ -575,13 +571,13 @@ export default function MaterialsListPage() {
           return (
             <div className="space-y-1" onClick={(event) => event.stopPropagation()}>
               {compactNumberInput("minStockAlert", "Reorder point")}
-              <div className="text-[11px] text-titan-text-muted">{m.inventoryUnit || m.unitOfMeasure || "unit"}</div>
+              <div className="text-[11px] text-titan-text-muted">{m.inventoryUnit || "unit"}</div>
             </div>
           );
         }
         return <span className="text-titan-text-primary">{getNumberValue(m.minStockAlert)}</span>;
       case "unit":
-        return <span className="text-titan-text-secondary">{m.unitOfMeasure}</span>;
+        return <span className="text-titan-text-secondary">{m.inventoryUnit}</span>;
       case "cost":
         if (countMode) {
           return (
@@ -619,7 +615,7 @@ export default function MaterialsListPage() {
             title="Displayed pricing may use sell price unit, vendor cost unit, or derived roll sqft cost depending on material type."
             className="space-y-0.5"
           >
-            <div className="text-titan-text-primary">Sell: {formatMoney(m.costPerUnit)} / {getSellPriceUnit(m)}</div>
+            <div className="text-titan-text-primary">Cost: {formatMoney(m.costPerUnit)} / {getInventoryUnit(m)}</div>
             {m.vendorCostPerUnit ? (
               <div className="text-xs text-titan-text-secondary">Vendor: {formatMoney(m.vendorCostPerUnit)} / {getVendorCostUnit(m)}</div>
             ) : null}
@@ -907,7 +903,7 @@ function InventoryCountPrintDialog({
                       <td className="border border-black p-2">{getVendorName(material, vendorNamesById)}</td>
                       <td className="border border-black p-2">{material.vendorSku || material.sku || ""}</td>
                       <td className="border border-black p-2 text-right">
-                        {normalizeNumericText(material.stockQuantity)} {material.inventoryUnit || material.unitOfMeasure || ""}
+                        {normalizeNumericText(material.stockQuantity)} {material.inventoryUnit || ""}
                       </td>
                       <td className="border border-black p-2 py-4">&nbsp;</td>
                       <td className="border border-black p-2 py-4">&nbsp;</td>
@@ -939,7 +935,7 @@ function buildInventoryCountPrintHtml(
     const category = material.category || "Uncategorized";
     const vendor = getVendorName(material, vendorNamesById);
     const skuOrItem = material.vendorSku || material.sku || "";
-    const systemQty = `${normalizeNumericText(material.stockQuantity)} ${material.inventoryUnit || material.unitOfMeasure || ""}`.trim();
+    const systemQty = `${normalizeNumericText(material.stockQuantity)} ${material.inventoryUnit || ""}`.trim();
 
     return `
       <tr>

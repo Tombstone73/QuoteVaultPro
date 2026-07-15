@@ -56,7 +56,7 @@ export function AdjustInventoryForm({ materialId, material: providedMaterial, op
   const { toast } = useToast();
   const adjustMutation = useAdjustInventory(materialId);
   const currentQuantity = Number(material?.stockQuantity || 0);
-  const inventoryUnit = material?.inventoryUnit || material?.unitOfMeasure || "";
+  const inventoryUnit = material?.inventoryUnit || "";
 
   const projectedQuantity = useMemo(() => {
     const values = form.getValues();
