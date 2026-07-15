@@ -81,6 +81,7 @@ import {
   Wrench,
   Hash,
   Brain,
+  KeyRound,
   type LucideIcon,
 } from "lucide-react";
 
@@ -139,6 +140,12 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     path: "/settings/preferences", 
     icon: Sliders,
     description: "Workflow and behavior preferences"
+  },
+  {
+    label: "Customer Portal",
+    path: "/settings/customer-portal",
+    icon: KeyRound,
+    description: "Company portal access and contact invitations",
   },
   { 
     label: "Users & Roles", 

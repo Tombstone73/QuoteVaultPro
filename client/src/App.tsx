@@ -253,7 +253,7 @@ function Router() {
         <Route path="/prepress" element={<PrepressPage />} />
 
         {/* Customer routes */}
-        <Route path={ROUTES.customers.portalAccess} element={<CustomerPortalAccessPage />} />
+        <Route path={ROUTES.customers.portalAccess} element={<Navigate to={ROUTES.settings.customerPortal} replace />} />
         <Route path="/customers/:id" element={<CustomerDetail />} />
         <Route path="/customers" element={<Customers />} />
 
@@ -325,6 +325,7 @@ function Router() {
           <Route index element={<CompanySettings />} />
           <Route path="company" element={<CompanySettings />} />
           <Route path="preferences" element={<PreferencesSettings />} />
+          <Route path="customer-portal" element={<CustomerPortalAccessPage />} />
           <Route path="users" element={<UsersSettings />} />
           <Route path="products" element={<ProductsPage />} />
           <Route path="product-types" element={<ProductTypesSettings />} />

@@ -231,6 +231,7 @@ export const ROUTES = {
   settings: {
     root: "/settings",
     company: "/settings/company",
+    customerPortal: "/settings/customer-portal",
     users: "/settings/users",
     products: "/settings/products",
     productTypes: "/settings/product-types",
