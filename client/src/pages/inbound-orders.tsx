@@ -8557,10 +8557,16 @@ export default function InboundOrdersPage() {
   const { toast } = useToast();
   const inboundEmailSettingsQuery = useInboundEmailIntakeSettings();
   const pullLatestEmailsMutation = usePullLatestInboundEmails();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const linkedRecordId = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("recordId");
+  }, []);
+  const [selectedId, setSelectedId] = useState<string | null>(linkedRecordId);
   const [selectedQueueRecordIds, setSelectedQueueRecordIds] = useState<Set<string>>(() => new Set());
-  const [queueFilters, setQueueFilters] = useState<QueueFilters>(defaultQueueFilters);
-  const [queueSearchText, setQueueSearchText] = useState(defaultQueueFilters.search);
+  const [queueFilters, setQueueFilters] = useState<QueueFilters>(() => linkedRecordId
+    ? { ...defaultQueueFilters, statusGroup: "converted", unconvertedOnly: false, search: linkedRecordId }
+    : defaultQueueFilters);
+  const [queueSearchText, setQueueSearchText] = useState(linkedRecordId ?? defaultQueueFilters.search);
   const [manualDialogOpen, setManualDialogOpen] = useState(false);
   const [parsingRecordId, setParsingRecordId] = useState<string | null>(null);
   const [parseCompletedWithoutDraftRecordId, setParseCompletedWithoutDraftRecordId] = useState<string | null>(null);

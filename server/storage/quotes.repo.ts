@@ -93,6 +93,14 @@ function mergeExplicitPriceOverrideIntoSpecsJson(specsJson: unknown, value: any)
     };
 }
 
+function inboundSourceString(source: unknown, path: string): string | null {
+    const value = path.split(".").reduce<unknown>((current, key) => {
+        if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+        return (current as Record<string, unknown>)[key];
+    }, source);
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
 
@@ -104,6 +112,12 @@ export class QuotesRepository {
             isActive: boolean;
             convertedLineItemCount: number | null;
             skippedLineItemCount: number | null;
+            sourceType: string;
+            sourceLabel: string | null;
+            subject: string | null;
+            senderName: string | null;
+            senderEmail: string | null;
+            receivedAt: Date;
         }>();
 
         if (quoteIds.length === 0) return links;
@@ -114,6 +128,11 @@ export class QuotesRepository {
                 createdQuoteId: inboundOrderRecords.createdQuoteId,
                 status: inboundOrderRecords.status,
                 reviewOutcome: inboundOrderRecords.reviewOutcome,
+                sourceType: inboundOrderRecords.sourceType,
+                sourceLabel: inboundOrderRecords.sourceLabel,
+                rawPayloadJson: inboundOrderRecords.rawPayloadJson,
+                normalizedPayloadJson: inboundOrderRecords.normalizedPayloadJson,
+                receivedAt: inboundOrderRecords.receivedAt,
             })
             .from(inboundOrderRecords)
             .where(and(
@@ -148,6 +167,12 @@ export class QuotesRepository {
                 : {};
             const convertedLineItemCount = Number(metadata.convertedLineItemCount);
             const skippedLineItemCount = Number(metadata.skippedLineItemCount);
+            const subject = inboundSourceString(record.rawPayloadJson, "subject")
+                ?? inboundSourceString(record.normalizedPayloadJson, "subject");
+            const senderName = inboundSourceString(record.rawPayloadJson, "sender.name")
+                ?? inboundSourceString(record.normalizedPayloadJson, "sender.name");
+            const senderEmail = inboundSourceString(record.rawPayloadJson, "sender.email")
+                ?? inboundSourceString(record.normalizedPayloadJson, "sender.email");
 
             links.set(record.createdQuoteId, {
                 inboundRecordId: record.id,
@@ -156,6 +181,12 @@ export class QuotesRepository {
                 isActive: record.status !== "approved" && record.status !== "terminal",
                 convertedLineItemCount: Number.isFinite(convertedLineItemCount) ? convertedLineItemCount : null,
                 skippedLineItemCount: Number.isFinite(skippedLineItemCount) ? skippedLineItemCount : null,
+                sourceType: record.sourceType,
+                sourceLabel: record.sourceLabel,
+                subject,
+                senderName,
+                senderEmail,
+                receivedAt: record.receivedAt,
             });
         }
 
@@ -470,7 +501,10 @@ export class QuotesRepository {
             .offset(offset);
 
         const quoteIds = rows.map((r) => r.quote.id);
-        const inboundLinks = await this.getInboundReviewLinksForQuoteIds(organizationId, quoteIds);
+        const isInternalUser = ["owner", "admin", "manager", "employee"].includes(opts.userRole ?? "");
+        const inboundLinks = isInternalUser
+            ? await this.getInboundReviewLinksForQuoteIds(organizationId, quoteIds)
+            : new Map();
         const previewData = opts.includeThumbnails
             ? await this.getPreviewThumbnailsForQuoteIds(organizationId, quoteIds)
             : new Map<string, { thumbnails: string[]; totalCount: number }>();
@@ -898,7 +932,11 @@ export class QuotesRepository {
         );
 
         const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quoteRow.userId));
-        const inboundLinks = await this.getInboundReviewLinksForQuoteIds(organizationId, [quoteRow.id]);
+        // A userId is supplied for customer-owned reads. Inbound source
+        // metadata is internal-only and must never cross that boundary.
+        const inboundLinks = userId
+            ? new Map()
+            : await this.getInboundReviewLinksForQuoteIds(organizationId, [quoteRow.id]);
 
         // Fetch list note (flags) for this quote
         const { quoteListNotes } = await import("@shared/schema");
