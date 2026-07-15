@@ -293,6 +293,7 @@ interface PricingValidationPanelProps {
   pricingProfileConfig?: unknown;
   pricingMode?: "basic" | "advanced";
   measurementMode?: "dimensions_required" | "quantity_only";
+  allowZeroPrice?: boolean;
   productPrimaryMaterialId?: string | null;
   findings: Finding[];
 }
@@ -543,7 +544,7 @@ function PreviewErrorBanner({
   );
 }
 
-export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode = "profile", pricingProfileKey, pricingProfileConfig, pricingMode = "basic", measurementMode = "dimensions_required", productPrimaryMaterialId, findings }: PricingValidationPanelProps) {
+export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode = "profile", pricingProfileKey, pricingProfileConfig, pricingMode = "basic", measurementMode = "dimensions_required", allowZeroPrice = false, productPrimaryMaterialId, findings }: PricingValidationPanelProps) {
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat("en-US", {
@@ -838,6 +839,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const displayUnitPrice = result
     ? (previewState.quantity > 0 ? displayTotalPrice / previewState.quantity : result.unitPrice)
     : 0;
+  const quantityOnlyPriceMissing = quantityOnly && !allowZeroPrice && Boolean(result) && displayTotalPrice === 0;
   const displayBasePrice = result?.breakdown
     ? (formulaPricingDebug?.finalTotalSource === "formula" && typeof formulaPricingDebug.finalTotal === "number"
       ? formulaPricingDebug.finalTotal
@@ -1248,6 +1250,9 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       ) : null}
                       <div className="flex items-center justify-between"><span>Unit price</span><span className="font-mono">{currencyFormatter.format(displayUnitPrice)}</span></div>
                       <div className="flex items-center justify-between"><span>Total price</span><span className="font-mono">{currencyFormatter.format(displayTotalPrice)}</span></div>
+                      {quantityOnlyPriceMissing ? (
+                        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-200">Price not configured. Set Rate per piece or explicitly allow a $0.00 price.</div>
+                      ) : null}
                       {formulaDebug?.pricing?.finalTotalSource ? (
                         <div className="flex items-center justify-between text-[11px] text-slate-400">
                           <span>Final source</span>
