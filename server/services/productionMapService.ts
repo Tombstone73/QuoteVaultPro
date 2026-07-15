@@ -128,7 +128,11 @@ export async function ensureProductionMapForOrg(
   const settings = (organization.settings as any) ?? {};
   const rawRules = settings?.preferences?.production?.lineItemStatuses;
   const existingRules = Array.isArray(rawRules) ? rawRules.filter((rule) => rule && typeof rule === "object") : [];
-  const rulesById = new Map(existingRules.map((rule) => [ruleId(rule), rule]).filter(([id]) => id));
+  const rulesById = new Map<string, any>(
+    existingRules
+      .map((rule): [string | null, any] => [ruleId(rule), rule])
+      .filter((entry): entry is [string, any] => Boolean(entry[0])),
+  );
   const mergedRules = [...existingRules];
   for (const defaultRule of DEFAULT_PRODUCTION_ROUTING_RULES) {
     if (rulesById.has(defaultRule.id)) {

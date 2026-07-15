@@ -29,6 +29,8 @@ import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTre
 import { buildPbv2DefaultSelections } from "@shared/pbv2OrderEntryRuntime";
 import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
+import { getProductWorkflowDefaults } from "@shared/productWorkflowIntent";
+import { formatLineItemMeasurementLabel } from "@shared/lineItemPresentation";
 import { deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
@@ -561,25 +563,30 @@ export function LineItemsSection({
     if (!expandedItem) return;
     const itemKey = getItemKey(expandedItem);
     const fixed = getPbv2FixedDimensions(expandedOptionTreeJson);
-    setWidthText(String(fixed?.widthIn ?? expandedItem.width ?? 1));
-    setHeightText(String(fixed?.heightIn ?? expandedItem.height ?? 1));
+    const quantityOnly = (expandedProduct as any)?.measurementMode === "quantity_only";
+    setWidthText(String(fixed?.widthIn ?? (quantityOnly ? 0 : expandedItem.width ?? 1)));
+    setHeightText(String(fixed?.heightIn ?? (quantityOnly ? 0 : expandedItem.height ?? 1)));
     setQty(expandedItem.quantity || 1);
     setNotes((expandedItem.specsJson as any)?.notes || expandedItem.notes || "");
     setDescription(expandedItem.description || "");
     setProductionNotes(expandedItem.productionNotes || "");
     // Rehydrate routing intent from quote line item (migration 0015)
     // Fall back to product-level defaults for new draft items (requiresDesign/requiresPrepress not yet persisted)
+    const workflowDefaults = getProductWorkflowDefaults(expandedProduct as any);
     const itemRequiresDesign = (expandedItem as any).requiresDesign;
     const productRequiresDesign = (expandedProduct as any)?.requiresDesign;
     setRequiresDesign(
-      itemRequiresDesign === true ||
-      (itemRequiresDesign === undefined && productRequiresDesign === true)
+      typeof itemRequiresDesign === "boolean"
+        ? itemRequiresDesign
+        : workflowDefaults.requiresDesign ?? productRequiresDesign === true
     );
     const itemRequiresPrepress = (expandedItem as any).requiresPrepress;
     const productRequiresPrepress = (expandedProduct as any)?.requiresPrepress;
     setRequiresPrepress(
       typeof itemRequiresPrepress === 'boolean'
         ? itemRequiresPrepress
+        : typeof workflowDefaults.requiresPrepress === "boolean"
+          ? workflowDefaults.requiresPrepress
         : typeof productRequiresPrepress === 'boolean'
           ? productRequiresPrepress
           : null
@@ -589,6 +596,8 @@ export function LineItemsSection({
     setRequiresProofApproval(
       typeof itemRequiresProofApproval === "boolean"
         ? itemRequiresProofApproval
+        : typeof workflowDefaults.requiresProofApproval === "boolean"
+          ? workflowDefaults.requiresProofApproval
         : productRequiresProofApproval === true
     );
     const selections: Record<string, OptionSelection> = {};
@@ -666,6 +675,8 @@ export function LineItemsSection({
     (expandedProduct as any)?.requiresPrepress,
     (expandedProduct as any)?.requiresProofApproval,
     (expandedProduct as any)?.requiresProductionJob,
+    (expandedProduct as any)?.measurementMode,
+    (expandedProduct as any)?.workflowIntent,
   ]);
 
   const fixedDimensions = getPbv2FixedDimensions(expandedOptionTreeJson);
@@ -1036,6 +1047,7 @@ export function LineItemsSection({
                     const isExpanded = !!itemKey && expandedKey === itemKey;
                     const contentId = itemKey ? `line-item-${itemKey}-details` : undefined;
                     const product = getProduct(products, item.productId);
+                    const fulfillmentOnly = (product as any)?.workflowIntent === "fulfillment_only";
                     
                     // Generic option summary (no hardcoded keys)
                     const { chips: optionChips, overflowCount } = extractOptionChips(item.selectedOptions, 3);
@@ -1075,7 +1087,7 @@ export function LineItemsSection({
                             isExpanded={isExpanded}
                             onToggleExpand={() => onExpandedKeyChange(isExpanded ? null : itemKey)}
                             title={item.productName}
-                            sizeLabel={`${item.width}" × ${item.height}"`}
+                            sizeLabel={formatLineItemMeasurementLabel(product, item.width, item.height)}
                             qtyLabel={`Qty ${item.quantity}`}
                             unitPriceLabel={`${formatMoney(visiblePrice.displayPerEach)}/ea`}
                             totalLabel={formatMoney(visiblePrice.displayTotal)}
@@ -1349,6 +1361,7 @@ export function LineItemsSection({
                               </>
                             }
                             artworkSlot={
+                              !fulfillmentOnly || Boolean((item as any).requiresDesign || (item as any).requiresPrepress || (item as any).requiresProofApproval) ? (
                               <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
                                 <div className="flex items-center justify-between mb-2">
                                   <div className="text-sm font-medium">Artwork</div>
@@ -1375,6 +1388,7 @@ export function LineItemsSection({
                                   lineItemKey={itemKey}
                                 />
                               </div>
+                              ) : null
                             }
                             detailsSide="right"
                             isDirty={isDirty}

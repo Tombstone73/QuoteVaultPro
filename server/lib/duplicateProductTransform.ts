@@ -37,6 +37,8 @@ export function buildDuplicatedProductInsert(original: Product): Omit<InsertProd
     pricingFormula: original.pricingFormula ?? null,
     pricingMode: original.pricingMode ?? "area",
     measurementMode: original.measurementMode ?? "dimensions_required",
+    workflowIntent: original.workflowIntent ?? "standard_production",
+    allowZeroPrice: original.allowZeroPrice ?? false,
 
     pricingProfileKey: original.pricingProfileKey ?? "default",
     pricingProfileConfig: original.pricingProfileConfig ? cloneJson(original.pricingProfileConfig) : null,

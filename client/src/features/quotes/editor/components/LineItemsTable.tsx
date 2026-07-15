@@ -8,6 +8,7 @@ import type { Product } from "@shared/schema";
 import type { QuoteLineItemDraft } from "../types";
 import { LineItemArtworkBadge } from "@/components/LineItemAttachmentsPanel";
 import { useMemo, useState } from "react";
+import { shouldDisplayLineItemDimensions } from "@shared/lineItemPresentation";
 
 type LineItemsTableProps = {
     lineItems: QuoteLineItemDraft[];
@@ -95,8 +96,7 @@ export function LineItemsTable({
                             {lineItems
                                 .filter((item) => item.status !== "draft")
                                 .map((item) => {
-                                    // products is intentionally kept in props to preserve existing API and future use
-                                    void products;
+                                    const product = products.find((candidate) => candidate.id === item.productId);
 
                                     const itemKey = item.tempId || item.id || "";
                                     const isPriceOverridden = !!item.priceOverridden && item.overriddenPrice != null;
@@ -106,7 +106,7 @@ export function LineItemsTable({
                                         ? item.productOptions.some((opt) => opt.type === "attachment")
                                         : false;
 
-                                    const showDimensions = item.width > 1 || item.height > 1;
+                                    const showDimensions = shouldDisplayLineItemDimensions(product) && (item.width > 0 || item.height > 0);
 
                                     return (
                                         <div
@@ -261,7 +261,7 @@ export function LineItemsTable({
                                                     <div className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1">
                                                         <span className="text-muted-foreground">Size</span>
                                                         <span className="font-mono">
-                                                            {showDimensions ? `${item.width}"×${item.height}"` : "—"}
+                                                            {showDimensions ? `${item.width}"×${item.height}"` : "Quantity only"}
                                                         </span>
                                                     </div>
                                                     <div className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1">

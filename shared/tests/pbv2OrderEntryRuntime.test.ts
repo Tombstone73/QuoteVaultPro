@@ -299,9 +299,31 @@ describe("PBV2 order-entry runtime", () => {
       "order_1",
     );
 
-    expect(draft.width).toBe(1);
-    expect(draft.height).toBe(1);
+    expect(draft.width).toBe(0);
+    expect(draft.height).toBe(0);
     expect(draft.quantity).toBe(1);
+  });
+
+  test("fulfillment-only products default routing off without preventing a staff override later", () => {
+    const draft = buildInitialOrderLineItemDraftFromProduct(
+      {
+        id: "prod_stakes",
+        name: "Economy Yard Sign Stakes",
+        measurementMode: "quantity_only",
+        workflowIntent: "fulfillment_only",
+        requiresDesign: true,
+        requiresPrepress: true,
+        requiresProofApproval: true,
+        requiresProductionJob: true,
+      },
+      makeTree(),
+      "order_1",
+    );
+
+    expect(draft.requiresDesign).toBe(false);
+    expect(draft.requiresPrepress).toBe(false);
+    expect(draft.requiresProofApproval).toBe(false);
+    expect(draft.requiresProductionJob).toBe(false);
   });
 
   test("dimension-required products still initialize with dimensions required", () => {

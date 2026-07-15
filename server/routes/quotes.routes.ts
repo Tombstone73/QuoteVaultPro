@@ -48,6 +48,7 @@ import {
 } from "@shared/schema";
 import { resolvePbv2RuntimeDimensions } from "@shared/pbv2/fixedDimensions";
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
+import { getProductWorkflowDefaults } from "@shared/productWorkflowIntent";
 import {
   buildProofApprovalManualOverrideAuditEvent,
   resolveLineItemProofApprovalRequirement,
@@ -574,6 +575,10 @@ export function registerQuoteRoutes(
             details: pricingError.details ?? [],
             debug: pricingError.debug,
           });
+        }
+
+        if (pricingError.code === 'PRODUCT_PRICE_NOT_CONFIGURED') {
+          return res.status(422).json({ message: pricingError.message, code: pricingError.code });
         }
 
         // Re-throw other pricing errors (will be caught by outer handler)
@@ -2050,15 +2055,25 @@ export function registerQuoteRoutes(
         .where(eq(organizations.id, organizationId))
         .limit(1);
       const [productForProofPolicy] = await db
-        .select({ requiresProofApproval: products.requiresProofApproval })
+        .select({
+          requiresProofApproval: products.requiresProofApproval,
+          workflowIntent: products.workflowIntent,
+        })
         .from(products)
         .where(eq(products.id, lineItem.productId))
         .limit(1);
+      const workflowDefaults = getProductWorkflowDefaults(productForMeasurement);
+      const requestedRequiresDesign = typeof lineItem.requiresDesign === "boolean" ? lineItem.requiresDesign : undefined;
+      const requestedRequiresPrepress = typeof lineItem.requiresPrepress === "boolean" ? lineItem.requiresPrepress : undefined;
+      const requestedRequiresProofApproval = typeof lineItem.requiresProofApproval === "boolean" ? lineItem.requiresProofApproval : undefined;
       const proofApproval = resolveLineItemProofApprovalRequirement({
         productRequiresProofApproval: Boolean(productForProofPolicy?.requiresProofApproval),
-        requestedRequiresProofApproval: typeof lineItem.requiresProofApproval === "boolean" ? lineItem.requiresProofApproval : undefined,
+        requestedRequiresProofApproval,
         proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
       });
+      const requiresProofApproval = typeof workflowDefaults.requiresProofApproval === "boolean" && requestedRequiresProofApproval === undefined
+        ? workflowDefaults.requiresProofApproval
+        : proofApproval.requiresProofApproval;
 
       const validatedLineItem = {
         productId: lineItem.productId,
@@ -2067,8 +2082,10 @@ export function registerQuoteRoutes(
         variantName: lineItem.variantName || null,
         productType: lineItem.productType || 'wide_roll',
         status: incomingStatus,
-        width: widthIn,
-        height: heightIn,
+        // The PBV2 evaluator receives neutral 1 x 1 geometry for quantity-only
+        // products; quote data does not persist that fictional finished size.
+        width: productForMeasurement.measurementMode === "quantity_only" ? 0 : widthIn,
+        height: productForMeasurement.measurementMode === "quantity_only" ? 0 : heightIn,
         quantity: parseInt(lineItem.quantity),
         specsJson: lineItem.specsJson || null,
         optionSelectionsJson: lineItem.optionSelectionsJson ?? null,
@@ -2091,9 +2108,9 @@ export function registerQuoteRoutes(
         displayOrder: lineItem.displayOrder || 0,
         isTemporary: false,
         // Canonical routing intent (migration 0015)
-        requiresDesign: lineItem.requiresDesign === true,
-        requiresPrepress: typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : null,
-        requiresProofApproval: proofApproval.requiresProofApproval,
+        requiresDesign: requestedRequiresDesign ?? workflowDefaults.requiresDesign ?? false,
+        requiresPrepress: requestedRequiresPrepress ?? workflowDefaults.requiresPrepress ?? null,
+        requiresProofApproval,
       };
 
       const createdLineItem = await storage.addLineItem(id, validatedLineItem);
@@ -2111,6 +2128,9 @@ export function registerQuoteRoutes(
       res.json(createdLineItem);
     } catch (error) {
       console.error("Error adding line item:", error);
+      if ((error as any)?.code === "PRODUCT_PRICE_NOT_CONFIGURED") {
+        return res.status(422).json({ message: (error as any).message, code: "PRODUCT_PRICE_NOT_CONFIGURED" });
+      }
       if ((error as any)?.code === "PBV2_FORMULA_ERROR") {
         return res.status(422).json({
           message: (error as any).message,
@@ -2184,8 +2204,8 @@ export function registerQuoteRoutes(
         variantId: variantId || null,
         variantName: variantName || null,
         productType: productType || "wide_roll",
-        width: widthNum,
-        height: heightNum,
+        width: productForMeasurement.measurementMode === "quantity_only" ? 0 : widthNum,
+        height: productForMeasurement.measurementMode === "quantity_only" ? 0 : heightNum,
         quantity: quantityNum,
         specsJson: specsJson || null,
         optionSelectionsJson: optionSelectionsJson ?? null,
@@ -2217,6 +2237,9 @@ export function registerQuoteRoutes(
       res.json({ success: true, data: createdLineItem });
     } catch (error) {
       console.error("Error creating temporary line item:", error);
+      if ((error as any)?.code === "PRODUCT_PRICE_NOT_CONFIGURED") {
+        return res.status(422).json({ message: (error as any).message, code: "PRODUCT_PRICE_NOT_CONFIGURED" });
+      }
       if ((error as any)?.code === "PBV2_FORMULA_ERROR") {
         return res.status(422).json({
           message: (error as any).message,
@@ -2336,8 +2359,8 @@ export function registerQuoteRoutes(
         updateData.overrideAt = null;
         updateData.overrideByUserId = null;
         if (pricingProduct.measurementMode === "quantity_only") {
-          updateData.width = pricingDimensions.widthIn;
-          updateData.height = pricingDimensions.heightIn;
+          updateData.width = 0;
+          updateData.height = 0;
         }
       }
 
@@ -2497,6 +2520,9 @@ export function registerQuoteRoutes(
           details: (error as any).details ?? [],
           debug: (error as any).debug,
         });
+      }
+      if ((error as any)?.code === "PRODUCT_PRICE_NOT_CONFIGURED") {
+        return res.status(422).json({ message: (error as any).message, code: "PRODUCT_PRICE_NOT_CONFIGURED" });
       }
       if (error instanceof LineItemPriceOverrideValidationError) {
         return res.status(error.statusCode).json({
