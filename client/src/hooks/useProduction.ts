@@ -144,6 +144,23 @@ export type ProductionJobListItem = {
   jobDescription?: string; // Line item description or fallback
   size?: string; // Formatted "W × H" or "—"
   sides?: string; // "Single", "Double", or "—" (parsed from selectedOptions)
+  productionSpecs?: {
+    orderedQuantity: number;
+    widthIn: number | null;
+    heightIn: number | null;
+    printSides: "Single-sided" | "Double-sided" | "Unknown";
+    material: string;
+    optionRows: ProductionDisplayOptionRow[];
+    finishingRequirements: string[];
+  };
+  productionLayout?: {
+    sheetWidthIn: number;
+    sheetHeightIn: number;
+    piecesPerSheet: number;
+    sheetsToPrint: number;
+    printPasses: number;
+    orientation: "normal" | "rotated" | "mixed";
+  } | null;
   media?: string; // Material name or "—"
   mediaLabel?: string; // Alias for media (legacy)
   optionRows?: ProductionDisplayOptionRow[];

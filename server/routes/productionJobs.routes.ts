@@ -16,6 +16,7 @@ import {
   productionAlerts,
   productionEvents,
   productionJobs,
+  products,
   reprintRequests,
   users,
 } from "@shared/schema";
@@ -52,6 +53,12 @@ import {
   extractFinishingBullets,
   type ProductionDisplayOptionRow,
 } from "./flatStockNesting.shared";
+import {
+  calculateSheetProductionLayout,
+  resolveProductionPreviewUrl,
+  resolveProductionSides,
+  resolveSheetConfiguration,
+} from "@shared/productionHydration";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -990,6 +997,7 @@ export function registerProductionJobsRoutes(
           quantity: orderLineItems.quantity,
           width: orderLineItems.width,
           height: orderLineItems.height,
+          productId: orderLineItems.productId,
           materialId: orderLineItems.materialId,
           productType: orderLineItems.productType,
           status: orderLineItems.status,
@@ -1034,6 +1042,24 @@ export function registerProductionJobsRoutes(
         materialNameById.set(m.id, m.name);
       }
 
+      const productIds = Array.from(new Set(
+        lineItemRows.map((li) => li.productId).filter((value): value is string => typeof value === "string" && !!value.trim()),
+      ));
+      const productById = new Map<string, { pricingProfileConfig: unknown; sheetWidth: unknown; sheetHeight: unknown; materialType: unknown }>();
+      if (productIds.length > 0) {
+        const productRows = await db
+          .select({
+            id: products.id,
+            pricingProfileConfig: products.pricingProfileConfig,
+            sheetWidth: products.sheetWidth,
+            sheetHeight: products.sheetHeight,
+            materialType: products.materialType,
+          })
+          .from(products)
+          .where(and(eq(products.organizationId, organizationId), inArray(products.id, productIds)));
+        for (const product of productRows) productById.set(product.id, product);
+      }
+
       const lineItemsByOrderId = new Map<
         string,
         Array<{
@@ -1042,6 +1068,11 @@ export function registerProductionJobsRoutes(
           quantity: number;
           width: any;
           height: any;
+          productId: string | null;
+          pricingProfileConfig: unknown;
+          sheetWidth: unknown;
+          sheetHeight: unknown;
+          materialType: unknown;
           materialId: string | null;
           materialName: string | null;
           productType: string;
@@ -1064,6 +1095,11 @@ export function registerProductionJobsRoutes(
           quantity: number;
           width: any;
           height: any;
+          productId: string | null;
+          pricingProfileConfig: unknown;
+          sheetWidth: unknown;
+          sheetHeight: unknown;
+          materialType: unknown;
           materialId: string | null;
           materialName: string | null;
           productType: string;
@@ -1085,6 +1121,11 @@ export function registerProductionJobsRoutes(
           quantity: Number(li.quantity) || 0,
           width: li.width,
           height: li.height,
+          productId: li.productId ?? null,
+          pricingProfileConfig: li.productId ? productById.get(li.productId)?.pricingProfileConfig ?? null : null,
+          sheetWidth: li.productId ? productById.get(li.productId)?.sheetWidth ?? null : null,
+          sheetHeight: li.productId ? productById.get(li.productId)?.sheetHeight ?? null : null,
+          materialType: li.productId ? productById.get(li.productId)?.materialType ?? null : null,
           materialId: li.materialId ?? null,
           materialName: li.materialId ? materialNameById.get(li.materialId) ?? null : null,
           productType: li.productType,
@@ -1249,7 +1290,7 @@ export function registerProductionJobsRoutes(
           thumbKey: a.thumbKey ?? null,
           previewKey: a.previewKey ?? null,
           thumbnailUrl: a.thumbnailUrl ?? null,
-          side: a.side ?? "na",
+          side: a.side ?? "unassigned",
           isPrimary: !!a.isPrimary,
           thumbStatus: a.thumbStatus ?? null,
         };
@@ -1292,7 +1333,7 @@ export function registerProductionJobsRoutes(
             (enrichedAsset as any).thumbnailUrl ??
             (enrichedAsset as any).thumbUrl ??
             null,
-          side: "na", // New assets system doesn't track side yet, could enhance later
+          side: "unassigned", // Side metadata is genuinely unavailable; UI must not assign it by position.
           isPrimary: false, // New assets system doesn't track isPrimary yet
           thumbStatus: link.previewStatus ?? null,
         };
@@ -1335,9 +1376,8 @@ export function registerProductionJobsRoutes(
         ["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "svg"].includes(ext);
 
       const computePreviewUrl = (art: any): string | undefined => {
-        const thumbUrl = normalizeObjectsUrl(art?.thumbnailUrl);
-        if (thumbUrl) return thumbUrl;
-        return undefined;
+        const preview = resolveProductionPreviewUrl(art);
+        return preview ? normalizeObjectsUrl(preview) : undefined;
       };
 
       const now = Date.now();
@@ -1405,28 +1445,21 @@ export function registerProductionJobsRoutes(
         const height = primaryLineItem?.height;
         const size = (width && height) ? `${width} × ${height}` : "—";
 
-        // 3) Sides: Parse selected_options for "Single Sided" / "Double Sided" choice
-        let sides: string = "—";
-        if (primaryLineItem?.selectedOptions && Array.isArray(primaryLineItem.selectedOptions)) {
-          const sidesOption = primaryLineItem.selectedOptions.find((opt: any) => {
-            const optName = String(opt.optionName || "").toLowerCase();
-            return optName.includes("side") || optName.includes("print");
-          });
-          if (sidesOption) {
-            const val = String(sidesOption.value || "").toLowerCase();
-            if (val.includes("single") || val === "1") {
-              sides = "Single";
-            } else if (val.includes("double") || val === "2") {
-              sides = "Double";
-            }
-          }
-        }
-        // Fallback: if selected_options didn't provide sides, use artwork count
-        if (sides === "—" && artworkBasedSides) {
-          sides = artworkBasedSides === 1 ? "Single" : "Double";
-        }
-
         const qty = Number(primaryLineItem?.quantity ?? 0) || 0;
+        // The persisted PBV2 selection is authoritative; an artwork count cannot tell us print intent.
+        const resolvedPrintSides = resolveProductionSides(primaryLineItem);
+        const sheetConfiguration = resolveSheetConfiguration(primaryLineItem ?? {});
+        const productionLayout = calculateSheetProductionLayout({
+          stationKey: row.stationKey,
+          materialType: sheetConfiguration.materialType,
+          widthIn: width,
+          heightIn: height,
+          quantity: qty,
+          sheetWidthIn: sheetConfiguration.sheetWidthIn,
+          sheetHeightIn: sheetConfiguration.sheetHeightIn,
+          allowRotation: sheetConfiguration.allowRotation,
+          sides: resolvedPrintSides,
+        });
 
         // Job description: Prefer line item description, fallback to "Job #{id}"
         const jobDescription = String(primaryLineItem?.description || "").trim() || `Job #${row.id.slice(-8)}`;
@@ -1494,11 +1527,21 @@ export function registerProductionJobsRoutes(
           qty,                // LIVE: from line item, updates when qty changed
           jobDescription,     // LIVE: from line item description
           size,              // LIVE: computed from line item width/height
-          sides,             // LIVE: parsed from line item selectedOptions
+          sides: resolvedPrintSides,
           media,             // LIVE: from line item material or description
           optionRows: lineItemDisplay.optionRows,
           finishingRequirements: lineItemDisplay.finishingRequirements,
           lamination: lineItemDisplay.lamination,
+          productionSpecs: {
+            orderedQuantity: qty,
+            widthIn: Number(width) || null,
+            heightIn: Number(height) || null,
+            printSides: resolvedPrintSides,
+            material: media,
+            optionRows: lineItemDisplay.optionRows,
+            finishingRequirements: lineItemDisplay.finishingRequirements,
+          },
+          productionLayout,
           productionAlerts: alertsByProductionJobId.get(row.id) ?? [],
           printerOptions,
           assignedPrinterId: row.assignedPrinterId ?? null,
@@ -1880,6 +1923,7 @@ export function registerProductionJobsRoutes(
           quantity: orderLineItems.quantity,
           width: orderLineItems.width,
           height: orderLineItems.height,
+          productId: orderLineItems.productId,
           materialId: orderLineItems.materialId,
           productType: orderLineItems.productType,
           status: orderLineItems.status,
@@ -1909,12 +1953,35 @@ export function registerProductionJobsRoutes(
         for (const m of materialRows) materialNameById.set(m.id, m.name);
       }
 
+      const productIds = Array.from(new Set(
+        lineItemRows.map((li) => li.productId).filter((value): value is string => typeof value === "string" && !!value.trim()),
+      ));
+      const productById = new Map<string, { pricingProfileConfig: unknown; sheetWidth: unknown; sheetHeight: unknown; materialType: unknown }>();
+      if (productIds.length > 0) {
+        const productRows = await db
+          .select({
+            id: products.id,
+            pricingProfileConfig: products.pricingProfileConfig,
+            sheetWidth: products.sheetWidth,
+            sheetHeight: products.sheetHeight,
+            materialType: products.materialType,
+          })
+          .from(products)
+          .where(and(eq(products.organizationId, organizationId), inArray(products.id, productIds)));
+        for (const product of productRows) productById.set(product.id, product);
+      }
+
       const lineItems = lineItemRows.map((li) => ({
         id: li.id,
         description: li.description,
         quantity: Number(li.quantity) || 0,
         width: li.width,
         height: li.height,
+        productId: li.productId ?? null,
+        pricingProfileConfig: li.productId ? productById.get(li.productId)?.pricingProfileConfig ?? null : null,
+        sheetWidth: li.productId ? productById.get(li.productId)?.sheetWidth ?? null : null,
+        sheetHeight: li.productId ? productById.get(li.productId)?.sheetHeight ?? null : null,
+        materialType: li.productId ? productById.get(li.productId)?.materialType ?? null : null,
         materialId: li.materialId ?? null,
         materialName: li.materialId ? materialNameById.get(li.materialId) ?? null : null,
         productType: li.productType,
@@ -1977,7 +2044,7 @@ export function registerProductionJobsRoutes(
           thumbKey: a.thumbKey ?? null,
           previewKey: a.previewKey ?? null,
           thumbnailUrl: a.thumbnailUrl ?? null,
-          side: a.side ?? "na",
+          side: a.side ?? "unassigned",
           isPrimary: !!a.isPrimary,
           thumbStatus: a.thumbStatus ?? null,
         };
@@ -2041,7 +2108,7 @@ export function registerProductionJobsRoutes(
               (enrichedAsset as any).thumbnailUrl ??
               (enrichedAsset as any).thumbUrl ??
               null,
-            side: "na",
+            side: "unassigned",
             isPrimary: false,
             thumbStatus: link.previewStatus ?? null,
             mimeType: link.mimeType ?? null,
@@ -2091,27 +2158,20 @@ export function registerProductionJobsRoutes(
       const height = primaryLineItem?.height;
       const size = width && height ? `${width} × ${height}` : "—";
 
-      // 3) Sides
-      let sides: string = "—";
-      if (primaryLineItem?.selectedOptions && Array.isArray(primaryLineItem.selectedOptions)) {
-        const sidesOption = primaryLineItem.selectedOptions.find((opt: any) => {
-          const optName = String(opt.optionName || "").toLowerCase();
-          return optName.includes("side") || optName.includes("print");
-        });
-        if (sidesOption) {
-          const val = String((sidesOption as any).value || "").toLowerCase();
-          if (val.includes("single") || val === "1") {
-            sides = "Single";
-          } else if (val.includes("double") || val === "2") {
-            sides = "Double";
-          }
-        }
-      }
-      if (sides === "—" && artworkBasedSides) {
-        sides = artworkBasedSides === 1 ? "Single" : "Double";
-      }
-
       const qty = Number(primaryLineItem?.quantity ?? 0) || 0;
+      const resolvedPrintSides = resolveProductionSides(primaryLineItem);
+      const sheetConfiguration = resolveSheetConfiguration(primaryLineItem);
+      const productionLayout = calculateSheetProductionLayout({
+        stationKey: job.stationKey,
+        materialType: sheetConfiguration.materialType,
+        widthIn: width,
+        heightIn: height,
+        quantity: qty,
+        sheetWidthIn: sheetConfiguration.sheetWidthIn,
+        sheetHeightIn: sheetConfiguration.sheetHeightIn,
+        allowRotation: sheetConfiguration.allowRotation,
+        sides: resolvedPrintSides,
+      });
       const jobDescription = String(primaryLineItem?.description || "").trim() || `Job #${job.id.slice(-8)}`;
       const config = await getProductionConfigForOrganization(organizationId);
       const lineItemDisplay = buildLineItemProductionDisplay(primaryLineItem);
@@ -2263,12 +2323,22 @@ export function registerProductionJobsRoutes(
           qty,
           jobDescription,
           size,
-          sides,
+          sides: resolvedPrintSides,
           media,
           mediaLabel: media,
           optionRows: lineItemDisplay.optionRows,
           finishingRequirements: lineItemDisplay.finishingRequirements,
           lamination: lineItemDisplay.lamination,
+          productionSpecs: {
+            orderedQuantity: qty,
+            widthIn: Number(width) || null,
+            heightIn: Number(height) || null,
+            printSides: resolvedPrintSides,
+            material: media,
+            optionRows: lineItemDisplay.optionRows,
+            finishingRequirements: lineItemDisplay.finishingRequirements,
+          },
+          productionLayout,
           finishingMode: config.finishingMode,
           productionAlerts: productionAlertList,
           printerOptions,

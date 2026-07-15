@@ -15,6 +15,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ROUTES } from "@/config/routes";
+import { resolveProductionPreviewUrl } from "@shared/productionHydration";
 import {
   useAddProductionNote,
   useCompleteProductionJob,
@@ -96,13 +97,8 @@ function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): str
 
   const normalizeArtworkImageUrl = (value: string): string | null => resolveObjectsPublicUrl(value);
 
-  // 1. Prefer thumbnailUrl (always an image if present).
-  if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
-    return normalizeArtworkImageUrl(artwork.thumbnailUrl);
-  }
-
-
-  return null;
+  const previewUrl = resolveProductionPreviewUrl(artwork);
+  return previewUrl ? normalizeArtworkImageUrl(previewUrl) : null;
 }
 
 /**
@@ -186,20 +182,14 @@ function normalizeArtworkForSides(
     return primary || items[0];
   };
 
-  const frontArt = pickBest(byFront) ?? pickBest(list);
-  let backArt = pickBest(byBack);
-
   const sidesLower = String(sides || "").toLowerCase();
   const isDouble = sidesLower.includes("double") || sidesLower === "2" || sidesLower === "ds";
+  const frontArt = pickBest(byFront) ?? (isDouble ? null : pickBest(list));
+  const backArt = pickBest(byBack);
 
   if (isDouble) {
-    // Double-sided: show back slot
-    if (!backArt && frontArt) {
-      // Default back to front if missing
-      backArt = frontArt;
-      return { front: frontArt, back: backArt, showBackSlot: true, isSameArtwork: true };
-    }
-    return { front: frontArt, back: backArt, showBackSlot: true, isSameArtwork: backArt === frontArt };
+    // Do not infer Front/Back from attachment order. Those files must be assigned at the order line.
+    return { front: frontArt, back: backArt, showBackSlot: true, isSameArtwork: false };
   } else {
     // Single-sided: no back slot
     return { front: frontArt, back: null, showBackSlot: false, isSameArtwork: false };
@@ -272,6 +262,10 @@ export default function ProductionJobDetailPage() {
     if (!data) return { front: null, back: null, showBackSlot: false, isSameArtwork: false };
     return normalizeArtworkForSides(String(data.sides || ""), data.order.artwork || []);
   }, [data]);
+  const unassignedArtwork = useMemo(
+    () => (data?.order.artwork || []).filter((item) => !["front", "back"].includes(String(item.side || "").toLowerCase())),
+    [data],
+  );
 
   // Lamination display (for Roll jobs)
   const lamination = useMemo(() => {
@@ -647,6 +641,11 @@ export default function ProductionJobDetailPage() {
                     </Link>
                   </div>
                 </div>
+                {String(data.sides || "").toLowerCase().includes("double") && unassignedArtwork.length > 0 ? (
+                  <div className="mt-3 rounded-md border border-dashed border-amber-500/60 bg-amber-500/5 px-3 py-2 text-xs text-amber-700">
+                    Unassigned artwork is attached. Assign each file to Front or Back in the order line Artwork panel before production.
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
 
@@ -711,6 +710,15 @@ export default function ProductionJobDetailPage() {
 
                   <div className="text-muted-foreground">Quantity:</div>
                   <div className="font-medium">{qty}</div>
+
+                  {data.productionLayout ? (
+                    <>
+                      <div className="text-muted-foreground">Sheet layout:</div>
+                      <div>{data.productionLayout.piecesPerSheet} up on {data.productionLayout.sheetWidthIn} × {data.productionLayout.sheetHeightIn}</div>
+                      <div className="text-muted-foreground">Production workload:</div>
+                      <div>{data.productionLayout.sheetsToPrint} sheets / {data.productionLayout.printPasses} print passes</div>
+                    </>
+                  ) : null}
 
                   {data.completedAt ? (
                     <>
