@@ -40,6 +40,7 @@ import {
     type InsertOrder
 } from "@shared/schema";
 import { isPortalFileCategory, normalizePortalFileCategory } from "@shared/portalFileVisibility";
+import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { eq, desc, asc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { z } from "zod";
@@ -5923,13 +5924,21 @@ export async function registerOrderRoutes(
             // Server-authoritative pricing using PricingService
             const { priceLineItem } = await import("../services/pricing/PricingService");
             const userId = getUserId(req.user);
+            const productForMeasurement = await storage.getProductById(organizationId, String(lineItemData.productId));
+            if (!productForMeasurement) return res.status(404).json({ message: "Product not found" });
+            const pricingDimensions = dimensionsForProductPricing(productForMeasurement, lineItemData.width, lineItemData.height);
+            if (!Number.isFinite(pricingDimensions.widthIn) || pricingDimensions.widthIn <= 0 || !Number.isFinite(pricingDimensions.heightIn) || pricingDimensions.heightIn <= 0) {
+                return res.status(400).json({ message: "width and height must be positive for this product" });
+            }
+            lineItemData.width = pricingDimensions.widthIn;
+            lineItemData.height = pricingDimensions.heightIn;
             
             const pricingResult = await priceLineItem({
                 organizationId,
                 productId: lineItemData.productId,
                 quantity: Number(lineItemData.quantity),
-                widthIn: lineItemData.width ? Number(lineItemData.width) : undefined,
-                heightIn: lineItemData.height ? Number(lineItemData.height) : undefined,
+                widthIn: pricingDimensions.widthIn,
+                heightIn: pricingDimensions.heightIn,
                 pbv2ExplicitSelections: pbv2ExplicitSelections || lineItemData.optionSelectionsJson?.selected || {},
                 pbv2TreeVersionIdOverride: undefined, // Always use active tree
             });
@@ -6245,13 +6254,28 @@ export async function registerOrderRoutes(
                     pbv2ExplicitSelections ||
                     updateData.optionSelectionsJson?.selected ||
                     (productChangedForPricing ? {} : ((oldLineItem as any).optionSelectionsJson?.selected || {}));
+                const pricingProductId = String(updateData.productId ?? oldLineItem.productId);
+                const productForMeasurement = await storage.getProductById(organizationId, pricingProductId);
+                if (!productForMeasurement) return res.status(404).json({ message: "Product not found" });
+                const pricingDimensions = dimensionsForProductPricing(
+                    productForMeasurement,
+                    updateData.width !== undefined ? updateData.width : oldLineItem.width,
+                    updateData.height !== undefined ? updateData.height : oldLineItem.height,
+                );
+                if (!Number.isFinite(pricingDimensions.widthIn) || pricingDimensions.widthIn <= 0 || !Number.isFinite(pricingDimensions.heightIn) || pricingDimensions.heightIn <= 0) {
+                    return res.status(400).json({ message: "width and height must be positive for this product" });
+                }
+                if (productForMeasurement.measurementMode === "quantity_only") {
+                    updateData.width = pricingDimensions.widthIn;
+                    updateData.height = pricingDimensions.heightIn;
+                }
                 
                 const pricingResult = await priceLineItem({
                     organizationId,
-                    productId: updateData.productId ?? oldLineItem.productId,
+                    productId: pricingProductId,
                     quantity: updateData.quantity !== undefined ? Number(updateData.quantity) : oldLineItem.quantity,
-                    widthIn: updateData.width !== undefined ? Number(updateData.width) : (oldLineItem.width ? Number(oldLineItem.width) : undefined),
-                    heightIn: updateData.height !== undefined ? Number(updateData.height) : (oldLineItem.height ? Number(oldLineItem.height) : undefined),
+                    widthIn: pricingDimensions.widthIn,
+                    heightIn: pricingDimensions.heightIn,
                     pbv2ExplicitSelections: effectivePbv2Selections,
                     pbv2TreeVersionIdOverride: undefined, // Always reprice with active tree
                 });

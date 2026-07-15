@@ -380,7 +380,7 @@ export function registerProductRoutes(
   app.get("/api/products/csv-template", isAuthenticated, isAdmin, async (req, res) => {
     try {
       const templateData = [
-        { Type: 'PRODUCT', 'Product Name': 'Business Cards', 'Product Description': 'High-quality business cards', 'Pricing Formula': 'basePrice * quantity', 'Variant Label': 'Media Type', Category: 'Cards', 'Store URL': 'https://example.com/business-cards', 'Show Store Link': 'true', 'Thumbnail URLs': '', 'Is Active': 'true', 'Variant Name': '', 'Variant Description': '', 'Base Price Per Sqft': '', 'Is Default Variant': '', 'Variant Display Order': '', 'Option Name': '', 'Option Description': '', 'Option Type': '', 'Default Value': '', 'Default Selection': '', 'Is Default Enabled': '', 'Setup Cost': '', 'Price Formula': '', 'Parent Option Name': '', 'Option Display Order': '' },
+        { Type: 'PRODUCT', 'Product Name': 'Business Cards', 'Product Description': 'High-quality business cards', 'Pricing Formula': 'basePrice * quantity', 'Measurement Mode': 'dimensions_required', 'Variant Label': 'Media Type', Category: 'Cards', 'Store URL': 'https://example.com/business-cards', 'Show Store Link': 'true', 'Thumbnail URLs': '', 'Is Active': 'true', 'Variant Name': '', 'Variant Description': '', 'Base Price Per Sqft': '', 'Is Default Variant': '', 'Variant Display Order': '', 'Option Name': '', 'Option Description': '', 'Option Type': '', 'Default Value': '', 'Default Selection': '', 'Is Default Enabled': '', 'Setup Cost': '', 'Price Formula': '', 'Parent Option Name': '', 'Option Display Order': '' },
         { Type: 'VARIANT', 'Product Name': 'Business Cards', 'Product Description': '', 'Pricing Formula': '', 'Variant Label': '', Category: '', 'Store URL': '', 'Show Store Link': '', 'Thumbnail URLs': '', 'Is Active': '', 'Variant Name': '13oz Vinyl', 'Variant Description': 'Durable vinyl material', 'Base Price Per Sqft': '0.0250', 'Is Default Variant': 'true', 'Variant Display Order': '1', 'Option Name': '', 'Option Description': '', 'Option Type': '', 'Default Value': '', 'Default Selection': '', 'Is Default Enabled': '', 'Setup Cost': '', 'Price Formula': '', 'Parent Option Name': '', 'Option Display Order': '' },
         { Type: 'VARIANT', 'Product Name': 'Business Cards', 'Product Description': '', 'Pricing Formula': '', 'Variant Label': '', Category: '', 'Store URL': '', 'Show Store Link': '', 'Thumbnail URLs': '', 'Is Active': '', 'Variant Name': 'Mesh', 'Variant Description': 'Windflow mesh material', 'Base Price Per Sqft': '0.0300', 'Is Default Variant': 'false', 'Variant Display Order': '2', 'Option Name': '', 'Option Description': '', 'Option Type': '', 'Default Value': '', 'Default Selection': '', 'Is Default Enabled': '', 'Setup Cost': '', 'Price Formula': '', 'Parent Option Name': '', 'Option Display Order': '' },
         { Type: 'OPTION', 'Product Name': 'Business Cards', 'Product Description': '', 'Pricing Formula': '', 'Variant Label': '', Category: '', 'Store URL': '', 'Show Store Link': '', 'Thumbnail URLs': '', 'Is Active': '', 'Variant Name': '', 'Variant Description': '', 'Base Price Per Sqft': '', 'Is Default Variant': '', 'Variant Display Order': '', 'Option Name': 'Lamination', 'Option Description': 'Add protective lamination', 'Option Type': 'toggle', 'Default Value': '', 'Default Selection': 'No Lamination', 'Is Default Enabled': 'false', 'Setup Cost': '25.00', 'Price Formula': 'quantity > 100 ? setupCost : setupCost * 1.5', 'Parent Option Name': '', 'Option Display Order': '1' },
@@ -445,6 +445,10 @@ export function registerProductRoutes(
         if (!type || !productName) continue;
 
         if (type === 'PRODUCT') {
+          const rawMeasurementMode = row['Measurement Mode']?.trim();
+          if (rawMeasurementMode && rawMeasurementMode !== 'dimensions_required' && rawMeasurementMode !== 'quantity_only') {
+            return res.status(400).json({ message: `Invalid Measurement Mode for product "${productName}"` });
+          }
           const thumbnailUrlsRaw = row['Thumbnail URLs']?.trim() || '';
           const thumbnailUrls = thumbnailUrlsRaw
             ? thumbnailUrlsRaw.split('|').map(url => url.trim()).filter(url => url.length > 0)
@@ -458,6 +462,7 @@ export function registerProductRoutes(
             aiParsingDescriptionLinkedToDescription: false,
             pricingProfileKey: "default",
             pricingMode: "area",
+            measurementMode: rawMeasurementMode || "dimensions_required",
             isService: false,
             artworkPolicy: "not_required",
             requiresProductionJob: true,
@@ -1972,6 +1977,7 @@ export function registerProductRoutes(
           'Product Name': product.name,
           'Product Description': product.description || '',
           'Pricing Formula': product.pricingFormula || '',
+          'Measurement Mode': product.measurementMode,
           'Variant Label': product.variantLabel || '',
           Category: product.category || '',
           'Store URL': product.storeUrl || '',

@@ -28,6 +28,7 @@ import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOp
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { buildPbv2DefaultSelections } from "@shared/pbv2OrderEntryRuntime";
 import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
+import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
 import { deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
@@ -138,12 +139,7 @@ function SortableLineItemWrapper({
 }
 
 function requiresDimensions(product: Product | null): boolean {
-  if (!product) return true;
-  const anyProduct = product as any;
-  if (typeof anyProduct.requiresDimensions === "boolean") return anyProduct.requiresDimensions;
-  if (anyProduct.pricingMode === "fee" || anyProduct.pricingMode === "addon") return false;
-  if (anyProduct.pricingMode === "area") return true;
-  return false;
+  return productRequiresEnteredDimensions(product);
 }
 
 /**
@@ -151,12 +147,7 @@ function requiresDimensions(product: Product | null): boolean {
  * Reads from tree.meta?.requiresDimensions if available, otherwise falls back to product-level logic.
  */
 function requiresDimensionsV2(product: Product | null, treeJson: OptionTreeV2 | null): boolean {
-  // Priority 1: PBV2 tree meta (if present)
-  if (treeJson?.meta?.requiresDimensions !== undefined) {
-    return treeJson.meta.requiresDimensions;
-  }
-  // Priority 2: Product-level logic
-  return requiresDimensions(product);
+  return productRequiresEnteredDimensions(product, treeJson);
 }
 
 function formatMoney(n: number): string {

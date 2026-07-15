@@ -5,6 +5,7 @@ import {
   hasPbv2Selections,
 } from "./pbv2OrderEntryRuntime";
 import { getPbv2FixedDimensions } from "./pbv2/fixedDimensions";
+import { productRequiresEnteredDimensions } from "./productMeasurementMode";
 
 type OrderEntryProductLike = {
   id: string;
@@ -18,6 +19,7 @@ type OrderEntryProductLike = {
   pbv2ActiveTreeVersionId?: string | null;
   optionTreeJson?: unknown;
   requiresDimensions?: boolean | null;
+  measurementMode?: "dimensions_required" | "quantity_only" | null;
   pricingMode?: string | null;
 };
 
@@ -76,11 +78,7 @@ export type InitialOrderLineItemDraftDebug = {
 };
 
 function isDimensionRequired(product: OrderEntryProductLike, activeTree?: OptionTreeV2 | null): boolean {
-  if (getPbv2FixedDimensions(activeTree)) return false;
-  if (activeTree?.meta?.requiresDimensions !== undefined) return activeTree.meta.requiresDimensions;
-  if (typeof product.requiresDimensions === "boolean") return product.requiresDimensions;
-  if (product.pricingMode === "fee" || product.pricingMode === "addon" || product.pricingMode === "flat") return false;
-  return true;
+  return productRequiresEnteredDimensions(product, activeTree);
 }
 
 export function buildInitialOrderLineItemDraftFromProduct(
@@ -153,8 +151,8 @@ export function buildInitialOrderLineItemDraftFromProduct(
     productId: product.id,
     productVariantId: null,
     description: "",
-    width: fixedDimensions ? fixedDimensions.widthIn : dimensionsRequired ? 1 : 0,
-    height: fixedDimensions ? fixedDimensions.heightIn : dimensionsRequired ? 1 : 0,
+    width: fixedDimensions ? fixedDimensions.widthIn : product.measurementMode === "quantity_only" ? 1 : dimensionsRequired ? 1 : 0,
+    height: fixedDimensions ? fixedDimensions.heightIn : product.measurementMode === "quantity_only" ? 1 : dimensionsRequired ? 1 : 0,
     quantity: 1,
     unitPrice: "0.00",
     totalPrice: "0.00",

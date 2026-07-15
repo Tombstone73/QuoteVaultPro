@@ -745,6 +745,8 @@ export const products = pgTable("products", {
   }>().default(sql`'{"enabled":false,"type":"quantity","tiers":[]}'::jsonb`).notNull(),
   // NEW: Pricing mode - determines how pricing is calculated
   pricingMode: varchar("pricing_mode", { length: 32 }).$type<"area" | "quantity" | "flat">().default("area").notNull(),
+  // Controls customer-entered order measurements independently from PBV2 pricing configuration.
+  measurementMode: varchar("measurement_mode", { length: 32 }).$type<"dimensions_required" | "quantity_only">().default("dimensions_required").notNull(),
   // NEW: Service/fee flag - marks product as a service (design fee, rush fee, etc.)
   isService: boolean("is_service").default(false).notNull(),
   // NEW: Primary material linkage for cost calculations
@@ -1224,6 +1226,7 @@ export const insertProductSchema = createInsertSchema(products).omit({
 }).extend({
   pricingFormula: z.string().optional().nullable(),
   pricingMode: z.enum(["area", "quantity", "flat"]).default("area"),
+  measurementMode: z.enum(["dimensions_required", "quantity_only"]).default("dimensions_required"),
   isService: z.boolean().default(false),
   primaryMaterialId: z.string().optional().nullable(),
   optionsJson: z.array(productOptionItemSchema).optional().nullable(),
@@ -1248,6 +1251,7 @@ export const updateProductSchema = createInsertSchema(products).omit({
 }).extend({
   pricingFormula: z.string().optional().nullable(),
   pricingMode: z.enum(["area", "quantity", "flat"]).optional(),
+  measurementMode: z.enum(["dimensions_required", "quantity_only"]).optional(),
   isService: z.boolean().optional(),
   primaryMaterialId: z.string().optional().nullable(),
   optionsJson: z.array(productOptionItemSchema).optional().nullable(),

@@ -11,7 +11,7 @@ import { PricingValidationPanel } from "./PricingValidationPanel";
   disconnect() {}
 };
 
-async function renderPanel(treeJson: unknown) {
+async function renderPanel(treeJson: unknown, measurementMode?: "dimensions_required" | "quantity_only") {
   const container = document.createElement("div");
   document.body.appendChild(container);
   let root: Root | null = null;
@@ -21,6 +21,7 @@ async function renderPanel(treeJson: unknown) {
     root.render(
       <PricingValidationPanel
         treeJson={treeJson}
+        measurementMode={measurementMode}
         findings={[]}
       />,
     );
@@ -127,6 +128,40 @@ describe("PricingValidationPanel fixed-size preview", () => {
     const body = JSON.parse(String(fetchCalls[0]?.[1]?.body));
     expect(body.width).toBe(24);
     expect(body.height).toBe(18);
+
+    await cleanup();
+    jest.useRealTimers();
+  });
+
+  it("uses quantity-only preview inputs even when an older PBV2 tree still requires dimensions", async () => {
+    jest.useFakeTimers();
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ success: true, data: { unitPrice: 1.5, totalPrice: 1.5, breakdown: { basePrice: 1.5, optionsPrice: 0, total: 1.5 } } }),
+    }));
+    (globalThis as any).fetch = fetchMock;
+
+    const { container, cleanup } = await renderPanel({
+      schemaVersion: 2,
+      rootNodeIds: [],
+      nodes: {},
+      meta: { requiresDimensions: true, geometry: { trimAllowanceX: 1, trimAllowanceY: 1 } },
+    }, "quantity_only");
+
+    expect(container.textContent).not.toContain("Width (in)");
+    expect(container.textContent).not.toContain("Height (in)");
+
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+
+    const fetchCalls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    const body = JSON.parse(String(fetchCalls[0]?.[1]?.body));
+    expect(body.width).toBe(1);
+    expect(body.height).toBe(1);
+    expect(body.treeJson.meta.geometry.trimAllowanceX).toBe(0);
+    expect(body.treeJson.meta.geometry.trimAllowanceY).toBe(0);
 
     await cleanup();
     jest.useRealTimers();

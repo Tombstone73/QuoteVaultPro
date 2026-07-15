@@ -47,6 +47,7 @@ import {
   quoteListNotes,
 } from "@shared/schema";
 import { resolvePbv2RuntimeDimensions } from "@shared/pbv2/fixedDimensions";
+import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import {
   buildProofApprovalManualOverrideAuditEvent,
   resolveLineItemProofApprovalRequirement,
@@ -212,8 +213,9 @@ async function repriceQuotePbv2LineItems(organizationId: string, quoteId: string
     if (!line.productId) continue;
     if (!line.pbv2TreeVersionId && !(line.pbv2SnapshotJson as any)?.pricingSystem) continue;
 
-    const width = Number(line.width);
-    const height = Number(line.height);
+    const product = await storage.getProductById(organizationId, line.productId);
+    if (!product) throw new Error(`Cannot reprice PBV2 quote line item ${line.id}: product no longer exists`);
+    const { widthIn: width, heightIn: height } = dimensionsForProductPricing(product, line.width, line.height);
     const quantity = Number(line.quantity);
     if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0 || !Number.isFinite(quantity) || quantity <= 0) {
       throw new Error(`Cannot reprice PBV2 quote line item ${line.id}: missing width, height, or quantity`);
@@ -470,6 +472,7 @@ export function registerQuoteRoutes(
           id: products.id,
           name: products.name,
           pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
+          measurementMode: products.measurementMode,
         })
         .from(products)
         .where(
@@ -495,9 +498,9 @@ export function registerQuoteRoutes(
       }
 
       const treeVersionIdForDimensions = pbv2TreeVersionIdOverride || product.pbv2ActiveTreeVersionId;
-      let runtimeWidth = Number(width);
-      let runtimeHeight = Number(height);
-      if (treeVersionIdForDimensions) {
+      let runtimeWidth = dimensionsForProductPricing(product, width, height).widthIn;
+      let runtimeHeight = dimensionsForProductPricing(product, width, height).heightIn;
+      if (product.measurementMode !== "quantity_only" && treeVersionIdForDimensions) {
         const [treeVersionForDimensions] = await db
           .select({ treeJson: pbv2TreeVersions.treeJson })
           .from(pbv2TreeVersions)
@@ -2012,8 +2015,15 @@ export function registerQuoteRoutes(
       if (!assertQuoteEditable(res, quote)) return;
 
       // Validate required fields for pricing
-      if (!lineItem.productId || lineItem.width == null || lineItem.height == null || lineItem.quantity == null) {
-        return res.status(400).json({ message: "Missing required fields: productId, width, height, quantity" });
+      if (!lineItem.productId || lineItem.quantity == null) {
+        return res.status(400).json({ message: "Missing required fields: productId, quantity" });
+      }
+
+      const productForMeasurement = await storage.getProductById(organizationId, lineItem.productId);
+      if (!productForMeasurement) return res.status(404).json({ message: "Product not found" });
+      const { widthIn, heightIn } = dimensionsForProductPricing(productForMeasurement, lineItem.width, lineItem.height);
+      if (!Number.isFinite(widthIn) || widthIn <= 0 || !Number.isFinite(heightIn) || heightIn <= 0) {
+        return res.status(400).json({ message: "width and height must be positive for this product" });
       }
 
       // Server-authoritative PBV2 pricing - call PricingService directly
@@ -2023,8 +2033,8 @@ export function registerQuoteRoutes(
         organizationId,
         productId: lineItem.productId,
         quantity: parseInt(lineItem.quantity),
-        widthIn: parseFloat(lineItem.width),
-        heightIn: parseFloat(lineItem.height),
+        widthIn,
+        heightIn,
         pbv2ExplicitSelections: lineItem.optionSelectionsJson?.selected || {},
         pbv2TreeVersionIdOverride: undefined, // Always use active tree for new line items
       });
@@ -2057,8 +2067,8 @@ export function registerQuoteRoutes(
         variantName: lineItem.variantName || null,
         productType: lineItem.productType || 'wide_roll',
         status: incomingStatus,
-        width: parseFloat(lineItem.width),
-        height: parseFloat(lineItem.height),
+        width: widthIn,
+        height: heightIn,
         quantity: parseInt(lineItem.quantity),
         specsJson: lineItem.specsJson || null,
         optionSelectionsJson: lineItem.optionSelectionsJson ?? null,
@@ -2143,8 +2153,9 @@ export function registerQuoteRoutes(
         return res.status(400).json({ message: "productId is required for temporary line items" });
       }
 
-      const widthNum = width != null ? Number(width) : 1;
-      const heightNum = height != null ? Number(height) : 1;
+      const productForMeasurement = await storage.getProductById(organizationId, productId);
+      if (!productForMeasurement) return res.status(404).json({ message: "Product not found" });
+      const { widthIn: widthNum, heightIn: heightNum } = dimensionsForProductPricing(productForMeasurement, width, height);
       const quantityNum = quantity != null ? Number(quantity) : 1;
 
       if (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0) {
@@ -2275,16 +2286,28 @@ export function registerQuoteRoutes(
       patchDiagnostics.pricingFieldPresent = pricingFieldPresent;
 
       let repricedBaseTotalCents: number | null = null;
+      let pricingProduct: Awaited<ReturnType<typeof storage.getProductById>> | null = null;
       if (pricingFieldsChanged) {
         // Server-authoritative repricing when pricing inputs change
         const { priceLineItem } = await import("../services/pricing/PricingService");
+        const pricingProductId = lineItem.productId ?? currentLineItem.productId;
+        pricingProduct = pricingProductId ? await storage.getProductById(organizationId, pricingProductId) : null;
+        if (!pricingProduct) return res.status(404).json({ message: "Product not found" });
+        const pricingDimensions = dimensionsForProductPricing(
+          pricingProduct,
+          lineItem.width !== undefined ? lineItem.width : currentLineItem.width,
+          lineItem.height !== undefined ? lineItem.height : currentLineItem.height,
+        );
+        if (!Number.isFinite(pricingDimensions.widthIn) || pricingDimensions.widthIn <= 0 || !Number.isFinite(pricingDimensions.heightIn) || pricingDimensions.heightIn <= 0) {
+          return res.status(400).json({ message: "width and height must be positive for this product" });
+        }
 
         const pricingResult = await priceLineItem({
           organizationId,
-          productId: lineItem.productId ?? currentLineItem.productId,
+          productId: pricingProductId,
           quantity: lineItem.quantity !== undefined ? parseInt(lineItem.quantity) : currentLineItem.quantity,
-          widthIn: lineItem.width !== undefined ? parseFloat(lineItem.width) : parseFloat(currentLineItem.width),
-          heightIn: lineItem.height !== undefined ? parseFloat(lineItem.height) : parseFloat(currentLineItem.height),
+          widthIn: pricingDimensions.widthIn,
+          heightIn: pricingDimensions.heightIn,
           pbv2ExplicitSelections: lineItem.optionSelectionsJson?.selected || currentLineItem.optionSelectionsJson?.selected || {},
           pbv2TreeVersionIdOverride: undefined, // Always reprice with active tree
         });
@@ -2312,6 +2335,10 @@ export function registerQuoteRoutes(
         updateData.overridePriceCents = null;
         updateData.overrideAt = null;
         updateData.overrideByUserId = null;
+        if (pricingProduct.measurementMode === "quantity_only") {
+          updateData.width = pricingDimensions.widthIn;
+          updateData.height = pricingDimensions.heightIn;
+        }
       }
 
       // Apply other field updates
@@ -2321,8 +2348,8 @@ export function registerQuoteRoutes(
       if (lineItem.variantName !== undefined) updateData.variantName = lineItem.variantName;
       if (lineItem.productType !== undefined) updateData.productType = lineItem.productType;
       if (lineItem.status !== undefined && allowedStatus.includes(lineItem.status)) updateData.status = lineItem.status;
-      if (lineItem.width !== undefined) updateData.width = parseFloat(lineItem.width);
-      if (lineItem.height !== undefined) updateData.height = parseFloat(lineItem.height);
+      if (lineItem.width !== undefined && pricingProduct?.measurementMode !== "quantity_only") updateData.width = parseFloat(lineItem.width);
+      if (lineItem.height !== undefined && pricingProduct?.measurementMode !== "quantity_only") updateData.height = parseFloat(lineItem.height);
       if (lineItem.quantity !== undefined) updateData.quantity = parseInt(lineItem.quantity);
       if (lineItem.optionSelectionsJson !== undefined) updateData.optionSelectionsJson = lineItem.optionSelectionsJson;
       if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;

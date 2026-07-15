@@ -48,6 +48,7 @@ import {
 } from '../../../shared/pbv2/pricingAdapter';
 import { calculateSheetYield, extractFormulaVariables, parseFormulaBoolean, sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
 import { resolvePbv2RuntimeDimensions } from '../../../shared/pbv2/fixedDimensions';
+import { dimensionsForProductPricing } from '../../../shared/productMeasurementMode';
 import { buildNumericSelectionFormulaVariables } from '../../../shared/pbv2/numericSelectionFormulaVariables';
 import {
   collectPbv2WeightMaterialIds,
@@ -461,11 +462,15 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     }
 
     const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
-    ({ widthIn, heightIn } = resolvePbv2RuntimeDimensions({
-      treeJson: treeVersion.treeJson,
-      widthIn,
-      heightIn,
-    }));
+    if (product.measurementMode === "quantity_only") {
+      ({ widthIn, heightIn } = dimensionsForProductPricing(product, widthIn, heightIn));
+    } else {
+      ({ widthIn, heightIn } = resolvePbv2RuntimeDimensions({
+        treeJson: treeVersion.treeJson,
+        widthIn,
+        heightIn,
+      }));
+    }
     const pricingMethod = String(product.pricingProfileKey || "default");
     const ruleValidatedSelections = resolveRuleValidatedSelectionsForPricing(
       treeVersion.treeJson as any,
@@ -577,11 +582,15 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
 
   // Step 3: Load tree version
   const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
-  ({ widthIn, heightIn } = resolvePbv2RuntimeDimensions({
-    treeJson: treeVersion.treeJson,
-    widthIn,
-    heightIn,
-  }));
+  if (product.measurementMode === "quantity_only") {
+    ({ widthIn, heightIn } = dimensionsForProductPricing(product, widthIn, heightIn));
+  } else {
+    ({ widthIn, heightIn } = resolvePbv2RuntimeDimensions({
+      treeJson: treeVersion.treeJson,
+      widthIn,
+      heightIn,
+    }));
+  }
   const ruleValidatedSelections = resolveRuleValidatedSelectionsForPricing(
     treeVersion.treeJson as any,
     pbv2ExplicitSelections
@@ -615,6 +624,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     product,
     pricingFormulaLibrary,
     pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
+    ignoreGeometry: product.measurementMode === "quantity_only",
     selectionFormulaVariables,
   });
   const formulaVariablesForPricing = formulaVariableResolution.variables;
@@ -1585,6 +1595,7 @@ function calculateBasePrice(
     formulaVariables?: Record<string, number>;
     formulaVariableSources?: Record<string, string>;
     pricingFormulaExpression?: string | null;
+    ignoreGeometry?: boolean;
     productLegacy?: {
       sheetWidth?: string | null;
       sheetHeight?: string | null;
@@ -2502,7 +2513,9 @@ function calculateBasePriceDetails(
     ?? 'default';
   const activeProfileConfig = (pricingContext?.pricingProfileConfig ?? (meta as any)?.pricingProfileConfig ?? null) as FlatGoodsConfig | null;
 
-  const { trimAllowanceX, trimAllowanceY } = getTrimAllowancesInches(tree);
+  const { trimAllowanceX, trimAllowanceY } = pricingContext?.ignoreGeometry
+    ? { trimAllowanceX: 0, trimAllowanceY: 0 }
+    : getTrimAllowancesInches(tree);
   const orderedWidthIn = widthIn > 0 ? widthIn : 0;
   const orderedHeightIn = heightIn > 0 ? heightIn : 0;
   const finishedWidthIn = orderedWidthIn + trimAllowanceX;

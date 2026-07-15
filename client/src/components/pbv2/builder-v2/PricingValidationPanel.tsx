@@ -292,6 +292,7 @@ interface PricingValidationPanelProps {
   pricingProfileKey?: string | null;
   pricingProfileConfig?: unknown;
   pricingMode?: "basic" | "advanced";
+  measurementMode?: "dimensions_required" | "quantity_only";
   productPrimaryMaterialId?: string | null;
   findings: Finding[];
 }
@@ -542,7 +543,7 @@ function PreviewErrorBanner({
   );
 }
 
-export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode = "profile", pricingProfileKey, pricingProfileConfig, pricingMode = "basic", productPrimaryMaterialId, findings }: PricingValidationPanelProps) {
+export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode = "profile", pricingProfileKey, pricingProfileConfig, pricingMode = "basic", measurementMode = "dimensions_required", productPrimaryMaterialId, findings }: PricingValidationPanelProps) {
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat("en-US", {
@@ -573,10 +574,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
 
   const errors = findings.filter((f) => f.severity === "ERROR");
   const warnings = findings.filter((f) => f.severity === "WARNING");
+  const quantityOnly = measurementMode === "quantity_only";
 
   const treeForPreview = useMemo(() => {
     if (!treeJson || typeof treeJson !== "object") return treeJson;
-    if (!pricingV2Override || typeof pricingV2Override !== "object") return treeJson;
 
     const tree = treeJson as Record<string, any>;
     const meta = tree.meta && typeof tree.meta === "object" ? tree.meta : {};
@@ -585,22 +586,27 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
       ...tree,
       meta: {
         ...meta,
-        pricingV2: pricingV2Override,
+        ...(pricingV2Override && typeof pricingV2Override === "object" ? { pricingV2: pricingV2Override } : {}),
+        ...(quantityOnly ? {
+          requiresDimensions: false,
+          fixedDimensions: undefined,
+          geometry: { ...(meta.geometry || {}), trimAllowance: 0, trimAllowanceX: 0, trimAllowanceY: 0 },
+        } : {}),
       },
     };
-  }, [treeJson, pricingV2Override]);
+  }, [treeJson, pricingV2Override, quantityOnly]);
 
   const fixedDimensions = useMemo(() => getPbv2FixedDimensions(treeForPreview), [treeForPreview]);
-  const previewWidth = fixedDimensions?.widthIn ?? previewState.width;
-  const previewHeight = fixedDimensions?.heightIn ?? previewState.height;
+  const previewWidth = quantityOnly ? 1 : (fixedDimensions?.widthIn ?? previewState.width);
+  const previewHeight = quantityOnly ? 1 : (fixedDimensions?.heightIn ?? previewState.height);
 
   useEffect(() => {
-    if (!fixedDimensions) return;
+    if (quantityOnly || !fixedDimensions) return;
     setPreviewState((prev) => {
       if (prev.width === fixedDimensions.widthIn && prev.height === fixedDimensions.heightIn) return prev;
       return { ...prev, width: fixedDimensions.widthIn, height: fixedDimensions.heightIn };
     });
-  }, [fixedDimensions?.widthIn, fixedDimensions?.heightIn]);
+  }, [fixedDimensions?.widthIn, fixedDimensions?.heightIn, quantityOnly]);
 
   const previewGroups = useMemo(
     () => buildPreviewGroups(treeForPreview, previewState.selectedOptionValues),
@@ -651,17 +657,17 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
 
   const inputErrors = useMemo(() => {
     const next: Partial<Record<"width" | "height" | "quantity", string>> = {};
-    if (!Number.isFinite(previewWidth) || previewWidth <= 0) {
+    if (!quantityOnly && (!Number.isFinite(previewWidth) || previewWidth <= 0)) {
       next.width = "Width must be greater than 0.";
     }
-    if (!Number.isFinite(previewHeight) || previewHeight <= 0) {
+    if (!quantityOnly && (!Number.isFinite(previewHeight) || previewHeight <= 0)) {
       next.height = "Height must be greater than 0.";
     }
     if (!Number.isFinite(previewState.quantity) || previewState.quantity < 1 || !Number.isInteger(previewState.quantity)) {
       next.quantity = "Quantity must be an integer of 1 or more.";
     }
     return next;
-  }, [previewWidth, previewHeight, previewState.quantity]);
+  }, [previewWidth, previewHeight, previewState.quantity, quantityOnly]);
 
   const hasInputErrors = Boolean(inputErrors.width || inputErrors.height || inputErrors.quantity);
 
@@ -1084,8 +1090,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                 <div className="text-[11px] text-slate-500 shrink-0">Units: {previewState.unit === "in" ? "inches" : previewState.unit}</div>
               </div>
 
-              <div className={fixedDimensions ? "grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-2 min-w-0 max-w-full" : "grid grid-cols-[repeat(3,minmax(0,1fr))] gap-2 min-w-0 max-w-full"}>
-                {fixedDimensions ? (
+              <div className={quantityOnly ? "grid grid-cols-1 gap-2 min-w-0 max-w-full" : fixedDimensions ? "grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-2 min-w-0 max-w-full" : "grid grid-cols-[repeat(3,minmax(0,1fr))] gap-2 min-w-0 max-w-full"}>
+                {quantityOnly ? null : fixedDimensions ? (
                   <div className="min-w-0">
                     <Label className="text-xs text-slate-400">Fixed Size</Label>
                     <div className="flex h-8 items-center rounded-md border border-slate-700/60 bg-slate-950/40 px-2 font-mono text-sm text-slate-200">
@@ -1171,7 +1177,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     </div>
                   ) : null}
 
-                  <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
+                  {!quantityOnly ? <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
                     <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">Finished Size Rule</div>
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-slate-300">Ordered size</span>
@@ -1193,7 +1199,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <span className="text-slate-300">Total sqft (finished)</span>
                       <span className="font-mono text-base text-slate-100">{typeof finishedTotalSqft === "number" ? finishedTotalSqft.toFixed(4) : "—"}</span>
                     </div>
-                  </div>
+                  </div> : null}
 
                   {hasBilledSqftDebug ? (
                     <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
