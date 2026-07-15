@@ -70,22 +70,32 @@ export function ManualReservationsCard(props: {
   const allowedInputUoms = useMemo(() => {
     if (!selectedMaterial) return [];
     return getAllowedInputUomsForMaterial({
-      type: selectedMaterial.type,
-      unitOfMeasure: selectedMaterial.unitOfMeasure,
+      materialForm: selectedMaterial.materialForm,
+      inventoryUnit: selectedMaterial.inventoryUnit,
+      consumptionUnit: selectedMaterial.consumptionUnit,
       width: selectedMaterial.width,
+      rollLengthFt: selectedMaterial.rollLengthFt,
+      edgeWasteInPerSide: selectedMaterial.edgeWasteInPerSide,
+      leadWasteFt: selectedMaterial.leadWasteFt,
+      tailWasteFt: selectedMaterial.tailWasteFt,
     });
   }, [selectedMaterial]);
 
   const conversion = useMemo(() => {
     if (!selectedMaterial) return null;
     const qty = Number(quantity);
-    const effectiveInputUom = inputUom || selectedMaterial.unitOfMeasure;
+    const effectiveInputUom = inputUom || selectedMaterial.consumptionUnit;
 
     return convertReservationInputToBaseQty({
       material: {
-        type: selectedMaterial.type,
-        unitOfMeasure: selectedMaterial.unitOfMeasure,
+        materialForm: selectedMaterial.materialForm,
+        inventoryUnit: selectedMaterial.inventoryUnit,
+        consumptionUnit: selectedMaterial.consumptionUnit,
         width: selectedMaterial.width,
+        rollLengthFt: selectedMaterial.rollLengthFt,
+        edgeWasteInPerSide: selectedMaterial.edgeWasteInPerSide,
+        leadWasteFt: selectedMaterial.leadWasteFt,
+        tailWasteFt: selectedMaterial.tailWasteFt,
       },
       inputUom: effectiveInputUom,
       inputQuantity: qty,
@@ -100,7 +110,7 @@ export function ManualReservationsCard(props: {
       conversion &&
       !conversion.ok &&
       conversion.code === "missing_width" &&
-      String(inputUom || selectedMaterial.unitOfMeasure) !== String(selectedMaterial.unitOfMeasure),
+      String(inputUom || selectedMaterial.consumptionUnit) !== String(selectedMaterial.inventoryUnit),
   );
 
   const onCreate = async () => {
@@ -128,7 +138,7 @@ export function ManualReservationsCard(props: {
       await createMutation.mutateAsync({
         materialId,
         quantity: qty,
-        inputUom: String(inputUom || selectedMaterial.unitOfMeasure),
+        inputUom: String(inputUom || selectedMaterial.consumptionUnit),
       });
       toast({ title: "Manual reservation added" });
       setDialogOpen(false);
@@ -252,7 +262,7 @@ export function ManualReservationsCard(props: {
                 onValueChange={(next) => {
                   setMaterialId(next);
                   const m = materials.find((x) => x.id === next);
-                  if (m) setInputUom(String(m.unitOfMeasure));
+                  if (m) setInputUom(String(m.consumptionUnit));
                 }}
               >
                 <SelectTrigger>
@@ -277,7 +287,7 @@ export function ManualReservationsCard(props: {
             {selectedMaterial ? (
               <div className="space-y-1">
                 <div className="text-sm text-muted-foreground">
-                  Stock unit: <span className="font-mono text-foreground">{String(selectedMaterial.unitOfMeasure)}</span>
+                  Stock unit: <span className="font-mono text-foreground">{String(selectedMaterial.inventoryUnit)}</span>
                 </div>
               </div>
             ) : null}

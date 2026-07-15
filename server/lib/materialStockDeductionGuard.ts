@@ -1,3 +1,6 @@
+import { convertReservationInputToBaseQty, type UomConversionMaterial } from "../../shared/uomConversions";
+import { normalizeMaterialUnit, roundMaterialQuantity } from "../../shared/materialUnits";
+
 export type MaterialStockDeductionRiskLevel = "safe" | "risky" | "unknown";
 
 export type MaterialStockDeductionDecision = {
@@ -5,83 +8,59 @@ export type MaterialStockDeductionDecision = {
   reason: string;
   materialUom: string | null;
   usageUom: string | null;
+  convertedQuantity?: number;
   riskLevel: MaterialStockDeductionRiskLevel;
 };
 
-export type MaterialStockDeductionMaterial = {
-  type?: string | null;
-  unitOfMeasure?: string | null;
-  inventoryUnit?: string | null;
+export type MaterialStockDeductionMaterial = UomConversionMaterial & {
+  materialForm?: string | null;
 };
-
-function normalizeUom(value: unknown): string | null {
-  const raw = String(value ?? "").trim().toLowerCase();
-  if (!raw) return null;
-  if (raw === "ft" || raw === "foot" || raw === "feet") return "linear_ft";
-  if (raw === "each") return "ea";
-  return raw;
-}
 
 export function canAutoDeductMaterialStock(
   material: MaterialStockDeductionMaterial | null | undefined,
   usageUom: string | null | undefined,
+  quantity = 1,
 ): MaterialStockDeductionDecision {
-  const materialType = String(material?.type ?? "").trim().toLowerCase();
-  const normalizedMaterialUom = normalizeUom(material?.inventoryUnit ?? material?.unitOfMeasure);
-  const normalizedUsageUom = normalizeUom(usageUom);
-
-  if (!normalizedMaterialUom || !normalizedUsageUom) {
+  const inventoryUnit = normalizeMaterialUnit(material?.inventoryUnit);
+  const normalizedUsage = normalizeMaterialUnit(usageUom);
+  if (!material?.materialForm || !inventoryUnit || !normalizedUsage) {
     return {
-      allowed: true,
-      reason: "Material or usage unit is unavailable; preserving existing workflow and leaving stock mutation behavior unchanged.",
-      materialUom: normalizedMaterialUom,
-      usageUom: normalizedUsageUom,
+      allowed: false,
+      reason: "Automatic inventory deduction requires a material form, inventory unit, and recognized usage unit.",
+      materialUom: inventoryUnit,
+      usageUom: normalizedUsage,
       riskLevel: "unknown",
     };
   }
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    return { allowed: false, reason: "Automatic inventory deduction requires a positive quantity.", materialUom: inventoryUnit, usageUom: normalizedUsage, riskLevel: "unknown" };
+  }
 
-  if (normalizedMaterialUom === normalizedUsageUom) {
+  if (material.materialForm === "roll") {
+    const conversion = convertReservationInputToBaseQty({ material, inputUom: normalizedUsage, inputQuantity: quantity });
+    if (!conversion.ok) {
+      return { allowed: false, reason: conversion.message, materialUom: inventoryUnit, usageUom: normalizedUsage, riskLevel: "risky" };
+    }
     return {
       allowed: true,
-      reason: "Usage unit matches the material effective Inventory Unit.",
-      materialUom: normalizedMaterialUom,
-      usageUom: normalizedUsageUom,
+      reason: normalizedUsage === inventoryUnit ? "Roll usage is already in the configured inventory unit." : "Roll linear-foot usage was converted using usable roll width.",
+      materialUom: inventoryUnit,
+      usageUom: normalizedUsage,
+      convertedQuantity: conversion.convertedQty,
       riskLevel: "safe",
     };
   }
 
-  if (
-    materialType === "sheet" &&
-    ((normalizedMaterialUom === "ea" && normalizedUsageUom === "sheet") ||
-      (normalizedMaterialUom === "sheet" && normalizedUsageUom === "ea"))
-  ) {
-    return {
-      allowed: true,
-      reason: "Sheet and each units are treated as aligned count units for sheet materials.",
-      materialUom: normalizedMaterialUom,
-      usageUom: normalizedUsageUom,
-      riskLevel: "safe",
-    };
+  const sheetCountMatch = material.materialForm === "sheet" && ((inventoryUnit === "sheet" && normalizedUsage === "each") || (inventoryUnit === "each" && normalizedUsage === "sheet"));
+  if (inventoryUnit === normalizedUsage || sheetCountMatch) {
+    return { allowed: true, reason: "Usage unit matches the configured inventory quantity semantics.", materialUom: inventoryUnit, usageUom: normalizedUsage, convertedQuantity: roundMaterialQuantity(quantity), riskLevel: "safe" };
   }
 
-  if (materialType !== "roll" && materialType !== "sheet") {
-    return {
-      allowed: true,
-      reason: "Unit mismatch is not guarded for non-roll and non-sheet materials in this phase.",
-      materialUom: normalizedMaterialUom,
-      usageUom: normalizedUsageUom,
-      riskLevel: "unknown",
-    };
-  }
-
-  // TODO(material-units): Add explicit conversion-factor architecture for roll sqft conversion,
-  // sheet yield conversion, and partial depletion tracking before auto-depleting mismatched units.
   return {
     allowed: false,
-    reason:
-      "Manual inventory review required: roll/sheet stock deduction has mismatched usage and effective Inventory Units with no explicit conversion logic.",
-    materialUom: normalizedMaterialUom,
-    usageUom: normalizedUsageUom,
+    reason: "Automatic inventory deduction is blocked because the usage unit cannot be converted to the configured inventory unit.",
+    materialUom: inventoryUnit,
+    usageUom: normalizedUsage,
     riskLevel: "risky",
   };
 }

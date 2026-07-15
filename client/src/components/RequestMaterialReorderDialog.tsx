@@ -33,7 +33,7 @@ interface Props {
 export function RequestMaterialReorderDialog({ open, onOpenChange, material, vendors }: Props) {
   const { toast } = useToast();
   const createMutation = useCreateMaterialReorderRequest(material.id);
-  const inventoryUnit = material.inventoryUnit || material.unitOfMeasure;
+  const inventoryUnit = material.inventoryUnit;
   const form = useForm<RequestValues>({
     resolver: zodResolver(requestSchema),
     defaultValues: {

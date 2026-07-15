@@ -317,7 +317,7 @@ export function MaterialsSettingsPanel() {
               <TitanTableHead>Material Name</TitanTableHead>
               <TitanTableHead>SKU</TitanTableHead>
               <TitanTableHead>Category / Type</TitanTableHead>
-              <TitanTableHead>Catalog Unit</TitanTableHead>
+              <TitanTableHead>Inventory Unit</TitanTableHead>
               <TitanTableHead>Stock Quantity</TitanTableHead>
               <TitanTableHead>Minimum Stock Alert</TitanTableHead>
               <TitanTableHead>Status</TitanTableHead>
@@ -388,7 +388,7 @@ export function MaterialsSettingsPanel() {
                       <div className="text-xs capitalize text-titan-text-muted">{material.type}</div>
                     </div>
                   </TitanTableCell>
-                  <TitanTableCell>{material.unitOfMeasure}</TitanTableCell>
+                  <TitanTableCell>{material.inventoryUnit}</TitanTableCell>
                   <TitanTableCell>
                     {material.type === "roll" && rollDerived
                       ? `${stock} rolls (~${(stock * rollDerived.usableSqftPerRoll).toLocaleString()} sqft)`

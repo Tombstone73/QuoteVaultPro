@@ -24,13 +24,6 @@ type LinkableProduct = {
   isActive?: boolean | null;
 };
 
-type MaterialWithTierPricing = Material & {
-  wholesaleBaseRate?: string | null;
-  wholesaleMinCharge?: string | null;
-  retailBaseRate?: string | null;
-  retailMinCharge?: string | null;
-};
-
 const optionalNumber = (schema: z.ZodNumber) =>
   z.preprocess(
     (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
@@ -58,13 +51,7 @@ function formatDateInput(value?: string | Date | null) {
   return date.toISOString().slice(0, 10);
 }
 
-const LEGACY_UNIT_HELPER_TEXT =
-  "Legacy/default unit for this material. Existing pricing, inventory, CSV, and some usage behavior may still fall back to this.";
-const ROLL_UNIT_WARNING =
-  "Roll inventory units are currently ambiguous. Stock quantity, vendor cost, and usage reservations may not all use the same unit. Review before relying on automated inventory depletion.";
-const SHEET_SQFT_WARNING =
-  "Sheet materials priced by sqft still need explicit conversion/yield handling before inventory depletion can be trusted.";
-const MATERIAL_UNIT_VALUES = ["sheet", "sqft", "linear_ft", "ml", "ea"] as const;
+const MATERIAL_UNIT_VALUES = ["square_foot", "linear_foot", "sheet", "each", "milliliter", "pound"] as const;
 const materialUnitSchema = z.enum(MATERIAL_UNIT_VALUES);
 const optionalMaterialUnitSchema = z.preprocess(
   (v) => (v === "" || v == null ? undefined : v),
@@ -72,11 +59,19 @@ const optionalMaterialUnitSchema = z.preprocess(
 );
 const MATERIAL_UNIT_OPTIONS = [
   { value: "sheet", label: "Sheet" },
-  { value: "sqft", label: "SqFt" },
-  { value: "linear_ft", label: "Linear Ft" },
-  { value: "ml", label: "mL" },
-  { value: "ea", label: "Each" },
+  { value: "square_foot", label: "Square Foot" },
+  { value: "linear_foot", label: "Linear Foot" },
+  { value: "milliliter", label: "Milliliter" },
+  { value: "each", label: "Each" },
+  { value: "pound", label: "Pound" },
 ] as const;
+const FORM_UNIT_OPTIONS = {
+  roll: { inventory: ["square_foot"], consumption: ["square_foot", "linear_foot"] },
+  sheet: { inventory: ["sheet", "square_foot"], consumption: ["sheet", "square_foot"] },
+  liquid: { inventory: ["milliliter"], consumption: ["milliliter"] },
+  each: { inventory: ["each"], consumption: ["each"] },
+  bulk_weight: { inventory: ["pound"], consumption: ["pound"] },
+} as const;
 const materialWeightUnitSchema = z.enum(MATERIAL_WEIGHT_UNITS);
 const materialWeightBasisSchema = z.enum(MATERIAL_WEIGHT_BASES);
 const optionalMaterialWeightUnitSchema = z.preprocess(
@@ -105,23 +100,15 @@ const materialSchema = z
   .object({
   name: z.string().min(1, "Name required"),
   sku: z.string().min(1, "SKU required"),
-  type: z.enum(["sheet", "roll", "ink", "consumable"]),
+  materialForm: z.enum(["sheet", "roll", "liquid", "each", "bulk_weight"]),
   category: z.string().trim().optional(),
-  unitOfMeasure: materialUnitSchema,
-  inventoryUnit: optionalMaterialUnitSchema,
-  sellPriceUnit: optionalMaterialUnitSchema,
-  wholesalePriceUnit: optionalMaterialUnitSchema,
+  inventoryUnit: materialUnitSchema,
+  consumptionUnit: materialUnitSchema,
   vendorCostUnit: optionalMaterialUnitSchema,
-  consumptionUnit: optionalMaterialUnitSchema,
   weightValue: optionalNumber(z.coerce.number().positive()),
   weightUnit: optionalMaterialWeightUnitSchema,
   weightBasis: optionalMaterialWeightBasisSchema,
   costPerUnit: z.coerce.number().nonnegative(),
-  // Tiered pricing fields
-  wholesaleBaseRate: optionalNumber(z.coerce.number().nonnegative()),
-  wholesaleMinCharge: optionalNumber(z.coerce.number().nonnegative()),
-  retailBaseRate: optionalNumber(z.coerce.number().nonnegative()),
-  retailMinCharge: optionalNumber(z.coerce.number().nonnegative()),
   stockQuantity: z.coerce.number().nonnegative().default(0),
   minStockAlert: z.coerce.number().nonnegative().default(0),
   isActive: z.boolean().default(true),
@@ -150,7 +137,21 @@ const materialSchema = z
   linkedProductIds: z.array(z.string()).default([]),
 })
   .superRefine((data, ctx) => {
-    if (data.type !== "roll") return;
+    const allowed = FORM_UNIT_OPTIONS[data.materialForm];
+    if (!allowed.inventory.includes(data.inventoryUnit as never)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["inventoryUnit"], message: "Inventory unit is not valid for this material form" });
+    }
+    if (!allowed.consumption.includes(data.consumptionUnit as never)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["consumptionUnit"], message: "Consumption unit is not valid for this material form" });
+    }
+    if (data.materialForm !== "roll") return;
+
+    if (data.inventoryUnit !== "square_foot") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["inventoryUnit"], message: "Roll inventory must use square feet" });
+    }
+    if (data.consumptionUnit !== "square_foot" && data.consumptionUnit !== "linear_foot") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["consumptionUnit"], message: "Roll consumption must use square feet or linear feet" });
+    }
 
     const isPos = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0;
 
@@ -182,7 +183,7 @@ export type MaterialFormValues = z.infer<typeof materialSchema>;
 interface Props {
   open: boolean;
   onOpenChange: (o:boolean)=>void;
-  material?: MaterialWithTierPricing;
+  material?: Material;
   /** When true, we are creating a copy of the material */
   isDuplicate?: boolean;
 }
@@ -200,23 +201,15 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
     defaultValues: material ? {
       name: isDuplicate ? `${material.name} (Copy)` : material.name,
       sku: isDuplicate ? `${material.sku}-COPY` : material.sku,
-      type: material.type,
+      materialForm: material.materialForm as any,
       category: material.category || "",
-      unitOfMeasure: material.unitOfMeasure as any,
-      inventoryUnit: (material.inventoryUnit || material.unitOfMeasure) as any,
-      sellPriceUnit: (material.sellPriceUnit || material.unitOfMeasure) as any,
-      wholesalePriceUnit: (material.wholesalePriceUnit || material.sellPriceUnit || material.unitOfMeasure) as any,
-      vendorCostUnit: (material.vendorCostUnit || material.unitOfMeasure) as any,
-      consumptionUnit: (material.consumptionUnit || material.sellPriceUnit || material.unitOfMeasure) as any,
+      inventoryUnit: material.inventoryUnit as any,
+      vendorCostUnit: material.vendorCostUnit as any,
+      consumptionUnit: material.consumptionUnit as any,
       weightValue: material.weightValue ? parseFloat(material.weightValue) : undefined,
       weightUnit: material.weightUnit || undefined,
       weightBasis: material.weightBasis || undefined,
       costPerUnit: parseFloat(material.costPerUnit),
-      // Tiered pricing fields
-      wholesaleBaseRate: material.wholesaleBaseRate ? parseFloat(material.wholesaleBaseRate) : undefined,
-      wholesaleMinCharge: material.wholesaleMinCharge ? parseFloat(material.wholesaleMinCharge) : undefined,
-      retailBaseRate: material.retailBaseRate ? parseFloat(material.retailBaseRate) : undefined,
-      retailMinCharge: material.retailMinCharge ? parseFloat(material.retailMinCharge) : undefined,
       stockQuantity: isDuplicate ? 0 : parseFloat(material.stockQuantity),
       minStockAlert: parseFloat(material.minStockAlert),
       isActive: isDuplicate ? true : material.isActive !== false,
@@ -246,23 +239,15 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
     } : {
       name: "",
       sku: "",
-      type: "sheet",
+      materialForm: "sheet",
       category: "",
-      unitOfMeasure: "sheet",
       inventoryUnit: "sheet",
-      sellPriceUnit: "sheet",
-      wholesalePriceUnit: "sheet",
       vendorCostUnit: "sheet",
       consumptionUnit: "sheet",
       weightValue: undefined,
       weightUnit: undefined,
       weightBasis: undefined,
       costPerUnit: 0,
-      // Tiered pricing fields
-      wholesaleBaseRate: undefined,
-      wholesaleMinCharge: undefined,
-      retailBaseRate: undefined,
-      retailMinCharge: undefined,
       stockQuantity: 0,
       minStockAlert: 0,
       isActive: true,
@@ -322,19 +307,12 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       ...values,
       category: values.category?.trim() || undefined,
       costPerUnit: values.costPerUnit.toString(),
-      inventoryUnit: values.inventoryUnit || undefined,
-      sellPriceUnit: values.sellPriceUnit || undefined,
-      wholesalePriceUnit: values.wholesalePriceUnit || undefined,
+      inventoryUnit: values.inventoryUnit,
       vendorCostUnit: values.vendorCostUnit || undefined,
-      consumptionUnit: values.consumptionUnit || undefined,
+      consumptionUnit: values.consumptionUnit,
       weightValue: values.weightValue !== undefined ? values.weightValue.toString() : undefined,
       weightUnit: values.weightUnit || undefined,
       weightBasis: values.weightBasis || undefined,
-      // Tiered pricing fields
-      wholesaleBaseRate: values.wholesaleBaseRate !== undefined ? values.wholesaleBaseRate.toString() : undefined,
-      wholesaleMinCharge: values.wholesaleMinCharge !== undefined ? values.wholesaleMinCharge.toString() : undefined,
-      retailBaseRate: values.retailBaseRate !== undefined ? values.retailBaseRate.toString() : undefined,
-      retailMinCharge: values.retailMinCharge !== undefined ? values.retailMinCharge.toString() : undefined,
       stockQuantity: values.stockQuantity.toString(),
       minStockAlert: values.minStockAlert.toString(),
       isActive: values.isActive,
@@ -389,19 +367,20 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
     try { return JSON.parse(str); } catch { return null; }
   }
 
-  // Watch type to conditionally show roll fields
-  const materialType = form.watch("type");
+  // Material form controls the valid operational unit combination.
+  const materialType = form.watch("materialForm");
   const isRoll = materialType === "roll";
-  const unitOfMeasure = form.watch("unitOfMeasure");
-  const inventoryUnit = form.watch("inventoryUnit") || unitOfMeasure;
-  const stockQuantity = form.watch("stockQuantity");
-  const stockQuantityNumber = Number(stockQuantity || 0);
-  const showRollUnitWarning =
-    isRoll &&
-    ["sqft", "linear_ft", "ft"].includes(String(inventoryUnit || unitOfMeasure)) &&
-    Number.isFinite(stockQuantityNumber) &&
-    stockQuantityNumber > 0;
-  const showSheetSqftWarning = materialType === "sheet" && (inventoryUnit || unitOfMeasure) === "sqft";
+  const inventoryUnit = form.watch("inventoryUnit");
+  const consumptionUnit = form.watch("consumptionUnit");
+  const allowedUnits = FORM_UNIT_OPTIONS[materialType];
+  useEffect(() => {
+    if (!allowedUnits.inventory.includes(inventoryUnit as never)) {
+      form.setValue("inventoryUnit", allowedUnits.inventory[0] as any);
+    }
+    if (!allowedUnits.consumption.includes(consumptionUnit as never)) {
+      form.setValue("consumptionUnit", allowedUnits.consumption[0] as any);
+    }
+  }, [allowedUnits, consumptionUnit, form, inventoryUnit]);
   const aiParsingLinkedToDescription = Boolean(form.watch("aiParsingDescriptionLinkedToDescription"));
   const linkedProductIds = form.watch("linkedProductIds") || [];
   const linkedProductIdSet = useMemo(() => new Set(linkedProductIds), [linkedProductIds]);
@@ -499,14 +478,15 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                       <Input {...form.register("category")} placeholder="e.g. Rigid, Vinyl, Ink" />
                     </div>
                     <div>
-                      <label className="text-sm font-medium">Type <span className="text-destructive">*</span></label>
-                      <Select onValueChange={v=> form.setValue("type", v as any)} value={form.watch("type")}> 
+                      <label className="text-sm font-medium">Material Form <span className="text-destructive">*</span></label>
+                      <Select onValueChange={v=> form.setValue("materialForm", v as any)} value={form.watch("materialForm")}>
                         <SelectTrigger><SelectValue/></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="sheet">Sheet</SelectItem>
                           <SelectItem value="roll">Roll</SelectItem>
-                          <SelectItem value="ink">Ink</SelectItem>
-                          <SelectItem value="consumable">Consumable</SelectItem>
+                          <SelectItem value="liquid">Liquid</SelectItem>
+                          <SelectItem value="each">Each item</SelectItem>
+                          <SelectItem value="bulk_weight">Bulk weight</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -527,78 +507,41 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
 
                   <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                     <div>
-                      <label className="text-sm font-medium">Catalog Unit <span className="text-destructive">*</span></label>
-                      <Select onValueChange={v=> form.setValue("unitOfMeasure", v as any)} value={form.watch("unitOfMeasure")}> 
+                      <label className="text-sm font-medium">Inventory Unit <span className="text-destructive">*</span></label>
+                      <Select onValueChange={v=> form.setValue("inventoryUnit", v as any)} value={form.watch("inventoryUnit")}>
                         <SelectTrigger><SelectValue/></SelectTrigger>
                         <SelectContent>
-                          {MATERIAL_UNIT_OPTIONS.map((option) => (
+                          {MATERIAL_UNIT_OPTIONS.filter((option) => allowedUnits.inventory.includes(option.value as never)).map((option) => (
                             <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {LEGACY_UNIT_HELPER_TEXT}
-                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">The canonical physical quantity for stock, adjustments, and reorder points.</p>
                     </div>
                     <div>
-                      <label className="text-sm font-medium">Inventory Unit</label>
-                      <Select onValueChange={v=> form.setValue("inventoryUnit", v as any)} value={form.watch("inventoryUnit") || form.watch("unitOfMeasure")}>
+                      <label className="text-sm font-medium">Consumption Unit <span className="text-destructive">*</span></label>
+                      <Select onValueChange={v=> form.setValue("consumptionUnit", v as any)} value={form.watch("consumptionUnit")}>
                         <SelectTrigger><SelectValue/></SelectTrigger>
                         <SelectContent>
-                          {MATERIAL_UNIT_OPTIONS.map((option) => (
+                          {MATERIAL_UNIT_OPTIONS.filter((option) => allowedUnits.consumption.includes(option.value as never)).map((option) => (
                             <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground mt-1">How stock quantity and reorder points are tracked. Conversion is not automatic yet.</p>
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium">Sell Price Unit</label>
-                      <Select onValueChange={v=> form.setValue("sellPriceUnit", v as any)} value={form.watch("sellPriceUnit") || form.watch("unitOfMeasure")}>
-                        <SelectTrigger><SelectValue/></SelectTrigger>
-                        <SelectContent>
-                          {MATERIAL_UNIT_OPTIONS.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className="text-xs text-muted-foreground mt-1">How customer-facing material pricing is calculated.</p>
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium">Wholesale Price Unit</label>
-                      <Select onValueChange={v=> form.setValue("wholesalePriceUnit", v as any)} value={form.watch("wholesalePriceUnit") || form.watch("sellPriceUnit") || form.watch("unitOfMeasure")}>
-                        <SelectTrigger><SelectValue/></SelectTrigger>
-                        <SelectContent>
-                          {MATERIAL_UNIT_OPTIONS.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className="text-xs text-muted-foreground mt-1">How wholesale/trade material pricing is calculated.</p>
+                      <p className="text-xs text-muted-foreground mt-1">The unit production requirements use. Product sell units and pricing are separate.</p>
                     </div>
                     <div>
                       <label className="text-sm font-medium">Vendor Cost Unit</label>
-                      <Select onValueChange={v=> form.setValue("vendorCostUnit", v as any)} value={form.watch("vendorCostUnit") || form.watch("unitOfMeasure")}>
+                      <Select onValueChange={v=> form.setValue("vendorCostUnit", v === "__none__" ? undefined : v as any)} value={form.watch("vendorCostUnit") || "__none__"}>
                         <SelectTrigger><SelectValue/></SelectTrigger>
                         <SelectContent>
+                          <SelectItem value="__none__">Not specified</SelectItem>
                           {MATERIAL_UNIT_OPTIONS.map((option) => (
                             <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground mt-1">How the supplier charges for this material.</p>
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium">Consumption Unit</label>
-                      <Select onValueChange={v=> form.setValue("consumptionUnit", v as any)} value={form.watch("consumptionUnit") || form.watch("sellPriceUnit") || form.watch("unitOfMeasure")}>
-                        <SelectTrigger><SelectValue/></SelectTrigger>
-                        <SelectContent>
-                          {MATERIAL_UNIT_OPTIONS.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className="text-xs text-muted-foreground mt-1">How production usage or reservations should consume this material. This does not enable automatic conversion yet.</p>
+                      <p className="text-xs text-muted-foreground mt-1">Supplier unit detail is retained for current purchasing workflows.</p>
                     </div>
                   </div>
 
@@ -656,9 +599,9 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                     </div>
                   </div>
 
-                  {(showRollUnitWarning || showSheetSqftWarning) ? (
-                    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-                      {showRollUnitWarning ? ROLL_UNIT_WARNING : SHEET_SQFT_WARNING}
+                  {isRoll && inventoryUnit !== "square_foot" ? (
+                    <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                      Roll inventory must be tracked in square feet.
                     </div>
                   ) : null}
 
@@ -718,22 +661,20 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base">Pricing / Costing</CardTitle>
-                  <p className="text-xs text-muted-foreground">
-                    Sell pricing, tier rates, and supplier unit cost values.
-                  </p>
+                  <p className="text-xs text-muted-foreground">Material cost and supplier cost values. Product sell pricing is configured on the product.</p>
                 </CardHeader>
                 <CardContent className="space-y-5">
                   <div className="grid gap-4 lg:grid-cols-3">
                     <div>
-                      <label className="text-sm font-medium">Base Sell Price</label>
+                      <label className="text-sm font-medium">Material Cost per Inventory Unit</label>
                       <Input 
                         type="number" 
                         step="0.0001" 
-                        placeholder="Default price when no tier-specific price set" 
+                        placeholder="Material cost"
                         {...form.register("costPerUnit", {valueAsNumber:true})}
                       />
                       <p className="text-xs text-muted-foreground mt-1">
-                        Recorded per Sell Price Unit. Existing quote pricing math is unchanged in this phase.
+                        Internal material cost; it does not define a product sell price or sell unit.
                       </p>
                     </div>
                     {!isRoll ? (
@@ -747,83 +688,6 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                     ) : null}
                   </div>
 
-                  <div className="grid gap-5 lg:grid-cols-2">
-                    <div className="space-y-3 rounded-md border p-3">
-                      <div>
-                        <h4 className="text-sm font-semibold">
-                          <span className="text-blue-600">Wholesale Pricing</span>
-                          <span className="ml-2 text-xs font-normal text-muted-foreground">(Trade/Reseller Rates)</span>
-                        </h4>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          Special rates for trade customers and resellers. Leave empty to use base price. Recorded per Wholesale Price Unit; pricing math is unchanged in this phase.
-                        </p>
-                      </div>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <div>
-                          <label className="text-sm font-medium">Wholesale Base Sell Price</label>
-                          <Input 
-                            type="number" 
-                            step="0.0001" 
-                            placeholder="Optional"
-                            {...form.register("wholesaleBaseRate", {valueAsNumber:true})}
-                          />
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Price for wholesale customers per Wholesale Price Unit.
-                          </p>
-                        </div>
-                        <div>
-                          <label className="text-sm font-medium">Wholesale Min Charge</label>
-                          <Input 
-                            type="number" 
-                            step="0.01" 
-                            placeholder="Optional"
-                            {...form.register("wholesaleMinCharge", {valueAsNumber:true})}
-                          />
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Minimum charge for wholesale jobs; not a unit conversion.
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="space-y-3 rounded-md border p-3">
-                      <div>
-                        <h4 className="text-sm font-semibold">
-                          <span className="text-green-600">Retail Pricing</span>
-                          <span className="ml-2 text-xs font-normal text-muted-foreground">(End-User Rates)</span>
-                        </h4>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          Rates for retail/consumer customers. Leave empty to use base price. Recorded per Sell Price Unit; pricing math is unchanged in this phase.
-                        </p>
-                      </div>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <div>
-                          <label className="text-sm font-medium">Retail Base Sell Price</label>
-                          <Input 
-                            type="number" 
-                            step="0.0001" 
-                            placeholder="Optional"
-                            {...form.register("retailBaseRate", {valueAsNumber:true})}
-                          />
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Price for retail customers per Sell Price Unit.
-                          </p>
-                        </div>
-                        <div>
-                          <label className="text-sm font-medium">Retail Min Charge</label>
-                          <Input 
-                            type="number" 
-                            step="0.01" 
-                            placeholder="Optional"
-                            {...form.register("retailMinCharge", {valueAsNumber:true})}
-                          />
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Minimum charge for retail jobs; not a unit conversion.
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
                 </CardContent>
               </Card>
 

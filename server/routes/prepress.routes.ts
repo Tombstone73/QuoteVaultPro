@@ -74,6 +74,7 @@ import {
   resolveDerivativeFileAccess,
 } from "../lib/supabaseObjectHelpers";
 import { canAutoDeductMaterialStock } from "../lib/materialStockDeductionGuard";
+import { convertReservationInputToBaseQty } from "@shared/uomConversions";
 import {
   getProductionStationLabel,
   normalizeProductionStationKey,
@@ -225,15 +226,15 @@ const getPrepressMaterialContext = async (organizationId: string, lineItemId: st
 
 const resolveMaterialMetaForOrg = async (organizationId: string, materialIds: string[]) => {
   const uniqueIds = Array.from(new Set(materialIds.filter((id) => typeof id === "string" && id.length > 0)));
-  if (uniqueIds.length === 0) return new Map<string, { name: string; unitOfMeasure: string | null }>();
+  if (uniqueIds.length === 0) return new Map<string, { name: string; consumptionUnit: string | null }>();
 
   const rows = await db
-    .select({ id: materials.id, name: materials.name, unitOfMeasure: materials.unitOfMeasure })
+    .select({ id: materials.id, name: materials.name, consumptionUnit: materials.consumptionUnit })
     .from(materials)
     .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, uniqueIds)));
 
-  return new Map<string, { name: string; unitOfMeasure: string | null }>(
-    rows.map((row) => [row.id, { name: row.name, unitOfMeasure: row.unitOfMeasure ?? null }])
+  return new Map<string, { name: string; consumptionUnit: string | null }>(
+    rows.map((row) => [row.id, { name: row.name, consumptionUnit: row.consumptionUnit ?? null }])
   );
 };
 
@@ -307,7 +308,7 @@ const buildPrepressMaterialsEffectivePayload = async (args: {
 
   const plannedMaterials = plannedResult.materials.map((m) => {
     const meta = materialMetaById.get(m.materialId);
-    const normalizedMaterialUom = normalizeMaterialUomForPlanning(meta?.unitOfMeasure);
+    const normalizedMaterialUom = normalizeMaterialUomForPlanning(meta?.consumptionUnit);
     const hasUomMismatch = !!normalizedMaterialUom && normalizedMaterialUom !== m.uom;
 
     return {
@@ -478,9 +479,14 @@ const listReservedMaterialsForLineItem = async (tx: any, args: { organizationId:
       sourceKey: inventoryReservations.sourceKey,
       uom: inventoryReservations.uom,
       qty: inventoryReservations.qty,
-      materialType: materials.type,
-      materialUnitOfMeasure: materials.unitOfMeasure,
+      materialForm: materials.materialForm,
       materialInventoryUnit: materials.inventoryUnit,
+      materialConsumptionUnit: materials.consumptionUnit,
+      materialWidth: materials.width,
+      materialRollLengthFt: materials.rollLengthFt,
+      materialEdgeWasteInPerSide: materials.edgeWasteInPerSide,
+      materialLeadWasteFt: materials.leadWasteFt,
+      materialTailWasteFt: materials.tailWasteFt,
     })
     .from(inventoryReservations)
     .leftJoin(
@@ -523,13 +529,20 @@ const syncReservedMaterialsForLineItem = async (
     existingByKey.set(`${row.sourceKey}::${row.uom}`, { id: row.id, qty: normalizeQty2dp(row.qty) });
   }
 
-  const desiredByKey = new Map<string, { materialId: string; uom: "sqft" | "ft" | "each"; qty: string }>();
+  const materialIds = Array.from(new Set((args.effectiveMaterials || []).map((item) => String(item.materialId || "").trim()).filter(Boolean)));
+  const materialRows = materialIds.length > 0
+    ? await tx.select({ id: materials.id, materialForm: materials.materialForm, inventoryUnit: materials.inventoryUnit, consumptionUnit: materials.consumptionUnit, width: materials.width, rollLengthFt: materials.rollLengthFt, edgeWasteInPerSide: materials.edgeWasteInPerSide, leadWasteFt: materials.leadWasteFt, tailWasteFt: materials.tailWasteFt }).from(materials).where(and(eq(materials.organizationId, args.organizationId), inArray(materials.id, materialIds)))
+    : [];
+  const materialById = new Map(materialRows.map((row: any) => [row.id, row]));
+  const desiredByKey = new Map<string, { materialId: string; uom: string; qty: string }>();
   for (const item of args.effectiveMaterials || []) {
     const materialId = String(item.materialId || "").trim();
-    const uom = String(item.uom || "").trim() as "sqft" | "ft" | "each";
-    const qty = normalizeQty2dp(item.qty);
-    if (!materialId || !uom || Number(qty) <= 0) continue;
-    desiredByKey.set(`${materialId}::${uom}`, { materialId, uom, qty });
+    if (!materialId || !item.uom || !Number.isFinite(item.qty) || item.qty <= 0) continue;
+    const material = materialById.get(materialId);
+    const conversion = convertReservationInputToBaseQty({ material: material ?? {}, inputUom: item.uom, inputQuantity: item.qty });
+    if (!conversion.ok) throw new Error(`Material ${materialId} cannot be reserved: ${conversion.message}`);
+    const qty = normalizeQty2dp(conversion.convertedQty);
+    desiredByKey.set(`${materialId}::${conversion.baseUom}`, { materialId, uom: conversion.baseUom, qty });
   }
 
   let insertedCount = 0;
@@ -687,19 +700,25 @@ const consumeReservedMaterialsForLineItem = async (
     const usageUom = String(row.uom || "each");
     const deductionDecision = canAutoDeductMaterialStock(
       {
-        type: (row as any).materialType,
-        unitOfMeasure: (row as any).materialUnitOfMeasure,
+        materialForm: (row as any).materialForm,
         inventoryUnit: (row as any).materialInventoryUnit,
+        consumptionUnit: (row as any).materialConsumptionUnit,
+        width: (row as any).materialWidth,
+        rollLengthFt: (row as any).materialRollLengthFt,
+        edgeWasteInPerSide: (row as any).materialEdgeWasteInPerSide,
+        leadWasteFt: (row as any).materialLeadWasteFt,
+        tailWasteFt: (row as any).materialTailWasteFt,
       },
       usageUom,
+      qty,
     );
 
     await tx.insert(orderMaterialUsage).values({
       orderId: args.orderId,
       orderLineItemId: args.lineItemId,
       materialId,
-      quantityUsed: normalizeQty2dp(qty),
-      unitOfMeasure: usageUom,
+      quantityUsed: normalizeQty2dp(deductionDecision.convertedQuantity ?? qty),
+      unitOfMeasure: deductionDecision.materialUom || usageUom,
       calculatedBy: "auto",
     } as any);
 
@@ -708,7 +727,7 @@ const consumeReservedMaterialsForLineItem = async (
         organizationId: args.organizationId,
         materialId,
         type: "job_usage",
-        quantityChange: normalizeQty2dp(-qty),
+        quantityChange: normalizeQty2dp(-(deductionDecision.convertedQuantity ?? qty)),
         reason: `Auto-consumed from reservation for line item ${args.lineItemId}`,
         orderId: args.orderId,
         userId: args.userId,
@@ -717,7 +736,7 @@ const consumeReservedMaterialsForLineItem = async (
       await tx
         .update(materials)
         .set({
-          stockQuantity: sql`${materials.stockQuantity} - ${normalizeQty2dp(qty)}`,
+          stockQuantity: sql`${materials.stockQuantity} - ${normalizeQty2dp(deductionDecision.convertedQuantity ?? qty)}`,
           updatedAt: now,
         } as any)
         .where(and(eq(materials.organizationId, args.organizationId), eq(materials.id, materialId)));

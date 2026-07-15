@@ -3,8 +3,9 @@ import { insertMaterialSchema, updateMaterialSchema } from "../schema";
 const baseMaterialPayload = {
   name: "13oz Banner Vinyl",
   sku: "VINYL-13",
-  type: "roll",
-  unitOfMeasure: "sqft",
+  materialForm: "roll",
+  inventoryUnit: "square_foot",
+  consumptionUnit: "square_foot",
   costPerUnit: "1.25",
   stockQuantity: "0",
   minStockAlert: "0",

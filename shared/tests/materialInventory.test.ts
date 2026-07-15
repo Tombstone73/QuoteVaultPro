@@ -7,8 +7,9 @@ describe("materialInventory helpers", () => {
   test("marks roll materials with missing operational fields as needs configuration", () => {
     const result = deriveMaterialConfigurationStatus({
       name: "Banner Vinyl",
-      type: "roll",
-      unitOfMeasure: "sqft",
+      materialForm: "roll",
+      inventoryUnit: "square_foot",
+      consumptionUnit: "square_foot",
       costPerUnit: "1.25",
       stockQuantity: "3",
       minStockAlert: "0",
@@ -25,8 +26,9 @@ describe("materialInventory helpers", () => {
     const status = deriveMaterialInventoryStatus({
       isActive: true,
       name: "PVC Sheet",
-      type: "sheet",
-      unitOfMeasure: "sheet",
+      materialForm: "sheet",
+      inventoryUnit: "sheet",
+      consumptionUnit: "sheet",
       costPerUnit: "10",
       width: "48",
       height: "96",
@@ -41,7 +43,9 @@ describe("materialInventory helpers", () => {
     const status = deriveMaterialInventoryStatus({
       isActive: false,
       name: "Retired Material",
-      unitOfMeasure: "ea",
+      materialForm: "each",
+      inventoryUnit: "each",
+      consumptionUnit: "each",
       costPerUnit: "1",
       stockQuantity: "0",
       minStockAlert: "10",

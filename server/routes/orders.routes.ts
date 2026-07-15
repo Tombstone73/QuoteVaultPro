@@ -155,6 +155,26 @@ function buildMaterialLinkWarning(ignoredProductIds: string[]) {
     };
 }
 
+// Retired material sell-price fields remain stored only as compatibility debt.
+// Material APIs deliberately do not expose or update them; PBV2 owns sell pricing.
+function toPublicMaterial(material: any) {
+    const {
+        unitOfMeasure: _migrationUnit,
+        sellPriceUnit: _retiredSellPriceUnit,
+        wholesalePriceUnit: _retiredWholesalePriceUnit,
+        wholesaleBaseRate: _retiredWholesaleBaseRate,
+        wholesaleMinCharge: _retiredWholesaleMinCharge,
+        retailBaseRate: _retiredRetailBaseRate,
+        retailMinCharge: _retiredRetailMinCharge,
+        ...publicMaterial
+    } = material;
+    return publicMaterial;
+}
+
+function toOperationalMaterialConfig(material: any) {
+    return toPublicMaterial(material);
+}
+
 // Helper to get organizationId from request (matches server/routes.ts behavior)
 function getRequestOrganizationId(req: any): string | undefined {
     return req.organizationId || req.headers['x-organization-id'] as string;
@@ -3894,7 +3914,7 @@ export async function registerOrderRoutes(
                 linkedProductIdsByMaterialId.set(materialId, current);
             }
             list = list.map((material: any) => ({
-                ...material,
+                ...toPublicMaterial(material),
                 linkedProductIds: linkedProductIdsByMaterialId.get(String(material.id)) || [],
             }));
 
@@ -3918,12 +3938,10 @@ export async function registerOrderRoutes(
                     .map((m: any) => ({
                         id: m.id,
                         name: m.name,
-                        unitOfMeasure: m.unitOfMeasure,
-                        inventoryUnit: m.inventoryUnit ?? m.unitOfMeasure,
-                        sellPriceUnit: m.sellPriceUnit ?? m.unitOfMeasure,
-                        wholesalePriceUnit: m.wholesalePriceUnit ?? m.sellPriceUnit ?? m.unitOfMeasure,
-                        vendorCostUnit: m.vendorCostUnit ?? m.unitOfMeasure,
-                        consumptionUnit: m.consumptionUnit ?? m.sellPriceUnit ?? m.unitOfMeasure,
+                        materialForm: m.materialForm,
+                        inventoryUnit: m.inventoryUnit,
+                        consumptionUnit: m.consumptionUnit,
+                        vendorCostUnit: m.vendorCostUnit,
                         isActive: m.isActive,
                         linkedProductIds: m.linkedProductIds || [],
                     }));
@@ -3944,24 +3962,17 @@ export async function registerOrderRoutes(
                     'Material ID': '',
                     Name: '13oz Vinyl',
                     SKU: 'VINYL-13OZ',
-                    Type: 'roll',
+                    'Material Form': 'roll',
                     Category: 'Vinyl',
-                    'Unit Of Measure': 'sqft',
-                    'Inventory Unit': 'sqft',
-                    'Sell Price Unit': 'sqft',
-                    'Wholesale Price Unit': 'sqft',
-                    'Vendor Cost Unit': 'sqft',
-                    'Consumption Unit': 'sqft',
+                    'Inventory Unit': 'square_foot',
+                    'Vendor Cost Unit': 'square_foot',
+                    'Consumption Unit': 'square_foot',
                     Width: '54',
                     Height: '',
                     Thickness: '',
                     'Thickness Unit': 'mil',
                     Color: 'White',
                     'Cost Per Unit': '0.2500',
-                    'Wholesale Base Rate': '',
-                    'Wholesale Min Charge': '',
-                    'Retail Base Rate': '',
-                    'Retail Min Charge': '',
                     'Stock Quantity': '0',
                     'Min Stock Alert': '0',
                     'Is Active': 'true',
@@ -3995,24 +4006,17 @@ export async function registerOrderRoutes(
                 'Material ID': m.id,
                 Name: m.name || '',
                 SKU: m.sku || '',
-                Type: m.type || '',
+                'Material Form': m.materialForm || '',
                 Category: m.category || '',
-                'Unit Of Measure': m.unitOfMeasure || '',
-                'Inventory Unit': m.inventoryUnit || m.unitOfMeasure || '',
-                'Sell Price Unit': m.sellPriceUnit || m.unitOfMeasure || '',
-                'Wholesale Price Unit': m.wholesalePriceUnit || m.sellPriceUnit || m.unitOfMeasure || '',
-                'Vendor Cost Unit': m.vendorCostUnit || m.unitOfMeasure || '',
-                'Consumption Unit': m.consumptionUnit || m.sellPriceUnit || m.unitOfMeasure || '',
+                'Inventory Unit': m.inventoryUnit || '',
+                'Vendor Cost Unit': m.vendorCostUnit || '',
+                'Consumption Unit': m.consumptionUnit || '',
                 Width: m.width ?? '',
                 Height: m.height ?? '',
                 Thickness: m.thickness ?? '',
                 'Thickness Unit': m.thicknessUnit ?? '',
                 Color: m.color ?? '',
                 'Cost Per Unit': m.costPerUnit ?? '',
-                'Wholesale Base Rate': m.wholesaleBaseRate ?? '',
-                'Wholesale Min Charge': m.wholesaleMinCharge ?? '',
-                'Retail Base Rate': m.retailBaseRate ?? '',
-                'Retail Min Charge': m.retailMinCharge ?? '',
                 'Stock Quantity': m.stockQuantity ?? '',
                 'Min Stock Alert': m.minStockAlert ?? '',
                 'Is Active': m.isActive === false ? 'false' : 'true',
@@ -4091,35 +4095,30 @@ export async function registerOrderRoutes(
                 const materialId = (row['Material ID'] || row['ID'] || '').trim();
                 const name = (row['Name'] || '').trim();
                 const sku = (row['SKU'] || '').trim();
-                const type = (row['Type'] || '').trim();
-                const unitOfMeasure = (row['Unit Of Measure'] || '').trim();
+                const materialForm = (row['Material Form'] || '').trim();
+                const inventoryUnit = (row['Inventory Unit'] || '').trim();
+                const consumptionUnit = (row['Consumption Unit'] || '').trim();
 
-                if (!name || !sku || !type || !unitOfMeasure) {
+                if (!name || !sku || !materialForm || !inventoryUnit || !consumptionUnit) {
                     skipped++;
+                    rowErrors.push({ row: i + 2, message: 'Name, SKU, Material Form, Inventory Unit, and Consumption Unit are required.' });
                     continue;
                 }
 
                 const payload: any = {
                     name,
                     sku,
-                    type,
+                    materialForm,
                     category: (row['Category'] || '').trim() || undefined,
-                    unitOfMeasure,
-                    inventoryUnit: (row['Inventory Unit'] || '').trim() || unitOfMeasure,
-                    sellPriceUnit: (row['Sell Price Unit'] || '').trim() || unitOfMeasure,
-                    wholesalePriceUnit: (row['Wholesale Price Unit'] || '').trim() || (row['Sell Price Unit'] || '').trim() || unitOfMeasure,
-                    vendorCostUnit: (row['Vendor Cost Unit'] || '').trim() || unitOfMeasure,
-                    consumptionUnit: (row['Consumption Unit'] || '').trim() || (row['Sell Price Unit'] || '').trim() || unitOfMeasure,
+                    inventoryUnit,
+                    vendorCostUnit: (row['Vendor Cost Unit'] || '').trim() || undefined,
+                    consumptionUnit,
                     width: parseNum(row['Width']),
                     height: parseNum(row['Height']),
                     thickness: parseNum(row['Thickness']),
                     thicknessUnit: (row['Thickness Unit'] || '').trim() || undefined,
                     color: (row['Color'] || '').trim() || undefined,
                     costPerUnit: parseNum(row['Cost Per Unit']),
-                    wholesaleBaseRate: parseNum(row['Wholesale Base Rate']),
-                    wholesaleMinCharge: parseNum(row['Wholesale Min Charge']),
-                    retailBaseRate: parseNum(row['Retail Base Rate']),
-                    retailMinCharge: parseNum(row['Retail Min Charge']),
                     stockQuantity: parseNum(row['Stock Quantity']),
                     minStockAlert: parseNum(row['Min Stock Alert']),
                     isActive: parseBool(row['Is Active']),
@@ -4135,7 +4134,10 @@ export async function registerOrderRoutes(
 
                 try {
                     if (materialId) {
+                        const existing = await storage.getMaterialById(organizationId, materialId);
+                        if (!existing) throw new Error('Material not found');
                         const parsedUpdate = updateMaterialSchema.parse(payload);
+                        insertMaterialSchema.parse({ ...toOperationalMaterialConfig(existing), ...parsedUpdate, type: parsedUpdate.materialForm ?? existing.type });
                         if (!dryRun) {
                             await storage.updateMaterial(organizationId, materialId, parsedUpdate);
                         }
@@ -4197,7 +4199,7 @@ export async function registerOrderRoutes(
             const material = await storage.getMaterialById(organizationId, req.params.id);
             if (!material) return res.status(404).json({ error: 'Material not found' });
             const linkedProducts = await storage.listProductsForMaterial(organizationId, req.params.id, { activeOnly: true });
-            res.json({ success: true, data: { ...material, linkedProductIds: linkedProducts.map((product: any) => product.id) } });
+            res.json({ success: true, data: { ...toPublicMaterial(material), linkedProductIds: linkedProducts.map((product: any) => product.id) } });
         } catch (err) {
             console.error('Error fetching material', err);
             res.status(500).json({ error: 'Failed to fetch material' });
@@ -4229,7 +4231,7 @@ export async function registerOrderRoutes(
                 if (existing) {
                     return res.json({
                         success: true,
-                        data: existing,
+                        data: toPublicMaterial(existing),
                         created: false,
                         duplicate: true,
                     });
@@ -4259,7 +4261,7 @@ export async function registerOrderRoutes(
             }
             res.json({
                 success: true,
-                data: { ...created, linkedProductIds: finalLinkedProductIds },
+                data: { ...toPublicMaterial(created), linkedProductIds: finalLinkedProductIds },
                 created: true,
                 duplicate: false,
                 warnings,
@@ -4286,7 +4288,7 @@ export async function registerOrderRoutes(
                         if (existing) {
                             return res.json({
                                 success: true,
-                                data: existing,
+                                data: toPublicMaterial(existing),
                                 created: false,
                                 duplicate: true,
                             });
@@ -4311,6 +4313,10 @@ export async function registerOrderRoutes(
             const parsed = updateMaterialSchema.parse(req.body);
             const { organizationId: _orgId, linkedProductIds: rawLinkedProductIds, ...materialData } =
                 parsed as typeof parsed & { organizationId?: string; linkedProductIds?: string[] };
+            const currentMaterial = await storage.getMaterialById(organizationId, req.params.id);
+            if (!currentMaterial) return res.status(404).json({ error: 'Material not found' });
+            // PATCH validation is performed against the resulting configuration, not just the sparse payload.
+            insertMaterialSchema.parse({ ...toOperationalMaterialConfig(currentMaterial), ...materialData, type: (materialData as any).materialForm ?? currentMaterial.type });
             const shouldReplaceLinkedProducts = Array.isArray(rawLinkedProductIds);
             const linkedProductIds = normalizeLinkedProductIds(rawLinkedProductIds);
 
@@ -4362,7 +4368,7 @@ export async function registerOrderRoutes(
                 const linkedProducts = await storage.listProductsForMaterial(organizationId, req.params.id, { activeOnly: true });
                 finalLinkedProductIds = linkedProducts.map((product: any) => product.id);
             }
-            res.json({ success: true, data: { ...updated, linkedProductIds: finalLinkedProductIds || [] }, warnings });
+            res.json({ success: true, data: { ...toPublicMaterial(updated), linkedProductIds: finalLinkedProductIds || [] }, warnings });
         } catch (err) {
             if ((err as any)?.code === '23505') {
                 return res.status(409).json({
@@ -7636,7 +7642,7 @@ export async function registerOrderRoutes(
                 .object({
                     materialId: z.string().min(1),
                     quantity: z.coerce.number().positive(),
-                    inputUom: z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]).optional(),
+                    inputUom: z.string().trim().min(1).optional(),
                 })
                 .safeParse(req.body);
 
@@ -7661,9 +7667,14 @@ export async function registerOrderRoutes(
                 .select({
                     id: materials.id,
                     sku: materials.sku,
-                    type: materials.type,
-                    unitOfMeasure: materials.unitOfMeasure,
+                    materialForm: materials.materialForm,
+                    inventoryUnit: materials.inventoryUnit,
+                    consumptionUnit: materials.consumptionUnit,
                     width: materials.width,
+                    rollLengthFt: materials.rollLengthFt,
+                    edgeWasteInPerSide: materials.edgeWasteInPerSide,
+                    leadWasteFt: materials.leadWasteFt,
+                    tailWasteFt: materials.tailWasteFt,
                 })
                 .from(materials)
                 .where(and(eq(materials.organizationId, organizationId), eq(materials.id, parsed.data.materialId)))
@@ -7673,11 +7684,16 @@ export async function registerOrderRoutes(
 
             const conversion = convertReservationInputToBaseQty({
                 material: {
-                    type: String((material as any).type),
-                    unitOfMeasure: String((material as any).unitOfMeasure),
+                    materialForm: (material as any).materialForm,
+                    inventoryUnit: (material as any).inventoryUnit,
+                    consumptionUnit: (material as any).consumptionUnit,
                     width: (material as any).width,
+                    rollLengthFt: (material as any).rollLengthFt,
+                    edgeWasteInPerSide: (material as any).edgeWasteInPerSide,
+                    leadWasteFt: (material as any).leadWasteFt,
+                    tailWasteFt: (material as any).tailWasteFt,
                 },
-                inputUom: parsed.data.inputUom ?? String((material as any).unitOfMeasure),
+                inputUom: parsed.data.inputUom ?? String((material as any).consumptionUnit),
                 inputQuantity: parsed.data.quantity,
             });
 

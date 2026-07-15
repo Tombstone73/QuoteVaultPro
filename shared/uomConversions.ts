@@ -1,19 +1,22 @@
-export const MATERIAL_UOMS = ["sheet", "sqft", "linear_ft", "ml", "ea"] as const;
+import {
+  calculateUsableRollCapacity,
+  normalizeMaterialUnit,
+  roundMaterialQuantity,
+  type MaterialInventoryUnit,
+  type RollGeometryInput,
+} from "./materialUnits";
+
+export const MATERIAL_UOMS = ["square_foot", "linear_foot", "sheet", "each", "milliliter", "pound"] as const;
 export type MaterialUom = (typeof MATERIAL_UOMS)[number];
 
-export type UomConversionMaterial = {
-  type?: string | null;
-  unitOfMeasure: string;
-  width?: string | number | null;
+export type UomConversionMaterial = RollGeometryInput & {
+  materialForm?: string | null;
+  inventoryUnit?: string | null;
+  consumptionUnit?: string | null;
 };
 
 export type UomConversionResult =
-  | {
-      ok: true;
-      baseUom: MaterialUom;
-      inputUom: MaterialUom;
-      convertedQty: number;
-    }
+  | { ok: true; baseUom: MaterialUom; inputUom: MaterialUom; convertedQty: number }
   | {
       ok: false;
       baseUom: MaterialUom | null;
@@ -22,31 +25,16 @@ export type UomConversionResult =
       code: "invalid_uom" | "missing_width" | "unsupported_conversion" | "invalid_quantity";
     };
 
-function isMaterialUom(value: unknown): value is MaterialUom {
-  return typeof value === "string" && (MATERIAL_UOMS as readonly string[]).includes(value);
-}
-
-export function round2dp(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.round(value * 100) / 100;
-}
-
 export function getMaterialBaseUom(material: UomConversionMaterial): MaterialUom | null {
-  const base = material?.unitOfMeasure;
-  return isMaterialUom(base) ? base : null;
+  return normalizeMaterialUnit(material?.inventoryUnit) as MaterialUom | null;
 }
 
 export function getAllowedInputUomsForMaterial(material: UomConversionMaterial): MaterialUom[] {
   const baseUom = getMaterialBaseUom(material);
   if (!baseUom) return [];
-
-  // Allow selecting convertible units even if width is missing.
-  // Width-dependent conversions are blocked by convertReservationInputToBaseQty().
-  // For sheet/ml/ea there are no conversions.
-  if (baseUom === "sqft") return ["sqft", "linear_ft"];
-  if (baseUom === "linear_ft") return ["linear_ft", "sqft"];
-
-  return [baseUom];
+  return material.materialForm === "roll" && baseUom === "square_foot"
+    ? ["square_foot", "linear_foot"]
+    : [baseUom];
 }
 
 export function convertReservationInputToBaseQty(args: {
@@ -55,69 +43,33 @@ export function convertReservationInputToBaseQty(args: {
   inputQuantity: number;
 }): UomConversionResult {
   const baseUom = getMaterialBaseUom(args.material);
-  if (!baseUom) {
+  const normalizedInput = normalizeMaterialUnit(args.inputUom ?? baseUom);
+  if (!baseUom || !normalizedInput) {
     return {
       ok: false,
-      baseUom: null,
+      baseUom,
       inputUom: String(args.inputUom ?? ""),
-      message: "Invalid material unit of measure",
+      message: "A configured inventory unit and a recognized input unit are required.",
       code: "invalid_uom",
     };
   }
-
-  const qty = args.inputQuantity;
-  if (!Number.isFinite(qty) || qty <= 0) {
-    return {
-      ok: false,
-      baseUom,
-      inputUom: String(args.inputUom ?? baseUom),
-      message: "Quantity must be > 0",
-      code: "invalid_quantity",
-    };
+  if (!Number.isFinite(args.inputQuantity) || args.inputQuantity <= 0) {
+    return { ok: false, baseUom, inputUom: normalizedInput, message: "Quantity must be greater than zero.", code: "invalid_quantity" };
   }
-
-  const inputUom = String(args.inputUom ?? baseUom);
-  if (!isMaterialUom(inputUom)) {
-    return {
-      ok: false,
-      baseUom,
-      inputUom,
-      message: "Invalid input unit",
-      code: "invalid_uom",
-    };
+  if (normalizedInput === baseUom) {
+    return { ok: true, baseUom, inputUom: normalizedInput, convertedQty: roundMaterialQuantity(args.inputQuantity) };
   }
-
-  if (inputUom === baseUom) {
-    return { ok: true, baseUom, inputUom, convertedQty: round2dp(qty) };
+  if (args.material.materialForm !== "roll" || baseUom !== "square_foot" || normalizedInput !== "linear_foot") {
+    return { ok: false, baseUom, inputUom: normalizedInput, message: "This material does not have a configured conversion for those units.", code: "unsupported_conversion" };
   }
-
-  const widthIn = typeof args.material.width === "number" ? args.material.width : Number(String(args.material.width ?? ""));
-  const widthFactor = Number.isFinite(widthIn) && widthIn > 0 ? widthIn / 12 : NaN;
-
-  if (!Number.isFinite(widthFactor) || widthFactor <= 0) {
-    return {
-      ok: false,
-      baseUom,
-      inputUom,
-      message: "Cannot convert without material width. Add width on the material to enable this unit.",
-      code: "missing_width",
-    };
+  const capacity = calculateUsableRollCapacity(args.material);
+  if (!capacity.ok) {
+    return { ok: false, baseUom, inputUom: normalizedInput, message: capacity.message, code: "missing_width" };
   }
-
-  // Only supported conversion: sqft <-> linear_ft (requires width).
-  if (baseUom === "sqft" && inputUom === "linear_ft") {
-    return { ok: true, baseUom, inputUom, convertedQty: round2dp(qty * widthFactor) };
-  }
-
-  if (baseUom === "linear_ft" && inputUom === "sqft") {
-    return { ok: true, baseUom, inputUom, convertedQty: round2dp(qty / widthFactor) };
-  }
-
   return {
-    ok: false,
+    ok: true,
     baseUom,
-    inputUom,
-    message: "Unsupported unit conversion",
-    code: "unsupported_conversion",
+    inputUom: normalizedInput,
+    convertedQty: roundMaterialQuantity(args.inputQuantity * (capacity.value.usableWidthInches / 12)),
   };
 }

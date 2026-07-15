@@ -12,6 +12,7 @@ export default {
       'ts-jest',
       {
         useESM: true,
+        diagnostics: false,
         tsconfig: {
           module: 'ESNext',
           moduleResolution: 'bundler',
@@ -27,6 +28,5 @@ export default {
   setupFilesAfterEnv: ['<rootDir>/server/tests/setup.ts'],
   testTimeout: 30000,
   verbose: true,
-  forceExit: true,
   detectOpenHandles: true,
 };

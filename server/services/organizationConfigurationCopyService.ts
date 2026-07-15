@@ -469,10 +469,27 @@ export async function copyOrganizationConfiguration(params: {
       counts.pricingFormulas = formulaRows.length;
 
       const sourceMaterials = await tx.select().from(materials).where(eq(materials.organizationId, sourceOrganizationId));
+      const invalidSourceMaterials = sourceMaterials.filter((row: any) => !row.materialForm || !row.inventoryUnit || !row.consumptionUnit);
+      if (invalidSourceMaterials.length > 0) {
+        throw new Error(`Cannot copy organization configuration: ${invalidSourceMaterials.length} material record(s) require material form, inventory unit, and consumption unit configuration.`);
+      }
       const materialRows = sourceMaterials.map((row: any) => {
         const id = newId();
         idMap.set(row.id, id);
-        const { createdAt, updatedAt, preferredVendorId, specsJson, ...rest } = row;
+        const {
+          createdAt,
+          updatedAt,
+          preferredVendorId,
+          specsJson,
+          unitOfMeasure: _retiredUnitOfMeasure,
+          sellPriceUnit: _retiredSellPriceUnit,
+          wholesalePriceUnit: _retiredWholesalePriceUnit,
+          wholesaleBaseRate: _retiredWholesaleBaseRate,
+          wholesaleMinCharge: _retiredWholesaleMinCharge,
+          retailBaseRate: _retiredRetailBaseRate,
+          retailMinCharge: _retiredRetailMinCharge,
+          ...rest
+        } = row;
         return {
           ...rest,
           id,

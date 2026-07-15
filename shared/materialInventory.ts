@@ -18,7 +18,9 @@ export type MaterialReorderRequestStatus = (typeof materialReorderRequestStatusV
 export type MaterialInventoryShape = {
   isActive?: boolean | null;
   name?: string | null;
-  unitOfMeasure?: string | null;
+  materialForm?: string | null;
+  inventoryUnit?: string | null;
+  consumptionUnit?: string | null;
   type?: string | null;
   stockQuantity?: string | number | null;
   minStockAlert?: string | number | null;
@@ -62,14 +64,20 @@ export function deriveMaterialConfigurationStatus(material: MaterialInventorySha
   const missing = new Set<string>();
   const stockQuantity = asNumber(material.stockQuantity) ?? 0;
   const minStockAlert = asNumber(material.minStockAlert);
-  const type = asTrimmed(material.type).toLowerCase();
+  const type = asTrimmed(material.materialForm).toLowerCase();
 
   if (!asTrimmed(material.name)) {
     missing.add("name");
   }
 
-  if (!asTrimmed(material.unitOfMeasure)) {
-    missing.add("unit_of_measure");
+  if (!asTrimmed(material.materialForm)) {
+    missing.add("material_form");
+  }
+  if (!asTrimmed(material.inventoryUnit)) {
+    missing.add("inventory_unit");
+  }
+  if (!asTrimmed(material.consumptionUnit)) {
+    missing.add("consumption_unit");
   }
 
   if ((asNumber(material.costPerUnit) ?? null) == null) {

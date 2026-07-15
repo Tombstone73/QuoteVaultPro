@@ -32,8 +32,9 @@ describe("AI parsing description schemas", () => {
     const created = insertMaterialSchema.parse({
       name: "3mm White PVC",
       sku: "PVC-3MM-WHT",
-      type: "sheet",
-      unitOfMeasure: "sheet",
+      materialForm: "sheet",
+      inventoryUnit: "sheet",
+      consumptionUnit: "sheet",
       costPerUnit: "12.50",
       stockQuantity: "10",
       minStockAlert: "2",

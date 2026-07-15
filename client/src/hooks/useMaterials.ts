@@ -7,12 +7,11 @@ export interface Material {
   id: string;
   name: string;
   sku: string;
-  type: "sheet" | "roll" | "ink" | "consumable";
+  type: string;
+  materialForm?: "roll" | "sheet" | "liquid" | "each" | "bulk_weight" | null;
   category?: string | null;
-  unitOfMeasure: string;
-  inventoryUnit?: string | null;
-  sellPriceUnit?: string | null;
-  wholesalePriceUnit?: string | null;
+  unitOfMeasure?: string | null;
+  inventoryUnit: string;
   vendorCostUnit?: string | null;
   consumptionUnit?: string | null;
   weightValue?: string | null;
@@ -25,10 +24,6 @@ export interface Material {
   thicknessUnit?: "in" | "mm" | "mil" | "gauge" | null;
   color?: string | null;
   costPerUnit: string;
-  wholesaleBaseRate?: string | null;
-  wholesaleMinCharge?: string | null;
-  retailBaseRate?: string | null;
-  retailMinCharge?: string | null;
   stockQuantity: string;
   minStockAlert: string;
   isActive: boolean;
@@ -180,10 +175,8 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 export interface MaterialSearchItem {
   id: string;
   name: string;
-  unitOfMeasure: string;
-  inventoryUnit?: string | null;
-  sellPriceUnit?: string | null;
-  wholesalePriceUnit?: string | null;
+  materialForm?: string | null;
+  inventoryUnit: string;
   vendorCostUnit?: string | null;
   consumptionUnit?: string | null;
   weightValue?: string | null;
@@ -217,12 +210,10 @@ export function useMaterialsSearch(searchText: string, options?: { limit?: numbe
       return list.map((m: any) => ({
         id: String(m.id || ""),
         name: String(m.name || ""),
-        unitOfMeasure: String(m.unitOfMeasure || ""),
-        inventoryUnit: m.inventoryUnit ?? m.unitOfMeasure ?? null,
-        sellPriceUnit: m.sellPriceUnit ?? m.unitOfMeasure ?? null,
-        wholesalePriceUnit: m.wholesalePriceUnit ?? m.sellPriceUnit ?? m.unitOfMeasure ?? null,
-        vendorCostUnit: m.vendorCostUnit ?? m.unitOfMeasure ?? null,
-        consumptionUnit: m.consumptionUnit ?? m.sellPriceUnit ?? m.unitOfMeasure ?? null,
+        materialForm: m.materialForm ?? null,
+        inventoryUnit: String(m.inventoryUnit || ""),
+        vendorCostUnit: m.vendorCostUnit ?? null,
+        consumptionUnit: m.consumptionUnit ?? null,
         weightValue: m.weightValue ?? null,
         weightUnit: m.weightUnit ?? null,
         weightBasis: m.weightBasis ?? null,

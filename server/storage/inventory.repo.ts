@@ -66,22 +66,6 @@ function mapLegacyMovementType(type: InventoryAdjustmentDetailType): InventoryMo
     return "adjustment";
 }
 
-function withMaterialUnitFallbacks<T extends { unitOfMeasure?: string | null }>(material: T): T {
-    const unitOfMeasure = material.unitOfMeasure;
-    if (!unitOfMeasure) return material;
-    const sellPriceUnit = (material as any).sellPriceUnit || unitOfMeasure;
-    return {
-        ...material,
-        inventoryUnit: (material as any).inventoryUnit || unitOfMeasure,
-        sellPriceUnit,
-        wholesalePriceUnit: (material as any).wholesalePriceUnit || sellPriceUnit || unitOfMeasure,
-        vendorCostUnit: (material as any).vendorCostUnit || unitOfMeasure,
-        // TODO(material-units): consumptionUnit remains informational until conversion factors
-        // exist for roll sqft conversion, sheet yield conversion, and partial depletion tracking.
-        consumptionUnit: (material as any).consumptionUnit || sellPriceUnit || unitOfMeasure,
-    };
-}
-
 function hasOwn(object: object, key: string): boolean {
     return Object.prototype.hasOwnProperty.call(object, key);
 }
@@ -136,6 +120,9 @@ export class InventoryRepository {
     private async getMaterialForUpdate(tx: any, organizationId: string, materialId: string): Promise<Material> {
         const [material] = await tx.select().from(materials).where(and(eq(materials.id, materialId), eq(materials.organizationId, organizationId)));
         if (!material) throw new Error("Material not found");
+        if (!material.materialForm || !material.inventoryUnit || !material.consumptionUnit) {
+            throw new Error("Material requires a form, inventory unit, and consumption unit before inventory can be changed.");
+        }
         return material;
     }
 
@@ -192,15 +179,21 @@ export class InventoryRepository {
 
     async createMaterial(organizationId: string, material: Omit<InsertMaterial, 'organizationId'>): Promise<Material> {
         const { linkedProductIds: _linkedProductIds, ...materialFields } = material as any;
-        const materialWithUnitFallbacks = withMaterialUnitFallbacks(materialFields);
-        const materialWithWeight = normalizeMaterialWeightFields(materialWithUnitFallbacks as any);
+        const materialWithWeight = normalizeMaterialWeightFields({
+            ...materialFields,
+            // `type` remains the existing storage classification during the migration bridge.
+            type: materialFields.materialForm,
+        } as any);
         const [created] = await this.dbInstance.insert(materials).values({ ...materialWithWeight, organizationId } as any).returning();
         return created;
     }
 
     async updateMaterial(organizationId: string, id: string, materialData: Partial<InsertMaterial>): Promise<Material> {
         const { linkedProductIds: _linkedProductIds, ...materialFields } = materialData as any;
-        const materialWithWeight = normalizeMaterialWeightFields(materialFields as any, { preserveWhenAbsent: true });
+        const materialWithWeight = normalizeMaterialWeightFields({
+            ...materialFields,
+            ...(materialFields.materialForm ? { type: materialFields.materialForm } : {}),
+        } as any, { preserveWhenAbsent: true });
         const [updated] = await this.dbInstance.update(materials)
             .set({ ...materialWithWeight, updatedAt: new Date() } as any)
             .where(and(eq(materials.id, id), eq(materials.organizationId, organizationId)))
@@ -614,28 +607,27 @@ export class InventoryRepository {
             if (!material) continue;
 
             let quantityNeeded = 0;
-            let usageUom = material.unitOfMeasure;
-            if (material.type === 'sheet') {
+            let usageUom: string | null = null;
+            if (material.materialForm === 'sheet') {
                 quantityNeeded = lineItem.nestingConfigSnapshot?.totalSheets || lineItem.quantity;
                 usageUom = "sheet";
-            } else if (material.type === 'roll' && material.unitOfMeasure === 'sqft') {
+            } else if (material.materialForm === 'roll') {
                 quantityNeeded = parseFloat(lineItem.sqft?.toString() || '0');
-                usageUom = "sqft";
+                usageUom = "square_foot";
             } else {
                 quantityNeeded = lineItem.quantity;
+                usageUom = material.consumptionUnit;
             }
             if (quantityNeeded <= 0) continue;
 
-            // TODO(material-units): consumptionUnit is informational until explicit roll/sheet
-            // conversion factors and partial depletion tracking exist.
-            const deductionDecision = canAutoDeductMaterialStock(material, usageUom);
+            const deductionDecision = canAutoDeductMaterialStock(material, usageUom, quantityNeeded);
 
             await this.dbInstance.insert(orderMaterialUsage).values({
                 orderId,
                 orderLineItemId: lineItem.id,
                 materialId: lineItem.materialId,
-                quantityUsed: `${quantityNeeded}`,
-                unitOfMeasure: usageUom,
+                quantityUsed: `${deductionDecision.convertedQuantity ?? quantityNeeded}`,
+                unitOfMeasure: deductionDecision.materialUom || usageUom,
                 calculatedBy: 'auto',
             } as any);
 
@@ -664,7 +656,7 @@ export class InventoryRepository {
                 organizationId,
                 lineItem.materialId,
                 'job_usage',
-                -quantityNeeded,
+                -(deductionDecision.convertedQuantity ?? quantityNeeded),
                 userId,
                 `Auto-deducted for order ${orderId}, line item: ${lineItem.description}`,
                 orderId
