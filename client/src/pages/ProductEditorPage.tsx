@@ -1161,6 +1161,7 @@ const ProductEditorPage = () => {
             pricingProfileConfig={form.watch("pricingProfileConfig") || null}
             pricingMode={pbv2PricingMode}
             measurementMode={form.watch("measurementMode") || "dimensions_required"}
+            allowZeroPrice={form.watch("allowZeroPrice") === true}
             productPrimaryMaterialId={form.watch("primaryMaterialId") || null}
             findings={pbv2PricingData.findings}
           />

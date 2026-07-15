@@ -203,6 +203,8 @@ export function buildFormulaEvaluationScope(input: {
   scope: Record<string, number | string | boolean | null>;
   formulaVariables?: Record<string, number>;
   pricingMatrixVariables?: Record<string, number>;
+  /** Quantity-only products bind this explicitly from PBV2 per-piece pricing. */
+  unitPriceOverride?: number;
 }): Record<string, number | string | boolean | null> {
   const out: Record<string, number | string | boolean | null> = { ...input.scope };
 
@@ -224,6 +226,10 @@ export function buildFormulaEvaluationScope(input: {
     for (const alias of BASE_PRICE_ALIASES) {
       out[alias] = finalBasePrice;
     }
+  }
+
+  if (typeof input.unitPriceOverride === "number" && Number.isFinite(input.unitPriceOverride)) {
+    out.unitPrice = input.unitPriceOverride;
   }
 
   return out;

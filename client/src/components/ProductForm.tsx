@@ -585,6 +585,7 @@ export const ProductForm = ({
           <div>
             <BasePricingEditor
               pricingV2={pricingV2 || null}
+              pricingProfileKey={addPricingProfileKey}
               onUpdateBase={onUpdatePricingV2Base!}
               onUpdateUnitSystem={onUpdatePricingV2UnitSystem!}
               onUpdateTierBasis={onUpdatePricingV2TierBasis!}

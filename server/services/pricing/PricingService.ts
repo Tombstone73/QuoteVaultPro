@@ -155,6 +155,19 @@ export type PBV2RuntimePricingSnapshot = {
   resolvedWeightDebug?: PBV2ResolvedWeightSnapshotDebug;
 };
 
+/** Quantity-only products must opt in before a zero-price line can be created. */
+export function assertQuantityOnlyPriceConfigured(
+  product: { measurementMode?: string | null; allowZeroPrice?: boolean | null },
+  lineTotalCents: number,
+): void {
+  if (product.measurementMode === "quantity_only" && lineTotalCents === 0 && product.allowZeroPrice !== true) {
+    throw Object.assign(
+      new Error("Price not configured: set a per-item PBV2 base price or explicitly allow a $0.00 price for this product."),
+      { code: "PRODUCT_PRICE_NOT_CONFIGURED" },
+    );
+  }
+}
+
 export type PBV2TierResolutionSnapshot = {
   quantity: number;
   enabled: boolean;
@@ -763,12 +776,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
   const optionsCents = Math.round(evalResult.optionsPrice * 100);
   const lineTotalCents = basePriceCents + optionsCents;
 
-  if (product.measurementMode === "quantity_only" && lineTotalCents === 0 && product.allowZeroPrice !== true) {
-    throw Object.assign(
-      new Error("Price not configured: set a per-item PBV2 base price or explicitly allow a $0.00 price for this product."),
-      { code: "PRODUCT_PRICE_NOT_CONFIGURED" },
-    );
-  }
+  assertQuantityOnlyPriceConfigured(product, lineTotalCents);
 
   // Debug log to verify quantity applied once
   console.log('[PBV2_PRICING_DEBUG]', {
@@ -2875,7 +2883,26 @@ function calculateBasePriceDetails(
     }
   }
 
-  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0) {
+  if (activePricingProfileKey === "qty_only" && perSqftCents !== 0) {
+    // Quantity-only products have no area-pricing semantics. Never let a stale
+    // $/sqft field (including a matrix base_price) become their unit price.
+    perSqftCents = 0;
+    tierResolution = {
+      ...tierResolution,
+      basePriceFinal: 0,
+      finalBaseRateUsed: 0,
+      warnings: [
+        ...tierResolution.warnings,
+        {
+          code: "PBV2_QTY_ONLY_IGNORED_PER_SQFT_RATE",
+          severity: "warning",
+          message: "Quantity-only pricing ignored a per-square-foot rate; configure Rate per piece instead.",
+        },
+      ],
+    };
+  }
+
+  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0 && activePricingProfileKey !== "qty_only") {
     throw new Error(
       'This product needs base pricing configured before it can be quoted. Please edit the product and set at least one base price ($/sqft, $/piece, or minimum charge) in the Base Pricing section.'
     );
@@ -3424,6 +3451,16 @@ function calculateFormulaAwareBasePrice(input: {
   const tierResolution = withFormulaTierReferenceWarning(baseDetails.tierResolution, formulaToUse);
   const formulaVariables = input.formulaVariables
     ?? (input.product ? resolveSnapshotFormulaVariables(input.treeJson, input.product) : undefined);
+  const quantityOnlyUnitPrice = activeProfile.kind === "qty_only"
+    ? baseDetails.perPieceCents / 100
+    : undefined;
+  // Matrix selectors may still provide useful non-price variables, but Quantity
+  // Only must never inherit an area-price alias from a legacy matrix row.
+  const formulaPricingMatrixVariables = activeProfile.kind === "qty_only"
+    ? Object.fromEntries(Object.entries(input.pricingMatrixVariables ?? {}).filter(([key]) => ![
+      "base_price", "p", "price", "basePricePerSqft", "pricePerSqft", "unitPrice",
+    ].includes(key)))
+    : input.pricingMatrixVariables;
 
   const formulaDebug = buildBaseFormulaDebugContext({
     formulaRaw: formulaToUse,
@@ -3444,7 +3481,8 @@ function calculateFormulaAwareBasePrice(input: {
     sheetYieldMetrics: baseDetails.sheetYieldMetrics,
     formulaVariables,
     formulaVariableSources: input.formulaVariableSources,
-    pricingMatrixVariables: input.pricingMatrixVariables,
+    pricingMatrixVariables: formulaPricingMatrixVariables,
+    unitPriceOverride: quantityOnlyUnitPrice,
   });
   formulaDebug.formulaSourceMode = sourceResolution.mode;
   formulaDebug.resolvedFormulaSource = sourceResolution.source;
@@ -3485,14 +3523,11 @@ function calculateFormulaAwareBasePrice(input: {
     baseDetails.perPieceCents > 0 &&
     baseDetails.perSqftCents === 0 &&
     (tierResolution.tierSource === "matrix_row" || baseDetails.basePriceSource === "pricing_matrix.row_qty_tier");
-  // The quantity-only profile's default formula is q * unitPrice. PBV2 stores
-  // that configured unit price as perPieceCents, so the already-calculated PBV2
-  // base is authoritative and avoids evaluating an unbound formula alias as $0.
+  // A quantity-only product still evaluates its chosen formula, but unitPrice is
+  // explicitly bound to PBV2's per-piece rate below.
   const usePbv2BaseForQuantityOnlyProfile =
-    sourceResolution.source === "profile" &&
     activeProfile.kind === "qty_only" &&
-    baseDetails.perPieceCents > 0 &&
-    baseDetails.perSqftCents === 0;
+    !shouldEvaluateFormula;
 
   if (!shouldEvaluateFormula || usePbv2BaseForPerPieceMatrix || usePbv2BaseForQuantityOnlyProfile) {
     if (profileUsesFormula) {
@@ -3555,7 +3590,8 @@ function calculateFormulaAwareBasePrice(input: {
     sheetYieldMetrics: baseDetails.sheetYieldMetrics,
     formulaVariables,
     formulaVariableSources: input.formulaVariableSources,
-    pricingMatrixVariables: input.pricingMatrixVariables,
+    pricingMatrixVariables: formulaPricingMatrixVariables,
+    unitPriceOverride: quantityOnlyUnitPrice,
     formulaOutputMeaning,
   });
 
@@ -3937,6 +3973,7 @@ function evaluatePreviewFormulaToCents(input: {
   formulaVariables?: Record<string, number>;
   formulaVariableSources?: Record<string, string>;
   pricingMatrixVariables?: Record<string, number>;
+  unitPriceOverride?: number;
   formulaOutputMeaning?: FormulaOutputMeaning;
 }): {
   resultValue: number;
@@ -3973,6 +4010,7 @@ function evaluatePreviewFormulaToCents(input: {
     scope,
     formulaVariables: input.formulaVariables,
     pricingMatrixVariables: input.pricingMatrixVariables,
+    unitPriceOverride: input.unitPriceOverride,
   });
   const variableSources = buildFormulaVariableSourceDebug({
     scope,
@@ -4183,6 +4221,7 @@ function buildBaseFormulaDebugContext(input: {
   formulaVariables?: Record<string, number>;
   formulaVariableSources?: Record<string, string>;
   pricingMatrixVariables?: Record<string, number>;
+  unitPriceOverride?: number;
 }): NonNullable<PricingPreviewEvaluationResult['debug']> {
   const scope = buildFormulaScope({
     formula: input.formulaRaw,
@@ -4217,6 +4256,7 @@ function buildBaseFormulaDebugContext(input: {
     scope,
     formulaVariables: input.formulaVariables,
     pricingMatrixVariables: input.pricingMatrixVariables,
+    unitPriceOverride: input.unitPriceOverride,
   });
   const variableSources = buildFormulaVariableSourceDebug({
     scope,

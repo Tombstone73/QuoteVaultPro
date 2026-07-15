@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from "@jest/globals";
-import { evaluatePricingPreviewFromTree } from "../PricingService";
+import { assertQuantityOnlyPriceConfigured, evaluatePricingPreviewFromTree } from "../PricingService";
 
 // Mock the calculateBasePrice function's logic
 function calculateBasePrice(
@@ -198,5 +198,74 @@ describe("PBV2 Base Pricing - Minimum Charge Semantics", () => {
     });
 
     expect(result.totalPrice).toBe(8.25);
+  });
+
+  test("quantity-only binds unitPrice to Rate per piece and ignores Rate per sq ft", () => {
+    const treeJson = {
+      schemaVersion: 2,
+      rootNodeIds: ["root"],
+      nodes: { root: { id: "root", kind: "group", label: "Product options" } },
+      edges: [],
+      meta: {
+        pricingProfileKey: "qty_only",
+        pricingFormula: "q * unitPrice",
+        pricingV2: {
+          base: { perSqftCents: 999, perPieceCents: 100, minimumChargeCents: 0 },
+        },
+      },
+    };
+
+    const one = evaluatePricingPreviewFromTree({
+      treeJson,
+      widthIn: 1,
+      heightIn: 1,
+      quantity: 1,
+      pricingProfileKey: "qty_only",
+      debug: true,
+    });
+    const fifty = evaluatePricingPreviewFromTree({
+      treeJson,
+      widthIn: 1,
+      heightIn: 1,
+      quantity: 50,
+      pricingProfileKey: "qty_only",
+      debug: true,
+    });
+
+    expect(one.totalPrice).toBe(1);
+    expect(one.unitPrice).toBe(1);
+    expect(one.debug?.variables.unitPrice).toBe(1);
+    expect(fifty.totalPrice).toBe(50);
+    expect(fifty.unitPrice).toBe(1);
+  });
+
+  test("quantity-only preview with no per-piece rate remains zero for the explicit configuration warning", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: {
+        schemaVersion: 2,
+        rootNodeIds: ["root"],
+        nodes: { root: { id: "root", kind: "group", label: "Product options" } },
+        edges: [],
+        meta: {
+          pricingProfileKey: "qty_only",
+          pricingFormula: "q * unitPrice",
+          pricingV2: { base: { perSqftCents: 500, perPieceCents: 0, minimumChargeCents: 0 } },
+        },
+      },
+      widthIn: 1,
+      heightIn: 1,
+      quantity: 1,
+      pricingProfileKey: "qty_only",
+    });
+
+    expect(result.totalPrice).toBe(0);
+    expect(result.unitPrice).toBe(0);
+  });
+
+  test("zero-priced quantity-only products are blocked unless explicitly allowed", () => {
+    expect(() => assertQuantityOnlyPriceConfigured({ measurementMode: "quantity_only", allowZeroPrice: false }, 0))
+      .toThrow("Price not configured");
+    expect(() => assertQuantityOnlyPriceConfigured({ measurementMode: "quantity_only", allowZeroPrice: true }, 0))
+      .not.toThrow();
   });
 });

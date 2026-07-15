@@ -35,6 +35,7 @@ interface BasePricingEditorProps {
   onUpdateBase: (base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }) => void;
   onUpdateUnitSystem: (unitSystem: 'imperial' | 'metric') => void;
   onUpdateTierBasis: (tierBasis: Pbv2TierBasis) => void;
+  pricingProfileKey?: string | null;
   allowRotation?: boolean;
   onUpdateAllowRotation?: (allowRotation: boolean) => void;
   onAddTier: (kind: 'qty' | 'sqft') => void;
@@ -47,6 +48,7 @@ export function BasePricingEditor({
   onUpdateBase,
   onUpdateUnitSystem,
   onUpdateTierBasis,
+  pricingProfileKey,
   allowRotation = false,
   onUpdateAllowRotation,
   onAddTier,
@@ -56,6 +58,7 @@ export function BasePricingEditor({
   const unitSystem = pricingV2?.unitSystem || 'imperial';
   const tierBasis = pricingV2?.tierBasis || 'line_item_quantity';
   const base = pricingV2?.base || {};
+  const quantityOnly = pricingProfileKey === "qty_only";
   const qtyTiers = pricingV2?.qtyTiers || [];
   const sqftTiers = pricingV2?.sqftTiers || [];
 
@@ -146,8 +149,8 @@ export function BasePricingEditor({
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-3">
-          <div>
+        <div className={`grid gap-3 ${quantityOnly ? "grid-cols-2" : "grid-cols-3"}`}>
+          {!quantityOnly ? <div>
             <Label className="text-xs text-slate-400 mb-1 block">
               Rate per sq ft {unitSystem === 'metric' && '(sq m)'}
             </Label>
@@ -163,7 +166,7 @@ export function BasePricingEditor({
                 className="bg-[#0f172a] border-slate-600 text-slate-100 pl-7"
               />
             </div>
-          </div>
+          </div> : null}
 
           <div>
             <Label className="text-xs text-slate-400 mb-1 block">Rate per piece</Label>
@@ -197,6 +200,9 @@ export function BasePricingEditor({
             </div>
           </div>
         </div>
+        {quantityOnly ? (
+          <div className="text-xs text-slate-400">Quantity Only uses Rate per piece. Rate per sq ft is not used.</div>
+        ) : null}
       </div>
 
       <Separator className="bg-slate-700" />
