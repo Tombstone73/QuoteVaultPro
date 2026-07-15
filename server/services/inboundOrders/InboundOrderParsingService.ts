@@ -654,9 +654,12 @@ export class InboundOrderParsingService {
     );
     const dateRefined = hasPurchaseOrderDueDate ? evidenceRefined : this.applyDateInference(record, evidenceRefined);
     const quantityRefined = this.applyQuantityWordInference(record, dateRefined);
-    const structuredRefined = this.applyStructuredLineItemInference(record, quantityRefined, evidenceBundle);
-    const segmentedRefined = this.applyLineItemSegmentation(record, structuredRefined, evidenceBundle);
-    const decisionsRefined = this.applyMissingDecisionDetection(segmentedRefined);
+    // Segment before field extraction.  Structured extraction is deliberately
+    // candidate-scoped below; enriching a single AI line item from the entire
+    // message was allowing a later banner (or artwork) to overwrite a sign.
+    const segmentedDraft = this.applyLineItemSegmentation(record, quantityRefined, evidenceBundle);
+    const structuredRefined = this.applyStructuredLineItemInference(record, segmentedDraft, evidenceBundle);
+    const decisionsRefined = this.applyMissingDecisionDetection(structuredRefined);
     return evidenceBundle
       ? {
         ...decisionsRefined,
@@ -761,7 +764,12 @@ export class InboundOrderParsingService {
     const baseLineItems = draft.lineItems.length > 0 ? draft.lineItems : [lineItemTemplate()];
     let changed = draft.lineItems.length === 0;
     const lineItems = baseLineItems.map((lineItem, index) => {
-      const text = [lineItem.sourceText, evidenceText].filter(Boolean).join("\n");
+      // Once segmentation has found more than one item, only the source range
+      // for this candidate may supply product, quantity, dimensions, finishing,
+      // or artwork.  Shared email evidence is safe only for one-item requests.
+      const text = baseLineItems.length > 1
+        ? (lineItem.sourceText ?? "")
+        : [lineItem.sourceText, evidenceText].filter(Boolean).join("\n");
       const inferredProduct = this.inferStructuredProduct(text);
       const dimensions = this.extractDistinctDimensions(text);
       const inferredQuantity = lineItem.quantity ? null : this.inferStructuredQuantity(lineItem, text);
@@ -1023,13 +1031,30 @@ export class InboundOrderParsingService {
     const baseLine = draft.lineItems[0] ?? lineItemTemplate();
     const evidence = getManualInboundEvidence(record);
     const evidenceText = [
-      baseLine.sourceText,
       evidence.bodyText,
       evidence.notes,
       evidence.subject,
       draft.order.notes,
       ...(evidenceBundle?.items.map((item) => item.rawText).filter(Boolean) ?? []),
     ].filter(Boolean).join("\n");
+
+    const fragments = this.extractLineItemFragments(evidenceText);
+    if (fragments.length > 1) {
+      return {
+        ...draft,
+        lineItems: fragments.map((fragment, index) => this.lineItemFromFragment(baseLine, fragment, index)),
+        globalWarnings: [
+          ...draft.globalWarnings,
+          warning(
+            "line_item_segmentation_review",
+            `${fragments.length} distinct requested items were detected from ${this.uniqueTextValues(fragments.flatMap((fragment) => fragment.reasons)).join(", ")}. Review line-item separation.`,
+            "info",
+            "lineItems",
+          ),
+        ],
+      };
+    }
+
     const dimensions = this.extractDistinctDimensions(evidenceText);
     if (dimensions.length < 2) return draft;
     const productName = baseLine.productName ?? this.inferSegmentProductName(evidenceText);
@@ -1085,6 +1110,96 @@ export class InboundOrderParsingService {
           `${dimensions.length} different sizes were found. Review line-item separation.`,
           "info",
           "lineItems",
+        ),
+      ],
+    };
+  }
+
+  private extractLineItemFragments(text: string): Array<{ sourceText: string; reasons: string[] }> {
+    const lines = text
+      .split(/\r?\n+/)
+      .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "").replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+    const fragments: Array<{ sourceText: string; reasons: string[] }> = [];
+    const add = (sourceText: string, reasons: string[]) => {
+      const normalized = sourceText.replace(/\s+/g, " ").trim();
+      if (!normalized || fragments.some((item) => item.sourceText.toLowerCase() === normalized.toLowerCase())) return;
+      fragments.push({ sourceText: normalized, reasons });
+    };
+
+    // Explicit quantity subgroups are one requested item group even when they
+    // are written in a single paragraph rather than a list.
+    const subset = /\b(\d{1,5})\s+([^.;\n]{0,90}?(?:signs?|banners?|decals?|stickers?|posters?))\b\s*(?:and\s+)?(?:the\s+)?other\s+(\d{1,5})\s+([^.;\n]{0,90}?(?:signs?|banners?|decals?|stickers?|posters?))\b/i.exec(text);
+    if (subset) {
+      add(`${subset[1]} ${subset[2]}`, ["quantity subset", "different specifications"]);
+      add(`${subset[3]} ${subset[4]}`, ["quantity subset", "different specifications"]);
+      return fragments;
+    }
+
+    for (const line of lines) {
+      const itemStarts = Array.from(line.matchAll(/\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:[\w/-]+\s+){0,3}(?:coroplast\s+)?(?:signs?|banners?|decals?|stickers?|posters?|magnets?)\b/gi));
+      if (itemStarts.length > 1) {
+        itemStarts.forEach((match, index) => {
+          const start = match.index ?? 0;
+          const end = index + 1 < itemStarts.length ? itemStarts[index + 1].index ?? line.length : line.length;
+          add(line.slice(start, end).replace(/^[,;\s]+|[,;\s]+$/g, ""), ["different product or quantity"]);
+        });
+        continue;
+      }
+      const hasProduct = /\b(?:coroplast|corrugated\s+plastic|yard\s+sign|lawn\s+sign|signs?|banners?|decals?|stickers?|posters?|magnets?)\b/i.test(line);
+      const hasQuantity = /\b(?:qty|quantity|count)\s*[:#-]?\s*\d+\b|\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:[\w/-]+\s+){0,3}(?:signs?|banners?|decals?|stickers?|posters?|magnets?)\b/i.test(line);
+      const hasDimension = this.extractDistinctDimensions(line).length > 0;
+      if (!hasProduct && !(hasQuantity && hasDimension)) continue;
+      const reasons: string[] = [];
+      if (hasProduct) reasons.push("different product");
+      if (hasQuantity) reasons.push("different quantity");
+      if (hasDimension) reasons.push("different size");
+      if (/^(?:[-*•]|\d+[.)])/.test(line)) reasons.push("separate bullet");
+      add(line, reasons);
+    }
+
+    // A prose request commonly puts two item clauses in one sentence.
+    if (fragments.length < 2) {
+      const clauses = text.split(/(?=\b(?:also|another|one\s+large|second\s+item|additionally)\b)|(?<=\.)\s+/i);
+      for (const clause of clauses) {
+        const cleaned = clause.replace(/\s+/g, " ").trim();
+        if (/\b(?:coroplast|signs?|banners?|decals?|stickers?|posters?|magnets?)\b/i.test(cleaned)
+          && (/\b\d+\b/.test(cleaned) || this.extractDistinctDimensions(cleaned).length > 0)) {
+          add(cleaned, ["separate request phrase"]);
+        }
+      }
+    }
+    return fragments.length > 1 ? fragments : [];
+  }
+
+  private lineItemFromFragment(
+    baseLine: InboundOrderParsedDraft["lineItems"][number],
+    fragment: { sourceText: string; reasons: string[] },
+    index: number,
+  ): InboundOrderParsedDraft["lineItems"][number] {
+    const product = this.inferStructuredProduct(fragment.sourceText);
+    const dimensions = this.extractDistinctDimensions(fragment.sourceText)[0] ?? null;
+    const quantity = this.inferStructuredQuantity(baseLine, fragment.sourceText);
+    const options = this.extractStructuredOptions(fragment.sourceText);
+    return {
+      ...lineItemTemplate(),
+      sourceText: fragment.sourceText,
+      productName: product?.productName ?? this.inferSegmentProductName(fragment.sourceText),
+      materialText: product?.materialText ?? null,
+      quantity: quantity?.quantity ?? null,
+      width: dimensions?.width ?? null,
+      height: dimensions?.height ?? null,
+      dimensionsUnit: dimensions?.unit ?? null,
+      optionTexts: options.optionTexts,
+      finishingTexts: options.finishingTexts,
+      artworkRefs: this.extractArtworkReferences(fragment.sourceText),
+      confidence: Math.max(baseLine.confidence, product?.confidence ?? 0, dimensions ? 84 : 0, quantity ? 84 : 0),
+      warnings: [
+        warning(
+          "line_item_segmented_from_source",
+          `Line item ${index + 1} was separated because ${fragment.reasons.join(", ")}.`,
+          "info",
+          `lineItems.${index}`,
         ),
       ],
     };

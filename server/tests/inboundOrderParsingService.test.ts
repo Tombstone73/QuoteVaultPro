@@ -607,6 +607,54 @@ describe("InboundOrderParsingService", () => {
     }));
   });
 
+  test("segments distinct Coroplast, directional-sign subset, and banner requests before candidate extraction", () => {
+    const bodyText = [
+      "20 coroplast signs, 24 x 18 inches, sponsor-sign.pdf",
+      "2 informational/directional signs with different content, directional-sign.pdf",
+      "1 welcome banner, approximately 8 x 2 feet, welcome-banner.pdf",
+    ].join("\n");
+    const service = new InboundOrderParsingService(makeRepository().repo as any, () => null);
+    const refined = service.refineParsedDraft(inboundRecord({ rawPayloadJson: { bodyText } }) as any, parsedDraft({
+      lineItems: [{ ...parsedDraft().lineItems[0], sourceText: null, productName: null, quantity: null, width: null, height: null, dimensionsUnit: null, artworkRefs: [] }],
+    }) as any);
+
+    expect(refined.lineItems).toHaveLength(3);
+    expect(refined.lineItems[0]).toMatchObject({ productName: "Coroplast", quantity: 20, width: 24, height: 18, dimensionsUnit: "in" });
+    expect(refined.lineItems[1]).toMatchObject({ productName: "Sign", quantity: 2 });
+    expect(refined.lineItems[2]).toMatchObject({ productName: "Banner", quantity: 1, width: 96, height: 24, dimensionsUnit: "in" });
+    expect(refined.lineItems[0].artworkRefs).toEqual(["sponsor-sign.pdf"]);
+    expect(refined.lineItems[2].artworkRefs).toEqual(["welcome-banner.pdf"]);
+    expect(refined.lineItems.every((item) => item.warnings.some((itemWarning) => itemWarning.code === "line_item_segmented_from_source"))).toBe(true);
+  });
+
+  test("preserves explicit quantity subsets and keeps a same-size total request as one item", () => {
+    const service = new InboundOrderParsingService(makeRepository().repo as any, () => null);
+    const subset = service.refineParsedDraft(inboundRecord({ rawPayloadJson: {
+      bodyText: "20 signs total: 18 sponsor signs and the other 2 directional signs.",
+    } }) as any, parsedDraft({ lineItems: [{ ...parsedDraft().lineItems[0], productName: null, quantity: null, sourceText: null }] }) as any);
+    expect(subset.lineItems).toHaveLength(2);
+    expect(subset.lineItems.map((item) => item.quantity)).toEqual([18, 2]);
+
+    const sameItem = service.refineParsedDraft(inboundRecord({ rawPayloadJson: {
+      bodyText: "20 coroplast signs, all 24 x 18 inches.",
+    } }) as any, parsedDraft({ lineItems: [{ ...parsedDraft().lineItems[0], productName: null, quantity: null, sourceText: null }] }) as any);
+    expect(sameItem.lineItems).toHaveLength(1);
+    expect(sameItem.lineItems[0]).toMatchObject({ quantity: 20, width: 24, height: 18 });
+  });
+
+  test("keeps differently sized banners and their artwork candidate-specific", () => {
+    const bodyText = "1 banner 4 x 8 feet, north.pdf\n1 banner 8 x 2 feet, south.pdf";
+    const service = new InboundOrderParsingService(makeRepository().repo as any, () => null);
+    const refined = service.refineParsedDraft(inboundRecord({ rawPayloadJson: { bodyText } }) as any, parsedDraft({
+      lineItems: [{ ...parsedDraft().lineItems[0], productName: null, quantity: null, sourceText: null, artworkRefs: [] }],
+    }) as any);
+    expect(refined.lineItems).toHaveLength(2);
+    expect(refined.lineItems.map((item) => [item.width, item.height, item.artworkRefs])).toEqual([
+      [48, 96, ["north.pdf"]],
+      [96, 24, ["south.pdf"]],
+    ]);
+  });
+
   test("infers bare banner dimensions as feet while keeping unresolved quantity and body-only filenames as references", async () => {
     const bodyText = "Please quote the 5x8 banner. Use 5x8 kasey.jpg for reference and add a pole pocket.";
     const { repo } = makeRepository(inboundRecord({
