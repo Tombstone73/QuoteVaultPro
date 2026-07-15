@@ -20,6 +20,20 @@ export type ProductionStation = {
   sort: number;
 };
 
+export type ProductionMapRepairReport = {
+  organizationId: string;
+  createdStations: string[];
+  reactivatedStations: string[];
+  existingStations: string[];
+  createdSteps: string[];
+  reactivatedSteps: string[];
+  existingSteps: string[];
+  createdRules: string[];
+  existingRules: string[];
+  invalidRules: string[];
+  failed: string[];
+};
+
 export type ProductionManagedStep = {
   key: string;
   label: string;
@@ -79,6 +93,43 @@ export function useProductionStations() {
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || json.message || "Failed to fetch stations");
       return (json.data ?? []) as ProductionStation[];
+    },
+  });
+}
+
+export function useRepairProductionMap() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/production/repair", {
+        method: "POST",
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || json.message || "Failed to repair production map");
+      return (json.data ?? {}) as ProductionMapRepairReport;
+    },
+    onSuccess: (report) => {
+      qc.invalidateQueries({ queryKey: ["/api/production/stations"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/steps"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/settings/line-item-statuses"] });
+      const changes = report.createdStations.length + report.reactivatedStations.length + report.createdSteps.length + report.reactivatedSteps.length + report.createdRules.length;
+      toast({
+        title: "Production map repaired",
+        description: changes > 0 ? `${changes} missing production-map record${changes === 1 ? "" : "s"} restored.` : "All required stations, steps, and routing rules already exist.",
+      });
+      if (report.invalidRules.length > 0) {
+        toast({
+          title: "Custom routing rules still need attention",
+          description: report.invalidRules[0],
+          variant: "destructive",
+        });
+      }
+    },
+    onError: (e: Error) => {
+      toast({ title: "Production map repair failed", description: e.message, variant: "destructive" });
     },
   });
 }

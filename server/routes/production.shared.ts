@@ -14,6 +14,7 @@ import {
 
 import { db } from "../db";
 import { canAutoDeductMaterialStock } from "../lib/materialStockDeductionGuard";
+import { DEFAULT_PRODUCTION_ROUTING_RULES } from "../services/productionMapService";
 
 export const productionStatusSchema = z.enum(["queued", "in_progress", "paused", "done", "canceled"]);
 export const productionViewKeySchema = z.string().min(1);
@@ -67,35 +68,9 @@ const normalizeProductionStepTriggers = (value: unknown) => {
   return parsed.success ? parsed.data : [];
 };
 
-const SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES = [
-  {
-    id: "prepress",
-    label: "Sent to Prepress",
-    color: "blue",
-    sendToProduction: true,
-    stationKey: "flatbed",
-    stepKey: "prepress",
-    sortOrder: 10,
-  },
-  {
-    id: "print",
-    label: "Sent to Print",
-    color: "purple",
-    sendToProduction: true,
-    stationKey: "flatbed",
-    stepKey: "print",
-    sortOrder: 20,
-  },
-  {
-    id: "done",
-    label: "Done",
-    color: "green",
-    sendToProduction: false,
-    stationKey: null,
-    stepKey: null,
-    sortOrder: 90,
-  },
-];
+// The production map service owns the one canonical default rule set. Clone
+// it per response so callers cannot mutate the system definition in memory.
+const SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES = () => DEFAULT_PRODUCTION_ROUTING_RULES.map((rule) => ({ ...rule }));
 
 const DEFAULT_PRODUCTION_MANAGED_STEP = {
   key: "queued",
@@ -151,7 +126,7 @@ export const loadProductionLineItemStatusRulesForOrganization = async (organizat
   if (raw == null) {
     return {
       source: "missing" as const,
-      rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES,
+      rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES(),
     };
   }
 
@@ -159,7 +134,7 @@ export const loadProductionLineItemStatusRulesForOrganization = async (organizat
   if (!parsed.success) {
     return {
       source: "invalid" as const,
-      rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES,
+      rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES(),
     };
   }
 
@@ -167,7 +142,7 @@ export const loadProductionLineItemStatusRulesForOrganization = async (organizat
   if (items.length === 0) {
     return {
       source: "empty" as const,
-      rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES,
+      rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES(),
     };
   }
 

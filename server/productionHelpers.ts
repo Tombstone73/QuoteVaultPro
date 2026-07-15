@@ -8,6 +8,7 @@ import { db } from "./db";
 import { organizations, productionEvents, productionJobs } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
+import { DEFAULT_PRODUCTION_ROUTING_RULES } from "./services/productionMapService";
 
 const productionLineItemStatusRuleSchema = z
   .object({
@@ -25,35 +26,7 @@ const productionLineItemStatusRuleSchema = z
 
 const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
 
-const SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES = [
-  {
-    id: "prepress",
-    label: "Sent to Prepress",
-    color: "blue",
-    sendToProduction: true,
-    stationKey: "flatbed",
-    stepKey: "prepress",
-    sortOrder: 10,
-  },
-  {
-    id: "print",
-    label: "Sent to Print",
-    color: "purple",
-    sendToProduction: true,
-    stationKey: "flatbed",
-    stepKey: "print",
-    sortOrder: 20,
-  },
-  {
-    id: "done",
-    label: "Done",
-    color: "green",
-    sendToProduction: false,
-    stationKey: null,
-    stepKey: null,
-    sortOrder: 90,
-  },
-];
+const SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES = () => DEFAULT_PRODUCTION_ROUTING_RULES.map((rule) => ({ ...rule }));
 
 export async function loadProductionLineItemStatusRulesForOrganization(organizationId: string) {
   const rows = await db
@@ -68,7 +41,7 @@ export async function loadProductionLineItemStatusRulesForOrganization(organizat
   if (raw == null) {
     return {
       source: "missing" as const,
-      rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES,
+      rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES(),
     };
   }
 
@@ -76,7 +49,7 @@ export async function loadProductionLineItemStatusRulesForOrganization(organizat
   if (!parsed.success) {
     return {
       source: "invalid" as const,
-      rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES,
+      rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES(),
     };
   }
 
@@ -84,7 +57,7 @@ export async function loadProductionLineItemStatusRulesForOrganization(organizat
   if (items.length === 0) {
     return {
       source: "empty" as const,
-      rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES,
+      rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES(),
     };
   }
 

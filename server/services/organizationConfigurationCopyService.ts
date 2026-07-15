@@ -1,6 +1,7 @@
 import crypto from "crypto";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db";
+import { assertProductionMapReady, DEFAULT_PRODUCTION_STATIONS, ensureProductionMapForOrg } from "./productionMapService";
 import {
   globalVariables,
   materialProductLinks,
@@ -204,6 +205,22 @@ async function assertDestinationEligible(client: DbClient | TxClient, destinatio
     });
   }
   const counts = await countRowsByOrg(client, destinationOrganizationId);
+  const destinationSteps = await client
+    .select({ stationKey: productionStationSteps.stationKey, key: productionStationSteps.key })
+    .from(productionStationSteps)
+    .where(eq(productionStationSteps.organizationId, destinationOrganizationId));
+  const canonicalStepKeys = new Set(
+    DEFAULT_PRODUCTION_STATIONS.flatMap((station) => station.steps.map((step) => `${station.key}:${step.key}`)),
+  );
+  // A new organization is bootstrapped before it can be seeded. Those system
+  // steps (and UI-created queued steps) are not tenant configuration and must
+  // not make the destination ineligible for a source configuration copy.
+  if (destinationSteps.every((step: any) => {
+    const key = `${step.stationKey}:${step.key}`;
+    return canonicalStepKeys.has(key) || (step.key === "queued" && DEFAULT_PRODUCTION_STATIONS.some((station) => station.key === step.stationKey));
+  })) {
+    counts.productionStationSteps = 0;
+  }
   if (totalCount(counts) > 0) {
     throw new OrganizationConfigurationCopyError(
       "Destination organization already contains configuration and is not eligible for seeding.",
@@ -401,6 +418,39 @@ export async function copyOrganizationConfiguration(params: {
       const idMap = new Map<string, string>([[sourceOrganizationId, destinationOrganizationId]]);
       const counts: Record<string, number> = {};
       const warnings: string[] = [];
+
+      // The destination may contain only its freshly bootstrapped map. Replace
+      // those system steps with the source configuration, then repair missing
+      // canonical steps after the copy. Eligibility above rejects any custom
+      // destination step, so this cannot erase tenant-authored configuration.
+      await tx.execute(sql`delete from production_station_steps where organization_id = ${destinationOrganizationId}`);
+
+      // Routing rules are organization settings rather than a standalone table.
+      // Copy only this production-specific setting; do not overwrite unrelated
+      // destination settings created by onboarding.
+      const sourceOrganization = await loadOrganization(tx, sourceOrganizationId);
+      const destinationOrganization = await loadOrganization(tx, destinationOrganizationId);
+      const sourceRoutingRules = (sourceOrganization?.settings as any)?.preferences?.production?.lineItemStatuses;
+      if (Array.isArray(sourceRoutingRules) && destinationOrganization) {
+        const destinationSettings = (destinationOrganization.settings ?? {}) as Record<string, unknown>;
+        await tx
+          .update(organizations)
+          .set({
+            settings: {
+              ...destinationSettings,
+              preferences: {
+                ...((destinationSettings as any).preferences ?? {}),
+                production: {
+                  ...((destinationSettings as any).preferences?.production ?? {}),
+                  lineItemStatuses: sourceRoutingRules,
+                },
+              },
+            },
+            updatedAt: new Date(),
+          } as any)
+          .where(eq(organizations.id, destinationOrganizationId));
+        counts.productionRoutingRules = sourceRoutingRules.length;
+      }
 
       const sourceTaxCategories = await tx.select().from(taxCategories).where(eq(taxCategories.organizationId, sourceOrganizationId));
       const taxCategoryRows = sourceTaxCategories.map((row: any) => {
@@ -677,11 +727,27 @@ export async function copyOrganizationConfiguration(params: {
       await insertIfAny(tx, productionStationSteps, stationStepRows);
       counts.productionStationSteps = stationStepRows.length;
 
+      // `stations` predates the Drizzle schema, but it owns the station IDs
+      // required by production jobs. Copy custom stations before copying is
+      // finalized; the canonical repair below fills any system gaps.
+      const copiedStations = await tx.execute(sql`
+        insert into stations (organization_id, key, name, sort, active)
+        select ${destinationOrganizationId}, key, name, sort, active
+        from stations
+        where organization_id = ${sourceOrganizationId}
+        on conflict (organization_id, key) do nothing
+        returning key
+      `);
+      counts.productionStations = copiedStations.rows?.length ?? 0;
+
       if (totalCount(counts) === 0) {
         warnings.push("Source organization contained no product configuration records.");
       }
 
       await validateCopiedGraph(tx, sourceOrganizationId, destinationOrganizationId);
+      const productionMap = await ensureProductionMapForOrg(destinationOrganizationId, tx);
+      assertProductionMapReady(productionMap);
+      warnings.push(...productionMap.invalidRules.map((warning) => `Production map: ${warning}`));
       return { counts, warnings };
     });
 

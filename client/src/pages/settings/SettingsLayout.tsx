@@ -41,6 +41,7 @@ import {
   useProductionLineItemStatusRules,
   useProductionStationSteps,
   useProductionStations,
+  useRepairProductionMap,
   useSaveProductionLineItemStatusRules,
   type ProductionLineItemStatusRule,
 } from "@/hooks/useProductionSettings";
@@ -874,6 +875,7 @@ export function ProductionSettings() {
     error: stepsError,
   } = useProductionStationSteps();
   const save = useSaveProductionLineItemStatusRules();
+  const repairProductionMap = useRepairProductionMap();
   const {
     preferences,
     updatePreferences,
@@ -945,6 +947,12 @@ export function ProductionSettings() {
       if (r.sendToProduction) {
         const station = (r.stationKey || "").trim();
         if (!station) errors.push(`Status '${k || "(missing key)"}' routes to production but has no station.`);
+        if (station && !isStationsLoading && !isStationsError) {
+          const stationExists = Array.isArray(stations) && stations.some((candidate) => String(candidate.key ?? "").trim() === station);
+          if (!stationExists) {
+            errors.push(`Status '${k || "(missing key)"}' references missing or inactive station '${station}'.`);
+          }
+        }
         const stepKey = String((r.stepKey ?? r.defaultStepKey ?? "")).trim();
         if (stepKey && station && !isStepsLoading && !isStepsError) {
           const stationStepList = stationSteps?.[station] ?? [];
@@ -958,7 +966,7 @@ export function ProductionSettings() {
       }
     }
     return { isValid: errors.length === 0, errors };
-  }, [draft, stationSteps, isStepsLoading, isStepsError]);
+  }, [draft, stations, stationSteps, isStationsLoading, isStationsError, isStepsLoading, isStepsError]);
 
   const stationOptions = React.useMemo(() => {
     const list = Array.isArray(stations) ? stations : [];
@@ -1154,6 +1162,22 @@ export function ProductionSettings() {
           <p className="text-titan-sm text-titan-text-secondary mt-1">
             Configure production workflow and operational settings
           </p>
+        </div>
+
+        <div className="flex items-center justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+          <div className="space-y-1">
+            <div className="text-titan-sm font-medium text-titan-text-primary">Production Map</div>
+            <p className="text-titan-xs text-titan-text-muted">
+              Restores required system stations, workflow steps, and default routing rules without changing custom configuration.
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => repairProductionMap.mutate()}
+            disabled={repairProductionMap.isPending}
+          >
+            {repairProductionMap.isPending ? "Repairing…" : "Repair Production Map"}
+          </Button>
         </div>
         
         <div className="h-px bg-titan-border-subtle" />

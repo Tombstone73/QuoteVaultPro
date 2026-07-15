@@ -43,6 +43,7 @@ import {
   updateOrganizationForPlatform,
 } from "../services/organizationEditorService";
 import { customerContactMigrationService } from "../services/customerContactMigration/service";
+import { assertProductionMapReady, ensureProductionMapForOrg } from "../services/productionMapService";
 
 // ─── Session type augmentation ────────────────────────────────────────────────
 declare module "express-session" {
@@ -998,6 +999,10 @@ export function registerPlatformRoutes(app: import("express").Express): void {
               updatedAt: new Date(),
             } as any)
             .where(eq(organizations.id, result.orgId));
+
+          // The setup-status write intentionally replaces the initial settings
+          // object, so restore the canonical routing settings afterwards.
+          assertProductionMapReady(await ensureProductionMapForOrg(result.orgId));
         }
 
         return res.status(201).json({
