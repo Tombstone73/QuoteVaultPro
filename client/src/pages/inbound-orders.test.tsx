@@ -2599,7 +2599,12 @@ describe("InboundOrdersPage", () => {
         height: 12,
         dimensionsUnit: "in",
       }],
-      missingDecisions: [],
+      missingDecisions: [{
+        field: "lineItems.0.quantity",
+        label: "What quantity is needed?",
+        reason: "No clear quantity was detected for this line item.",
+        severity: "blocking",
+      }],
       globalWarnings: [],
     });
     const cleanReview = reviewDraft(cleanParsed);
@@ -2617,6 +2622,7 @@ describe("InboundOrdersPage", () => {
     await waitForText("Blocking Decisions");
     const quantityChecklistItem = () => container.querySelector("[data-clean-checklist-item='Quantity confirmed']");
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("false");
+    expect(container.textContent).toContain("What quantity is needed?");
     expect(container.querySelector("[data-testid='clean-ticket-details']")).toBeNull();
     const inlineQuantityInput = container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
     expect(inlineQuantityInput).toBeTruthy();
@@ -2632,6 +2638,7 @@ describe("InboundOrdersPage", () => {
       Simulate.change(inlineQuantityInput, { target: { value: "2" } } as any);
     });
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("true");
+    expect(container.textContent).not.toContain("What quantity is needed?");
   });
 
   test("collapses a completed Clean View line item into a compact summary", async () => {

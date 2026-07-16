@@ -2391,9 +2391,26 @@ function isArtworkDecision(decision: ReviewDraftFormState["missingDecisionsJson"
   return /artwork/i.test(`${decision.field} ${decision.label} ${decision.reason}`);
 }
 
+function isQuantityDecision(decision: ReviewDraftFormState["missingDecisionsJson"][number]): boolean {
+  return /quantity/i.test(`${decision.field} ${decision.label} ${decision.reason}`);
+}
+
 function artworkLineIndex(value: string | null | undefined): number | null {
   const match = String(value ?? "").match(/lineitems\.(\d+)\.artwork/i);
   return match ? Number(match[1]) : null;
+}
+
+function quantityLineIndex(value: string | null | undefined): number | null {
+  const match = String(value ?? "").match(/lineitems\.(\d+)\.quantity/i);
+  return match ? Number(match[1]) : null;
+}
+
+function hasValidLineItemQuantity(
+  lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number] | undefined,
+): boolean {
+  return typeof lineItem?.quantity === "number"
+    && Number.isFinite(lineItem.quantity)
+    && lineItem.quantity > 0;
 }
 
 function artworkDecisionIsResolvedByAssignment(
@@ -2403,6 +2420,14 @@ function artworkDecisionIsResolvedByAssignment(
   const lineIndex = artworkLineIndex(decision.field);
   if (lineIndex == null) return reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
   return reviewedLineItemsJson[lineIndex]?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
+}
+
+function quantityDecisionIsResolvedByLineItem(
+  reviewedLineItemsJson: ReviewDraftFormState["reviewedLineItemsJson"],
+  decision: ReviewDraftFormState["missingDecisionsJson"][number],
+): boolean {
+  const lineIndex = quantityLineIndex(decision.field);
+  return lineIndex != null && hasValidLineItemQuantity(reviewedLineItemsJson[lineIndex]);
 }
 
 function isStaleMissingArtworkWarning(
@@ -2427,15 +2452,14 @@ function artworkValidationErrorIsResolvedByAssignment(
   return reviewedLineItemsJson[lineIndex]?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
 }
 
-function reconcileAssignedArtwork(
+function reconcileResolvedLineItemDecisions(
   form: ReviewDraftFormState,
   reviewedLineItemsJson: ReviewDraftFormState["reviewedLineItemsJson"],
 ): Partial<ReviewDraftFormState> {
   const artworkAssigned = reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
-  if (!artworkAssigned) return { reviewedLineItemsJson };
   return {
     reviewedLineItemsJson,
-    reviewedArtworkJson: { ...form.reviewedArtworkJson, status: "supplied" },
+    reviewedArtworkJson: artworkAssigned ? { ...form.reviewedArtworkJson, status: "supplied" } : form.reviewedArtworkJson,
     missingDecisionsJson: form.missingDecisionsJson.map((decision) => (
       isArtworkDecision(decision) && decision.status === "still_blocking" && artworkDecisionIsResolvedByAssignment(reviewedLineItemsJson, decision)
         ? {
@@ -2443,9 +2467,17 @@ function reconcileAssignedArtwork(
           status: "resolved",
           resolutionNote: decision.resolutionNote ?? "Resolved by artwork assigned to a reviewed line item.",
         }
+        : isQuantityDecision(decision) && decision.status === "still_blocking" && quantityDecisionIsResolvedByLineItem(reviewedLineItemsJson, decision)
+          ? {
+            ...decision,
+            status: "resolved",
+            resolutionNote: decision.resolutionNote ?? "Resolved by staff-confirmed line item quantity.",
+          }
         : decision
     )),
-    warningsJson: form.warningsJson.filter((warning) => !isStaleMissingArtworkWarning(reviewedLineItemsJson, warning)),
+    warningsJson: artworkAssigned
+      ? form.warningsJson.filter((warning) => !isStaleMissingArtworkWarning(reviewedLineItemsJson, warning))
+      : form.warningsJson,
   };
 }
 
@@ -5926,7 +5958,7 @@ function CleanOrderWorkstation({
   };
   const updateLineItem = (index: number, patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => {
     const reviewedLineItemsJson = form.reviewedLineItemsJson.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item);
-    updateForm(reconcileAssignedArtwork(form, reviewedLineItemsJson));
+    updateForm(reconcileResolvedLineItemDecisions(form, reviewedLineItemsJson));
   };
   const addLineItem = () => {
     updateForm({
@@ -5994,9 +6026,13 @@ function CleanOrderWorkstation({
   ]).filter((link) => link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK");
   const anyArtworkAssigned = form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
   const rawValidationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
-  const validationErrors = anyArtworkAssigned
-    ? rawValidationErrors.filter((error) => !artworkValidationErrorIsResolvedByAssignment(form.reviewedLineItemsJson, error))
-    : rawValidationErrors;
+  const validationErrors = rawValidationErrors.filter((error) => {
+    if (anyArtworkAssigned && artworkValidationErrorIsResolvedByAssignment(form.reviewedLineItemsJson, error)) return false;
+    if (!/quantity/i.test(error)) return true;
+    const lineMatch = error.match(/line\s+(\d+)/i);
+    if (lineMatch) return !hasValidLineItemQuantity(form.reviewedLineItemsJson[Number(lineMatch[1]) - 1]);
+    return !form.reviewedLineItemsJson.every(hasValidLineItemQuantity);
+  });
   const artworkNeedsAssignment = !anyArtworkAssigned && (
     attachmentLinkOptions.length > 0
     || form.reviewedArtworkJson.status === "supplied"
@@ -6046,6 +6082,7 @@ function CleanOrderWorkstation({
       .filter((decision) => (
         (decision.status === "still_blocking" || decision.severity === "blocking")
         && !(anyArtworkAssigned && isArtworkDecision(decision) && artworkDecisionIsResolvedByAssignment(form.reviewedLineItemsJson, decision))
+        && !(isQuantityDecision(decision) && quantityDecisionIsResolvedByLineItem(form.reviewedLineItemsJson, decision))
       ))
       .map((decision) => cleanOperatorIssueLabel([decision.label, decision.reason].filter(Boolean).join(": "))),
   ]);
