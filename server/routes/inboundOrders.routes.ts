@@ -20,6 +20,7 @@ import {
   inboundEmailTrustRuleCreateSchema,
   inboundEmailTrustRuleUpdateSchema,
   inboundAttachmentTrustActionSchema,
+  inboundOrderCombineSchema,
   inboundRecordTrustActionSchema,
   inboundOrderBulkActionSchema,
   inboundOrderIgnoreActionSchema,
@@ -1786,6 +1787,36 @@ export function registerInboundOrderRoutes(
       }
       console.error("Error applying inbound order bulk action:", error);
       res.status(500).json({ message: "Failed to update selected inbound records" });
+    }
+  });
+
+  app.post("/api/inbound-orders/combine", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const input = inboundOrderCombineSchema.parse(req.body ?? {});
+      const result = await service.combineInboundRecords({
+        organizationId,
+        actorUserId,
+        recordIds: input.recordIds,
+        primaryRecordId: input.primaryRecordId,
+        confirmCustomerMismatch: input.confirmCustomerMismatch,
+        confirmMultipleDrafts: input.confirmMultipleDrafts,
+      });
+      res.json({ success: true, data: result });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+      console.error("Error combining inbound order records:", error);
+      res.status(500).json({ message: "Failed to combine selected inbound records" });
     }
   });
 

@@ -907,7 +907,14 @@ export class InboundOrderEvidenceService {
     }
     items.push(...threadMessagesFromRecord(args.record));
 
+    // A combined job can surface the same canonical stored file from more than one
+    // source email. Only collapse exact file-record duplicates; filename/size-only
+    // matching is intentionally avoided so distinct customer artwork is never lost.
+    const seenCanonicalFileIds = new Set<string>();
     for (const file of args.files) {
+      const fileKey = file.fileRecordId ? `canonical:${file.fileRecordId}` : `inbound:${file.id}`;
+      if (seenCanonicalFileIds.has(fileKey)) continue;
+      seenCanonicalFileIds.add(fileKey);
       const manual = args.manualClassifications?.get(`file:${file.id}`)
         ?? (file.fileRecordId ? args.manualClassifications?.get(`record:${file.fileRecordId}`) : undefined);
       const attachment = await this.buildAttachmentEvidence(args.record, file, manual);

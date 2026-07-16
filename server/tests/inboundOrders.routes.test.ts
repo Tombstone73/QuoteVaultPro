@@ -464,6 +464,7 @@ describe("inbound order routes", () => {
     resolveDecisionFlag: jest.fn(),
     convertInboundReviewDraftToOrder: jest.fn<(...args: any[]) => Promise<any>>(),
     applyBulkQueueAction: jest.fn<(...args: any[]) => Promise<any>>(),
+    combineInboundRecords: jest.fn<(...args: any[]) => Promise<any>>(),
     createQuoteDraftFromInbound: jest.fn(),
     getReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
     saveReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -1520,6 +1521,35 @@ describe("inbound order routes", () => {
     });
     expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
     expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
+  });
+
+  test("combines selected inbound emails through the staff-controlled route", async () => {
+    service.combineInboundRecords.mockResolvedValue({
+      detail: inboundDetail(inboundRecord({ id: "inbound_parent" })),
+      combinedSourceCount: 2,
+      reparseRecommended: true,
+    });
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/combine")
+      .send({
+        recordIds: ["inbound_parent", "inbound_child"],
+        primaryRecordId: "inbound_parent",
+        confirmCustomerMismatch: false,
+        confirmMultipleDrafts: true,
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.combinedSourceCount).toBe(2);
+    expect(response.body.data.reparseRecommended).toBe(true);
+    expect(service.combineInboundRecords).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      recordIds: ["inbound_parent", "inbound_child"],
+      primaryRecordId: "inbound_parent",
+      confirmCustomerMismatch: false,
+      confirmMultipleDrafts: true,
+    });
   });
 
   test("searches customers and all contacts for review selectors", async () => {

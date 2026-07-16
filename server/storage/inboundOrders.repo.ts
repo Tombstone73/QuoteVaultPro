@@ -1171,29 +1171,118 @@ export class InboundOrdersRepository {
   }
 
   async listFiles(organizationId: string, inboundRecordId: string): Promise<InboundOrderFile[]> {
+    const childRecords = await this.listCombinedChildRecords(organizationId, inboundRecordId);
+    const recordIds = [inboundRecordId, ...childRecords.map((record) => record.id)];
     return this.dbInstance
       .select()
       .from(inboundOrderFiles)
       .where(
         and(
           eq(inboundOrderFiles.organizationId, organizationId),
-          eq(inboundOrderFiles.inboundRecordId, inboundRecordId),
+          inArray(inboundOrderFiles.inboundRecordId, recordIds),
         ),
       )
       .orderBy(asc(inboundOrderFiles.createdAt));
   }
 
-  async getFile(organizationId: string, inboundRecordId: string, fileId: string): Promise<InboundOrderFile | null> {
-    const [file] = await this.dbInstance
+  async listCombinedChildRecords(organizationId: string, parentRecordId: string): Promise<InboundOrderRecord[]> {
+    return this.dbInstance
       .select()
-      .from(inboundOrderFiles)
+      .from(inboundOrderRecords)
       .where(and(
-        eq(inboundOrderFiles.organizationId, organizationId),
-        eq(inboundOrderFiles.inboundRecordId, inboundRecordId),
-        eq(inboundOrderFiles.id, fileId),
+        eq(inboundOrderRecords.organizationId, organizationId),
+        sql`${inboundOrderRecords.normalizedPayloadJson}->>'combinedParentRecordId' = ${parentRecordId}`,
       ))
-      .limit(1);
-    return file ?? null;
+      .orderBy(asc(inboundOrderRecords.receivedAt), asc(inboundOrderRecords.createdAt));
+  }
+
+  async combineRecords(args: {
+    organizationId: string;
+    primaryRecordId: string;
+    childRecordIds: string[];
+    actorUserId: string;
+    combinedSources: Array<Record<string, unknown>>;
+  }): Promise<InboundOrderRecord | null> {
+    return this.dbInstance.transaction(async (tx) => {
+      const now = new Date();
+      const [primary] = await tx
+        .select()
+        .from(inboundOrderRecords)
+        .where(and(
+          eq(inboundOrderRecords.organizationId, args.organizationId),
+          eq(inboundOrderRecords.id, args.primaryRecordId),
+        ))
+        .limit(1);
+      if (!primary) return null;
+
+      const normalizedPayloadJson = {
+        ...(primary.normalizedPayloadJson ?? {}),
+        combinedSources: args.combinedSources,
+        combinedSourceCount: args.combinedSources.length,
+        reparseRecommended: true,
+      };
+      const [updatedPrimary] = await tx
+        .update(inboundOrderRecords)
+        .set({
+          status: "needs_review",
+          reviewOutcome: null,
+          requiresHumanDecision: true,
+          reviewRequiredReason: `Combined from ${args.combinedSources.length} inbound emails. Reparse recommended before conversion.`,
+          normalizedPayloadJson,
+          archivedAt: null,
+          updatedAt: now,
+        })
+        .where(and(eq(inboundOrderRecords.organizationId, args.organizationId), eq(inboundOrderRecords.id, args.primaryRecordId)))
+        .returning();
+
+      await tx.insert(inboundOrderEvents).values({
+        organizationId: args.organizationId,
+        inboundRecordId: args.primaryRecordId,
+        actorUserId: args.actorUserId,
+        actorType: "user",
+        eventType: "combine.completed",
+        fromStatus: primary.status,
+        toStatus: "needs_review",
+        message: `Combined ${args.combinedSources.length} inbound emails into this job. Reparse recommended.`,
+        metadataJson: { sourceRecordIds: [args.primaryRecordId, ...args.childRecordIds] },
+      });
+
+      for (const childRecordId of args.childRecordIds) {
+        const [child] = await tx
+          .select()
+          .from(inboundOrderRecords)
+          .where(and(eq(inboundOrderRecords.organizationId, args.organizationId), eq(inboundOrderRecords.id, childRecordId)))
+          .limit(1);
+        if (!child) continue;
+        await tx.update(inboundOrderRecords).set({
+          status: "ignored",
+          reviewOutcome: "merged",
+          archivedAt: now,
+          normalizedPayloadJson: {
+            ...(child.normalizedPayloadJson ?? {}),
+            combinedParentRecordId: args.primaryRecordId,
+            combinedAt: now.toISOString(),
+          },
+          updatedAt: now,
+        }).where(and(eq(inboundOrderRecords.organizationId, args.organizationId), eq(inboundOrderRecords.id, childRecordId)));
+        await tx.insert(inboundOrderEvents).values({
+          organizationId: args.organizationId,
+          inboundRecordId: childRecordId,
+          actorUserId: args.actorUserId,
+          actorType: "user",
+          eventType: "combine.merged_into_parent",
+          fromStatus: child.status,
+          toStatus: "ignored",
+          message: `Merged into inbound job ${args.primaryRecordId}.`,
+          metadataJson: { parentRecordId: args.primaryRecordId },
+        });
+      }
+      return updatedPrimary ?? null;
+    });
+  }
+
+  async getFile(organizationId: string, inboundRecordId: string, fileId: string): Promise<InboundOrderFile | null> {
+    return (await this.listFiles(organizationId, inboundRecordId)).find((file) => file.id === fileId) ?? null;
   }
 
   async findFileByProviderAttachment(args: {
@@ -1221,13 +1310,15 @@ export class InboundOrdersRepository {
     fileId: string;
     patch: Partial<typeof inboundOrderFiles.$inferInsert>;
   }, executor: any = this.dbInstance): Promise<InboundOrderFile | null> {
+    const childRecords = await this.listCombinedChildRecords(args.organizationId, args.inboundRecordId);
+    const accessibleRecordIds = [args.inboundRecordId, ...childRecords.map((record) => record.id)];
     const [updated] = await executor
       .update(inboundOrderFiles)
       .set({ ...args.patch, updatedAt: new Date() })
       .where(and(
         eq(inboundOrderFiles.organizationId, args.organizationId),
-        eq(inboundOrderFiles.inboundRecordId, args.inboundRecordId),
         eq(inboundOrderFiles.id, args.fileId),
+        inArray(inboundOrderFiles.inboundRecordId, accessibleRecordIds),
       ))
       .returning();
     return updated ?? null;

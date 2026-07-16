@@ -131,6 +131,15 @@ type ClientInboundOrderParseResponse = Omit<InboundOrderParseResponse, "data"> &
   };
 };
 
+type InboundOrderCombineResponse = {
+  success: true;
+  data: {
+    detail: ClientInboundOrderDetailResponse["data"];
+    combinedSourceCount: number;
+    reparseRecommended: true;
+  };
+};
+
 type CleanInlineAttachmentSelection = {
   recordId: string;
   file: ClientInboundOrderFile;
@@ -177,6 +186,15 @@ function downloadBlob(blob: Blob, filename: string) {
   anchor.click();
   document.body.removeChild(anchor);
   URL.revokeObjectURL(blobUrl);
+}
+
+function combinedInboundSources(record: ClientInboundOrderRecord): Array<Record<string, unknown>> {
+  const payload = record.normalizedPayloadJson;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return [];
+  const sources = (payload as Record<string, unknown>).combinedSources;
+  return Array.isArray(sources)
+    ? sources.filter((source): source is Record<string, unknown> => Boolean(source) && typeof source === "object" && !Array.isArray(source))
+    : [];
 }
 
 function readBlobArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
@@ -3998,6 +4016,13 @@ function SourceEvidencePanel({
   }
 
   const record = detail?.record ?? selectedRecord;
+  const combinedSources = combinedInboundSources(record);
+  const reparseRecommended = Boolean(
+    record.normalizedPayloadJson
+      && typeof record.normalizedPayloadJson === "object"
+      && !Array.isArray(record.normalizedPayloadJson)
+      && (record.normalizedPayloadJson as Record<string, unknown>).reparseRecommended,
+  );
   const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
   const warnings = detail?.warnings ?? [];
   const evidenceItems = draftPreview?.draft?.evidence?.items ?? [];
@@ -4445,6 +4470,7 @@ function OperationalEmailPanel({
   }
 
   const record = detail?.record ?? selectedRecord;
+  const combinedSources = combinedInboundSources(record);
   const evidence = getInboundEmailEvidence(record);
   const files = dedupeAttachmentFiles(detail?.files ?? []);
   const threadMessageCount = typeof evidence.thread?.messageCount === "number" ? evidence.thread.messageCount : null;
@@ -4590,7 +4616,38 @@ function OperationalEmailPanel({
           />
         )}
         {activeTab === "history" && (
-          <SourceHistoryPanel thread={evidence.thread} />
+          <div className="space-y-3 p-3">
+            {combinedSources.length > 1 && (
+              <section className="rounded-md border border-slate-700 bg-slate-900/70 p-3" data-testid="combined-inbound-sources">
+                <div className="text-xs font-bold uppercase tracking-wide text-slate-200">Combined Sources</div>
+                <div className="mt-1 text-sm font-semibold text-slate-100">Combined from {combinedSources.length} emails</div>
+                <div className="mt-2 space-y-2">
+                  {combinedSources.map((source, index) => {
+                    const sourceEvidence = source.evidence && typeof source.evidence === "object" && !Array.isArray(source.evidence)
+                      ? source.evidence as Record<string, unknown>
+                      : {};
+                    const sender = typeof sourceEvidence.senderEmail === "string" ? sourceEvidence.senderEmail : "Unknown sender";
+                    const subject = typeof sourceEvidence.subject === "string" ? sourceEvidence.subject : "No subject";
+                    const bodyText = typeof sourceEvidence.bodyText === "string" ? sourceEvidence.bodyText : null;
+                    const receivedAt = typeof source.receivedAt === "string" ? source.receivedAt : null;
+                    return (
+                      <div key={typeof source.recordId === "string" ? source.recordId : index} className="rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs text-slate-300">
+                        <div className="truncate font-medium text-slate-100">{subject}</div>
+                        <div className="truncate text-slate-400">{sender}{receivedAt ? ` · ${new Date(receivedAt).toLocaleString()}` : ""}</div>
+                        {bodyText && (
+                          <details className="mt-1 text-slate-400">
+                            <summary className="cursor-pointer text-slate-300">View message</summary>
+                            <p className="mt-1 whitespace-pre-wrap break-words">{bodyText}</p>
+                          </details>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+            <SourceHistoryPanel thread={evidence.thread} />
+          </div>
         )}
       </div>
     </ScrollArea>
@@ -4612,6 +4669,7 @@ function CleanInboundQueue({
   onToggleSelected,
   onToggleVisibleSelected,
   onBulkAction,
+  onCombineSelected,
 }: {
   records: ClientInboundOrderRecord[];
   selectedId: string | null;
@@ -4627,6 +4685,7 @@ function CleanInboundQueue({
   onToggleSelected: (id: string, selected: boolean) => void;
   onToggleVisibleSelected: (ids: string[], selected: boolean) => void;
   onBulkAction: (action: InboundQueueCleanupAction) => void;
+  onCombineSelected: () => void;
 }) {
   const [quickFilters, setQuickFilters] = useState({
     trusted: false,
@@ -4728,6 +4787,18 @@ function CleanInboundQueue({
               <ChevronDown className="h-3.5 w-3.5" />
             </summary>
             <div className="grid grid-cols-2 gap-1 border-t border-slate-800 p-1.5">
+              {selectedRecordIds.size >= 2 && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  className="col-span-2 h-7 justify-start px-2 text-[10px]"
+                  disabled={isBulkActionPending}
+                  onClick={onCombineSelected}
+                >
+                  Combine Emails
+                </Button>
+              )}
               {([
                 ["trust_sender", "Trust Sender"],
                 ["trust_domain", "Trust Domain"],
@@ -4767,6 +4838,7 @@ function CleanInboundQueue({
           const selected = selectedId === record.id;
           const issue = getQueueIssueChip(record);
           const intent = getInboundIntentLabel(record);
+          const combinedSourceCount = combinedInboundSources(record).length;
           return (
             <button
               key={record.id}
@@ -4795,6 +4867,11 @@ function CleanInboundQueue({
                 <span>{intent ?? "Unknown"}</span>
                 <span>/</span>
                 <span>{statusLabels[record.status]}</span>
+                {combinedSourceCount > 1 && (
+                  <span className="rounded border border-blue-400/50 bg-blue-400/10 px-1.5 py-0.5 font-semibold text-blue-100">
+                    Combined from {combinedSourceCount} emails
+                  </span>
+                )}
               </div>
               <div className="mt-1 flex items-center gap-1 text-[11px]">
                 <span className="text-slate-500">{formatRelative(record.createdAt)}</span>
@@ -4967,6 +5044,13 @@ function CleanSourceDocuments({
     return <section className="flex h-full min-h-0 flex-1 items-center justify-center bg-slate-950 text-slate-500">Select an inbound item.</section>;
   }
   const record = detail?.record ?? selectedRecord;
+  const combinedSources = combinedInboundSources(record);
+  const reparseRecommended = Boolean(
+    record.normalizedPayloadJson
+      && typeof record.normalizedPayloadJson === "object"
+      && !Array.isArray(record.normalizedPayloadJson)
+      && (record.normalizedPayloadJson as Record<string, unknown>).reparseRecommended,
+  );
   const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
   const emailEvidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : null;
   const files = dedupeAttachmentFiles(detail?.files ?? []);
@@ -5038,6 +5122,9 @@ function CleanSourceDocuments({
       <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-700 px-3">
         <div>
           <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Source Documents</div>
+          {reparseRecommended && (
+            <div className="mt-0.5 text-[11px] font-semibold text-amber-200">Combined sources changed. Reparse recommended before conversion.</div>
+          )}
           {sourceChanged && (
             <div className="mt-0.5 text-[11px] font-semibold text-amber-200">Classification changed. Reparse to update draft.</div>
           )}
@@ -5308,7 +5395,33 @@ function CleanSourceDocuments({
             </div>
           </div>
         ) : (
-          <SourceHistoryPanel thread={emailEvidence?.thread} />
+          <div className="space-y-3 p-3">
+            {combinedSources.length > 1 && (
+              <section className="rounded border border-slate-800 bg-slate-900 p-3" data-testid="clean-combined-inbound-sources">
+                <div className="text-xs font-bold uppercase tracking-wide text-slate-300">Combined Sources</div>
+                <div className="mt-1 text-sm font-semibold text-slate-100">Combined from {combinedSources.length} emails</div>
+                <div className="mt-2 space-y-2">
+                  {combinedSources.map((source, index) => {
+                    const sourceEvidence = source.evidence && typeof source.evidence === "object" && !Array.isArray(source.evidence)
+                      ? source.evidence as Record<string, unknown>
+                      : {};
+                    const subject = typeof sourceEvidence.subject === "string" ? sourceEvidence.subject : "No subject";
+                    const sender = typeof sourceEvidence.senderEmail === "string" ? sourceEvidence.senderEmail : "Unknown sender";
+                    const bodyText = typeof sourceEvidence.bodyText === "string" ? sourceEvidence.bodyText : null;
+                    return (
+                      <details key={typeof source.recordId === "string" ? source.recordId : index} className="rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs text-slate-300">
+                        <summary className="cursor-pointer">
+                          <span className="font-medium text-slate-100">{subject}</span><span className="text-slate-500"> · {sender}</span>
+                        </summary>
+                        {bodyText && <p className="mt-1 whitespace-pre-wrap break-words text-slate-400">{bodyText}</p>}
+                      </details>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+            <SourceHistoryPanel thread={emailEvidence?.thread} />
+          </div>
         )}
       </div>
     </section>
@@ -9185,6 +9298,10 @@ export default function InboundOrdersPage() {
   }, []);
   const [selectedId, setSelectedId] = useState<string | null>(linkedRecordId);
   const [selectedQueueRecordIds, setSelectedQueueRecordIds] = useState<Set<string>>(() => new Set());
+  const [combineDialogOpen, setCombineDialogOpen] = useState(false);
+  const [combinePrimaryRecordId, setCombinePrimaryRecordId] = useState<string | null>(null);
+  const [combineCustomerMismatchConfirmed, setCombineCustomerMismatchConfirmed] = useState(false);
+  const [combineMultipleDraftsConfirmed, setCombineMultipleDraftsConfirmed] = useState(false);
   const [queueFilters, setQueueFilters] = useState<QueueFilters>(() => linkedRecordId
     ? { ...defaultQueueFilters, statusGroup: "converted", unconvertedOnly: false, search: linkedRecordId }
     : defaultQueueFilters);
@@ -9628,6 +9745,30 @@ export default function InboundOrdersPage() {
           description: formatInboundIgnoreBulkDescription(response.data),
         });
       }
+    },
+  });
+
+  const combineInboundRecordsMutation = useMutation({
+    mutationFn: (input: {
+      recordIds: string[];
+      primaryRecordId: string;
+      confirmCustomerMismatch: boolean;
+      confirmMultipleDrafts: boolean;
+    }) => postJson<InboundOrderCombineResponse>("/api/inbound-orders/combine", input),
+    onSuccess: async (response) => {
+      const parentId = response.data.detail.record.id;
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
+      queryClient.setQueryData<ClientInboundOrderDetailResponse>(
+        ["/api/inbound-orders", parentId],
+        { success: true, data: response.data.detail },
+      );
+      setSelectedId(parentId);
+      setSelectedQueueRecordIds(new Set());
+      setCombineDialogOpen(false);
+      toast({
+        title: "Inbound emails combined",
+        description: `Combined from ${response.data.combinedSourceCount} emails. Reparse recommended before conversion.`,
+      });
     },
   });
 
@@ -10187,6 +10328,32 @@ export default function InboundOrdersPage() {
     }
     bulkQueueActionMutation.mutate({ recordIds, action, note: cleanNote });
   };
+  const openCombineDialog = () => {
+    const selectedRecords = records.filter((record) => selectedQueueRecordIds.has(record.id));
+    if (selectedRecords.length < 2) return;
+    const suggestedPrimary = [...selectedRecords].sort((left, right) => {
+      const leftEvidence = getManualInboundEvidence(left);
+      const rightEvidence = getManualInboundEvidence(right);
+      const leftHasOrderText = Number(Boolean(leftEvidence.bodyText?.trim() || leftEvidence.subject?.trim()));
+      const rightHasOrderText = Number(Boolean(rightEvidence.bodyText?.trim() || rightEvidence.subject?.trim()));
+      if (leftHasOrderText !== rightHasOrderText) return rightHasOrderText - leftHasOrderText;
+      return new Date(right.receivedAt).getTime() - new Date(left.receivedAt).getTime();
+    })[0];
+    setCombinePrimaryRecordId(suggestedPrimary?.id ?? null);
+    setCombineCustomerMismatchConfirmed(false);
+    setCombineMultipleDraftsConfirmed(false);
+    setCombineDialogOpen(true);
+  };
+  const submitCombineRecords = () => {
+    const recordIds = Array.from(selectedQueueRecordIds);
+    if (recordIds.length < 2 || !combinePrimaryRecordId) return;
+    combineInboundRecordsMutation.mutate({
+      recordIds,
+      primaryRecordId: combinePrimaryRecordId,
+      confirmCustomerMismatch: combineCustomerMismatchConfirmed,
+      confirmMultipleDrafts: combineMultipleDraftsConfirmed,
+    });
+  };
   const convertSelectedRecordToOrder = async () => {
     if (!selectedId || convertToOrderMutation.isPending) return;
     const confirmed = window.confirm("Create a draft order from this reviewed inbound record? This will create a real order but will not release production, create proofs, invoices, fulfillment, or payments.");
@@ -10469,6 +10636,7 @@ export default function InboundOrdersPage() {
               onToggleSelected={toggleQueueRecordSelected}
               onToggleVisibleSelected={toggleQueueRecordIdsSelected}
               onBulkAction={runBulkQueueAction}
+              onCombineSelected={openCombineDialog}
             />
             <button
               type="button"
@@ -10751,6 +10919,16 @@ export default function InboundOrdersPage() {
                   <div className="border-b border-border bg-muted/30 p-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant="secondary">{selectedQueueRecordIds.size} selected</Badge>
+                      {selectedQueueRecordIds.size >= 2 && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={combineInboundRecordsMutation.isPending}
+                          onClick={openCombineDialog}
+                        >
+                          Combine Emails
+                        </Button>
+                      )}
                       <Button
                         type="button"
                         size="sm"
@@ -11079,6 +11257,60 @@ export default function InboundOrdersPage() {
         onClose={() => setManualDialogOpen(false)}
         onCreate={(payload) => createManualMutation.mutateAsync(payload).then(() => undefined)}
       />
+      <Dialog open={combineDialogOpen} onOpenChange={setCombineDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Combine selected emails into one job</DialogTitle>
+            <DialogDescription>
+              Keep one inbound record as the parent. The other records will be retained as merged sources, removed from the active queue, and their attachments will appear on the parent job.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="text-sm text-muted-foreground">
+              {selectedQueueRecordIds.size} selected emails. The combined job will be marked <strong>Reparse recommended</strong> before it can be converted.
+            </div>
+            <label className="grid gap-1.5 text-sm font-medium">
+              Primary job and draft to keep
+              <select
+                className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                value={combinePrimaryRecordId ?? ""}
+                onChange={(event) => setCombinePrimaryRecordId(event.target.value || null)}
+              >
+                {records.filter((record) => selectedQueueRecordIds.has(record.id)).map((record) => {
+                  const evidence = getManualInboundEvidence(record);
+                  const label = evidence.subject || evidence.senderEmail || record.sourceLabel || record.id;
+                  return <option key={record.id} value={record.id}>{label} · {new Date(record.receivedAt).toLocaleString()}</option>;
+                })}
+              </select>
+            </label>
+            {new Set(records.filter((record) => selectedQueueRecordIds.has(record.id)).map((record) => record.matchedCustomerId).filter(Boolean)).size > 1 && (
+              <label className="flex items-start gap-2 text-sm text-amber-700">
+                <Checkbox checked={combineCustomerMismatchConfirmed} onCheckedChange={(checked) => setCombineCustomerMismatchConfirmed(checked === true)} />
+                <span>I confirmed these emails have different matched customers and should still be combined.</span>
+              </label>
+            )}
+            <label className="flex items-start gap-2 text-sm text-muted-foreground">
+              <Checkbox checked={combineMultipleDraftsConfirmed} onCheckedChange={(checked) => setCombineMultipleDraftsConfirmed(checked === true)} />
+              <span>I understand the selected primary record is the draft to continue reviewing. Other source drafts remain preserved on their source records.</span>
+            </label>
+            {combineInboundRecordsMutation.error && (
+              <Alert variant="destructive">
+                <AlertDescription>{(combineInboundRecordsMutation.error as Error).message}</AlertDescription>
+              </Alert>
+            )}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setCombineDialogOpen(false)} disabled={combineInboundRecordsMutation.isPending}>Cancel</Button>
+            <Button
+              type="button"
+              onClick={submitCombineRecords}
+              disabled={!combinePrimaryRecordId || combineInboundRecordsMutation.isPending}
+            >
+              {combineInboundRecordsMutation.isPending ? "Combining…" : "Combine into one job"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
         </>
       )}
     </div>
