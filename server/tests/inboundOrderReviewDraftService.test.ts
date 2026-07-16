@@ -561,6 +561,41 @@ function completePbv2Selections() {
 }
 
 describe("InboundOrderService editable review draft", () => {
+  test("bulk classification skips unsafe artwork and warns when metadata-only files cannot be used", async () => {
+    const safeFile = inboundFile({ id: "file_safe", fileRecordId: null, role: "reference", status: "available", metadataJson: {} });
+    const quarantinedFile = inboundFile({ id: "file_quarantined", role: "reference", status: "quarantined", metadataJson: { attachmentState: "scan_pending" } });
+    const repo = {
+      getRecord: jest.fn(async () => inboundRecord()),
+      getFile: jest.fn(async (_organizationId: string, _inboundRecordId: string, fileId: string) => (
+        fileId === safeFile.id ? safeFile : fileId === quarantinedFile.id ? quarantinedFile : null
+      )),
+      updateFile: jest.fn(async ({ fileId, patch }: any) => ({
+        ...(fileId === safeFile.id ? safeFile : quarantinedFile),
+        ...patch,
+      })),
+      createEvent: jest.fn(async () => undefined),
+    };
+    const service = new InboundOrderService(repo as any);
+
+    const result = await service.bulkUpdateAttachmentClassification({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      fileIds: [safeFile.id, quarantinedFile.id],
+      classification: "ARTWORK",
+    });
+
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0]).toMatchObject({ id: safeFile.id, role: "artwork" });
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileId: safeFile.id, message: expect.stringContaining("Metadata-only") }),
+    ]));
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileId: quarantinedFile.id, message: expect.stringContaining("Unsafe or quarantined") }),
+    ]));
+    expect(repo.updateFile).toHaveBeenCalledTimes(1);
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockSuccessfulPricing();

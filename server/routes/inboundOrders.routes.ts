@@ -217,6 +217,14 @@ const inboundAttachmentClassificationUpdateSchema = z.object({
   }).optional().nullable(),
 });
 
+const inboundAttachmentClassificationBulkUpdateSchema = z.object({
+  fileIds: z.array(z.string().trim().min(1)).min(1).max(100),
+  classification: z.union([
+    z.enum(inboundAttachmentClassificationValues),
+    z.literal("reset_to_ai"),
+  ]),
+});
+
 const inboundEmailReprocessActionSchema = z.object({
   action: z.enum(["reprocess_email", "backfill_attachments", "rerun_trust_attachment_download"]),
 });
@@ -1186,6 +1194,35 @@ export function registerInboundOrderRoutes(
       }
       console.error("Error updating inbound attachment classification:", error);
       res.status(500).json({ success: false, message: "Failed to update inbound attachment classification" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/files/classification/bulk", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: "User ID not found" });
+
+      const recordId = z.string().trim().min(1).parse(req.params.id);
+      const input = inboundAttachmentClassificationBulkUpdateSchema.parse(req.body ?? {});
+      const result = await service.bulkUpdateAttachmentClassification({
+        organizationId,
+        actorUserId,
+        inboundRecordId: recordId,
+        fileIds: input.fileIds,
+        classification: input.classification,
+      });
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message });
+      }
+      console.error("Error bulk updating inbound attachment classifications:", error);
+      res.status(500).json({ success: false, message: "Failed to bulk update inbound attachment classifications" });
     }
   });
 

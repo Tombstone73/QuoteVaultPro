@@ -616,6 +616,7 @@ function setupParsedInboundReview({
   const attempt = parseAttempt({ parsedDraft: parsed, confidence: 82, warnings: parsed.globalWarnings });
   let savedBody: any = null;
   let classificationBody: any = null;
+  let bulkClassificationBody: any = null;
   apiFetchMock.mockImplementation(async (url: any, options?: any) => {
     const path = String(url);
     if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
@@ -632,6 +633,34 @@ function setupParsedInboundReview({
       });
     }
     if (path === `/api/inbound-orders/${row.id}/review-draft`) return jsonResponse({ success: true, data: review });
+    if (path === `/api/inbound-orders/${row.id}/files/classification/bulk`) {
+      bulkClassificationBody = JSON.parse(options?.body ?? "{}");
+      const files = (detailOverrides.files ?? [])
+        .filter((file: any) => bulkClassificationBody.fileIds.includes(file.id))
+        .filter((file: any) => !(bulkClassificationBody.classification === "ARTWORK" && (file.status === "quarantined" || file.metadataJson?.attachmentState === "scan_pending" || file.metadataJson?.attachmentState === "blocked_file_type")))
+        .map((file: any) => ({
+          ...file,
+          role: bulkClassificationBody.classification === "PO"
+            ? "po"
+            : bulkClassificationBody.classification === "ARTWORK"
+              ? "artwork"
+              : bulkClassificationBody.classification === "REFERENCE"
+                ? "reference"
+                : bulkClassificationBody.classification === "IGNORE_INLINE"
+                  ? "ignore_inline"
+                  : file.role,
+        }));
+      return jsonResponse({
+        success: true,
+        data: {
+          files,
+          errors: bulkClassificationBody.classification === "ARTWORK"
+            ? (detailOverrides.files ?? []).filter((file: any) => bulkClassificationBody.fileIds.includes(file.id) && (file.status === "quarantined" || file.metadataJson?.attachmentState === "scan_pending" || file.metadataJson?.attachmentState === "blocked_file_type")).map((file: any) => ({ fileId: file.id, message: "Unsafe or quarantined attachments cannot be classified as usable artwork." }))
+            : [],
+          warnings: [],
+        },
+      });
+    }
     if (path.includes(`/api/inbound-orders/${row.id}/files/`) && path.endsWith("/classification")) {
       classificationBody = JSON.parse(options?.body ?? "{}");
       const fileId = path.split("/files/")[1]?.split("/classification")[0];
@@ -682,6 +711,7 @@ function setupParsedInboundReview({
   return {
     getSavedBody: () => savedBody,
     getClassificationBody: () => classificationBody,
+    getBulkClassificationBody: () => bulkClassificationBody,
   };
 }
 
@@ -2071,6 +2101,52 @@ describe("InboundOrdersPage", () => {
       classification: "ARTWORK",
       source: "staff_selected",
     });
+  });
+
+  test("selects visible source attachments and bulk classifies them with unsafe files skipped", async () => {
+    const files = [
+      {
+        id: "file_reference_1", inboundRecordId: "inbound_1", fileRecordId: "record_reference_1", sourceFilename: "sign-front.pdf", role: "reference", mimeType: "application/pdf", sizeBytes: 1200, status: "available", metadataJson: {}, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z",
+      },
+      {
+        id: "file_reference_2", inboundRecordId: "inbound_1", fileRecordId: null, sourceFilename: "sign-back.png", role: "other", mimeType: "image/png", sizeBytes: 900, status: "available", metadataJson: {}, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z",
+      },
+      {
+        id: "file_quarantined", inboundRecordId: "inbound_1", fileRecordId: "record_quarantined", sourceFilename: "unsafe.zip", role: "reference", mimeType: "application/zip", sizeBytes: 900, status: "quarantined", metadataJson: { attachmentState: "scan_pending" }, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z",
+      },
+    ];
+    const { getBulkClassificationBody } = setupParsedInboundReview({ detailOverrides: { files } });
+
+    renderPage();
+    await waitForText("Clean View");
+    act(() => {
+      Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement);
+    });
+    const artworkTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Artwork") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(artworkTab);
+    });
+    await waitForText("Reference");
+    const selectAll = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Select all visible") as HTMLButtonElement;
+    expect(selectAll).toBeTruthy();
+    act(() => {
+      Simulate.click(selectAll);
+    });
+    await waitForText("3 files selected");
+    expect(container.textContent).toContain("will be skipped when classifying as Artwork");
+    const bulkArtworkButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Classify as Artwork") as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(bulkArtworkButton);
+    });
+    await waitForCondition(() => Boolean(getBulkClassificationBody()), "bulk artwork classification persisted");
+    expect(getBulkClassificationBody()).toEqual({
+      fileIds: ["file_reference_1", "file_reference_2", "file_quarantined"],
+      classification: "ARTWORK",
+    });
+    expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Classified 2 files as Artwork",
+      description: expect.stringContaining("Reparse required"),
+    }));
   });
 
   test("shows a Clean View PDF render error instead of a blank viewer", async () => {

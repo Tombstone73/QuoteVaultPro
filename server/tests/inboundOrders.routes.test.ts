@@ -480,6 +480,7 @@ describe("inbound order routes", () => {
     updateEmailTrustRule: jest.fn<(...args: any[]) => Promise<any>>(),
     deleteEmailTrustRule: jest.fn<(...args: any[]) => Promise<any>>(),
     updateAttachmentClassification: jest.fn<(...args: any[]) => Promise<any>>(),
+    bulkUpdateAttachmentClassification: jest.fn<(...args: any[]) => Promise<any>>(),
   };
   const parsingService = {
     parseInboundOrderRecord: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -1184,6 +1185,47 @@ describe("inbound order routes", () => {
     expect(response.body.data.file.role).toBe("po");
     expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
     expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
+  });
+
+  test("bulk updates inbound attachment classifications through the shared service path", async () => {
+    service.bulkUpdateAttachmentClassification.mockResolvedValue({
+      files: [
+        { id: "file_1", inboundRecordId: "inbound_1", sourceFilename: "art-1.pdf", role: "artwork", metadataJson: {} },
+        { id: "file_2", inboundRecordId: "inbound_1", sourceFilename: "art-2.pdf", role: "artwork", metadataJson: {} },
+      ],
+      errors: [{ fileId: "file_unsafe", message: "Unsafe or quarantined attachments cannot be classified as usable artwork. Resolve the attachment safety state first." }],
+      warnings: [],
+    });
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/inbound_1/files/classification/bulk")
+      .send({ fileIds: ["file_1", "file_2", "file_unsafe"], classification: "ARTWORK" });
+
+    expect(response.status).toBe(200);
+    expect(service.bulkUpdateAttachmentClassification).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      inboundRecordId: "inbound_1",
+      fileIds: ["file_1", "file_2", "file_unsafe"],
+      classification: "ARTWORK",
+    });
+    expect(response.body.data.files).toHaveLength(2);
+    expect(response.body.data.errors[0].fileId).toBe("file_unsafe");
+  });
+
+  test.each(["PO", "REFERENCE", "IGNORE_INLINE", "reset_to_ai"])("accepts bulk attachment classification action %s", async (classification) => {
+    service.bulkUpdateAttachmentClassification.mockResolvedValue({ files: [], errors: [], warnings: [] });
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/inbound_1/files/classification/bulk")
+      .send({ fileIds: ["file_1"], classification });
+
+    expect(response.status).toBe(200);
+    expect(service.bulkUpdateAttachmentClassification).toHaveBeenCalledWith(expect.objectContaining({
+      inboundRecordId: "inbound_1",
+      fileIds: ["file_1"],
+      classification,
+    }));
   });
 
   test("allows authorized staff to download stored quarantined ZIP attachments without exposing storage paths", async () => {
