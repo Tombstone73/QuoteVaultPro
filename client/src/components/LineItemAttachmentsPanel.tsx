@@ -98,6 +98,9 @@ interface LineItemAttachmentsPanelProps {
   onTemporaryOrderUpload?: (files: File[]) => Promise<void>;
   /** Show explicit Front/Back controls for a double-sided print line. */
   doubleSided?: boolean;
+  /** Persisted line-item intent; controlled by the order line editor. */
+  useSameArtworkBothSides?: boolean;
+  onUseSameArtworkBothSidesChange?: (checked: boolean) => void;
 }
 
 export function LineItemAttachmentsPanel({
@@ -113,6 +116,8 @@ export function LineItemAttachmentsPanel({
   pendingOrderAttachments = [],
   onTemporaryOrderUpload,
   doubleSided = false,
+  useSameArtworkBothSides: controlledUseSameArtworkBothSides,
+  onUseSameArtworkBothSidesChange,
 }: LineItemAttachmentsPanelProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -124,7 +129,8 @@ export function LineItemAttachmentsPanel({
   const [isCreatingQuote, setIsCreatingQuote] = useState(false);
   const [isPersistingLineItem, setIsPersistingLineItem] = useState(false);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
-  const [useSameArtworkBothSides, setUseSameArtworkBothSides] = useState(false);
+  const [uncontrolledUseSameArtworkBothSides, setUncontrolledUseSameArtworkBothSides] = useState(false);
+  const useSameArtworkBothSides = controlledUseSameArtworkBothSides ?? uncontrolledUseSameArtworkBothSides;
   // Store ensured IDs to use during upload (props may not have updated yet)
   const ensuredIdsRef = useRef<{ quoteId: string | null; lineItemId: string | null }>({
     quoteId: null,
@@ -241,12 +247,10 @@ export function LineItemAttachmentsPanel({
   const sharedArtwork = artworkAttachments.find((file) => file.side === 'both') ?? null;
 
   useEffect(() => {
-    if (!doubleSided) {
-      setUseSameArtworkBothSides(false);
-      return;
-    }
-    if (sharedArtwork) setUseSameArtworkBothSides(true);
-  }, [doubleSided, sharedArtwork?.id]);
+    if (controlledUseSameArtworkBothSides !== undefined) return;
+    if (!doubleSided) return;
+    setUncontrolledUseSameArtworkBothSides(Boolean(sharedArtwork));
+  }, [controlledUseSameArtworkBothSides, doubleSided, sharedArtwork?.id]);
 
   const updateArtworkSide = async (fileId: string, side: 'front' | 'back' | 'both' | 'na') => {
     if (!orderId) return;
@@ -795,7 +799,8 @@ export function LineItemAttachmentsPanel({
                   checked={useSameArtworkBothSides}
                   onCheckedChange={(checked) => {
                     const next = checked === true;
-                    setUseSameArtworkBothSides(next);
+                    setUncontrolledUseSameArtworkBothSides(next);
+                    onUseSameArtworkBothSidesChange?.(next);
                     if (!next && sharedArtwork) void assignArtworkSide(sharedArtwork.id, 'front');
                     if (next && frontArtwork) void assignArtworkSide(frontArtwork.id, 'both');
                   }}
@@ -808,7 +813,7 @@ export function LineItemAttachmentsPanel({
                   Front artwork
                   <select
                     className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs text-foreground"
-                    value={(useSameArtworkBothSides ? sharedArtwork : frontArtwork)?.id ?? ''}
+                    value={(useSameArtworkBothSides ? (sharedArtwork ?? frontArtwork) : frontArtwork)?.id ?? ''}
                     onChange={(event) => event.target.value && void assignArtworkSide(event.target.value, useSameArtworkBothSides ? 'both' : 'front')}
                     data-testid="order-front-artwork-select"
                   >

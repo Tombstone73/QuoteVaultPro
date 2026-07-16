@@ -19,6 +19,7 @@ export type OrderLineItemSavedSnapshot = {
   requiresProofApproval: boolean;
   optionSelections: Record<string, OptionSelection>;
   optionSelectionsV2: LineItemOptionSelectionsV2["selected"];
+  useSameArtworkBothSides: boolean;
   totalPrice: number;
 };
 
@@ -36,6 +37,7 @@ export type OrderLineItemDraftSnapshot = {
   requiresProofApproval: boolean;
   optionSelections: Record<string, OptionSelection>;
   optionSelectionsV2: LineItemOptionSelectionsV2["selected"];
+  useSameArtworkBothSides: boolean;
   isPbv2Mode: boolean;
   designBriefDraftJson: string;
   savedDesignBriefJson: string;
@@ -97,14 +99,19 @@ export function hydratePersistedOrderLineItemOptionSelections(lineItem: any): {
 } {
   const specs = asRecord(lineItem?.specsJson) ?? {};
   const raw = asRecord(lineItem?.optionSelectionsJson);
-  const rawSelected = asRecord(raw?.selected)
-    ?? asRecord(raw?.selections)
-    ?? (raw && !Object.prototype.hasOwnProperty.call(raw, "schemaVersion") ? raw : null);
-  const selectedOptions = Array.isArray(lineItem?.selectedOptions)
-    ? lineItem.selectedOptions
-    : Array.isArray(specs.selectedOptions)
-      ? specs.selectedOptions
-      : [];
+  const pricingSnapshot = asRecord(lineItem?.pbv2SnapshotJson);
+  const persistedSelectionMaps = [
+    asRecord(raw?.selected),
+    asRecord(raw?.selections),
+    raw && !Object.prototype.hasOwnProperty.call(raw, "schemaVersion") ? raw : null,
+    asRecord(pricingSnapshot?.selections),
+  ];
+  const selectedOptionCandidates = [
+    lineItem?.selectedOptions,
+    specs.selectedOptions,
+    pricingSnapshot?.selectedOptions,
+  ];
+  const selectedOptions = selectedOptionCandidates.find((candidate) => Array.isArray(candidate) && candidate.length > 0) ?? [];
   const optionSelections: Record<string, OptionSelection> = {};
 
   for (const option of selectedOptions) {
@@ -122,15 +129,64 @@ export function hydratePersistedOrderLineItemOptionSelections(lineItem: any): {
   }
 
   const selected: LineItemOptionSelectionsV2["selected"] = {};
-  if (rawSelected) {
-    for (const [key, value] of Object.entries(rawSelected)) {
+  for (const persistedMap of persistedSelectionMaps) {
+    if (!persistedMap) continue;
+    for (const [key, value] of Object.entries(persistedMap)) {
+      // Earlier maps are more canonical. Lower-priority persisted snapshots
+      // fill missing keys but never replace a current saved selection.
+      if (selected[key] !== undefined) continue;
       selected[key] = normalizeV2SelectionEntry(value) as any;
     }
+  }
+
+  // Older saved rows may only have the evaluated selected-options array. It is
+  // still persisted line-item state and must win over current product defaults.
+  for (const option of selectedOptions) {
+    const key = option?.selectionKey ?? option?.optionId ?? option?.key ?? option?.id;
+    if (!key || option?.value === undefined || selected[String(key)] !== undefined) continue;
+    selected[String(key)] = {
+      value: option.value,
+      ...(typeof option.selectedLabel === "string"
+        ? { label: option.selectedLabel }
+        : typeof option.label === "string"
+          ? { label: option.label }
+          : {}),
+    } as any;
   }
 
   return {
     optionSelections,
     optionSelectionsV2: { schemaVersion: 2, selected },
+  };
+}
+
+export function hydratePersistedArtworkSideIntent(lineItem: any): {
+  useSameArtworkBothSides: boolean;
+  hasExplicitValue: boolean;
+} {
+  const specs = asRecord(lineItem?.specsJson) ?? {};
+  const assignment = asRecord(specs.artworkSideAssignment);
+  if (typeof assignment?.useSameArtworkBothSides === "boolean") {
+    return {
+      useSameArtworkBothSides: assignment.useSameArtworkBothSides,
+      hasExplicitValue: true,
+    };
+  }
+  return { useSameArtworkBothSides: false, hasExplicitValue: false };
+}
+
+export function mergeArtworkSideIntentIntoSpecs(
+  specsJson: unknown,
+  useSameArtworkBothSides: boolean,
+): Record<string, unknown> {
+  const specs = asRecord(specsJson) ?? {};
+  const existingAssignment = asRecord(specs.artworkSideAssignment) ?? {};
+  return {
+    ...specs,
+    artworkSideAssignment: {
+      ...existingAssignment,
+      useSameArtworkBothSides,
+    },
   };
 }
 
@@ -419,6 +475,7 @@ export function hasOrderLineItemDraftChanges(
     draft.requiresDesign !== saved.requiresDesign ||
     draft.requiresPrepress !== saved.requiresPrepress ||
     draft.requiresProofApproval !== saved.requiresProofApproval ||
+    draft.useSameArtworkBothSides !== saved.useSameArtworkBothSides ||
     (draft.isPbv2Mode ? currentOptionsV2 !== savedOptionsV2 : currentOptions !== savedOptions) ||
     draft.designBriefDraftJson !== draft.savedDesignBriefJson
   );

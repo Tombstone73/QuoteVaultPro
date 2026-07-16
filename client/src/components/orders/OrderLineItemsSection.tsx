@@ -87,6 +87,8 @@ import {
   buildProductReplacementDraft,
   buildSavedSnapshotAfterLineItemSave,
   hydratePersistedOrderLineItemOptionSelections,
+  hydratePersistedArtworkSideIntent,
+  mergeArtworkSideIntentIntoSpecs,
   hasOrderLineItemDraftChanges,
   reconcileLineItemListSafely,
   normalizeVariantId,
@@ -1260,6 +1262,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [requiresProofApprovalInput, setRequiresProofApprovalInput] = useState(false);
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
   const [optionSelectionsV2, setOptionSelectionsV2] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
+  const [useSameArtworkBothSides, setUseSameArtworkBothSides] = useState(false);
   const [optionsV2Valid, setOptionsV2Valid] = useState(true);
   const [pbv2PanelRenderStats, setPbv2PanelRenderStats] = useState<ProductOptionsPanelV2RenderStats>({
     renderedNodeCount: 0,
@@ -1491,8 +1494,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setRequiresProofApprovalInput(Boolean((expandedItem as any).requiresProofApproval));
 
     const persistedSelections = hydratePersistedOrderLineItemOptionSelections(expandedItem);
+    const persistedArtworkSideIntent = hydratePersistedArtworkSideIntent(expandedItem);
     const selections = persistedSelections.optionSelections;
     setOptionSelections(selections);
+    setUseSameArtworkBothSides(persistedArtworkSideIntent.useSameArtworkBothSides);
 
     const nextSelectionsV2: LineItemOptionSelectionsV2 =
       Object.keys(persistedSelections.optionSelectionsV2.selected).length > 0
@@ -1555,6 +1560,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       requiresProofApproval: Boolean((expandedItem as any).requiresProofApproval),
       optionSelections: selections,
       optionSelectionsV2: nextSelectionsV2.selected ?? {},
+      useSameArtworkBothSides: persistedArtworkSideIntent.useSameArtworkBothSides,
       totalPrice: currentTotal,
     };
   }, [expandedItem?.id, effectivePbv2Tree, onDraftLineItemPricingChange, resetPricingDirtyByUser]);
@@ -1656,6 +1662,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setRequiresProofApprovalInput(replacementDraft.requiresProofApproval);
     setOptionSelections(replacementDraft.optionSelections);
     setOptionSelectionsV2(replacementDraft.optionSelectionsV2);
+    setUseSameArtworkBothSides(false);
     setPbv2SnapshotJson(replacementDraft.pbv2SnapshotJson);
     setComputedTotal(replacementDraft.computedTotal);
     setComputedTotalQty(replacementDraft.computedTotalQty);
@@ -1776,6 +1783,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       requiresProofApproval: requiresProofApprovalInput,
       optionSelections: pricingDirtyByUser ? optionSelections : saved.optionSelections,
       optionSelectionsV2: pricingDirtyByUser ? (optionSelectionsV2?.selected || {}) : saved.optionSelectionsV2,
+      useSameArtworkBothSides,
       isPbv2Mode,
       designBriefDraftJson: currentBrief,
       savedDesignBriefJson: persistedBrief,
@@ -1819,6 +1827,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     notesDraftById,
     optionSelections,
     optionSelectionsV2,
+    useSameArtworkBothSides,
     isPbv2Mode,
     requiresDesignInput,
     requiresPrepressInput,
@@ -2189,7 +2198,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
       const selectedOptionsArray = buildSelectedOptionsArray(expandedProductOptions, optionSelections, widthNum, heightNum, qtyNum);
       const replacementInitialDraft = productChanged ? initialDraftDebugByLineItemId[itemId] : null;
-      const nextSpecsJson = {
+      const nextSpecsJson = mergeArtworkSideIntentIntoSpecs({
         ...(productChanged ? {} : (expandedItem.specsJson || {})),
         notes: notes || "",
         lineItemNotes: {
@@ -2210,7 +2219,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
               },
             }
           : {}),
-      };
+      }, useSameArtworkBothSides);
 
       const savedPricingDrivers = savedSnapshotRef.current[itemId];
       const pricingDriversChangedForSave = Boolean(
@@ -2311,6 +2320,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         requiresProofApproval: requiresProofApprovalInput,
         optionSelections,
         optionSelectionsV2: optionSelectionsV2.selected ?? {},
+        useSameArtworkBothSides,
         totalPrice: resolvedTotal,
       };
       savedSnapshotRef.current[itemId] = buildSavedSnapshotAfterLineItemSave({
@@ -3552,6 +3562,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         productName={productName}
                                         defaultExpanded={true}
                                         doubleSided={printSides === "Double-sided"}
+                                        useSameArtworkBothSides={useSameArtworkBothSides}
+                                        onUseSameArtworkBothSidesChange={setUseSameArtworkBothSides}
                                       />
                                     </div>
 

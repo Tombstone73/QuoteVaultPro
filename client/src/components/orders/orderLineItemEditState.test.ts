@@ -3,6 +3,8 @@ import {
   buildProductReplacementDraft,
   buildSavedSnapshotAfterLineItemSave,
   hydratePersistedOrderLineItemOptionSelections,
+  hydratePersistedArtworkSideIntent,
+  mergeArtworkSideIntentIntoSpecs,
   hasOrderLineItemDraftChanges,
   mergeLineItemPatchSafely,
   reconcileLineItemListSafely,
@@ -24,6 +26,7 @@ const savedSnapshot: OrderLineItemSavedSnapshot = {
   requiresProofApproval: false,
   optionSelections: {},
   optionSelectionsV2: {},
+  useSameArtworkBothSides: false,
   totalPrice: 100,
 };
 
@@ -41,6 +44,25 @@ describe("order line item edit state", () => {
       optionSelectionsJson: { schemaVersion: 2, selected: { printSides: { value: "single", label: "Single-Sided" } } },
     });
     expect(single.optionSelectionsV2.selected.printSides).toEqual({ value: "single", label: "Single-Sided" });
+
+    const snapshotOnly = hydratePersistedOrderLineItemOptionSelections({
+      pbv2SnapshotJson: { selections: { printSides: { value: "double" } } },
+    });
+    expect(snapshotOnly.optionSelectionsV2.selected.printSides).toEqual({ value: "double" });
+
+    const evaluatedOptionsOnly = hydratePersistedOrderLineItemOptionSelections({
+      selectedOptions: [{ optionId: "printSides", optionName: "Print Sides", value: "double", selectedLabel: "Double-Sided" }],
+    });
+    expect(evaluatedOptionsOnly.optionSelectionsV2.selected.printSides).toEqual({ value: "double", label: "Double-Sided" });
+
+    const mergedPersistedSources = hydratePersistedOrderLineItemOptionSelections({
+      optionSelectionsJson: { schemaVersion: 2, selected: { thickness: { value: "4mm" } } },
+      pbv2SnapshotJson: { selections: { printSides: { value: "double" }, thickness: { value: "10mm" } } },
+    });
+    expect(mergedPersistedSources.optionSelectionsV2.selected).toEqual({
+      thickness: { value: "4mm" },
+      printSides: { value: "double" },
+    });
   });
 
   it("treats matching persisted V2 selections as clean and a changed side as dirty", () => {
@@ -62,6 +84,31 @@ describe("order line item edit state", () => {
       ...baseDraft,
       optionSelectionsV2: { printSides: { value: "single" } },
     })).toBe(true);
+  });
+
+  it("hydrates and dirty-checks the persisted same-artwork intent", () => {
+    const savedSpecs = mergeArtworkSideIntentIntoSpecs(
+      { notes: "Keep me", artworkSideAssignment: { frontFileId: "file-1" } },
+      true,
+    );
+    expect(savedSpecs).toEqual({
+      notes: "Keep me",
+      artworkSideAssignment: { frontFileId: "file-1", useSameArtworkBothSides: true },
+    });
+    const persisted = hydratePersistedArtworkSideIntent({
+      specsJson: savedSpecs,
+    });
+    expect(persisted).toEqual({ useSameArtworkBothSides: true, hasExplicitValue: true });
+
+    const saved = { ...savedSnapshot, useSameArtworkBothSides: true };
+    const draft = {
+      ...saved,
+      isPbv2Mode: true,
+      designBriefDraftJson: "{}",
+      savedDesignBriefJson: "{}",
+    };
+    expect(hasOrderLineItemDraftChanges(saved, draft)).toBe(false);
+    expect(hasOrderLineItemDraftChanges(saved, { ...draft, useSameArtworkBothSides: false })).toBe(true);
   });
   it("marks a product replacement dirty even when quantity and dimensions are unchanged", () => {
     expect(
@@ -152,6 +199,7 @@ describe("order line item edit state", () => {
         requiresProofApproval: adopted.requiresProofApproval,
         optionSelections: adopted.optionSelections,
         optionSelectionsV2: adopted.optionSelectionsV2,
+        useSameArtworkBothSides: adopted.useSameArtworkBothSides,
         isPbv2Mode: true,
         designBriefDraftJson: "{}",
         savedDesignBriefJson: "{}",
