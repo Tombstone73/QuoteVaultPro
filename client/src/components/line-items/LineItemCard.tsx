@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
  * 
  * Provides:
  * - Collapsed 3-row summary with description preview + "Internal" badge
- * - Expanded 2-column layout (options left, artwork + description + production notes right)
+ * - Expanded operational layout (configuration left, artwork and staff notes right)
  * - Consistent styling and behavior across Quotes and Orders
  * 
  * Pure UI component - no data fetching or mutations. All logic passed as props.
@@ -122,10 +122,10 @@ export type LineItemCardProps = {
   topAnchorRef?: (node: HTMLDivElement | null) => void;
   widthInputRef?: (node: HTMLInputElement | null) => void;
 
-  // Expanded view - Options slot (left column)
+  // Expanded view - Product, material, print, and finishing controls (left column)
   optionsSlot?: ReactNode;
 
-  // Expanded view - Artwork slot (right column, above description)
+  // Expanded view - Artwork slot (right column, above notes)
   artworkSlot?: ReactNode;
   detailsSide?: "left" | "right";
   collapseSecondaryDetails?: boolean;
@@ -356,27 +356,14 @@ export function LineItemCard({
 
   const detailsFields = (
     <>
-      {fulfillmentOnly ? (
-        <Collapsible defaultOpen={Boolean(description.trim())} className="mt-3">
-          <CollapsibleTrigger asChild>
-            <button type="button" className="flex w-full items-center justify-between text-left text-sm font-medium text-muted-foreground">
-              Customer-facing description
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="pt-2">
-            <textarea
-              value={description}
-              onChange={(e) => onDescriptionChange?.(e.target.value)}
-              placeholder="Add custom description for this line item..."
-              className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-              disabled={readOnly}
-            />
-          </CollapsibleContent>
-        </Collapsible>
-      ) : (
-        <div className="mt-3 space-y-1.5">
-          <label className="text-sm font-medium text-muted-foreground">Description (optional)</label>
+      <Collapsible defaultOpen={Boolean(description.trim())} className="mt-3">
+        <CollapsibleTrigger asChild>
+          <button type="button" className="flex w-full items-center justify-between text-left text-sm font-medium text-muted-foreground">
+            Customer-facing description
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="pt-2">
           <textarea
             value={description}
             onChange={(e) => onDescriptionChange?.(e.target.value)}
@@ -384,8 +371,8 @@ export function LineItemCard({
             className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
             disabled={readOnly}
           />
-        </div>
-      )}
+        </CollapsibleContent>
+      </Collapsible>
 
       <div className="mt-3 space-y-1.5">
         <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
@@ -406,10 +393,10 @@ export function LineItemCard({
         />
       </div>
 
-      <Collapsible defaultOpen={!fulfillmentOnly || requiresDesign || requiresPrepress === true || requiresProofApproval} className="mt-3 rounded-md border border-border/40 p-2.5">
+      <Collapsible defaultOpen={requiresDesign || requiresPrepress === true || requiresProofApproval} className="mt-3 rounded-md border border-border/40 p-2.5">
         <CollapsibleTrigger asChild>
           <button type="button" className="flex w-full items-center justify-between text-left">
-            <span className="text-sm font-medium">{fulfillmentOnly ? "Advanced / routing override" : "Routing Intent"}</span>
+            <span className="text-sm font-medium">Advanced / Staff Controls</span>
             <ChevronRight className="h-4 w-4" />
           </button>
         </CollapsibleTrigger>
@@ -462,14 +449,14 @@ export function LineItemCard({
   const actionsRow = (
     <>
       {!readOnly && (onSave || onDuplicate || onRemove) && (
-        <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-sm">
-          <div className="flex items-center gap-2">
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-3 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
             {onSave && isDirty && (
               <Button
                 type="button"
                 variant="default"
                 size="sm"
-                className="h-8"
+                className="h-auto min-h-8 whitespace-normal leading-tight"
                 onClick={onSave}
                 disabled={isSaving || isCalculating}
               >
@@ -497,7 +484,7 @@ export function LineItemCard({
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-8"
+                className="h-auto min-h-8 max-w-full whitespace-normal leading-tight"
                 onClick={onDuplicate}
               >
                 Duplicate Item
@@ -513,11 +500,26 @@ export function LineItemCard({
     </>
   );
 
+  const configurationSection = optionsSlot ? (
+    <section className="rounded-md border border-border/40 bg-background/40 p-3">
+      <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Finishing &amp; Print</div>
+      {optionsSlot}
+    </section>
+  ) : null;
+
   const secondaryDetailsContent = (
-    <>
-      {artworkSlot}
-      {detailsFields}
-    </>
+    <div className="space-y-3">
+      {artworkSlot ? (
+        <section className="rounded-md border border-border/40 bg-background/40 p-3">
+          <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Artwork Assets</div>
+          {artworkSlot}
+        </section>
+      ) : null}
+      <section className="rounded-md border border-border/40 bg-background/40 p-3">
+        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notes</div>
+        {detailsFields}
+      </section>
+    </div>
   );
 
   const secondaryDetailsPanel = collapseSecondaryDetails ? (
@@ -703,9 +705,16 @@ export function LineItemCard({
               aria-hidden="true"
               className="h-0 w-full overflow-hidden outline-none"
             />
-            {/* Top editing row */}
+            {/* Compact operational controls */}
             <div className="flex flex-wrap items-end gap-3">
-              {primaryControlSlot ? <div className="min-w-[220px] flex-1">{primaryControlSlot}</div> : null}
+              {primaryControlSlot ? (
+                <section className={cn("min-w-[220px] flex-1", !fulfillmentOnly && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
+                  {!fulfillmentOnly ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Material &amp; Product</div> : null}
+                  {primaryControlSlot}
+                </section>
+              ) : null}
+              <section className={cn("flex flex-wrap items-end gap-3", !fulfillmentOnly && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
+              {!fulfillmentOnly ? <div className="w-full text-xs font-semibold uppercase tracking-wide text-muted-foreground">Dimensions &amp; Quantity</div> : null}
               {dimsRequired ? (
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-2">
@@ -799,6 +808,7 @@ export function LineItemCard({
                   </div>
                 ) : null}
               </div>
+              </section>
 
               <div className={cn("min-h-[60px] w-[220px]", fulfillmentOnly ? "text-left" : "ml-auto text-right")}>
                 <div className="text-xs text-muted-foreground">Total</div>
@@ -882,13 +892,13 @@ export function LineItemCard({
               {fulfillmentOnly ? (
                 <div className="min-w-0">
                   {secondaryDetailsPanel}
-                  {optionsSlot}
+                  {configurationSection}
                   {actionsRow}
                 </div>
               ) : detailsOnRight ? (
                 <>
                   <div className="min-w-0">
-                    {optionsSlot}
+                    {configurationSection}
                   </div>
 
                   <div className="min-w-0 lg:w-[360px] lg:shrink-0">
@@ -899,13 +909,12 @@ export function LineItemCard({
               ) : (
                 <>
                   <div className="min-w-0">
-                    {optionsSlot}
-                    {collapseSecondaryDetails ? secondaryDetailsPanel : detailsFields}
-                    {actionsRow}
+                    {configurationSection}
                   </div>
 
                   <div className="min-w-0 lg:w-[360px] lg:shrink-0">
-                    {!collapseSecondaryDetails ? artworkSlot : null}
+                    {collapseSecondaryDetails ? secondaryDetailsPanel : secondaryDetailsContent}
+                    {actionsRow}
                   </div>
                 </>
               )}

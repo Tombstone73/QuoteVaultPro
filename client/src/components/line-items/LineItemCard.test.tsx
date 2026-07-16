@@ -225,3 +225,41 @@ describe("LineItemCard fixed-size editing", () => {
     await cleanup();
   });
 });
+
+describe("LineItemCard operational sections", () => {
+  it("groups production configuration, artwork, notes, and staff controls", async () => {
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: true,
+      primaryControlSlot: <select aria-label="Product"><option>Banner</option></select>,
+      optionsSlot: <select aria-label="Print sides"><option>Single-sided</option></select>,
+      artworkSlot: <div>Artwork upload</div>,
+    });
+
+    expect(container.textContent).toContain("Material & Product");
+    expect(container.textContent).toContain("Dimensions & Quantity");
+    expect(container.textContent).toContain("Finishing & Print");
+    expect(container.textContent).toContain("Artwork Assets");
+    expect(container.textContent).toContain("Notes");
+    expect(container.textContent).toContain("Advanced / Staff Controls");
+
+    await cleanup();
+  });
+
+  it("keeps a fulfillment-only editor to its compact operational controls", async () => {
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: true,
+      fulfillmentOnly: true,
+      dimsRequired: false,
+      primaryControlSlot: <select aria-label="Product"><option>Yard Sign Stakes</option></select>,
+    });
+
+    expect(container.textContent).not.toContain("Width");
+    expect(container.textContent).not.toContain("Height");
+    expect(container.textContent).not.toContain("Artwork Assets");
+    expect(container.querySelector("hr")).toBeNull();
+    expect(container.textContent).toContain("Fulfillment Notes");
+    expect(container.textContent).toContain("Advanced / Staff Controls");
+
+    await cleanup();
+  });
+});
