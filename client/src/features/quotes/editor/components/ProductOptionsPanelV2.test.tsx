@@ -198,4 +198,44 @@ describe("ProductOptionsPanelV2", () => {
 
     expect(onSelectionsChange).not.toHaveBeenCalled();
   });
+
+  test("renders compact order-entry fields without permanent helper text", () => {
+    const tree: OptionTreeV2 = {
+      schemaVersion: 2,
+      rootNodeIds: ["thickness_node", "sides_node"],
+      nodes: {
+        thickness_node: {
+          id: "thickness_node",
+          kind: "question",
+          label: "Thickness",
+          description: "Choose the stock thickness.",
+          input: { type: "select", selectionKey: "thickness", defaultValue: "half" },
+          choices: [{ value: "half", label: "1/2\"" }],
+        },
+        sides_node: {
+          id: "sides_node",
+          kind: "question",
+          label: "Print Sides",
+          input: { type: "select", selectionKey: "sides", defaultValue: "single" },
+          choices: [{ value: "single", label: "Single Sided" }],
+        },
+      },
+    };
+
+    act(() => {
+      root.render(
+        <ProductOptionsPanelV2
+          tree={tree}
+          selections={{ schemaVersion: 2, selected: {} }}
+          onSelectionsChange={jest.fn()}
+          compact
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Thickness");
+    expect(container.textContent).toContain("Print Sides");
+    expect(container.textContent).not.toContain("Choose the stock thickness.");
+    expect(container.querySelectorAll("select")).toHaveLength(2);
+  });
 });

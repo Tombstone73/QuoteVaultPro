@@ -25,6 +25,7 @@ type ProductOptionsPanelProps = {
     productOptions: ProductOptionItem[];
     optionSelections: Record<string, OptionSelection>;
     onOptionSelectionsChange: (selections: Record<string, OptionSelection>) => void;
+    compact?: boolean;
 };
 
 function groupSortKey(groupName: string): number {
@@ -88,6 +89,7 @@ type OptionTileProps = {
     onRemoveSelection: (optionId: string) => void;
     onCacheSelection: (optionId: string, selection: OptionSelection) => void;
     onRestoreCachedSelection: (optionId: string) => OptionSelection | null;
+    compact?: boolean;
 };
 
 const OptionRow = memo(function OptionRow({
@@ -99,6 +101,7 @@ const OptionRow = memo(function OptionRow({
     onRemoveSelection,
     onCacheSelection,
     onRestoreCachedSelection,
+    compact = false,
 }: OptionTileProps) {
     const children = ui.children;
     const hasChildren = !!children && children.length > 0;
@@ -267,8 +270,9 @@ const OptionRow = memo(function OptionRow({
     };
 
     const rowClass = cn(
-        "flex flex-wrap items-start gap-x-3 gap-y-2",
-        "rounded-md border border-border/40 bg-muted/10 px-3 py-2",
+        compact
+            ? "grid grid-cols-[minmax(0,1fr)_minmax(140px,1.25fr)] items-start gap-x-3 gap-y-2 py-1.5"
+            : "flex flex-wrap items-start gap-x-3 gap-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2",
         isInvalid && "border-destructive/40 bg-destructive/5"
     );
 
@@ -317,7 +321,9 @@ const OptionRow = memo(function OptionRow({
         );
     };
 
-    const rightControlsClass = "flex flex-wrap items-center justify-end gap-2 ml-auto";
+    const rightControlsClass = compact
+        ? "flex min-w-0 flex-wrap items-center gap-2"
+        : "flex flex-wrap items-center justify-end gap-2 ml-auto";
 
     if (ui.type === "boolean" && !ui.required) {
         return (
@@ -520,6 +526,7 @@ export const ProductOptionsPanel = memo(function ProductOptionsPanel({
     productOptions,
     optionSelections,
     onOptionSelectionsChange,
+    compact = false,
 }: ProductOptionsPanelProps) {
     const effectiveProductOptions = useMemo(() => {
         return injectDerivedMaterialOptionIntoProductOptions(product, productOptions || []);
@@ -631,7 +638,7 @@ export const ProductOptionsPanel = memo(function ProductOptionsPanel({
                         {showGroupHeader && idx !== 0 && (
                             <div className="text-sm font-medium">{formatGroupHeader(groupName)}</div>
                         )}
-                        <div className="space-y-2">
+                        <div className={cn(compact ? "grid gap-x-5 gap-y-1 md:grid-cols-2" : "space-y-2")}>
                             {options.map((ui) => {
                                 const source = productOptionById.get(ui.id);
                                 const selection = optionSelections[ui.id];
@@ -647,6 +654,7 @@ export const ProductOptionsPanel = memo(function ProductOptionsPanel({
                                         onRemoveSelection={onRemoveSelection}
                                         onCacheSelection={onCacheSelection}
                                         onRestoreCachedSelection={onRestoreCachedSelection}
+                                        compact={compact}
                                     />
                                 );
                             })}

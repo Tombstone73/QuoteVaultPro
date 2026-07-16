@@ -98,6 +98,7 @@ export type LineItemCardProps = {
   onPriceKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onUndoOverride?: () => void;
   priceControlSlot?: ReactNode;
+  primaryControlSlot?: ReactNode;
 
   // Calculating state
   isCalculating?: boolean;
@@ -129,6 +130,7 @@ export type LineItemCardProps = {
   detailsSide?: "left" | "right";
   collapseSecondaryDetails?: boolean;
   compactExpandedLayout?: boolean;
+  fulfillmentOnly?: boolean;
 
   // Actions
   isDirty?: boolean;
@@ -252,6 +254,7 @@ export function LineItemCard({
   onPriceKeyDown,
   onUndoOverride,
   priceControlSlot,
+  primaryControlSlot,
   isCalculating = false,
   calcError = null,
   description,
@@ -273,6 +276,7 @@ export function LineItemCard({
   detailsSide = "left",
   collapseSecondaryDetails = false,
   compactExpandedLayout = false,
+  fulfillmentOnly = false,
   isDirty = false,
   isSaving = false,
   isSaved = false,
@@ -310,40 +314,65 @@ export function LineItemCard({
 
   const detailsFields = (
     <>
-      <div className="mt-3 space-y-1.5">
-        <label className="text-sm font-medium text-muted-foreground">Description (optional)</label>
-        <textarea
-          value={description}
-          onChange={(e) => onDescriptionChange?.(e.target.value)}
-          placeholder="Add custom description for this line item..."
-          className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-          disabled={readOnly}
-        />
-      </div>
+      {fulfillmentOnly ? (
+        <Collapsible defaultOpen={Boolean(description.trim())} className="mt-3">
+          <CollapsibleTrigger asChild>
+            <button type="button" className="flex w-full items-center justify-between text-left text-sm font-medium text-muted-foreground">
+              Customer-facing description
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="pt-2">
+            <textarea
+              value={description}
+              onChange={(e) => onDescriptionChange?.(e.target.value)}
+              placeholder="Add custom description for this line item..."
+              className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+              disabled={readOnly}
+            />
+          </CollapsibleContent>
+        </Collapsible>
+      ) : (
+        <div className="mt-3 space-y-1.5">
+          <label className="text-sm font-medium text-muted-foreground">Description (optional)</label>
+          <textarea
+            value={description}
+            onChange={(e) => onDescriptionChange?.(e.target.value)}
+            placeholder="Add custom description for this line item..."
+            className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            disabled={readOnly}
+          />
+        </div>
+      )}
 
       <div className="mt-3 space-y-1.5">
         <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-          Production Notes (internal)
+          {fulfillmentOnly ? "Fulfillment Notes (internal)" : "Production Notes (internal)"}
           <span className="text-xs text-amber-600 dark:text-amber-500 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 rounded">
             Staff only
           </span>
         </label>
+        <p className="text-xs text-muted-foreground">
+          {fulfillmentOnly ? "Visible to staff handling pick, pack, and fulfillment." : "Visible to production staff; not shown to customers."}
+        </p>
         <textarea
           value={productionNotes}
           onChange={(e) => onProductionNotesChange?.(e.target.value)}
-          placeholder="Internal production notes (not shown to customers)..."
+          placeholder={fulfillmentOnly ? "Internal pick, pack, or fulfillment instructions (not shown to customers)..." : "Internal production notes (not shown to customers)..."}
           className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
           disabled={readOnly}
         />
       </div>
 
-      <div className="mt-3 space-y-1.5">
-        <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-          Routing Intent
-          <span className="text-xs text-amber-600 dark:text-amber-500 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 rounded">
-            Staff only
-          </span>
-        </label>
+      <Collapsible defaultOpen={!fulfillmentOnly || requiresDesign || requiresPrepress === true || requiresProofApproval} className="mt-3 rounded-md border border-border/40 p-2.5">
+        <CollapsibleTrigger asChild>
+          <button type="button" className="flex w-full items-center justify-between text-left">
+            <span className="text-sm font-medium">{fulfillmentOnly ? "Advanced / routing override" : "Routing Intent"}</span>
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="pt-3">
+      <div className="space-y-1.5">
         <div className="flex items-center gap-5">
           <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
             <input
@@ -383,6 +412,8 @@ export function LineItemCard({
           <p className="text-xs text-muted-foreground">Prepress routing not explicitly set — will default to product type / org setting on conversion.</p>
         )}
       </div>
+        </CollapsibleContent>
+      </Collapsible>
     </>
   );
 
@@ -632,6 +663,7 @@ export function LineItemCard({
             />
             {/* Top editing row */}
             <div className="flex flex-wrap items-end gap-3">
+              {primaryControlSlot ? <div className="min-w-[220px] flex-1">{primaryControlSlot}</div> : null}
               {dimsRequired ? (
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-2">
@@ -681,9 +713,16 @@ export function LineItemCard({
                   </Button>
                   <Input
                     value={String(quantity)}
-                    onChange={(e) => onQuantityChange?.(Number.parseInt(e.target.value || "1", 10) || 1)}
+                    onChange={(e) => {
+                      const nextQuantity = e.currentTarget.valueAsNumber;
+                      onQuantityChange?.(Number.isFinite(nextQuantity) && nextQuantity >= 1 ? Math.floor(nextQuantity) : 1);
+                    }}
                     className="h-8 w-16 border-0 text-center font-mono focus-visible:ring-0"
                     inputMode="numeric"
+                    type="number"
+                    min={1}
+                    step={1}
+                    aria-label="Quantity"
                     disabled={readOnly}
                     readOnly={readOnly}
                   />
@@ -700,9 +739,9 @@ export function LineItemCard({
                 </div>
               </div>
 
-              <div className="ml-auto min-h-[60px] w-[220px] text-right">
+              <div className={cn("min-h-[60px] w-[220px]", fulfillmentOnly ? "text-left" : "ml-auto text-right")}>
                 <div className="text-xs text-muted-foreground">Total</div>
-                <div className="flex items-center gap-2 justify-end">
+                <div className={cn("flex items-center gap-2", fulfillmentOnly ? "justify-start" : "justify-end")}>
                   {editingPrice ? (
                     <Input
                       type="text"
@@ -751,7 +790,8 @@ export function LineItemCard({
                 {priceControlSlot ? (
                   <div className="mt-1">{priceControlSlot}</div>
                 ) : null}
-                <div className="h-5 flex items-center justify-end">
+                <div className="text-[11px] text-muted-foreground">Unit price {unitPriceLabel}</div>
+                <div className={cn("h-5 flex items-center", fulfillmentOnly ? "justify-start" : "justify-end")}>
                   {isCalculating && <div className="text-[11px] text-muted-foreground">Calculating…</div>}
                   {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" && (
                     <div className="text-[11px] text-amber-600 dark:text-amber-500 font-medium">
