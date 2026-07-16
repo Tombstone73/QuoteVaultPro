@@ -20,6 +20,7 @@ import { uploadAttachmentViaChunked, type TemporaryOrderAttachmentUpload } from 
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Checkbox } from "@/components/ui/checkbox";
+import { assignOrderLineItemArtworkSide } from "@/lib/attachments/orderArtworkSideAssignment";
 
 const LOCAL_ORIGINAL_NOT_PRESENT = "local_original_not_present";
 
@@ -241,7 +242,9 @@ export function LineItemAttachmentsPanel({
   });
 
   const fileCount = attachments.length + pendingOrderAttachments.length;
-  const artworkAttachments = useMemo(() => attachments.filter((file) => file.source !== 'asset'), [attachments]);
+  // Asset-only uploads are assignable too. The backend materializes their
+  // order_attachment link when the first explicit side is saved.
+  const artworkAttachments = attachments;
   const frontArtwork = artworkAttachments.find((file) => file.side === 'front') ?? null;
   const backArtwork = artworkAttachments.find((file) => file.side === 'back') ?? null;
   const sharedArtwork = artworkAttachments.find((file) => file.side === 'both') ?? null;
@@ -252,25 +255,10 @@ export function LineItemAttachmentsPanel({
     setUncontrolledUseSameArtworkBothSides(Boolean(sharedArtwork));
   }, [controlledUseSameArtworkBothSides, doubleSided, sharedArtwork?.id]);
 
-  const updateArtworkSide = async (fileId: string, side: 'front' | 'back' | 'both' | 'na') => {
-    if (!orderId) return;
-    const response = await fetch(`/api/orders/${orderId}/files/${fileId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: 'artwork', side }),
-      credentials: 'include',
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload?.error || 'Could not update artwork side');
-  };
-
   const assignArtworkSide = async (fileId: string, side: 'front' | 'back' | 'both') => {
+    if (!orderId || !lineItemId || !filesApiPath) return;
     try {
-      const assignedSides = new Set(['front', 'back', 'both']);
-      await Promise.all(artworkAttachments
-        .filter((file) => file.id !== fileId && assignedSides.has(String(file.side ?? 'na')))
-        .map((file) => updateArtworkSide(file.id, 'na')));
-      await updateArtworkSide(fileId, side);
+      await assignOrderLineItemArtworkSide({ orderId, lineItemId, fileId, side });
       await queryClient.invalidateQueries({ queryKey: [filesApiPath] });
       toast({ title: 'Artwork side assigned', description: side === 'both' ? 'The same artwork is assigned to Front and Back.' : `Artwork assigned to ${side}.` });
     } catch (error: any) {

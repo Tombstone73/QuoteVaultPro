@@ -13,7 +13,7 @@
  */
 
 import type { Express } from "express";
-import { eq, and, desc, sql, or } from "drizzle-orm";
+import { eq, and, desc, sql, or, inArray, ne } from "drizzle-orm";
 import { db } from "../db";
 import {
   orders,
@@ -40,6 +40,11 @@ import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { autoSyncCanonicalProofForLineItem } from "../services/proofingService";
 import { getFileUploadNamingPolicy } from "../prepressFileService";
 import { withOrderOriginalArtworkDisplayFilename } from "../services/originalArtworkFiles";
+import {
+  assignOrderLineItemArtworkSide,
+  isOrderArtworkSide,
+  OrderLineItemArtworkAssignmentError,
+} from "../services/orderLineItemArtworkAssignmentService";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -491,6 +496,187 @@ export function registerOrderLineItemFileRoutes(
     } catch (error: any) {
       console.error("[OrderLineItemFiles:POST] Error:", error);
       res.status(500).json({ error: "Failed to upload line item file" });
+    }
+  });
+
+  app.patch("/api/orders/:orderId/line-items/:lineItemId/files/:fileId/artwork-side", isAuthenticated, tenantContext, async (req: any, res) => {
+    const { orderId, lineItemId, fileId } = req.params;
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+    if (!isOrderArtworkSide(req.body?.side)) {
+      return res.status(400).json({ error: "Side must be front, back, or both", code: "INVALID_ARTWORK_SIDE" });
+    }
+
+    try {
+      const updated = await db.transaction(async (tx) => assignOrderLineItemArtworkSide({
+        organizationId,
+        orderId,
+        lineItemId,
+        fileId,
+        side: req.body.side,
+        store: {
+          findOrder: async (scopedOrganizationId, scopedOrderId) => {
+            const [row] = await tx
+              .select({ id: orders.id })
+              .from(orders)
+              .where(and(eq(orders.id, scopedOrderId), eq(orders.organizationId, scopedOrganizationId)))
+              .limit(1);
+            return row ?? null;
+          },
+          findLineItem: async (scopedOrderId, scopedLineItemId) => {
+            const [row] = await tx
+              .select({ id: orderLineItems.id })
+              .from(orderLineItems)
+              .where(and(eq(orderLineItems.id, scopedLineItemId), eq(orderLineItems.orderId, scopedOrderId)))
+              .limit(1);
+            return row ?? null;
+          },
+          findAttachment: async (scopedOrderId, scopedLineItemId, scopedFileId) => {
+            const [row] = await tx
+              .select()
+              .from(orderAttachments)
+              .where(and(
+                eq(orderAttachments.id, scopedFileId),
+                eq(orderAttachments.orderId, scopedOrderId),
+                eq(orderAttachments.orderLineItemId, scopedLineItemId),
+              ))
+              .limit(1);
+            if (row) return row;
+
+            // Newer line-item uploads are canonical assets. Materialize the
+            // order_attachment link on first side assignment because that is
+            // where Front/Back/Both metadata is persisted and consumed.
+            const [assetRow] = await tx
+              .select({
+                id: assets.id,
+                fileRecordId: assets.fileRecordId,
+                fileKey: assets.fileKey,
+                fileName: assets.fileName,
+                mimeType: assets.mimeType,
+                sizeBytes: assets.sizeBytes,
+              })
+              .from(assets)
+              .innerJoin(assetLinks, and(
+                eq(assetLinks.assetId, assets.id),
+                eq(assetLinks.organizationId, organizationId),
+                eq(assetLinks.parentType, "order_line_item"),
+                eq(assetLinks.parentId, scopedLineItemId),
+              ))
+              .where(and(eq(assets.id, scopedFileId), eq(assets.organizationId, organizationId)))
+              .limit(1);
+            if (!assetRow) return null;
+
+            if (assetRow.fileRecordId) {
+              const [existingLink] = await tx
+                .select()
+                .from(orderAttachments)
+                .where(and(
+                  eq(orderAttachments.orderId, scopedOrderId),
+                  eq(orderAttachments.orderLineItemId, scopedLineItemId),
+                  eq(orderAttachments.fileRecordId, assetRow.fileRecordId),
+                ))
+                .limit(1);
+              if (existingLink) return existingLink;
+            }
+
+            const [materialized] = await tx
+              .insert(orderAttachments)
+              .values({
+                orderId: scopedOrderId,
+                orderLineItemId: scopedLineItemId,
+                fileRecordId: assetRow.fileRecordId,
+                uploadedByUserId: getUserId(req.user) ?? null,
+                uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+                fileName: assetRow.fileName,
+                fileUrl: assetRow.fileKey,
+                fileSize: assetRow.sizeBytes,
+                sizeBytes: assetRow.sizeBytes,
+                mimeType: assetRow.mimeType,
+                role: "artwork",
+                side: "na",
+                isPrimary: false,
+                storageProvider: null,
+              })
+              .returning();
+            return materialized ?? null;
+          },
+          clearConflictingSides: async ({ orderId: scopedOrderId, lineItemId: scopedLineItemId, exceptFileId, sides }) => {
+            await tx
+              .update(orderAttachments)
+              .set({ side: "na", updatedAt: new Date() })
+              .where(and(
+                eq(orderAttachments.orderId, scopedOrderId),
+                eq(orderAttachments.orderLineItemId, scopedLineItemId),
+                ne(orderAttachments.id, exceptFileId),
+                inArray(orderAttachments.side, sides),
+              ));
+          },
+          updateAttachmentMetadata: async (scopedFileId, patch) => {
+            const [row] = await tx
+              .update(orderAttachments)
+              .set({ ...patch, updatedAt: new Date() })
+              .where(and(
+                eq(orderAttachments.id, scopedFileId),
+                eq(orderAttachments.orderId, orderId),
+                eq(orderAttachments.orderLineItemId, lineItemId),
+              ))
+              .returning();
+            return row ?? null;
+          },
+        },
+      }));
+
+      const userId = getUserId(req.user);
+      try {
+        await storage.createOrderAuditLog({
+          orderId,
+          orderLineItemId: lineItemId,
+          userId,
+          userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+          actionType: "file_updated",
+          fromStatus: null,
+          toStatus: null,
+          note: `Artwork assigned to ${req.body.side}`,
+          metadata: { fileId, lineItemId, side: req.body.side } as any,
+        });
+      } catch (auditError) {
+        console.warn("[OrderLineItemFiles:ARTWORK_SIDE] Audit log failed after assignment", auditError);
+      }
+
+      if (userId) {
+        try {
+          await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
+            organizationId,
+            lineItemId,
+            actorUserId: userId,
+            reason: "artwork_saved",
+          }));
+        } catch (proofSyncError) {
+          console.warn("[OrderLineItemFiles:ARTWORK_SIDE] Proof sync failed after assignment", proofSyncError);
+        }
+      }
+
+      return res.json({ success: true, data: updated });
+    } catch (error: any) {
+      if (error instanceof OrderLineItemArtworkAssignmentError) {
+        return res.status(error.statusCode).json({ error: error.message, code: error.code });
+      }
+      const enumValueRejected = error?.code === "22P02" && /file_side/i.test(String(error?.message || ""));
+      console.error("[OrderLineItemFiles:ARTWORK_SIDE] Failed", {
+        orderId,
+        lineItemId,
+        fileId,
+        side: req.body?.side,
+        code: error?.code ?? null,
+        message: error?.message ?? String(error),
+      });
+      if (enumValueRejected) {
+        return res.status(409).json({
+          error: "Artwork side support is not available until the current database migration is applied",
+          code: "ARTWORK_SIDE_SCHEMA_NOT_READY",
+        });
+      }
+      return res.status(500).json({ error: "Failed to assign artwork side", code: "ARTWORK_SIDE_UPDATE_FAILED" });
     }
   });
 
