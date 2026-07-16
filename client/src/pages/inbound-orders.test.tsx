@@ -2750,6 +2750,14 @@ describe("InboundOrdersPage", () => {
       globalWarnings: [],
     });
     const cleanReview = reviewDraft(cleanParsed);
+    cleanReview.missingDecisionsJson.push({
+      field: "lineItems.1.artwork",
+      label: "Is artwork supplied for line item 2?",
+      reason: "The parser split a second line item that staff removed.",
+      severity: "blocking",
+      status: "still_blocking",
+      resolutionNote: null,
+    });
     const { getSavedBody } = setupParsedInboundReview({ parsed: cleanParsed, review: cleanReview });
 
     renderPage();
@@ -2804,6 +2812,61 @@ describe("InboundOrdersPage", () => {
     expect(getSavedBody().reviewedLineItemsJson).toHaveLength(2);
     expect(getSavedBody().reviewedLineItemsJson.map((lineItem: any) => lineItem.quantity)).toEqual([1, 1]);
     expect(getSavedBody().reviewedLineItemsJson[0]).not.toBe(getSavedBody().reviewedLineItemsJson[1]);
+    expect(getSavedBody().missingDecisionsJson).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: "lineItems.1.artwork",
+        status: "resolved",
+        resolutionNote: "Obsolete: reviewed line item was removed.",
+      }),
+    ]));
+  });
+
+  test("Clean View reindexes active-line decisions when the first line is removed", async () => {
+    const cleanParsed = parsedDraft({ missingDecisions: [], globalWarnings: [] });
+    const cleanReview = reviewDraft(cleanParsed);
+    cleanReview.missingDecisionsJson.push({
+      field: "lineItems.1.artwork",
+      label: "Is artwork supplied for line item 2?",
+      reason: "The remaining line still needs artwork.",
+      severity: "blocking",
+      status: "still_blocking",
+      resolutionNote: null,
+    });
+    const { getSavedBody } = setupParsedInboundReview({ parsed: cleanParsed, review: cleanReview });
+
+    renderPage();
+    await waitForText("Operational View");
+    const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(cleanButton);
+    });
+    await waitForText("Line Items");
+
+    const addButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Add line item")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(addButton);
+    });
+    const cards = () => Array.from(container.querySelectorAll("[data-testid='clean-line-item-card']")) as HTMLElement[];
+    expect(cards()).toHaveLength(2);
+    const firstRemove = Array.from(cards()[0].querySelectorAll("button")).find((button) => button.textContent?.includes("Remove")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(firstRemove);
+    });
+    expect(cards()).toHaveLength(1);
+    expect(cards()[0].textContent).toContain("Line Item 1");
+
+    const saveDraftButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(saveDraftButton);
+    });
+    await waitForCondition(() => Boolean(getSavedBody()), "reindexed draft saved");
+    expect(getSavedBody().missingDecisionsJson).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: "lineItems.0.artwork",
+        label: "Is artwork supplied for line item 1?",
+        status: "still_blocking",
+      }),
+    ]));
   });
 
   test("groups Clean View review tasks into operator-facing categories", async () => {
