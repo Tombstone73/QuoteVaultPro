@@ -116,6 +116,35 @@ interface EmailTemplates {
   invoiceEmailBody?: string;
 }
 
+export type EmailAttachment = {
+  filename: string;
+  content: Buffer;
+  contentType: string;
+};
+
+/**
+ * Normalize legacy base64 attachments before Gmail builds the MIME part. Gmail
+ * base64-encodes the resulting bytes itself, so encoding a base64 string a
+ * second time would create a corrupt file attachment.
+ */
+export function normalizeEmailAttachments(attachments: any[] | undefined): EmailAttachment[] | undefined {
+  if (!attachments?.length) return undefined;
+
+  return attachments.map((att: any) => {
+    const content = Buffer.isBuffer(att.content)
+      ? att.content
+      : att.encoding === "base64" && typeof att.content === "string"
+        ? Buffer.from(att.content, "base64")
+        : Buffer.from(att.content);
+
+    return {
+      filename: att.filename || "attachment",
+      content,
+      contentType: att.contentType || "application/octet-stream",
+    };
+  });
+}
+
 class EmailService {
   /**
    * Get email templates from organization settings
@@ -514,14 +543,7 @@ class EmailService {
     }
 
     // Convert nodemailer attachment format to Gmail API format
-    let gmailAttachments: Array<{ filename: string; content: Buffer; contentType: string }> | undefined;
-    if (options.attachments && options.attachments.length > 0) {
-      gmailAttachments = options.attachments.map((att: any) => ({
-        filename: att.filename || 'attachment',
-        content: Buffer.isBuffer(att.content) ? att.content : Buffer.from(att.content),
-        contentType: att.contentType || 'application/octet-stream',
-      }));
-    }
+    const gmailAttachments = normalizeEmailAttachments(options.attachments);
 
     return await this.sendOrMarkRevoked(organizationId, config, {
       to: options.to,

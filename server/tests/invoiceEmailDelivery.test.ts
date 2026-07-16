@@ -1,0 +1,99 @@
+import { describe, expect, test } from "@jest/globals";
+import { PDFDocument } from "pdf-lib";
+
+import { normalizeEmailAttachments } from "../emailService";
+import { generateInvoicePdfBytes } from "../lib/invoicePdf";
+import { createInvoicePdfEmailAttachment, INVOICE_PDF_CONTENT_TYPE } from "../services/invoiceEmailAttachment";
+import { buildInvoiceEmailHtml, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
+
+async function generateValidInvoicePdf() {
+  return generateInvoicePdfBytes({
+    invoice: {
+      id: "invoice_20000",
+      invoiceNumber: 20000,
+      status: "sent",
+      issueDate: "2026-07-16",
+      dueDate: "2026-08-15",
+      subtotalCents: 2500,
+      taxCents: 0,
+      shippingCents: 0,
+      totalCents: 2500,
+      currency: "USD",
+    },
+    customer: { companyName: "Test Customer", email: "customer@example.com" },
+    companySettings: { companyName: "Test Print Shop" },
+    paymentSummary: { amountPaidCents: 0, amountDueCents: 2500, statusLabel: "Open" },
+    lineItems: [{ description: "Shipping", quantity: 1, lineTotalCents: 2500 }],
+  } as any);
+}
+
+describe("invoice email delivery", () => {
+  test("uses valid renderer bytes for the PDF email attachment", async () => {
+    const attachment = await createInvoicePdfEmailAttachment({
+      filename: "invoice-INV-20000.pdf",
+      pdfBytes: await generateValidInvoicePdf(),
+    });
+    const normalized = normalizeEmailAttachments([attachment]);
+
+    expect(attachment.filename).toBe("invoice-INV-20000.pdf");
+    expect(attachment.contentType).toBe(INVOICE_PDF_CONTENT_TYPE);
+    expect(attachment.content.length).toBeGreaterThan(0);
+    expect(attachment.content.subarray(0, 5).toString("ascii")).toBe("%PDF-");
+    expect(normalized).toHaveLength(1);
+    expect(normalized?.[0].content).toEqual(attachment.content);
+    await expect(PDFDocument.load(normalized?.[0].content as Buffer)).resolves.toBeDefined();
+  });
+
+  test("decodes legacy base64 attachment content exactly once", async () => {
+    const pdf = Buffer.from(await generateValidInvoicePdf());
+    const normalized = normalizeEmailAttachments([{
+      filename: "invoice-INV-20000.pdf",
+      content: pdf.toString("base64"),
+      encoding: "base64",
+      contentType: INVOICE_PDF_CONTENT_TYPE,
+    }]);
+
+    expect(normalized?.[0].content).toEqual(pdf);
+    expect(normalized?.[0].content.subarray(0, 5).toString("ascii")).toBe("%PDF-");
+  });
+
+  test("rejects corrupt PDF bytes before an email is sent", async () => {
+    await expect(createInvoicePdfEmailAttachment({
+      filename: "invoice-INV-20000.pdf",
+      pdfBytes: Buffer.from("<html>PDF unavailable</html>"),
+    })).rejects.toMatchObject({ code: "INVOICE_PDF_INVALID", statusCode: 500 });
+  });
+
+  test("includes an invoice-specific payment CTA and raw fallback only when online payment is available", () => {
+    const paymentUrl = buildInvoicePortalPaymentUrl({
+      publicWebOrigin: "https://app.example.test",
+      invoiceId: "invoice_20000",
+      canPayOnline: true,
+    });
+    const payableHtml = buildInvoiceEmailHtml({
+      invoiceNumber: "INV-20000",
+      companyName: "Test Print Shop",
+      customerName: "Test Customer",
+      totalFormatted: "25.00",
+      dueDate: "Aug 15, 2026",
+      paymentUrl,
+    });
+    const unavailableHtml = buildInvoiceEmailHtml({
+      invoiceNumber: "INV-20000",
+      companyName: "Test Print Shop",
+      customerName: "Test Customer",
+      totalFormatted: "25.00",
+      dueDate: "Aug 15, 2026",
+      paymentUrl: buildInvoicePortalPaymentUrl({
+        publicWebOrigin: "https://app.example.test",
+        invoiceId: "invoice_20000",
+        canPayOnline: false,
+      }),
+    });
+
+    expect(paymentUrl).toBe("https://app.example.test/portal/invoices/invoice_20000");
+    expect(payableHtml).toContain("Pay Invoice Online");
+    expect(payableHtml).toContain(paymentUrl as string);
+    expect(unavailableHtml).not.toContain("Pay Invoice Online");
+  });
+});

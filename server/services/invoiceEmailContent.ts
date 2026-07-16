@@ -1,0 +1,78 @@
+function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+export function buildInvoicePortalPaymentUrl(input: {
+  publicWebOrigin: string | null;
+  invoiceId: string;
+  canPayOnline: boolean;
+}): string | null {
+  if (!input.canPayOnline || !input.publicWebOrigin) return null;
+
+  try {
+    const origin = new URL(input.publicWebOrigin).origin;
+    return `${origin}/portal/invoices/${encodeURIComponent(input.invoiceId)}`;
+  } catch {
+    return null;
+  }
+}
+
+export function buildInvoiceEmailHtml(input: {
+  invoiceNumber: string;
+  companyName: string;
+  customerName: string;
+  totalFormatted: string;
+  dueDate: string;
+  paymentUrl?: string | null;
+}): string {
+  const invoiceNumber = escapeHtml(input.invoiceNumber);
+  const companyName = escapeHtml(input.companyName);
+  const customerName = escapeHtml(input.customerName);
+  const totalFormatted = escapeHtml(input.totalFormatted);
+  const dueDate = escapeHtml(input.dueDate);
+  const paymentUrl = input.paymentUrl ? escapeHtml(input.paymentUrl) : null;
+  const paymentSection = paymentUrl
+    ? `
+    <p style="margin: 24px 0 12px 0;">
+      <a href="${paymentUrl}" style="display: inline-block; background: #2563eb; color: #ffffff; padding: 12px 18px; border-radius: 6px; font-weight: 600; text-decoration: none;">Pay Invoice Online</a>
+    </p>
+    <p style="font-size: 13px; color: #666; word-break: break-all;">If the button does not work, copy and paste this secure payment link into your browser:<br><a href="${paymentUrl}">${paymentUrl}</a></p>`
+    : "";
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Invoice #${invoiceNumber}</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background-color: #f8f9fa; padding: 30px; border-radius: 8px; margin-bottom: 30px;">
+    <h1 style="margin: 0 0 10px 0; color: #2563eb;">Invoice #${invoiceNumber}</h1>
+    <p style="margin: 0; color: #666;">
+      From: ${companyName}<br>
+      To: ${customerName}
+    </p>
+  </div>
+
+  <div style="padding: 20px 0;">
+    <p>Dear ${customerName},</p>
+    <p>Please find attached Invoice #${invoiceNumber} for the amount of <strong>$${totalFormatted}</strong>.</p>
+    <p>Payment is due ${dueDate}.</p>${paymentSection}
+    <p>If you have any questions about this invoice, please don't hesitate to contact us.</p>
+  </div>
+
+  <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #dee2e6; color: #666; font-size: 14px;">
+    <p style="margin: 0;">Thank you for your business!</p>
+    <p style="margin: 5px 0 0 0;">${companyName}</p>
+  </div>
+</body>
+</html>
+  `.trim();
+}

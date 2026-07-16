@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, companySettings, customers, invoiceLineItems, invoiceReminderLogs, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
+import { auditLogs, companySettings, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { applyPayment, createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, refreshInvoiceStatus } from "../invoicesService";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
@@ -22,6 +22,9 @@ import { storage } from "../storage";
 import { isCanceledOrder } from "../../shared/operationalState";
 import { getPaymentSettings } from "../services/payments/paymentProvider.service";
 import { resolveOrderPayment } from "../services/payments/paymentOrchestrator.service";
+import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
+import { createInvoicePdfEmailAttachment } from "../services/invoiceEmailAttachment";
+import { buildInvoiceEmailHtml, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -34,6 +37,17 @@ function getRequestOrganizationId(req: any): string | undefined {
 
 function paymentsDebugLogsEnabled(): boolean {
   return String(process.env.PAYMENTS_DEBUG_LOGS || '').trim() === '1';
+}
+
+function getInvoiceEmailPublicWebOrigin(): string | null {
+  const configured = getPublicWebOrigin() || String(process.env.APP_URL || "").trim() || null;
+  if (!configured) return null;
+  try {
+    const parsed = new URL(configured);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.origin : null;
+  } catch {
+    return null;
+  }
 }
 
 const IMPORTED_QB_PAYMENT_RECONCILIATION_MESSAGE = 'Payments for imported QuickBooks invoices should be reconciled from QuickBooks until payment sync is enabled.';
@@ -288,43 +302,78 @@ export async function registerMvpInvoicingRoutes(
 
     const invoiceNumber = (inv as any).displayNumber || ((inv as any).invoiceNumber ? String((inv as any).invoiceNumber) : inv.id);
     const filename = `invoice-${invoiceNumber}.pdf`;
-    const pdfBase64 = Buffer.from(pdfBytes).toString("base64");
+    let pdfAttachment;
+    try {
+      pdfAttachment = await createInvoicePdfEmailAttachment({ filename, pdfBytes });
+    } catch (error) {
+      console.error("[Invoice Send] PDF attachment validation failed", {
+        invoiceId: input.invoiceId,
+        organizationId: input.organizationId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+
+    const invoiceStatusForOnlinePayment = String((inv as any).status || "").trim().toLowerCase();
+    const canInvoiceBePaidOnline = rollup.amountDueCents > 0
+      && ["finalized", "billed", "sent", "partially_paid", "overdue"].includes(invoiceStatusForOnlinePayment);
+    let paymentUrl: string | null = null;
+    if (canInvoiceBePaidOnline) {
+      const [portalAccessRows, paymentSettings, stripeConnections] = await Promise.all([
+        db
+          .select({ email: customerPortalAccess.email })
+          .from(customerPortalAccess)
+          .where(and(
+            eq(customerPortalAccess.organizationId, input.organizationId),
+            eq(customerPortalAccess.customerId, inv.customerId),
+            eq(customerPortalAccess.status, "ACTIVE"),
+          )),
+        getPaymentSettings(input.organizationId),
+        db
+          .select({ externalAccountId: integrationConnections.externalAccountId, status: integrationConnections.status })
+          .from(integrationConnections)
+          .where(and(eq(integrationConnections.organizationId, input.organizationId), eq(integrationConnections.provider, "stripe")))
+          .limit(1),
+      ]);
+
+      const recipientHasPortalAccess = portalAccessRows.some(
+        (access) => String(access.email || "").trim().toLowerCase() === String(recipientEmail).trim().toLowerCase(),
+      );
+      const stripeConnected = Boolean(
+        stripeConnections[0]?.externalAccountId
+        && String(stripeConnections[0]?.status || "connected").toLowerCase() !== "disconnected",
+      );
+      const availableProviders = [
+        stripeConnected ? "stripe" : null,
+        paymentSettings.epsReady ? "eps" : null,
+      ].filter((provider): provider is HostedPaymentProvider => provider === "stripe" || provider === "eps");
+      const hostedPaymentResolution = resolveHostedPaymentProvider({
+        configuredDefaultProvider: paymentSettings.provider,
+        availableProviders,
+      });
+
+      // The portal payment screen currently supports Stripe. Do not create an
+      // EPS session while merely composing an email, and never include a link
+      // that the recipient cannot use through their existing portal access.
+      paymentUrl = buildInvoicePortalPaymentUrl({
+        publicWebOrigin: getInvoiceEmailPublicWebOrigin(),
+        invoiceId: inv.id,
+        canPayOnline: recipientHasPortalAccess && hostedPaymentResolution.provider === "stripe",
+      });
+    }
+
     const companyName = orgCompany?.companyName || "QuoteVaultPro";
     const customerName = cust.companyName || cust.email || "Valued Customer";
     const totalFormatted = (Number(inv.totalCents || 0) / 100).toFixed(2);
     const dueDate = inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : "upon receipt";
-
-    const emailHtml = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Invoice #${invoiceNumber}</title>
-</head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-  <div style="background-color: #f8f9fa; padding: 30px; border-radius: 8px; margin-bottom: 30px;">
-    <h1 style="margin: 0 0 10px 0; color: #2563eb;">Invoice #${invoiceNumber}</h1>
-    <p style="margin: 0; color: #666;">
-      From: ${companyName}<br>
-      To: ${customerName}
-    </p>
-  </div>
-
-  <div style="padding: 20px 0;">
-    <p>Dear ${customerName},</p>
-    <p>Please find attached Invoice #${invoiceNumber} for the amount of <strong>$${totalFormatted}</strong>.</p>
-    <p>Payment is due ${dueDate}.</p>
-    <p>If you have any questions about this invoice, please don't hesitate to contact us.</p>
-  </div>
-
-  <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #dee2e6; color: #666; font-size: 14px;">
-    <p style="margin: 0;">Thank you for your business!</p>
-    <p style="margin: 5px 0 0 0;">${companyName}</p>
-  </div>
-</body>
-</html>
-    `.trim();
+    const emailHtml = buildInvoiceEmailHtml({
+      invoiceNumber,
+      companyName,
+      customerName,
+      totalFormatted,
+      dueDate,
+      paymentUrl,
+    });
 
     const now = new Date();
     let messageId: string | null = null;
@@ -334,12 +383,7 @@ export async function registerMvpInvoicingRoutes(
         subject: `Invoice #${invoiceNumber} from ${companyName}`,
         html: emailHtml,
         attachments: [
-          {
-            filename,
-            content: pdfBase64,
-            encoding: "base64",
-            contentType: "application/pdf",
-          },
+          pdfAttachment,
         ] as any,
       });
 
