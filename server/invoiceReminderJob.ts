@@ -39,17 +39,26 @@ import {
   invoiceLineItems,
   invoices,
   invoiceReminderLogs,
-  jobs,
   payments,
   type InvoiceReminderSettings,
 } from '../shared/schema';
 import { desc } from 'drizzle-orm';
+import { getInvoiceOrderContext } from './services/invoiceOrderContext';
 
 // ---------------------------------------------------------------------------
 // In-process singleton guard — prevents overlapping job runs.
 // ---------------------------------------------------------------------------
 
 let jobRunning = false;
+
+function escapeEmailHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
 function isJobRunning(): boolean {
   return jobRunning;
@@ -84,15 +93,23 @@ export interface ReminderJobDeps {
 // Email helpers
 // ---------------------------------------------------------------------------
 
-function buildReminderEmailHtml(opts: {
+export function buildReminderEmailHtml(opts: {
   invoiceNumber: string | number;
   customerName: string;
   companyName: string;
   balanceDue: string;
   dueDate: string;
   reminderNumber: number;
+  poNumber?: string | null;
+  jobLabel?: string | null;
 }): string {
-  const { invoiceNumber, customerName, companyName, balanceDue, dueDate, reminderNumber } = opts;
+  const { invoiceNumber, customerName, companyName, balanceDue, reminderNumber } = opts;
+  const dueDate = opts.dueDate;
+  const poNumber = String(opts.poNumber || '').trim();
+  const jobLabel = String(opts.jobLabel || '').trim();
+  const orderContext = poNumber || jobLabel
+    ? `<p>${poNumber ? `<strong>PO #:</strong> ${escapeEmailHtml(poNumber)}<br>` : ''}${jobLabel ? `<strong>Job:</strong> ${escapeEmailHtml(jobLabel)}` : ''}</p>`
+    : '';
   const ordinal = reminderNumber === 1 ? 'First' : reminderNumber === 2 ? 'Second' : reminderNumber === 3 ? 'Third' : `${reminderNumber}th`;
 
   return `
@@ -117,6 +134,7 @@ function buildReminderEmailHtml(opts: {
       This is a friendly reminder that <strong>Invoice #${invoiceNumber}</strong> has an outstanding
       balance of <strong>$${balanceDue}</strong> that was due on <strong>${dueDate}</strong>.
     </p>
+    ${orderContext}
     <p>Please find the invoice attached for your reference. If payment has already been sent, please disregard this reminder.</p>
     <p>If you have any questions or concerns, please don't hesitate to contact us.</p>
   </div>
@@ -164,12 +182,13 @@ async function sendReminderForInvoice(opts: {
     .where(eq(invoiceLineItems.invoiceId, inv.id))
     .orderBy(invoiceLineItems.sortOrder, desc(invoiceLineItems.createdAt));
 
-  const jobId = String((fullInv as any).jobId || '').trim();
-  let job: any = null;
-  if (jobId) {
-    const jobRows = await db.select().from(jobs).where(and(eq(jobs.id, jobId), eq((jobs as any).organizationId, organizationId)));
-    job = jobRows[0] || null;
-  }
+  const orderContext = await getInvoiceOrderContext({
+    organizationId,
+    orderId: (fullInv as any).orderId,
+  });
+  const job = orderContext
+    ? { poNumber: orderContext.poNumber, jobNumber: orderContext.orderNumber, jobLabel: orderContext.jobLabel }
+    : null;
 
   const paymentRows = await db
     .select()
@@ -220,6 +239,8 @@ async function sendReminderForInvoice(opts: {
     balanceDue,
     dueDate: dueDateStr,
     reminderNumber,
+    poNumber: orderContext?.poNumber,
+    jobLabel: orderContext?.jobLabel,
   });
 
   const subject = `REMINDER: Invoice #${invoiceNumber} — Balance Due $${balanceDue}`;

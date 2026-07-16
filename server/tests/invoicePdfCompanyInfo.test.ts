@@ -57,6 +57,36 @@ function extractDecodedPdfContent(bytes: Uint8Array): string {
 }
 
 describe("invoice PDF company info and remittance data", () => {
+  test("renders order PO and wraps a long job label in the invoice metadata area", async () => {
+    const bytes = await generateInvoicePdfBytes({
+      ...baseInvoiceParams,
+      companySettings: { companyDisplayName: "Context Print" },
+      job: {
+        poNumber: "Mike Gerdt Shipping",
+        jobNumber: "ORD-20001",
+        jobLabel: "Shipping cost for sending a box with a long descriptive job label that must wrap cleanly without crowding the bill-to address block",
+      },
+    } as any);
+
+    const text = extractDecodedPdfContent(bytes);
+    expect(text).toContain("PO # Mike Gerdt Shipping");
+    expect(text).toContain("Job: Shipping cost for sending a box");
+    expect(text).toContain("Order # ORD-20001");
+    expect(text).toContain("must wrap cleanly");
+  });
+
+  test("omits order metadata cleanly when no linked order context exists", async () => {
+    const bytes = await generateInvoicePdfBytes({
+      ...baseInvoiceParams,
+      companySettings: { companyDisplayName: "No Context Print" },
+      job: null,
+    } as any);
+
+    const text = extractDecodedPdfContent(bytes);
+    expect(text).not.toContain("PO #");
+    expect(text).not.toContain("Order #");
+  });
+
   test("uses physical address as payment address when remittance is disabled", () => {
     const resolved = resolveInvoiceCompanyDisplayData({
       companyDisplayName: "Acme Print",
