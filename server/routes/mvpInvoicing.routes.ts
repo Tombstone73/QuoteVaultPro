@@ -1715,6 +1715,22 @@ export async function registerMvpInvoicingRoutes(
         return res.status(409).json({ error: "Cannot create an invoice from a cancelled order", code: "ORDER_CANCELLED" });
       }
 
+      // Invoice creation is allowed only after the current line-item state has
+      // established billing readiness. This keeps service/fee lines invoiceable
+      // without bypassing production/proof gates for normal production lines.
+      await recomputeOrderBillingStatus({ organizationId, orderId });
+      const [billingOrder] = await db
+        .select({ billingStatus: orders.billingStatus, billingReadyOverride: orders.billingReadyOverride })
+        .from(orders)
+        .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+      if (!billingOrder || (billingOrder.billingStatus !== "ready" && !billingOrder.billingReadyOverride)) {
+        return res.status(409).json({
+          error: "Order is not ready for billing. Complete required production/proof work or set a billing override before creating an invoice.",
+          code: "BILLING_NOT_READY",
+        });
+      }
+
       const invoice = await createInvoiceFromOrder(organizationId, orderId, userId, {
         terms: terms || "due_on_receipt",
         customDueDate: customDueDate ? new Date(customDueDate) : null,

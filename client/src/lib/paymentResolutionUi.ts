@@ -2,16 +2,62 @@ import type { PaymentResolutionStatus } from "@shared/paymentOrchestration";
 
 export type InvoiceAutoPaymentAction = "wait" | "stripe" | "eps" | "manual" | "blocked";
 
-export function getOrderTakePaymentLabel(input: {
+export function getOrderBillingActionState(input: {
+  billingReady: boolean;
+  hasExistingInvoice: boolean;
+  orderCanceled: boolean;
   isLoading: boolean;
   isPreparing: boolean;
   resolutionStatus?: PaymentResolutionStatus | null;
-}): string {
-  if (input.isPreparing) return "Preparing…";
-  if (input.isLoading) return "Resolving Payment…";
-  if (input.resolutionStatus === "NO_INVOICE") return "Invoice & Take Payment";
-  if (input.resolutionStatus === "ALREADY_PAID") return "View Payment";
-  return "Take Payment";
+  blockedReason?: string | null;
+}): {
+  canCreateInvoice: boolean;
+  canTakePayment: boolean;
+  canInvoiceAndTakePayment: boolean;
+  takePaymentLabel: string;
+  takePaymentHelp: string | null;
+  invoiceAndTakePaymentLabel: string;
+} {
+  const busy = input.isLoading || input.isPreparing;
+  const noInvoice = !input.hasExistingInvoice
+    && (input.resolutionStatus === "NO_INVOICE" || !input.resolutionStatus);
+  const payable = input.resolutionStatus === "SINGLE_PAYABLE_INVOICE" || input.resolutionStatus === "MULTIPLE_PAYABLE_INVOICES";
+  const alreadyPaid = input.resolutionStatus === "ALREADY_PAID";
+  const canCreateInvoice = !busy && !input.orderCanceled && input.billingReady && noInvoice;
+
+  if (alreadyPaid) {
+    return {
+      canCreateInvoice: false,
+      canTakePayment: !busy,
+      canInvoiceAndTakePayment: false,
+      takePaymentLabel: "View Invoice",
+      takePaymentHelp: "Invoice already paid",
+      invoiceAndTakePaymentLabel: "Invoice already paid",
+    };
+  }
+
+  if (payable) {
+    return {
+      canCreateInvoice: false,
+      canTakePayment: !busy && !input.orderCanceled,
+      canInvoiceAndTakePayment: !busy && !input.orderCanceled,
+      takePaymentLabel: "Take Payment",
+      takePaymentHelp: null,
+      invoiceAndTakePaymentLabel: "Invoice & Take Payment",
+    };
+  }
+
+  const blockedHelp = noInvoice
+    ? "Create an invoice first"
+    : input.blockedReason || "No payable invoice is available.";
+  return {
+    canCreateInvoice,
+    canTakePayment: false,
+    canInvoiceAndTakePayment: canCreateInvoice,
+    takePaymentLabel: "Take Payment",
+    takePaymentHelp: blockedHelp,
+    invoiceAndTakePaymentLabel: "Invoice & Take Payment",
+  };
 }
 
 export function resolveInvoiceAutoPaymentAction(input: {

@@ -1535,6 +1535,10 @@ export async function registerOrderRoutes(
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            // Billing readiness is derived from current line-item workflow and pricing.
+            // Recompute on read so service/fee lines cannot remain visibly stale after
+            // their product configuration or price was corrected.
+            await recomputeOrderBillingStatus({ organizationId, orderId: req.params.id });
             const order = await storage.getOrderById(organizationId, req.params.id);
             if (!order) {
                 return res.status(404).json({ message: "Order not found" });
