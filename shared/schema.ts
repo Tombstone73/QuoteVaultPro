@@ -5252,7 +5252,7 @@ export const fileRoleEnum = pgEnum('file_role', [
 ]);
 
 // File side enum - for sided products (front/back)
-export const fileSideEnum = pgEnum('file_side', ['front', 'back', 'na']);
+export const fileSideEnum = pgEnum('file_side', ['front', 'back', 'both', 'na']);
 
 // Order Attachments table - files uploaded by customers or staff
 // EXTENDED with artwork metadata (role, side, isPrimary, thumbnailUrl, orderLineItemId)
@@ -5314,7 +5314,7 @@ export const insertOrderAttachmentSchema = createInsertSchema(orderAttachments).
   createdAt: true,
 }).extend({
   role: z.enum(['artwork', 'proof', 'reference', 'customer_po', 'setup', 'output', 'other']).default('other'),
-  side: z.enum(['front', 'back', 'na']).default('na'),
+  side: z.enum(['front', 'back', 'both', 'na']).default('na'),
   isPrimary: z.boolean().default(false),
 });
 

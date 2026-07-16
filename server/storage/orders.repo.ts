@@ -2469,8 +2469,9 @@ export class OrdersRepository {
 
         const files = rows as any as OrderAttachment[];
 
-        const front = files.find(f => f.side === 'front' && f.isPrimary) || files.find(f => f.side === 'front') || null;
-        const back = files.find(f => f.side === 'back' && f.isPrimary) || files.find(f => f.side === 'back') || null;
+        const shared = files.find(f => (f.side as any) === 'both' && f.isPrimary) || files.find(f => (f.side as any) === 'both') || null;
+        const front = files.find(f => f.side === 'front' && f.isPrimary) || files.find(f => f.side === 'front') || shared;
+        const back = files.find(f => f.side === 'back' && f.isPrimary) || files.find(f => f.side === 'back') || shared;
         const other = files.filter(f => f.side === 'na' || (!f.isPrimary && (f.side === 'front' || f.side === 'back')));
 
         return { front, back, other };

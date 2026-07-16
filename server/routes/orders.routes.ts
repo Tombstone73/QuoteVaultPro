@@ -5389,7 +5389,7 @@ export async function registerOrderRoutes(
             }
 
             const validRoles = ['artwork', 'proof', 'reference', 'customer_po', 'setup', 'output', 'other'];
-            const validSides = ['front', 'back', 'na'];
+            const validSides = ['front', 'back', 'both', 'na'];
 
             if (role && !validRoles.includes(role)) {
                 return res.status(400).json({ error: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
@@ -5609,22 +5609,31 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.patch('/api/orders/:orderId/files/:fileId', isAuthenticated, async (req: any, res) => {
+    app.patch('/api/orders/:orderId/files/:fileId', isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const userId = getUserId(req.user);
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const [order] = await db
                 .select({ organizationId: orders.organizationId })
                 .from(orders)
-                .where(eq(orders.id, req.params.orderId))
+                .where(and(eq(orders.id, req.params.orderId), eq(orders.organizationId, organizationId)))
                 .limit(1);
 
             if (!order?.organizationId) {
                 return res.status(404).json({ error: 'Order not found' });
             }
 
+            const [file] = await db
+                .select({ id: orderAttachments.id })
+                .from(orderAttachments)
+                .where(and(eq(orderAttachments.id, req.params.fileId), eq(orderAttachments.orderId, req.params.orderId)))
+                .limit(1);
+            if (!file) return res.status(404).json({ error: 'File not found' });
+
             const { role, side, isPrimary, description } = req.body;
             const validRoles = ['artwork', 'proof', 'reference', 'customer_po', 'setup', 'output', 'other'];
-            const validSides = ['front', 'back', 'na'];
+            const validSides = ['front', 'back', 'both', 'na'];
 
             if (role && !validRoles.includes(role)) return res.status(400).json({ error: 'Invalid role' });
             if (side && !validSides.includes(side)) return res.status(400).json({ error: 'Invalid side' });

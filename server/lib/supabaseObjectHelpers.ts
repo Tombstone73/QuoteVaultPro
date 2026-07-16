@@ -7,7 +7,7 @@ import { canonicalFileReadResolver, type CanonicalFileReadStatus } from "../serv
 import { canonicalDerivativeReadResolver, type CanonicalDerivativeReadStatus } from "../services/storage/CanonicalDerivativeReadResolver";
 
 export type FileRole = "artwork" | "proof" | "reference" | "customer_po" | "setup" | "output" | "other";
-export type FileSide = "front" | "back" | "na";
+export type FileSide = "front" | "back" | "both" | "na";
 
 export type OriginalFileAccessResult = {
     displayFilename: string;
