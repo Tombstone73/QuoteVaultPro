@@ -82,6 +82,7 @@ type InvoicePdfParams = {
   job?: {
     poNumber?: string | null;
     jobNumber?: string | null;
+    jobLabel?: string | null;
   } | null;
   overrides?: {
     // Data URL only (no remote fetch)
@@ -679,10 +680,25 @@ export async function generateInvoicePdfBytes(
   // -----------------
   // PO / JOB bar
   // -----------------
+  // TODO: honor organization-level invoice document display preferences when
+  // those settings are introduced. Until then, present non-empty order context.
   const po = String(params.job?.poNumber || '').trim();
-  const job = String(params.job?.jobNumber || '').trim();
-  if (po || job) {
-    const barH = 22;
+  const jobNumber = String(params.job?.jobNumber || '').trim();
+  const jobLabel = String(params.job?.jobLabel || '').trim();
+  const contextLines = [
+    po ? `PO # ${po}` : null,
+    jobLabel ? `Job: ${jobLabel}` : null,
+    jobNumber ? `Order # ${jobNumber}` : null,
+  ].filter((line): line is string => Boolean(line));
+  const wrappedContextLines = contextLines.flatMap((line) => wrapText({
+    text: line,
+    maxWidth: width - margin * 2 - 20,
+    font: fontBold,
+    fontSize: theme.fontSizes.small,
+  }));
+  if (wrappedContextLines.length) {
+    const lineHeight = 12;
+    const barH = Math.max(22, 10 + wrappedContextLines.length * lineHeight);
     page.drawRectangle({
       x: margin,
       y: y - barH + 4,
@@ -691,11 +707,10 @@ export async function generateInvoicePdfBytes(
       color: toRgb(theme.colors.jobBarBg),
     });
 
-    const textY = y - 12;
-    if (po) drawText(`PO # ${po}`, { x: margin + 10, y: textY, size: theme.fontSizes.small, bold: true });
-
-    if (job) {
-      drawTextRight(`JOB: ${job}`, { rightX: width - margin - 10, y: textY, size: theme.fontSizes.small, bold: true });
+    let textY = y - 12;
+    for (const line of wrappedContextLines) {
+      drawText(line, { x: margin + 10, y: textY, size: theme.fontSizes.small, bold: true });
+      textY -= lineHeight;
     }
 
     y -= barH + 10;

@@ -17,7 +17,6 @@ import { resolveQuickBooksPreferencesFromOrgPreferences, type QuickBooksSyncPoli
 import { normalizeInvoiceAccountingDisplay, normalizeQuickBooksLineItemsSnapshot } from "../../shared/invoiceAccountingDisplay";
 import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "../../shared/paymentProviderResolution";
 import { emailService } from "../emailService";
-import { jobs } from "../../shared/schema";
 import { storage } from "../storage";
 import { isCanceledOrder } from "../../shared/operationalState";
 import { getPaymentSettings } from "../services/payments/paymentProvider.service";
@@ -25,6 +24,7 @@ import { resolveOrderPayment } from "../services/payments/paymentOrchestrator.se
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { createInvoicePdfEmailAttachment } from "../services/invoiceEmailAttachment";
 import { buildInvoiceEmailHtml, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
+import { getInvoiceOrderContext } from "../services/invoiceOrderContext";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -264,12 +264,13 @@ export async function registerMvpInvoicingRoutes(
       .where(eq(invoiceLineItems.invoiceId, inv.id))
       .orderBy(invoiceLineItems.sortOrder, desc(invoiceLineItems.createdAt));
 
-    const jobId = String(inv.jobId || "").trim();
-    let job: any = null;
-    if (jobId) {
-      const jobRows = await db.select().from(jobs).where(and(eq(jobs.id, jobId), eq(jobs.organizationId, input.organizationId)));
-      job = jobRows[0] || null;
-    }
+    const orderContext = await getInvoiceOrderContext({
+      organizationId: input.organizationId,
+      orderId: inv.orderId,
+    });
+    const job = orderContext
+      ? { poNumber: orderContext.poNumber, jobNumber: orderContext.orderNumber, jobLabel: orderContext.jobLabel }
+      : null;
 
     const paymentRows = await db
       .select()
@@ -372,6 +373,8 @@ export async function registerMvpInvoicingRoutes(
       customerName,
       totalFormatted,
       dueDate,
+      poNumber: orderContext?.poNumber,
+      jobLabel: orderContext?.jobLabel,
       paymentUrl,
     });
 
@@ -960,24 +963,10 @@ export async function registerMvpInvoicingRoutes(
 
       if (!inv) return res.status(404).json({ error: 'Invoice not found' });
 
-      let job: { poNumber?: string | null; jobNumber?: string | null } | null = null;
-      if ((inv as any).orderId) {
-        const [ord] = await db
-          .select({
-            orderNumber: orders.orderNumber,
-            poNumber: orders.poNumber,
-          })
-          .from(orders)
-          .where(and(eq(orders.id, String((inv as any).orderId)), eq(orders.organizationId, organizationId)))
-          .limit(1);
-
-        if (ord) {
-          job = {
-            poNumber: ord.poNumber ?? null,
-            jobNumber: ord.orderNumber ?? null,
-          };
-        }
-      }
+      const orderContext = await getInvoiceOrderContext({ organizationId, orderId: (inv as any).orderId });
+      const job = orderContext
+        ? { poNumber: orderContext.poNumber, jobNumber: orderContext.orderNumber, jobLabel: orderContext.jobLabel }
+        : null;
 
       const [cust] = await db
         .select()

@@ -34,6 +34,7 @@ import { getPortalFileCategoryLabel, normalizePortalFileCategory } from "@shared
 import { getStripeClient } from "../lib/stripe";
 import { refreshInvoiceStatus } from "../invoicesService";
 import { generateInvoicePdfBytes } from "./invoicePdf";
+import { getInvoiceOrderContext } from "./invoiceOrderContext";
 import { storage } from "../storage";
 import { resolveOriginalFileAccess } from "../lib/supabaseObjectHelpers";
 import { buildProofArtifactSummary, INCOMPLETE_PROOF_MESSAGE, recordProofResponse } from "./proofingService";
@@ -1951,24 +1952,14 @@ export async function getPortalInvoicePdf(req: Request, invoiceId: string): Prom
   const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
   if (!invoice || normalizeInvoiceStatus(invoice.status) === "draft") return null;
 
-  let job: { poNumber?: string | null; jobNumber?: string | null } | null = null;
-  if (invoice.orderId) {
-    const [order] = await db
-      .select({
-        orderNumber: orders.orderNumber,
-        poNumber: orders.poNumber,
-      })
-      .from(orders)
-      .where(and(eq(orders.id, String(invoice.orderId)), eq(orders.organizationId, scope.organizationId), eq(orders.customerId, scope.customerId)))
-      .limit(1);
-
-    if (order) {
-      job = {
-        poNumber: order.poNumber ?? null,
-        jobNumber: order.orderNumber ?? null,
-      };
-    }
-  }
+  const orderContext = await getInvoiceOrderContext({
+    organizationId: scope.organizationId,
+    orderId: invoice.orderId,
+    customerId: scope.customerId,
+  });
+  const job = orderContext
+    ? { poNumber: orderContext.poNumber, jobNumber: orderContext.orderNumber, jobLabel: orderContext.jobLabel }
+    : null;
 
   const [customer] = await db
     .select()

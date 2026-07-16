@@ -5,6 +5,7 @@ import { normalizeEmailAttachments } from "../emailService";
 import { generateInvoicePdfBytes } from "../lib/invoicePdf";
 import { createInvoicePdfEmailAttachment, INVOICE_PDF_CONTENT_TYPE } from "../services/invoiceEmailAttachment";
 import { buildInvoiceEmailHtml, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
+import { buildReminderEmailHtml } from "../invoiceReminderJob";
 
 async function generateValidInvoicePdf() {
   return generateInvoicePdfBytes({
@@ -76,6 +77,8 @@ describe("invoice email delivery", () => {
       customerName: "Test Customer",
       totalFormatted: "25.00",
       dueDate: "Aug 15, 2026",
+      poNumber: "Mike Gerdt Shipping",
+      jobLabel: "Shipping cost for sending box",
       paymentUrl,
     });
     const unavailableHtml = buildInvoiceEmailHtml({
@@ -94,6 +97,26 @@ describe("invoice email delivery", () => {
     expect(paymentUrl).toBe("https://app.example.test/portal/invoices/invoice_20000");
     expect(payableHtml).toContain("Pay Invoice Online");
     expect(payableHtml).toContain(paymentUrl as string);
+    expect(payableHtml).toContain("PO #:</strong> Mike Gerdt Shipping");
+    expect(payableHtml).toContain("Job:</strong> Shipping cost for sending box");
     expect(unavailableHtml).not.toContain("Pay Invoice Online");
+    expect(unavailableHtml).not.toContain("PO #:</strong>");
+    expect(unavailableHtml).not.toContain("Job:</strong>");
+  });
+
+  test("includes available PO and job context in invoice reminder emails", () => {
+    const html = buildReminderEmailHtml({
+      invoiceNumber: "INV-20000",
+      customerName: "Test Customer",
+      companyName: "Test Print Shop",
+      balanceDue: "25.00",
+      dueDate: "Aug 15, 2026",
+      reminderNumber: 1,
+      poNumber: "Mike Gerdt Shipping",
+      jobLabel: "Shipping cost for sending box",
+    });
+
+    expect(html).toContain("PO #:</strong> Mike Gerdt Shipping");
+    expect(html).toContain("Job:</strong> Shipping cost for sending box");
   });
 });

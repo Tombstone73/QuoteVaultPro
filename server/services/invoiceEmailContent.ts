@@ -28,6 +28,8 @@ export function buildInvoiceEmailHtml(input: {
   customerName: string;
   totalFormatted: string;
   dueDate: string;
+  poNumber?: string | null;
+  jobLabel?: string | null;
   paymentUrl?: string | null;
 }): string {
   const invoiceNumber = escapeHtml(input.invoiceNumber);
@@ -35,6 +37,11 @@ export function buildInvoiceEmailHtml(input: {
   const customerName = escapeHtml(input.customerName);
   const totalFormatted = escapeHtml(input.totalFormatted);
   const dueDate = escapeHtml(input.dueDate);
+  const poNumber = String(input.poNumber || "").trim();
+  const jobLabel = String(input.jobLabel || "").trim();
+  const orderContextSection = poNumber || jobLabel
+    ? `<p style="margin: 12px 0; color: #444;">${poNumber ? `<strong>PO #:</strong> ${escapeHtml(poNumber)}<br>` : ""}${jobLabel ? `<strong>Job:</strong> ${escapeHtml(jobLabel)}` : ""}</p>`
+    : "";
   const paymentUrl = input.paymentUrl ? escapeHtml(input.paymentUrl) : null;
   const paymentSection = paymentUrl
     ? `
@@ -64,7 +71,7 @@ export function buildInvoiceEmailHtml(input: {
   <div style="padding: 20px 0;">
     <p>Dear ${customerName},</p>
     <p>Please find attached Invoice #${invoiceNumber} for the amount of <strong>$${totalFormatted}</strong>.</p>
-    <p>Payment is due ${dueDate}.</p>${paymentSection}
+    <p>Payment is due ${dueDate}.</p>${orderContextSection}${paymentSection}
     <p>If you have any questions about this invoice, please don't hesitate to contact us.</p>
   </div>
 
