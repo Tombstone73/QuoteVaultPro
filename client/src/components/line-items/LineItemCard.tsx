@@ -296,12 +296,54 @@ export function LineItemCard({
   const displayedRequiresProofApproval = proofApprovalLocked ? true : requiresProofApproval === true;
   const proofApprovalDisabled = readOnly || proofApprovalLocked || !onRequiresProofApprovalChange;
   const [secondaryDetailsOpen, setSecondaryDetailsOpen] = useState(false);
+  const [quantityDraft, setQuantityDraft] = useState(String(quantity));
+  const [quantityError, setQuantityError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isExpanded) {
       setSecondaryDetailsOpen(false);
     }
   }, [isExpanded]);
+
+  useEffect(() => {
+    setQuantityDraft(String(quantity));
+    setQuantityError(null);
+  }, [quantity, id]);
+
+  const applyQuantity = (nextQuantity: number) => {
+    const normalized = Math.max(1, Math.floor(nextQuantity));
+    setQuantityDraft(String(normalized));
+    setQuantityError(null);
+    onQuantityChange?.(normalized);
+  };
+
+  const updateQuantityDraft = (nextValue: string) => {
+    setQuantityDraft(nextValue);
+    if (!/^\d+$/.test(nextValue)) {
+      setQuantityError("Enter a whole quantity of 1 or more.");
+      return;
+    }
+    const parsed = Number(nextValue);
+    if (!Number.isSafeInteger(parsed) || parsed < 1) {
+      setQuantityError("Quantity must be a whole number of 1 or more.");
+      return;
+    }
+    setQuantityError(null);
+    onQuantityChange?.(parsed);
+  };
+
+  const commitQuantityDraft = () => {
+    if (!/^\d+$/.test(quantityDraft)) {
+      setQuantityError("Enter a whole quantity of 1 or more.");
+      return;
+    }
+    const parsed = Number(quantityDraft);
+    if (!Number.isSafeInteger(parsed) || parsed < 1) {
+      setQuantityError("Quantity must be a whole number of 1 or more.");
+      return;
+    }
+    applyQuantity(parsed);
+  };
 
   const secondaryDetailsSummary = useMemo(() => {
     const parts: string[] = [];
@@ -706,23 +748,33 @@ export function LineItemCard({
                     variant="ghost"
                     size="icon"
                     className="h-8 w-8"
-                    onClick={onQuantityDecrement}
+                    aria-label="Decrease quantity"
+                    onClick={() => {
+                      if (onQuantityChange) applyQuantity(quantity - 1);
+                      else onQuantityDecrement?.();
+                    }}
                     disabled={readOnly}
                   >
                     <Minus className="h-4 w-4" />
                   </Button>
                   <Input
-                    value={String(quantity)}
-                    onChange={(e) => {
-                      const nextQuantity = e.currentTarget.valueAsNumber;
-                      onQuantityChange?.(Number.isFinite(nextQuantity) && nextQuantity >= 1 ? Math.floor(nextQuantity) : 1);
+                    value={quantityDraft}
+                    onChange={(e) => updateQuantityDraft(e.currentTarget.value)}
+                    onBlur={commitQuantityDraft}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        commitQuantityDraft();
+                        e.currentTarget.blur();
+                      }
                     }}
                     className="h-8 w-16 border-0 text-center font-mono focus-visible:ring-0"
                     inputMode="numeric"
-                    type="number"
-                    min={1}
-                    step={1}
+                    type="text"
+                    pattern="[0-9]*"
                     aria-label="Quantity"
+                    aria-invalid={Boolean(quantityError)}
+                    aria-describedby={quantityError ? `line-item-quantity-error-${id}` : undefined}
                     disabled={readOnly}
                     readOnly={readOnly}
                   />
@@ -731,12 +783,21 @@ export function LineItemCard({
                     variant="ghost"
                     size="icon"
                     className="h-8 w-8"
-                    onClick={onQuantityIncrement}
+                    aria-label="Increase quantity"
+                    onClick={() => {
+                      if (onQuantityChange) applyQuantity(quantity + 1);
+                      else onQuantityIncrement?.();
+                    }}
                     disabled={readOnly}
                   >
                     <Plus className="h-4 w-4" />
                   </Button>
                 </div>
+                {quantityError ? (
+                  <div id={`line-item-quantity-error-${id}`} className="mt-1 text-xs text-destructive" role="alert">
+                    {quantityError}
+                  </div>
+                ) : null}
               </div>
 
               <div className={cn("min-h-[60px] w-[220px]", fulfillmentOnly ? "text-left" : "ml-auto text-right")}>
@@ -814,11 +875,17 @@ export function LineItemCard({
               </div>
             </div>
 
-            <Separator className="my-3" />
+            {!fulfillmentOnly ? <Separator className="my-3" /> : null}
 
             {/* Options (left) + Artwork (right) */}
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_360px]">
-              {detailsOnRight ? (
+            <div className={cn("grid grid-cols-1 gap-3", !fulfillmentOnly && "lg:grid-cols-[1fr_360px]")}>
+              {fulfillmentOnly ? (
+                <div className="min-w-0">
+                  {secondaryDetailsPanel}
+                  {optionsSlot}
+                  {actionsRow}
+                </div>
+              ) : detailsOnRight ? (
                 <>
                   <div className="min-w-0">
                     {optionsSlot}
