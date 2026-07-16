@@ -68,7 +68,7 @@ import {
   ReopenOrderButton 
 } from "@/components/StateTransitionButtons";
 import type { OrderState } from "@/hooks/useOrderState";
-import { isTerminalState as checkIfTerminalState } from "@/hooks/useOrderState";
+import { isTerminalState as checkIfTerminalState, useCloseOrder } from "@/hooks/useOrderState";
 import { OrderLineItemsSection, type OrderLineItemsSectionHandle } from "@/components/orders/OrderLineItemsSection";
 import {
   hasOrderDetailSecondaryActions,
@@ -638,11 +638,13 @@ export default function OrderDetail() {
   const { data: orderInvoices = [], isLoading: isInvoicesLoading } = useInvoices(orderId ? { orderId } : undefined);
   const createOrderInvoice = useCreateOrderInvoice();
   const billInvoice = useBillInvoice();
+  const closeOrder = useCloseOrder(orderId || '');
   const orderPaymentResolution = useOrderPaymentResolution(orderId);
   const [billingOverrideDialogOpen, setBillingOverrideDialogOpen] = useState(false);
   const [billingOverrideNote, setBillingOverrideNote] = useState('');
   const [paymentInvoiceSelectorOpen, setPaymentInvoiceSelectorOpen] = useState(false);
   const [paymentBlockedDialogOpen, setPaymentBlockedDialogOpen] = useState(false);
+  const [closeFeeOnlyAfterInvoice, setCloseFeeOnlyAfterInvoice] = useState<{ invoiceId: string } | null>(null);
 
   const setBillingOverrideMutation = useMutation({
     mutationFn: async ({ note }: { note: string }) => {
@@ -1796,6 +1798,9 @@ export default function OrderDetail() {
   });
   const payableInvoiceCandidates = paymentResolution?.invoiceCandidates.filter((invoice) => invoice.payable) ?? [];
   const billingLineItems = order.lineItems ?? [];
+  const isServiceFeeOnlyOrder = billingLineItems.length > 0 && billingLineItems.every((lineItem: any) =>
+    lineItem.product?.workflowIntent === 'service_fee',
+  );
   const unpricedServiceFeeCount = billingLineItems.filter((lineItem: any) => {
     const product = lineItem.product as any;
     if (product?.workflowIntent !== 'service_fee') return false;
@@ -1825,6 +1830,10 @@ export default function OrderDetail() {
       const created = (result as any)?.data;
       if (created?.id) {
         toast({ title: 'Success', description: 'Invoice created' });
+        if (isServiceFeeOnlyOrder) {
+          setCloseFeeOnlyAfterInvoice({ invoiceId: String(created.id) });
+          return;
+        }
         navigate(`/invoices/${created.id}`);
         return;
       }
@@ -2087,7 +2096,8 @@ export default function OrderDetail() {
             <OrderDetailPrimaryActions
               canEditOrder={canEditOrder}
               canMarkCompleted={isAdminOrOwner && !isTerminal && allowedNextStatuses.includes('completed')}
-              canCompleteProduction={isAdminOrOwner && order.state === 'open'}
+              canCompleteProduction={isAdminOrOwner && order.state === 'open' && !isServiceFeeOnlyOrder}
+              canCloseOrder={isAdminOrOwner && order.state === 'open' && isServiceFeeOnlyOrder && orderInvoices.length > 0}
               orderId={order.id}
               isDirty={isDirty}
               isSavingOrder={isSavingOrder}
@@ -2528,7 +2538,7 @@ export default function OrderDetail() {
                 {/* State Transition Actions */}
                 {isAdminOrOwner && (
                   <div className="flex gap-2 flex-wrap">
-                    {order.state === 'production_complete' && (
+                    {(order.state === 'production_complete' || (order.state === 'open' && isServiceFeeOnlyOrder && orderInvoices.length > 0)) && (
                       <CloseOrderButton orderId={order.id} />
                     )}
                     
@@ -4337,6 +4347,41 @@ export default function OrderDetail() {
                     : 'Complete Order'
                   )
               }
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!closeFeeOnlyAfterInvoice} onOpenChange={(open) => !open && setCloseFeeOnlyAfterInvoice(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Close this billing-only order?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This order has no production work. Close this order now? Closing does not affect the invoice or payment collection.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => {
+              const invoiceId = closeFeeOnlyAfterInvoice?.invoiceId;
+              setCloseFeeOnlyAfterInvoice(null);
+              if (invoiceId) navigate(`/invoices/${invoiceId}`);
+            }}>Keep Order Open</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                closeOrder.mutate(
+                  { confirmUnpaidInvoices: true },
+                  {
+                    onSuccess: () => {
+                      const invoiceId = closeFeeOnlyAfterInvoice?.invoiceId;
+                      setCloseFeeOnlyAfterInvoice(null);
+                      if (invoiceId) navigate(`/invoices/${invoiceId}`);
+                    },
+                  },
+                );
+              }}
+              disabled={closeOrder.isPending}
+            >
+              {closeOrder.isPending ? 'Closing...' : 'Close Order'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { CompleteProductionButton } from "@/components/StateTransitionButtons";
+import { CloseOrderButton, CompleteProductionButton } from "@/components/StateTransitionButtons";
 import { Ban, Check } from "lucide-react";
 
 type MaybePromise = void | Promise<void>;
@@ -10,6 +10,7 @@ interface OrderDetailPrimaryActionsProps {
   canEditOrder: boolean;
   canMarkCompleted: boolean;
   canCompleteProduction: boolean;
+  canCloseOrder: boolean;
   orderId: string;
   isDirty: boolean;
   isSavingOrder: boolean;
@@ -25,6 +26,7 @@ export function OrderDetailPrimaryActions({
   canEditOrder,
   canMarkCompleted,
   canCompleteProduction,
+  canCloseOrder,
   orderId,
   isDirty,
   isSavingOrder,
@@ -77,6 +79,8 @@ export function OrderDetailPrimaryActions({
       {canCompleteProduction && (
         <CompleteProductionButton orderId={orderId} />
       )}
+
+      {canCloseOrder && <CloseOrderButton orderId={orderId} />}
     </>
   );
 }

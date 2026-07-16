@@ -9,6 +9,12 @@ import { useToast } from '@/hooks/use-toast';
 
 export type OrderState = 'open' | 'production_complete' | 'closed' | 'canceled';
 
+export class OrderStateApiError extends Error {
+  constructor(message: string, public readonly code?: string, public readonly details?: Record<string, unknown>) {
+    super(message);
+  }
+}
+
 /**
  * Get allowed next states for a given current state
  */
@@ -111,6 +117,36 @@ export function useTransitionOrderState(orderId: string) {
         description: error.message,
         variant: 'destructive',
       });
+    },
+  });
+}
+
+/** Close through the server-side eligibility gate, including fee-only invoice checks. */
+export function useCloseOrder(orderId: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async ({ notes, confirmUnpaidInvoices = false }: { notes?: string; confirmUnpaidInvoices?: boolean }) => {
+      const res = await fetch(`/api/orders/${orderId}/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes, confirmUnpaidInvoices }),
+        credentials: 'include',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new OrderStateApiError(data.message || data.error || 'Failed to close order', data.code, data);
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['/api', 'orders', orderId] });
+      queryClient.invalidateQueries({ queryKey: ['/api', 'orders'] });
+      queryClient.invalidateQueries({ queryKey: ['/api', 'timeline'] });
+      toast({ title: 'Order Closed', description: data.message || 'Order has been closed.' });
+    },
+    onError: (error: Error) => {
+      if (error instanceof OrderStateApiError && error.code === 'UNPAID_INVOICES_CONFIRMATION_REQUIRED') return;
+      toast({ title: 'Close Order Failed', description: error.message, variant: 'destructive' });
     },
   });
 }
