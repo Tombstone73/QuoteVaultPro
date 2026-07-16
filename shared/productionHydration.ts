@@ -46,7 +46,16 @@ const readOptionCandidates = (lineItem: any): ProductionOption[] => {
   if (!selections) return selected;
 
   for (const [key, value] of Object.entries(selections)) {
-    selected.push({ optionId: key, optionName: key, value });
+    // Inbound/PBV2 selections are stored as `{ value, label }` entries. Read
+    // their scalar value so production does not mistake the object itself for
+    // an unknown option value during hydration.
+    const entry = asRecord(value);
+    selected.push({
+      optionId: key,
+      optionName: key,
+      value: entry?.value ?? value,
+      selectedLabel: typeof entry?.label === "string" ? entry.label : undefined,
+    });
   }
   return selected;
 };

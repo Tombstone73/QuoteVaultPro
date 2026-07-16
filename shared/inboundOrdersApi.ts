@@ -415,6 +415,7 @@ export const inboundOrderArtworkLinkSourceSchema = z.enum(inboundOrderArtworkLin
 export const inboundOrderArtworkAttachmentRoleValues = ["artwork", "po", "reference", "ignore_inline", "other"] as const;
 export const inboundOrderArtworkAttachmentRoleSchema = z.enum(inboundOrderArtworkAttachmentRoleValues);
 export const inboundOrderAttachmentClassificationSourceSchema = z.enum(["automatic", "manual_override"]);
+export const inboundOrderArtworkAssignmentSideSchema = z.enum(["front", "back", "both", "unassigned"]);
 
 export const inboundOrderArtworkLinkSchema = z.object({
   fileId: z.string().trim().min(1),
@@ -423,6 +424,9 @@ export const inboundOrderArtworkLinkSchema = z.object({
   mimeType: z.string().trim().max(255).nullable().default(null),
   sizeBytes: z.number().int().min(0).nullable().default(null),
   role: inboundOrderArtworkAttachmentRoleSchema.default("artwork"),
+  // Explicit production intent. `both` means the same source file is used for
+  // front and back; it is not inferred from attachment order.
+  assignmentSide: inboundOrderArtworkAssignmentSideSchema.default("unassigned"),
   source: inboundOrderArtworkLinkSourceSchema.default("ai_suggested"),
   confidence: z.number().min(0).max(100).nullable().default(null),
   reason: z.string().trim().max(1000).nullable().default(null),

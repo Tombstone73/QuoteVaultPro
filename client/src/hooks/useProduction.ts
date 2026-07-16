@@ -113,6 +113,8 @@ export type ProductionOrderArtworkSummary = {
   thumbStatus: string | null;
   mimeType: string | null;
   sizeBytes: number | null;
+  fileRecordId?: string | null;
+  sameAsFront?: boolean;
 };
 
 export type ProductionJobListItem = {

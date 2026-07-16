@@ -2175,6 +2175,91 @@ describe("InboundOrdersPage", () => {
     expect((container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement).value).toBe("2");
   });
 
+  test("assigns explicit Front and Back artwork for a double-sided review line", async () => {
+    const parsed = parsedDraft();
+    const review = reviewDraft(parsed);
+    review.reviewedLineItemsJson[0].optionSelectionsJson = {
+      schemaVersion: 2,
+      selected: { sides: { value: "double" } },
+    };
+    const files = [
+      { id: "file_front", inboundRecordId: "inbound_1", fileRecordId: "record_front", sourceFilename: "front.pdf", role: "artwork", mimeType: "application/pdf", sizeBytes: 1200, status: "available", metadataJson: {}, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z" },
+      { id: "file_back", inboundRecordId: "inbound_1", fileRecordId: "record_back", sourceFilename: "back.pdf", role: "artwork", mimeType: "application/pdf", sizeBytes: 1200, status: "available", metadataJson: {}, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z" },
+    ];
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review, detailOverrides: { files } });
+
+    renderPage();
+    await waitForText("Clean View");
+    act(() => {
+      Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement);
+    });
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-double-sided-artwork-assignment']")), "double-sided artwork controls rendered");
+
+    const frontSelect = container.querySelector("[data-testid='clean-front-artwork-select']") as HTMLSelectElement;
+    const backSelect = container.querySelector("[data-testid='clean-back-artwork-select']") as HTMLSelectElement;
+    const frontOption = Array.from(frontSelect.options).find((option) => option.textContent === "front.pdf") as HTMLOptionElement;
+    const backOption = Array.from(backSelect.options).find((option) => option.textContent === "back.pdf") as HTMLOptionElement;
+    act(() => {
+      Simulate.change(frontSelect, { target: { value: frontOption.value } } as any);
+    });
+    await waitForCondition(() => (
+      (container.querySelector("[data-testid='clean-front-artwork-select']") as HTMLSelectElement)?.value === frontOption.value
+    ), "Front artwork assignment applied");
+    act(() => {
+      Simulate.change(container.querySelector("[data-testid='clean-back-artwork-select']") as HTMLSelectElement, { target: { value: backOption.value } } as any);
+    });
+    await waitForCondition(() => (
+      (container.querySelector("[data-testid='clean-back-artwork-select']") as HTMLSelectElement)?.value === backOption.value
+    ), "Back artwork assignment applied");
+
+    const saveDraftButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(saveDraftButton);
+    });
+    await waitForCondition(() => Boolean(getSavedBody()), "side assignments saved");
+    expect(getSavedBody().reviewedLineItemsJson[0].artworkLinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileId: "file_front", assignmentSide: "front" }),
+      expect.objectContaining({ fileId: "file_back", assignmentSide: "back" }),
+    ]));
+  });
+
+  test("lets staff select the same artwork for both sides before assigning the Front file", async () => {
+    const parsed = parsedDraft();
+    const review = reviewDraft(parsed);
+    review.reviewedLineItemsJson[0].optionSelectionsJson = {
+      schemaVersion: 2,
+      selected: { sides: { value: "double" } },
+    };
+    const files = [{ id: "file_both", inboundRecordId: "inbound_1", fileRecordId: "record_both", sourceFilename: "same-art.pdf", role: "artwork", mimeType: "application/pdf", sizeBytes: 1200, status: "available", metadataJson: {}, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z" }];
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review, detailOverrides: { files } });
+
+    renderPage();
+    await waitForText("Clean View");
+    act(() => {
+      Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement);
+    });
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-use-same-artwork-both-sides']")), "same-artwork control rendered");
+    const sameArtworkCheckbox = container.querySelector("[data-testid='clean-use-same-artwork-both-sides']") as HTMLInputElement;
+    act(() => {
+      Simulate.change(sameArtworkCheckbox, { target: { checked: true } } as any);
+    });
+    const frontSelect = container.querySelector("[data-testid='clean-front-artwork-select']") as HTMLSelectElement;
+    const option = Array.from(frontSelect.options).find((entry) => entry.textContent === "same-art.pdf") as HTMLOptionElement;
+    act(() => {
+      Simulate.change(frontSelect, { target: { value: option.value } } as any);
+    });
+    await waitForCondition(() => !container.querySelector("[data-testid='clean-back-artwork-select']"), "Back selector hidden for same-artwork mapping");
+
+    const saveDraftButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(saveDraftButton);
+    });
+    await waitForCondition(() => Boolean(getSavedBody()), "same-artwork assignment saved");
+    expect(getSavedBody().reviewedLineItemsJson[0].artworkLinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileId: "file_both", assignmentSide: "both" }),
+    ]));
+  });
+
   test("shows a Clean View PDF render error instead of a blank viewer", async () => {
     mockPdfGetDocument.mockImplementationOnce(() => ({
       promise: Promise.reject(new Error("PDF render failed")),

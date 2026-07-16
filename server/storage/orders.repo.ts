@@ -1903,13 +1903,32 @@ export class OrdersRepository {
 
                 if (quoteLineItemAttachments.length > 0) {
                     const orderAttachmentInserts: typeof orderAttachments.$inferInsert[] = [];
+                    const artworkSideByOrderLineItemAndFileRecord = new Map<string, "front" | "back" | "both" | "unassigned">();
+                    for (const orderLineItem of createdOrder.lineItems || []) {
+                        const links = (orderLineItem as any)?.specsJson?.staffReviewedDraft?.artworkLinks;
+                        if (!Array.isArray(links)) continue;
+                        for (const link of links) {
+                            if (!link || link.source === "staff_removed" || !link.fileRecordId) continue;
+                            const assignmentSide = link.assignmentSide;
+                            if (assignmentSide !== "front" && assignmentSide !== "back" && assignmentSide !== "both") continue;
+                            artworkSideByOrderLineItemAndFileRecord.set(`${orderLineItem.id}:${link.fileRecordId}`, assignmentSide);
+                        }
+                    }
                     
                     for (const qa of quoteLineItemAttachments) {
                         if (!qa.quoteLineItemId) continue;
                         const orderLineItemId = lineItemMap.get(qa.quoteLineItemId);
                         if (!orderLineItemId) continue;
 
-                        orderAttachmentInserts.push({
+                        const assignmentSide = qa.fileRecordId
+                            ? artworkSideByOrderLineItemAndFileRecord.get(`${orderLineItemId}:${qa.fileRecordId}`) ?? "unassigned"
+                            : "unassigned";
+                        const attachmentSides = assignmentSide === "both"
+                            ? ["front", "back"] as const
+                            : assignmentSide === "front" || assignmentSide === "back"
+                                ? [assignmentSide]
+                                : ["na"] as const;
+                        for (const side of attachmentSides) orderAttachmentInserts.push({
                             orderId: createdOrder.id,
                             orderLineItemId: orderLineItemId,
                             quoteId: quoteId,
@@ -1934,6 +1953,9 @@ export class OrdersRepository {
                             thumbKey: qa.thumbKey ?? null,
                             previewKey: qa.previewKey ?? null,
                             thumbError: qa.thumbError ?? null,
+                            role: "artwork",
+                            side,
+                            isPrimary: side !== "na",
                         });
                     }
 

@@ -41,7 +41,6 @@ import {
 } from "@shared/fileUploadNaming";
 import { DEFAULT_ORGANIZATION_ID } from "./tenantContext";
 import {
-  dedupeByCanonicalOriginalFileIdentity,
   getCanonicalOriginalFileIdentity,
   withOrderOriginalArtworkDisplayFilename,
 } from "./services/originalArtworkFiles";
@@ -65,6 +64,7 @@ export type BridgedOriginal = {
   mimeType: string | null;
   sizeBytes: number | null;
   role: string;
+  side: "front" | "back" | "na";
   createdAt: Date;
   source: 'order_attachment';
   downloadUrl: string;
@@ -582,6 +582,7 @@ export async function getLineItemFiles(
       sizeBytes: orderAttachments.sizeBytes,
       fileSize: orderAttachments.fileSize,
       role: orderAttachments.role,
+      side: orderAttachments.side,
       fileRecordId: orderAttachments.fileRecordId,
       fileUrl: orderAttachments.fileUrl,
       thumbKey: orderAttachments.thumbKey,
@@ -598,8 +599,19 @@ export async function getLineItemFiles(
   const originalIdentities = allFiles
     .filter((file) => file.role === "original")
     .map((file) => getCanonicalOriginalFileIdentity(file));
-  const dedupedLegacyRows = dedupeByCanonicalOriginalFileIdentity(legacyRows, {
-    seedIdentities: originalIdentities,
+  // A single artwork record may deliberately be linked to both Front and Back.
+  // Preserve that explicit mapping in prepress while still deduplicating accidental
+  // duplicate rows for the same file and same side.
+  const knownOriginalIdentities = new Set(originalIdentities.filter((identity): identity is string => Boolean(identity)));
+  const seenLegacyArtworkSides = new Set<string>();
+  const dedupedLegacyRows = legacyRows.filter((row) => {
+    const identity = getCanonicalOriginalFileIdentity(row);
+    if (identity && knownOriginalIdentities.has(identity)) return false;
+    const side = row.side === "front" || row.side === "back" ? row.side : "na";
+    const dedupeKey = `${identity ?? `attachment:${row.id}`}:${side}`;
+    if (seenLegacyArtworkSides.has(dedupeKey)) return false;
+    seenLegacyArtworkSides.add(dedupeKey);
+    return true;
   });
 
   const bridgedOriginals: BridgedOriginal[] = await Promise.all(dedupedLegacyRows.map(async (row) => {
@@ -618,6 +630,7 @@ export async function getLineItemFiles(
       mimeType: row.mimeType ?? null,
       sizeBytes: row.sizeBytes ?? row.fileSize ?? null,
       role: row.role ?? "other",
+      side: row.side === "front" || row.side === "back" ? row.side : "na",
       createdAt: row.createdAt,
       source: "order_attachment" as const,
       downloadUrl: originalAccess.downloadUrl ?? originalAccess.originalUrl ?? "",
