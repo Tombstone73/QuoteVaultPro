@@ -367,7 +367,9 @@ export default function OrderDetail() {
       };
     }
 
-    const productionRelevant = order.lineItems.filter((lineItem: any) => (lineItem?.product as any)?.requiresProductionJob === true);
+    const productionRelevant = order.lineItems.filter((lineItem: any) =>
+      (lineItem?.product as any)?.requiresProductionJob === true && (lineItem?.product as any)?.workflowIntent !== "service_fee",
+    );
     const terminalStates = new Set(["completed", "canceled", "complete"]);
     const readyStates = new Set(["ready_for_prepress", "ready_for_production"]);
 
@@ -391,7 +393,9 @@ export default function OrderDetail() {
   const orderOperationalSummary = useMemo(() => {
     const lineItems = order?.lineItems ?? [];
     const totalItems = lineItems.length;
-    const productionRequiredCount = lineItems.filter((lineItem: any) => (lineItem?.product as any)?.requiresProductionJob === true).length;
+    const productionRequiredCount = lineItems.filter((lineItem: any) =>
+      (lineItem?.product as any)?.requiresProductionJob === true && (lineItem?.product as any)?.workflowIntent !== "service_fee",
+    ).length;
     const actionNeededCount = lineItems.filter((lineItem: any) => {
       const workflowState = String(lineItem?.workflowState || lineItem?.status || "new").trim().toLowerCase();
       return ["new", "needs_design", "ready_for_prepress", "ready_for_production", "on_hold"].includes(workflowState);

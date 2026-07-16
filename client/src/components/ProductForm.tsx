@@ -318,7 +318,17 @@ export const ProductForm = ({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel className="text-xs text-slate-400">Workflow intent</FormLabel>
-                  <Select value={field.value ?? "standard_production"} onValueChange={field.onChange}>
+                  <Select
+                    value={field.value ?? "standard_production"}
+                    onValueChange={(value) => {
+                      field.onChange(value);
+                      if (value === "service_fee") {
+                        form.setValue("measurementMode", "quantity_only", { shouldDirty: true });
+                        form.setValue("requiresProductionJob", false, { shouldDirty: true });
+                        form.setValue("requiresProofApproval", false, { shouldDirty: true });
+                      }
+                    }}
+                  >
                     <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
                     <SelectContent>
                       <SelectItem value="standard_production">Standard production</SelectItem>
@@ -327,7 +337,7 @@ export const ProductForm = ({
                     </SelectContent>
                   </Select>
                   <FormDescription className="text-[11px] text-slate-500">
-                    Fulfillment-only items skip artwork, proof, and prepress by default. Staff can still override a line item.
+                    Fulfillment-only items skip artwork, proof, and prepress by default. Service / fee items are billing-only and never create production work by default.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -623,21 +633,27 @@ export const ProductForm = ({
                   </FormItem>
                 )}
               />
-              <FormField
-                control={form.control}
-                name="requiresProductionJob"
-                render={({ field }) => (
-                  <FormItem className="min-h-9">
-                    <div className="flex items-center gap-2">
-                      <FormControl>
-                        <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
-                      </FormControl>
-                      <FormLabel className="text-sm text-slate-300 !mt-0">Requires Production Job</FormLabel>
-                    </div>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              {workflowIntent === "service_fee" ? (
+                <div className="min-h-9 text-sm text-slate-400">
+                  Service / fee workflow: no production job
+                </div>
+              ) : (
+                <FormField
+                  control={form.control}
+                  name="requiresProductionJob"
+                  render={({ field }) => (
+                    <FormItem className="min-h-9">
+                      <div className="flex items-center gap-2">
+                        <FormControl>
+                          <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
+                        </FormControl>
+                        <FormLabel className="text-sm text-slate-300 !mt-0">Requires Production Job</FormLabel>
+                      </div>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
               <FormField
                 control={form.control}
                 name="allowZeroPrice"

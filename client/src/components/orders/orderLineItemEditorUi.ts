@@ -16,10 +16,13 @@ const PRODUCTION_WARNING_STATES = new Set([
 /** The generic `in_production` state also represents active pick/pack work. */
 export function getOrderLineItemActiveWorkWarning(input: {
   fulfillmentOnly: boolean;
+  serviceFee?: boolean;
   workflowState: string;
   hasActiveOwner: boolean;
 }): OrderLineItemActiveWorkWarning {
   const workflowState = String(input.workflowState || "new").trim().toLowerCase();
+
+  if (input.serviceFee) return null;
 
   if (input.fulfillmentOnly) {
     if (!input.hasActiveOwner && workflowState !== "in_production") return null;

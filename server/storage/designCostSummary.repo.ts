@@ -36,6 +36,7 @@ export type OrderDesignBillingVisibilityRow = {
   description: string | null;
   quantity: number;
   productName: string | null;
+  workflowIntent: string | null;
   requiresDesignSnapshot: boolean;
   needsDesignOverride: boolean | null;
   designPricingModeSnapshot: string | null;
@@ -140,6 +141,7 @@ export class DesignCostSummaryRepository {
         description: orderLineItems.description,
         quantity: orderLineItems.quantity,
         productName: products.name,
+        workflowIntent: products.workflowIntent,
         requiresDesignSnapshot: orderLineItems.requiresDesignSnapshot,
         needsDesignOverride: orderLineItems.needsDesignOverride,
         designPricingModeSnapshot: orderLineItems.designPricingModeSnapshot,

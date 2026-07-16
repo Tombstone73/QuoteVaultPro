@@ -2460,7 +2460,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const productionRequiredItemCount = useMemo(() => {
     return activeLineItems.filter((item) => {
       const product = products.find((p) => p.id === item.productId);
-      return (product as any)?.requiresProductionJob === true;
+      return (product as any)?.requiresProductionJob === true && (product as any)?.workflowIntent !== "service_fee";
     }).length;
   }, [activeLineItems, products]);
 
@@ -2666,6 +2666,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const productArtworkPolicy = (productForPolicy as any)?.artworkPolicy ?? null;
                   const quantityOnly = (productForPolicy as any)?.measurementMode === "quantity_only";
                   const fulfillmentOnly = (productForPolicy as any)?.workflowIntent === "fulfillment_only";
+                  const serviceFee = (productForPolicy as any)?.workflowIntent === "service_fee";
 
                   const previewThumbUrls = Array.isArray(previewForLineItem?.thumbUrls) ? previewForLineItem!.thumbUrls! : [];
                   const heroThumbUrls = Array.from(
@@ -2721,7 +2722,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   );
 
                   const productForItem = products.find((p) => p.id === item.productId);
-                  const itemRequiresProduction = (productForItem as any)?.requiresProductionJob === true;
+                  const itemRequiresProduction = (productForItem as any)?.requiresProductionJob === true && (productForItem as any)?.workflowIntent !== "service_fee";
                   const isSelectedForProduction = selectedForProduction.has(item.id);
                   const isProductionFocused = productionFocusLineItemIds.includes(String(item.id));
                   const expandedBriefDetail = isExpanded && expandedItem && expandedItem.id === item.id ? designBriefQuery.data : null;
@@ -2754,13 +2755,17 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const isMissingArtworkSuppressed = Boolean(suppressedReason && suppressedAt);
                   const canDeriveArtwork = lineItemAttachmentsAssociationKnown && lineItemAssetsKnownForItem;
                   const hasAnyArtwork = attachmentsForThumb.length > 0 || assetCountForItem > 0;
-                  const missingArtworkActive = !fulfillmentOnly && policy === "required" && canDeriveArtwork && !hasAnyArtwork && !isMissingArtworkSuppressed;
-                  const operationalStatusLabel = fulfillmentOnly && workflowState === "ready_for_production"
+                  const missingArtworkActive = !fulfillmentOnly && !serviceFee && policy === "required" && canDeriveArtwork && !hasAnyArtwork && !isMissingArtworkSuppressed;
+                  const operationalStatusLabel = serviceFee
+                    ? "Billing line"
+                    : fulfillmentOnly && workflowState === "ready_for_production"
                     ? "Ready for fulfillment"
                     : fulfillmentOnly && workflowState === "in_production"
                       ? "Pick / pack"
                       : WORKFLOW_LABELS[workflowState] || workflowState;
-                  const operationalNextStep = fulfillmentOnly && workflowState === "ready_for_production"
+                  const operationalNextStep = serviceFee
+                    ? (displayTotal > 0 || (productForPolicy as any)?.allowZeroPrice === true ? "Ready to invoice" : "Price not configured")
+                    : fulfillmentOnly && workflowState === "ready_for_production"
                     ? "Pick / pack"
                     : fulfillmentOnly && workflowState === "in_production"
                       ? "Complete fulfillment"
@@ -2805,7 +2810,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     ? requiresProofApprovalInput
                     : Boolean((item as any)?.requiresProofApproval);
                   const showArtworkControls =
-                    !fulfillmentOnly || renderedRequiresDesign || renderedRequiresPrepress === true || renderedRequiresProofApproval;
+                    (!fulfillmentOnly && !serviceFee) || renderedRequiresDesign || renderedRequiresPrepress === true || renderedRequiresProofApproval;
 
                   let operationalWarning: string | null = null;
                   let operationalWarningTone: "warning" | "danger" | null = null;
@@ -2867,7 +2872,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 title={productName}
                                 sizeLabel={formatLineItemMeasurementLabel(productForPolicy, item.width, item.height)}
                                 qtyLabel={`Qty ${item.quantity || 0}`}
-                                unitPriceLabel={`${formatMoney(displayPerEa)}/ea`}
+                                unitPriceLabel={serviceFee ? formatMoney(displayTotal) : `${formatMoney(displayPerEa)}/ea`}
+                                priceLabel={serviceFee ? "Flat fee" : "Unit price"}
                                 totalLabel={formatMoney(displayTotal)}
                                 badges={{
                                   isNew: statusValue === "new",
@@ -3727,6 +3733,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 collapseSecondaryDetails={false}
                                 compactExpandedLayout={true}
                                 fulfillmentOnly={fulfillmentOnly}
+                                serviceFee={serviceFee}
                                 isDirty={isExpanded && expandedItem && expandedItem.id === item.id ? isDirty : false}
                                 isSaving={savingItemId === item.id}
                                 isSaved={!isDirty && (savedItemId === item.id || designBriefSavedAt === item.id)}
@@ -3774,7 +3781,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     ) : null}
                                   </div>
 
-                                  {!readOnly && getWorkflowActions(workflowState).length > 0 && (
+                                  {!readOnly && !serviceFee && getWorkflowActions(workflowState).length > 0 && (
                                     <div className="flex flex-wrap gap-2">
                                       {showOpenProofingAction ? (
                                         <Button asChild type="button" variant="outline" size="sm" className="h-8">
@@ -3800,7 +3807,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     ))}
                                     </div>
                                   )}
-                                  {!readOnly && showOpenProofingAction && getWorkflowActions(workflowState).length === 0 ? (
+                                  {!readOnly && !serviceFee && showOpenProofingAction && getWorkflowActions(workflowState).length === 0 ? (
                                     <div className="flex flex-wrap gap-2">
                                       <Button asChild type="button" variant="outline" size="sm" className="h-8">
                                         <Link to={buildProofingLineItemPath(item.id)}>Open Proofing</Link>

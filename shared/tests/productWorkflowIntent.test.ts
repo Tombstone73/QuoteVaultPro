@@ -21,4 +21,14 @@ describe("product workflow intent", () => {
       requiresProductionJob: false,
     });
   });
+
+  test("service/fee products are billing-only by default", () => {
+    expect(getProductWorkflowDefaults({ workflowIntent: "service_fee", requiresProductionJob: true })).toEqual({
+      intent: "service_fee",
+      requiresDesign: false,
+      requiresPrepress: false,
+      requiresProofApproval: false,
+      requiresProductionJob: false,
+    });
+  });
 });

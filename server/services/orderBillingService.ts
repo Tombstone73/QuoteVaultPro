@@ -1,8 +1,24 @@
 import { db } from '../db';
-import { orders, orderLineItems, organizations } from '../../shared/schema';
+import { orders, orderLineItems, organizations, products } from '../../shared/schema';
 import { and, eq, sql } from 'drizzle-orm';
 
 export type BillingReadyPolicy = 'all_line_items_done' | 'manual' | 'none';
+
+/** Service/fee lines are immediately billable once they carry a configured price. */
+export function isLineItemReadyForBilling(lineItem: {
+  status?: string | null;
+  totalPrice?: unknown;
+  workflowIntent?: string | null;
+  allowZeroPrice?: boolean | null;
+}): boolean {
+  if (lineItem.workflowIntent === "service_fee") {
+    const total = Number(lineItem.totalPrice);
+    return Number.isFinite(total) && (total > 0 || lineItem.allowZeroPrice === true);
+  }
+
+  const status = String(lineItem.status || '').toLowerCase();
+  return status === 'done' || status === 'canceled';
+}
 export type OrderBillingStatus = 'not_ready' | 'ready' | 'billed';
 
 export async function getBillingReadyPolicyForOrg(organizationId: string): Promise<BillingReadyPolicy> {
@@ -92,14 +108,17 @@ export async function recomputeOrderBillingStatus(params: {
   let target: OrderBillingStatus = 'not_ready';
   if (policy === 'all_line_items_done') {
     const lineItems = await db
-      .select({ status: orderLineItems.status })
+      .select({
+        status: orderLineItems.status,
+        totalPrice: orderLineItems.totalPrice,
+        workflowIntent: products.workflowIntent,
+        allowZeroPrice: products.allowZeroPrice,
+      })
       .from(orderLineItems)
+      .innerJoin(products, eq(products.id, orderLineItems.productId))
       .where(eq(orderLineItems.orderId, orderId));
 
-    const allDone = lineItems.length > 0 && lineItems.every((li) => {
-      const s = String(li.status || '').toLowerCase();
-      return s === 'done' || s === 'canceled';
-    });
+    const allDone = lineItems.length > 0 && lineItems.every(isLineItemReadyForBilling);
 
     target = allDone ? 'ready' : 'not_ready';
   } else {

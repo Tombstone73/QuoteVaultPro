@@ -576,6 +576,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const errors = findings.filter((f) => f.severity === "ERROR");
   const warnings = findings.filter((f) => f.severity === "WARNING");
   const quantityOnly = measurementMode === "quantity_only";
+  const feeService = pricingProfileKey === "fee";
+  const nonDimensionalPricing = quantityOnly || feeService;
 
   const treeForPreview = useMemo(() => {
     if (!treeJson || typeof treeJson !== "object") return treeJson;
@@ -588,26 +590,26 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
       meta: {
         ...meta,
         ...(pricingV2Override && typeof pricingV2Override === "object" ? { pricingV2: pricingV2Override } : {}),
-        ...(quantityOnly ? {
+        ...(nonDimensionalPricing ? {
           requiresDimensions: false,
           fixedDimensions: undefined,
           geometry: { ...(meta.geometry || {}), trimAllowance: 0, trimAllowanceX: 0, trimAllowanceY: 0 },
         } : {}),
       },
     };
-  }, [treeJson, pricingV2Override, quantityOnly]);
+  }, [treeJson, pricingV2Override, nonDimensionalPricing]);
 
   const fixedDimensions = useMemo(() => getPbv2FixedDimensions(treeForPreview), [treeForPreview]);
-  const previewWidth = quantityOnly ? 1 : (fixedDimensions?.widthIn ?? previewState.width);
-  const previewHeight = quantityOnly ? 1 : (fixedDimensions?.heightIn ?? previewState.height);
+  const previewWidth = nonDimensionalPricing ? 1 : (fixedDimensions?.widthIn ?? previewState.width);
+  const previewHeight = nonDimensionalPricing ? 1 : (fixedDimensions?.heightIn ?? previewState.height);
 
   useEffect(() => {
-    if (quantityOnly || !fixedDimensions) return;
+    if (nonDimensionalPricing || !fixedDimensions) return;
     setPreviewState((prev) => {
       if (prev.width === fixedDimensions.widthIn && prev.height === fixedDimensions.heightIn) return prev;
       return { ...prev, width: fixedDimensions.widthIn, height: fixedDimensions.heightIn };
     });
-  }, [fixedDimensions?.widthIn, fixedDimensions?.heightIn, quantityOnly]);
+  }, [fixedDimensions?.widthIn, fixedDimensions?.heightIn, nonDimensionalPricing]);
 
   const previewGroups = useMemo(
     () => buildPreviewGroups(treeForPreview, previewState.selectedOptionValues),
@@ -658,17 +660,17 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
 
   const inputErrors = useMemo(() => {
     const next: Partial<Record<"width" | "height" | "quantity", string>> = {};
-    if (!quantityOnly && (!Number.isFinite(previewWidth) || previewWidth <= 0)) {
+    if (!nonDimensionalPricing && (!Number.isFinite(previewWidth) || previewWidth <= 0)) {
       next.width = "Width must be greater than 0.";
     }
-    if (!quantityOnly && (!Number.isFinite(previewHeight) || previewHeight <= 0)) {
+    if (!nonDimensionalPricing && (!Number.isFinite(previewHeight) || previewHeight <= 0)) {
       next.height = "Height must be greater than 0.";
     }
     if (!Number.isFinite(previewState.quantity) || previewState.quantity < 1 || !Number.isInteger(previewState.quantity)) {
       next.quantity = "Quantity must be an integer of 1 or more.";
     }
     return next;
-  }, [previewWidth, previewHeight, previewState.quantity, quantityOnly]);
+  }, [previewWidth, previewHeight, previewState.quantity, nonDimensionalPricing]);
 
   const hasInputErrors = Boolean(inputErrors.width || inputErrors.height || inputErrors.quantity);
 
@@ -837,9 +839,9 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     ? formulaAuthoritativeTotal ?? result.totalPrice
     : 0;
   const displayUnitPrice = result
-    ? (previewState.quantity > 0 ? displayTotalPrice / previewState.quantity : result.unitPrice)
+    ? (feeService ? displayTotalPrice : (previewState.quantity > 0 ? displayTotalPrice / previewState.quantity : result.unitPrice))
     : 0;
-  const quantityOnlyPriceMissing = quantityOnly && !allowZeroPrice && Boolean(result) && displayTotalPrice === 0;
+  const quantityOnlyPriceMissing = nonDimensionalPricing && !allowZeroPrice && Boolean(result) && displayTotalPrice === 0;
   const displayBasePrice = result?.breakdown
     ? (formulaPricingDebug?.finalTotalSource === "formula" && typeof formulaPricingDebug.finalTotal === "number"
       ? formulaPricingDebug.finalTotal
@@ -1092,8 +1094,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                 <div className="text-[11px] text-slate-500 shrink-0">Units: {previewState.unit === "in" ? "inches" : previewState.unit}</div>
               </div>
 
-              <div className={quantityOnly ? "grid grid-cols-1 gap-2 min-w-0 max-w-full" : fixedDimensions ? "grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-2 min-w-0 max-w-full" : "grid grid-cols-[repeat(3,minmax(0,1fr))] gap-2 min-w-0 max-w-full"}>
-                {quantityOnly ? null : fixedDimensions ? (
+              <div className={nonDimensionalPricing ? "grid grid-cols-1 gap-2 min-w-0 max-w-full" : fixedDimensions ? "grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-2 min-w-0 max-w-full" : "grid grid-cols-[repeat(3,minmax(0,1fr))] gap-2 min-w-0 max-w-full"}>
+                {nonDimensionalPricing ? null : fixedDimensions ? (
                   <div className="min-w-0">
                     <Label className="text-xs text-slate-400">Fixed Size</Label>
                     <div className="flex h-8 items-center rounded-md border border-slate-700/60 bg-slate-950/40 px-2 font-mono text-sm text-slate-200">
@@ -1179,7 +1181,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     </div>
                   ) : null}
 
-                  {!quantityOnly ? <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
+                  {!nonDimensionalPricing ? <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
                     <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">Finished Size Rule</div>
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-slate-300">Ordered size</span>
@@ -1248,7 +1250,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                           PBV2_E_FINAL_TOTAL_MISMATCH: API total was {currencyFormatter.format(result.totalPrice)} but formula final total is {currencyFormatter.format(formulaAuthoritativeTotal ?? result.totalPrice)}.
                         </div>
                       ) : null}
-                      <div className="flex items-center justify-between"><span>Unit price</span><span className="font-mono">{currencyFormatter.format(displayUnitPrice)}</span></div>
+                      <div className="flex items-center justify-between"><span>{feeService ? "Flat fee" : "Unit price"}</span><span className="font-mono">{currencyFormatter.format(displayUnitPrice)}</span></div>
                       <div className="flex items-center justify-between"><span>Total price</span><span className="font-mono">{currencyFormatter.format(displayTotalPrice)}</span></div>
                       {quantityOnlyPriceMissing ? (
                         <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-200">Price not configured. Set Rate per piece or explicitly allow a $0.00 price.</div>
@@ -1306,9 +1308,11 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     </button>
                     {openFormulaDebug ? (
                       <div id="pbv2-formula-debug-content" className="space-y-2 pb-4 pt-0 text-xs text-slate-300 min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere]">
-                      {quantityOnly ? (
+                      {nonDimensionalPricing ? (
                         <div className="rounded border border-sky-500/30 bg-sky-500/10 px-2 py-1.5 text-sky-100">
-                          Quantity-only pricing ignores width, height, square footage, sheet yield, and base-price formulas. The only base rate is Rate per piece.
+                          {feeService
+                            ? "Fee / Service pricing ignores quantity, width, height, square footage, sheet yield, and base-price formulas. Flat Fee Amount is charged once per line item."
+                            : "Quantity-only pricing ignores width, height, square footage, sheet yield, and base-price formulas. The only base rate is Rate per piece."}
                         </div>
                       ) : null}
                       <div className="min-w-0"><span className="text-slate-400">Formula used:</span> <span className="font-mono break-all">{formulaDebug.formulaRaw || "—"}</span></div>
@@ -1319,7 +1323,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div className="min-w-0"><span className="text-slate-400">Resolved formula expression:</span> <span className="font-mono break-all">{formulaDebug.resolvedFormulaExpression ?? "—"}</span></div>
                       <div><span className="text-slate-400">Manual formula present:</span> <span className="font-mono">{formulaDebug.manualFormulaPresent ? "true" : "false"}</span></div>
                       <div><span className="text-slate-400">Manual formula ignored:</span> <span className="font-mono">{formulaDebug.manualFormulaIgnored ? "true" : "false"}</span></div>
-                      {!quantityOnly ? ["sheet_width", "sheet_length", "usable_drop_min", "billable_length_increment", "minimum_billable_sqft"].map((key) => (
+                      {!nonDimensionalPricing ? ["sheet_width", "sheet_length", "usable_drop_min", "billable_length_increment", "minimum_billable_sqft"].map((key) => (
                         <div key={key}>
                           <span className="text-slate-400">{key}:</span>{" "}
                           <span className="font-mono">{String(formulaDebug.variables?.[key] ?? "—")}</span>

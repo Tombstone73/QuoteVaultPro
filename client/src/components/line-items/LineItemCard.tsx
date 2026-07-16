@@ -45,6 +45,7 @@ export type LineItemCardProps = {
   sizeLabel: string; // e.g., "24\" × 36\""
   qtyLabel: string; // e.g., "Qty 100"
   unitPriceLabel: string; // e.g., "$2.50/ea"
+  priceLabel?: string;
   totalLabel: string; // e.g., "$250.00"
   
   // Optional badges for collapsed view
@@ -134,6 +135,7 @@ export type LineItemCardProps = {
   collapseSecondaryDetails?: boolean;
   compactExpandedLayout?: boolean;
   fulfillmentOnly?: boolean;
+  serviceFee?: boolean;
   quantityOnly?: boolean;
 
   // Actions
@@ -228,6 +230,7 @@ export function LineItemCard({
   sizeLabel,
   qtyLabel,
   unitPriceLabel,
+  priceLabel = "Unit price",
   totalLabel,
   badges,
   descriptionPreview,
@@ -284,6 +287,7 @@ export function LineItemCard({
   collapseSecondaryDetails = false,
   compactExpandedLayout = false,
   fulfillmentOnly = false,
+  serviceFee = false,
   quantityOnly = false,
   isDirty = false,
   isSaving = false,
@@ -294,6 +298,7 @@ export function LineItemCard({
   onRemove,
   readOnly = false,
 }: LineItemCardProps) {
+  const nonProductionItem = fulfillmentOnly || serviceFee;
   const hasNote = Boolean(descriptionPreview) && showNoteLabel;
   const hasOverride = Boolean(priceOverride != null);
   const hasProductionNotes = Boolean(productionNotes && productionNotes.trim());
@@ -385,18 +390,18 @@ export function LineItemCard({
 
       <div className="mt-3 space-y-1.5">
         <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-          {fulfillmentOnly ? "Fulfillment Notes (internal)" : "Production Notes (internal)"}
+          {serviceFee ? "Service Notes (internal)" : fulfillmentOnly ? "Fulfillment Notes (internal)" : "Production Notes (internal)"}
           <span className="text-xs text-amber-600 dark:text-amber-500 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 rounded">
             Staff only
           </span>
         </label>
         <p className="text-xs text-muted-foreground">
-          {fulfillmentOnly ? "Visible to staff handling pick, pack, and fulfillment." : "Visible to production staff; not shown to customers."}
+          {serviceFee ? "Visible to staff handling this billing line; not shown to customers." : fulfillmentOnly ? "Visible to staff handling pick, pack, and fulfillment." : "Visible to production staff; not shown to customers."}
         </p>
         <textarea
           value={productionNotes}
           onChange={(e) => onProductionNotesChange?.(e.target.value)}
-          placeholder={fulfillmentOnly ? "Internal pick, pack, or fulfillment instructions (not shown to customers)..." : "Internal production notes (not shown to customers)..."}
+          placeholder={serviceFee ? "Internal service or billing instructions (not shown to customers)..." : fulfillmentOnly ? "Internal pick, pack, or fulfillment instructions (not shown to customers)..." : "Internal production notes (not shown to customers)..."}
           className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
           disabled={readOnly}
         />
@@ -736,13 +741,13 @@ export function LineItemCard({
             {/* Compact operational controls */}
             <div className="flex flex-wrap items-end gap-3">
               {primaryControlSlot ? (
-                <section className={cn("min-w-[220px] flex-1", !fulfillmentOnly && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
-                  {!fulfillmentOnly ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Material &amp; Product</div> : null}
+                <section className={cn("min-w-[220px] flex-1", !nonProductionItem && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
+                  {!nonProductionItem ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Material &amp; Product</div> : null}
                   {primaryControlSlot}
                 </section>
               ) : null}
-              <section className={cn("flex flex-wrap items-end gap-3", !fulfillmentOnly && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
-              {!fulfillmentOnly ? <div className="w-full text-xs font-semibold uppercase tracking-wide text-muted-foreground">Dimensions &amp; Quantity</div> : null}
+              <section className={cn("flex flex-wrap items-end gap-3", !nonProductionItem && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
+              {!nonProductionItem ? <div className="w-full text-xs font-semibold uppercase tracking-wide text-muted-foreground">Dimensions &amp; Quantity</div> : null}
               {dimsRequired ? (
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-2">
@@ -838,9 +843,9 @@ export function LineItemCard({
               </div>
               </section>
 
-              <div className={cn("w-[220px] self-end", fulfillmentOnly ? "text-left" : "ml-auto text-right")}>
+              <div className={cn("w-[220px] self-end", nonProductionItem ? "text-left" : "ml-auto text-right")}>
                 <div className="text-xs text-muted-foreground">Total</div>
-                <div className={cn("flex items-center gap-2", fulfillmentOnly ? "justify-start" : "justify-end")}>
+                <div className={cn("flex items-center gap-2", nonProductionItem ? "justify-start" : "justify-end")}>
                   {editingPrice ? (
                     <Input
                       type="text"
@@ -889,7 +894,7 @@ export function LineItemCard({
                 {priceControlSlot ? (
                   <div className="mt-1">{priceControlSlot}</div>
                 ) : null}
-                <div className="text-[11px] text-muted-foreground">Unit price {unitPriceLabel}</div>
+                <div className="text-[11px] text-muted-foreground">{priceLabel} {unitPriceLabel}</div>
                 {pricingDetailsSlot ? (
                   <Collapsible defaultOpen={false} className="mt-1">
                     <CollapsibleTrigger asChild>
@@ -898,18 +903,18 @@ export function LineItemCard({
                         data-quantity-only={quantityOnly ? "true" : "false"}
                         className={cn(
                           "text-[11px] font-medium text-muted-foreground hover:text-foreground",
-                          fulfillmentOnly ? "text-left" : "ml-auto block"
+                          nonProductionItem ? "text-left" : "ml-auto block"
                         )}
                       >
                         Pricing details
                       </button>
                     </CollapsibleTrigger>
-                    <CollapsibleContent className={cn("pt-1 text-[11px] text-muted-foreground", fulfillmentOnly ? "text-left" : "text-right")}>
+                    <CollapsibleContent className={cn("pt-1 text-[11px] text-muted-foreground", nonProductionItem ? "text-left" : "text-right")}>
                       {pricingDetailsSlot}
                     </CollapsibleContent>
                   </Collapsible>
                 ) : null}
-                <div className={cn("h-5 flex items-center", fulfillmentOnly ? "justify-start" : "justify-end")}>
+                <div className={cn("h-5 flex items-center", nonProductionItem ? "justify-start" : "justify-end")}>
                   {isCalculating && <div className="text-[11px] text-muted-foreground">Calculating…</div>}
                   {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" && (
                     <div className="text-[11px] text-amber-600 dark:text-amber-500 font-medium">
@@ -932,11 +937,11 @@ export function LineItemCard({
               </div>
             </div>
 
-            {!fulfillmentOnly ? <Separator className="my-3" /> : null}
+            {!nonProductionItem ? <Separator className="my-3" /> : null}
 
             {/* Options (left) + Artwork (right) */}
-            <div className={cn("grid grid-cols-1 gap-3", !fulfillmentOnly && "lg:grid-cols-[1fr_360px]")}>
-              {fulfillmentOnly ? (
+            <div className={cn("grid grid-cols-1 gap-3", !nonProductionItem && "lg:grid-cols-[1fr_360px]")}>
+              {nonProductionItem ? (
                 <div className="min-w-0">
                   {secondaryDetailsPanel}
                   {configurationSection}

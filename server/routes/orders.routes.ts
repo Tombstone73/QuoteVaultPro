@@ -349,6 +349,7 @@ async function resolveEffectiveLineItemRouting(args: {
         requiresPrepress,
         requiresProofApproval,
         proofApprovalManualOverride: proofApproval.manualOverride,
+        isServiceFee: productRow?.workflowIntent === "service_fee",
         workflowState: getInitialWorkflowState({ requiresDesign, requiresPrepress, requiresProofApproval }),
     };
 }
@@ -5906,14 +5907,17 @@ export async function registerOrderRoutes(
             const userId = getUserId(req.user);
             const productForMeasurement = await storage.getProductById(organizationId, String(lineItemData.productId));
             if (!productForMeasurement) return res.status(404).json({ message: "Product not found" });
-            const pricingDimensions = dimensionsForProductPricing(productForMeasurement, lineItemData.width, lineItemData.height);
+            const nonDimensionalProduct = productForMeasurement.measurementMode === "quantity_only" || productForMeasurement.pricingProfileKey === "fee";
+            const pricingDimensions = nonDimensionalProduct
+                ? { widthIn: 1, heightIn: 1 }
+                : dimensionsForProductPricing(productForMeasurement, lineItemData.width, lineItemData.height);
             if (!Number.isFinite(pricingDimensions.widthIn) || pricingDimensions.widthIn <= 0 || !Number.isFinite(pricingDimensions.heightIn) || pricingDimensions.heightIn <= 0) {
                 return res.status(400).json({ message: "width and height must be positive for this product" });
             }
             // Quantity-only pricing uses neutral geometry internally, but a line item
             // must not persist that implementation detail as a fictional 1 x 1 size.
-            lineItemData.width = productForMeasurement.measurementMode === "quantity_only" ? 0 : pricingDimensions.widthIn;
-            lineItemData.height = productForMeasurement.measurementMode === "quantity_only" ? 0 : pricingDimensions.heightIn;
+            lineItemData.width = nonDimensionalProduct ? 0 : pricingDimensions.widthIn;
+            lineItemData.height = nonDimensionalProduct ? 0 : pricingDimensions.heightIn;
             
             const pricingResult = await priceLineItem({
                 organizationId,
@@ -5963,6 +5967,23 @@ export async function registerOrderRoutes(
                 requestedRequiresPrepress: requestedRequiresPrepressOverride,
                 requestedRequiresProofApproval: requestedRequiresProofApprovalOverride,
             });
+            // A service fee is not design work by default. Preserve an explicit
+            // line-level design override, but do not carry a product's unrelated
+            // design configuration into a normal billing-only line snapshot.
+            const persistedDesignSnapshot = routing.isServiceFee && !routing.requiresDesign
+                ? {
+                    ...designSnapshot,
+                    requiresDesignSnapshot: false,
+                    designBriefRequiredSnapshot: false,
+                    designPricingModeSnapshot: "none" as const,
+                    flatFeeAmountSnapshot: null,
+                    hourlyRateSnapshot: null,
+                    overageRateSnapshot: null,
+                    internalLaborRateSnapshot: null,
+                    needsDesignOverride: null,
+                    effectiveRequiresDesign: false,
+                }
+                : designSnapshot;
 
             // Create line item with server-computed pricing
             const created = await storage.createOrderLineItem({
@@ -5970,16 +5991,16 @@ export async function registerOrderRoutes(
                 selectedOptions: pricingResult.pbv2SnapshotJson.selectedOptions || [],
                 status: "new",
                 workflowState: routing.workflowState,
-                requiresDesignSnapshot: designSnapshot.requiresDesignSnapshot,
-                designBriefRequiredSnapshot: designSnapshot.designBriefRequiredSnapshot,
-                estimatedDesignMinutesSnapshot: designSnapshot.estimatedDesignMinutesSnapshot,
-                includedDesignMinutesSnapshot: designSnapshot.includedDesignMinutesSnapshot,
-                designPricingModeSnapshot: designSnapshot.designPricingModeSnapshot,
-                flatFeeAmountSnapshot: designSnapshot.flatFeeAmountSnapshot,
-                hourlyRateSnapshot: designSnapshot.hourlyRateSnapshot,
-                overageRateSnapshot: designSnapshot.overageRateSnapshot,
-                internalLaborRateSnapshot: designSnapshot.internalLaborRateSnapshot,
-                needsDesignOverride: designSnapshot.needsDesignOverride,
+                requiresDesignSnapshot: persistedDesignSnapshot.requiresDesignSnapshot,
+                designBriefRequiredSnapshot: persistedDesignSnapshot.designBriefRequiredSnapshot,
+                estimatedDesignMinutesSnapshot: persistedDesignSnapshot.estimatedDesignMinutesSnapshot,
+                includedDesignMinutesSnapshot: persistedDesignSnapshot.includedDesignMinutesSnapshot,
+                designPricingModeSnapshot: persistedDesignSnapshot.designPricingModeSnapshot,
+                flatFeeAmountSnapshot: persistedDesignSnapshot.flatFeeAmountSnapshot,
+                hourlyRateSnapshot: persistedDesignSnapshot.hourlyRateSnapshot,
+                overageRateSnapshot: persistedDesignSnapshot.overageRateSnapshot,
+                internalLaborRateSnapshot: persistedDesignSnapshot.internalLaborRateSnapshot,
+                needsDesignOverride: persistedDesignSnapshot.needsDesignOverride,
                 requiresDesign: routing.requiresDesign,
                 requiresProofApproval: routing.requiresProofApproval,
                 requiresPrepress: routing.requiresPrepress,
@@ -6015,7 +6036,7 @@ export async function registerOrderRoutes(
                     .where(eq(products.id, String(created.productId)))
                     .limit(1);
 
-                if (ptRow?.sendToProductionDefault === true && created.workflowState === "ready_for_production") {
+                if (!routing.isServiceFee && ptRow?.sendToProductionDefault === true && created.workflowState === "ready_for_production") {
                     const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
                     const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
                     const scheduleResult = await scheduleOrderLineItemsForProduction({
@@ -6047,6 +6068,7 @@ export async function registerOrderRoutes(
             }
 
             await recomputeOrderTotalsFromPersistedLineItems(String(created.orderId), organizationId);
+            await recomputeOrderBillingStatus({ organizationId, orderId: String(created.orderId) });
 
             res.json(enrichLineItemWithEffectivePricing(created as any));
         } catch (error) {
@@ -6243,15 +6265,18 @@ export async function registerOrderRoutes(
                 const pricingProductId = String(updateData.productId ?? oldLineItem.productId);
                 const productForMeasurement = await storage.getProductById(organizationId, pricingProductId);
                 if (!productForMeasurement) return res.status(404).json({ message: "Product not found" });
-                const pricingDimensions = dimensionsForProductPricing(
-                    productForMeasurement,
-                    updateData.width !== undefined ? updateData.width : oldLineItem.width,
-                    updateData.height !== undefined ? updateData.height : oldLineItem.height,
-                );
+                const nonDimensionalProduct = productForMeasurement.measurementMode === "quantity_only" || productForMeasurement.pricingProfileKey === "fee";
+                const pricingDimensions = nonDimensionalProduct
+                    ? { widthIn: 1, heightIn: 1 }
+                    : dimensionsForProductPricing(
+                        productForMeasurement,
+                        updateData.width !== undefined ? updateData.width : oldLineItem.width,
+                        updateData.height !== undefined ? updateData.height : oldLineItem.height,
+                    );
                 if (!Number.isFinite(pricingDimensions.widthIn) || pricingDimensions.widthIn <= 0 || !Number.isFinite(pricingDimensions.heightIn) || pricingDimensions.heightIn <= 0) {
                     return res.status(400).json({ message: "width and height must be positive for this product" });
                 }
-                if (productForMeasurement.measurementMode === "quantity_only") {
+                if (nonDimensionalProduct) {
                     updateData.width = 0;
                     updateData.height = 0;
                 }
@@ -6521,13 +6546,16 @@ export async function registerOrderRoutes(
                 try {
                     const newProductId = String(updateData.productId);
                     const [ptRow] = await db
-                        .select({ sendToProductionDefault: productTypes.sendToProductionDefault })
+                        .select({
+                            sendToProductionDefault: productTypes.sendToProductionDefault,
+                            workflowIntent: products.workflowIntent,
+                        })
                         .from(products)
                         .innerJoin(productTypes, eq(products.productTypeId, productTypes.id))
                         .where(eq(products.id, newProductId))
                         .limit(1);
 
-                    if (ptRow?.sendToProductionDefault === true && String((finalLineItem ?? lineItem).workflowState || "") === "ready_for_production") {
+                    if (ptRow?.workflowIntent !== "service_fee" && ptRow?.sendToProductionDefault === true && String((finalLineItem ?? lineItem).workflowState || "") === "ready_for_production") {
                         const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
                         const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
                         const scheduleResult = await scheduleOrderLineItemsForProduction({
@@ -6547,6 +6575,7 @@ export async function registerOrderRoutes(
             }
 
             await recomputeOrderTotalsFromPersistedLineItems(String(lineItem.orderId), organizationId);
+            await recomputeOrderBillingStatus({ organizationId, orderId: String(lineItem.orderId) });
 
             res.json(enrichLineItemWithEffectivePricing((finalLineItem ?? lineItem) as any));
         } catch (error) {

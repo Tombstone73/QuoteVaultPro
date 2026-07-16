@@ -1,6 +1,6 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 
-import { orderLineItems, orders, type LineItemWorkflowState } from "@shared/schema";
+import { orderLineItems, orders, products, type LineItemWorkflowState } from "@shared/schema";
 import { isCanceledOrder } from "@shared/operationalState";
 
 type DbLike = {
@@ -31,6 +31,7 @@ async function loadOrderWithOperationalChild(tx: DbLike, args: {
   const conditions = [
     eq(orders.organizationId, args.organizationId),
     inArray(orderLineItems.workflowState, OPERATIONAL_LINE_ITEM_STATES as any),
+    ne(products.workflowIntent, "service_fee"),
   ];
 
   if (args.orderId) {
@@ -54,6 +55,7 @@ async function loadOrderWithOperationalChild(tx: DbLike, args: {
     })
     .from(orderLineItems)
     .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+    .innerJoin(products, eq(orderLineItems.productId, products.id))
     .where(and(...conditions))
     .limit(1);
 

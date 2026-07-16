@@ -26,4 +26,9 @@ describe("product measurement mode", () => {
     expect(Number.isNaN(dimensions.widthIn)).toBe(true);
     expect(Number.isNaN(dimensions.heightIn)).toBe(true);
   });
+
+  test("Fee / Service pricing is non-dimensional even if an older product lacks the measurement flag", () => {
+    expect(productRequiresEnteredDimensions({ pricingProfileKey: "fee" })).toBe(false);
+    expect(dimensionsForProductPricing({ pricingProfileKey: "fee" }, undefined, undefined)).toEqual({ widthIn: 1, heightIn: 1 });
+  });
 });

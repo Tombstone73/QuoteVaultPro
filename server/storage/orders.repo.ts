@@ -345,6 +345,7 @@ export class OrdersRepository {
                 workflowState: orderLineItems.workflowState,
                 status: orderLineItems.status,
                 requiresProductionJob: products.requiresProductionJob,
+                workflowIntent: products.workflowIntent,
             })
             .from(orderLineItems)
             .innerJoin(products, eq(orderLineItems.productId, products.id))
@@ -397,7 +398,7 @@ export class OrdersRepository {
         }
 
         for (const lineItem of lineItems) {
-            if (lineItem.requiresProductionJob !== true) continue;
+            if (lineItem.requiresProductionJob !== true || lineItem.workflowIntent === "service_fee") continue;
 
             const orderId = String(lineItem.orderId);
             const summary = summaries.get(orderId);

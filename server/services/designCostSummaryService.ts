@@ -231,7 +231,10 @@ export async function listOrderDesignBillingVisibility(args: {
     return null;
   }
 
-  return rows.map((row) => ({
+  // Service/fee products are invoiceable order charges, not design work. Keep
+  // them out of the design-billing diagnostic entirely instead of rendering a
+  // misleading "Not applicable" row.
+  return rows.filter((row) => row.workflowIntent !== "service_fee").map((row) => ({
     lineItemId: row.lineItemId,
     orderId: row.orderId,
     description: row.description,
