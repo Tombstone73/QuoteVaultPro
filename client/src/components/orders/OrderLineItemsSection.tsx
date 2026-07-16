@@ -1384,6 +1384,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       OrderLineItemSavedSnapshot
     >
   >({});
+  const initializedExpandedLineItemRef = useRef<string | null>(null);
   // Monotonic id per preview request. Incrementing it cancels older responses.
   const lastCalcKeyRef = useRef<string>("");
   const calcSeqRef = useRef(0);
@@ -1458,8 +1459,13 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   // Initialize local editor state when expanded item changes
   useEffect(() => {
-    if (!expandedItem) return;
+    if (!expandedItem) {
+      initializedExpandedLineItemRef.current = null;
+      return;
+    }
     const itemId = expandedItem.id;
+    if (initializedExpandedLineItemRef.current === itemId) return;
+    initializedExpandedLineItemRef.current = itemId;
 
     setDraftProductId(String(expandedItem.productId || ""));
     setDraftProductVariantId(normalizeVariantId(expandedItem.productVariantId));
